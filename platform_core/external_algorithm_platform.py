@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2069,64 +2067,6 @@ def external_algorithm_platform_router(
         data_dir=Path(data_dir),
         secret_store_factory=secret_store_factory,
     )
-    auto_sync_lock = FileLock(str(service.repository.root / ".auto-sync-worker.lock"), timeout=0)
-
-    def _auto_sync_projects() -> list[str]:
-        projects_path = Path(data_dir) / "projects.json"
-        if not projects_path.exists():
-            return []
-        try:
-            rows = json.loads(projects_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-        if not isinstance(rows, list):
-            return []
-        result: list[str] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            project_id = str(row.get("id") or "").strip()
-            if project_id:
-                result.append(project_id)
-        return result
-
-    def _auto_sync_once() -> None:
-        if not service.auto_sync_due():
-            return
-        try:
-            with auto_sync_lock.acquire(timeout=0):
-                if not service.auto_sync_due():
-                    return
-                for project_id in _auto_sync_projects():
-                    try:
-                        get_project(project_id)
-                        service.sync(
-                            project_id=project_id,
-                            algorithms_path=algorithms_file(project_id),
-                            sync_type="auto",
-                        )
-                    except Exception:
-                        # sync() records provider failures; one project must not stop the worker.
-                        continue
-        except Timeout:
-            return
-
-    def _auto_sync_loop() -> None:
-        while True:
-            try:
-                _auto_sync_once()
-            except Exception:
-                pass
-            # Check often, but auto_sync_due() still enforces the 60-second
-            # provider pull interval. This keeps scheduling jitter small.
-            time.sleep(5)
-
-    threading.Thread(
-        target=_auto_sync_loop,
-        name="external-algorithm-platform-auto-sync",
-        daemon=True,
-    ).start()
-
     @router.get("/config")
     def get_config():
         return {"ok": True, "config": service.public_config()}

@@ -12,6 +12,8 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.node_identity import resolve_node_identity
 from platform_core.storage.material_cache_runtime import MaterialCacheRuntimeReporter
+from platform_core.external_algorithm_auto_sync import ExternalAlgorithmAutoSyncReporter
+from platform_core.secrets import KeyringSecretStore
 from platform_core.remote_material_lifecycle import RemoteMaterialStagingGCReporter
 from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
@@ -184,6 +186,20 @@ def main(argv=None) -> int:
         except Exception:
             pass
         instance_lease.add_renew_hook(material_gc_reporter.report)
+
+    external_sync_reporter = None
+    if "storage" in set(instance_roles):
+        external_sync_reporter = ExternalAlgorithmAutoSyncReporter(
+            data_dir,
+            secret_store_factory=lambda: KeyringSecretStore(
+                encrypted_path=data_dir / "secure" / "secrets.enc.json",
+            ),
+        )
+        try:
+            external_sync_reporter.report()
+        except Exception:
+            pass
+        instance_lease.add_renew_hook(external_sync_reporter.report)
 
     try:
         write_worker_build_marker(data_dir, build_id)

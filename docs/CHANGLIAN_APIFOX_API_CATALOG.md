@@ -196,8 +196,8 @@ SSE / WebSocket 推送
 
 - 手动立即同步；
 - 外部模式自动同步由服务端强制启用，Provider 主数据拉取间隔固定为 60 秒，作为准实时同步；
-- 自动同步 daemon thread 每 5 秒仅检查一次是否到期；未满 60 秒不会请求新畅联，因此这不是“每 5 秒调用接口”；
-- 实际触发时间仍会受 5 秒检查周期和远端接口耗时影响。
+- 后台 Worker heartbeat hook 负责触发到期检查，Web/API 进程不再持有自动同步 daemon timer；
+- `auto_sync_due()` 仍强制 Provider 主数据两次拉取至少间隔 60 秒；远端网络 I/O 使用一次性、FileLock 保护的后台执行，不阻塞 Worker lease heartbeat。
 
 若后续新畅联新增 Webhook/事件订阅文档，应优先升级为事件驱动，并保留定时拉取作为兜底对账。
 

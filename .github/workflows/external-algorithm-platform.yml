@@ -7,6 +7,8 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_auto_sync.py
+      - task_worker.py
       - platform_core/algorithm_sql_store.py
       - platform_core/integration_audit.py
       - platform_core/storage/source_repository.py
@@ -19,6 +21,7 @@ on:
       - static/modules/training-submit.js
       - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_external_algorithm_auto_sync.py
       - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
@@ -42,6 +45,8 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_auto_sync.py
+      - task_worker.py
       - platform_core/algorithm_sql_store.py
       - platform_core/integration_audit.py
       - platform_core/storage/source_repository.py
@@ -54,6 +59,7 @@ on:
       - static/modules/training-submit.js
       - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_external_algorithm_auto_sync.py
       - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
@@ -87,6 +93,7 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_secrets.py \
             tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_external_algorithm_auto_sync.py \
             tests/unit/test_algorithm_sql_store.py \
             tests/unit/test_integration_audit.py \
             tests/unit/test_changlian_audit_client.py \
@@ -100,7 +107,7 @@ jobs:
             tests/frontend/startup-render-owner.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py platform_core/storage/source_repository.py
+          python -m py_compile app.py task_worker.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_auto_sync.py platform_core/integration_audit.py platform_core/storage/source_repository.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
@@ -117,7 +124,10 @@ jobs:
           grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
           grep -q "installModelArtifactRuntime" static/main.mjs
           grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
-          grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
+          grep -Fq 'ExternalAlgorithmAutoSyncReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(external_sync_reporter.report)' task_worker.py
+          grep -Fq 'name="external-algorithm-platform-auto-sync"' platform_core/external_algorithm_auto_sync.py
+          if grep -Fq 'threading.Thread(' platform_core/external_algorithm_platform.py; then echo "external auto-sync must not be owned by the Web/API router" >&2; exit 1; fi
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
           grep -q "externalAlgorithmTrainingReadiness" static/modules/external-algorithm-platform.js
           grep -q "data-external-stale" static/modules/external-algorithm-platform.js
@@ -146,9 +156,9 @@ jobs:
           grep -Fq 'client.analysis_info(analysis_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
           grep -Fq '"external_analysis_id": external_analysis_id' app.py
-          grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py
-          grep -Fq '自动同步 daemon thread 每 5 秒仅检查一次是否到期' docs/CHANGLIAN_APIFOX_API_CATALOG.md
-          if grep -Fq '每 30 秒检查一次是否到期' docs/CHANGLIAN_APIFOX_API_CATALOG.md; then echo "ChangLian auto-sync cadence documentation drifted back to 30 seconds" >&2; exit 1; fi
+          if grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py; then echo "Web/API auto-sync timer must stay retired" >&2; exit 1; fi
+          grep -Fq '后台 Worker heartbeat hook 负责触发到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
+          grep -Fq 'test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer' tests/unit/test_external_algorithm_auto_sync.py
           grep -Fq '外部模式下自动同步和自动发布由服务端强制启用' docs/CHANGLIAN_CORE_INTEGRATION.md
           if grep -Fq '自动同步 / 自动发布放在高级设置' docs/CHANGLIAN_CORE_INTEGRATION.md; then echo "ChangLian core handoff drifted back to optional auto sync/publish" >&2; exit 1; fi
           grep -Fq '复用同一 algoVersionId 追加转换权重' docs/CHANGLIAN_CORE_INTEGRATION.md
