@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 
 const css = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const taskCenter = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
 
 test('material import dock uses the normal light UI surface', () => {
   const button = css.match(/\.import-dock-btn\{([^}]*)\}/);
@@ -25,3 +26,11 @@ test('material import dock exposes a safe clear-finished action', () => {
   assert.match(app, /正在运行和待确认任务会保留/);
 });
 
+
+test('upload task center stays below modal interaction layer', () => {
+  const dock = taskCenter.match(/\.utc-root\{[^}]*z-index:(\d+)/);
+  const modal = css.match(/\.modal\{[^}]*z-index:(\d+)/);
+  assert.ok(dock, 'upload task center z-index must be explicit');
+  assert.ok(modal, 'modal z-index must be explicit');
+  assert.ok(Number(dock[1]) < Number(modal[1]), `task center z-index ${dock[1]} must stay below modal ${modal[1]}`);
+});

@@ -263,17 +263,31 @@ jobs:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
           if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
               raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
-          named_apply = """performNavigation: page => {
-              state.page = page;
-              render();
-            },"""
-          if named_apply not in main:
+          start = main.find('performNavigation: page => {')
+          end = main.find('\n  },', start)
+          if start < 0 or end <= start:
               raise SystemExit('named actual page mutation/render owner is missing from final navigation runtime')
+          owner = main[start:end]
+          required = (
+              'const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);',
+              'state.page = page;',
+              'uploadTaskCenterRuntime.switchProject?.();',
+              'render();',
+              'window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);',
+          )
+          positions = [owner.find(item) for item in required]
+          if any(position < 0 for position in positions) or positions != sorted(positions):
+              raise SystemExit('final navigation owner lost cache/task-center/render semantic ordering')
           PY
       - name: Dataset cache-first navigation guard
         run: |
           grep -Fq 'function rememberDatasetPage61()' static/modules/material-pagination-runtime.js
           grep -Fq 'function restoreDatasetPage61()' static/modules/material-pagination-runtime.js
+          grep -Fq 'function beforeNavigate61(page)' static/modules/material-pagination-runtime.js
+          grep -Fq 'function afterNavigate61(page, navigation)' static/modules/material-pagination-runtime.js
+          if grep -Fq 'materialAwareSetPage' static/modules/material-pagination-runtime.js; then echo "material pagination must not own a second setPage wrapper" >&2; exit 1; fi
+          grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
+          grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs
           grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
           grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests

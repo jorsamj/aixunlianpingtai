@@ -50,6 +50,30 @@ test('pagination bootstrap is loaded before the legacy app bundle', () => {
 });
 
 
+test('dataset cache and full-pool switching are owned by final named navigation hooks', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+
+  assert.match(runtime, /function beforeNavigate61\(page\)/);
+  assert.match(runtime, /function afterNavigate61\(page, navigation\)/);
+  assert.match(runtime, /beforeNavigate: beforeNavigate61/);
+  assert.match(runtime, /afterNavigate: afterNavigate61/);
+  assert.doesNotMatch(runtime, /materialAwareSetPage/);
+  assert.doesNotMatch(runtime, /window\.setPage\s*=/);
+
+  const start = main.indexOf('performNavigation: page => {');
+  const end = main.indexOf('\n  },', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = main.slice(start, end);
+  const before = owner.indexOf('MaterialPaginationRuntime61?.beforeNavigate?.(page)');
+  const stateMutation = owner.indexOf('state.page = page');
+  const taskCenter = owner.indexOf('uploadTaskCenterRuntime.switchProject?.()');
+  const render = owner.indexOf('render()');
+  const after = owner.indexOf('MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)');
+  assert.ok(before >= 0 && before < stateMutation);
+  assert.ok(stateMutation < taskCenter && taskCenter < render && render < after);
+});
+
 test('page renders cannot overwrite the current UI version with 42.22.0', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /badge\.textContent='v42\.22\.0'/);

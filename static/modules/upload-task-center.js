@@ -107,7 +107,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const style = document.createElement('style');
     style.id = 'uploadTaskCenterStyles';
     style.textContent = `
-      .utc-root{position:fixed;right:20px;bottom:18px;z-index:10025;width:min(430px,calc(100vw - 28px));font-size:13px;color:var(--text,#18212f)}
+      .utc-root{position:fixed;right:20px;bottom:18px;z-index:900;width:min(430px,calc(100vw - 28px));font-size:13px;color:var(--text,#18212f)}
       .utc-shell{border:1px solid #dfe5ee;border-radius:16px;background:rgba(255,255,255,.98);box-shadow:0 18px 50px rgba(15,23,42,.14);backdrop-filter:blur(16px);overflow:hidden}
       .utc-head{width:100%;display:flex;align-items:center;gap:10px;border:0;background:linear-gradient(180deg,#fff,#f8fafc);color:inherit;padding:10px 12px;text-align:left}.utc-toggle{min-width:0;flex:1;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;background:transparent;color:inherit;padding:3px;cursor:pointer;text-align:left}.utc-head-actions{display:flex;align-items:center;gap:7px}.utc-clear{border:1px solid #d8e0ea;border-radius:8px;background:#fff;color:#536174;padding:6px 8px;font-size:11px;cursor:pointer}.utc-clear:hover{background:#f3f6fa}.utc-clear:disabled{opacity:.45;cursor:not-allowed}
       .utc-head strong{font-size:14px}.utc-head span{display:block;color:#728096;font-size:12px;margin-top:2px}.utc-count{min-width:26px;height:26px;border-radius:999px;display:grid;place-items:center;background:#eaf2ff;color:#2563eb;font-weight:800}

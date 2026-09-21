@@ -58,7 +58,6 @@ export function installMaterialPaginationRuntime() {
   const materialFetch = typeof transport.originalFetch === 'function'
     ? transport.originalFetch
     : window.fetch.bind(window);
-  const baseSetPage = window.setPage;
   const baseRenderDatasets = window.renderDatasets424;
   const baseRenderCards = window.renderData412Cards;
   let requestSerial = 0;
@@ -499,36 +498,40 @@ export function installMaterialPaginationRuntime() {
     return mode;
   };
 
-  if (typeof baseSetPage === 'function') {
-    window.setPage = function materialAwareSetPage(page) {
-      const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
-      const leavingDataset = state.page === '数据集' && target !== '数据集' && transport.mode === 'paged';
-      if (leavingDataset) rememberDatasetPage61();
-      const full = requiresFullMaterialPool(target);
-      transport.mode = full ? 'full' : 'paged';
-      if (target === '数据集') {
-        const restored = restoreDatasetPage61();
-        if (!restored) state.materialFilterSignature61 = '';
-        state.materialShellSignature61 = '';
-      }
-      const result = baseSetPage(page);
-      if (full) {
-        setTimeout(async () => {
-          try {
-            if (state.page !== target) return;
-            await window.refreshCurrentPage413?.();
-            if (state.page !== target || target === '训练任务') return;
-            if (typeof window.render === 'function') window.render();
-            else if (typeof render === 'function') render();
-          } catch (error) {
-            window.toast?.(error.message || String(error));
-          }
-        }, 0);
-      } else if (target !== '数据集') {
-        setTimeout(refreshSummary61, 0);
-      }
-      return result;
-    };
+  function beforeNavigate61(page) {
+    const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
+    const leavingDataset = state.page === '数据集' && target !== '数据集' && transport.mode === 'paged';
+    if (leavingDataset) rememberDatasetPage61();
+    const full = requiresFullMaterialPool(target);
+    transport.mode = full ? 'full' : 'paged';
+    let restored = false;
+    if (target === '数据集') {
+      restored = restoreDatasetPage61();
+      if (!restored) state.materialFilterSignature61 = '';
+      state.materialShellSignature61 = '';
+    }
+    return Object.freeze({target, full, restored});
+  }
+
+  function afterNavigate61(page, navigation) {
+    const target = String(navigation?.target || (page === '自动标注' ? '自动标注及清洗' : page || ''));
+    const full = navigation?.full === true || (navigation?.full == null && requiresFullMaterialPool(target));
+    if (full) {
+      setTimeout(async () => {
+        try {
+          if (state.page !== target) return;
+          await window.refreshCurrentPage413?.();
+          if (state.page !== target || target === '训练任务') return;
+          if (typeof window.render === 'function') window.render();
+          else if (typeof render === 'function') render();
+        } catch (error) {
+          window.toast?.(error.message || String(error));
+        }
+      }, 0);
+    } else if (target !== '数据集') {
+      setTimeout(refreshSummary61, 0);
+    }
+    return true;
   }
 
   const onRefreshCapture = event => {
@@ -550,11 +553,13 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422205',
+    build: 'material-pagination-runtime-422207',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
     render: renderPagedDataset61,
+    beforeNavigate: beforeNavigate61,
+    afterNavigate: afterNavigate61,
     state() {
       return {
         requestSerial,

@@ -68,7 +68,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422205');
+    .toBe('material-pagination-runtime-422207');
 
   await page.evaluate(() => {
     state.data412Tab = 'processed';
@@ -165,7 +165,7 @@ test('dataset return paints the cached page before a background refresh replaces
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422205');
+    .toBe('material-pagination-runtime-422207');
   await page.evaluate(() => {
     state.data412Tab = 'processed';
     state.materialQuery61 = '';
