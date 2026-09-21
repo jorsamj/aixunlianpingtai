@@ -1006,7 +1006,11 @@ def enrich_job_runtime(
     job["eta_seconds"] = eta
     job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
     job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
-    if str(job.get("status") or "").lower() in {"done","finished","completed","succeeded","success","failed","stopped"} and job.get("asset_algorithm_id"):
+    if (
+        str(job.get("status") or "").lower() in successful_terminal_statuses
+        and not job.get("never_started")
+        and job.get("asset_algorithm_id")
+    ):
         try:
             _v48_archive_training_version(project_id, job)
         except Exception as archive_error:
@@ -2285,9 +2289,6 @@ def _v50_end_image_batch(save: bool = True):
                 else:
                     patches.setdefault(image_id, {}).update(patch)
 
-        records_by_id = {
-            str(record.get("id")): record for record in records
-        }
         for image_id in list(patches):
             record = records_by_id.get(image_id)
             if record is not None:
