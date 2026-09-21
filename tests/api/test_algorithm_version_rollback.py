@@ -199,7 +199,7 @@ def test_rollback_delete_preserves_directory_used_by_target_version(client, seed
     rows = app_module.list_algorithm_assets(app_module.algorithms_file(project_id))
     stored_algorithm = next(row for row in rows if row["id"] == algorithm["id"])
     next(row for row in stored_algorithm["versions"] if row["id"] == "v3")["stored_path"] = str(target_model)
-    app_module.save_algorithm_assets(app_module.algorithms_file(project_id), rows)
+    save_algorithms(app_module.algorithms_file(project_id), rows)
 
     response = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
