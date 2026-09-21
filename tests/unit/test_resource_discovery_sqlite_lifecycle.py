@@ -9,6 +9,7 @@ import pytest
 
 import platform_core.resource_discovery.cache as cache_module
 from platform_core.resource_discovery.cache import DiscoveryCache
+from test_support.resource_discovery_spawn import concurrent_cache_worker
 
 
 class TrackingConnection:
@@ -72,32 +73,6 @@ def _tracking_connect(real_connect, counters, statements):
         return TrackingConnection(real_connect(*args, **kwargs), counters, statements)
 
     return connect
-
-
-def _write_worker_stage(stage_dir, worker_id, stage):
-    try:
-        Path(stage_dir, f"worker-{worker_id}.stage").write_text(str(stage), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def _concurrent_cache_worker(path, start, result_queue, stage_dir, worker_id):
-    _write_worker_stage(stage_dir, worker_id, "entered")
-    try:
-        if not start.wait(15):
-            raise RuntimeError("start gate timeout")
-        _write_worker_stage(stage_dir, worker_id, "gate_open")
-        cache = DiscoveryCache(path)
-        _write_worker_stage(stage_dir, worker_id, "cache_ready")
-        generation = cache.next_generation("environment")
-        _write_worker_stage(stage_dir, worker_id, f"generation_allocated:{generation}")
-        mode = cache.journal_mode()
-        _write_worker_stage(stage_dir, worker_id, f"journal_mode:{mode}")
-        result_queue.put(("ok", worker_id, generation, mode))
-        _write_worker_stage(stage_dir, worker_id, "reported")
-    except BaseException as error:
-        _write_worker_stage(stage_dir, worker_id, f"error:{type(error).__name__}:{error}")
-        result_queue.put(("error", worker_id, type(error).__name__, str(error)))
 
 
 def _count_sqlite_fds(path):
@@ -174,7 +149,7 @@ def test_concurrent_cache_initialization_and_generation_allocation_is_lock_safe(
     result_queue = ctx.Queue()
     processes = [
         ctx.Process(
-            target=_concurrent_cache_worker,
+            target=concurrent_cache_worker,
             args=(path, start, result_queue, str(stage_dir), index),
         )
         for index in range(8)
