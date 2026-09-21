@@ -42,6 +42,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66007';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422536';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -314,6 +315,9 @@ const navigationStabilityRuntime = installNavigationStability({
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+
+const serviceNodeRuntime = installServiceNodeRuntime({notify});
+window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;
 
 Promise.resolve(window.__v53InitPromise).then(() => refreshCurrentPageOwner(state.page));
 

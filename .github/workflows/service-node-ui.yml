@@ -49,6 +49,8 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'service-node-bootstrap.mjs?v=422536' static/index.html
+          grep -Fq "installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422536'" static/main.mjs
+          grep -Fq 'window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;' static/main.mjs
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
           grep -Fq "POLL_KEY = 'service-node-runtime'" static/modules/service-node-runtime.js

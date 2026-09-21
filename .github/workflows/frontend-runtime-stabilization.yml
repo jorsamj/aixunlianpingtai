@@ -22,6 +22,7 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
+          node --check static/modules/service-node-runtime.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
@@ -311,6 +312,8 @@ jobs:
           if grep -Fq 'await window.refreshCurrentPage413?.()' static/modules/material-pagination-runtime.js; then echo "material navigation must not launch broad stale project refreshes" >&2; exit 1; fi
           if grep -Fq 'materialAwareSetPage' static/modules/material-pagination-runtime.js; then echo "material pagination must not own a second setPage wrapper" >&2; exit 1; fi
           grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
+          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422536';" static/main.mjs
+          grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
           grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs
           grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
           grep -Fq 'pageLoadFlight && pageLoadFlightKey === flightKey' static/modules/material-pagination-runtime.js

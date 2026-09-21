@@ -58,3 +58,35 @@ test('navigation requested during startup waits for bootstrap readiness before r
   expect(await page.evaluate(() => state.uiReady)).toBe(true);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('persisted service-node page has its owner installed in the main runtime before restore navigation', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '服务节点'}));
+  });
+  await page.route('**/api/v63/service-nodes', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [], supported_capabilities: []}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => ({
+    uiReady: Boolean(state.uiReady),
+    runtime: window.ServiceNodeRuntime?.build || null,
+    owner: Boolean(window.NavigationStability?.hasPageOwner?.('服务节点')),
+  })), {timeout: 15_000}).toEqual({
+    uiReady: true,
+    runtime: 'service-node-runtime-422536',
+    owner: true,
+  });
+  await expect(page.locator('#title')).toHaveText('服务节点');
+  await expect(page.locator('[data-service-node-page="1"]')).toBeVisible();
+  await expect(page.locator('#view')).not.toContainText('模块尚未');
+  await expect(page.locator('#view')).not.toContainText('当前页面不存在');
+  expect(pageErrors).toEqual([]);
+});
