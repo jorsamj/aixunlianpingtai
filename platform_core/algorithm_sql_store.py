@@ -4,8 +4,11 @@ import hashlib
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from filelock import FileLock
 
 from .errors import PlatformError
 
@@ -13,6 +16,7 @@ from .errors import PlatformError
 SCHEMA_VERSION = 1
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
+_INIT_LOCK_TIMEOUT = 30
 
 
 class AlgorithmSqlStore:
@@ -35,27 +39,61 @@ class AlgorithmSqlStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        # Ordinary connections never negotiate persistent journal state. Set
+        # the wait policy first so concurrent writers rely on SQLite's own
+        # busy handling instead of racing during connection initialization.
         conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def ensure_ready(self) -> None:
-        with self._connect() as conn:
-            self._ensure_schema(conn)
-            migrated = self._meta(conn, "legacy_json_migrated") == "1"
-            count = int(conn.execute("SELECT COUNT(*) FROM algorithms").fetchone()[0])
-            if not migrated and count == 0 and self.json_path.exists():
-                legacy = self._read_legacy_json()
-                self._backup_legacy_json()
-                self._replace_all(conn, legacy)
-                self._set_meta(conn, "legacy_json_migrated", "1")
-                self._set_meta(conn, "legacy_json_sha256", self._sha256_file(self.json_path))
-                self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
-            elif not migrated:
-                self._set_meta(conn, "legacy_json_migrated", "1")
-                self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+        # WAL transition, schema bootstrap and legacy migration are persistent
+        # database initialization. Keep them under one store-owned cross-process
+        # lock; normal CRUD transactions remain independently concurrent.
+        lock = FileLock(
+            str(self.db_path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as conn:
+                try:
+                    mode = str(
+                        conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    ).lower()
+                    if mode != "wal":
+                        mode = str(
+                            conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                        ).lower()
+                    if mode != "wal":
+                        raise RuntimeError(
+                            f"algorithm store requires WAL mode, got {mode}"
+                        )
+
+                    self._ensure_schema(conn)
+                    migrated = self._meta(conn, "legacy_json_migrated") == "1"
+                    count = int(
+                        conn.execute("SELECT COUNT(*) FROM algorithms").fetchone()[0]
+                    )
+                    if not migrated and count == 0 and self.json_path.exists():
+                        legacy = self._read_legacy_json()
+                        self._backup_legacy_json()
+                        self._replace_all(conn, legacy)
+                        self._set_meta(conn, "legacy_json_migrated", "1")
+                        self._set_meta(
+                            conn,
+                            "legacy_json_sha256",
+                            self._sha256_file(self.json_path),
+                        )
+                        self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+                    elif not migrated:
+                        self._set_meta(conn, "legacy_json_migrated", "1")
+                        self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+                    conn.commit()
+                except Exception:
+                    if conn.in_transaction:
+                        conn.rollback()
+                    raise
 
     def read_all(self) -> list[dict]:
         self.ensure_ready()
