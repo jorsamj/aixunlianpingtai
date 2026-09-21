@@ -296,13 +296,6 @@ class MaterialRepository:
             return
         stat = legacy.stat()
         signature = f"{stat.st_size}:{stat.st_mtime_ns}"
-        with closing(self._connect()) as database:
-            migrated = database.execute(
-                "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
-            ).fetchone()
-            existing = int(database.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
-        if migrated or existing:
-            return
         value = json.loads(legacy.read_text(encoding="utf-8"))
         rows = value.get("items", []) if isinstance(value, dict) else value
         if not isinstance(rows, list):
@@ -310,6 +303,18 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
+                # Recheck after acquiring the writer transaction. Concurrent
+                # process startup may have completed the migration after this
+                # process read the legacy JSON but before BEGIN IMMEDIATE won.
+                migrated = database.execute(
+                    "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
+                ).fetchone()
+                existing = int(
+                    database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+                )
+                if migrated or existing:
+                    database.execute("ROLLBACK")
+                    return
                 for source in rows:
                     self._write_row(database, source)
                 if rows:
@@ -320,7 +325,8 @@ class MaterialRepository:
                 )
                 database.execute("COMMIT")
             except Exception:
-                database.execute("ROLLBACK")
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
                 raise
 
     def read(self) -> MaterialSnapshot:
