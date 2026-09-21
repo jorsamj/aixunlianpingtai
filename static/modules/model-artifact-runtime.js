@@ -34,13 +34,16 @@ function formatTime(value) {
 
 export function normalizeModelArtifactConfig(body = {}) {
   const config = body.config || {};
+  const storageSources = Array.isArray(body.storage_sources) ? body.storage_sources : [];
+  const storageSourceId = String(config.storage_source_id || '');
+  const source = storageSources.find(row => String(row.id || '') === storageSourceId);
   return {
-    storageSourceId: String(config.storage_source_id || ''),
-    objectPrefix: String(config.object_prefix || 'model-assets'),
-    publicBaseUrl: String(config.public_base_url || ''),
+    storageSourceId,
+    rootPrefix: String(config.root_prefix || config.object_prefix || 'changlian-ai/artifacts'),
+    publicBaseUrl: String(source?.config?.public_base_url || ''),
     autoUploadEnabled: config.auto_upload_enabled !== false,
     updatedAt: config.updated_at || null,
-    storageSources: Array.isArray(body.storage_sources) ? body.storage_sources : [],
+    storageSources,
     summary: body.summary || {total: 0, uploaded: 0, failed: 0, pending: 0},
   };
 }
@@ -151,26 +154,6 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     }).join('');
   }
 
-  function suggestedOssPublicBaseUrl(sourceId) {
-    const source = (config?.storageSources || []).find(row => String(row.id || '') === String(sourceId || ''));
-    if (!source || String(source.type || '').toLowerCase() !== 'oss') return {url: '', warning: '请选择阿里云 OSS 存储源'};
-    const endpoint = String(source.config?.endpoint || '').trim();
-    const bucket = String(source.config?.bucket || '').trim();
-    if (!endpoint || !bucket) return {url: '', warning: '该 OSS 存储源缺少 Endpoint 或 Bucket'};
-    try {
-      const parsed = new URL(endpoint.includes('://') ? endpoint : `https://${endpoint}`);
-      const host = parsed.hostname;
-      const bucketHost = host.startsWith(`${bucket}.`) ? host : `${bucket}.${host}`;
-      const port = parsed.port ? `:${parsed.port}` : '';
-      return {
-        url: `${parsed.protocol}//${bucketHost}${port}`,
-        warning: /-internal\./i.test(host) ? '当前是 OSS 内网 Endpoint，请确认畅联云与该 OSS 在可互通网络内；否则请改用公网 Bucket 域名或 CDN 域名。' : '',
-      };
-    } catch (_) {
-      return {url: '', warning: 'OSS Endpoint 格式无法识别，请手动填写长期访问域名'};
-    }
-  }
-
   function storagePanel() {
     const c = config || normalizeModelArtifactConfig({});
     return `<section class="panel" data-model-artifact-panel="1">
@@ -184,8 +167,8 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
         </div>
         <div class="form two">
           <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择阿里云 OSS</option>${storageOptions(c.storageSourceId)}</select><div class="subline">正式环境仅展示已启用的阿里云 OSS；旧开发环境若已保存本地存储，会保留“开发兼容”项便于迁移。</div></div>
-          <div class="field"><label>对象目录前缀</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.objectPrefix)}" placeholder="model-assets"></div>
-          <div class="field full"><label>OSS / CDN 长期访问域名</label><div class="row"><input id="modelArtifactPublicBaseUrl" class="input" style="flex:1" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><button type="button" class="btn" id="modelArtifactSuggestPublicUrl">从 OSS 生成</button></div><div class="subline" id="modelArtifactPublicUrlHint">用于写入畅联云权重 filePath。请使用长期可访问域名，不保存会过期的临时签名链接。</div></div>
+          <div class="field"><label>算法产物根目录</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.rootPrefix)}" placeholder="changlian-ai/artifacts/"><div class="subline">只由 Artifact Binding 使用；不会与素材 Provider prefix 重复拼接。</div></div>
+          <div class="field full"><label>OSS 长期访问地址</label><div class="alert soft"><b>${escapeHtml(c.publicBaseUrl || '尚未配置')}</b><span>该地址由所选 StorageSource 持有；请在上方 OSS 存储源中维护外网地址。</span></div></div>
           <div class="field"><label>归档策略</label><div class="alert soft"><b>自动归档已启用</b><span>训练模型和转换结果完成后自动上传到这里配置的存储，不需要人工触发。</span></div></div>
         </div>
         <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物存储配置</button></div>
@@ -245,8 +228,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
   async function saveModelConfig() {
     const payload = {
       storage_source_id: document.getElementById('modelArtifactStorageSource')?.value || '',
-      object_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'model-assets',
-      public_base_url: document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '',
+      root_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'changlian-ai/artifacts/',
       auto_upload_enabled: true,
     };
     await requestJson(`${MODEL_API}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
@@ -259,8 +241,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     const button = document.getElementById('modelArtifactTestStorage');
     if (button) { button.disabled = true; button.textContent = '正在测试…'; }
     try {
-      const publicBaseUrl = document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '';
-      const body = await requestJson(`${MODEL_API}/storage-test`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({storage_source_id: storageSourceId, public_base_url: publicBaseUrl})});
+      const body = await requestJson(`${MODEL_API}/storage-test`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({storage_source_id: storageSourceId})});
       notify?.(body.message || '算法产物存储与长期访问地址测试通过');
     } finally {
       if (button) { button.disabled = false; button.textContent = '测试存储'; }
@@ -306,15 +287,6 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     document.getElementById('modelArtifactSave')?.addEventListener('click', () => void saveModelConfig().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactTestStorage')?.addEventListener('click', () => void testStorage().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactRunNow')?.addEventListener('click', () => void runNow().catch(error => notify?.(error?.message || error)));
-    document.getElementById('modelArtifactSuggestPublicUrl')?.addEventListener('click', () => {
-      const sourceId = document.getElementById('modelArtifactStorageSource')?.value || '';
-      const suggestion = suggestedOssPublicBaseUrl(sourceId);
-      const input = document.getElementById('modelArtifactPublicBaseUrl');
-      const hint = document.getElementById('modelArtifactPublicUrlHint');
-      if (suggestion.url && input) input.value = suggestion.url;
-      if (hint) hint.textContent = suggestion.warning || (suggestion.url ? '已根据 OSS Bucket 与 Endpoint 生成；保存前请确认畅联云可访问该地址。' : '用于写入畅联云权重 filePath。');
-      if (!suggestion.url) notify?.(suggestion.warning || '无法从当前存储源生成访问域名');
-    });
     document.getElementById('changlianAuditRefresh')?.addEventListener('click', () => void refreshLogsOnly().catch(error => notify?.(error?.message || error)));
     document.getElementById('changlianAuditStatus')?.addEventListener('change', () => void refreshLogsOnly());
     document.getElementById('changlianAuditOperation')?.addEventListener('change', () => void refreshLogsOnly());

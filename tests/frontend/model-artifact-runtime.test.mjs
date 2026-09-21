@@ -14,15 +14,19 @@ test('model artifact config uses backend field names without frontend-only alias
   const config = normalizeModelArtifactConfig({
     config: {
       storage_source_id: 'oss-prod',
-      object_prefix: 'algorithm-models',
+      root_prefix: 'changlian-ai/artifacts/',
       auto_upload_enabled: true,
     },
-    storage_sources: [{id: 'oss-prod', name: '生产 OSS'}],
+    storage_sources: [{
+      id: 'oss-prod', name: '生产 OSS',
+      config: {public_base_url: 'https://models.example.com'},
+    }],
     summary: {total: 8, uploaded: 7, failed: 1, pending: 0},
   });
 
   assert.equal(config.storageSourceId, 'oss-prod');
-  assert.equal(config.objectPrefix, 'algorithm-models');
+  assert.equal(config.rootPrefix, 'changlian-ai/artifacts/');
+  assert.equal(config.publicBaseUrl, 'https://models.example.com');
   assert.equal(config.autoUploadEnabled, true);
   assert.equal(config.summary.failed, 1);
 });
@@ -57,14 +61,16 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /算法与转换结果存储/);
   assert.match(source, /畅联云交互日志/);
   assert.match(source, /storage-test/);
-  assert.match(source, /public_base_url: publicBaseUrl/);
-  assert.match(source, /modelArtifactPublicBaseUrl/);
-  assert.match(source, /suggestedOssPublicBaseUrl/);
-  assert.match(source, /modelArtifactSuggestPublicUrl/);
+  assert.match(source, /root_prefix:/);
+  assert.match(source, /source\?\.config\?\.public_base_url/);
+  assert.doesNotMatch(source, /modelArtifactPublicBaseUrl/);
+  assert.doesNotMatch(source, /modelArtifactSuggestPublicUrl/);
   assert.match(source, /toLowerCase\(\) === 'oss'/);
   assert.match(source, /请选择阿里云 OSS/);
   assert.match(source, /开发兼容/);
-  assert.match(source, /OSS 内网 Endpoint/);
+  assert.match(source, /OSS 长期访问地址/);
+  assert.match(source, /StorageSource/);
+  assert.match(source, /不会与素材 Provider prefix 重复拼接/);
   assert.match(source, /自动归档已启用/);
   assert.doesNotMatch(source, /id="modelArtifactAutoUpload"/);
   assert.match(source, /存储配置/);

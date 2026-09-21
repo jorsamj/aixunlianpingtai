@@ -40,14 +40,14 @@
 - Test: `tests/frontend/storage-source-ui.test.mjs`
 - Test: `tests/frontend/model-artifact-runtime.test.mjs`
 
-- [ ] Add failing tests for StorageSource `public_base_url` and artifact binding default `root_prefix=changlian-ai/artifacts/`.
-- [ ] Implement connection/binding persistence without moving material prefixes.
-- [ ] Record that existing Provider `prefix` remains general/legacy scope, while Artifact Binding `root_prefix` is the sole artifact namespace; the canonical builder must include it exactly once.
-- [ ] Add failing tests for the unified training/onnx/rknn/reports key mapping and immutable filename.
-- [ ] Implement one object-key builder and one public-URL builder; upload the already-canonical Bucket-relative key without reapplying Provider `prefix`.
-- [ ] Add failing tests for PUT, STAT, READ, DELETE and public URL reachability, including cleanup failure.
-- [ ] Implement the real health flow and pre-Weight artifact URL probe.
-- [ ] Run focused storage/model-artifact tests and one storage UI smoke if markup changed.
+- [x] Add failing tests for StorageSource `public_base_url` and artifact binding default `root_prefix=changlian-ai/artifacts/`.
+- [x] Implement connection/binding persistence without moving material prefixes.
+- [x] Record that existing Provider `prefix` remains general/legacy scope, while Artifact Binding `root_prefix` is the sole artifact namespace; the canonical builder must include it exactly once.
+- [x] Add failing tests for the unified training/onnx/rknn/reports key mapping and immutable filename.
+- [x] Implement one object-key builder and one public-URL builder; upload the already-canonical Bucket-relative key without reapplying Provider `prefix`.
+- [x] Add failing tests for PUT, STAT, READ, DELETE and public URL reachability, including cleanup failure.
+- [x] Implement the real health flow and pre-Weight artifact URL probe.
+- [x] Run focused storage/model-artifact tests and one storage UI smoke if markup changed.
 
 ### Task 3: Make repositories single-truth owners
 

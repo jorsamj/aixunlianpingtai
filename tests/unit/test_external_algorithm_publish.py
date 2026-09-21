@@ -379,7 +379,12 @@ def _seed_conversion(
     return output
 
 
-def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishingClient):
+def _service(
+    root: Path,
+    memory: MemorySecretStore,
+    client_factory=FakePublishingClient,
+    artifact_url_probe=lambda _url: None,
+):
     sources = StorageSourceRepository(root / "storage" / "storage_sources.sqlite3")
     credentials = SecretCredentialStore(memory)
     service = ExternalAlgorithmPublishService(
@@ -390,6 +395,7 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
         storage_sources_factory=lambda: sources,
         storage_credentials_factory=lambda: credentials,
         client_factory=client_factory,
+        artifact_url_probe=artifact_url_probe,
     )
     service.save_config(ExternalPublishConfigPayload(
         storage_source_id="default_local",
@@ -482,7 +488,7 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3576"
     assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
     assert FakePublishingClient.last_weight_payload["filePath"].startswith(
-        "https://platform.example/model-assets/"
+        "https://platform.example/changlian-ai/artifacts/projects/"
     )
 
 
@@ -546,14 +552,14 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3568"
     assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
     assert FakePublishingClient.last_weight_payload["filePath"].startswith(
-        "https://platform.example/model-assets/"
+        "https://platform.example/changlian-ai/artifacts/projects/"
     )
     artifact = next(row for row in result["artifacts"] if row["target"] == "rockchip")
     assert artifact["upload_status"] == "UPLOADED"
     assert artifact["sync_status"] == "SYNCED"
     assert artifact["compute_platform_id"] == "cp-rk"
     assert artifact["chip_code"] == "RK3568"
-    assert artifact["public_url"].startswith("https://platform.example/model-assets/")
+    assert artifact["public_url"].startswith("https://platform.example/changlian-ai/artifacts/projects/")
     uploaded = _project_dir(tmp_path, "p1") / artifact["object_key"]
     assert uploaded.read_bytes() == b"converted-rknn"
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
@@ -612,13 +618,12 @@ def test_published_weight_public_url_change_edits_existing_file_path_without_dup
     publication = first["publication"]
     assert FakePublishingClient.weight_creates == 2
 
-    model_config = service.model_assets.repository.config()
-    service.model_assets.save_config(ModelArtifactConfigPayload(
-        storage_source_id=str(model_config["storage_source_id"]),
-        object_prefix=str(model_config["object_prefix"]),
-        public_base_url="https://cdn.example",
-        auto_upload_enabled=True,
-    ))
+    sources = service.storage_sources_factory()
+    source = sources.get("default_local")
+    assert source is not None
+    sources.update("default_local", {
+        "config": {**source.config, "public_base_url": "https://cdn.example"},
+    })
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
     version = algorithm["versions"][0]
     assert service.publication_requires_sync("p1", algorithm, version, publication) is True
@@ -769,10 +774,15 @@ def test_publish_blocks_before_remote_version_when_public_base_url_missing(tmp_p
     service = _service(tmp_path, memory)
     service.model_assets.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
-        object_prefix="model-assets",
-        public_base_url="",
+        root_prefix="changlian-ai/artifacts/",
         auto_upload_enabled=True,
     ))
+    sources = service.storage_sources_factory()
+    source = sources.get("default_local")
+    assert source is not None
+    source_config = dict(source.config)
+    source_config.pop("public_base_url", None)
+    sources.update("default_local", {"config": source_config})
     service.repository.save_config(ExternalPublishConfigPayload(
         storage_source_id="",
         public_base_url="",
@@ -1443,12 +1453,51 @@ def test_auto_publish_readiness_uses_canonical_model_storage_url(tmp_path: Path)
     ))
     service.model_assets.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
-        object_prefix="model-assets",
-        public_base_url="https://oss.example.com",
+        root_prefix="changlian-ai/artifacts/",
         auto_upload_enabled=True,
     ))
+    sources = service.storage_sources_factory()
+    source = sources.get("default_local")
+    assert source is not None
+    sources.update("default_local", {
+        "config": {**source.config, "public_base_url": "https://oss.example.com"},
+    })
 
     assert service.auto_publish_ready() is True
+
+
+def test_publish_probes_actual_artifact_urls_before_remote_version(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    probed: list[str] = []
+
+    def reject(url: str) -> None:
+        probed.append(url)
+        raise PlatformError(
+            "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+            "算法产物长期访问地址不可达",
+            url,
+            "修复外网地址后重试。",
+            409,
+        )
+
+    service = _service(tmp_path, memory, artifact_url_probe=reject)
+
+    with pytest.raises(PlatformError) as captured:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert captured.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"
+    assert probed and probed[0].startswith(
+        "https://platform.example/changlian-ai/artifacts/projects/p1/"
+    )
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication is not None
+    assert publication["status"] == "FAILED"
 
 
 def test_auto_publish_worker_recovers_successful_external_version_without_request_marker(tmp_path: Path):

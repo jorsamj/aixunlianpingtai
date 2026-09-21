@@ -69,6 +69,7 @@ from platform_core.labels import (
     suggest_label_code,
 )
 from platform_core.material_store import MaterialStore
+from platform_core.model_artifacts import ModelArtifactService
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
@@ -1226,6 +1227,9 @@ def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) ->
             missing.append("Endpoint")
         if not str(config.get("bucket") or "").strip():
             missing.append("Bucket")
+        public_base_url = str(config.get("public_base_url") or "").strip()
+        if public_base_url and not public_base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="外网地址必须以 http:// 或 https:// 开头")
     elif normalized == "s3":
         if not str(config.get("bucket") or "").strip():
             missing.append("Bucket")
@@ -1332,25 +1336,38 @@ def test_storage_source(source_id: str):
     source = repository.get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="存储源不存在")
-    secret = storage_credentials().get(source.secret_ref) if source.secret_ref else {}
     try:
-        provider = StorageProviderFactory(
-            data_dir=DATA_DIR, project_dir=DATA_DIR / "projects",
-            credentials={source.id: secret or {}},
-        ).create(source)
-        health = provider.health_check()
+        result = ModelArtifactService(
+            data_dir=DATA_DIR,
+            project_dir=project_dir,
+            algorithms_file=algorithms_file,
+            storage_sources_factory=storage_source_repository,
+            storage_credentials_factory=storage_credentials,
+        ).test_storage(source_id)
     except StorageError as error:
         repository.record_health(source_id, ok=False, message=str(error))
         _raise_storage_error(error)
-    repository.record_health(source_id, ok=health.ok, message=health.message)
-    if not health.ok:
+    except PlatformError as error:
+        repository.record_health(source_id, ok=False, message=str(error.message or error))
         raise PlatformError(
-            code="STORAGE_HEALTH_CHECK_FAILED", message="素材存储连接检测失败",
-            detail=health.message,
-            solution="请检查 Endpoint、Bucket、凭据、网络和访问权限。",
-            status_code=503,
-        )
-    return {"ok": True, "health": {"ok": health.ok, "status": health.status, "message": health.message, "details": dict(health.details)}, "source": _public_storage_source(repository.get(source_id))}
+            "STORAGE_HEALTH_CHECK_FAILED",
+            "存储连接或完整读写测试失败",
+            str(error.detail or error.message or error),
+            str(error.solution or "请检查存储源配置和权限后重试。"),
+            int(error.status_code or 503),
+        ) from error
+    message = str(result.get("message") or "存储连接与读写删除测试通过")
+    repository.record_health(source_id, ok=True, message=message)
+    return {
+        "ok": True,
+        "health": {
+            "ok": True,
+            "status": "AVAILABLE",
+            "message": message,
+            "details": dict(result.get("stages") or {}),
+        },
+        "source": _public_storage_source(repository.get(source_id)),
+    }
 
 
 @app.delete("/api/v61/storage-sources/{source_id}")

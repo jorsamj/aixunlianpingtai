@@ -1,11 +1,18 @@
 # Codex Current State
 
+<!-- OSS_CONNECTION_BINDING_BATCH2_2026_09_21 -->
+> ## CURRENT RESUME POINT — OSS CONNECTION/BINDING BATCH 2 COMPLETE LOCALLY
+>
+> StorageSource is the durable owner of endpoint/bucket/public_base_url and secret reference; ModelArtifactConfig owns only storage_source_id/root_prefix. One canonical builder emits final Bucket-relative keys, and artifact uploads suppress the material Provider prefix so the root is never doubled. Connection testing performs PUT/STAT/READ/DELETE plus public Range GET when configured; remote publication probes the real artifact URL before any ChangLian Version/Weight mutation.
+>
+> Focused evidence: 20 Python tests, 9 frontend tests, and 1 storage-page Chrome smoke passed. Real OSS credentials/public delivery and real ChangLian production E2E remain OPEN. Before Batch 3 database changes, publish the field-owner/migration table and preserve migration→dual-read-if-needed→single-write; no DROP and no long-lived dual-write. VERSION remains 42.24.0.
+
 <!-- CHANGLIAN_VERSION_WEIGHT_BATCH1_2026_09_21 -->
 > ## CURRENT RESUME POINT — CHANGLIAN VERSION/WEIGHT BATCH 1 COMPLETE LOCALLY
 >
 > Current work is still `feature/external-algorithm-publishing`, based on safely synchronized remote `2ff431a7`. Batch 1 makes Version recovery a strict AND identity (`versionName + versionNo + bound analysisId`) across product/analysis query paths; ambiguous or incomplete candidates become UNKNOWN without a POST. Weight creation requires all five official fields; recovery requires exact file/platform/non-empty chip and matching returned `filePath` when present. Weight prerequisites are checked before remote Version creation.
 >
-> `code=0` remains primary while `code=200/SUCCESS` remains marked legacy compatibility / OPEN. Focused verification: 15 new-contract cases (including cross-list same-ID deduplication and retry after repairing FAILED prerequisites) + 9 directly affected regressions passed; no browser/full pytest/integration/Actions run. Batch 2 OSS work is NOT STARTED and requires user confirmation. `VERSION.txt` remains `42.24.0`.
+> `code=0` remains primary while `code=200/SUCCESS` remains marked legacy compatibility / OPEN. Focused verification: 15 new-contract cases (including cross-list same-ID deduplication and retry after repairing FAILED prerequisites) + 9 directly affected regressions passed; no browser/full pytest/integration/Actions run. Batch 2 status is superseded by the latest section above. `VERSION.txt` remains `42.24.0`.
 
 <!-- CACHE_FIRST_LOADING_2026_09_21 -->
 > ## CURRENT RESUME POINT — CACHE-FIRST PAGE LOADING COMPLETE LOCALLY

@@ -6,6 +6,31 @@
 >
 > 本文件优先于旧文档中的历史 NEXT、Current priority、历史 acceptance SHA、历史部署建议。旧文档仍然保留作为架构与历史证据，但若与本文件及实时 GitHub 冲突，以 **实时 GitHub → 本文件 → 当前 owner 代码** 为准。
 
+## 0C. OSS 第二批：Connection / Artifact Binding 分层（最新覆盖）
+
+第二批已在第一批 HEAD `acbbb077` 之后完成，未进入第三批数据库 owner/migration。正式 owner 现在是：
+
+~~~text
+StorageSource.config
+├─ endpoint / bucket / public_base_url
+└─ credentials 仍只在 SecretCredentialStore
+
+ModelArtifactConfig（Artifact Binding）
+├─ storage_source_id
+└─ root_prefix = changlian-ai/artifacts/
+
+artifact.object_key
+= unified builder 输出的最终 Bucket-relative key
+~~~
+
+统一 builder 生成 `projects/<project_id>/algorithms/<algorithm_id>/versions/<version_id>/training|onnx|rknn/<chip>|reports/`，文件名继续带 SHA 前缀保持 immutable。Storage Provider 的 `prefix` 继续只服务素材/旧通用调用；算法产物调用会清空该 provider namespace，保证 `root_prefix` 只出现一次。`public_url` 只按 `StorageSource.public_base_url + final object_key` 生成，不再次拼 Bucket 或 provider prefix。
+
+OSS 测试现在执行 `health → PUT → STAT → READ → public Range GET（配置外网地址时）→ DELETE → exists=false`，DELETE 失败不会返回成功。正式发布在任何 `algorithm-version/add` / `algorithm-weight/add` 前，对每个实际 artifact `filePath` 做 Range GET；不可访问时 publication 保持可重试 FAILED，畅联远端不写入。旧 publish 配置中的 source/URL 仅一次性迁移到上述 owner，运行时不再把旧下载网关作为正式 filePath fallback。
+
+最小验证：Python 定向 20 passed，前端定向 9 passed，存储配置 Real Chrome smoke 1 passed；未跑全量 pytest、完整 integration 或全部浏览器。真实阿里云 OSS 凭据/长期公网地址仍需生产环境验证，不得把 mock/local 结果写成真实 OSS E2E。
+
+第三批开始前仍必须先给字段 owner/migration 表；不得直接 DROP、长期 dual-write，或把 provider-specific `external_weight_id` 塞进 Artifact 本体。
+
 ## 0B. OSS + 新畅联第一批：Version/Weight 正式合同（最新覆盖）
 
 本批从已同步的远端 `2ff431a7` 开始，只修改 Version/Weight 请求与 UNKNOWN 幂等恢复，没有进入 OSS 配置、Object Key、数据库 migration 或 RK3578 批次。
@@ -35,7 +60,7 @@ UNKNOWN Weight
 
 修改 owner：`platform_core/external_algorithm_platform.py`、`platform_core/external_algorithm_publish.py`，以及两份对应 unit tests。最小验证为新增合同 15 passed（包含两个列表同一远端 ID 去重、FAILED 补齐配置后可重试）、直接影响回归 9 passed，另有 AST 与 `git diff --check`；未跑全量 pytest、integration、浏览器或 Actions。
 
-第二批 OSS 未开始。下一步必须先等用户确认，并遵守：Artifact Binding `root_prefix` 只由统一 builder 拼一次；第三批改数据库前先给字段 owner/migration 表，`external_weight_id` 属于 provider-specific publication mapping，不属于模型文件本体。
+第二批 OSS 已由上方 0C 完成；下一步是第三批数据库 owner/migration gate，必须先给字段 owner/migration 表，`external_weight_id` 属于 provider-specific publication mapping，不属于模型文件本体。
 
 ## 0A. 2026-09-21 全站 cache-first 性能最小闭环（最新覆盖）
 

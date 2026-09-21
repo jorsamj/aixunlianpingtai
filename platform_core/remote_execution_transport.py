@@ -21,7 +21,7 @@ from .algorithms import attach_version, list_algorithms, resolve_current_version
 from filelock import FileLock, Timeout
 
 from .material_repository import MaterialRepository
-from .model_artifacts import ModelArtifactService
+from .model_artifacts import ModelArtifactService, build_artifact_object_key
 from .remote_training_results import (
     RemoteTrainingResultError,
     verify_training_result_archive,
@@ -2416,18 +2416,18 @@ class RemoteExecutionTransportService:
                 "remote training models require OSS/S3/MinIO object storage",
                 409,
             )
-        prefix = str(config.get("object_prefix") or "model-assets").strip().strip("/") or "model-assets"
         role = str(model["role"])
         digest = str(model["sha256"])
         file_name = Path(str(model["file_name"])).name
-        object_key = "/".join([
-            prefix,
-            _safe_segment(task.project_id, "project"),
-            _safe_segment(algorithm_id, "algorithm"),
-            _safe_segment(version_id, "version"),
-            _safe_segment(role, "model"),
-            f"{digest[:16]}-{_safe_segment(file_name, role + '.pt')}",
-        ])
+        object_key = build_artifact_object_key(
+            root_prefix=str(config.get("root_prefix") or config.get("object_prefix") or "changlian-ai/artifacts"),
+            project_id=task.project_id,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            target="training",
+            sha256=digest,
+            file_name=file_name,
+        )
         artifact_id = hashlib.sha256(
             f"{task.project_id}:{algorithm_id}:{version_id}:{role}:{digest}".encode("utf-8")
         ).hexdigest()[:32]

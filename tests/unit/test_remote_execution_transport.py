@@ -27,9 +27,9 @@ class FakeConfigRepository:
 
     def config(self):
         return {
-            "schema_version": 1,
+            "schema_version": 3,
             "storage_source_id": self.source_id,
-            "object_prefix": "model-assets",
+            "root_prefix": "changlian-ai/artifacts",
             "auto_upload_enabled": True,
         }
 
@@ -1241,6 +1241,11 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     for item in prepared_models["items"]:
         role = str(item["role"])
         storage_ref = item["storage_ref"]
+        assert storage_ref["object_key"].startswith(
+            "changlian-ai/artifacts/projects/p1/algorithms/algorithm-one/versions/"
+        )
+        assert "/training/" in storage_ref["object_key"]
+        assert storage_ref["object_key"].count("changlian-ai/artifacts") == 1
         data = local_by_role[role].read_bytes()
         provider.objects[storage_ref["object_key"]] = {
             "data": data,

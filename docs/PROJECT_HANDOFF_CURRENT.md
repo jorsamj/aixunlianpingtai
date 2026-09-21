@@ -1,11 +1,18 @@
 # 畅联云算法训练平台 — 当前接手总览
 
+<!-- OSS_CONNECTION_BINDING_BATCH2_2026_09_21 -->
+> ## 2026-09-21 最新覆盖：OSS Connection / Artifact Binding 第二批
+>
+> `StorageSource` 现在拥有 Endpoint、Bucket、`public_base_url` 和 Secret Store 凭据引用；Artifact Binding 只拥有 `storage_source_id + root_prefix`。统一 builder 生成最终 Bucket-relative `object_key`，Provider 的素材 `prefix` 不会再次拼到算法产物路径。OSS 连接测试为 PUT→STAT→READ→DELETE，并在配置长期地址时 Range GET；删除失败或 URL 不可达均 fail closed。畅联发布在远端 Version/Weight 写入前探测实际 artifact URL。
+>
+> 最小验证为 Python 20 passed、frontend 9 passed、Real Chrome storage smoke 1 passed。真实 OSS/畅联生产 E2E 仍 OPEN；第三批改数据库前必须先输出字段 owner/migration 表，不得直接 DROP 或长期 dual-write。`VERSION.txt` 仍为 `42.24.0`。
+
 <!-- CHANGLIAN_VERSION_WEIGHT_BATCH1_2026_09_21 -->
 > ## 2026-09-21 最新覆盖：新畅联 Version/Weight 第一批
 >
 > 已从远端 `2ff431a7` 安全继续，未重复修改其 keyring 测试修复。第一批仅收紧新畅联发布合同：Version payload 使用独立 durable `version_name/version_no`；恢复必须唯一匹配 `versionName + versionNo + bound analysisId`；Weight 创建必须具备五字段，恢复必须严格匹配三字段并在远端提供时继续匹配 `filePath`。缺字段、候选多条、空 chip 或冲突 URL 均 fail closed/UNKNOWN，不盲目 POST。
 >
-> `code=0` 为主合同，`code=200/SUCCESS` 仍是 legacy compatibility / OPEN。最小测试 24 passed（15 新合同 + 9 直接回归），包含 product/analysis 同 ID 去重与 FAILED 修复配置后重新发布；未跑浏览器、全量 pytest/integration 或等待 Actions。OSS 第二批尚未开始，必须等用户确认；`VERSION.txt` 仍为 `42.24.0`。
+> `code=0` 为主合同，`code=200/SUCCESS` 仍是 legacy compatibility / OPEN。最小测试 24 passed（15 新合同 + 9 直接回归），包含 product/analysis 同 ID 去重与 FAILED 修复配置后重新发布；未跑浏览器、全量 pytest/integration 或等待 Actions。OSS 第二批状态以上方最新覆盖为准；`VERSION.txt` 仍为 `42.24.0`。
 
 <!-- CACHE_FIRST_LOADING_2026_09_21 -->
 > ## 2026-09-21 最新覆盖：全站 cache-first 性能闭环

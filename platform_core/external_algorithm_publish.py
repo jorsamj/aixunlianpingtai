@@ -7,6 +7,7 @@ import re
 import sqlite3
 import threading
 import time
+import requests
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,35 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _probe_artifact_public_url(url: str) -> None:
+    try:
+        response = requests.get(
+            str(url),
+            headers={"Range": "bytes=0-0", "Cache-Control": "no-cache"},
+            timeout=10,
+            allow_redirects=False,
+        )
+    except requests.RequestException as error:
+        raise PlatformError(
+            "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+            "算法产物长期访问地址不可达",
+            str(error),
+            "OSS 已上传，但畅联云将使用的 filePath 当前不可访问。请检查 Bucket 访问策略、外网地址或 CDN。",
+            409,
+        ) from error
+    try:
+        if response.status_code not in {200, 206}:
+            raise PlatformError(
+                "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                "算法产物长期访问地址不可达",
+                f"HTTP {response.status_code}: {url}",
+                "OSS 已上传，但畅联云将使用的 filePath 当前不可访问。请检查 Bucket 访问策略、外网地址或 CDN。",
+                409,
+            )
+    finally:
+        response.close()
 
 
 def _json_load(path: Path, default: Any) -> Any:
@@ -458,6 +488,7 @@ class ExternalAlgorithmPublishService:
         storage_sources_factory: Callable[[], StorageSourceRepository],
         storage_credentials_factory: Callable[[], SecretCredentialStore],
         client_factory: Callable[..., PublishingChangLianClient] = PublishingChangLianClient,
+        artifact_url_probe: Callable[[str], None] | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.project_dir = project_dir
@@ -466,6 +497,7 @@ class ExternalAlgorithmPublishService:
         self.storage_sources_factory = storage_sources_factory
         self.storage_credentials_factory = storage_credentials_factory
         self.client_factory = client_factory
+        self.artifact_url_probe = artifact_url_probe or _probe_artifact_public_url
         self.repository = ExternalPublicationRepository(self.data_dir)
         self.external_repository = ExternalPlatformRepository(self.data_dir)
         self.audit = IntegrationAuditRepository(self.data_dir)
@@ -475,19 +507,32 @@ class ExternalAlgorithmPublishService:
             storage_credentials_factory=self.storage_credentials_factory,
         )
         legacy_publish = self.repository.config()
+        self._migrate_legacy_storage_binding(
+            str(legacy_publish.get("storage_source_id") or ""),
+            str(legacy_publish.get("public_base_url") or ""),
+        )
+
+    def _migrate_legacy_storage_binding(self, legacy_source_id: str, legacy_public_url: str) -> None:
+        """Move legacy publish delivery settings to their durable owners once."""
         asset_config = self.model_assets.repository.config()
-        legacy_source = str(legacy_publish.get("storage_source_id") or "")
-        legacy_public_url = str(legacy_publish.get("public_base_url") or "")
-        if (
-            (not str(asset_config.get("storage_source_id") or "") and legacy_source)
-            or (not str(asset_config.get("public_base_url") or "") and legacy_public_url)
-        ):
+        current_source_id = str(asset_config.get("storage_source_id") or "").strip()
+        selected_source_id = current_source_id or str(legacy_source_id or "").strip()
+        if selected_source_id and not current_source_id:
             self.model_assets.save_config(ModelArtifactConfigPayload(
-                storage_source_id=str(asset_config.get("storage_source_id") or legacy_source),
-                object_prefix=str(asset_config.get("object_prefix") or "model-assets"),
-                public_base_url=str(asset_config.get("public_base_url") or legacy_public_url),
+                storage_source_id=selected_source_id,
+                root_prefix=str(asset_config.get("root_prefix") or "changlian-ai/artifacts/"),
                 auto_upload_enabled=bool(asset_config.get("auto_upload_enabled", True)),
             ))
+        public_base_url = str(legacy_public_url or "").strip().rstrip("/")
+        if not selected_source_id or not public_base_url:
+            return
+        sources = self.storage_sources_factory()
+        source = sources.get(selected_source_id)
+        if source is None or str(source.config.get("public_base_url") or "").strip():
+            return
+        sources.update(selected_source_id, {
+            "config": {**source.config, "public_base_url": public_base_url},
+        })
 
     def public_config(self) -> Dict[str, Any]:
         config = self.repository.config()
@@ -561,20 +606,9 @@ class ExternalAlgorithmPublishService:
             if mapping.enabled and str(mapping.compute_platform_id or "").strip():
                 self._assert_current_compute_platform(mapping.compute_platform_id, target=str(target))
         saved = self.repository.save_config(payload)
-        # Legacy migration only: model-asset storage is the canonical owner.
-        # Never overwrite an explicit current model-asset storage choice with a
-        # stale external-publish storage_source_id.
-        current = self.model_assets.repository.config()
-        current_source_id = str(current.get("storage_source_id") or "").strip()
-        current_public_url = str(current.get("public_base_url") or "").strip()
-        legacy_public_url = str(payload.public_base_url or "").strip()
-        if (source_id and not current_source_id) or (legacy_public_url and not current_public_url):
-            self.model_assets.save_config(ModelArtifactConfigPayload(
-                storage_source_id=current_source_id or source_id,
-                object_prefix=str(current.get("object_prefix") or "model-assets"),
-                public_base_url=current_public_url or legacy_public_url,
-                auto_upload_enabled=bool(current.get("auto_upload_enabled", True)),
-            ))
+        # Legacy compatibility only. Runtime reads the StorageSource and the
+        # artifact binding; this moves old values to those owners once.
+        self._migrate_legacy_storage_binding(source_id, str(payload.public_base_url or ""))
         return saved
 
     def _external_client(self) -> PublishingChangLianClient:
@@ -1108,11 +1142,6 @@ class ExternalAlgorithmPublishService:
             raise RuntimeError(str(stored.get("storage_error") or "算法产物上传失败"))
         public_url = self.model_assets.public_url(stored)
         if not public_url:
-            # Backward-compatible delivery gateway for existing installations.
-            base_url = str(self.repository.config().get("public_base_url") or "").rstrip("/")
-            if base_url:
-                public_url = f"{base_url}/api/v64/model-artifacts/{artifact['artifact_id']}/download"
-        if not public_url:
             raise PlatformError(
                 "MODEL_ARTIFACT_PUBLIC_URL_REQUIRED",
                 "算法产物缺少长期访问地址",
@@ -1324,28 +1353,26 @@ class ExternalAlgorithmPublishService:
 
     def _publish_transport_state(self) -> Dict[str, Any]:
         issues: list[Dict[str, str]] = []
-        publish_config = self.repository.config()
         model_asset_config = self.model_assets.repository.config()
-        public_base_url = str(
-            model_asset_config.get("public_base_url")
-            or publish_config.get("public_base_url")
-            or ""
-        ).strip().rstrip("/")
-        if not public_base_url:
-            issues.append({
-                "code": "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
-                "message": "尚未配置算法产物长期访问域名（OSS Bucket 域名或 CDN 域名）",
-            })
         storage_source_id = str(model_asset_config.get("storage_source_id") or "").strip()
+        source = None
         if not storage_source_id:
             issues.append({
                 "code": "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED",
                 "message": "尚未配置算法与转换结果存储源",
             })
-        elif self.storage_sources_factory().get(storage_source_id) is None:
+        else:
+            source = self.storage_sources_factory().get(storage_source_id)
+        if storage_source_id and source is None:
             issues.append({
                 "code": "ARTIFACT_STORAGE_SOURCE_NOT_FOUND",
                 "message": f"算法与转换结果存储源不存在：{storage_source_id}",
+            })
+        public_base_url = str((source.config if source else {}).get("public_base_url") or "").strip().rstrip("/")
+        if source is not None and not public_base_url:
+            issues.append({
+                "code": "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
+                "message": "所选算法产物 StorageSource 尚未配置长期访问地址",
             })
         return {
             "ready": not issues,
@@ -1541,6 +1568,7 @@ class ExternalAlgorithmPublishService:
         try:
             for uploaded in uploaded_artifacts:
                 self._weight_artifact_payload(uploaded)
+                self.artifact_url_probe(str(uploaded.get("public_url") or ""))
         except PlatformError as error:
             self.repository.patch_publication(
                 str(publication["publication_key"]),
@@ -1744,11 +1772,14 @@ class ExternalAlgorithmPublishService:
     def auto_publish_ready(self) -> bool:
         external = self.external_repository.config()
         model_storage = self.model_assets.repository.config()
+        source_id = str(model_storage.get("storage_source_id") or "").strip()
+        source = self.storage_sources_factory().get(source_id) if source_id else None
         return bool(
             str(external.get("mode") or "local") == "external"
             and bool(external.get("auto_publish_enabled"))
-            and str(model_storage.get("storage_source_id") or "").strip()
-            and str(model_storage.get("public_base_url") or "").strip()
+            and source_id
+            and source is not None
+            and str(source.config.get("public_base_url") or "").strip()
         )
 
     def run_auto_publish_once(self) -> Dict[str, int]:

@@ -1,14 +1,21 @@
 import hashlib
 import sqlite3
 import json
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from platform_core.errors import PlatformError
 from platform_core.algorithms import save_algorithms
-from platform_core.model_artifacts import ModelArtifactConfigPayload, ModelArtifactService
+from platform_core.model_artifacts import (
+    ModelArtifactConfigPayload,
+    ModelArtifactService,
+    build_artifact_object_key,
+    build_public_url,
+)
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
+from platform_core.storage.models import ObjectMetadata, StorageHealth
 from platform_core.storage.source_repository import StorageSourceRepository
 
 
@@ -33,10 +40,15 @@ def _service(root: Path):
         storage_sources_factory=lambda: sources,
         storage_credentials_factory=lambda: credentials,
     )
+    sources.update("default_local", {
+        "config": {
+            "prefix": "materials-only",
+            "public_base_url": "https://models.example.com",
+        },
+    })
     service.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
-        object_prefix="models-central",
-        public_base_url="https://models.example.com",
+        root_prefix="changlian-ai/artifacts/",
         auto_upload_enabled=True,
     ))
     return service
@@ -78,6 +90,59 @@ def _seed(root: Path):
     return model, output
 
 
+@pytest.mark.parametrize(
+    ("target", "chip_code", "expected_directory"),
+    [
+        ("original", "", "training"),
+        ("onnx", "", "onnx"),
+        ("rockchip", "rk3568", "rknn/rk3568"),
+        ("rockchip", "RK3578", "rknn/rk3578"),
+        ("report", "", "reports"),
+    ],
+)
+def test_artifact_object_key_builder_uses_one_canonical_root_prefix(
+    target: str,
+    chip_code: str,
+    expected_directory: str,
+):
+    key = build_artifact_object_key(
+        root_prefix="changlian-ai/artifacts/",
+        project_id="project-1",
+        algorithm_id="algorithm-1",
+        version_id="version-1",
+        target=target,
+        chip_code=chip_code,
+        sha256="a" * 64,
+        file_name="model.rknn" if target == "rockchip" else "best.pt",
+    )
+
+    assert key.startswith(
+        "changlian-ai/artifacts/projects/project-1/algorithms/algorithm-1/versions/version-1/"
+    )
+    assert f"/{expected_directory}/" in f"/{key}/"
+    assert key.count("changlian-ai/artifacts") == 1
+    assert key.endswith(("-model.rknn", "-best.pt"))
+
+
+def test_public_url_joins_storage_source_base_with_final_object_key_exactly_once():
+    key = (
+        "changlian-ai/artifacts/projects/p1/algorithms/a1/versions/v1/"
+        "training/aaaaaaaaaaaaaaaa-best.pt"
+    )
+
+    url = build_public_url(
+        "https://company-models.oss-cn-hangzhou.aliyuncs.com/",
+        key,
+    )
+
+    assert url == (
+        "https://company-models.oss-cn-hangzhou.aliyuncs.com/"
+        "changlian-ai/artifacts/projects/p1/algorithms/a1/versions/v1/"
+        "training/aaaaaaaaaaaaaaaa-best.pt"
+    )
+    assert url.count("changlian-ai/artifacts") == 1
+
+
 def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_path: Path):
     model, output = _seed(tmp_path)
     service = _service(tmp_path)
@@ -96,8 +161,14 @@ def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_pa
         assert stored.is_file()
         expected = model.read_bytes() if row["target"] == "original" else output.read_bytes()
         assert stored.read_bytes() == expected
-        assert row["object_key"].startswith("models-central/p1/local-a1/v1/")
-        assert row["public_url"].startswith("https://models.example.com/models-central/p1/local-a1/v1/")
+        assert row["object_key"].startswith(
+            "changlian-ai/artifacts/projects/p1/algorithms/local-a1/versions/v1/"
+        )
+        assert row["public_url"].startswith(
+            "https://models.example.com/changlian-ai/artifacts/projects/p1/"
+        )
+        assert "materials-only" not in row["object_key"]
+        assert "materials-only" not in row["public_url"]
 
 
 def test_same_sha_rockchip_artifacts_remain_distinct_by_chip(tmp_path: Path):
@@ -302,19 +373,52 @@ def test_register_verified_remote_artifact_rejects_object_content_mismatch(tmp_p
     ) == []
 
 
-def test_public_url_includes_storage_source_prefix_and_is_persisted(tmp_path: Path):
+def test_public_url_uses_storage_source_base_without_provider_prefix_and_is_persisted(tmp_path: Path):
     _seed(tmp_path)
     service = _service(tmp_path)
     sources = service.storage_sources_factory()
     source = sources.get("default_local")
     assert source is not None
 
-    # Local source has no provider prefix, so the configured delivery domain is
-    # joined directly with the immutable object key.
     service.run_auto_upload_once()
     row = next(item for item in service.repository.list(project_id="p1") if item["target"] == "original")
     assert row["public_url"] == service.public_url(row)
-    assert row["public_url"].startswith("https://models.example.com/models-central/")
+    assert row["public_url"].startswith("https://models.example.com/changlian-ai/artifacts/")
+    assert "materials-only" not in row["public_url"]
+
+
+def test_artifact_binding_persists_only_storage_source_and_root_prefix(tmp_path: Path):
+    service = _service(tmp_path)
+
+    config = service.repository.config()
+    stored = json.loads(service.repository.config_path.read_text(encoding="utf-8"))
+
+    assert config["storage_source_id"] == "default_local"
+    assert config["root_prefix"] == "changlian-ai/artifacts"
+    assert stored["root_prefix"] == "changlian-ai/artifacts"
+    assert "object_prefix" not in stored
+    assert "public_base_url" not in stored
+
+
+def test_artifact_provider_does_not_apply_material_prefix_to_final_object_key(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    captured = {}
+
+    def capture_source(_factory, source):
+        captured["prefix"] = source.config.get("prefix")
+        return object()
+
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.StorageProviderFactory.create",
+        capture_source,
+    )
+
+    service._provider("p1", "default_local")
+
+    assert captured["prefix"] == ""
+    original = service.storage_sources_factory().get("default_local")
+    assert original is not None
+    assert original.config["prefix"] == "materials-only"
 
 
 def test_model_storage_always_keeps_auto_upload_enabled(tmp_path: Path):
@@ -322,8 +426,7 @@ def test_model_storage_always_keeps_auto_upload_enabled(tmp_path: Path):
 
     saved = service.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
-        object_prefix="model-assets",
-        public_base_url="https://models.example.com",
+        root_prefix="changlian-ai/artifacts",
         auto_upload_enabled=False,
     ))
 
@@ -415,19 +518,99 @@ def test_storage_test_verifies_long_term_delivery_url(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("platform_core.model_artifacts.requests.get", fake_get)
 
-    result = service.test_storage("default_local", "https://models.example.com")
+    result = service.test_storage("default_local")
 
     assert result["ok"] is True
     assert result["public_url_checked"] is True
     assert result["public_url_reachable"] is True
     assert calls
-    assert calls[0][0].startswith("https://models.example.com/model-assets-healthcheck/")
+    assert calls[0][0].startswith(
+        "https://models.example.com/changlian-ai/artifacts/.changlian-health-check/"
+    )
     assert calls[0][1]["headers"]["Range"] == "bytes=0-0"
     assert calls[0][1]["allow_redirects"] is False
 
 
+class RecordingHealthProvider:
+    def __init__(self, *, fail_delete: bool = False):
+        self.fail_delete = fail_delete
+        self.operations = []
+        self.payload = b""
+        self.deleted = False
+
+    def health_check(self):
+        self.operations.append("health")
+        return StorageHealth.available("bucket ready")
+
+    def upload(self, _key, source, **_kwargs):
+        self.operations.append("put")
+        self.payload = Path(source).read_bytes()
+        return ObjectMetadata(key=_key, size_bytes=len(self.payload))
+
+    def stat(self, key):
+        self.operations.append("stat")
+        return ObjectMetadata(key=key, size_bytes=len(self.payload))
+
+    def open_reader(self, _key):
+        self.operations.append("read")
+        return BytesIO(self.payload)
+
+    def delete(self, _key):
+        self.operations.append("delete")
+        if self.fail_delete:
+            raise RuntimeError("delete denied")
+        self.deleted = True
+
+    def exists(self, _key):
+        self.operations.append("exists")
+        return not self.deleted
+
+
+def test_storage_test_runs_put_stat_read_delete_and_public_url_probe(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    provider = RecordingHealthProvider()
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 206})(),
+    )
+
+    result = service.test_storage("default_local")
+
+    assert provider.operations == ["health", "put", "stat", "read", "delete", "exists"]
+    assert result["stages"] == {
+        "authenticated": True,
+        "written": True,
+        "stat_checked": True,
+        "read_checked": True,
+        "deleted": True,
+        "public_url_checked": True,
+    }
+
+
+def test_storage_test_fails_when_health_object_delete_fails(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    provider = RecordingHealthProvider(fail_delete=True)
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 206})(),
+    )
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_storage("default_local")
+
+    assert blocked.value.code == "MODEL_STORAGE_HEALTH_DELETE_FAILED"
+
+
 def test_storage_test_rejects_unreadable_delivery_url(tmp_path: Path, monkeypatch):
     service = _service(tmp_path)
+    service.storage_sources_factory().update("default_local", {
+        "config": {
+            "prefix": "materials-only",
+            "public_base_url": "https://private.example.com",
+        },
+    })
 
     monkeypatch.setattr(
         "platform_core.model_artifacts.requests.get",
@@ -435,6 +618,6 @@ def test_storage_test_rejects_unreadable_delivery_url(tmp_path: Path, monkeypatc
     )
 
     with pytest.raises(PlatformError) as blocked:
-        service.test_storage("default_local", "https://private.example.com")
+        service.test_storage("default_local")
 
     assert blocked.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"

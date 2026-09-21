@@ -8,6 +8,7 @@ import requests
 import tempfile
 import uuid
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -72,7 +73,12 @@ def _json_load(path: Path, default: Any) -> Any:
 
 class ModelArtifactConfigPayload(BaseModel):
     storage_source_id: str = ""
-    object_prefix: str = "model-assets"
+    root_prefix: str = ""
+    # Read-only migration input for callers that have not yet moved to
+    # root_prefix. New durable config writes only root_prefix.
+    object_prefix: str = ""
+    # Legacy request compatibility only. Stable public URL now belongs to the
+    # selected StorageSource and is never written to artifact binding config.
     public_base_url: str = ""
     auto_upload_enabled: bool = True
 
@@ -83,13 +89,98 @@ class StorageTestPayload(BaseModel):
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 2,
+    "schema_version": 3,
     "storage_source_id": "",
-    "object_prefix": "model-assets",
-    "public_base_url": "",
+    "root_prefix": "changlian-ai/artifacts",
     "auto_upload_enabled": True,
     "updated_at": None,
 }
+
+
+def _canonical_prefix(value: Any, default: str = "changlian-ai/artifacts") -> str:
+    text = str(value or default).replace("\\", "/").strip().strip("/")
+    parts = [part for part in text.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise PlatformError(
+            "MODEL_ARTIFACT_ROOT_PREFIX_INVALID",
+            "算法产物根目录不合法",
+            str(value or ""),
+            "请填写 Bucket 内的安全相对目录，例如 changlian-ai/artifacts/。",
+            422,
+        )
+    return "/".join(parts)
+
+
+def build_artifact_object_key(
+    *,
+    root_prefix: str,
+    project_id: Any,
+    algorithm_id: Any,
+    version_id: Any,
+    target: Any,
+    chip_code: Any = "",
+    sha256: Any,
+    file_name: Any,
+) -> str:
+    """Build the final Bucket-relative immutable artifact object key."""
+    root = _canonical_prefix(root_prefix)
+    normalized_target = str(target or "original").strip().lower()
+    normalized_chip = str(chip_code or "").strip().lower()
+    if normalized_target in {"original", "training", "best", "last"}:
+        artifact_directory = ["training"]
+    elif normalized_target == "onnx":
+        artifact_directory = ["onnx"]
+    elif normalized_target in {"rockchip", "rknn"}:
+        if not normalized_chip:
+            raise PlatformError(
+                "MODEL_ARTIFACT_CHIP_REQUIRED",
+                "RKNN 产物缺少芯片身份",
+                "chip_code 为空",
+                "生成 RKNN Object Key 前必须提供真实芯片型号。",
+                422,
+            )
+        artifact_directory = ["rknn", _safe_segment(normalized_chip, "chip").lower()]
+    elif normalized_target in {"report", "reports", "training-report", "metrics"}:
+        artifact_directory = ["reports"]
+    else:
+        artifact_directory = ["conversions", _safe_segment(normalized_target, "artifact").lower()]
+        if normalized_chip:
+            artifact_directory.append(_safe_segment(normalized_chip, "chip").lower())
+    digest = str(sha256 or "").strip().lower()
+    if len(digest) < 16:
+        raise PlatformError(
+            "MODEL_ARTIFACT_HASH_INVALID",
+            "算法产物 SHA256 不完整",
+            f"sha256={digest or '<empty>'}",
+            "生成不可变 Object Key 前必须完成 SHA256 计算。",
+            422,
+        )
+    immutable_name = f"{digest[:16]}-{_safe_segment(Path(str(file_name or 'model.bin')).name, 'model.bin')}"
+    return "/".join([
+        root,
+        "projects", _safe_segment(project_id, "project"),
+        "algorithms", _safe_segment(algorithm_id, "algorithm"),
+        "versions", _safe_segment(version_id, "version"),
+        *artifact_directory,
+        immutable_name,
+    ])
+
+
+def build_public_url(public_base_url: Any, object_key: Any) -> str:
+    """Join a StorageSource long-lived public root with one final object key."""
+    base_url = str(public_base_url or "").strip().rstrip("/")
+    key = str(object_key or "").replace("\\", "/").lstrip("/")
+    if not base_url or not key:
+        return ""
+    if not base_url.startswith(("http://", "https://")):
+        raise PlatformError(
+            "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
+            "算法产物长期访问根地址格式不正确",
+            base_url,
+            "请在 StorageSource 填写以 http:// 或 https:// 开头的 OSS Bucket 域名或 CDN 域名。",
+            422,
+        )
+    return f"{base_url}/{quote(key, safe='/-._~')}"
 
 
 _SCHEMA = """
@@ -192,26 +283,24 @@ class ModelArtifactRepository:
         result = dict(DEFAULT_CONFIG)
         if isinstance(stored, dict):
             result.update(stored)
+        root_prefix = _canonical_prefix(
+            result.get("root_prefix") or result.get("object_prefix") or DEFAULT_CONFIG["root_prefix"]
+        )
+        result["schema_version"] = 3
+        result["root_prefix"] = root_prefix
+        # Compatibility read alias only; config.json has one durable owner.
+        result["object_prefix"] = root_prefix
+        result.pop("public_base_url", None)
         # Model delivery is a platform invariant once a storage source is configured.
         result["auto_upload_enabled"] = True
         return result
 
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
-        prefix = str(payload.object_prefix or "model-assets").strip().strip("/") or "model-assets"
-        public_base_url = str(payload.public_base_url or "").strip().rstrip("/")
-        if public_base_url and not public_base_url.startswith(("http://", "https://")):
-            raise PlatformError(
-                "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
-                "算法产物访问域名格式不正确",
-                public_base_url,
-                "请填写以 http:// 或 https:// 开头的 OSS Bucket 域名或 CDN 域名。",
-                422,
-            )
+        prefix = _canonical_prefix(payload.root_prefix or payload.object_prefix)
         body = {
-            "schema_version": 2,
+            "schema_version": 3,
             "storage_source_id": str(payload.storage_source_id or "").strip(),
-            "object_prefix": prefix,
-            "public_base_url": public_base_url,
+            "root_prefix": prefix,
             "auto_upload_enabled": True,
             "updated_at": utc_now(),
         }
@@ -406,65 +495,87 @@ class ModelArtifactService:
         secret: Mapping[str, str] = {}
         if source.secret_ref:
             secret = self.storage_credentials_factory().get(source.secret_ref) or {}
+        # Artifact object_key is already the final Bucket-relative key. Keep a
+        # StorageSource prefix available for material callers, but never apply
+        # that provider namespace a second time to canonical artifact keys.
+        artifact_source = replace(
+            source,
+            config={**source.config, "prefix": ""},
+        )
         return StorageProviderFactory(
             data_dir=self.data_dir,
             project_dir=self.project_dir(project_id),
             credentials={source.id: secret},
-        ).create(source)
+        ).create(artifact_source)
 
     def public_url(self, artifact: Mapping[str, Any]) -> str:
         """Return a stable externally reachable object URL, never an expiring signed URL."""
         config = self.repository.config()
-        base_url = str(config.get("public_base_url") or "").strip().rstrip("/")
-        if not base_url:
-            return ""
         source_id = str(artifact.get("storage_source_id") or config.get("storage_source_id") or "").strip()
         source = self.storage_sources_factory().get(source_id) if source_id else None
-        object_key = str(artifact.get("object_key") or "").replace("\\", "/").lstrip("/")
-        if not object_key:
+        if source is None:
             return ""
-        provider_prefix = ""
-        if source is not None:
-            provider_prefix = str(source.config.get("prefix") or "").replace("\\", "/").strip("/")
-        full_key = "/".join(part for part in (provider_prefix, object_key) if part)
-        return f"{base_url}/{quote(full_key, safe='/-._~')}"
+        base_url = str(source.config.get("public_base_url") or "").strip().rstrip("/")
+        object_key = str(artifact.get("object_key") or "").replace("\\", "/").lstrip("/")
+        return build_public_url(base_url, object_key)
 
-    def test_storage(self, source_id: str, public_base_url: str = "") -> dict[str, Any]:
+    def test_storage(self, source_id: str, _legacy_public_base_url: str = "") -> dict[str, Any]:
         source_id = str(source_id or "").strip()
-        public_base_url = str(public_base_url or "").strip().rstrip("/")
         if not source_id:
             raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择算法与转换结果存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
+        source = self.storage_sources_factory().get(source_id)
+        if source is None:
+            raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "算法与转换结果存储源不存在", source_id, "请先在存储配置中创建该存储源。", 404)
+        public_base_url = str(source.config.get("public_base_url") or "").strip().rstrip("/")
         probe_project = "_model_artifact_probe"
         self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
         provider = self._provider(probe_project, source_id)
         health = provider.health_check()
+        if not health.ok:
+            raise PlatformError(
+                "MODEL_STORAGE_HEALTH_AUTH_FAILED",
+                "算法产物存储认证或 Bucket 访问失败",
+                str(health.message or ""),
+                "请检查 Endpoint、Bucket、AccessKey ID、AccessKey Secret 和 Bucket 权限。",
+                503,
+            )
         probe_id = uuid.uuid4().hex
-        key = f"model-assets-healthcheck/{probe_id}.txt"
+        root_prefix = str(self.repository.config().get("root_prefix") or "changlian-ai/artifacts")
+        key = f"{_canonical_prefix(root_prefix)}/.changlian-health-check/{probe_id}.txt"
+        payload = b"model-artifact-storage-healthcheck"
         with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
-            stream.write(b"model-artifact-storage-healthcheck")
+            stream.write(payload)
             temporary = Path(stream.name)
         direct_url = ""
         direct_url_reachable = False
+        stages = {
+            "authenticated": True,
+            "written": False,
+            "stat_checked": False,
+            "read_checked": False,
+            "deleted": False,
+            "public_url_checked": False,
+        }
+        operation_error: Exception | None = None
         try:
             meta = provider.upload(key, temporary, content_type="text/plain", metadata={"purpose": "healthcheck"})
+            stages["written"] = True
             checked = provider.stat(key)
             if int(checked.size_bytes) != int(meta.size_bytes) or int(checked.size_bytes) <= 0:
                 raise RuntimeError("写入后对象大小校验失败")
+            stages["stat_checked"] = True
+            reader = provider.open_reader(key)
+            try:
+                content = reader.read()
+            finally:
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+            if content != payload:
+                raise RuntimeError("读取内容与写入内容不一致")
+            stages["read_checked"] = True
             if public_base_url:
-                if not public_base_url.startswith(("http://", "https://")):
-                    raise PlatformError(
-                        "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
-                        "算法产物长期访问域名格式不正确",
-                        public_base_url,
-                        "请填写以 http:// 或 https:// 开头的 OSS Bucket 域名或 CDN 域名。",
-                        422,
-                    )
-                source = self.storage_sources_factory().get(source_id)
-                provider_prefix = ""
-                if source is not None:
-                    provider_prefix = str(source.config.get("prefix") or "").replace("\\", "/").strip("/")
-                full_key = "/".join(part for part in (provider_prefix, key) if part)
-                direct_url = f"{public_base_url}/{quote(full_key, safe='/-._~')}"
+                direct_url = build_public_url(public_base_url, key)
                 try:
                     response = requests.get(
                         direct_url,
@@ -489,17 +600,40 @@ class ModelArtifactService:
                         409,
                     )
                 direct_url_reachable = True
+                stages["public_url_checked"] = True
+        except Exception as error:
+            operation_error = error
         finally:
             try:
                 provider.delete(key)
-            except Exception:
-                # A failed cleanup must not hide the actual connectivity result.
-                pass
+                if provider.exists(key):
+                    raise RuntimeError("DELETE 后测试对象仍然存在")
+                stages["deleted"] = True
+            except Exception as error:
+                temporary.unlink(missing_ok=True)
+                raise PlatformError(
+                    "MODEL_STORAGE_HEALTH_DELETE_FAILED",
+                    "OSS 测试对象删除失败",
+                    str(error),
+                    "测试对象未能确认删除，连接测试不会返回成功；请检查 Bucket 删除权限并清理 .changlian-health-check/。",
+                    409,
+                ) from error
             temporary.unlink(missing_ok=True)
+        if operation_error is not None:
+            if isinstance(operation_error, PlatformError):
+                raise operation_error
+            raise PlatformError(
+                "MODEL_STORAGE_HEALTH_ROUNDTRIP_FAILED",
+                "OSS 写入、读取或校验失败",
+                str(operation_error),
+                "请检查 Endpoint、Bucket、凭据以及对象的 PUT、HEAD/STAT、GET 权限。",
+                503,
+            ) from operation_error
         return {
             "ok": True,
             "storage_source_id": source_id,
             "health": getattr(health, "status", None) or "AVAILABLE",
+            "stages": stages,
             "public_url_checked": bool(public_base_url),
             "public_url_reachable": direct_url_reachable,
             "message": (
@@ -603,23 +737,19 @@ class ModelArtifactService:
         source_path = Path(str(row["source_path"])).resolve()
         if not source_path.is_file() or source_path.stat().st_size <= 0:
             return self.repository.patch(str(row["artifact_id"]), storage_status="FAILED", storage_error="模型源文件不存在")
-        prefix = str(config.get("object_prefix") or "model-assets").strip().strip("/") or "model-assets"
+        root_prefix = str(config.get("root_prefix") or "changlian-ai/artifacts")
         object_key = str(row.get("object_key") or "")
         if not object_key or str(row.get("storage_source_id") or "") != source_id:
-            identity_segments = [
-                prefix,
-                _safe_segment(row["project_id"], "project"),
-                _safe_segment(row["algorithm_id"], "algorithm"),
-                _safe_segment(row["version_id"], "version"),
-                _safe_segment(row["target"], "artifact"),
-            ]
-            chip_code = str(row.get("chip_code") or "").strip().lower()
-            if chip_code:
-                identity_segments.append(_safe_segment(chip_code, "chip"))
-            identity_segments.append(
-                f"{str(row['sha256'])[:16]}-{_safe_segment(row['file_name'], 'model.bin')}"
+            object_key = build_artifact_object_key(
+                root_prefix=root_prefix,
+                project_id=row["project_id"],
+                algorithm_id=row["algorithm_id"],
+                version_id=row["version_id"],
+                target=row["target"],
+                chip_code=row.get("chip_code") or "",
+                sha256=row["sha256"],
+                file_name=row["file_name"],
             )
-            object_key = "/".join(identity_segments)
         if not force and str(row.get("storage_status") or "").upper() == "UPLOADED" and str(row.get("storage_source_id") or "") == source_id:
             try:
                 meta = provider.stat(object_key)

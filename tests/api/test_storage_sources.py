@@ -71,6 +71,7 @@ def test_storage_source_validation_and_wrong_remote_credentials_are_truthful(cli
         "config": {
             "endpoint": "http://127.0.0.1:1",
             "bucket": "unreachable-bucket",
+            "public_base_url": "https://unreachable-bucket.oss-cn-hangzhou.aliyuncs.com",
             "timeout_seconds": 1,
         },
         "credentials": {
@@ -79,6 +80,9 @@ def test_storage_source_validation_and_wrong_remote_credentials_are_truthful(cli
         },
     })
     assert oss.status_code == 201, oss.text
+    assert oss.json()["config"]["public_base_url"] == (
+        "https://unreachable-bucket.oss-cn-hangzhou.aliyuncs.com"
+    )
     assert "invalid-oss-secret" not in oss.text
     oss_test = client.post(f"/api/v61/storage-sources/{oss_id}/test")
     assert oss_test.status_code == 503
