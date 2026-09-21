@@ -292,6 +292,5 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   persist();
   render();
   arm();
-  window.__uploadTaskCenterProjectTimer = window.setInterval(switchProject, 1500);
   return runtime;
 }

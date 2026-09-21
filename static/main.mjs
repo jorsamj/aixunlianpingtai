@@ -38,7 +38,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422206';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422522';
-import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66002';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66003';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
@@ -260,6 +260,7 @@ installNavigationStability({
   beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
   performNavigation: page => {
     state.page = page;
+    uploadTaskCenterRuntime.switchProject?.();
     render();
   },
 });

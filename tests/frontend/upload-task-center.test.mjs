@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   clearCompletedUploadTasks,
@@ -76,3 +77,12 @@ test('terminal ZIP history requires durable backend cleanup before local removal
   ]), false);
 });
 
+
+
+test('project switching is navigation-owned and has no permanent interval', () => {
+  const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(runtime, /setInterval\(switchProject,\s*1500\)/);
+  assert.doesNotMatch(runtime, /__uploadTaskCenterProjectTimer/);
+  assert.match(main, /uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
+});
