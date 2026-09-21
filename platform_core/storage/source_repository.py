@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -36,6 +37,14 @@ ON storage_sources(type, enabled);
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _SENSITIVE = re.compile(r"(?i)(secret|password|token|api[_-]?key|access[_-]?key)")
+_INITIALIZATION_LOCKS: dict[str, threading.Lock] = {}
+_INITIALIZATION_LOCKS_GUARD = threading.Lock()
+
+
+def _initialization_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _INITIALIZATION_LOCKS_GUARD:
+        return _INITIALIZATION_LOCKS.setdefault(key, threading.Lock())
 
 
 def _now() -> str:
@@ -118,17 +127,21 @@ class StorageSourceRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.reference_counter = reference_counter or (lambda _source_id: 0)
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
-            stamp = _now()
-            database.execute(
-                """
-                INSERT OR IGNORE INTO storage_sources
-                (id, name, type, config_json, enabled, is_default, created_at, updated_at)
-                VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
-                """,
-                (stamp, stamp),
-            )
+        # The storage page can load source and artifact configuration in
+        # parallel. Serialize only first/schema initialization for this exact
+        # database path so concurrent constructors cannot race the WAL switch.
+        with _initialization_lock(self.path):
+            with closing(self._connect()) as database:
+                database.executescript(_SCHEMA)
+                stamp = _now()
+                database.execute(
+                    """
+                    INSERT OR IGNORE INTO storage_sources
+                    (id, name, type, config_json, enabled, is_default, created_at, updated_at)
+                    VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
+                    """,
+                    (stamp, stamp),
+                )
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)

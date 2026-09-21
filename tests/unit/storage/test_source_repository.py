@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -168,3 +171,60 @@ def test_non_wal_connection_sets_busy_timeout_before_switching_mode(monkeypatch,
         "PRAGMA journal_mode",
         "PRAGMA journal_mode=WAL",
     ]
+
+
+def test_concurrent_first_initialization_serializes_wal_transition(monkeypatch, tmp_path):
+    class Cursor:
+        def __init__(self, value=None):
+            self.value = value
+
+        def fetchone(self):
+            return [self.value]
+
+    transition = threading.Lock()
+
+    class FakeDatabase:
+        def __init__(self):
+            self.row_factory = None
+
+        def execute(self, statement, *_args):
+            if statement == "PRAGMA journal_mode":
+                return Cursor("delete")
+            if statement == "PRAGMA journal_mode=WAL":
+                if not transition.acquire(blocking=False):
+                    raise sqlite3.OperationalError("database is locked")
+                try:
+                    time.sleep(0.02)
+                finally:
+                    transition.release()
+            return Cursor(None)
+
+        def executescript(self, _script):
+            return None
+
+        def close(self):
+            return None
+
+    import platform_core.storage.source_repository as source_repository_module
+    monkeypatch.setattr(
+        source_repository_module.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: FakeDatabase(),
+    )
+    workers = 8
+    start = threading.Barrier(workers)
+    database_path = tmp_path / "storage.sqlite3"
+
+    def initialize(_index):
+        start.wait()
+        StorageSourceRepository(database_path)
+
+    errors = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(initialize, index) for index in range(workers)]:
+            try:
+                future.result()
+            except Exception as error:
+                errors.append(error)
+
+    assert errors == []
