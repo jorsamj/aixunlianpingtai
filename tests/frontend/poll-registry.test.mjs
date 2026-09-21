@@ -550,3 +550,60 @@ test('canonical task_status prevents stale legacy running text from keeping a te
     delete globalThis.window;
   }
 });
+
+
+test('training elapsed clock is PollRegistry-owned and adds no backend request', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const timeouts = new Map();
+  const intervals = new Map();
+  let nextTimer = 1100;
+  let ticks = 0;
+
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  globalThis.setInterval = (callback, delay) => {
+    const id = ++nextTimer;
+    intervals.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearInterval = id => intervals.delete(id);
+  globalThis.window = {
+    TrainingTaskVisibilityRuntime: {
+      tickClock(step) { ticks += step; },
+    },
+  };
+
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [{id: 'j1', status: 'running'}],
+  };
+  const runtime = installPollRegistry({getState: () => state});
+  try {
+    const clock = runtime.snapshot().find(row => row.key === 'training-clock');
+    assert.deepEqual(clock, {
+      key: 'training-clock', owners: ['训练任务'], active: true, managed: true, delay: 1000,
+    });
+    const intervalId = [...intervals.keys()][0];
+    await intervals.get(intervalId).callback();
+    assert.equal(ticks, 1);
+
+    state.jobs = [{id: 'j1', status: 'paused'}];
+    runtime.syncTrainingClockTimer();
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-clock'), false);
+  } finally {
+    runtime.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+    delete globalThis.window;
+  }
+});

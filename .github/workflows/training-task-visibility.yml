@@ -81,7 +81,9 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422526' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422527' static/index.html
+          grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
+          grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
           grep -Fq 'setTrainingRealtimeActive' static/modules/poll-registry.js
           grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js

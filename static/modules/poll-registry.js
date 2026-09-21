@@ -167,6 +167,29 @@ export function installPollRegistry({getState} = {}) {
     return next;
   }
 
+  function syncTrainingClockTimer() {
+    const s = state();
+    const key = 'training-clock';
+    const canTick = String(s.page || '') === trainingOwner
+      && Boolean(s.project?.id)
+      && typeof window.TrainingTaskVisibilityRuntime?.tickClock === 'function'
+      && (s.jobs || []).some(trainingTaskNeedsPolling);
+
+    if (!canTick) {
+      registry.clear(key);
+      return null;
+    }
+    const existing = registry.entries.get(key);
+    if (existing?.timer != null) return existing.timer;
+
+    return registry.startInterval(
+      key,
+      trainingOwner,
+      () => window.TrainingTaskVisibilityRuntime?.tickClock?.(1),
+      1000,
+    );
+  }
+
   function videoTaskActive(task) {
     const helper = window.PlatformCore?.video?.isActiveVideoTask;
     if (typeof helper === 'function') return Boolean(helper(task));
@@ -262,6 +285,7 @@ export function installPollRegistry({getState} = {}) {
         }
       } finally {
         replaceTrainingJobTimer();
+        syncTrainingClockTimer();
       }
       return true;
     }
@@ -300,9 +324,15 @@ export function installPollRegistry({getState} = {}) {
   }
 
   const onVisibilityChange = () => {
+    if (doc?.visibilityState === 'hidden') {
+      registry.clear('training-jobs');
+      registry.clear('training-clock');
+      return;
+    }
     if (doc?.visibilityState !== 'visible' || visibilityRefresh) return;
     visibilityRefresh = Promise.resolve(resyncVisiblePage()).finally(() => {
       visibilityRefresh = null;
+      syncTrainingClockTimer();
     });
   };
   doc?.addEventListener?.('visibilitychange', onVisibilityChange);
@@ -320,6 +350,7 @@ export function installPollRegistry({getState} = {}) {
     setTrainingRealtimeActive,
     trainingRealtimeActive() { return trainingRealtimeActive; },
     replaceTrainingJobTimer,
+    syncTrainingClockTimer,
     replaceVideo424Timer,
     replaceCleanTaskTimer,
     replaceSourceTimer,
@@ -328,7 +359,12 @@ export function installPollRegistry({getState} = {}) {
       clearLegacyReferences(nextPage);
     },
     afterNavigate(page) {
-      if (String(page || state().page || '') === trainingOwner) return replaceTrainingJobTimer();
+      if (String(page || state().page || '') === trainingOwner) {
+        const timer = replaceTrainingJobTimer();
+        syncTrainingClockTimer();
+        return timer;
+      }
+      registry.clear('training-clock');
       return null;
     },
     snapshot() { return registry.snapshot(); },
@@ -347,6 +383,7 @@ export function installPollRegistry({getState} = {}) {
   window.PollRegistryRuntime = runtime;
   window.__pollRegistryInstalled = true;
   replaceTrainingJobTimer();
+  syncTrainingClockTimer();
   replaceVideo424Timer();
   replaceCleanTaskTimer();
   replaceSourceTimer();

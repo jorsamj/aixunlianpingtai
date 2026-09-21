@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installTrainingTaskVisibilityRuntime} from '../../static/modules/training-task-visibility-runtime.js';
+import {installTrainingTaskVisibilityRuntime, tickTrainingClockRows} from '../../static/modules/training-task-visibility-runtime.js';
 
 function cleanup() {
   delete globalThis.window;
@@ -250,4 +250,28 @@ test('visibility renderer reuses canonical durable queue order', () => {
   assert.ok(html.indexOf('fifo-old') < html.indexOf('fifo-new'));
   visibility.destroy();
   cleanup();
+});
+
+
+test('local training clock advances elapsed and ETA without a network refresh', () => {
+  const elapsed = {dataset: {seconds: '80'}, textContent: '1m 20s'};
+  const eta = {dataset: {seconds: '140'}, textContent: '2m 20s'};
+  const row = {
+    querySelector(selector) {
+      if (selector === '[data-training-clock="elapsed"]') return elapsed;
+      if (selector === '[data-training-clock="eta"]') return eta;
+      return null;
+    },
+  };
+  const root = {
+    querySelectorAll(selector) {
+      return selector === 'tr[data-clock-active="1"]' ? [row] : [];
+    },
+  };
+
+  assert.equal(tickTrainingClockRows(root, 1), 2);
+  assert.equal(elapsed.dataset.seconds, '81');
+  assert.equal(elapsed.textContent, '1m 21s');
+  assert.equal(eta.dataset.seconds, '139');
+  assert.equal(eta.textContent, '2m 19s');
 });

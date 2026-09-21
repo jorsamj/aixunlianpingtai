@@ -1,4 +1,4 @@
-import {trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422525';
+import {formatTrainingDuration, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422526';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([
@@ -32,6 +32,37 @@ function counts(jobs) {
     active: visibleTrainingJobs(jobs, 'active').length,
     history: visibleTrainingJobs(jobs, 'history').length,
   };
+}
+
+export function tickTrainingClockRows(root, stepSeconds = 1) {
+  const step = Math.max(1, Math.floor(Number(stepSeconds) || 1));
+  const rows = root?.querySelectorAll?.('tr[data-clock-active="1"]') || [];
+  let changed = 0;
+  for (const row of rows) {
+    const elapsed = row.querySelector?.('[data-training-clock="elapsed"]');
+    const eta = row.querySelector?.('[data-training-clock="eta"]');
+
+    if (elapsed && elapsed.dataset?.seconds !== '') {
+      const current = Number(elapsed.dataset.seconds);
+      if (Number.isFinite(current)) {
+        const next = Math.max(0, current + step);
+        elapsed.dataset.seconds = String(next);
+        elapsed.textContent = formatTrainingDuration(next);
+        changed += 1;
+      }
+    }
+
+    if (eta && eta.dataset?.seconds !== '') {
+      const current = Number(eta.dataset.seconds);
+      if (Number.isFinite(current)) {
+        const next = Math.max(0, current - step);
+        eta.dataset.seconds = String(next);
+        eta.textContent = formatTrainingDuration(next);
+        changed += 1;
+      }
+    }
+  }
+  return changed;
 }
 
 export function installTrainingTaskVisibilityRuntime({
@@ -127,6 +158,7 @@ export function installTrainingTaskVisibilityRuntime({
 
   function patchTrainingRow(currentRow, nextRow) {
     if (!currentRow || !nextRow || currentRow.cells?.length !== nextRow.cells?.length) return nextRow;
+    currentRow.dataset.clockActive = nextRow.dataset.clockActive || '0';
     for (let index = 0; index < nextRow.cells.length; index += 1) {
       const currentCell = currentRow.cells[index];
       const nextCell = nextRow.cells[index];
@@ -216,7 +248,14 @@ export function installTrainingTaskVisibilityRuntime({
 
     const visible = visibleTrainingJobs(jobs, tab);
     patchRows(body, visible);
+    pollRegistry?.syncTrainingClockTimer?.();
     return true;
+  }
+
+  function tickClock(stepSeconds = 1) {
+    if (destroyed || !doc || String(state().page || '') !== TRAINING_PAGE) return 0;
+    const root = doc.querySelector?.('.train428-page');
+    return tickTrainingClockRows(root, stepSeconds);
   }
 
   async function refreshOwned(options = {}) {
@@ -306,6 +345,7 @@ export function installTrainingTaskVisibilityRuntime({
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
+    tickClock,
     refresh: refreshOwned,
     state() {
       return {
@@ -336,6 +376,7 @@ export function installTrainingTaskVisibilityRuntime({
   if (window.PlatformCore?.runtime) {
     window.PlatformCore.runtime.trainingTaskVisibilityRuntime = visibilityRuntime;
   }
+  pollRegistry?.syncTrainingClockTimer?.();
 
   if (String(state().page || '') === TRAINING_PAGE) {
     renderOwned();
