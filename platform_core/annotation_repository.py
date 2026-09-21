@@ -542,15 +542,31 @@ class AnnotationRepository:
                 raise
 
     def finalize_delete(self, token) -> int:
-        """Delete only annotation rows that still match the durable backup snapshot."""
+        """Delete matching annotation truth and remain idempotent after a crash.
+
+        A recovery run may arrive after the annotation rows were already deleted
+        but before the journal/backup cleanup completed. Missing rows are therefore
+        treated as already finalized. A newer row with a different digest still
+        fails closed and is never removed.
+        """
         token = self._delete_token(token)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                expected = int(db.execute(
-                    "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
+                conflict = db.execute(
+                    """SELECT annotations.image_id
+                       FROM annotations
+                       JOIN annotation_delete_backup backup
+                         ON backup.image_id=annotations.image_id
+                       WHERE backup.token=?
+                         AND backup.content_digest<>annotations.content_digest
+                       LIMIT 1""",
                     (token,),
-                ).fetchone()[0])
+                ).fetchone()
+                if conflict is not None:
+                    raise RuntimeError(
+                        "annotation changed during dataset deletion; refusing stale delete"
+                    )
                 cursor = db.execute(
                     """DELETE FROM annotations
                        WHERE EXISTS (
@@ -562,10 +578,6 @@ class AnnotationRepository:
                     (token,),
                 )
                 deleted = max(0, int(cursor.rowcount))
-                if deleted != expected:
-                    raise RuntimeError(
-                        "annotation changed during dataset deletion; refusing stale delete"
-                    )
                 db.execute("COMMIT")
                 return deleted
             except Exception:
