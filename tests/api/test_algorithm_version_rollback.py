@@ -3,6 +3,7 @@ import uuid
 from pathlib import Path
 
 import app as app_module
+from platform_core.algorithms import save_algorithms
 
 
 def _create_algorithm(client, project_id: str) -> dict:
@@ -41,7 +42,7 @@ def _seed_versions(project_id: str, algorithm_id: str, *, explicit_current: bool
     algorithm.pop("current_version_id", None)
     if explicit_current:
         algorithm["current_version_id"] = "v5"
-    app_module.save_algorithm_assets(app_module.algorithms_file(project_id), rows)
+    save_algorithms(app_module.algorithms_file(project_id), rows)
     return v5, v3
 
 
@@ -63,7 +64,7 @@ def test_algorithm_list_projects_legacy_current_version_without_persisting_it(cl
     assert "current_version_id" not in raw
 
 
-def test_rollback_api_persists_current_and_iteration_base_uses_it(client, seeded_project, monkeypatch):
+def test_rollback_api_deletes_current_and_iteration_base_uses_target(client, seeded_project, monkeypatch):
     project_id, _ = seeded_project
     algorithm = _create_algorithm(client, project_id)
     _seed_versions(project_id, algorithm["id"])
@@ -71,12 +72,12 @@ def test_rollback_api_persists_current_and_iteration_base_uses_it(client, seeded
 
     response = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
-        json={"delete_current_version": False, "expected_current_version_id": "v5"},
+        json={"delete_current_version": True, "expected_current_version_id": "v5"},
     )
 
     assert response.status_code == 200, response.text
     assert response.json()["current_version_id"] == "v3"
-    assert response.json()["deleted_version_id"] is None
+    assert response.json()["deleted_version_id"] == "v5"
     base = client.get(
         f"/api/v54/projects/{project_id}/algorithms/{algorithm['id']}/iteration-base?framework=ultralytics"
     )
@@ -87,7 +88,7 @@ def test_rollback_api_persists_current_and_iteration_base_uses_it(client, seeded
         if row["id"] == algorithm["id"]
     )
     assert stored["current_version_id"] == "v3"
-    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert {row["id"] for row in stored["versions"]} == {"v3"}
 
     test_models = client.get(
         f"/api/v12/projects/{project_id}/test_models?probe_optional=false"
@@ -97,9 +98,8 @@ def test_rollback_api_persists_current_and_iteration_base_uses_it(client, seeded
         row for row in test_models.json()["items"]
         if row.get("algorithm_id") == algorithm["id"]
     ]
-    assert [row["version_id"] for row in algorithm_test_models] == ["v3", "v5"]
+    assert [row["version_id"] for row in algorithm_test_models] == ["v3"]
     assert algorithm_test_models[0]["is_current_version"] is True
-    assert algorithm_test_models[1]["is_current_version"] is False
 
     deploy_sources = client.get(
         f"/api/v39/projects/{project_id}/deploy/source-models"
@@ -109,9 +109,8 @@ def test_rollback_api_persists_current_and_iteration_base_uses_it(client, seeded
         row for row in deploy_sources.json()["items"]
         if row.get("algorithm_id") == algorithm["id"]
     ]
-    assert [row["version_id"] for row in algorithm_deploy_sources] == ["v3", "v5"]
+    assert [row["version_id"] for row in algorithm_deploy_sources] == ["v3"]
     assert algorithm_deploy_sources[0]["is_current_version"] is True
-    assert algorithm_deploy_sources[1]["is_current_version"] is False
 
 
 def test_rollback_and_delete_preflight_blocks_active_conversion_before_pointer_change(client, seeded_project):
