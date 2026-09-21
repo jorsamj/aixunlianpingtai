@@ -12,7 +12,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
     .toBe('algorithm-list-runtime-422504');
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
   await page.evaluate(() => {
@@ -305,7 +305,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412)).toBe(true);
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -410,7 +410,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
     .toBe('algorithm-list-runtime-422504');
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);

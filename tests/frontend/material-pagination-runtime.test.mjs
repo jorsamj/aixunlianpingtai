@@ -28,12 +28,15 @@ test('material paging query keeps filters on the server', () => {
 });
 
 
-test('training and AI workflows explicitly request the full material pool', () => {
+test('server-paged training avoids full material hydration while legacy AI/quality pages remain explicit', () => {
   assert.equal(requiresFullMaterialPool('数据集'), false);
   assert.equal(requiresFullMaterialPool('算法列表'), false);
-  assert.equal(requiresFullMaterialPool('训练任务'), true);
+  assert.equal(requiresFullMaterialPool('训练任务'), false);
   assert.equal(requiresFullMaterialPool('自动标注及清洗'), true);
   assert.equal(requiresFullMaterialPool('质量中心'), true);
+
+  const picker = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  assert.match(picker, /fullPoolHydration: false/);
 });
 
 
@@ -56,6 +59,9 @@ test('dataset cache and full-pool switching are owned by final named navigation 
 
   assert.match(runtime, /function beforeNavigate61\(page\)/);
   assert.match(runtime, /function afterNavigate61\(page, navigation\)/);
+  assert.match(runtime, /const action = window\.NavigationStability\?\.action\?\.\(target\)/);
+  assert.match(runtime, /action\?\.commit/);
+  assert.doesNotMatch(runtime, /await window\.refreshCurrentPage413\?\.\(\)/);
   assert.match(runtime, /beforeNavigate: beforeNavigate61/);
   assert.match(runtime, /afterNavigate: afterNavigate61/);
   assert.doesNotMatch(runtime, /materialAwareSetPage/);

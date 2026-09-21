@@ -1,9 +1,7 @@
 export const FULL_MATERIAL_PAGES = new Set([
-  // These legacy selectors still filter state.images (training V3 also pages
-  // locally). Keep their complete pool only while visiting the relevant page.
-  // Dataset batch actions already use server filters and frozen manifests.
-  // main.mjs adds the untouched test/publish, deployment-test and iteration pages.
-  '训练任务',
+  // Training selection is server-paged by TrainingMaterialPickerRuntime and must
+  // not hydrate the complete image pool merely by visiting the task page.
+  // Only remaining legacy AI/quality selectors still require state.images.
   '自动标注',
   '自动标注及清洗',
   '质量中心',
@@ -517,15 +515,25 @@ export function installMaterialPaginationRuntime() {
     const target = String(navigation?.target || (page === '自动标注' ? '自动标注及清洗' : page || ''));
     const full = navigation?.full === true || (navigation?.full == null && requiresFullMaterialPool(target));
     if (full) {
+      const action = window.NavigationStability?.action?.(target);
       setTimeout(async () => {
         try {
           if (state.page !== target) return;
-          await window.refreshCurrentPage413?.();
-          if (state.page !== target || target === '训练任务') return;
-          if (typeof window.render === 'function') window.render();
-          else if (typeof render === 'function') render();
+          const pid = projectId();
+          if (!pid) return;
+          const images = await responseJson(await materialFetch(`/api/projects/${encodeURIComponent(pid)}/images`, {
+            headers: {Accept: 'application/json'},
+            credentials: 'same-origin',
+          }));
+          const commit = () => {
+            state.images = Array.isArray(images) ? images : [];
+            if (typeof window.render === 'function') window.render();
+            else if (typeof render === 'function') render();
+          };
+          if (action?.commit) action.commit(commit);
+          else if (state.page === target) commit();
         } catch (error) {
-          window.toast?.(error.message || String(error));
+          if (!action || action.isCurrent?.()) window.toast?.(error.message || String(error));
         }
       }, 0);
     } else if (target !== '数据集') {
@@ -553,7 +561,7 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422207',
+    build: 'material-pagination-runtime-422208',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
