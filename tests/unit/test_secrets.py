@@ -225,8 +225,16 @@ class FakeDbusFailKeyring:
         raise RuntimeError("Cannot autolaunch D-Bus without X11 $DISPLAY")
 
 
-def test_keyring_non_keyringerror_dbus_failure_is_normalized():
+def test_keyring_non_keyringerror_dbus_failure_is_normalized(monkeypatch):
     reference = "xjalgo:external-platform:changlian"
+    for env_name in (
+        "MC_CHANGLIAN_ACCESS_KEY",
+        "MC_CHANGLIAN_ACCESS_SECRET",
+        "MC_SECRET_MASTER_KEY",
+        "MC_SECRET_FILE",
+        secret_environment_name(reference),
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     credentials = SecretCredentialStore(KeyringSecretStore(keyring_module=FakeDbusFailKeyring))
 
     state = credentials.public_state(reference)
