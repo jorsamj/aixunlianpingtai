@@ -1,5 +1,23 @@
 # 畅联云算法训练平台 — 当前接手总览
 
+
+<!-- CURRENT_HANDOFF_2026_09_21 -->
+> ## 2026-09-21 当前 Codex 接手入口
+>
+> **先读：docs/CODEX_HANDOFF_2026-09-21.md**
+>
+> 该文件记录了 2026-09-21 当前真实开发现场，包括：最新代码/测试基线、最后两项 integration 状态、AlgorithmSqlStore 并发锁故障、五个 SQLite owner 生命周期收口、素材/标注批处理 truth、Training V3 Dataset Revision、ResourceDiscovery spawn 根因、新畅联合同、部署门槛和 Codex 下一步执行顺序。
+>
+> 文档写入前最后一个代码/测试 HEAD：bc88fcdfd7a5097499a67596741b8f13018f7645。
+> handoff 文档提交：8ab473efbca7cb2c95b032de0858bb7070d8b0af。
+>
+> **本节与 docs/CODEX_HANDOFF_2026-09-21.md 优先于下面 2026-09-20 的历史 LIVE HANDOFF、历史 NEXT、历史部署建议。**
+>
+> 当前第一优先级：不要继续扩大生产代码改动；先在最新远端 HEAD 上重跑两个 focused integration，再跑完整 integration。只有 0 failed 后才进入 task_worker.py --check 和部署前 candidate 验收。
+>
+> 接手仍必须先重新读取远端 HEAD、VERSION.txt、最近 commits 和 Actions；不要假定上述 SHA 仍是当前远端 HEAD。
+
+
 > **新 AI / 新开发人员先读本文件。**  
 > 目标：10 分钟内知道“当前在哪个分支、什么已经做完、什么绝对不能重做、下一步该做什么”。
 
