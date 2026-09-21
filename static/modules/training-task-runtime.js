@@ -501,7 +501,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       try { await inflight; } catch (_) {}
     }
     if (String(state().page || '') !== TRAINING_PAGE) return {stale: true, jobs: state().jobs || []};
-    return refresh({render: true, force: true, source: 'mutation'});
+    return runtime.refresh({render: true, force: true, source: 'mutation'});
   }
 
   async function mutate(key, path, {method = 'POST', successMessage = '操作成功'} = {}) {
@@ -523,7 +523,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     }
   }
 
-  const focusedRefresh = () => refresh({render: true, source: 'poll'});
+  const focusedRefresh = () => runtime.refresh({render: true, source: 'poll'});
   focusedRefresh.__trainingTaskRuntime = true;
   window.refreshJobsOnly = focusedRefresh;
   window.refreshTrainPage428 = focusedRefresh;
@@ -600,7 +600,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     event.stopImmediatePropagation();
     if (button.disabled || inflight) return;
     button.disabled = true;
-    void refresh({render: true, source: 'manual'}).then(
+    void runtime.refresh({render: true, source: 'manual'}).then(
       result => { if (!result?.stale) notify?.('训练任务已刷新'); },
       error => notify?.(error?.message || error),
     ).finally(() => {
