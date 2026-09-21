@@ -58,7 +58,34 @@ class AlgorithmSqlStore:
                 return False
             raise
 
+    def _ready_without_init_lock(self) -> bool:
+        """Return ready-state using a short, read-only probe.
+
+        A fully initialized database is the common case. Avoid taking the
+        cross-process init FileLock on every CRUD call; if the probe cannot
+        prove readiness quickly, fall back to the locked initialization path.
+        """
+        if not self.db_path.is_file():
+            return False
+        try:
+            with closing(
+                sqlite3.connect(self.db_path, timeout=0.25, isolation_level=None)
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=250")
+                mode = str(
+                    conn.execute("PRAGMA journal_mode").fetchone()[0]
+                ).lower()
+                return mode == "wal" and self._initialization_complete(conn)
+        except sqlite3.Error:
+            return False
+
     def ensure_ready(self) -> None:
+        # The steady-state path is read-only and lock-free across processes.
+        # Only an uninitialized/uncertain store enters the persistent init lock.
+        if self._ready_without_init_lock():
+            return
+
         # WAL transition, schema bootstrap and legacy migration are persistent
         # database initialization. Keep them under one store-owned cross-process
         # lock; normal CRUD transactions remain independently concurrent.
@@ -115,8 +142,48 @@ class AlgorithmSqlStore:
                 "SELECT * FROM algorithms WHERE project_id=? ORDER BY sort_index ASC, created_at DESC, id ASC",
                 (self.project_id,),
             ).fetchall()
+            if not algorithm_rows:
+                return []
+
+            # Prefetch child rows once for the project instead of issuing two
+            # extra SELECTs per algorithm. This keeps the algorithm-list read
+            # path O(1) in SQL round-trips as the catalog grows.
+            version_rows = conn.execute(
+                """SELECT versions.*
+                   FROM algorithm_versions AS versions
+                   JOIN algorithms AS algorithms
+                     ON algorithms.id=versions.algorithm_id
+                   WHERE algorithms.project_id=?
+                   ORDER BY versions.algorithm_id ASC,
+                            versions.sort_index ASC,
+                            versions.id ASC""",
+                (self.project_id,),
+            ).fetchall()
+            analysis_rows = conn.execute(
+                """SELECT analyses.*
+                   FROM algorithm_external_analyses AS analyses
+                   JOIN algorithms AS algorithms
+                     ON algorithms.id=analyses.algorithm_id
+                   WHERE algorithms.project_id=?
+                   ORDER BY analyses.algorithm_id ASC,
+                            analyses.sort_index ASC,
+                            analyses.external_analysis_id ASC""",
+                (self.project_id,),
+            ).fetchall()
+            versions_by_algorithm: dict[str, list[sqlite3.Row]] = {}
+            for version_row in version_rows:
+                versions_by_algorithm.setdefault(
+                    str(version_row["algorithm_id"]), []
+                ).append(version_row)
+            analyses_by_algorithm: dict[str, list[sqlite3.Row]] = {}
+            for analysis_row in analysis_rows:
+                analyses_by_algorithm.setdefault(
+                    str(analysis_row["algorithm_id"]), []
+                ).append(analysis_row)
+
             result: list[dict] = []
             for row in algorithm_rows:
+                algorithm_id = str(row["id"])
                 item = self._json_object(row["payload_json"])
                 item.update({
                     "id": row["id"],
@@ -135,15 +202,9 @@ class AlgorithmSqlStore:
                 ))
                 if str(item.get("source_type") or "").upper() == "EXTERNAL":
                     item.setdefault("external_analysis_id", "")
-                versions = conn.execute(
-                    "SELECT * FROM algorithm_versions WHERE algorithm_id=? ORDER BY sort_index ASC, id ASC",
-                    (row["id"],),
-                ).fetchall()
+                versions = versions_by_algorithm.get(algorithm_id, [])
                 item["versions"] = [self._version_from_row(v) for v in versions]
-                analyses = conn.execute(
-                    "SELECT * FROM algorithm_external_analyses WHERE algorithm_id=? ORDER BY sort_index ASC, external_analysis_id ASC",
-                    (row["id"],),
-                ).fetchall()
+                analyses = analyses_by_algorithm.get(algorithm_id, [])
                 if analyses:
                     item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]
                     item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)
