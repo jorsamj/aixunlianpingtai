@@ -128,7 +128,10 @@ jobs:
           grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
           grep -q 'data-external-publish-automation="1"' static/modules/external-algorithm-publish.js
           grep -q "算力环境来自最近一次新畅联主数据同步" static/modules/external-algorithm-publish.js
-          grep -q "require_analysis_identity" platform_core/external_algorithm_publish.py
+          grep -Fq "def _assert_current_external_identity(" platform_core/external_algorithm_publish.py
+          grep -Fq "self._assert_current_external_identity(algorithm, version)" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_MISSING" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
           grep -q "external_artifact_publications" platform_core/external_algorithm_publish.py
           grep -Fq "UNIQUE INDEX IF NOT EXISTS ux_external_version_publication_owner" platform_core/external_algorithm_publish.py
           grep -Fq "ON external_version_publications(provider, project_id, algorithm_id, version_id)" platform_core/external_algorithm_publish.py
