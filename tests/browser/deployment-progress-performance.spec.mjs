@@ -64,5 +64,13 @@ test('deployment conversion polling keeps job and progress nodes stable', async 
     card: window.__deployStableCard === document.querySelector('[data-deploy-job-id="deploy-perf-1"]'),
     progress: window.__deployStableProgress === document.querySelector('[data-deploy-job-id="deploy-perf-1"] .progress-bar i'),
   }))).toEqual({card:true, progress:true});
+
+  await expect.poll(() => page.evaluate(() => (
+    window.PollRegistryRuntime?.snapshot?.().some(row => row.key === 'deploy-jobs-v39') || false
+  ))).toBe(true);
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect.poll(() => page.evaluate(() => (
+    window.PollRegistryRuntime?.snapshot?.().some(row => row.key === 'deploy-jobs-v39') || false
+  ))).toBe(false);
   expect(pageErrors).toEqual([]);
 });

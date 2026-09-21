@@ -40,7 +40,7 @@ const OWNER_FUNCTIONS = {
     'retryAiTask60', 'showAiTask60'
   ],
   '视频切帧': ['refreshVideoTasksOnly', 'refreshVideo424Delta', 'stopVideo424'],
-  '部署转换': ['loadDeployData', 'refreshDeployTasks'],
+  '部署转换': ['loadDeployData', 'refreshDeployTasks', 'refreshDeployJobsV39'],
 };
 
 const PAGE_RENDERERS = {

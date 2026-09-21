@@ -28,3 +28,16 @@ test('deployment conversion progress is keyed and compositor-friendly', () => {
   assert.doesNotMatch(finalLayer, /deployJobList'\);if\(!box\)return;box\.innerHTML=/);
   assert.doesNotMatch(finalLayer, /progress-bar"><i style="width:/);
 });
+
+
+test('deployment conversion polling is PollRegistry-owned and leaves with the page', () => {
+  const start = source.lastIndexOf('async function pollDeployJobs()');
+  const end = source.indexOf('window.renderDeployCenter', start);
+  assert.ok(start >= 0 && end > start);
+  const finalPoll = source.slice(start, end);
+  assert.match(finalPoll, /PollRegistryRuntime\?\.startTimeout/);
+  assert.match(finalPoll, /'deploy-jobs-v39','部署转换'/);
+  assert.match(finalPoll, /function clearDeployPollV39\(\)/);
+  assert.match(finalPoll, /function armDeployPollV39\(\)/);
+  assert.doesNotMatch(finalPoll, /__deployPollV39=setTimeout\(pollDeployJobs,1800\)/);
+});
