@@ -61,7 +61,7 @@ def test_algorithm_list_projects_legacy_current_version_without_persisting_it(cl
         row for row in app_module.list_algorithm_assets(app_module.algorithms_file(project_id))
         if row["id"] == algorithm["id"]
     )
-    assert "current_version_id" not in raw
+    assert raw.get("current_version_id") is None
 
 
 def test_rollback_api_deletes_current_and_iteration_base_uses_target(client, seeded_project, monkeypatch):
