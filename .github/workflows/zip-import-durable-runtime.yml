@@ -76,8 +76,10 @@ jobs:
           grep -Fq "stage:'等待前序 ZIP 导入任务'" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
           grep -Fq 'window.doUploadZip426=input=>upload(input)' static/modules/zip-import-runtime.js
-          grep -Fq 'zip-import-bootstrap.mjs?v=422533' static/index.html
+          grep -Fq 'zip-import-bootstrap.mjs?v=422534' static/index.html
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
+          grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
+          grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
           grep -Fq 'INDEX_BATCH_SIZE = 50' platform_core/storage/import_tasks.py
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js

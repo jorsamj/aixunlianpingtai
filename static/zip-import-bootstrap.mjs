@@ -26,6 +26,17 @@ if (runtime) {
   // always read the backend, while background polling stays exclusively runtime-owned.
   claimLegacyImportPolling();
 
+  const durableUploadFromImportModal = () => {
+    const input = document.getElementById('importFile');
+    if (!input?.files?.length) {
+      window.toast?.('请选择压缩包');
+      return null;
+    }
+    return runtime.upload(input).catch(() => null);
+  };
+  durableUploadFromImportModal.__zipImportRuntimeBridge = true;
+  window.doImportUploadV19 = durableUploadFromImportModal;
+
   if (typeof originalStartImportJobV19 === 'function' && !originalStartImportJobV19.__zipImportRuntimeBridge) {
     const bridgedStartImportJobV19 = async function(...args) {
       claimLegacyImportPolling();

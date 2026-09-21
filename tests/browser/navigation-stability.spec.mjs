@@ -1,5 +1,68 @@
 import {test, expect} from '@playwright/test';
 
+async function mockDurableZipUpload(page, {
+  jobId,
+  fileName = 'browser.zip',
+  report = {imported_images: 1, annotated_images: 0, boxes: 0, warnings: []},
+}) {
+  const uploadId = `upload-${jobId}`;
+  let uploaded = false;
+  let started = false;
+  const selecting = {
+    id: jobId,
+    file_name: fileName,
+    status: 'selecting',
+    stage: '上传与校验完成',
+    message: '等待启动后台导入',
+    progress: 0,
+    image_count: Number(report.imported_images || 0),
+    file_count: Number(report.imported_images || 0),
+    uncompressed_size_mb: 1,
+    format_hints: ['YOLO'],
+  };
+  const running = {...selecting, status: 'running', stage: '后台导入中', progress: 65};
+  const done = {...running, status: 'done', stage: '导入完成', message: '完成', progress: 100, report};
+
+  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/uploads$/, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        upload_id: uploadId,
+        part_size: 8 * 1024 * 1024,
+        completed_parts: [],
+        total_parts: 1,
+        upload_progress: 0,
+      }),
+    });
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/parts/\\d+), async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/complete), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    uploaded = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selecting)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}/start), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    started = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(running)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}), async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(started ? done : selecting)});
+  });
+  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs$/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const items = !uploaded ? [] : [started ? done : selecting];
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items})});
+  });
+}
+
+
 test('delayed request from previous page cannot jump back over the current page', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -324,38 +387,11 @@ test('ZIP import completion surfaces review action and auto-opens review', async
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
-  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/jobs$/, async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id: 'zip-browser-1',
-        image_count: 3,
-        format_hints: ['YOLO'],
-        upload_seconds: 0.1,
-        scan_seconds: 0.1,
-      }),
-    });
+  await mockDurableZipUpload(page, {
+    jobId: 'zip-browser-1',
+    fileName: 'browser.zip',
+    report: {imported_images: 3, annotated_images: 2, boxes: 5, warnings: []},
   });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1\/start$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1$/, async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id: 'zip-browser-1',
-        status: 'done',
-        stage: '导入完成',
-        message: '完成',
-        progress: 100,
-        processing_seconds: 0.2,
-        report: {imported_images: 3, annotated_images: 2, boxes: 5, warnings: []},
-      }),
-    });
-  });
-
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => {
@@ -392,19 +428,10 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
-  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/jobs$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      id: 'zip-r20g-scoped', image_count: 2, format_hints: ['YOLO'], upload_seconds: 0.1, scan_seconds: 0.1,
-    })});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-r20g-scoped\/start$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-r20g-scoped$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      id: 'zip-r20g-scoped', status: 'done', stage: '导入完成', message: '完成', progress: 100,
-      processing_seconds: 0.2, report: {imported_images: 2, annotated_images: 1, boxes: 2, warnings: []},
-    })});
+  await mockDurableZipUpload(page, {
+    jobId: 'zip-r20g-scoped',
+    fileName: 'r20g.zip',
+    report: {imported_images: 2, annotated_images: 1, boxes: 2, warnings: []},
   });
   await page.route(/\/api\/v12\/projects\/[^/]+\/labels$/, async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -513,13 +540,13 @@ test('server storage import confirmation avoids broad related refresh', async ({
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
-  await page.evaluate(() => window.setPage('素材存储配置'));
-  await expect(page.locator('#title')).toContainText('素材存储配置');
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.locator('#title')).toContainText('存储配置');
   await page.evaluate(async () => { await window.openStorageImport61(); });
   await expect(page.locator('#si61ImportShell')).toBeVisible();
   await page.evaluate(() => {
     const status = document.getElementById('si61Status');
-    status.innerHTML = '<div data-import-class="smoke"><input data-label-code value="smoke"><input data-create-label type="checkbox" checked></div><button id="si61Confirm">确认建立索引</button>';
+    status.innerHTML = '<div data-import-class="smoke"><input data-label-code value="smoke"></div><button id="si61Confirm">确认建立索引</button>';
   });
 
   const broad = [];
@@ -553,7 +580,7 @@ test('server storage import confirmation avoids broad related refresh', async ({
     expect.stringMatching(/^POST \/api\/v61\/projects\/[^/]+\/storage-imports\/storage-r20g\/confirm$/),
     expect.stringMatching(/^GET \/api\/v62\/projects\/[^/]+\/tasks\/storage-r20g$/),
   ]);
-  expect(requests.some(row => row.startsWith('GET /api/v12/projects/') && row.endsWith('/labels'))).toBe(true);
+  expect(requests.some(row => row.startsWith('GET /api/v12/projects/') && row.endsWith('/labels'))).toBe(false);
   expect(broad).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

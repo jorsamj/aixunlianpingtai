@@ -18,6 +18,10 @@ test('terminal source import does not fan out into a broad project reload', asyn
   await boot(page);
   await page.evaluate(() => window.setPage('数据集'));
   await expect(page.locator('#title')).toContainText('数据集');
+  await expect.poll(async () => page.evaluate(() => ({
+    project: Boolean(state.project?.id),
+    dataset: Boolean(state.datasetId),
+  }))).toEqual({project: true, dataset: true});
 
   page.on('request', request => {
     if (!terminalReleased || request.method() !== 'GET') return;
@@ -62,7 +66,7 @@ test('terminal source import does not fan out into a broad project reload', asyn
   await page.evaluate(() => window.importData());
   await Promise.race([
     intercepted,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('source-import jobs GET was not intercepted')), 8_000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('explicit source-import refresh was not intercepted')), 8_000)),
   ]);
   release();
 

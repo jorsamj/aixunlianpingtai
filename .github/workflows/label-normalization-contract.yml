@@ -268,7 +268,7 @@ jobs:
               'static/index.html': (
                   '/static/app.js?v=42.25.127',
                   '/static/main.mjs?v=42.25.126',
-                  '/static/zip-import-bootstrap.mjs?v=422533',
+                  '/static/zip-import-bootstrap.mjs?v=422534',
               ),
               'static/main.mjs': (
                   'annotation-task-view.js?v=422002',
