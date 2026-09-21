@@ -26,9 +26,10 @@ test('final ZIP completion keeps review ownership and refreshes only label/mater
   assert.doesNotMatch(zipOwner, /loadAll\s*\(/);
 });
 
-test('server storage import confirmation refreshes labels only when created and never broad-loads', () => {
+test('server storage import confirmation stays mapping-only and never broad-loads', () => {
   assert.equal((app.match(/window\.confirmStorageImport61=async function/g) || []).length, 1);
-  assert.match(storageOwner, /rows\.some\(row=>row\.create\).*refreshLabels414\?\.\(false\)/);
+  assert.match(storageOwner, /serverApi\(\)\.buildImportConfirmation\(rows/);
+  assert.doesNotMatch(storageOwner, /refreshLabels414/);
   assert.match(storageOwner, /state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
   assert.doesNotMatch(storageOwner, /loadRelated\s*\(/);
   assert.doesNotMatch(storageOwner, /loadAll\s*\(/);

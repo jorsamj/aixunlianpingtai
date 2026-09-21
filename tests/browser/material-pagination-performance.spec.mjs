@@ -307,7 +307,7 @@ test('v19 background import completion uses scoped labels and material refresh w
 
   await page.evaluate(() => window.importData());
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalTitle')).toContainText('导入素材 / 标注');
+  await expect(page.locator('#modalTitle')).toContainText('导入已标注数据');
   await page.locator('#importFile').setInputFiles({
     name: 'r20k-yolo.zip',
     mimeType: 'application/zip',

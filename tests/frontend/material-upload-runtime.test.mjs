@@ -87,7 +87,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const index = fs.readFileSync('static/index.html', 'utf8');
   const bootstrap = fs.readFileSync('static/material-upload-bootstrap.mjs', 'utf8');
   const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
-  assert.match(index, /main\.mjs\?v=42\.25\.103[\s\S]*material-upload-bootstrap\.mjs\?v=422529/);
+  assert.match(index, /main\.mjs\?v=42\.25\.124[\s\S]*material-upload-bootstrap\.mjs\?v=422529/);
   assert.match(bootstrap, /installMaterialUploadRuntime/);
   assert.match(runtime, /window\.doUploadImages426 = input =>/);
   assert.match(runtime, /window\.uploadData424 = \(\) =>/);

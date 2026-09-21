@@ -40,7 +40,7 @@ test('final render owns page normalization without legacy view observer or RAF w
   assert.equal(app.includes("observer.observe(view,{childList:true,subtree:true})"), false);
   assert.equal(app.split('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});').length - 1, 1);
   assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
-  assert.equal(app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};"), true);
+  assert.equal(app.includes("render=function(){if(state.page==='存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};"), true);
   assert.equal(app.includes('new MutationObserver'), false);
   assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
 });
