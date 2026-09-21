@@ -9120,10 +9120,11 @@ def v48_stop_job(project_id: str, job_id: str):
                 raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
         job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued); write_json(jf,job); sync_jobs_index(project_id)
         return job
-    was_queued = job.get("status") == "queued"
-    if was_queued:
+    legacy_status = str(job.get("status") or "").strip().lower()
+    queued_like = legacy_status in {"queued", "waiting", "pending"}
+    if queued_like:
         job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True); write_json(jf,job)
-    elif job.get("status") in {"running","paused"}:
+    elif legacy_status in {"running","paused"}:
         if job.get("target")=="remote":
             remote=job.get("remote") or {}
             base=str(remote.get("base_url") or "").rstrip("/")
@@ -9147,8 +9148,10 @@ def v48_stop_job(project_id: str, job_id: str):
         else:
             _terminate_pid_tree(job.get("pid")); PROCESS_REGISTRY.pop(job_id,None)
         job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso()); write_json(jf,job)
-    # 只有真正开始过训练的任务才形成算法版本；纯排队后取消不属于一次算法迭代。
-    if not was_queued:
+    else:
+        raise HTTPException(status_code=409, detail="训练任务已经结束或不处于可停止状态，未修改本地状态")
+    # 只有真正开始过训练的任务才形成算法版本；排队/等待资源后取消不属于一次算法迭代。
+    if not queued_like:
         _v48_archive_training_version(project_id,job)
     _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
     return read_json(jf,job)

@@ -140,6 +140,76 @@ def test_direct_delete_cancels_durable_training_before_hiding_job(client, seeded
         except Exception:
             pass
 
+def test_legacy_waiting_and_pending_stop_as_never_started_without_version_archive(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    archived = []
+
+    def fake_archive(project_id_value, job):
+        archived.append((project_id_value, dict(job)))
+        return {"id": "unexpected-version"}
+
+    monkeypatch.setattr(app_module, "_v48_archive_training_version", fake_archive)
+
+    for status in ("waiting", "pending"):
+        job_id = f"legacy-{status}-{uuid.uuid4().hex[:8]}"
+        job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        job_file = job_dir / "job.json"
+        job_file.write_text(
+            json.dumps({
+                "id": job_id,
+                "status": status,
+                "asset_algorithm_id": "algorithm-one",
+                "created_at": "2026-09-21T00:00:00+00:00",
+            }),
+            encoding="utf-8",
+        )
+
+        stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        persisted = json.loads(job_file.read_text(encoding="utf-8"))
+        assert persisted["status"] == "stopped"
+        assert persisted["message"] == "用户取消排队"
+        assert persisted["never_started"] is True
+
+    assert archived == []
+
+
+def test_legacy_terminal_stop_fails_closed_without_version_archive(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-terminal-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "failed",
+            "asset_algorithm_id": "algorithm-one",
+            "created_at": "2026-09-21T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+
+    archived = []
+    monkeypatch.setattr(
+        app_module,
+        "_v48_archive_training_version",
+        lambda project_id_value, job: archived.append((project_id_value, dict(job))),
+    )
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 409, stopped.text
+    assert "未修改本地状态" in stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "failed"
+    assert archived == []
+
+
 def test_legacy_remote_training_stop_fails_closed_when_remote_rejects(client, seeded_project, monkeypatch):
     import app as app_module
 
