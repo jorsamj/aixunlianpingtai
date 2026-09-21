@@ -131,3 +131,14 @@ test('service node page is registered with NavigationStability and never routed 
   assert.doesNotMatch(source, /titleObserver/);
   assert.doesNotMatch(source, /getElementById\('title'\)/);
 });
+
+
+test('service node cached refresh keeps page shell ownership stable', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /let loadedOnce = false/);
+  assert.match(source, /function patchNodeList\(list\)/);
+  assert.match(source, /function paintPage\(\)/);
+  assert.match(source, /shell\.dataset\.serviceNodeBound === '1'/);
+  assert.match(source, /const hasSnapshot = loadedOnce \|\| hadCache/);
+  assert.doesNotMatch(source, /view\.querySelectorAll\('\[data-node-action\]'\)\.forEach/);
+});

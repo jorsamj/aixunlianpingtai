@@ -48,7 +48,7 @@ jobs:
       - name: Permanent service-node UI guards
         shell: bash
         run: |
-          grep -Fq 'service-node-bootstrap.mjs?v=422535' static/index.html
+          grep -Fq 'service-node-bootstrap.mjs?v=422536' static/index.html
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
           grep -Fq "POLL_KEY = 'service-node-runtime'" static/modules/service-node-runtime.js
@@ -63,6 +63,9 @@ jobs:
           grep -Fq "NEVER_CONNECTED: {label: '未收到心跳'" static/modules/service-node-runtime.js
           grep -Fq "OFFLINE: {label: '心跳超时'" static/modules/service-node-runtime.js
           grep -Fq 'const hadCache = nodes.length > 0;' static/modules/service-node-runtime.js
+          grep -Fq 'const hasSnapshot = loadedOnce || hadCache;' static/modules/service-node-runtime.js
+          grep -Fq 'function patchNodeList(list)' static/modules/service-node-runtime.js
+          grep -Fq "shell.dataset.serviceNodeBound === '1'" static/modules/service-node-runtime.js
           grep -Fq 'Agent Token 只显示这一次' static/modules/service-node-runtime.js
           grep -Fq "'deployment-test.rknn': '瑞芯微板端验证'" static/modules/service-node-runtime.js
           grep -Fq 'Rockchip 板端预检' static/modules/service-node-runtime.js

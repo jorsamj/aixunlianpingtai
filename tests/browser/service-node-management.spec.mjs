@@ -93,6 +93,21 @@ test('service node page shows live resources and creates Agent credentials', asy
   await expect(page.locator('#summary')).toContainText('服务节点');
   await expect(page.locator('#summary')).toContainText('在线');
 
+  await page.evaluate(() => {
+    window.__serviceNodeStableShell = document.querySelector('[data-service-node-page="1"]');
+    window.__serviceNodeStableCard = document.querySelector('[data-node-card="gpu-a800-01"]');
+  });
+  nodes = [node({
+    heartbeat_age_seconds: 7,
+    durable_tasks: [{task_id: 'train-browser-1', kind: 'TRAINING', status: 'RUNNING', stage: 'running', progress: 48}],
+  })];
+  await page.evaluate(() => window.ServiceNodeRuntime.refresh({paint: true, silent: true}));
+  await expect(a800).toContainText('48%');
+  expect(await page.evaluate(() => ({
+    shell: window.__serviceNodeStableShell === document.querySelector('[data-service-node-page="1"]'),
+    card: window.__serviceNodeStableCard === document.querySelector('[data-node-card="gpu-a800-01"]'),
+  }))).toEqual({shell: true, card: true});
+
   // Modal lifecycle must not consume the node-card action owner.
   await page.getByRole('button', {name: /新增服务节点/}).click();
   await expect(page.locator('[data-node-form="1"]')).toBeVisible();

@@ -195,6 +195,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let nodes = [];
   let capabilities = Object.keys(CAPABILITY_LABELS);
   let loading = false;
+  let loadedOnce = false;
   let destroyed = false;
   let navObserver = null;
   let unregisterPageOwner = null;
@@ -218,6 +219,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       const body = await requestJson(API_ROOT);
       nodes = Array.isArray(body?.items) ? body.items : [];
       if (Array.isArray(body?.supported_capabilities) && body.supported_capabilities.length) capabilities = body.supported_capabilities;
+      loadedOnce = true;
       return nodes;
     } catch (error) {
       if (!silent) notify?.(error?.message || error);
@@ -235,8 +237,78 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     summary.innerHTML = `<div class="stat"><div class="k">服务节点</div><div class="v">${nodes.length}</div></div><div class="stat"><div class="k">在线</div><div class="v">${online}</div></div><div class="stat"><div class="k">已停用</div><div class="v">${disabled}</div></div><div class="stat"><div class="k">GPU</div><div class="v">${gpuCount}</div></div><div class="stat"><div class="k">执行中任务</div><div class="v">${tasks}</div></div>`;
   }
 
+  function nodeListHtml() {
+    return nodes.length
+      ? nodes.map(renderNodeCard).join('')
+      : '<div class="empty node633-empty">暂无服务节点。新增节点后，在目标服务器运行 Node Agent 完成注册心跳。</div>';
+  }
+
   function pageHtml() {
-    return `<section class="node633-shell" data-service-node-page="1"><div class="node633-page-head"><div><h2>服务节点</h2><p>统一查看各节点实时资源、Agent/Worker 状态和可执行能力。节点启停只改变中央允许状态，不会绕过现有任务 lease/fencing。</p></div><div class="row"><button class="btn" data-node-page-refresh>刷新</button><button class="btn primary" data-node-page-create>＋ 新增服务节点</button></div></div><div class="node633-list">${nodes.length ? nodes.map(renderNodeCard).join('') : '<div class="empty node633-empty">暂无服务节点。新增节点后，在目标服务器运行 Node Agent 完成注册心跳。</div>'}</div></section>`;
+    return `<section class="node633-shell" data-service-node-page="1"><div class="node633-page-head"><div><h2>服务节点</h2><p>统一查看各节点实时资源、Agent/Worker 状态和可执行能力。节点启停只改变中央允许状态，不会绕过现有任务 lease/fencing。</p></div><div class="row"><button class="btn" data-node-page-refresh>刷新</button><button class="btn primary" data-node-page-create>＋ 新增服务节点</button></div></div><div class="node633-list">${nodeListHtml()}</div></section>`;
+  }
+
+  function createNodeCardElement(list, node) {
+    const holder = document.createElement('div');
+    holder.innerHTML = renderNodeCard(node).trim();
+    return holder.firstElementChild || null;
+  }
+
+  function patchNodeList(list) {
+    if (!list) return false;
+    if (!nodes.length) {
+      if (!list.querySelector?.('.node633-empty')) list.innerHTML = nodeListHtml();
+      return true;
+    }
+
+    list.querySelector?.('.node633-empty')?.remove?.();
+    const existing = new Map(
+      [...list.querySelectorAll('[data-node-card]')]
+        .map(card => [String(card.dataset?.nodeCard || ''), card]),
+    );
+    const wanted = new Set();
+
+    nodes.forEach((node, index) => {
+      const nodeId = String(node?.node_id || '');
+      const nextCard = createNodeCardElement(list, node);
+      if (!nodeId || !nextCard) return;
+      wanted.add(nodeId);
+
+      let currentCard = existing.get(nodeId) || null;
+      if (!currentCard) {
+        currentCard = nextCard;
+      } else if (currentCard.innerHTML !== nextCard.innerHTML) {
+        currentCard.innerHTML = nextCard.innerHTML;
+      }
+
+      const reference = list.children[index] || null;
+      if (reference !== currentCard) list.insertBefore(currentCard, reference);
+    });
+
+    for (const [nodeId, card] of existing) {
+      if (!wanted.has(nodeId)) card.remove?.();
+    }
+    return true;
+  }
+
+  function paintPage() {
+    const view = document.getElementById('view');
+    if (!view) return false;
+    let shell = view.querySelector?.('[data-service-node-page="1"]');
+    if (!shell) {
+      view.innerHTML = pageHtml();
+      shell = view.querySelector?.('[data-service-node-page="1"]');
+      bindPage();
+      return Boolean(shell);
+    }
+    const list = shell.querySelector?.('.node633-list');
+    if (!list) {
+      view.innerHTML = pageHtml();
+      bindPage();
+      return true;
+    }
+    patchNodeList(list);
+    bindPage();
+    return true;
   }
 
   function invokeCardAction(button) {
@@ -251,11 +323,22 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
 
   function bindPage() {
     const view = document.getElementById('view');
-    if (!view) return;
-    view.querySelector('[data-node-page-refresh]')?.addEventListener('click', () => void refresh({paint: true}));
-    view.querySelector('[data-node-page-create]')?.addEventListener('click', () => openForm());
-    view.querySelectorAll('[data-node-action]').forEach(button => {
-      button.addEventListener('click', () => invokeCardAction(button));
+    const shell = view?.querySelector?.('[data-service-node-page="1"]');
+    if (!shell || shell.dataset.serviceNodeBound === '1') return;
+    shell.dataset.serviceNodeBound = '1';
+    shell.addEventListener('click', event => {
+      const refreshButton = event.target.closest?.('[data-node-page-refresh]');
+      if (refreshButton) {
+        void refresh({paint: true});
+        return;
+      }
+      const createButton = event.target.closest?.('[data-node-page-create]');
+      if (createButton) {
+        openForm();
+        return;
+      }
+      const actionButton = event.target.closest?.('[data-node-action]');
+      if (actionButton) invokeCardAction(actionButton);
     });
   }
 
@@ -265,37 +348,38 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (!view) return false;
     if (loading) {
       paintSummary();
-      view.innerHTML = nodes.length
-        ? pageHtml()
-        : '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
-      if (nodes.length) bindPage();
+      if (loadedOnce || nodes.length) paintPage();
+      else if (!view.querySelector?.('[data-service-node-skeleton="1"]')) {
+        view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
+      }
       return false;
     }
+
     loading = true;
     const hadCache = nodes.length > 0;
-    const before = hadCache ? JSON.stringify(nodes) : '';
-    if (hadCache) {
+    const hasSnapshot = loadedOnce || hadCache;
+    const before = hasSnapshot ? JSON.stringify(nodes) : '';
+    if (hasSnapshot) {
       paintSummary();
-      view.innerHTML = pageHtml();
-      bindPage();
+      paintPage();
       armPoll();
     } else if (reload) {
       paintSummary();
       view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
     }
+
     try {
       if (reload) await load({silent});
       if (currentPage() !== PAGE) return false;
-      if (!hadCache || JSON.stringify(nodes) !== before || !view.querySelector('[data-service-node-page]')) {
+      if (!hasSnapshot || JSON.stringify(nodes) !== before || !view.querySelector('[data-service-node-page="1"]')) {
         paintSummary();
-        view.innerHTML = pageHtml();
-        bindPage();
+        paintPage();
       }
       armPoll();
       return true;
     } catch (error) {
-      if (!hadCache && currentPage() === PAGE) view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
-      return hadCache;
+      if (!hasSnapshot && currentPage() === PAGE) view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
+      return hasSnapshot;
     } finally {
       loading = false;
     }
@@ -304,10 +388,9 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   async function refresh({paint = true, silent = false} = {}) {
     const before = JSON.stringify(nodes);
     await load({silent});
-    if (paint && currentPage() === PAGE && (JSON.stringify(nodes) !== before || !document.querySelector('[data-service-node-page]'))) {
+    if (paint && currentPage() === PAGE && (JSON.stringify(nodes) !== before || !document.querySelector('[data-service-node-page="1"]'))) {
       paintSummary();
-      const view = document.getElementById('view');
-      if (view) { view.innerHTML = pageHtml(); bindPage(); }
+      paintPage();
     }
     return nodes;
   }
@@ -469,7 +552,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   decorateNavigation();
 
   const runtime = {
-    build: 'service-node-runtime-422535',
+    build: 'service-node-runtime-422536',
     page: PAGE,
     load,
     render,
