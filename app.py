@@ -2159,10 +2159,9 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
-        # New-image annotations are buffered with the material rows and
-        # committed once per request/import batch. Existing-image writes
-        # stay immediate so their independent update semantics do not change.
-        "annotations": {},
+        # Annotation truth stays immediately durable per image. Only the
+        # searchable material projection is buffered for the batch commit so
+        # rollback can explicitly remove already-written annotation truth.
         "annotation_repository": None,
         # Storage source schema/provider/credential setup is request-scoped,
         # not image-scoped. Reuse one manager across the whole import batch.
@@ -2249,9 +2248,6 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
-    annotations = [
-        dict(row) for row in batch.get("annotations", {}).values()
-    ]
     if not save:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
         if cleanup_errors:
@@ -2259,32 +2255,10 @@ def _v50_end_image_batch(save: bool = True):
                 "批量导入回滚失败：" + "; ".join(cleanup_errors)
             )
         return []
-    if not records and not patches and not annotations:
+    if not records and not patches:
         return []
 
     try:
-        if annotations:
-            annotation_repository = (
-                batch.get("annotation_repository")
-                or AnnotationRepository(project_dir(project_id))
-            )
-            saved_annotations = annotation_repository.upsert_many(
-                annotations,
-                project_material=False,
-                return_rows=True,
-            )
-            records_by_id = {
-                str(record.get("id")): record for record in records
-            }
-            for saved in saved_annotations:
-                image_id = str(saved.get("image_id") or "")
-                patch = _v50_material_annotation_patch(saved)
-                record = records_by_id.get(image_id)
-                if record is not None:
-                    record.update(patch)
-                else:
-                    patches.setdefault(image_id, {}).update(patch)
-
         records_by_id = {
             str(record.get("id")): record for record in records
         }
@@ -2374,18 +2348,9 @@ def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    batch = _v50_active_image_batch(project_id)
-    normalized_id = str(image_id)
-    if batch is not None and normalized_id in batch.get("records", {}):
-        batch.setdefault("annotations", {})[normalized_id] = {
-            "image_id": normalized_id,
-            "boxes": [dict(box) for box in boxes],
-            "annotation_state": annotation_state,
-        }
-        return
-
-    # Existing-image writes remain immediately durable. New images inside
-    # an import/upload batch are persisted together by _v50_end_image_batch.
+    # AnnotationRepository is the ground-truth owner. Persist the final truth
+    # exactly once per image even while a material batch is active; only its
+    # material projection is buffered and can be discarded/rebased separately.
     saved = _v50_annotation_repository(project_id).upsert(
         image_id, boxes, annotation_state, project_material=False
     )
@@ -18284,7 +18249,8 @@ def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
     jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
-    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"generated_at":now_iso()}
+    model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"model_configs":model_configs,"generated_at":now_iso()}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
