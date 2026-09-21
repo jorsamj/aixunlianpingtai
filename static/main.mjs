@@ -257,7 +257,7 @@ function renderUnknownPage(page) {
   const summary = document.getElementById('summary');
   const view = document.getElementById('view');
   if (summary) summary.innerHTML = '';
-  if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面模块尚未就绪</section>`;
+  if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面不存在或已下线</section>`;
 }
 
 function refreshCurrentPageOwner(page) {

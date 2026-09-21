@@ -34,6 +34,8 @@ test('navigation epoch invalidates work started on the previous page', () => {
 test('legacy navigation aliases normalize to canonical pages', () => {
   assert.equal(normalizeNavigationPage('自动标注'), '自动标注及清洗');
   assert.equal(normalizeNavigationPage('自动标注及清洗'), '自动标注及清洗');
+  assert.equal(normalizeNavigationPage('新建算法'), '算法列表');
+  assert.equal(normalizeNavigationPage('自动迭代'), '算法列表');
   assert.equal(normalizeNavigationPage('数据集'), '数据集');
   assert.equal(normalizeNavigationPage(''), '');
 });

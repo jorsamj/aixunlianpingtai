@@ -21,7 +21,9 @@ export class NavigationEpochGuard {
 
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
-  return requested === '自动标注' ? '自动标注及清洗' : requested;
+  if (requested === '自动标注') return '自动标注及清洗';
+  if (requested === '新建算法' || requested === '自动迭代') return '算法列表';
+  return requested;
 }
 
 const OWNER_FUNCTIONS = {
