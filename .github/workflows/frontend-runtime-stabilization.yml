@@ -264,8 +264,13 @@ jobs:
           navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
           if 'export function normalizeNavigationPage(page)' not in navigation:
               raise SystemExit('semantic navigation normalizer is missing')
-          if "requested === '自动标注' ? '自动标注及清洗' : requested" not in navigation:
-              raise SystemExit('legacy auto-label alias normalization is missing')
+          required_aliases = (
+              "if (requested === '自动标注') return '自动标注及清洗';",
+              "if (requested === '新建算法' || requested === '自动迭代') return '算法列表';",
+          )
+          for alias in required_aliases:
+              if alias not in navigation:
+                  raise SystemExit(f'legacy page alias normalization is missing: {alias}')
           for required in ('waitForNavigationReady', 'beforeInvokeNavigation', 'performNavigation'):
               if required not in navigation:
                   raise SystemExit(f'final navigation named owner is missing: {required}')
