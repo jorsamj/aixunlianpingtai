@@ -6945,6 +6945,15 @@ async def v64_training_events(project_id: str, request: Request):
 
             rows = _training_event_rows(project_id, repository)
             active_ids = {str(row.get("task_id") or "") for row in rows}
+            announced_ids = getattr(event_stream, "_announced_ids", None)
+            if announced_ids != active_ids:
+                ready = json.dumps(
+                    {"task_ids": sorted(active_ids), "interval_ms": 750},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                yield f"event: training.ready\ndata: {ready}\n\n"
+                event_stream._announced_ids = set(active_ids)
             for row in rows:
                 task_id = str(row.get("task_id") or "")
                 if not task_id:

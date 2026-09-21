@@ -12,6 +12,7 @@ on:
       - static/main.mjs
       - static/modules/training-submit.js
       - static/modules/training-task-runtime.js
+      - static/modules/training-progress-stream.js
       - static/modules/task-runtime-truth.js
       - static/modules/training-task-visibility-runtime.js
       - static/modules/poll-registry.js
@@ -19,6 +20,7 @@ on:
       - tests/frontend/training-submit.test.mjs
       - tests/frontend/training-task-identity.test.mjs
       - tests/frontend/training-task-runtime.test.mjs
+      - tests/frontend/training-progress-stream.test.mjs
       - tests/frontend/training-task-visibility-runtime.test.mjs
       - tests/frontend/poll-registry.test.mjs
       - tests/api/test_training_unified_task_overlay.py
@@ -48,6 +50,7 @@ jobs:
           node --check static/app.js &&
           node --check static/modules/training-submit.js &&
           node --check static/modules/training-task-runtime.js &&
+          node --check static/modules/training-progress-stream.js &&
           node --check static/modules/task-runtime-truth.js &&
           node --check static/modules/training-task-visibility-runtime.js &&
           node --check static/modules/poll-registry.js &&
@@ -72,12 +75,15 @@ jobs:
           tests/frontend/training-submit.test.mjs
           tests/frontend/training-task-identity.test.mjs
           tests/frontend/training-task-runtime.test.mjs
+          tests/frontend/training-progress-stream.test.mjs
           tests/frontend/training-task-visibility-runtime.test.mjs
           tests/frontend/poll-registry.test.mjs
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422525' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422526' static/index.html
+          grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
+          grep -Fq 'setTrainingRealtimeActive' static/modules/poll-registry.js
           grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js
           grep -Fq '__trainingTaskVisibilityRuntime' static/modules/training-task-visibility-runtime.js
           grep -Fq 'visibleTrainingJobs' static/modules/training-task-visibility-runtime.js

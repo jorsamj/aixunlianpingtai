@@ -1,4 +1,4 @@
-import {trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422524';
+import {trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422525';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([

@@ -7,7 +7,7 @@ import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514
 import {installNavigationStability} from './modules/navigation-stability.js?v=422512';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422518';
+import {installPollRegistry} from './modules/poll-registry.js?v=422519';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63013';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
@@ -15,7 +15,8 @@ import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422505';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422524';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422525';
+import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422500';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
@@ -188,6 +189,14 @@ const trainingTaskRuntime = installTrainingTaskRuntime({
 });
 window.PlatformCore.runtime.trainingTaskRuntime = trainingTaskRuntime;
 
+const trainingProgressStreamRuntime = installTrainingProgressStream({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingTaskRuntime,
+  pollRegistry,
+});
+window.PlatformCore.runtime.trainingProgressStreamRuntime = trainingProgressStreamRuntime;
+
 const trainingSubmitRuntime = installTrainingSubmitRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
@@ -261,6 +270,7 @@ function renderUnknownPage(page) {
 }
 
 function refreshCurrentPageOwner(page) {
+  trainingProgressStreamRuntime?.syncPage?.(page);
   if (page === '训练任务') {
     void trainingTaskRuntime.refresh({render: true, force: true, source: 'page-owner'}).then(result => {
       if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();

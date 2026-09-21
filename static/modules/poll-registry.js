@@ -9,9 +9,23 @@ const TRAINING_POLL_STATUSES = new Set([
   'starting',
   'running',
   'pausing',
+  'paused',
   'resuming',
   'stopping',
   'cancel_requested',
+]);
+const TRAINING_POLL_TASK_STATUSES = new Set([
+  'ACCEPTED',
+  'QUEUED',
+  'WAITING_RESOURCE',
+  'PREPARING',
+  'RUNNING',
+  'PAUSING',
+  'PAUSED',
+  'RESUMING',
+  'STOPPING',
+  'CANCEL_REQUESTED',
+  'RETRYING',
 ]);
 
 export class PollRegistry {
@@ -96,6 +110,7 @@ export function installPollRegistry({getState} = {}) {
   const cleanOwner = '自动标注及清洗';
   const doc = typeof document !== 'undefined' ? document : null;
   let visibilityRefresh = null;
+  let trainingRealtimeActive = false;
 
   function state() { return getState?.() || {}; }
 
@@ -111,6 +126,8 @@ export function installPollRegistry({getState} = {}) {
   }
 
   function trainingTaskNeedsPolling(task) {
+    const taskStatus = String(task?.task_status || '').trim().toUpperCase();
+    if (taskStatus) return TRAINING_POLL_TASK_STATUSES.has(taskStatus);
     return TRAINING_POLL_STATUSES.has(String(task?.status || '').toLowerCase());
   }
 
@@ -140,8 +157,16 @@ export function installPollRegistry({getState} = {}) {
           replaceTrainingJobTimer();
         }
       },
-      2000,
+      trainingRealtimeActive ? 10000 : 2000,
     );
+  }
+
+  function setTrainingRealtimeActive(active) {
+    const next = Boolean(active);
+    if (trainingRealtimeActive === next) return next;
+    trainingRealtimeActive = next;
+    replaceTrainingJobTimer();
+    return next;
   }
 
   function videoTaskActive(task) {
@@ -294,6 +319,8 @@ export function installPollRegistry({getState} = {}) {
     },
     clear(key) { return registry.clear(key); },
     resyncVisiblePage,
+    setTrainingRealtimeActive,
+    trainingRealtimeActive() { return trainingRealtimeActive; },
     replaceTrainingJobTimer,
     replaceVideo424Timer,
     replaceCleanTaskTimer,
@@ -311,6 +338,7 @@ export function installPollRegistry({getState} = {}) {
       registry.clearAll();
       doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
       visibilityRefresh = null;
+      trainingRealtimeActive = false;
       const s = state();
       s.video424Timer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;

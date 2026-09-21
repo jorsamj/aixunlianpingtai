@@ -492,3 +492,61 @@ test('visibility resync skips hidden documents instead of spending background re
     delete globalThis.document;
   }
 });
+
+
+test('training stream coverage slows canonical polling and failure restores the two-second fallback', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timeouts = new Map();
+  let nextTimer = 900;
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  globalThis.window = {};
+
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [{id: 'j1', task_status: 'RUNNING', status: 'running'}],
+  };
+  const runtime = installPollRegistry({getState: () => state});
+  try {
+    assert.equal(runtime.snapshot().find(row => row.key === 'training-jobs')?.delay, 2000);
+    runtime.setTrainingRealtimeActive(true);
+    assert.equal(runtime.trainingRealtimeActive(), true);
+    assert.equal(runtime.snapshot().find(row => row.key === 'training-jobs')?.delay, 10000);
+    runtime.setTrainingRealtimeActive(false);
+    assert.equal(runtime.trainingRealtimeActive(), false);
+    assert.equal(runtime.snapshot().find(row => row.key === 'training-jobs')?.delay, 2000);
+  } finally {
+    runtime.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
+});
+
+test('canonical task_status prevents stale legacy running text from keeping a terminal task polling', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = () => 999;
+  globalThis.clearTimeout = () => {};
+  globalThis.window = {};
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [{id: 'j1', task_status: 'SUCCEEDED', status: 'running'}],
+  };
+  const runtime = installPollRegistry({getState: () => state});
+  try {
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+  } finally {
+    runtime.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
+});
