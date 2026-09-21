@@ -1,0 +1,92 @@
+# OSS + ChangLian Durable Publish Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Make version/weight publication, OSS artifact delivery, and local recovery use one explicit durable truth per responsibility.
+
+**Architecture:** Preserve the current Provider and runtime boundaries. Tighten the existing ChangLian publication service first, then move storage identity into `ModelArtifactStore` while reducing `ExternalPublicationRepository` to an outbox through compatibility migration rather than destructive table removal.
+
+**Tech Stack:** Python 3, FastAPI, Pydantic, SQLite, Aliyun `oss2`, JavaScript runtime modules, pytest, Node test runner, Playwright only where UI smoke is necessary.
+
+---
+
+### Task 1: Tighten Version and Weight contracts
+
+**Files:**
+- Modify: `platform_core/external_algorithm_publish.py`
+- Modify: `platform_core/external_algorithm_platform.py`
+- Test: `tests/unit/test_external_algorithm_publish.py`
+- Test: `tests/unit/test_external_algorithm_platform.py`
+
+- [ ] Add failing tests proving `versionNo` comes from durable `version_no`, Version recovery uses product then analysis results, and a near-match never recovers the wrong remote ID.
+- [ ] Run only the new pytest nodes and confirm the expected contract failures.
+- [ ] Implement a version identity object/helper that matches `versionName`, `versionNo`, and analysis/product identity without issuing a second POST.
+- [ ] Add failing tests proving all five Weight fields are required and recovery requires exact canonical `fileName + computePlatformId + chipCode`.
+- [ ] Run the new nodes and confirm the expected failures.
+- [ ] Add minimal fail-closed validation and strict recovery matching.
+- [ ] Keep `code=200` compatibility, label it in source as legacy/OPEN, and retain tests for both `0` and `200`.
+- [ ] Run focused Version/Weight tests and commit the batch.
+
+### Task 2: Separate OSS connection from artifact binding
+
+**Files:**
+- Modify: `app.py`
+- Modify: `platform_core/storage/source_repository.py`
+- Modify: `platform_core/model_artifacts.py`
+- Modify: `static/modules/storage.js`
+- Modify: `static/modules/model-artifact-runtime.js`
+- Test: `tests/api/test_storage_sources.py`
+- Test: `tests/unit/test_model_artifacts.py`
+- Test: `tests/frontend/storage-source-ui.test.mjs`
+- Test: `tests/frontend/model-artifact-runtime.test.mjs`
+
+- [ ] Add failing tests for StorageSource `public_base_url` and artifact binding default `root_prefix=changlian-ai/artifacts/`.
+- [ ] Implement connection/binding persistence without moving material prefixes.
+- [ ] Add failing tests for the unified training/onnx/rknn/reports key mapping and immutable filename.
+- [ ] Implement one object-key builder and one public-URL builder; replace existing artifact path concatenation.
+- [ ] Add failing tests for PUT, STAT, READ, DELETE and public URL reachability, including cleanup failure.
+- [ ] Implement the real health flow and pre-Weight artifact URL probe.
+- [ ] Run focused storage/model-artifact tests and one storage UI smoke if markup changed.
+
+### Task 3: Make repositories single-truth owners
+
+**Files:**
+- Modify: `platform_core/algorithm_sql_store.py`
+- Modify: `platform_core/model_artifacts.py`
+- Modify: `platform_core/external_algorithm_publish.py`
+- Test: `tests/unit/test_algorithm_sql_store.py`
+- Test: `tests/unit/test_model_artifacts.py`
+- Test: `tests/unit/test_external_algorithm_publish.py`
+
+- [ ] Add failing compatibility tests seeded with old publication/artifact rows.
+- [ ] Migrate canonical version fields to `AlgorithmSqlStore` and artifact/weight fields to `ModelArtifactStore` in one idempotent transaction boundary per repository.
+- [ ] Keep old outbox tables readable while removing formal-truth writes to their duplicate fields.
+- [ ] Add permanent guards that reject new dual-write paths and verify restart recovery.
+- [ ] Run only the three focused repository suites and commit.
+
+### Task 4: Audit and adopt RK3578 where locally proven
+
+**Files:**
+- Modify only after capability proof: `platform_core/conversion.py`, RKNN Agent/runtime owners, relevant frontend target selector
+- Modify: `docs/CHANGLIAN_CORE_INTEGRATION.md`
+- Modify: `docs/CHANGLIAN_APIFOX_API_CATALOG.md`
+- Test: relevant RKNN capability/unit tests and one conversion selector smoke
+
+- [ ] Add a capability test that probes RK3578 through the same Toolkit/Agent path used in production.
+- [ ] If the probe contract is supported, replace the product target RK3576 with RK3578 across the authoritative owner and focused tests; otherwise report the concrete blocker without faking support.
+- [ ] Keep computePlatformId/chipCode mapping unset until real ChangLian master data is confirmed.
+- [ ] Mark analysis detail object/list and code=200 as OPEN in integration docs.
+- [ ] Run focused RKNN tests and the minimal browser smoke, then commit.
+
+### Task 5: Final focused verification and handoff
+
+**Files:**
+- Modify: `AGENTS.md`
+- Modify: `docs/CODEX_HANDOFF_2026-09-21.md`
+- Modify: `docs/PROJECT_HANDOFF_CURRENT.md`
+- Modify: `docs/CODEX_CURRENT_STATE.md`
+- Modify other current owner/closure docs only where their stated truth changed
+
+- [ ] Run the focused test commands recorded by each batch; do not run full pytest or full integration.
+- [ ] Verify branch, HEAD, VERSION, worktree, and targeted test evidence.
+- [ ] Record confirmed contracts and remaining production-environment OPEN items without claiming real ChangLian E2E.
