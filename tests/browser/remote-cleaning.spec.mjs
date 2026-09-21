@@ -26,9 +26,14 @@ async function uploadLocal(request, projectId) {
 }
 
 async function selectProject(page, projectId) {
-  await page.addInitScript(id => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId: id, page: '数据集'}));
-  }, projectId);
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
+  });
 }
 
 async function waitForCleanRuntime(page) {

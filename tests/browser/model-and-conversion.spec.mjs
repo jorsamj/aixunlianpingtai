@@ -327,12 +327,12 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
     });
   });
 
-  await page.addInitScript(projectId => {
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
-      projectId,
       page: '部署转换'
     }));
-  }, project.id);
+  });
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => typeof window.renderDeployCenter)).toBe('function');
   await page.evaluate(async () => {
