@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -67,4 +67,28 @@ test('large bulk selection has a single server owner', () => {
   assert.match(source, /method: 'POST'/);
   assert.match(source, /bulkSelectionOwner: 'server'/);
   assert.doesNotMatch(source, /do \{[\s\S]*\/training-materials\/ids/);
+});
+
+test('annotated preview uses source coordinates as the SVG viewBox', () => {
+  const html = renderTrainingMaterialPreview({
+    id: 'm1', filename: 'm1.jpg', width: 400, height: 200,
+    thumbnail_url: '/thumb/m1.jpg', content_url: '/full/m1.jpg',
+    annotation_state: 'annotated',
+    boxes: [{label: 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
+  }, {loading: 'eager', priority: 'high'});
+
+  assert.match(html, /viewBox="0 0 400 200"/);
+  assert.match(html, /preserveAspectRatio="xMidYMid meet"/);
+  assert.match(html, /<rect[^>]*x="40"[^>]*y="20"[^>]*width="160"[^>]*height="80"/);
+  assert.match(html, /data-label="smoke"/);
+  assert.match(html, /已标注 · 1 框/);
+});
+
+test('empty boxes preserve confirmed-empty and unannotated as distinct states', () => {
+  const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
+  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'unannotated', boxes: []});
+  assert.match(confirmed, /已确认无目标/);
+  assert.match(unannotated, /未标注/);
+  assert.doesNotMatch(confirmed, /<svg/);
+  assert.doesNotMatch(unannotated, /<svg/);
 });

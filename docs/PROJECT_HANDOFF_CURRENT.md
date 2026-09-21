@@ -1,6 +1,16 @@
 # 畅联云算法训练平台 — 当前接手总览
 
 
+<!-- P0_OWNER_CLOSURE_2026_09_21 -->
+> ## 2026-09-21 最新覆盖：P0 产品可用性最小 owner 收口
+>
+> 最高优先级细节仍以 `docs/CODEX_HANDOFF_2026-09-21.md` 第 0 节为准。当前本地分支已关闭四项：训练创建 durable identity、正式 page owner 导航、创建训练 immediate shell + 并行 hydration、当前分页素材正式 annotation truth + SVG 原图坐标框。
+>
+> 已提交：`249a8b89`、`e92d6c00`、`89c04070`；训练素材标注框与本次文档在随后本地提交中。`VERSION.txt` 保持 `42.24.0`，未 merge、tag、release、deploy，也未等待完整 Actions。
+>
+> 不要执行下方旧 NEXT 中已完成的 owner 改造。接手先重新读取远端 HEAD，核对本地提交是否已 push；浏览器验收只需复核四条主路径，不应再引入前端 durable task 轮询或第二套 annotation / navigation truth。
+
+
 <!-- CURRENT_HANDOFF_2026_09_21 -->
 > ## 2026-09-21 当前 Codex 接手入口
 >

@@ -18,6 +18,7 @@ from urllib.parse import quote
 from filelock import FileLock
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from .annotation_repository import AnnotationRepository
 from .material_repository import MaterialRepository
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
@@ -44,17 +45,28 @@ def _safe_project_path(data_dir: Path, project_id: str) -> Path:
     return project
 
 
-def _public_picker_material(project_id: str, row: dict) -> dict:
+def _public_picker_material(project_id: str, row: dict, annotation: dict) -> dict:
     image_id = str(row.get("id") or "")
     encoded = quote(image_id, safe="")
+    annotation_state = str(annotation.get("annotation_state") or "unannotated")
+    boxes = [dict(box) for box in (annotation.get("boxes") or [])] if annotation_state == "annotated" else []
+    labels = sorted({
+        str(box.get("label") or box.get("code") or "").strip()
+        for box in boxes
+        if str(box.get("label") or box.get("code") or "").strip()
+    })
     return {
         "id": image_id,
+        "image_id": image_id,
         "filename": str(row.get("filename") or image_id),
-        "labels": [str(value) for value in (row.get("labels") or [])],
-        "annotated": bool(row.get("annotated")),
-        "box_count": max(0, int(row.get("box_count") or 0)),
+        "width": max(0, int(row.get("width") or 0)),
+        "height": max(0, int(row.get("height") or 0)),
+        "labels": labels,
+        "annotated": annotation_state in {"annotated", "confirmed_empty"},
+        "box_count": len(boxes),
+        "boxes": boxes,
         "processing_status": str(row.get("processing_status") or ""),
-        "annotation_state": str(row.get("annotation_state") or row.get("annotation_status") or ""),
+        "annotation_state": annotation_state,
         "source_available": row.get("source_available") is not False,
         "size_bytes": max(0, int(row.get("size_bytes") or 0)),
         "thumbnail_url": f"/api/v62/projects/{quote(str(project_id), safe='')}/training-materials/{encoded}/thumbnail?size={DEFAULT_THUMBNAIL_SIZE}",
@@ -231,6 +243,10 @@ def training_material_picker_router(get_project, data_dir_provider):
         """
         return MaterialRepository(Path(project_path))
 
+    @lru_cache(maxsize=128)
+    def annotation_repository_for_path(project_path: str) -> AnnotationRepository:
+        return AnnotationRepository(Path(project_path))
+
     def materials(project_id: str) -> MaterialRepository:
         get_project(project_id)
         try:
@@ -260,8 +276,19 @@ def training_material_picker_router(get_project, data_dir_provider):
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        rows = [dict(row) for row in page.items]
+        annotations = annotation_repository_for_path(str(repository.project_path)).get_many(
+            [str(row.get("id") or "") for row in rows]
+        )
         return {
-            "items": [_public_picker_material(project_id, dict(row)) for row in page.items],
+            "items": [
+                _public_picker_material(
+                    project_id,
+                    row,
+                    annotations.get(str(row.get("id") or ""), {"annotation_state": "unannotated", "boxes": []}),
+                )
+                for row in rows
+            ],
             "next_cursor": page.next_cursor,
             "total": page.total,
             "limit": int(limit),

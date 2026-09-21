@@ -36,6 +36,45 @@ export function buildTrainingMaterialQuery({cursor = null, pageSize = DEFAULT_PA
   return params.toString();
 }
 
+function annotationColor(label) {
+  const palette = ['#ef4444', '#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#db2777', '#65a30d'];
+  const text = String(label || '目标');
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  return palette[Math.abs(hash) % palette.length];
+}
+
+function finiteCoordinate(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+export function renderTrainingMaterialPreview(row = {}, {loading = 'lazy', priority = 'low'} = {}) {
+  const width = Math.max(1, finiteCoordinate(row.width));
+  const height = Math.max(1, finiteCoordinate(row.height));
+  const state = ['annotated', 'confirmed_empty'].includes(String(row.annotation_state || ''))
+    ? String(row.annotation_state)
+    : 'unannotated';
+  const boxes = state === 'annotated' && Array.isArray(row.boxes) ? row.boxes : [];
+  const shapes = boxes.map(box => {
+    const x1 = finiteCoordinate(box.x1), y1 = finiteCoordinate(box.y1);
+    const x2 = finiteCoordinate(box.x2), y2 = finiteCoordinate(box.y2);
+    if (x2 <= x1 || y2 <= y1) return '';
+    const label = String(box.label || box.code || '目标');
+    const color = annotationColor(label);
+    const textY = Math.max(12, y1 + 14);
+    return `<g><rect data-label="${esc(label)}" x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"><title>${esc(label)}</title></rect><text x="${x1 + 3}" y="${textY}" fill="${color}" font-size="12" font-weight="700">${esc(label)}</text></g>`;
+  }).join('');
+  const overlay = shapes
+    ? `<svg class="train-v3-box-layer" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${shapes}</svg>`
+    : '';
+  const status = state === 'annotated'
+    ? `已标注 · ${boxes.length} 框`
+    : state === 'confirmed_empty' ? '已确认无目标' : '未标注';
+  const thumbnail = row.thumbnail_url || row.content_url || '';
+  return `<div class="train-v3-preview" data-annotation-state="${state}"><img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">${overlay}<span class="train-v3-annotation-state ${state}" data-annotation-state="${state}">${status}</span></div>`;
+}
+
 export function installTrainingMaterialPickerRuntime({
   getState,
   projectId,
@@ -69,7 +108,13 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
       .train-v3-picker.server-paged .train-v3-card.on{border-color:#4f7cff;box-shadow:0 0 0 2px rgba(79,124,255,.12),0 8px 20px rgba(15,23,42,.08)}
       .train-v3-picker.server-paged .train-v3-card>input[type="checkbox"]{position:absolute;top:14px;right:14px;z-index:3;width:18px;height:18px;margin:0;accent-color:#2563eb;box-shadow:0 1px 4px rgba(15,23,42,.22)}
-      .train-v3-picker.server-paged .train-v3-card img{display:block!important;width:100%!important;height:auto!important;min-height:0;aspect-ratio:4/3!important;flex:none;background:#eef2f7;object-fit:cover;border-radius:9px}
+      .train-v3-picker.server-paged .train-v3-preview{position:relative;width:100%;aspect-ratio:4/3;flex:none;background:#eef2f7;border-radius:9px;overflow:hidden}
+      .train-v3-picker.server-paged .train-v3-card img{position:absolute;inset:0;display:block!important;width:100%!important;height:100%!important;min-height:0;aspect-ratio:4/3!important;background:#eef2f7;object-fit:contain;border-radius:9px}
+      .train-v3-picker.server-paged .train-v3-box-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+      .train-v3-picker.server-paged .train-v3-box-layer text{paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}
+      .train-v3-picker.server-paged .train-v3-annotation-state{position:absolute;left:6px;bottom:6px;display:block;min-height:0;padding:2px 6px;border-radius:6px;background:rgba(15,23,42,.78);color:#fff;font-size:10px;line-height:16px;z-index:2}
+      .train-v3-picker.server-paged .train-v3-annotation-state.confirmed_empty{background:rgba(22,163,74,.88)}
+      .train-v3-picker.server-paged .train-v3-annotation-state.unannotated{background:rgba(100,116,139,.88)}
       .train-v3-picker.server-paged .train-v3-card b{display:block;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:20px;color:#172033}
       .train-v3-picker.server-paged .train-v3-card span{display:block;min-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;color:#64748b}
       .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
@@ -227,14 +272,13 @@ export function installTrainingMaterialPickerRuntime({
     grid.innerHTML = picker.items.map((row, index) => {
       const id = String(row.id || '');
       const selected = picker.selected.has(id);
-      const unavailable = blocked.has(id);
+      const unavailable = blocked.has(id) || String(row.annotation_state || '') === 'unannotated';
       const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、') || '无标签';
       const loading = index < THUMBNAIL_EAGER_COUNT ? 'eager' : 'lazy';
       const priority = index < THUMBNAIL_EAGER_COUNT ? 'high' : 'low';
-      const thumbnail = row.thumbnail_url || row.content_url || '';
       return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}">
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
-        <img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">
+        ${renderTrainingMaterialPreview(row, {loading, priority})}
         <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span title="${esc(labelText)}">${esc(labelText)}</span>
       </label>`;
     }).join('') || '<div class="empty">没有符合筛选条件的可训练图片</div>';
@@ -431,7 +475,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422504',
+    build: 'training-material-picker-runtime-422505',
     open,
     loadPage,
     bulkAction,

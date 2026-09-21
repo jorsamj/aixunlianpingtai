@@ -1,6 +1,19 @@
 # Codex Current State
 
 
+<!-- P0_OWNER_CLOSURE_2026_09_21 -->
+> ## CURRENT RESUME POINT — P0 OWNER CLOSURE COMPLETE LOCALLY
+>
+> Read `docs/CODEX_HANDOFF_2026-09-21.md` section 0 before every older NEXT below. Four P0 usability paths now reuse their real owners:
+>
+> - training creation: durable `TaskRepository` response → strict identity validation → `TrainingTaskRuntime` immediate merge;
+> - navigation: `state.page` → `NavigationStability` registered owner → target shell; no title-observer routing;
+> - training modal: immediate shell → parallel cached hydration guarded by the existing epoch/scope;
+> - material boxes: current-page batch → `AnnotationRepository` → source-coordinate SVG, with three explicit annotation states.
+>
+> Local implementation commits include `249a8b89`, `e92d6c00`, `89c04070`, followed by the material-box/handoff commit. `VERSION.txt` remains `42.24.0`. No full suite, full integration, Actions wait, deployment, merge, tag, or release was performed in this P0 batch.
+
+
 <!-- CURRENT_HANDOFF_2026_09_21 -->
 > ## CURRENT RESUME POINT — 2026-09-21
 >

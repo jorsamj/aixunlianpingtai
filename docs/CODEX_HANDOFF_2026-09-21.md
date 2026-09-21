@@ -14,6 +14,52 @@
 
 ---
 
+# 0. 2026-09-21 P0 产品可用性最小 owner 收口（最新，覆盖本文旧 NEXT）
+
+本轮在隔离 worktree 的 `feature/external-algorithm-publishing` 上完成四项最小闭环；没有全面重构，没有改变 `VERSION.txt = 42.24.0`，没有 merge / tag / release / deploy，也没有等待全量 Actions。
+
+当前本地提交链：
+
+- `249a8b89` — 训练创建仅接受正式 durable task identity；`TaskRepository.create()` 原本已经在 SQLite commit 后才返回，因此后端无需新增第二套确认 truth。前端校验 `task_id / kind / task_type / status`，随后同步合并到唯一 `TrainingTaskRuntime`。
+- `e92d6c00` — `NavigationStability` 增加正式 page owner registry；服务节点由 `ServiceNodeRuntime` 在同一次 navigation commit 直接接管。`#title.textContent` 和 MutationObserver 不再承担路由职责，未知页面只能显示中性 skeleton。
+- `89c04070` — 创建训练先同步显示 modal shell，再并行 hydration 训练配置、推荐配置和外部算法 preflight；复用现有 open epoch / shell identity stale guard，关闭、切换算法、连续打开均不能被旧响应覆盖。
+- 当前 handoff 提交包含训练素材标注框收口：列表 API 仅对当前分页 IDs 调用一次 `AnnotationRepository.get_many()`；返回 `image_id / width / height / annotation_state / boxes`；前端使用 `object-fit: contain + SVG viewBox=原图坐标`，并严格区分 `annotated / confirmed_empty / unannotated`。
+
+本轮关键验收合同：
+
+~~~text
+durable create response
+→ validate task_id/kind/task_type/status
+→ TrainingTaskRuntime.acceptCreatedTask
+→ success toast
+→ 当前 owner 的一次并行列表刷新（不是 durable 轮询确认）
+
+setPage
+→ state.page
+→ NavigationStability page owner
+→ target shell/cache
+
+click create training
+→ immediate modal shell
+→ parallel hydration + stale guards
+
+current picker page IDs
+→ one AnnotationRepository.get_many
+→ contain image + source-coordinate SVG
+~~~
+
+已完成的轻量证据：
+
+- 训练 durable response / runtime 定向前端测试与创建 API durable commit 测试通过。
+- Navigation owner 定向测试通过；浏览器 `服务节点 → 训练任务 → 数据集 → 服务节点` 无错误业务页闪现。
+- Training create hydration 定向测试通过；延迟配置接口时 modal shell 仍在 1 秒内可见。
+- Training material picker API 5 tests、前端 8 tests 通过；浏览器可见真实框、contain 与原图 viewBox。
+- 创建训练浏览器 smoke 证明正式 `task_id` 立即进入 `TrainingTaskRuntime`，成功阶段没有新增轮询链，并在 F5 启动快照后仍存在。
+
+接手时不要根据本文后面的旧 NEXT 重复这四项。下一步只需要先读取真实远端 HEAD，并确认这些本地提交是否已 push；未获授权不要自行部署。Actions 未在本轮等待，不能宣称最终 HEAD CI 全绿。
+
+---
+
 # 1. Codex 接手后的第一条规则：先重新读取真实状态
 
 **不要一上来改代码。不要仅凭本文 SHA 假定远端没有变化。**

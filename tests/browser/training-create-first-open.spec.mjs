@@ -199,6 +199,35 @@ test('training target is the only automatic early-stop control', async ({page, r
 test('frozen feedback candidates stay aligned with training submit provenance', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
   let submitted = null;
+  let durableTask = null;
+  let jobListReads = 0;
+
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    snapshot.jobs = durableTask ? [{
+      ...durableTask,
+      id: durableTask.task_id,
+      asset_algorithm_id: algorithmId,
+      framework: 'ultralytics',
+      queue_priority: 50,
+    }] : [];
+    await route.fulfill({response, json: snapshot});
+  });
+  await page.route('**/api/projects/*/jobs', async route => {
+    jobListReads += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(durableTask ? [{
+        ...durableTask,
+        id: durableTask.task_id,
+        asset_algorithm_id: algorithmId,
+        framework: 'ultralytics',
+        queue_priority: 50,
+      }] : []),
+    });
+  });
 
   await page.route('**/api/training_options**', route => route.fulfill({
     status: 200,
@@ -254,10 +283,20 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   });
   await page.route('**/api/v12/projects/*/train/start', async route => {
     submitted = route.request().postDataJSON();
+    durableTask = {
+      task_id: submitted.task_id,
+      kind: 'TRAINING',
+      task_type: 'TRAINING',
+      status: 'QUEUED',
+      persisted_status: 'QUEUED',
+      phase: 'queued',
+      progress_percent: 0,
+      created_at: '2026-09-21T08:00:00Z',
+    };
     await route.fulfill({
       status: 202,
       contentType: 'application/json',
-      body: JSON.stringify({ok: true, task: {task_id: submitted.task_id, kind: 'TRAINING', task_type: 'TRAINING', status: 'QUEUED', persisted_status: 'QUEUED', phase: 'queued', progress_percent: 0}}),
+      body: JSON.stringify({ok: true, task: durableTask}),
     });
   });
 
@@ -301,10 +340,29 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
   const submitButton = dialog.getByRole('button', {name: '开始训练'});
   await expect(submitButton).toBeEnabled();
+  const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
   await expect.poll(() => submitted).not.toBeNull();
   expect(submitted.supplement_candidate_set_id).toBe('a'.repeat(64));
   expect(submitted.train_image_ids).toEqual(['feedback-material', 'normal-material']);
+  const createdTaskId = submitted.task_id;
+  await expect.poll(async () => page.evaluate(taskId => (
+    state.jobs || []
+  ).some(job => String(job.task_id || job.id || '') === taskId), createdTaskId)).toBe(true);
+  expect(jobListReads).toBe(jobListReadsBeforeSubmit + 1);
+  const jobListReadsAfterSubmit = jobListReads;
+
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('.train428-table tbody')).toContainText(createdTaskId);
+  await expect.poll(() => jobListReads).toBeGreaterThan(jobListReadsAfterSubmit);
+
+  await page.reload();
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  expect(await page.evaluate(taskId => (
+    state.jobs || []
+  ).some(job => String(job.task_id || job.id || '') === taskId), createdTaskId)).toBe(true);
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('.train428-table tbody')).toContainText(createdTaskId);
 });
 
 

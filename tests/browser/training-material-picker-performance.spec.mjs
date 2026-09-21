@@ -10,6 +10,10 @@ function material(index, page = 1) {
     labels: index % 2 ? ['person'] : ['smoke'],
     annotated: true,
     box_count: 1,
+    width: 400,
+    height: 200,
+    annotation_state: 'annotated',
+    boxes: [{id: `box-${id}`, label: index % 2 ? 'person' : 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
     processing_status: 'processed',
     thumbnail_url: `/thumb/${id}.png`,
     content_url: `/full/${id}.png`,
@@ -23,7 +27,8 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422504');
+    .toBe('training-material-picker-runtime-422505');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -103,6 +108,10 @@ test('training material picker opens immediately, renders larger previews, and p
   const firstImage = firstCard.locator('img');
   const ratio = await firstImage.evaluate(element => getComputedStyle(element).aspectRatio);
   expect(ratio).toContain('4');
+  expect(await firstImage.evaluate(element => getComputedStyle(element).objectFit)).toBe('contain');
+  await expect(firstCard.locator('svg.train-v3-box-layer')).toHaveAttribute('viewBox', '0 0 400 200');
+  await expect(firstCard.locator('svg.train-v3-box-layer rect[data-label="smoke"]')).toHaveAttribute('x', '40');
+  await expect(firstCard.locator('.train-v3-annotation-state[data-annotation-state="annotated"]')).toContainText('已标注 · 1 框');
 
   await page.locator('#trV3Grid').evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
   await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(firstViewportThumbnailCount);
