@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
 from dataclasses import replace
 from threading import Barrier
 
 import pytest
 
+import platform_core.task_runtime.repository as task_repository_module
 from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
@@ -27,6 +29,57 @@ def add(
             required_capabilities=(capability,),
         )
     )
+
+
+def test_ready_task_repository_bypasses_init_lock(tmp_path, monkeypatch):
+    path = tmp_path / "tasks.sqlite3"
+    TaskRepository(path)
+
+    class ForbiddenInitLock:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("ready task repository must bypass init FileLock")
+
+    monkeypatch.setattr(task_repository_module, "FileLock", ForbiddenInitLock)
+
+    reopened = TaskRepository(path)
+    assert reopened.journal_mode() == "wal"
+
+
+def test_task_regular_connection_does_not_negotiate_wal(tmp_path, monkeypatch):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    real_connect = sqlite3.connect
+
+    class GuardedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        @property
+        def row_factory(self):
+            return self.connection.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self.connection.row_factory = value
+
+        def execute(self, sql, *args, **kwargs):
+            if "journal_mode" in str(sql).lower():
+                raise AssertionError("ordinary TaskRepository._connect() must not touch journal_mode")
+            return self.connection.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        task_repository_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: GuardedConnection(real_connect(*args, **kwargs)),
+    )
+
+    connection = repository._connect()
+    try:
+        assert int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+    finally:
+        connection.close()
 
 
 def test_wal_claim_is_global_low_number_first_and_fifo(tmp_path):
