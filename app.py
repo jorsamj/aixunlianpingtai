@@ -1,4 +1,5 @@
 import json
+import asyncio
 import base64
 import hashlib
 import math
@@ -24,7 +25,7 @@ import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
@@ -6882,6 +6883,110 @@ def list_jobs(project_id: str):
         if jf.exists(): write_json(jf,full)
         out.append(full)
     return out
+
+
+
+_TRAINING_STREAM_ACTIVE_STATUSES = (
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+)
+
+
+def _training_event_rows(
+    project_id: str,
+    repository: Optional[TaskRepository] = None,
+) -> List[Dict[str, Any]]:
+    """Return the small durable projection used by the live training stream."""
+    repo = repository or shared_task_repository()
+    page = repo.list(
+        project_id=project_id,
+        kinds=(TaskKind.TRAINING,),
+        statuses=_TRAINING_STREAM_ACTIVE_STATUSES,
+        limit=100,
+    )
+    return [task_to_public(task) for task in page.items]
+
+
+def _training_event_signature(row: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        row.get("status"),
+        row.get("persisted_status"),
+        row.get("phase"),
+        row.get("progress_percent"),
+        row.get("current_item"),
+        row.get("worker_id"),
+        row.get("resource_wait_reason"),
+        row.get("updated_at"),
+        row.get("finished_at"),
+        row.get("error"),
+    )
+
+
+def _training_sse_message(row: Mapping[str, Any]) -> str:
+    payload = json.dumps(dict(row), ensure_ascii=False, separators=(",", ":"))
+    return f"event: training.task\ndata: {payload}\n\n"
+
+
+@app.get("/api/v64/projects/{project_id}/training-events")
+async def v64_training_events(project_id: str, request: Request):
+    get_project(project_id)
+    repository = shared_task_repository()
+
+    async def event_stream():
+        signatures: Dict[str, Tuple[Any, ...]] = {}
+        watched: set[str] = set()
+        last_keepalive = time.monotonic()
+        yield "retry: 2000\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                return
+
+            rows = _training_event_rows(project_id, repository)
+            active_ids = {str(row.get("task_id") or "") for row in rows}
+            for row in rows:
+                task_id = str(row.get("task_id") or "")
+                if not task_id:
+                    continue
+                watched.add(task_id)
+                signature = _training_event_signature(row)
+                if signatures.get(task_id) == signature:
+                    continue
+                signatures[task_id] = signature
+                yield _training_sse_message(row)
+
+            # A task disappears from the active query exactly when it becomes
+            # terminal. Read that task once so the browser receives its final
+            # durable state before this stream stops watching it.
+            for task_id in tuple(watched - active_ids):
+                task = repository.get(task_id)
+                if (
+                    task is not None
+                    and task.project_id == project_id
+                    and task.kind is TaskKind.TRAINING
+                ):
+                    row = task_to_public(task)
+                    signature = _training_event_signature(row)
+                    if signatures.get(task_id) != signature:
+                        signatures[task_id] = signature
+                        yield _training_sse_message(row)
+                watched.discard(task_id)
+
+            now = time.monotonic()
+            if now - last_keepalive >= 15:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            await asyncio.sleep(0.75)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}")
