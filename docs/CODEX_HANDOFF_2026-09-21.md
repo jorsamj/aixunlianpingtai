@@ -6,6 +6,38 @@
 >
 > 本文件优先于旧文档中的历史 NEXT、Current priority、历史 acceptance SHA、历史部署建议。旧文档仍然保留作为架构与历史证据，但若与本文件及实时 GitHub 冲突，以 **实时 GitHub → 本文件 → 当前 owner 代码** 为准。
 
+## 0A. 2026-09-21 全站 cache-first 性能最小闭环（最新覆盖）
+
+本轮没有拆掉 v53 snapshot，也没有建立第二套 cache/polling/truth。真实根因和收口如下：
+
+~~~text
+旧启动：prepared snapshot → browser cached snapshot → loadCore412(refresh=true) → full rebuild
+新启动：prepared snapshot → browser cached snapshot → immediate target shell/cache
+                                      ↘ page runtime authoritative refresh when stale
+
+旧数据集：broad snapshot → current 48 + status totals → paint
+新数据集：cached shell → current 48 → paint → status totals incremental patch
+~~~
+
+- `9fff42df` — 后端 snapshot 普通缓存命中直接返回；authoritative rebuild 的 project counts 使用 request-local map，每项目最多一次；新 snapshot 写回 `_V53_BOOTSTRAP_SNAPSHOT`。标签 schema GET 使用 `MaterialRepository.label_usage()` 聚合既有 material summary，不再 `load_images()`、逐图 `read_annotation()` 或 GET 时 patch。
+- `2e3a726b` — `loadCore412({authoritative:false})` 默认不带 `refresh=true`；启动移除第二次 broad refresh；显式刷新仍 authoritative。snapshot 中已有的 jobs/model_configs 不再由 `extras412()` 重复请求；jobs 实时性继续由现有 TrainingTask/Algorithm runtime 与 PollRegistry 负责。v61 分页当前页先绘制，辅助 totals 后补，并保留 epoch/single-flight stale guard。
+
+修复前后同一 Playwright Network 采样：
+
+| 场景 | 修复前 | 修复后 |
+|---|---:|---:|
+| 冷启动 | 10 请求；2 snapshot；含 `refresh=true`；约 998ms | fresh cache：4 请求、约 542ms；snapshot 过期触发页面 owner SWR：8 请求、约 353ms；两者均仅 1 snapshot 且无 `refresh=true` |
+| 算法列表 | 0 新请求；约 35ms | 命中新 snapshot cache 时 0；约 32ms；过期后由 AlgorithmListRuntime SWR |
+| 训练任务 | 1 jobs；约 144ms | 1 jobs；约 147ms；无 broad snapshot |
+| 数据集 | 6 请求；约 145ms | 4 请求；约 27–30ms；当前 48 条优先可见 |
+| 服务节点 | 1 请求；约 126ms | 1 请求；约 48ms；只请求 service-nodes |
+
+标签读取 10,000 条临时 SQLite 素材的简单计时：全量 material 对象水合约 `86.9ms`，仓库内 label 聚合约 `30.5ms`；更重要的是普通 GET 的 annotation 文件读取次数从“缺 summary 时最多 N 次”降为 0。
+
+验收：API 定向 `5 passed`；前端定向 `12 passed`；Network + 数据集分页/缓存 + 服务节点 owner browser smoke `4 passed`。未跑 1200+ 全量 pytest、完整 integration 或等待 Actions。`VERSION.txt = 42.24.0` 未改；未 merge/tag/release/deploy。
+
+接手不要根据下面旧 NEXT 重复 broad refresh/owner 改造。下一步只需核对 live remote 是否包含 `9fff42df`、`2e3a726b` 与随后文档提交；若要推送或等待 Actions，需按用户当时指令执行。
+
 更新时间：2026-09-21  
 仓库：jorsamj/aixunlianpingtai  
 长期开发分支：feature/external-algorithm-publishing  

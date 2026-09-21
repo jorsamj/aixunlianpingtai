@@ -1,5 +1,16 @@
 # Codex Current State
 
+<!-- CACHE_FIRST_LOADING_2026_09_21 -->
+> ## CURRENT RESUME POINT — CACHE-FIRST PAGE LOADING COMPLETE LOCALLY
+>
+> Latest product commits are `9fff42df` (v53 request-local counts/cache replacement + label summary SQL owner) and `2e3a726b` (single cached startup snapshot, no ordinary `refresh=true`, no extras jobs/model-config duplication, v61 current-page-first paint).
+>
+> Owner truth remains unchanged: AlgorithmListRuntime / TrainingTaskVisibilityRuntime / MaterialPaginationRuntime / ServiceNodeRuntime and PollRegistry perform page-specific authoritative refreshes. Explicit refresh still requests an authoritative snapshot. No second cache, polling owner, fake data, or long durable-task confirmation chain was introduced.
+>
+> Browser inventory improved from `10 requests / 2 snapshots / refresh=true / ~998ms` to fresh-cache `4 / 1 / false / ~542ms`, or stale-snapshot page-owner SWR `8 / 1 / false / ~353ms`; dataset visibility improved from `6 requests / ~145ms` to `4 / ~27–30ms`. Targeted verification passed: API 5, frontend 12, browser 4. Full pytest/integration and Actions are NOT VERIFIED. `VERSION.txt` remains `42.24.0`; no merge/tag/release/deploy.
+>
+> Read `docs/CODEX_HANDOFF_2026-09-21.md` section 0A before every older NEXT below.
+
 
 <!-- P0_OWNER_CLOSURE_2026_09_21 -->
 > ## CURRENT RESUME POINT — P0 OWNER CLOSURE COMPLETE LOCALLY

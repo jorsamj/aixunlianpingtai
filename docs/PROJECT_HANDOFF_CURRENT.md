@@ -1,5 +1,16 @@
 # 畅联云算法训练平台 — 当前接手总览
 
+<!-- CACHE_FIRST_LOADING_2026_09_21 -->
+> ## 2026-09-21 最新覆盖：全站 cache-first 性能闭环
+>
+> `9fff42df` 已收口 v53 request-local project counts、普通 snapshot cache fast path、authoritative snapshot replacement，并把标签 GET 从全量素材/逐图 annotation 扫描改成 MaterialRepository 的 SQLite summary 聚合。
+>
+> `2e3a726b` 已移除普通启动与导航的 `snapshot?refresh=true`，删除 extras 对 jobs/model_configs 的重复读取，保留显式刷新与各页面现有 runtime/PollRegistry truth；数据集 v61 当前 48 条先绘制，totals 后补。
+>
+> 实测冷启动 `10 请求 / 2 snapshot / refresh=true / ~998ms` → fresh cache `4 / 1 / false / ~542ms`，snapshot 过期触发页面 owner SWR 时 `8 / 1 / false / ~353ms`；数据集 `6 / ~145ms` → `4 / ~27–30ms`；服务节点仍只请求自己的 API。定向测试共 `5 API + 12 frontend + 4 browser smoke` 全绿。
+>
+> `VERSION.txt` 仍为 `42.24.0`；未全量测试、未等待 Actions、未 merge/tag/release/deploy。最高优先级细节见 `docs/CODEX_HANDOFF_2026-09-21.md` 第 0A 节；不要执行下方旧 NEXT 中的 broad snapshot refresh 或另建 polling/cache owner。
+
 
 <!-- P0_OWNER_CLOSURE_2026_09_21 -->
 > ## 2026-09-21 最新覆盖：P0 产品可用性最小 owner 收口
