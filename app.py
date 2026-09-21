@@ -2159,9 +2159,10 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
-        # Annotation truth stays immediately durable per image. Only the
-        # searchable material projection is buffered for the batch commit so
-        # rollback can explicitly remove already-written annotation truth.
+        # Plain multi-image uploads may defer only their initial unannotated
+        # placeholders so one SQLite upsert_many persists the batch. Structured
+        # imports already know final GT and persist that truth immediately once.
+        "deferred_annotations": {},
         "annotation_repository": None,
         # Storage source schema/provider/credential setup is request-scoped,
         # not image-scoped. Reuse one manager across the whole import batch.
@@ -2248,6 +2249,9 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
+    deferred_annotations = [
+        dict(row) for row in batch.get("deferred_annotations", {}).values()
+    ]
     if not save:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
         if cleanup_errors:
@@ -2255,10 +2259,32 @@ def _v50_end_image_batch(save: bool = True):
                 "批量导入回滚失败：" + "; ".join(cleanup_errors)
             )
         return []
-    if not records and not patches:
+    if not records and not patches and not deferred_annotations:
         return []
 
     try:
+        records_by_id = {
+            str(record.get("id")): record for record in records
+        }
+        if deferred_annotations:
+            annotation_repository = (
+                batch.get("annotation_repository")
+                or AnnotationRepository(project_dir(project_id))
+            )
+            saved_annotations = annotation_repository.upsert_many(
+                deferred_annotations,
+                project_material=False,
+                return_rows=True,
+            )
+            for saved in saved_annotations:
+                image_id = str(saved.get("image_id") or "")
+                patch = _v50_material_annotation_patch(saved)
+                record = records_by_id.get(image_id)
+                if record is not None:
+                    record.update(patch)
+                else:
+                    patches.setdefault(image_id, {}).update(patch)
+
         records_by_id = {
             str(record.get("id")): record for record in records
         }
@@ -2348,9 +2374,12 @@ def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    # AnnotationRepository is the ground-truth owner. Persist the final truth
-    # exactly once per image even while a material batch is active; only its
-    # material projection is buffered and can be discarded/rebased separately.
+    # AnnotationRepository is the ground-truth owner. Persist explicit/final
+    # truth immediately. If this image had only a deferred plain-upload
+    # unannotated placeholder, cancel that placeholder before writing final GT.
+    batch = _v50_active_image_batch(project_id)
+    if batch is not None:
+        batch.get("deferred_annotations", {}).pop(str(image_id), None)
     saved = _v50_annotation_repository(project_id).upsert(
         image_id, boxes, annotation_state, project_material=False
     )
@@ -2391,6 +2420,7 @@ def add_image_record(
     source_type: str = "raw", dataset_id: str = "default",
     storage_source_id: str = "default_local", annotation_builder=None,
     content_sha256: Optional[str] = None,
+    defer_unannotated_annotation: bool = False,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     path_source = isinstance(src, (str, Path))
@@ -2485,8 +2515,14 @@ def add_image_record(
                 # Structured import paths already know the final GT. Persist it once
                 # before returning instead of durable unannotated -> final double writes.
                 write_annotation(project_id, img_id, prepared_annotation_boxes)
+            elif batch and defer_unannotated_annotation:
+                batch["deferred_annotations"][str(img_id)] = {
+                    "image_id": str(img_id),
+                    "boxes": [],
+                    "annotation_state": "unannotated",
+                }
             elif not annotation_path.exists():
-                write_annotation(project_id, img_id, [], 'unannotated')
+                write_annotation(project_id, img_id, [], "unannotated")
     except Exception:
         annotation_path.unlink(missing_ok=True)
         _v50_annotation_repository(project_id).remove([img_id])
@@ -3644,6 +3680,7 @@ async def upload_images(
                     "raw",
                     dataset_id,
                     storage_source_id,
+                    defer_unannotated_annotation=True,
                 )
                 if record:
                     uploaded.append(record)
