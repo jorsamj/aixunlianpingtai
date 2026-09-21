@@ -105,6 +105,23 @@ def test_concurrent_legacy_material_migration_commits_once(tmp_path):
     assert migration_count == 1
 
 
+def test_completed_legacy_material_migration_does_not_reread_json(tmp_path):
+    legacy = tmp_path / "images.json"
+    legacy.write_text(
+        json.dumps([material("legacy-a")], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert MaterialRepository(tmp_path).count() == 1
+
+    # Once SQLite owns the data, the retained legacy source is no longer read
+    # on every repository construction.
+    legacy.write_text("{malformed-after-migration", encoding="utf-8")
+
+    reopened = MaterialRepository(tmp_path)
+    assert reopened.count() == 1
+    assert reopened.get("legacy-a")["id"] == "legacy-a"
+
+
 def test_crud_and_revision_use_sqlite_rows(tmp_path):
     repository = MaterialRepository(tmp_path)
     assert repository.journal_mode() == "wal"
