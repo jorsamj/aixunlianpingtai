@@ -47,6 +47,7 @@ function installDom() {
   const controls = {
     tr429Target: {value: 'gpu-local'},
     tr429Alg: {value: 'yolo_detect'},
+    tr429TaskId: {value: 'train_aaaaaaaaaaaaaaaaaaaa'},
   };
   const submitButton = {disabled: true, dataset: {}, textContent: '开始训练'};
   globalThis.document = {
@@ -57,6 +58,22 @@ function installDom() {
     querySelectorAll() { return [submitButton]; },
   };
   return {controls, submitButton};
+}
+
+function durableTask(taskId = 'train_aaaaaaaaaaaaaaaaaaaa', overrides = {}) {
+  return {
+    ok: true,
+    task: {
+      task_id: taskId,
+      kind: 'TRAINING',
+      task_type: 'TRAINING',
+      status: 'QUEUED',
+      persisted_status: 'QUEUED',
+      phase: 'queued',
+      progress_percent: 0,
+      ...overrides,
+    },
+  };
 }
 
 function baseState() {
@@ -154,13 +171,14 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   let reloaded = 0;
   let rendered = 0;
   let closed = 0;
+  const accepted = [];
   const notices = [];
   const oldSubmit = () => 'legacy';
   globalThis.window = {
     submitTrain429: oldSubmit,
     fetch: async (_url, init) => {
       sent = JSON.parse(init.body);
-      return {ok: true, async json() { return {task: {id: 'task-1'}}; }};
+      return {ok: true, async json() { return durableTask(sent.task_id); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
@@ -171,6 +189,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
     reloadRelated: async () => { reloaded += 1; },
     renderAlgorithms: () => { rendered += 1; },
     closeModal: () => { closed += 1; },
+    trainingTaskRuntime: {acceptCreatedTask: (task, context) => accepted.push({task, context})},
     notify: message => notices.push(String(message)),
   });
 
@@ -179,7 +198,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.equal(submitButton.disabled, false);
   const result = await window.submitTrain429();
 
-  assert.equal(result.task.id, 'task-1');
+  assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.deepEqual(sent.train_image_ids, ['img-1', 'img-2']);
   assert.deepEqual(sent.train_labels, ['fire']);
   assert.equal(sent.queue_priority, 7);
@@ -187,8 +206,11 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.equal(reloaded, 1);
   assert.equal(rendered, 1);
   assert.equal(closed, 1);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].task.task_id, sent.task_id);
+  assert.equal(accepted[0].context.algorithmId, 'alg-1');
   assert.equal(state.alg428Expanded['alg-1'], true);
-  assert.match(notices[0], /训练任务已进入后台队列/);
+  assert.match(notices[0], /训练任务已进入后台队列 · train_aaaaaaaaaaaaaaaaaaaa/);
 
   runtime.destroy();
   assert.equal(window.submitTrain429, oldSubmit);
@@ -286,7 +308,7 @@ test('double click cannot create two independent training tasks', async () => {
     fetch: async () => {
       calls += 1;
       await pending;
-      return {ok: true, async json() { return {task: {id: 'task-once'}}; }};
+      return {ok: true, async json() { return durableTask(); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
@@ -323,7 +345,7 @@ test('refresh failure after successful POST does not invite a duplicate training
     submitTrain429: () => 'legacy',
     fetch: async () => {
       calls += 1;
-      return {ok: true, async json() { return {task: {id: 'created'}}; }};
+      return {ok: true, async json() { return durableTask(); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
@@ -336,10 +358,64 @@ test('refresh failure after successful POST does not invite a duplicate training
   });
 
   const result = await window.submitTrain429();
-  assert.equal(result.task.id, 'created');
+  assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.equal(calls, 1);
   assert.match(notices[0], /训练任务已进入后台队列/);
   assert.match(notices.at(-1), /列表刷新失败/);
+  cleanup(runtime);
+});
+
+test('2xx without the formal durable task identity is not success and keeps the dialog open', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let closed = 0;
+  let accepted = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({
+      ok: true,
+      async json() { return {ok: true, task: {id: 'legacy-only', status: 'QUEUED'}}; },
+    }),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftToRequest,
+    trainingTaskRuntime: {acceptCreatedTask: () => { accepted += 1; }},
+    closeModal: () => { closed += 1; },
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(closed, 0);
+  assert.equal(accepted, 0);
+  assert.match(notices.at(-1), /正式任务身份/);
+  cleanup(runtime);
+});
+
+test('durable response task id must match the submitted planned task id', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let closed = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({ok: true, async json() { return durableTask('train_bbbbbbbbbbbbbbbbbbbb'); }}),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftToRequest,
+    closeModal: () => { closed += 1; },
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(closed, 0);
+  assert.match(notices.at(-1), /任务身份不一致/);
   cleanup(runtime);
 });
 
@@ -356,7 +432,7 @@ test('confirmed iteration action lineage is injected only for matching current d
   installDom();
   let sent;
   globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
-    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-action'}}}};
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
@@ -384,7 +460,7 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   installDom();
   let sent;
   globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
-    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-normal'}}}};
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
@@ -434,7 +510,7 @@ test('submit runtime carries candidate_set_id when selected materials adopt feed
     submitTrain429: () => 'legacy',
     fetch: async (_url, init) => {
       sent = JSON.parse(init.body);
-      return {ok: true, async json() { return {task: {id: 'task-feedback'}}; }};
+      return {ok: true, async json() { return durableTask(sent.task_id); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
@@ -479,7 +555,7 @@ test('submit runtime sends only fixed benchmark identity while exact test ids st
   state.trainingBenchmarkReuse = {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', source_version_name: 'v1', scope_id: 'd'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 9, binding_level: 'bundle_verified', loading: false, load_error: false};
   installDom();
   let sent;
-  globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return {task: {id: 'task-benchmark'}}; }}; }};
+  globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return durableTask(sent.task_id); }}; }};
   const runtime = installTrainingSubmitRuntime({
     getState: () => state, projectId: () => 'project-1',
     trainingDraftRuntime: {sync: () => value, current: () => value, inheritance: () => ({blocked: false, versionId: 'ver-1'})},

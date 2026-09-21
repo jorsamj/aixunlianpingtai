@@ -180,6 +180,24 @@ export function benchmarkReuseContext({asset, draft, inheritance, benchmark} = {
     bindingLevel: 'bundle_verified',
   };
 }
+
+const CREATED_TRAINING_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'PAUSED']);
+
+export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
+  const task = body?.task;
+  const taskId = String(task?.task_id || '').trim();
+  const kind = String(task?.kind || task?.task_type || '').trim().toUpperCase();
+  const taskType = String(task?.task_type || task?.kind || '').trim().toUpperCase();
+  const status = String(task?.status || '').trim().toUpperCase();
+  if (body?.ok !== true || !taskId || kind !== 'TRAINING' || taskType !== 'TRAINING' || !CREATED_TRAINING_STATUSES.has(status)) {
+    throw new Error('训练创建响应缺少正式任务身份，请保留当前窗口并重试');
+  }
+  const expected = String(expectedTaskId || '').trim();
+  if (expected && taskId !== expected) {
+    throw new Error(`训练创建返回的任务身份不一致：期望 ${expected}，实际 ${taskId}`);
+  }
+  return task;
+}
 function renderSupplementCandidateSummary(context) {
   if (typeof document === 'undefined') return;
   const root = document.querySelector?.('.train-v3-summary');
@@ -213,6 +231,7 @@ export function installTrainingSubmitRuntime({
   trainingDraftToRequest,
   reloadRelated,
   renderAlgorithms,
+  trainingTaskRuntime,
   closeModal,
   notify,
 } = {}) {
@@ -365,15 +384,21 @@ export function installTrainingSubmitRuntime({
         throw new Error(validationDetail ? `${message}：${validationDetail}` : String(message));
       }
       const body = await response.json();
+      const createdTask = validateTrainingCreatedResponse(body, payload.task_id);
       lastStage = 'created';
       if (payload.iteration_action && state.trainingIterationAction) {
         state.trainingIterationAction = null;
       }
 
+      trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
+        algorithmId: asset.id,
+        framework: String(payload.framework || target.framework || ''),
+        queuePriority: payload.queue_priority,
+      });
       closeModal?.();
       state.alg428Expanded = state.alg428Expanded || {};
       state.alg428Expanded[asset.id] = true;
-      notify?.(`训练任务已进入后台队列${body.task?.id || body.job?.id ? ` · ${body.task?.id || body.job?.id}` : ''}`);
+      notify?.(`训练任务已进入后台队列 · ${createdTask.task_id}`);
 
       try {
         await reloadRelated?.();

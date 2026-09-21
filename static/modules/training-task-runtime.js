@@ -425,6 +425,30 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     return true;
   }
 
+  function acceptCreatedTask(task, {algorithmId = '', framework = '', queuePriority = 50} = {}) {
+    const taskId = String(task?.task_id || '').trim();
+    if (!taskId) throw new Error('训练任务响应缺少 task_id');
+    const status = String(task?.status || task?.persisted_status || 'QUEUED').trim().toLowerCase();
+    const row = {
+      ...task,
+      id: taskId,
+      task_id: taskId,
+      status,
+      task_status: String(task?.status || '').trim().toUpperCase(),
+      asset_algorithm_id: String(algorithmId || task?.asset_algorithm_id || ''),
+      algorithm_asset_id: String(algorithmId || task?.algorithm_asset_id || ''),
+      framework: String(framework || task?.framework || ''),
+      queue_priority: Number(task?.priority ?? queuePriority ?? 50),
+      priority_scheme: 'lower_number_first',
+      created_at: task?.created_at || new Date().toISOString(),
+      updated_at: task?.updated_at || task?.created_at || new Date().toISOString(),
+    };
+    const current = Array.isArray(state().jobs) ? state().jobs : [];
+    state().jobs = [row, ...current.filter(item => String(item?.id || item?.task_id || '') !== taskId)];
+    if (String(state().page || '') === TRAINING_PAGE) patchFinalTrainingTable();
+    return row;
+  }
+
   async function refresh({render = true, force = false, source = 'direct'} = {}) {
     if (destroyed) throw new Error('训练任务模块已销毁');
     if (inflight) return inflight;
@@ -588,6 +612,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   const runtime = {
     build: 'training-task-runtime-422506',
     refresh,
+    acceptCreatedTask,
     patch: patchFinalTrainingTable,
     state() {
       return {inflight: Boolean(inflight), lastRefreshAt, lastRefreshSource, mutations: mutationLocks.size};

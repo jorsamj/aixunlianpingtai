@@ -193,6 +193,7 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   projectId: () => state.project?.id,
   trainingDraftRuntime,
   trainingDraftToRequest,
+  trainingTaskRuntime,
   reloadRelated: async () => {
     if (state.page === '算法列表' && algorithmListRuntime) return algorithmListRuntime.refresh({render: false});
     if (typeof loadRelated === 'function') return loadRelated();

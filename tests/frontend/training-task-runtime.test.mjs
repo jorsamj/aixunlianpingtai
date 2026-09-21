@@ -466,3 +466,37 @@ test('transitioning training task disables conflicting controls until backend tr
   assert.doesNotMatch(html, /pauseTrain428/);
   assert.doesNotMatch(html, /stopTrain428/);
 });
+
+test('durable create response is merged immediately without a confirmation request', () => {
+  const state = {page: '算法列表', jobs: [{id: 'older', status: 'done'}]};
+  let fetchCalls = 0;
+  globalThis.document = {
+    addEventListener() {}, removeEventListener() {}, querySelector() { return null; },
+  };
+  globalThis.window = {
+    fetch: async () => { fetchCalls += 1; throw new Error('must not fetch'); },
+  };
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+  });
+
+  const row = runtime.acceptCreatedTask({
+    task_id: 'train_aaaaaaaaaaaaaaaaaaaa',
+    kind: 'TRAINING',
+    task_type: 'TRAINING',
+    status: 'QUEUED',
+    persisted_status: 'QUEUED',
+    phase: 'queued',
+    progress_percent: 0,
+    created_at: '2026-09-21T00:00:00Z',
+  }, {algorithmId: 'alg-1', framework: 'ultralytics'});
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(row.id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.equal(state.jobs[0].id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.equal(state.jobs[0].asset_algorithm_id, 'alg-1');
+  assert.equal(state.jobs[0].status, 'queued');
+  runtime.destroy();
+  cleanup();
+});
