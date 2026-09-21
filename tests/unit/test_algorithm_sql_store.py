@@ -108,6 +108,86 @@ def test_ready_store_skips_repeated_schema_bootstrap(tmp_path: Path, monkeypatch
     reopened.ensure_ready()
 
 
+def test_ready_store_fast_path_does_not_take_init_file_lock(tmp_path: Path, monkeypatch):
+    project = tmp_path / "projects" / "p-ready-fast"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    AlgorithmSqlStore(json_path).ensure_ready()
+    reopened = AlgorithmSqlStore(json_path)
+
+    class ForbiddenInitLock:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("ready algorithm store must bypass init FileLock")
+
+    monkeypatch.setattr(algorithm_sql_store_module, "FileLock", ForbiddenInitLock)
+
+    reopened.ensure_ready()
+
+
+def test_algorithm_list_prefetches_versions_and_analyses_without_n_plus_one(
+    tmp_path: Path, monkeypatch
+):
+    project = tmp_path / "projects" / "p-prefetch"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    store.replace_all([
+        {
+            "id": f"algo-{index}",
+            "name": f"算法 {index}",
+            "source_type": "EXTERNAL",
+            "provider_type": "CHANG_LIAN",
+            "external_product_id": f"product-{index}",
+            "external_analysis_id": f"analysis-{index}",
+            "external_analyses": [{
+                "analysis_id": f"analysis-{index}",
+                "analysis_name": f"分析 {index}",
+                "analysis_type": "1",
+                "status": "1",
+            }],
+            "versions": [{
+                "id": f"version-{index}",
+                "task_id": f"task-{index}",
+                "training_status": "SUCCEEDED",
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+            }],
+        }
+        for index in range(5)
+    ])
+
+    statements = []
+    real_connect = store._connect
+
+    def traced_connect():
+        connection = real_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+
+    rows = store.read_all()
+
+    assert len(rows) == 5
+    version_selects = [
+        statement for statement in statements
+        if "FROM algorithm_versions" in statement
+    ]
+    analysis_selects = [
+        statement for statement in statements
+        if "FROM algorithm_external_analyses" in statement
+    ]
+    assert len(version_selects) == 1
+    assert len(analysis_selects) == 1
+    assert all(len(row["versions"]) == 1 for row in rows)
+    assert all(len(row["external_analyses"]) == 1 for row in rows)
+
+
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
     project = tmp_path / "projects" / "p-concurrent-attach"
     project.mkdir(parents=True)
