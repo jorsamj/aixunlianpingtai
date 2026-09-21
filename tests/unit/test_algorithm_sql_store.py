@@ -188,6 +188,49 @@ def test_algorithm_list_prefetches_versions_and_analyses_without_n_plus_one(
     assert all(len(row["external_analyses"]) == 1 for row in rows)
 
 
+def test_schema_v1_store_upgrades_indexes_without_rewriting_data(tmp_path: Path):
+    project = tmp_path / "projects" / "p-schema-v2"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    store.create_algorithm({
+        "id": "algorithm-preserved",
+        "name": "保留算法",
+        "versions": [],
+        "current_version_id": None,
+    })
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("DROP INDEX IF EXISTS idx_algorithms_project_sort")
+        connection.execute("DROP INDEX IF EXISTS idx_analyses_algorithm_sort")
+        connection.execute(
+            "UPDATE algorithm_store_meta SET value='1' WHERE key='schema_version'"
+        )
+        connection.commit()
+
+    reopened = AlgorithmSqlStore(json_path)
+    reopened.ensure_ready()
+
+    with sqlite3.connect(reopened.db_path) as connection:
+        schema_version = connection.execute(
+            "SELECT value FROM algorithm_store_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+
+    assert schema_version == "2"
+    assert "idx_algorithms_project_sort" in indexes
+    assert "idx_analyses_algorithm_sort" in indexes
+    assert reopened.read_one("algorithm-preserved")["name"] == "保留算法"
+
+
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
     project = tmp_path / "projects" / "p-concurrent-attach"
     project.mkdir(parents=True)
