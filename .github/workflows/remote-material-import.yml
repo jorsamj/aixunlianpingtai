@@ -193,7 +193,8 @@ jobs:
         run: |
           grep -Fq 'execution_mode: Literal["local", "agent"] = "local"' app.py
           grep -Fq 'clearCompletedUploadTasks' static/modules/upload-task-center.js
-          grep -Fq '清空已完成' static/modules/upload-task-center.js
+          grep -Fq '清空已结束' static/modules/upload-task-center.js
+          grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
           grep -Fq 'stage_material_import(' app.py
           grep -Fq 'stage_material_storage_scan(' app.py
           grep -Fq 'storage_rescan_preflight' app.py
