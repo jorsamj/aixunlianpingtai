@@ -34,6 +34,7 @@ jobs:
           node --check tests/browser/source-import-completion-scope.spec.mjs &&
           node --check tests/browser/upload-task-center-performance.spec.mjs &&
           node --check tests/browser/video-task-performance.spec.mjs &&
+          node --check tests/browser/component-scan-performance.spec.mjs &&
           node --check static/modules/material-pagination-runtime.js &&
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
@@ -146,6 +147,9 @@ jobs:
             exit 1
           fi
           grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
+          grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/app.js
+          grep -Fq "PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)" static/app.js
+          grep -Fq 'function patchCompProgress()' static/app.js
       - name: Video PollRegistry direct owner guard
         run: |
           if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then
@@ -361,3 +365,4 @@ jobs:
           tests/browser/source-import-completion-scope.spec.mjs
           tests/browser/upload-task-center-performance.spec.mjs
           tests/browser/video-task-performance.spec.mjs
+          tests/browser/component-scan-performance.spec.mjs
