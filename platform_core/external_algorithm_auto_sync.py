@@ -97,8 +97,13 @@ class ExternalAlgorithmAutoSyncReporter:
         """Fast Worker-heartbeat hook; returns True only when a run was started."""
         if not self.service.auto_sync_due():
             return False
+
         with self._thread_guard:
-            if self._thread is not None and self._thread.is_alive():
+            # Register the one-shot before start() so concurrent heartbeats cannot
+            # create a second sync while the thread is still in its starting window.
+            # start() must run outside this non-reentrant guard because test/runtime
+            # thread factories may execute the target synchronously.
+            if self._thread is not None:
                 return False
             thread = self.thread_factory(
                 target=self._run_background,
@@ -106,8 +111,15 @@ class ExternalAlgorithmAutoSyncReporter:
                 daemon=True,
             )
             self._thread = thread
+
+        try:
             thread.start()
-            return True
+        except Exception:
+            with self._thread_guard:
+                if self._thread is thread:
+                    self._thread = None
+            raise
+        return True
 
 
 __all__ = ["ExternalAlgorithmAutoSyncReporter"]
