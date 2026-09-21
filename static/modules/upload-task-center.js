@@ -136,7 +136,8 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   function persist() {
     const project = pid();
     if (!project) return;
-    try { localStorage.setItem(storageKey(project), JSON.stringify(rows.slice(0, MAX_ROWS))); } catch (_) {}
+    const persistedRows = rows.slice(0, MAX_ROWS).map(row => { const value = {...row}; delete value.pollOwner; return value; });
+    try { localStorage.setItem(storageKey(project), JSON.stringify(persistedRows)); } catch (_) {}
   }
 
   function load(project) {
@@ -231,7 +232,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   async function refreshDurable(row) {
-    if (!row?.serverUrl || !isUploadTaskActive(row)) return row;
+    if (!row?.serverUrl || row?.pollOwner || !isUploadTaskActive(row)) return row;
     try {
       const body = await responseJson(await fetchImpl(row.serverUrl, {credentials:'same-origin'}));
       return normalizeDurableUploadTask(body, row);
@@ -247,7 +248,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       lastProjectId = project;
       load(project);
     }
-    const active = rows.filter(row => isUploadTaskActive(row) && row.serverUrl);
+    const active = rows.filter(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
     if (active.length) {
       const updates = await Promise.all(active.map(refreshDurable));
       for (const updated of updates) {
@@ -263,7 +264,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
 
   function arm() {
     if (timer) clearTimeout(timer);
-    const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl);
+    const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
     if (needsPoll) timer = setTimeout(() => poll().catch(() => arm()), POLL_MS);
   }
 

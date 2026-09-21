@@ -60,7 +60,7 @@ async function responseJson(response) {
 
 export function installStorageImportProgressRuntime({pollRegistry, getState} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422520') {
+  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422523') {
     return window.StorageImportProgressRuntime;
   }
 
@@ -73,6 +73,24 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   let rejectCurrent = null;
 
   const state = () => getState?.() || {};
+
+  function publishTaskCenter(task, pollOwner = 'storage-import-progress') {
+    if (!task) return;
+    const currentState = state();
+    const taskId = String(task.task_id || task.id || trackedTaskId || '');
+    const projectId = String(currentState.project?.id || '');
+    if (!taskId || !projectId) return;
+    const phase = (canonicalTaskPhase(task) || '').toUpperCase();
+    const progress = taskProgress(task).percent || 0;
+    window.UploadTaskCenterRuntime?.upsert?.({
+      id: `storage-import:${taskId}`, kind: 'storage-import',
+      title: ['MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING'].includes(phase) ? '标签转换 / 素材索引' : '素材导入',
+      status: canonicalTaskStatus(task), progress, stage: STAGE_LABELS[phase] || phase || '素材导入',
+      detail: String(task.current_item || task.error || ''),
+      serverUrl: `/api/v62/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+      pollOwner,
+    });
+  }
 
   function statusElement() {
     return document.getElementById('si61Status');
@@ -90,20 +108,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     if (!currentTask) return;
     const status = statusElement();
     if (status) status.textContent = storageImportProgressText(currentTask);
-    const s = state();
-    const taskId = String(currentTask.task_id || currentTask.id || trackedTaskId || '');
-    const projectId = String(s.project?.id || '');
-    const phase = (canonicalTaskPhase(currentTask) || '').toUpperCase();
-    const progress = taskProgress(currentTask).percent || 0;
-    if (taskId && projectId) {
-      window.UploadTaskCenterRuntime?.upsert?.({
-        id: `storage-import:${taskId}`, kind: 'storage-import',
-        title: ['MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING'].includes(phase) ? '标签转换 / 素材索引' : '素材导入',
-        status: canonicalTaskStatus(currentTask), progress, stage: STAGE_LABELS[phase] || phase || '素材导入',
-        detail: String(currentTask.current_item || currentTask.error || ''),
-        serverUrl: `/api/v62/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
-      });
-    }
+    publishTaskCenter(currentTask);
     if (typeof window.renderStorageImportTask61 === 'function') {
       window.renderStorageImportTask61(currentTask);
     }
@@ -149,7 +154,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     }, POLL_DELAY);
   }
 
-  function stop() {
+  function stop({handoff = true} = {}) {
     registry.clear(POLL_KEY);
     trackedTaskId = '';
     const resolve = settle;
@@ -157,12 +162,13 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     rejectCurrent = null;
     const last = currentTask;
     currentTask = null;
+    if (handoff && last && isTaskActive(last)) publishTaskCenter(last, '');
     resolve?.(last || null);
     return true;
   }
 
   function track(taskId, initialTask = null) {
-    stop();
+    stop({handoff: false});
     trackedTaskId = String(taskId || '').trim();
     currentTask = initialTask || null;
     if (!trackedTaskId) return Promise.resolve(null);
@@ -177,7 +183,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   }
 
   const runtime = Object.freeze({
-    build: 'storage-import-progress-422520',
+    build: 'storage-import-progress-422523',
     track,
     stop,
     current: () => currentTask,

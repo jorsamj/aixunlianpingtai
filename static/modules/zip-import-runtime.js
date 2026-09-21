@@ -175,6 +175,7 @@ export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},on
 
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
+  const classicImportData = typeof window.importData === 'function' ? window.importData : null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null;
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set();
   const pid=()=>String(projectId?.()||'');
@@ -306,7 +307,10 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   const runtime={upload,reconcile,open,confirmLabels,forgetTerminal,snapshot:()=>({jobs:[...jobs],current}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>upload(input).catch(()=>{});
-  window.importData=()=>window.modal?.('导入已标注数据',`<div class="form"><div class="import-box"><div class="item-title">上传并检查标注</div><div class="item-sub">支持 YOLO、COCO、Pascal VOC。检测到外部标签后，必须先统一到平台标签再正式入库。</div></div><div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div><div class="row end"><button class="btn soft" onclick="closeModal()">取消</button><button class="btn primary" onclick="doImportData()">上传并检查标注</button></div></div>`,true);
+  window.importData=()=>{
+    if(classicImportData)return classicImportData();
+    return window.modal?.('导入素材 / 标注',`<div class="form"><div class="import-box"><div class="item-title">上传并检查标注</div><div class="item-sub">支持 YOLO、COCO、Pascal VOC。检测到外部标签后，必须先统一到平台标签再正式入库。</div></div><div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div><div class="row end"><button class="btn soft" onclick="closeModal()">取消</button><button class="btn primary" onclick="doImportData()">上传并检查标注</button></div></div>`,true);
+  };
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};
   reconcile('bootstrap').then(value=>{if(!value&&!pid())setTimeout(()=>reconcile('bootstrap-retry').catch(()=>{}),500)}).catch(()=>{});return runtime;
 }

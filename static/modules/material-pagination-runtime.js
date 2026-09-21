@@ -59,6 +59,8 @@ export function installMaterialPaginationRuntime() {
   const baseRenderDatasets = window.renderDatasets424;
   const baseRenderCards = window.renderData412Cards;
   let requestSerial = 0;
+  let pageLoadFlight = null;
+  let pageLoadFlightKey = '';
   let searchTimer = null;
   let suppressCardReload = false;
   let refreshBusy = false;
@@ -326,7 +328,6 @@ export function installMaterialPaginationRuntime() {
 
   async function loadMaterialPage61({reset = false, cursor = undefined, page = undefined} = {}) {
     if (!isPagedDataset()) return {stale: true};
-    const serial = ++requestSerial;
     const info = state.materialPage61;
     if (reset) {
       info.cursor = '';
@@ -335,29 +336,47 @@ export function installMaterialPaginationRuntime() {
       info.page = 1;
     }
     const requestedCursor = cursor === undefined ? info.cursor : (cursor || '');
-    const expectedPage = state.page;
+    const requestedPage = page === undefined ? Math.max(1, Number(info.page) || 1) : Math.max(1, Number(page) || 1);
+    const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedCursor, requestedPage]);
+    if (pageLoadFlight && pageLoadFlightKey === flightKey) return pageLoadFlight;
+
+    const run = (async () => {
+      const serial = ++requestSerial;
+      const expectedPage = state.page;
+      try {
+        const [materialPage, unprocessedTotal, processedTotal] = await Promise.all([
+          fetchMaterialPage61(requestedCursor),
+          fetchStatusTotal61('unprocessed'),
+          fetchStatusTotal61('processed'),
+        ]);
+        if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
+        state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
+        info.cursor = requestedCursor;
+        info.nextCursor = materialPage.next_cursor || '';
+        info.total = Number(materialPage.total || 0);
+        info.unprocessedTotal = unprocessedTotal;
+        info.processedTotal = processedTotal;
+        info.page = requestedPage;
+        transport.lastPage = materialPage;
+        state.materialFilterSignature61 = filterSignature61();
+        rememberDatasetPage61();
+        const mode = renderPagedDataset61();
+        return {stale: false, mode, items: state.images, total: info.total};
+      } catch (error) {
+        if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
+        return {stale: serial !== requestSerial, error};
+      }
+    })();
+
+    pageLoadFlightKey = flightKey;
+    pageLoadFlight = run;
     try {
-      const [materialPage, unprocessedTotal, processedTotal] = await Promise.all([
-        fetchMaterialPage61(requestedCursor),
-        fetchStatusTotal61('unprocessed'),
-        fetchStatusTotal61('processed'),
-      ]);
-      if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
-      state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
-      info.cursor = requestedCursor;
-      info.nextCursor = materialPage.next_cursor || '';
-      info.total = Number(materialPage.total || 0);
-      info.unprocessedTotal = unprocessedTotal;
-      info.processedTotal = processedTotal;
-      if (page !== undefined) info.page = Math.max(1, Number(page) || 1);
-      transport.lastPage = materialPage;
-      state.materialFilterSignature61 = filterSignature61();
-      rememberDatasetPage61();
-      const mode = renderPagedDataset61();
-      return {stale: false, mode, items: state.images, total: info.total};
-    } catch (error) {
-      if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
-      return {stale: serial !== requestSerial, error};
+      return await run;
+    } finally {
+      if (pageLoadFlight === run) {
+        pageLoadFlight = null;
+        pageLoadFlightKey = '';
+      }
     }
   }
 
@@ -561,7 +580,7 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422208',
+    build: 'material-pagination-runtime-422209',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
