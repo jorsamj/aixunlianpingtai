@@ -266,8 +266,8 @@ jobs:
                   '平台标签已创建并选中；仍需确认后才会正式入库',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.128',
-                  '/static/main.mjs?v=42.25.129',
+                  '/static/app.js?v=42.25.130',
+                  '/static/main.mjs?v=42.25.130',
                   '/static/zip-import-bootstrap.mjs?v=422535',
               ),
               'static/main.mjs': (
@@ -275,7 +275,7 @@ jobs:
                   'server-material-import.js?v=422526',
               ),
               'static/zip-import-bootstrap.mjs': (
-                  'zip-import-runtime.js?v=422533',
+                  'zip-import-runtime.js?v=422534',
               ),
           }
           bodies = {
