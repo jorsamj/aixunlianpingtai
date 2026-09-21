@@ -80,6 +80,14 @@ test('dataset cache and full-pool switching are owned by final named navigation 
   assert.ok(stateMutation < taskCenter && taskCenter < render && render < after);
 });
 
+test('identical material page loads are single-flight instead of issuing duplicate GETs', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(runtime, /let pageLoadFlight = null/);
+  assert.match(runtime, /let pageLoadFlightKey = ''/);
+  assert.match(runtime, /if \(pageLoadFlight && pageLoadFlightKey === flightKey\) return pageLoadFlight/);
+  assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedCursor, requestedPage\]\)/);
+});
+
 test('page renders cannot overwrite the current UI version with 42.22.0', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /badge\.textContent='v42\.22\.0'/);

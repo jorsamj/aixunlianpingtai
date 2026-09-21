@@ -93,8 +93,10 @@ test('storage import active task uses one PollRegistry-managed one-shot and re-a
       clear(key) { cleared.push(key); return true; },
     };
     const rendered = [];
+    const taskCenterRows = [];
     globalThis.window = {
       renderStorageImportTask61: task => rendered.push(task),
+      UploadTaskCenterRuntime: {upsert: row => taskCenterRows.push(row)},
     };
     globalThis.fetch = async url => {
       if (String(url).includes('/api/v62/')) {
@@ -126,8 +128,10 @@ test('storage import active task uses one PollRegistry-managed one-shot and re-a
     assert.equal(scheduled.length, 2, 'WAITING_RESOURCE must remain active and re-arm the same managed poll');
     assert.equal(scheduled[1].key, 'storage-import-scan-v61');
 
+    assert.equal(taskCenterRows.at(-1)?.pollOwner, 'storage-import-progress');
     runtime.stop();
     assert.equal(cleared.includes('storage-import-scan-v61'), true);
+    assert.equal(taskCenterRows.at(-1)?.pollOwner, '', 'closing the focused tracker must hand active polling back to the task center');
   } finally {
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
@@ -146,6 +150,8 @@ test('storage import final wiring retires direct polling loops and installs mana
   assert.doesNotMatch(serverSource, /waitForNextPoll\(|pollServerImport\(/);
   assert.match(appSource, /StorageImportProgressRuntime\?\.track/);
   assert.match(appSource, /StorageImportProgressRuntime\?\.stop/);
+  assert.match(progressSource, /pollOwner = 'storage-import-progress'/);
+  assert.match(progressSource, /stop\(\{handoff: false\}\)/);
   assert.match(appSource, /data-import-mode="storage_scan"/);
   assert.match(appSource, /si61RemoteSource/);
   assert.match(appSource, /长期存储凭据/);

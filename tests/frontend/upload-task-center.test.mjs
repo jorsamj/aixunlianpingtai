@@ -89,6 +89,13 @@ test('task center labels terminal cleanup as clear ended, not clear completed', 
   assert.doesNotMatch(runtime, /已清空 \$\{cleared\} 条已完成任务/);
 });
 
+test('task center yields durable polling while a focused runtime owns the task', () => {
+  const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  assert.match(runtime, /row\.serverUrl && !row\.pollOwner/);
+  assert.match(runtime, /delete value\.pollOwner/);
+  assert.match(runtime, /row\?\.pollOwner/);
+});
+
 test('project switching is navigation-owned and has no permanent interval', () => {
   const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');

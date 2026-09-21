@@ -53,6 +53,9 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   const bootstrap=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
   assert.match(source,/window\.doUploadZip426=input=>upload\(input\)/);
   assert.match(source,/window\.doImportData=\(\)=>/);
+  assert.match(source,/const classicImportData = typeof window\.importData === 'function'/);
+  assert.match(source,/if\(classicImportData\)return classicImportData\(\)/);
+  assert.match(source,/导入素材 \/ 标注/);
   assert.match(source,/function forgetTerminal\(\)/);
   assert.match(source,/knownJobs\.delete\(id\)/);
   assert.match(source,/检测到外部标签后，必须先统一到平台标签再正式入库/);

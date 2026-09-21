@@ -296,6 +296,11 @@ jobs:
           grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
           grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs
           grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
+          grep -Fq 'pageLoadFlight && pageLoadFlightKey === flightKey' static/modules/material-pagination-runtime.js
+          grep -Fq 'identical material page loads are single-flight instead of issuing duplicate GETs' tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq "pollOwner = 'storage-import-progress'" static/modules/storage-import-progress.js
+          grep -Fq "stop({handoff: false})" static/modules/storage-import-progress.js
+          grep -Fq "if(classicImportData)return classicImportData()" static/modules/zip-import-runtime.js
           grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
