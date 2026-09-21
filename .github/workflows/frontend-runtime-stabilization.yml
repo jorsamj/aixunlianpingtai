@@ -31,6 +31,7 @@ jobs:
           node --check tests/browser/material-pagination-performance.spec.mjs &&
           node --check tests/browser/algorithm-list-performance.spec.mjs &&
           node --check tests/browser/source-import-completion-scope.spec.mjs &&
+          node --check tests/browser/upload-task-center-performance.spec.mjs &&
           node --check static/modules/material-pagination-runtime.js &&
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
@@ -350,3 +351,4 @@ jobs:
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs
+          tests/browser/upload-task-center-performance.spec.mjs
