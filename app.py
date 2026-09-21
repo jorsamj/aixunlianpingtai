@@ -166,6 +166,11 @@ def _default_data_dir() -> Path:
     return resolve_data_dir(base_dir=BASE_DIR)
 
 DATA_DIR = _default_data_dir()
+DEFAULT_PROJECT_ID = "f1fb1e6fa373"
+DEFAULT_PROJECT_NAME = "默认空间"
+ALLOW_MULTIPLE_PROJECTS_FOR_TESTS = os.environ.get(
+    "MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", ""
+).strip() == "1"
 
 _SHARED_TASK_REPOSITORY: Optional[TaskRepository] = None
 _SHARED_TASK_ARTIFACTS: Optional[ArtifactStore] = None
@@ -2590,12 +2595,28 @@ class ProjectUpdate(BaseModel):
 
 @app.get("/api/projects")
 def list_projects():
-    return read_json(PROJECTS_FILE, [])
+    projects = read_json(PROJECTS_FILE, [])
+    projects = projects if isinstance(projects, list) else []
+    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        return projects
+    canonical = next(
+        (item for item in projects if str(item.get("id") or "") == DEFAULT_PROJECT_ID),
+        projects[0] if projects else None,
+    )
+    if not canonical:
+        return []
+    return [{**canonical, "name": DEFAULT_PROJECT_NAME}]
 
 
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdate):
     project = get_project(project_id)
+    if (
+        not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
+        and payload.name is not None
+        and payload.name.strip() != DEFAULT_PROJECT_NAME
+    ):
+        raise HTTPException(status_code=409, detail="当前仅支持固定的默认空间")
     if payload.name is not None:
         if not payload.name.strip():
             raise HTTPException(status_code=400, detail="项目名称不能为空")
@@ -2608,6 +2629,8 @@ def update_project(project_id: str, payload: ProjectUpdate):
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str):
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        raise HTTPException(status_code=409, detail="默认空间不允许删除")
     projects = read_json(PROJECTS_FILE, [])
     if not any(p.get("id") == project_id for p in projects):
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -3538,6 +3561,10 @@ def system_recommendation():
 
 @app.post("/api/projects")
 def create_project(payload: ProjectCreate):
+    existing_projects = read_json(PROJECTS_FILE, [])
+    existing_projects = existing_projects if isinstance(existing_projects, list) else []
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and existing_projects:
+        raise HTTPException(status_code=409, detail="系统仅支持一个默认空间")
     labels = []
     label_meta = []
     raw_label_meta = payload.label_meta or []
@@ -3574,14 +3601,14 @@ def create_project(payload: ProjectCreate):
                 "hotkey": str(len(labels)) if len(labels) <= 9 else "",
                 "aliases": aliases,
             })
-    if not payload.name.strip():
+    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and not payload.name.strip():
         raise HTTPException(status_code=400, detail="项目名称不能为空")
     # 项目创建不再强制填写标签；标签在数据集/标注环节维护。
-    pid = uuid.uuid4().hex[:12]
+    pid = uuid.uuid4().hex[:12] if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_ID
     ensure_project_dirs(pid)
     project = {
         "id": pid,
-        "name": payload.name.strip(),
+        "name": payload.name.strip() if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_NAME,
         "description": payload.description or "",
         "labels": labels,
         "label_meta": label_meta,
@@ -18276,6 +18303,9 @@ def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     return {"images":image_count,"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
 
 def _v53_choose_project(projects:List[Dict[str,Any]], preferred_project_id:str=""):
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        runtime_projects = list_projects()
+        return runtime_projects[0] if runtime_projects else None
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}
     return choose_project(projects,preferred_project_id,counts)
 
@@ -18311,7 +18341,7 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
     try:
         _V53_BOOTSTRAP_STATUS.update({"status":"running","progress":1,"stage":"读取平台数据","message":"正在读取项目索引","started_at":now_iso(),"finished_at":"","error":""})
-        projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []
+        projects=list_projects()
         if not projects:projects=[create_project(ProjectCreate(name="默认空间",description="系统自动创建",labels=[]))]
         _v53_set_bootstrap(8,"读取平台数据",f"发现 {len(projects)} 个项目")
         active=_v53_choose_project(projects,preferred_project_id)
@@ -18360,7 +18390,7 @@ def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 @app.get("/api/v53/bootstrap/snapshot")
 def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
     global _V53_BOOTSTRAP_SNAPSHOT
-    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
+    projects=list_projects(); requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""; cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
     if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
         return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else choose_project(projects,"",counts); chosen_id=str(chosen.get("id")) if chosen else ""

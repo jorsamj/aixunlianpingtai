@@ -10,7 +10,7 @@ function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html
 function modal(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})}
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}
 function splitPill(s){return `<span class="pill ${s==='val'?'warn':s==='test'?'blue':'ok'}">${splitName(s)}</span>`}
-async function ensureWorkspace(){let projects=await safe(api('/api/projects'))||[];if(!projects.length){const p=await safe(api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认空间',description:'系统自动创建',labels:[]})}));if(p)projects=[p]}state.projects=projects;state.project=projects[0]||null}
+async function ensureWorkspace(){const projects=await api('/api/projects');if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');state.projects=projects;state.project=projects[0]}
 async function loadAll(){await ensureWorkspace();await loadRelated();state.targets=(await safe(api(`/api/training_options${state.project?`?project_id=${state.project.id}`:''}`)))?.targets||[];state.inferenceEnvs=(await safe(api('/api/v16/inference_envs')))?.items||[];state.rec=await safe(api('/api/system/recommendation'));state.localModels=(await safe(api('/api/local_models')))?.items||[]}
 async function loadRelated(){if(!state.project)return;const pid=state.project.id;const info=await safe(api(`/api/projects/${pid}`));if(info){state.project=info.project;state.jobs=info.jobs||[];state.models=info.models||[]}state.datasets=(await safe(api(`/api/projects/${pid}/datasets`)))?.items||[];if(!state.datasets.length){await safe(api(`/api/projects/${pid}/datasets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认数据集',description:'',kind:'mixed'})}));state.datasets=(await safe(api(`/api/projects/${pid}/datasets`)))?.items||[]}if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';state.images=await safe(api(`/api/projects/${pid}/images?dataset_id=${state.datasetId}`))||[];state.labels=(await safe(api(`/api/v12/projects/${pid}/labels`)))?.items||[];state.algorithms=(await safe(api(`/api/v12/projects/${pid}/algorithms`)))?.items||[];state.pending=(await safe(api(`/api/v12/projects/${pid}/publish/pending`)))?.items||[];state.testModels=(await safe(api(`/api/v12/projects/${pid}/test_models`)))?.items||[]}
 function statusName(s){return ({queued:'排队中',running:'训练中',done:'已完成',finished:'已完成',failed:'失败',stopped:'已停止'}[s]||s||'-')}
@@ -1395,7 +1395,6 @@ window.installUsability417=function(){
     try{
       localStorage.setItem(UI_STORE_KEY, JSON.stringify({
         page: state.page,
-        projectId: state.project?.id || lastState.projectId || '',
         datasetId: state.datasetId || '',
         imageFilter: state.imageFilter || 'all',
         ts: Date.now()
@@ -1429,14 +1428,10 @@ window.installUsability417=function(){
 
   const oldEnsureWorkspace = ensureWorkspace;
   ensureWorkspace = async function(){
-    let projects = await safe(api('/api/projects')) || [];
-    if(!projects.length){
-      const p=await safe(api('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认空间',description:'系统自动创建',labels:[]})}));
-      if(p) projects=[p];
-    }
+    const projects = await api('/api/projects');
+    if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');
     state.projects=projects;
-    const saved=lastState.projectId || '';
-    state.project=projects.find(p=>p.id===saved) || projects[0] || null;
+    state.project=projects[0];
     const restoredPage=lastState.page==='自动标注'?'自动标注及清洗':lastState.page;
     if(restoredPage && (RENDER_MAP()[restoredPage]||restoredPage==='自动标注及清洗')) state.page=restoredPage;
     if(lastState.datasetId) state.datasetId=lastState.datasetId;
@@ -1612,7 +1607,7 @@ window.installUsability417=function(){
     const map=v35RenderMap();
     (map[state.page]||map['工作台'])();
     window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-    try{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:state.page,projectId:state.project?.id||'',datasetId:state.datasetId||'',imageFilter:state.imageFilter||'all',ts:Date.now()}))}catch(e){}
+    try{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:state.page,datasetId:state.datasetId||'',imageFilter:state.imageFilter||'all',ts:Date.now()}))}catch(e){}
   };
 
   function setBtnBusy(btn, busy, text){
@@ -3714,7 +3709,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.loadCore412=async function({authoritative=false}={}){
     if(!state.project)await ensureWorkspace(); if(!state.project)return;
     const id=state.project.id;
-    const snapshot=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(id)}${authoritative?'&refresh=true':''}`);
+    const snapshot=await api(`/api/v53/bootstrap/snapshot${authoritative?'?refresh=true':''}`);
     state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];
     state.modelConfigs=snapshot.model_configs||[];state.__coreSnapshotGeneratedAt=Date.parse(snapshot.generated_at||'')||Date.now();
     state.materialSummary61=snapshot.material_summary;state.annotationSummary61=snapshot.annotation_summary;
@@ -3833,11 +3828,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 (()=>{
  const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
  window.__v53BootstrapOwned=true;
- function savedProject(){try{return JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}').projectId||''}catch(e){return ''}}
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0)));return `<div class="boot413"><div class="boot413-card"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span>${esc(st?.stage||'正在启动')}</span><b>${Math.round(p)}%</b></div><i><em style="width:${p}%"></em></i><p>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};if(view)view.innerHTML=boot(st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;if(view)view.innerHTML=boot(st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');x.projectId=state.project?.id||'';x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
- window.loadStartupSnapshot413=async function(force=false){const requested=savedProject();if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferred_project_id:requested,force:true})});if(requested&&!force){try{const direct=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(direct);return direct}catch(e){}}await waitReady();const s=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(s);return s};
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');delete x.projectId;x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ window.loadStartupSnapshot413=async function(force=false){if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});await waitReady();const s=await api('/api/v53/bootstrap/snapshot');apply(s);return s};
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();const page=state.page;if(!state.__extras412)state.__extras412=window.loadPageExtras413?.(page).then(()=>{if(state.page===page)render()}).finally(()=>state.__extras412=null)}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='刷新中';try{await window.refreshCurrentPage413({authoritative:true});render();toast('当前页面已刷新')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
 })();

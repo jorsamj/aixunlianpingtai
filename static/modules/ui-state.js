@@ -14,10 +14,10 @@ function readExisting(storage, key) {
 export function persistUiState(state, {storage = globalThis.localStorage, key = UI_STATE_STORAGE_KEY, now = Date.now} = {}) {
   if (!storage?.setItem) return null;
   const current = readExisting(storage, key);
+  delete current.projectId;
   const next = {
     ...current,
     page: String(state?.page || current.page || ''),
-    projectId: String(state?.project?.id || current.projectId || ''),
     datasetId: String(state?.datasetId || current.datasetId || ''),
     imageFilter: String(state?.imageFilter || current.imageFilter || 'all'),
     ts: Number(now()),
