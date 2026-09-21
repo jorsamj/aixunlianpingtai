@@ -1,5 +1,13 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
 function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   const rowBytes = Math.ceil(width * 3 / 4) * 4;
   const buffer = Buffer.alloc(54 + rowBytes * height);
@@ -73,13 +81,22 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ok: true, job: {id: 'label-browser-job', status: 'queued'}}),
+      body: JSON.stringify({ok: true, task: {
+        task_id: submitted.task_id,
+        kind: 'TRAINING',
+        task_type: 'TRAINING',
+        status: 'QUEUED',
+        persisted_status: 'QUEUED',
+        phase: 'queued',
+        progress_percent: 0,
+      }}),
     });
   });
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
