@@ -3038,7 +3038,7 @@ def _v50_restore_dataset_delete_files(
         source = Path(item["source"])
         staged = Path(item["staged"])
         try:
-            if staged.exists() and not source.exists():
+            if item.get("existed") and staged.exists() and not source.exists():
                 _v50_stage_material_file(staged, source)
             if item.get("existed") and not source.exists():
                 errors.append(f"{item['image_id']}:{item['kind']} 恢复文件缺失")
