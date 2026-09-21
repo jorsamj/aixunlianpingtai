@@ -22,6 +22,7 @@ on:
       - tests/frontend/training-task-visibility-runtime.test.mjs
       - tests/frontend/poll-registry.test.mjs
       - tests/api/test_training_unified_task_overlay.py
+      - tests/api/test_training_job_visibility.py
       - tests/api/test_durable_training_controls.py
       - tests/api/test_training_terminal_runtime.py
       - tests/browser/training-task-performance.spec.mjs
@@ -60,6 +61,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_training_unified_task_overlay.py
+          tests/api/test_training_job_visibility.py
           tests/api/test_durable_training_controls.py
           tests/api/test_training_terminal_runtime.py
       - name: Training visibility and identity focused tests

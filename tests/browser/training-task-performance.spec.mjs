@@ -120,3 +120,68 @@ test('training task refresh and actions patch the final table without rebuilding
   expect(apiRequests.some(row => row.includes('/materials'))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('hard refresh restores a live training task even when the bootstrap snapshot is stale and empty', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '训练任务'}));
+  });
+
+  let bootstrapRequests = 0;
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    bootstrapRequests += 1;
+    const response = await route.fetch();
+    const payload = await response.json();
+    payload.jobs = [];
+    payload.generated_at = '2026-09-21T00:00:00Z';
+    await route.fulfill({
+      response,
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    });
+  });
+
+  let jobRequests = 0;
+  await page.route(/\/api\/projects\/[^/]+\/jobs$/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    jobRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'live-after-reload',
+        task_id: 'live-after-reload',
+        status: 'running',
+        task_status: 'RUNNING',
+        asset_algorithm_name: '刷新后仍可见训练',
+        task_name: '运行中任务',
+        framework: 'ultralytics',
+        queue_priority: 3,
+        priority_scheme: 'lower_number_first',
+        progress_percent: 37,
+        current_epoch: 11,
+        total_epochs: 30,
+        elapsed_seconds: 80,
+        eta_seconds: 140,
+        phase: 'training',
+        current_item: 'Epoch 11/30',
+        created_at: '2026-09-21T00:00:00Z',
+        started_at: '2026-09-21T00:00:10Z',
+      }]),
+    });
+  });
+
+  await page.goto('/');
+
+  await expect(page.locator('#title')).toContainText('训练任务', {timeout: 15_000});
+  await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
+  await expect(page.locator('[data-job-id="live-after-reload"]')).toContainText('刷新后仍可见训练', {timeout: 10_000});
+  await expect(page.locator('[data-job-id="live-after-reload"]')).toContainText('37%');
+
+  expect(bootstrapRequests).toBeGreaterThan(0);
+  expect(jobRequests).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
+});
