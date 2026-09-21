@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from filelock import FileLock
+
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -170,17 +174,53 @@ class MaterialRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "materials.sqlite3"
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
+        self._initialize()
         self._migrate_legacy_json()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
         database.execute("PRAGMA busy_timeout=30000")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"material repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"material repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(_SCHEMA)
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
