@@ -53,11 +53,13 @@ test('durable task can leave resume wait once backend advances beyond upload pha
 });
 
 
-test('clear completed import history never removes active tasks', () => {
+test('clear ended import history removes every terminal state but preserves active tasks', () => {
   const rows = [
     {id:'running', status:'RUNNING'},
     {id:'done', status:'SUCCEEDED'},
     {id:'failed', status:'FAILED'},
+    {id:'cancelled', status:'CANCELLED'},
+    {id:'interrupted', status:'INTERRUPTED'},
     {id:'waiting', status:'WAITING_RESOURCE'},
   ];
   assert.deepEqual(
@@ -78,6 +80,12 @@ test('terminal ZIP history requires durable backend cleanup before local removal
 });
 
 
+
+test('task center labels terminal cleanup as clear ended, not clear completed', () => {
+  const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  assert.match(runtime, />清空已结束<\/button>/);
+  assert.doesNotMatch(runtime, />清空已完成<\/button>/);
+});
 
 test('project switching is navigation-owned and has no permanent interval', () => {
   const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');

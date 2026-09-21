@@ -87,9 +87,11 @@ jobs:
           grep -Fq 'upload task center stays below modal interaction layer' tests/frontend/import-dock-style.test.mjs
           if grep -Fq 'setInterval(switchProject, 1500)' static/modules/upload-task-center.js; then echo "upload task center project switching must be navigation-owned" >&2; exit 1; fi
           grep -Fq 'uploadTaskCenterRuntime.switchProject?.()' static/main.mjs
-          grep -Fq "upload-task-center.js?v=66004" static/main.mjs
-          grep -Fq "main.mjs?v=42.25.127" static/index.html
+          grep -Fq "upload-task-center.js?v=66005" static/main.mjs
+          grep -Fq "main.mjs?v=42.25.128" static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
+          grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
+          grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
           grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.()' static/modules/upload-task-center.js
           grep -Fq 'function forgetTerminal()' static/modules/zip-import-runtime.js
           grep -Fq 'knownJobs.delete(id)' static/modules/zip-import-runtime.js
