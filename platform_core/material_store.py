@@ -15,7 +15,8 @@ from .annotations import atomic_write_json
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
 _CACHE_GUARD = threading.RLock()
-_ROW_CACHE: dict[Path, tuple[tuple[int, int] | None, list[dict[str, Any]]]] = {}
+_FileSignature = tuple[int, int, int, int, int] | None
+_ROW_CACHE: dict[Path, tuple[_FileSignature, list[dict[str, Any]]]] = {}
 _Result = TypeVar("_Result")
 
 
@@ -38,12 +39,18 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _file_signature(path: Path) -> tuple[int, int] | None:
+def _file_signature(path: Path) -> _FileSignature:
     try:
         stat = path.stat()
     except FileNotFoundError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return (
+        int(stat.st_mtime_ns),
+        int(stat.st_ctime_ns),
+        int(stat.st_size),
+        int(stat.st_ino),
+        int(stat.st_dev),
+    )
 
 
 def _cached_rows_shared(path: Path) -> list[dict[str, Any]]:
