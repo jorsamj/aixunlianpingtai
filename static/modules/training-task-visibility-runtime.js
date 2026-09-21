@@ -75,6 +75,7 @@ export function installTrainingTaskVisibilityRuntime({
   let jobsProjectId = String(state().project?.id || '');
   let refreshSequence = 0;
   let appliedSequence = 0;
+  const renderedRows = new Map();
 
   function sameProject(projectId) {
     return String(state().project?.id || '') === String(projectId || '');
@@ -88,6 +89,110 @@ export function installTrainingTaskVisibilityRuntime({
       root = doc.querySelector?.('.train428-page');
     }
     return root || null;
+  }
+
+  function createTrainingRow(html) {
+    if (!doc?.createElement) return null;
+    const holder = doc.createElement('tbody');
+    holder.innerHTML = String(html || '').trim();
+    return holder.firstElementChild || null;
+  }
+
+  function patchProgressCell(currentCell, nextCell) {
+    const currentTrack = currentCell?.querySelector?.('.progress424');
+    const nextTrack = nextCell?.querySelector?.('.progress424');
+    const currentBar = currentTrack?.querySelector?.('i');
+    const nextBar = nextTrack?.querySelector?.('i');
+    const currentText = currentCell?.querySelector?.('.train428-progress-txt');
+    const nextText = nextCell?.querySelector?.('.train428-progress-txt');
+    if (!currentTrack || !nextTrack || !currentBar || !nextBar || !currentText || !nextText) {
+      currentCell.innerHTML = nextCell.innerHTML;
+      return;
+    }
+
+    currentBar.dataset.progress = nextBar.dataset.progress || '';
+    currentBar.style.transform = nextBar.style.transform;
+    currentText.textContent = nextText.textContent;
+
+    const currentMetrics = currentCell.querySelector?.('.train428-metrics');
+    const nextMetrics = nextCell.querySelector?.('.train428-metrics');
+    if (currentMetrics && nextMetrics) {
+      currentMetrics.textContent = nextMetrics.textContent;
+    } else if (currentMetrics && !nextMetrics) {
+      currentMetrics.remove();
+    } else if (!currentMetrics && nextMetrics) {
+      currentCell.appendChild(nextMetrics.cloneNode(true));
+    }
+  }
+
+  function patchTrainingRow(currentRow, nextRow) {
+    if (!currentRow || !nextRow || currentRow.cells?.length !== nextRow.cells?.length) return nextRow;
+    for (let index = 0; index < nextRow.cells.length; index += 1) {
+      const currentCell = currentRow.cells[index];
+      const nextCell = nextRow.cells[index];
+      if (index === 5) {
+        patchProgressCell(currentCell, nextCell);
+      } else if (currentCell.innerHTML !== nextCell.innerHTML) {
+        currentCell.innerHTML = nextCell.innerHTML;
+      }
+    }
+    return currentRow;
+  }
+
+  function patchRows(body, visible) {
+    const canPatch = Boolean(
+      doc?.createElement
+      && typeof body?.querySelectorAll === 'function'
+      && typeof body?.insertBefore === 'function'
+      && body?.children,
+    );
+    if (!canPatch) {
+      body.innerHTML = visible.map(trainingTaskRow).join('')
+        || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
+      renderedRows.clear();
+      for (const job of visible) renderedRows.set(String(job?.id || ''), trainingTaskRow(job));
+      return;
+    }
+
+    if (!visible.length) {
+      if (!body.querySelector?.('.empty-row')) {
+        body.innerHTML = '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
+      }
+      renderedRows.clear();
+      return;
+    }
+
+    body.querySelector?.('.empty-row')?.remove?.();
+    const existingRows = new Map(
+      [...body.querySelectorAll('tr[data-job-id]')]
+        .map(row => [String(row.dataset?.jobId || ''), row]),
+    );
+    const wanted = new Set();
+
+    visible.forEach((job, index) => {
+      const id = String(job?.id || '');
+      const html = trainingTaskRow(job);
+      wanted.add(id);
+      let row = existingRows.get(id) || null;
+      if (!row) {
+        row = createTrainingRow(html);
+        if (!row) return;
+      } else if (renderedRows.get(id) !== html) {
+        const nextRow = createTrainingRow(html);
+        if (nextRow) row = patchTrainingRow(row, nextRow);
+      }
+
+      const reference = body.children[index] || null;
+      if (row && reference !== row) body.insertBefore(row, reference);
+      renderedRows.set(id, html);
+    });
+
+    for (const [id, row] of existingRows) {
+      if (!wanted.has(id)) row.remove?.();
+    }
+    for (const id of [...renderedRows.keys()]) {
+      if (!wanted.has(id)) renderedRows.delete(id);
+    }
   }
 
   function renderOwned() {
@@ -110,8 +215,7 @@ export function installTrainingTaskVisibilityRuntime({
     historyButton?.classList?.toggle?.('on', tab === 'history');
 
     const visible = visibleTrainingJobs(jobs, tab);
-    body.innerHTML = visible.map(trainingTaskRow).join('')
-      || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
+    patchRows(body, visible);
     return true;
   }
 
@@ -213,6 +317,7 @@ export function installTrainingTaskVisibilityRuntime({
     },
     destroy() {
       destroyed = true;
+      renderedRows.clear();
       runtime.refresh = previous.runtimeRefresh;
       for (const [name, fn] of Object.entries(previous)) {
         if (name === 'runtimeRefresh') continue;

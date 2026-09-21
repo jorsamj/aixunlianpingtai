@@ -80,6 +80,10 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('.train428-table tbody')).toContainText('局部刷新训练');
   await expect(page.locator('.train428-table tbody')).toContainText('37%');
   await expect(page.locator('.train428-page')).toHaveAttribute('data-performance-marker', 'preserve-me');
+  await page.evaluate(() => {
+    window.__trainingStableRow = document.querySelector('[data-job-id="job-focused-1"]');
+    window.__trainingStableProgress = window.__trainingStableRow?.querySelector('.progress424 i') || null;
+  });
 
   const jobRequests = apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`));
   expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs`]);
@@ -111,6 +115,12 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('[data-job-id="job-focused-1"]')).toContainText('已暂停');
   await expect(page.locator('[data-job-id="job-focused-1"]')).toContainText('38%');
   await expect(page.locator('.train428-page')).toHaveAttribute('data-performance-marker', 'preserve-me');
+  expect(await page.evaluate(() => (
+    window.__trainingStableRow === document.querySelector('[data-job-id="job-focused-1"]')
+  ))).toBe(true);
+  expect(await page.evaluate(() => (
+    window.__trainingStableProgress === document.querySelector('[data-job-id="job-focused-1"] .progress424 i')
+  ))).toBe(true);
   expect(apiRequests.filter(row => row.includes(`/api/v48/projects/${projectId}/jobs/job-focused-1/pause`)))
     .toEqual([`POST /api/v48/projects/${projectId}/jobs/job-focused-1/pause`]);
   expect(apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`)))
