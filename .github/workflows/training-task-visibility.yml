@@ -109,6 +109,9 @@ jobs:
           grep -Fq 'test_legacy_remote_training_stop_fails_closed_when_remote_rejects' tests/api/test_durable_training_controls.py
           grep -Fq 'test_legacy_remote_training_stop_commits_local_state_only_after_remote_ack' tests/api/test_durable_training_controls.py
           grep -Fq 'test_success_aliases_are_terminal_and_attempt_version_archive' tests/api/test_training_terminal_runtime.py
+          grep -Fq 'successful_terminal_statuses = {"done", "finished", "completed", "succeeded", "success"}' app.py
+          grep -Fq 'ended_terminal_statuses = successful_terminal_statuses | {"failed", "stopped", "cancelled", "canceled"}' app.py
+          grep -Fq 'test_cancel_aliases_freeze_elapsed_without_fabricating_success_progress' tests/api/test_training_terminal_runtime.py
           grep -Fq '"SUCCESS", "PARTIAL_SUCCESS"' app.py
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py

@@ -923,7 +923,9 @@ def enrich_job_runtime(
             # the same clock representation; durable UTC is the recovery fallback.
             job.setdefault("finished_at", durable.finished_at)
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
-    status = job.get("status") or "queued"
+    successful_terminal_statuses = {"done", "finished", "completed", "succeeded", "success"}
+    ended_terminal_statuses = successful_terminal_statuses | {"failed", "stopped", "cancelled", "canceled"}
+    status = str(job.get("status") or "queued").strip().lower()
     if proc:
         code = proc.poll()
         if code is None and status in {"queued", "waiting", "pending"}:
@@ -937,9 +939,10 @@ def enrich_job_runtime(
             # Re-read after poll() observes exit so a stale in-flight request cannot
             # overwrite that successful result with an inferred failure.
             persisted = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
-            if persisted.get("status") in {"done", "finished", "completed", "failed", "stopped"}:
+            persisted_status = str(persisted.get("status") or "").strip().lower()
+            if persisted_status in ended_terminal_statuses:
                 job = persisted
-                status = job.get("status") or status
+                status = persisted_status
             if status in {"queued", "running", "waiting", "pending"}:
                 # 正常情况下 worker 会写 done/failed；如果服务刚好轮询到进程已退但文件未回写，则兜底。
                 job["status"] = "done" if code == 0 else "failed"
@@ -969,16 +972,16 @@ def enrich_job_runtime(
         persisted_cur = 0
     log_text = _job_log_text(project_id, job_id)
     cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
-    if status in {"done", "finished", "completed"}:
-        # 100% means the task lifecycle is terminal. It must not fabricate 300/300
-        # when Ultralytics legitimately stopped at 180/300.
+    if status in successful_terminal_statuses:
+        # 100% means the task lifecycle is terminal. It must not fabricate the
+        # final epoch number when training legitimately ended early.
         progress = 100
-    elif status in {"failed", "stopped"}:
+    elif status in ended_terminal_statuses:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     else:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
-    finished = _parse_dt_value(job.get("finished_at")) if status in {"done", "finished", "completed", "failed", "stopped"} else None
+    finished = _parse_dt_value(job.get("finished_at")) if status in ended_terminal_statuses else None
     clock = finished or datetime.now()
     elapsed = int((clock - started).total_seconds()) if started else 0
     # 暂停期间不计入真实训练耗时/ETA。
@@ -991,7 +994,7 @@ def enrich_job_runtime(
     eta = None
     if status == "running" and total and cur and elapsed > 0:
         eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
-    elif status in {"done", "finished", "completed", "succeeded", "success", "failed", "stopped"}:
+    elif status in ended_terminal_statuses:
         eta = 0
     elif status == "paused":
         eta = None
@@ -1002,7 +1005,7 @@ def enrich_job_runtime(
     job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
     job["eta_seconds"] = eta
     job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
-    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止"}.get(status, status)
+    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
     if str(job.get("status") or "").lower() in {"done","finished","completed","succeeded","success","failed","stopped"} and job.get("asset_algorithm_id"):
         try:
             _v48_archive_training_version(project_id, job)

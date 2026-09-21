@@ -79,7 +79,7 @@ def test_success_aliases_are_terminal_and_attempt_version_archive(tmp_path, monk
 
     monkeypatch.setattr(app_module, "_v48_archive_training_version", fake_archive)
 
-    for status in ("succeeded", "success"):
+    for status in ("done", "finished", "completed", "succeeded", "success"):
         job = app_module.enrich_job_runtime("project-1", {
             "id": f"terminal-{status}",
             "status": status,
@@ -87,14 +87,41 @@ def test_success_aliases_are_terminal_and_attempt_version_archive(tmp_path, monk
             "started_at": "2026-09-14 10:00:00",
             "finished_at": "2026-09-14 10:10:00",
             "epochs": 30,
-            "current_epoch": 30,
+            "current_epoch": 18,
             "total_epochs": 30,
-            "progress_percent": 100,
+            "progress_percent": 60,
         })
         assert job["status_text"] == "已完成"
+        assert job["progress_percent"] == 100
+        assert job["elapsed_seconds"] == 600
         assert job["eta_seconds"] == 0
 
-    assert [row[1]["status"] for row in archived] == ["succeeded", "success"]
+    assert [row[1]["status"] for row in archived] == [
+        "done", "finished", "completed", "succeeded", "success",
+    ]
+
+
+def test_cancel_aliases_freeze_elapsed_without_fabricating_success_progress(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+
+    for status in ("cancelled", "canceled"):
+        job = app_module.enrich_job_runtime("project-1", {
+            "id": f"terminal-{status}",
+            "status": status,
+            "started_at": "2026-09-14 10:00:00",
+            "finished_at": "2026-09-14 10:10:00",
+            "epochs": 30,
+            "current_epoch": 18,
+            "total_epochs": 30,
+            "progress_percent": 60,
+        })
+        assert job["status_text"] == "已取消"
+        assert job["progress_percent"] == 60
+        assert job["elapsed_seconds"] == 600
+        assert job["eta_seconds"] == 0
 
 
 def test_training_success_rate_uses_all_ended_jobs_without_calling_cancellations_failures():
