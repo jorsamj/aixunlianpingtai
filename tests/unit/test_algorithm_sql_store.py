@@ -90,6 +90,24 @@ def test_ordinary_connection_does_not_negotiate_journal_mode(tmp_path: Path, mon
         connection.close()
 
 
+def test_ready_store_skips_repeated_schema_bootstrap(tmp_path: Path, monkeypatch):
+    project = tmp_path / "projects" / "p-ready"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    AlgorithmSqlStore(json_path).ensure_ready()
+
+    reopened = AlgorithmSqlStore(json_path)
+
+    def forbidden_schema(_connection):
+        raise AssertionError("ready algorithm store must not rerun schema bootstrap")
+
+    monkeypatch.setattr(reopened, "_ensure_schema", forbidden_schema)
+
+    reopened.ensure_ready()
+
+
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
     project = tmp_path / "projects" / "p-concurrent-attach"
     project.mkdir(parents=True)
