@@ -294,6 +294,19 @@ class MaterialRepository:
         legacy = self.project_path / "images.json"
         if not legacy.is_file():
             return
+        # Fast-path the common steady state before touching a potentially large
+        # legacy JSON file. The same predicates are rechecked inside the writer
+        # transaction below, so this optimization cannot reintroduce the race.
+        with closing(self._connect()) as database:
+            migrated = database.execute(
+                "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
+            ).fetchone()
+            existing = int(
+                database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+            )
+        if migrated or existing:
+            return
+
         stat = legacy.stat()
         signature = f"{stat.st_size}:{stat.st_mtime_ns}"
         value = json.loads(legacy.read_text(encoding="utf-8"))
