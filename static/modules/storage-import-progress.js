@@ -109,7 +109,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     const status = statusElement();
     if (status) {
       status.textContent = storageImportProgressText(currentTask);
-      status.dataset.storageImportLive = isTaskActive(currentTask) ? '1' : '0';
+      if (status.dataset) status.dataset.storageImportLive = isTaskActive(currentTask) ? '1' : '0';
     }
     publishTaskCenter(currentTask);
     if (!isTaskActive(currentTask) && typeof window.renderStorageImportTask61 === 'function') {
