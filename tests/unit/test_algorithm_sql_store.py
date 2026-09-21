@@ -1,4 +1,7 @@
 import json
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from platform_core.algorithms import (
@@ -9,6 +12,7 @@ from platform_core.algorithms import (
     save_algorithms,
     update_algorithm,
 )
+import platform_core.algorithm_sql_store as algorithm_sql_store_module
 from platform_core.algorithm_sql_store import AlgorithmSqlStore
 from platform_core.external_algorithm_platform import mirror_products_to_algorithms
 
@@ -40,6 +44,101 @@ def _legacy_rows():
             "updated_at": "2026-09-01T01:00:00Z",
         }
     ]
+
+
+class _ConnectionWithoutJournalMode:
+    def __init__(self, connection):
+        self._connection = connection
+
+    @property
+    def row_factory(self):
+        return self._connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self._connection.row_factory = value
+
+    def execute(self, sql, *args, **kwargs):
+        if "journal_mode" in str(sql).lower():
+            raise AssertionError("ordinary AlgorithmSqlStore._connect() must not touch journal_mode")
+        return self._connection.execute(sql, *args, **kwargs)
+
+    def close(self):
+        return self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+def test_ordinary_connection_does_not_negotiate_journal_mode(tmp_path: Path, monkeypatch):
+    project = tmp_path / "projects" / "p-connect"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    real_connect = sqlite3.connect
+
+    def guarded_connect(*args, **kwargs):
+        return _ConnectionWithoutJournalMode(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(algorithm_sql_store_module.sqlite3, "connect", guarded_connect)
+
+    connection = store._connect()
+    try:
+        assert int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) == 30000
+    finally:
+        connection.close()
+
+
+def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
+    project = tmp_path / "projects" / "p-concurrent-attach"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    store.create_algorithm({
+        "id": "algorithm-concurrent",
+        "name": "并发归档算法",
+        "remark": "",
+        "industry": "测试",
+        "algorithm_type": "yolo_ultralytics",
+        "versions": [],
+        "current_version_id": None,
+        "created_at": "2026-09-21T00:00:00Z",
+        "updated_at": "2026-09-21T00:00:00Z",
+    })
+
+    barrier = threading.Barrier(2)
+
+    def attach(index: int):
+        barrier.wait(timeout=2)
+        return AlgorithmSqlStore(json_path).attach_version(
+            "algorithm-concurrent",
+            {
+                "id": f"version-task-{index}",
+                "task_id": f"task-{index}",
+                "training_status": "SUCCEEDED",
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+                "finished_at": f"2026-09-21T00:00:0{index}Z",
+                "stored_path": f"/models/version-task-{index}/best.pt",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(attach, index) for index in (1, 2)]
+        for future in futures:
+            future.result(timeout=5)
+
+    persisted = AlgorithmSqlStore(json_path).read_one("algorithm-concurrent")
+    assert persisted is not None
+    assert {version["id"] for version in persisted["versions"]} == {
+        "version-task-1",
+        "version-task-2",
+    }
 
 
 def test_legacy_json_is_migrated_losslessly_and_sql_becomes_source_of_truth(tmp_path: Path):
