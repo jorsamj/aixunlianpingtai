@@ -13,3 +13,18 @@ test('deployment conversion UI keeps queued and waiting-resource tasks live and 
   assert.match(source, /j\.status==='waiting_resource'&&j\.resource_wait_reason/);
   assert.match(source, /j\.worker_id\?` · Worker/);
 });
+
+
+test('deployment conversion progress is keyed and compositor-friendly', () => {
+  const start = source.lastIndexOf('function jobRow(j)');
+  const end = source.indexOf('window.renderDeployCenter', start);
+  assert.ok(start >= 0 && end > start);
+  const finalLayer = source.slice(start, end);
+  assert.match(finalLayer, /data-deploy-job-id=/);
+  assert.match(finalLayer, /function patchDeployJobNode\(current,next\)/);
+  assert.match(finalLayer, /currentBar\.style\.transform=nextBar\.style\.transform/);
+  assert.match(finalLayer, /data-progress=/);
+  assert.match(finalLayer, /window\.refreshDeployJobsV39=pollDeployJobs/);
+  assert.doesNotMatch(finalLayer, /deployJobList'\);if\(!box\)return;box\.innerHTML=/);
+  assert.doesNotMatch(finalLayer, /progress-bar"><i style="width:/);
+});

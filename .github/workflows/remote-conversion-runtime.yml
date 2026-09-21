@@ -29,6 +29,7 @@ on:
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
+      - 'tests/browser/deployment-progress-performance.spec.mjs'
       - '.github/workflows/remote-conversion-runtime.yml'
   pull_request:
     branches:
@@ -228,6 +229,8 @@ jobs:
         run: >-
           npx playwright test tests/browser/model-and-conversion.spec.mjs
           --grep "deployment resource editor exposes service-node Agent for RKNN|RKNN Agent INT8 conversion submits frozen calibration selection from the UI"
+          &&
+          npx playwright test tests/browser/deployment-progress-performance.spec.mjs
       - name: Browser guard
         shell: bash
         run: |
