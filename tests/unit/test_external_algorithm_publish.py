@@ -15,6 +15,7 @@ from platform_core.external_algorithm_platform import (
 )
 from platform_core.external_algorithm_publish import (
     _remote_id,
+    DEFAULT_PUBLISH_CONFIG,
     ExternalAlgorithmPublishService,
     ExternalPublicationRepository,
     ExternalPublishConfigPayload,
@@ -46,6 +47,79 @@ def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_name
     config = repository.config()
     assert config["version_list_by_product"] == "/internal/algorithm/algorithm-version/listByProduct/{productId}"
     assert config["weight_list_by_version"] == "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
+
+
+def test_new_external_publish_save_does_not_persist_legacy_storage_fields(tmp_path: Path):
+    repository = ExternalPublicationRepository(tmp_path)
+
+    assert "storage_source_id" not in DEFAULT_PUBLISH_CONFIG
+    assert "public_base_url" not in DEFAULT_PUBLISH_CONFIG
+
+    saved = repository.save_config(ExternalPublishConfigPayload(
+        storage_source_id="legacy-oss",
+        public_base_url="https://legacy.example.com",
+        target_mappings={"onnx": TargetMapping(compute_platform_id="cp-onnx", chip_code="ONNX")},
+    ))
+    durable = json.loads(repository.config_path.read_text(encoding="utf-8"))
+
+    assert "storage_source_id" not in durable
+    assert "public_base_url" not in durable
+    assert "storage_source_id" not in saved
+    assert "public_base_url" not in saved
+    assert durable["target_mappings"]["onnx"]["compute_platform_id"] == "cp-onnx"
+
+
+def test_legacy_external_publish_storage_is_migrated_to_new_owners(tmp_path: Path):
+    repository = ExternalPublicationRepository(tmp_path)
+    repository.config_path.write_text(json.dumps({
+        "schema_version": 2,
+        "storage_source_id": "default_local",
+        "public_base_url": "https://legacy-models.example.com",
+        "target_mappings": {},
+    }), encoding="utf-8")
+    memory = MemorySecretStore()
+    sources = StorageSourceRepository(tmp_path / "storage" / "storage_sources.sqlite3")
+    credentials = SecretCredentialStore(memory)
+
+    service = ExternalAlgorithmPublishService(
+        data_dir=tmp_path,
+        project_dir=lambda pid: _project_dir(tmp_path, pid),
+        algorithms_file=lambda pid: _algorithms_file(tmp_path, pid),
+        external_secret_store_factory=lambda: memory,
+        storage_sources_factory=lambda: sources,
+        storage_credentials_factory=lambda: credentials,
+        client_factory=FakePublishingClient,
+        artifact_url_probe=lambda _url: None,
+    )
+
+    assert service.model_assets.repository.config()["storage_source_id"] == "default_local"
+    source = sources.get("default_local")
+    assert source is not None
+    assert source.config["public_base_url"] == "https://legacy-models.example.com"
+
+
+def test_runtime_ignores_stale_legacy_publish_storage_fields(tmp_path: Path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+    sources = service.storage_sources_factory()
+    source = sources.get("default_local")
+    assert source is not None
+    current_config = dict(source.config)
+    current_config.pop("public_base_url", None)
+    sources.update("default_local", {"config": current_config})
+    service.repository.config_path.write_text(json.dumps({
+        "schema_version": 2,
+        "storage_source_id": "default_local",
+        "public_base_url": "https://stale-legacy.example.com",
+        "target_mappings": {},
+    }), encoding="utf-8")
+
+    state = service._publish_transport_state()
+
+    assert state["ready"] is False
+    assert state["public_base_url"] == ""
+    assert state["storage_source_id"] == "default_local"
 
 
 class FakePublishingClient:

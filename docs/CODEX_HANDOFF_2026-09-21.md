@@ -27,6 +27,8 @@ artifact.object_key
 
 OSS 测试现在执行 `health → PUT → STAT → READ → public Range GET（配置外网地址时）→ DELETE → exists=false`，DELETE 失败不会返回成功。正式发布在任何 `algorithm-version/add` / `algorithm-weight/add` 前，对每个实际 artifact `filePath` 做 Range GET；不可访问时 publication 保持可重试 FAILED，畅联远端不写入。旧 publish 配置中的 source/URL 仅一次性迁移到上述 owner，运行时不再把旧下载网关作为正式 filePath fallback。
 
+Batch 2.1 进一步封口：`ExternalPublishConfigPayload` 仍接受旧 `storage_source_id/public_base_url` 以触发迁移，但 `DEFAULT_PUBLISH_CONFIG` 和任何新 `config.json` 写入均不再保存这两个字段，运行时只读新 owner。正式 Object Key 对空 `project_id/algorithm_id/version_id` fail closed，SHA256 必须是完整 64 位 hexadecimal，immutable 文件名使用完整 SHA256；不得恢复占位 identity 或 16 位截断 hash。Batch 2.1 最小定向验证为 22 passed，无 UI 变更所以未跑浏览器。
+
 最小验证：Python 定向 20 passed，前端定向 9 passed，存储配置 Real Chrome smoke 1 passed；未跑全量 pytest、完整 integration 或全部浏览器。真实阿里云 OSS 凭据/长期公网地址仍需生产环境验证，不得把 mock/local 结果写成真实 OSS E2E。
 
 第三批开始前仍必须先给字段 owner/migration 表；不得直接 DROP、长期 dual-write，或把 provider-specific `external_weight_id` 塞进 Artifact 本体。

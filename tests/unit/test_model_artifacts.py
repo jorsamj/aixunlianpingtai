@@ -121,7 +121,56 @@ def test_artifact_object_key_builder_uses_one_canonical_root_prefix(
     )
     assert f"/{expected_directory}/" in f"/{key}/"
     assert key.count("changlian-ai/artifacts") == 1
+    assert f"/{'a' * 64}-" in key
     assert key.endswith(("-model.rknn", "-best.pt"))
+
+
+@pytest.mark.parametrize(
+    ("field", "project_id", "algorithm_id", "version_id"),
+    [
+        ("project_id", "", "algorithm-1", "version-1"),
+        ("algorithm_id", "project-1", "", "version-1"),
+        ("version_id", "project-1", "algorithm-1", ""),
+    ],
+)
+def test_artifact_object_key_rejects_empty_stable_identity(
+    field: str,
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+):
+    with pytest.raises(PlatformError) as blocked:
+        build_artifact_object_key(
+            root_prefix="changlian-ai/artifacts/",
+            project_id=project_id,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            target="original",
+            sha256="a" * 64,
+            file_name="best.pt",
+        )
+
+    assert blocked.value.code == "MODEL_ARTIFACT_IDENTITY_REQUIRED"
+    assert field in blocked.value.detail
+
+
+@pytest.mark.parametrize(
+    "digest",
+    ["", "a" * 16, "a" * 63, "a" * 65, "g" * 64, "not-a-sha256"],
+)
+def test_artifact_object_key_requires_full_hex_sha256(digest: str):
+    with pytest.raises(PlatformError) as blocked:
+        build_artifact_object_key(
+            root_prefix="changlian-ai/artifacts/",
+            project_id="project-1",
+            algorithm_id="algorithm-1",
+            version_id="version-1",
+            target="original",
+            sha256=digest,
+            file_name="best.pt",
+        )
+
+    assert blocked.value.code == "MODEL_ARTIFACT_HASH_INVALID"
 
 
 def test_public_url_joins_storage_source_base_with_final_object_key_exactly_once():

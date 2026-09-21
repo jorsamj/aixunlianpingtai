@@ -182,7 +182,15 @@ jobs:
           grep -q "test_storage_test_verifies_long_term_delivery_url" tests/unit/test_model_artifacts.py
           grep -q "test_storage_test_rejects_unreadable_delivery_url" tests/unit/test_model_artifacts.py
           grep -q "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE" platform_core/model_artifacts.py
-          grep -Fq 'public_base_url: publicBaseUrl' static/modules/model-artifact-runtime.js
+          grep -Fq 'test_new_external_publish_save_does_not_persist_legacy_storage_fields' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_legacy_external_publish_storage_is_migrated_to_new_owners' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_runtime_ignores_stale_legacy_publish_storage_fields' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'body.pop("storage_source_id", None)' platform_core/external_algorithm_publish.py
+          grep -Fq 'body.pop("public_base_url", None)' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_artifact_object_key_rejects_empty_stable_identity' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_object_key_requires_full_hex_sha256' tests/unit/test_model_artifacts.py
+          grep -Fq 're.fullmatch(r"[0-9a-f]{64}", digest)' platform_core/model_artifacts.py
+          grep -Fq 'immutable_name = f"{digest}-' platform_core/model_artifacts.py
           grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
           grep -Fq '自动归档已启用' static/modules/model-artifact-runtime.js
           grep -Fq "toLowerCase() === 'oss'" static/modules/model-artifact-runtime.js

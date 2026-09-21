@@ -48,6 +48,8 @@
 - [x] Add failing tests for PUT, STAT, READ, DELETE and public URL reachability, including cleanup failure.
 - [x] Implement the real health flow and pre-Weight artifact URL probe.
 - [x] Run focused storage/model-artifact tests and one storage UI smoke if markup changed.
+- [x] Batch 2.1: retain legacy publish storage fields only as migration inputs; remove them from defaults/new durable writes and prove runtime reads only the new owners.
+- [x] Batch 2.1: reject empty project/algorithm/version identities and require a full 64-character hexadecimal SHA256 in canonical object keys.
 
 ### Task 3: Make repositories single-truth owners
 

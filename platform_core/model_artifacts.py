@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 import sqlite3
 import requests
 import tempfile
@@ -111,6 +112,19 @@ def _canonical_prefix(value: Any, default: str = "changlian-ai/artifacts") -> st
     return "/".join(parts)
 
 
+def _required_artifact_identity(value: Any, field: str) -> str:
+    identity = str(value or "").strip()
+    if not identity:
+        raise PlatformError(
+            "MODEL_ARTIFACT_IDENTITY_REQUIRED",
+            "算法产物缺少稳定身份",
+            f"{field} 为空",
+            "生成正式 Object Key 前必须提供非空 project_id、algorithm_id 和 version_id。",
+            422,
+        )
+    return _safe_segment(identity, field.removesuffix("_id"))
+
+
 def build_artifact_object_key(
     *,
     root_prefix: str,
@@ -124,6 +138,9 @@ def build_artifact_object_key(
 ) -> str:
     """Build the final Bucket-relative immutable artifact object key."""
     root = _canonical_prefix(root_prefix)
+    stable_project_id = _required_artifact_identity(project_id, "project_id")
+    stable_algorithm_id = _required_artifact_identity(algorithm_id, "algorithm_id")
+    stable_version_id = _required_artifact_identity(version_id, "version_id")
     normalized_target = str(target or "original").strip().lower()
     normalized_chip = str(chip_code or "").strip().lower()
     if normalized_target in {"original", "training", "best", "last"}:
@@ -147,20 +164,20 @@ def build_artifact_object_key(
         if normalized_chip:
             artifact_directory.append(_safe_segment(normalized_chip, "chip").lower())
     digest = str(sha256 or "").strip().lower()
-    if len(digest) < 16:
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise PlatformError(
             "MODEL_ARTIFACT_HASH_INVALID",
-            "算法产物 SHA256 不完整",
+            "算法产物 SHA256 无效",
             f"sha256={digest or '<empty>'}",
-            "生成不可变 Object Key 前必须完成 SHA256 计算。",
+            "生成不可变 Object Key 前必须提供完整的 64 位 hexadecimal SHA256。",
             422,
         )
-    immutable_name = f"{digest[:16]}-{_safe_segment(Path(str(file_name or 'model.bin')).name, 'model.bin')}"
+    immutable_name = f"{digest}-{_safe_segment(Path(str(file_name or 'model.bin')).name, 'model.bin')}"
     return "/".join([
         root,
-        "projects", _safe_segment(project_id, "project"),
-        "algorithms", _safe_segment(algorithm_id, "algorithm"),
-        "versions", _safe_segment(version_id, "version"),
+        "projects", stable_project_id,
+        "algorithms", stable_algorithm_id,
+        "versions", stable_version_id,
         *artifact_directory,
         immutable_name,
     ])

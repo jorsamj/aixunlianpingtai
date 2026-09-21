@@ -190,6 +190,8 @@ def _canonical_publish_endpoint(value: Any, fallback: str) -> str:
 
 
 class ExternalPublishConfigPayload(BaseModel):
+    # Legacy request compatibility only. Values are migrated to
+    # ModelArtifactConfig / StorageSource and are never persisted here.
     storage_source_id: str = ""
     public_base_url: str = ""
     publish_original_model: bool = True
@@ -200,8 +202,6 @@ class ExternalPublishConfigPayload(BaseModel):
 
 DEFAULT_PUBLISH_CONFIG: Dict[str, Any] = {
     "schema_version": PUBLICATION_SCHEMA_VERSION,
-    "storage_source_id": "",
-    "public_base_url": "",
     "publish_original_model": True,
     "target_mappings": {key: {"compute_platform_id": "", "chip_code": "", "enabled": True} for key in TARGET_KEYS},
     "version_list_by_product": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
@@ -300,6 +300,11 @@ class ExternalPublicationRepository:
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
         previous = self.config()
         body = payload.model_dump()
+        # These fields are accepted only so old clients can trigger migration
+        # in ExternalAlgorithmPublishService. This repository is not their
+        # durable owner and must never write them into config.json again.
+        body.pop("storage_source_id", None)
+        body.pop("public_base_url", None)
         merged_mappings = {
             str(key): dict(value)
             for key, value in (previous.get("target_mappings") or {}).items()
@@ -309,8 +314,6 @@ class ExternalPublicationRepository:
             merged_mappings[str(key)] = dict(value or {})
         body["target_mappings"] = merged_mappings
         body["schema_version"] = PUBLICATION_SCHEMA_VERSION
-        body["public_base_url"] = str(body.get("public_base_url") or "").strip().rstrip("/")
-        body["storage_source_id"] = str(body.get("storage_source_id") or "").strip()
         body["publish_original_model"] = True
         mappings = body.setdefault("target_mappings", {})
         original = dict(mappings.get("original") or {})
