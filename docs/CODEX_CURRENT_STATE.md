@@ -1,5 +1,12 @@
 # Codex Current State
 
+<!-- PUBLICATION_DURABLE_TRUTH_BATCH3_2026_09_21 -->
+> ## CURRENT RESUME POINT — PROVIDER PUBLICATION DURABLE TRUTH BATCH 3 COMPLETE LOCALLY
+>
+> `AlgorithmSqlStore` now owns only local algorithm/version business truth, `ModelArtifactRepository` owns file/OSS truth, and provider-aware `external_version_publications` plus `external_artifact_publications` own remote Version/Weight mappings and retry state. Runtime no longer writes `algorithm_versions.external_algo_version_id/external_publish_status` or `external_model_artifacts`; both remain frozen migration sources. Provider/version and provider/artifact uniqueness are enforced, legacy backfill is idempotent, and conflicting remote IDs become `UNKNOWN` and fail closed before remote mutation.
+>
+> Focused evidence: 60 external-publish unit tests and 5 directly related ModelArtifact tests passed. No full pytest/integration/browser/Actions run. Real OSS and ChangLian production E2E remain OPEN. VERSION remains 42.24.0.
+
 <!-- OSS_CONNECTION_BINDING_BATCH2_2026_09_21 -->
 > ## CURRENT RESUME POINT — OSS CONNECTION/BINDING BATCH 2 COMPLETE LOCALLY
 >

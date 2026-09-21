@@ -54,19 +54,35 @@
 ### Task 3: Make repositories single-truth owners
 
 **Files:**
-- Modify: `platform_core/algorithm_sql_store.py`
 - Modify: `platform_core/model_artifacts.py`
 - Modify: `platform_core/external_algorithm_publish.py`
-- Test: `tests/unit/test_algorithm_sql_store.py`
+- Modify: `.github/workflows/external-algorithm-publish.yml`
 - Test: `tests/unit/test_model_artifacts.py`
 - Test: `tests/unit/test_external_algorithm_publish.py`
 
-- [ ] Before code changes, publish the approved field-owner/migration table: Version identity/external business status in `AlgorithmSqlStore`; file/storage facts in `ModelArtifactStore`; provider-specific Weight mapping/retries/errors in `ExternalPublicationRepository` by `artifact_id`.
-- [ ] Add failing compatibility tests seeded with old publication/artifact rows.
-- [ ] Migrate canonical version fields to `AlgorithmSqlStore`, artifact facts to `ModelArtifactStore`, and provider-specific remote mappings to `ExternalPublicationRepository` in idempotent repository boundaries.
-- [ ] Keep old tables readable only where migration requires it, then enforce one write owner; do not DROP tables or leave long-lived dual writes.
-- [ ] Add permanent guards that reject new dual-write paths and verify restart recovery.
-- [ ] Run only the three focused repository suites and commit.
+- [x] Record the corrected owner matrix: `AlgorithmSqlStore` owns local algorithm/version business facts; `ModelArtifactRepository` owns file/storage facts; `ExternalPublicationRepository` owns provider-specific Version/Weight mappings, outbox, retry, error, and UNKNOWN state.
+- [x] Add failing tests for `provider` identity and `UNIQUE(provider, project_id, algorithm_id, version_id)` on Version publications.
+- [x] Add failing tests for the new `external_artifact_publications` mapping keyed by `UNIQUE(provider, artifact_id)` and prove it stores no file/storage truth.
+- [x] Add failing legacy backfill tests for Version publications and Artifact/Weight mappings, including a second migration run that creates no duplicate rows.
+- [x] Add failing conflict tests proving different legacy/new Version IDs and Weight IDs become `UNKNOWN` with an explicit reconciliation diagnostic and never trigger a remote POST.
+- [x] Implement additive, idempotent schema migration. Keep `algorithm_versions.external_*` columns and `external_model_artifacts` physically present as frozen compatibility sources; do not DROP them.
+- [x] Backfill legacy Artifact file/storage truth into `ModelArtifactRepository`, and backfill only provider-specific remote mapping into `external_artifact_publications` through `artifact_id`.
+- [x] Switch publication status, publish, auto-publish, retry, Weight sync, and rollback readers to the new publication owners.
+- [x] Stop all runtime writes to `algorithm_versions.external_algo_version_id`, `algorithm_versions.external_publish_status`, and `external_model_artifacts`.
+- [x] Project `external_algo_version_id` and `external_publish_status` from `ExternalPublicationRepository` in the service response without writing them back to `AlgorithmSqlStore`.
+- [x] Add permanent source guards for provider identity, single-write ownership, frozen legacy tables, and conflict fail-closed behavior.
+- [x] Run only the directly affected publication/model-artifact test nodes, then commit and safe-push.
+
+**Approved field ownership:**
+
+| Fact | Canonical durable owner | Migration/compatibility rule |
+|---|---|---|
+| Algorithm product/category/provider/analysis relationships | `AlgorithmSqlStore.algorithms` | Publication request snapshots never overwrite algorithm business identity. |
+| Version name/no, bound analysis, training/artifact readiness | `AlgorithmSqlStore.algorithm_versions` | Legacy remote fields remain physical but become read-only migration sources. |
+| Provider Version ID/status/attempts/errors/timestamps | `ExternalPublicationRepository.external_version_publications` | Key and uniqueness include `provider`; conflict becomes `UNKNOWN`, never timestamp-winner. |
+| File name/path/hash/size/storage/object/public URL/storage status | `ModelArtifactRepository.model_artifacts` | Legacy `external_model_artifacts` can seed missing canonical rows once and is then frozen. |
+| Local artifact chip identity | `ModelArtifactRepository.model_artifacts.chip_code` | Represents the actual generated artifact platform. |
+| Provider compute platform/remote chip/Weight ID/sync state | `ExternalPublicationRepository.external_artifact_publications` | Keyed by `provider + artifact_id`; references file truth through `artifact_id` only. |
 
 ### Task 4: Audit and adopt RK3578 where locally proven
 

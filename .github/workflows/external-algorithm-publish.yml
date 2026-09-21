@@ -129,7 +129,21 @@ jobs:
           grep -q 'data-external-publish-automation="1"' static/modules/external-algorithm-publish.js
           grep -q "算力环境来自最近一次新畅联主数据同步" static/modules/external-algorithm-publish.js
           grep -q "require_analysis_identity" platform_core/external_algorithm_publish.py
-          grep -q "_canonical_chip_code(discovered.get(\"chip_code\") or mapping.get(\"chip_code\") or \"\")" platform_core/external_algorithm_publish.py
+          grep -q "external_artifact_publications" platform_core/external_algorithm_publish.py
+          grep -Fq "UNIQUE INDEX IF NOT EXISTS ux_external_version_publication_owner" platform_core/external_algorithm_publish.py
+          grep -Fq "ON external_version_publications(provider, project_id, algorithm_id, version_id)" platform_core/external_algorithm_publish.py
+          grep -Fq "ON external_artifact_publications(provider, artifact_id)" platform_core/external_algorithm_publish.py
+          grep -q "LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN" platform_core/external_algorithm_publish.py
+          if grep -Fq "INSERT INTO external_model_artifacts" platform_core/external_algorithm_publish.py; then echo "legacy external_model_artifacts must remain frozen" >&2; exit 1; fi
+          if grep -Fq "DELETE FROM external_artifact_publications" platform_core/external_algorithm_publish.py; then echo "publication migration history must not be deleted" >&2; exit 1; fi
+          grep -q "test_version_publications_are_unique_per_provider" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_repository_migrates_actual_legacy_schema_with_provider_key_once" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_version_remote_identity_backfills_once" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conflicting_legacy_and_publication_version_ids_fail_closed" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_uses_model_artifact_and_provider_mapping_single_owners" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conflicting_legacy_and_provider_weight_ids_fail_closed" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_artifact_backfill_is_idempotent_and_old_store_is_frozen" tests/unit/test_external_algorithm_publish.py
+          grep -Fq "superseded_by_artifact_id" platform_core/external_algorithm_publish.py
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
@@ -209,7 +223,8 @@ jobs:
           grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
           grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
           grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
-          grep -Fq 'len({row["source_sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'len({row["sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'assert {row["remote_chip_code"] for row in artifacts} == {"RK3568", "RK3576"}' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
           grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
           grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py

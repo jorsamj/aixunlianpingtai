@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from platform_core.external_algorithm_platform import (
     ExternalPlatformConfigPayload,
     ExternalPlatformRepository,
     resolve_external_training_analysis,
+    PROVIDER_CHANGLIAN,
 )
 from platform_core.external_algorithm_publish import (
     _remote_id,
@@ -482,6 +484,367 @@ def _service(
     return service
 
 
+def _version(root: Path, project_id: str = "p1", algorithm_id: str = "a1", version_id: str = "v1"):
+    algorithm = next(
+        row for row in list_algorithms(_algorithms_file(root, project_id))
+        if str(row.get("id") or "") == algorithm_id
+    )
+    version = next(
+        row for row in algorithm.get("versions") or []
+        if str(row.get("id") or "") == version_id
+    )
+    return algorithm, version
+
+
+def test_version_publications_are_unique_per_provider(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    algorithm, version = _version(tmp_path)
+    repository = ExternalPublicationRepository(tmp_path)
+
+    changlian = repository.ensure_publication(
+        provider=PROVIDER_CHANGLIAN,
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+    secondary = repository.ensure_publication(
+        provider="SECONDARY_PROVIDER",
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+
+    assert changlian["provider"] == PROVIDER_CHANGLIAN
+    assert secondary["provider"] == "SECONDARY_PROVIDER"
+    assert changlian["publication_key"] != secondary["publication_key"]
+    with sqlite3.connect(repository.db_path) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM external_version_publications WHERE project_id='p1' AND algorithm_id='a1' AND version_id='v1'"
+        ).fetchone()[0]
+    assert count == 2
+
+
+def test_repository_migrates_actual_legacy_schema_with_provider_key_once(tmp_path: Path):
+    root = tmp_path / "external_algorithm_publish"
+    root.mkdir(parents=True)
+    db_path = root / "publications.sqlite3"
+    legacy_key = hashlib.sha256(b"p1:a1:v1").hexdigest()[:32]
+    with sqlite3.connect(db_path) as database:
+        database.executescript(
+            """
+            CREATE TABLE external_version_publications (
+                publication_key TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                algorithm_id TEXT NOT NULL, version_id TEXT NOT NULL,
+                external_product_id TEXT NOT NULL, external_analysis_id TEXT NOT NULL DEFAULT '',
+                version_name TEXT NOT NULL, external_algo_version_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'PENDING', last_error TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, published_at TEXT
+            );
+            CREATE TABLE external_model_artifacts (
+                artifact_id TEXT PRIMARY KEY, publication_key TEXT NOT NULL,
+                project_id TEXT NOT NULL, algorithm_id TEXT NOT NULL, version_id TEXT NOT NULL,
+                target TEXT NOT NULL, file_name TEXT NOT NULL, source_path TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                compute_platform_id TEXT NOT NULL DEFAULT '', chip_code TEXT NOT NULL DEFAULT '',
+                storage_source_id TEXT NOT NULL DEFAULT '', object_key TEXT NOT NULL DEFAULT '',
+                public_url TEXT NOT NULL DEFAULT '', upload_status TEXT NOT NULL DEFAULT 'PENDING',
+                external_weight_id TEXT NOT NULL DEFAULT '', sync_status TEXT NOT NULL DEFAULT 'PENDING',
+                last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            """
+        )
+        database.execute(
+            """
+            INSERT INTO external_version_publications
+            VALUES (?, 'p1', 'a1', 'v1', 'product-1', 'analysis-1', 'V1',
+                    'remote-v1', 'PUBLISHED', '', 1, '2026-09-21T00:00:00Z',
+                    '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')
+            """,
+            (legacy_key,),
+        )
+        database.execute(
+            """
+            INSERT INTO external_model_artifacts
+            VALUES ('legacy-a1', ?, 'p1', 'a1', 'v1', 'original', 'best.pt',
+                    'C:/models/best.pt', ?, 12, 'cp-rk', 'PYTORCH', 'oss-1',
+                    'legacy/key.pt', 'https://models.example/legacy/key.pt', 'UPLOADED',
+                    'remote-w1', 'SYNCED', '', '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')
+            """,
+            (legacy_key, "a" * 64),
+        )
+
+    first = ExternalPublicationRepository(tmp_path)
+    publication = first.publication("p1", "a1", "v1", provider=PROVIDER_CHANGLIAN)
+    mapping = first.artifact_publication("legacy-a1", provider=PROVIDER_CHANGLIAN)
+    second = ExternalPublicationRepository(tmp_path)
+
+    assert publication["provider"] == PROVIDER_CHANGLIAN
+    assert publication["publication_key"] != legacy_key
+    assert first.legacy_artifact("legacy-a1")["publication_key"] == publication["publication_key"]
+    assert mapping["external_weight_id"] == "remote-w1"
+    with sqlite3.connect(second.db_path) as database:
+        assert database.execute("SELECT COUNT(*) FROM external_version_publications").fetchone()[0] == 1
+        assert database.execute("SELECT COUNT(*) FROM external_artifact_publications").fetchone()[0] == 1
+
+
+def test_legacy_version_remote_identity_backfills_once(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    version = algorithms[0]["versions"][0]
+    version["external_algo_version_id"] = "legacy-version-501"
+    version["external_publish_status"] = "published"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+
+    first_service = _service(tmp_path, memory)
+    first = first_service.publication_status("p1", "a1", "v1")["publication"]
+    second_service = _service(tmp_path, memory)
+    second = second_service.publication_status("p1", "a1", "v1")["publication"]
+
+    assert first["provider"] == PROVIDER_CHANGLIAN
+    assert first["external_algo_version_id"] == "legacy-version-501"
+    assert first["status"] == "PUBLISHED"
+    assert second["publication_key"] == first["publication_key"]
+    with sqlite3.connect(second_service.repository.db_path) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM external_version_publications WHERE provider=? AND project_id='p1' AND algorithm_id='a1' AND version_id='v1'",
+            (PROVIDER_CHANGLIAN,),
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_conflicting_legacy_and_publication_version_ids_fail_closed(tmp_path: Path):
+    FakePublishingClient.reset()
+    _seed_external_algorithm(tmp_path)
+    algorithm, version = _version(tmp_path)
+    repository = ExternalPublicationRepository(tmp_path)
+    publication = repository.ensure_publication(
+        provider=PROVIDER_CHANGLIAN,
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+    repository.patch_publication(
+        publication["publication_key"],
+        external_algo_version_id="new-owner-version-502",
+        status="VERSION_READY",
+    )
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["external_algo_version_id"] = "legacy-version-501"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["publication"]["status"] == "UNKNOWN"
+    assert "MIGRATION_CONFLICT" in status["publication"]["last_error"]
+    with pytest.raises(PlatformError) as captured:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert captured.value.code == "EXTERNAL_PUBLICATION_RECONCILIATION_REQUIRED"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_publish_uses_model_artifact_and_provider_mapping_single_owners(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    status = service.publication_status("p1", "a1", "v1")
+    _, durable_version = _version(tmp_path)
+    artifact = result["artifacts"][0]
+    canonical = service.model_assets.repository.get(artifact["artifact_id"])
+    mapping = service.repository.artifact_publication(
+        artifact["artifact_id"], provider=PROVIDER_CHANGLIAN
+    )
+
+    assert canonical is not None
+    assert canonical["file_name"] == "best.pt"
+    assert canonical["storage_status"] == "UPLOADED"
+    assert mapping["external_weight_id"] == "w-1"
+    assert mapping["sync_status"] == "SYNCED"
+    assert mapping["compute_platform_id"] == "cp-rk"
+    assert mapping["remote_chip_code"] == "PYTORCH"
+    assert "file_name" not in mapping
+    assert "source_path" not in mapping
+    assert "object_key" not in mapping
+    assert "public_url" not in mapping
+    assert "external_algo_version_id" not in durable_version
+    assert "external_publish_status" not in durable_version
+    assert status["version"]["external_algo_version_id"] == "av-1"
+    assert status["version"]["external_publish_status"] == "published"
+    with sqlite3.connect(service.repository.db_path) as database:
+        legacy_count = database.execute("SELECT COUNT(*) FROM external_model_artifacts").fetchone()[0]
+        mapping_columns = {
+            row[1] for row in database.execute("PRAGMA table_info(external_artifact_publications)").fetchall()
+        }
+    assert legacy_count == 0
+    assert not {
+        "file_name", "source_path", "source_sha256", "size_bytes",
+        "storage_source_id", "object_key", "public_url", "upload_status",
+    } & mapping_columns
+
+
+def test_rollback_uses_version_publication_owner(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    algorithm, version = _version(tmp_path)
+
+    assert "external_algo_version_id" not in version
+    result = service.delete_version_for_rollback(
+        project_id="p1", algorithm=algorithm, version=version,
+    )
+
+    assert result["status"] == "deleted"
+    assert result["external_algo_version_id"] == "av-1"
+    assert FakePublishingClient.removed_version_ids == ["av-1"]
+
+
+def test_legacy_artifact_backfill_is_idempotent_and_old_store_is_frozen(tmp_path: Path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    model_path = _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithm, version = _version(tmp_path)
+    publication = service.repository.ensure_publication(
+        provider=PROVIDER_CHANGLIAN,
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+    digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    artifact_id = "legacy-artifact-1"
+    canonical_id = "canonical-artifact-1"
+    service.model_assets.repository.upsert({
+        "artifact_id": canonical_id,
+        "project_id": "p1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "artifact_kind": "original",
+        "target": "original",
+        "chip_code": "",
+        "conversion_job_id": "",
+        "file_name": "best.pt",
+        "source_path": str(model_path),
+        "sha256": digest,
+        "size_bytes": model_path.stat().st_size,
+        "metadata": {},
+    })
+    with sqlite3.connect(service.repository.db_path) as database:
+        database.execute(
+            """
+            INSERT INTO external_model_artifacts
+            (artifact_id, publication_key, project_id, algorithm_id, version_id, target,
+             file_name, source_path, source_sha256, size_bytes, compute_platform_id,
+             chip_code, storage_source_id, object_key, public_url, upload_status,
+             external_weight_id, sync_status, last_error, created_at, updated_at)
+            VALUES (?, ?, 'p1', 'a1', 'v1', 'original', 'best.pt', ?, ?, ?,
+                    'cp-rk', 'PYTORCH', 'default_local', 'legacy/key.pt',
+                    'https://platform.example/legacy/key.pt', 'UPLOADED',
+                    'legacy-weight-701', 'SYNCED', '', '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')
+            """,
+            (artifact_id, publication["publication_key"], str(model_path), digest, model_path.stat().st_size),
+        )
+    migrated_once = _service(tmp_path, memory)
+    migrated_twice = _service(tmp_path, memory)
+
+    canonical = migrated_twice.model_assets.repository.get(canonical_id)
+    mapping = migrated_twice.repository.artifact_publication(
+        canonical_id, provider=PROVIDER_CHANGLIAN
+    )
+    assert migrated_twice.model_assets.repository.get(artifact_id) is None
+    assert canonical["sha256"] == digest
+    assert canonical["object_key"] == "legacy/key.pt"
+    assert mapping["external_weight_id"] == "legacy-weight-701"
+    with sqlite3.connect(migrated_twice.repository.db_path) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM external_artifact_publications WHERE provider=? AND artifact_id=?",
+            (PROVIDER_CHANGLIAN, canonical_id),
+        ).fetchone()[0]
+        legacy_history = database.execute(
+            """
+            SELECT active, superseded_by_artifact_id
+            FROM external_artifact_publications
+            WHERE provider=? AND artifact_id=?
+            """,
+            (PROVIDER_CHANGLIAN, artifact_id),
+        ).fetchone()
+    assert count == 1
+    assert legacy_history == (0, canonical_id)
+    with pytest.raises(PlatformError) as captured:
+        migrated_once.repository.upsert_artifact(
+            publication["publication_key"],
+            {
+                "artifact_id": "new-legacy-write", "project_id": "p1", "algorithm_id": "a1",
+                "version_id": "v1", "target": "original", "file_name": "best.pt",
+                "source_path": str(model_path), "sha256": digest, "size_bytes": model_path.stat().st_size,
+            },
+            {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
+        )
+    assert captured.value.code == "LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN"
+
+
+def test_conflicting_legacy_and_provider_weight_ids_fail_closed(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    published = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    publication = published["publication"]
+    artifact = published["artifacts"][0]
+    canonical = service.model_assets.repository.get(artifact["artifact_id"])
+    assert canonical is not None
+    with sqlite3.connect(service.repository.db_path) as database:
+        database.execute(
+            """
+            INSERT INTO external_model_artifacts
+            (artifact_id, publication_key, project_id, algorithm_id, version_id, target,
+             file_name, source_path, source_sha256, size_bytes, compute_platform_id,
+             chip_code, storage_source_id, object_key, public_url, upload_status,
+             external_weight_id, sync_status, last_error, created_at, updated_at)
+            VALUES (?, ?, 'p1', 'a1', 'v1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UPLOADED',
+                    'conflicting-legacy-weight', 'SYNCED', '', ?, ?)
+            """,
+            (
+                artifact["artifact_id"], publication["publication_key"], canonical["target"],
+                canonical["file_name"], canonical["source_path"], canonical["sha256"],
+                canonical["size_bytes"], artifact["compute_platform_id"], artifact["remote_chip_code"],
+                canonical["storage_source_id"], canonical["object_key"], canonical["public_url"],
+                "2026-09-21T00:00:00Z", "2026-09-21T00:00:00Z",
+            ),
+        )
+
+    version_creates = FakePublishingClient.version_creates
+    weight_creates = FakePublishingClient.weight_creates
+    weight_edits = FakePublishingClient.weight_edits
+    restarted = _service(tmp_path, memory)
+    mapping = restarted.repository.artifact_publication(
+        artifact["artifact_id"], provider=PROVIDER_CHANGLIAN,
+    )
+    assert mapping["sync_status"] == "UNKNOWN"
+    assert "MIGRATION_CONFLICT" in mapping["last_error"]
+
+    with pytest.raises(PlatformError) as captured:
+        restarted.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert captured.value.code == "EXTERNAL_ARTIFACT_PUBLICATION_RECONCILIATION_REQUIRED"
+    assert FakePublishingClient.version_creates == version_creates
+    assert FakePublishingClient.weight_creates == weight_creates
+    assert FakePublishingClient.weight_edits == weight_edits
+
+
 def test_synced_changlian_identity_survives_training_choice_conversion_and_publish(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
@@ -543,6 +906,19 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
     )
 
     publish = _service(tmp_path, memory)
+    # Keep the Windows local-provider test root short enough for the canonical
+    # full-SHA object key. Production OSS keys are not filesystem paths.
+    sources = publish.storage_sources_factory()
+    local_source = sources.get("default_local")
+    assert local_source is not None
+    sources.update("default_local", {
+        "config": {**local_source.config, "root": str(tmp_path / "s")},
+    })
+    publish.model_assets.save_config(ModelArtifactConfigPayload(
+        storage_source_id="default_local",
+        root_prefix="a",
+        auto_upload_enabled=True,
+    ))
     result = publish.publish(
         project_id="p1",
         algorithm_id=algorithm["id"],
@@ -562,7 +938,7 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3576"
     assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
     assert FakePublishingClient.last_weight_payload["filePath"].startswith(
-        "https://platform.example/changlian-ai/artifacts/projects/"
+        "https://platform.example/a/projects/"
     )
 
 
@@ -629,16 +1005,18 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
         "https://platform.example/changlian-ai/artifacts/projects/"
     )
     artifact = next(row for row in result["artifacts"] if row["target"] == "rockchip")
-    assert artifact["upload_status"] == "UPLOADED"
+    assert artifact["storage_status"] == "UPLOADED"
     assert artifact["sync_status"] == "SYNCED"
     assert artifact["compute_platform_id"] == "cp-rk"
-    assert artifact["chip_code"] == "RK3568"
+    assert artifact["chip_code"] == "rk3568"
+    assert artifact["remote_chip_code"] == "RK3568"
     assert artifact["public_url"].startswith("https://platform.example/changlian-ai/artifacts/projects/")
     uploaded = _project_dir(tmp_path, "p1") / artifact["object_key"]
     assert uploaded.read_bytes() == b"converted-rknn"
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
-    assert version["external_publish_status"] == "published"
-    assert version["external_algo_version_id"] == "av-1"
+    assert "external_publish_status" not in version
+    assert "external_algo_version_id" not in version
+    assert result["publication"]["external_algo_version_id"] == "av-1"
 
 
 def test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create(tmp_path: Path):
@@ -741,6 +1119,14 @@ def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_pat
         ],
     }), encoding="utf-8")
     service = _service(tmp_path, memory)
+    # Keep the local-provider test path below the legacy Windows path limit;
+    # the production OSS object key still uses the canonical full SHA256.
+    sources = service.storage_sources_factory()
+    local_source = sources.get("default_local")
+    assert local_source is not None
+    sources.update("default_local", {
+        "config": {**local_source.config, "root": str(tmp_path / "s")},
+    })
 
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
     version = algorithm["versions"][0]
@@ -775,9 +1161,10 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     assert {row["chipCode"] for row in FakePublishingClient.weights if str(row["fileName"]).endswith(".rknn")} == {"RK3568", "RK3576"}
     assert {row["computePlatformId"] for row in FakePublishingClient.weights} == {"cp-rk"}
     artifacts = [row for row in result["artifacts"] if row["target"] == "rockchip"]
-    assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
+    assert {row["chip_code"] for row in artifacts} == {"rk3568", "rk3576"}
+    assert {row["remote_chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
     assert len({row["artifact_id"] for row in artifacts}) == 2
-    assert len({row["source_sha256"] for row in artifacts}) == 1
+    assert len({row["sha256"] for row in artifacts}) == 1
 
 
 def test_publication_status_blocks_stale_changlian_master_data(tmp_path: Path):
@@ -1148,16 +1535,23 @@ def test_weight_recovery_rejects_same_identity_with_different_returned_file_path
     algorithm, version = service._algorithm_version("p1", "a1", "v1")
     publication = service.repository.ensure_publication(project_id="p1", algorithm=algorithm, version=version)
     discovered = service.discover_artifacts("p1", algorithm, version)[0]
-    artifact = service.repository.upsert_artifact(
-        publication["publication_key"],
-        discovered,
-        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
-    )
-    artifact = service.repository.patch_artifact(
-        artifact["artifact_id"],
+    canonical = service.model_assets.repository.upsert({
+        **discovered,
+        "artifact_kind": "original",
+        "conversion_job_id": "",
+        "metadata": {},
+    })
+    canonical = service.model_assets.repository.patch(
+        canonical["artifact_id"],
         public_url="https://models.example/current.pt",
-        upload_status="UPLOADED",
+        storage_status="UPLOADED",
     )
+    mapping = service.repository.ensure_artifact_publication(
+        publication["publication_key"], canonical,
+        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
+        provider=PROVIDER_CHANGLIAN,
+    )
+    artifact = {**canonical, **mapping}
     FakePublishingClient.weights = [{
         "weightId": "same-name-wrong-url",
         "algoVersionId": "remote-v1",
@@ -1172,7 +1566,9 @@ def test_weight_recovery_rejects_same_identity_with_different_returned_file_path
 
     assert error.value.code == "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"
     assert FakePublishingClient.weight_creates == 0
-    stored = service.repository.artifact(artifact["artifact_id"])
+    stored = service.repository.artifact_publication(
+        artifact["artifact_id"], provider=PROVIDER_CHANGLIAN,
+    )
     assert stored["sync_status"] == "UNKNOWN"
 
 
@@ -1185,16 +1581,23 @@ def test_weight_recovery_never_downgrades_when_remote_chip_code_is_empty(tmp_pat
     algorithm, version = service._algorithm_version("p1", "a1", "v1")
     publication = service.repository.ensure_publication(project_id="p1", algorithm=algorithm, version=version)
     discovered = service.discover_artifacts("p1", algorithm, version)[0]
-    artifact = service.repository.upsert_artifact(
-        publication["publication_key"],
-        discovered,
-        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
-    )
-    artifact = service.repository.patch_artifact(
-        artifact["artifact_id"],
+    canonical = service.model_assets.repository.upsert({
+        **discovered,
+        "artifact_kind": "original",
+        "conversion_job_id": "",
+        "metadata": {},
+    })
+    canonical = service.model_assets.repository.patch(
+        canonical["artifact_id"],
         public_url="https://models.example/current.pt",
-        upload_status="UPLOADED",
+        storage_status="UPLOADED",
     )
+    mapping = service.repository.ensure_artifact_publication(
+        publication["publication_key"], canonical,
+        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
+        provider=PROVIDER_CHANGLIAN,
+    )
+    artifact = {**canonical, **mapping}
     FakePublishingClient.weights = [{
         "weightId": "missing-chip",
         "algoVersionId": "remote-v1",
@@ -1266,7 +1669,7 @@ def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path:
     assert marked is True
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"] == "2026-09-17T12:00:00Z"
-    assert version["external_publish_status"] == "pending"
+    assert "external_publish_status" not in version
 
 
 def test_conversion_in_progress_does_not_block_training_version_and_original_weight(tmp_path: Path):
@@ -1596,7 +1999,9 @@ def test_auto_publish_worker_recovers_successful_external_version_without_reques
     assert FakePublishingClient.weight_creates == 1
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"]
-    assert version["external_publish_status"] == "published"
+    assert "external_publish_status" not in version
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "PUBLISHED"
 
 
 def test_rollback_remote_delete_fails_closed_when_same_name_remote_version_is_ambiguous(tmp_path: Path):
@@ -1751,6 +2156,10 @@ def test_publish_reuses_existing_verified_remote_training_object(tmp_path: Path)
     assert after[0]["artifact_id"] == existing["artifact_id"]
     assert FakePublishingClient.weight_creates == 1
     assert FakePublishingClient.weights[0]["filePath"] == existing["public_url"]
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync(
+        "p1", algorithm, version, result["publication"],
+    ) is False
 
 
 def test_publish_blocks_when_version_has_no_persisted_analysis_identity(tmp_path: Path):

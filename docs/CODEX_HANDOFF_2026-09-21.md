@@ -6,6 +6,30 @@
 >
 > 本文件优先于旧文档中的历史 NEXT、Current priority、历史 acceptance SHA、历史部署建议。旧文档仍然保留作为架构与历史证据，但若与本文件及实时 GitHub 冲突，以 **实时 GitHub → 本文件 → 当前 owner 代码** 为准。
 
+## 0D. OSS 第三批：durable truth migration（最新覆盖）
+
+第三批把三层 durable owner 真正落到 schema/runtime，而不是只在文档中约定：
+
+~~~text
+AlgorithmSqlStore
+└─ 本地 Algorithm / Version 业务身份、训练与产物就绪事实
+
+ModelArtifactRepository.model_artifacts
+└─ 文件名、源路径、SHA256、大小、本地 chip、StorageSource、Object Key、public URL、OSS 状态
+
+ExternalPublicationRepository
+├─ external_version_publications：provider-specific Version ID / status / attempts / error
+└─ external_artifact_publications：provider-specific Weight ID / computePlatformId / remote chip / sync state
+~~~
+
+`external_version_publications` 新增 `provider` 与 `version_no`，正式唯一关系是 `provider + project_id + algorithm_id + version_id`；`publication_key` 同样包含 provider。新的 `external_artifact_publications` 只通过 canonical `artifact_id` 引用文件事实，正式唯一关系是 `provider + artifact_id`，不复制 file/path/hash/size/storage/object/public URL。`compute_platform_id` 与 `remote_chip_code` 属于 provider mapping；`model_artifacts.chip_code` 只表示本地产物芯片身份。
+
+迁移为 additive + idempotent：旧 `algorithm_versions.external_algo_version_id/external_publish_status` 和旧 `external_model_artifacts` 物理保留，但只作为兼容迁移源；新 runtime 不再写入。旧 Artifact ID 与 canonical ID 不同时，旧映射保留为 inactive history，并记录 `superseded_by_artifact_id`，不删除历史。旧/新 Version ID 或 Weight ID 冲突时状态进入 `UNKNOWN`，写入明确 `MIGRATION_CONFLICT` 诊断，并在任何远端 POST/DELETE 前 fail closed。
+
+状态接口现在动态投影 `AlgorithmVersion + VersionPublication`；发布、自动发布、UNKNOWN 恢复、Weight 同步和远端回退均读取 publication owner。发布成功不再把远端 ID/status 回写 AlgorithmSqlStore。旧 `external_model_artifacts` 写方法固定返回 `LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN`。
+
+最小验证：外部发布 unit 模块 60 passed；ModelArtifact 直接相关回归 5 passed。没有运行全量 pytest、完整 integration、浏览器或全部 Actions；没有真实畅联/OSS 生产 E2E 声明。`VERSION.txt` 仍为 `42.24.0`。
+
 ## 0C. OSS 第二批：Connection / Artifact Binding 分层（最新覆盖）
 
 第二批已在第一批 HEAD `acbbb077` 之后完成，未进入第三批数据库 owner/migration。正式 owner 现在是：
@@ -31,7 +55,7 @@ Batch 2.1 进一步封口：`ExternalPublishConfigPayload` 仍接受旧 `storage
 
 最小验证：Python 定向 20 passed，前端定向 9 passed，存储配置 Real Chrome smoke 1 passed；未跑全量 pytest、完整 integration 或全部浏览器。真实阿里云 OSS 凭据/长期公网地址仍需生产环境验证，不得把 mock/local 结果写成真实 OSS E2E。
 
-第三批开始前仍必须先给字段 owner/migration 表；不得直接 DROP、长期 dual-write，或把 provider-specific `external_weight_id` 塞进 Artifact 本体。
+第三批 owner/migration 已由上方 0D 完成；下一步不得跳过真实 OSS/畅联环境验证，也不得恢复旧字段双写。
 
 ## 0B. OSS + 新畅联第一批：Version/Weight 正式合同（最新覆盖）
 
