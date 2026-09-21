@@ -47,6 +47,17 @@ class AlgorithmSqlStore:
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
+    def _initialization_complete(self, conn: sqlite3.Connection) -> bool:
+        try:
+            return (
+                self._meta(conn, "schema_version") == str(SCHEMA_VERSION)
+                and self._meta(conn, "legacy_json_migrated") == "1"
+            )
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error).lower():
+                return False
+            raise
+
     def ensure_ready(self) -> None:
         # WAL transition, schema bootstrap and legacy migration are persistent
         # database initialization. Keep them under one store-owned cross-process
@@ -61,6 +72,8 @@ class AlgorithmSqlStore:
                     mode = str(
                         conn.execute("PRAGMA journal_mode").fetchone()[0]
                     ).lower()
+                    if mode == "wal" and self._initialization_complete(conn):
+                        return
                     if mode != "wal":
                         mode = str(
                             conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
