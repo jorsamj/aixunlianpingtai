@@ -43,6 +43,20 @@ class _InlineThread:
             self._alive = False
 
 
+class _DeferredThread:
+    def __init__(self, *, target, name, daemon):
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+
+    def is_alive(self):
+        return False
+
+    def start(self):
+        self.started = True
+
+
 def _project(data_dir: Path, project_id: str):
     root = data_dir / "projects" / project_id
     root.mkdir(parents=True, exist_ok=True)
@@ -89,6 +103,34 @@ def test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer
     assert service.calls[0][0] == "project-1"
     service.due = False
     assert reporter.report() is False
+
+
+def test_auto_sync_reporter_reserves_starting_slot_before_thread_is_alive(tmp_path: Path):
+    _project(tmp_path, "project-1")
+    (tmp_path / "projects.json").write_text('[{"id":"project-1"}]', encoding="utf-8")
+    service = _Service(tmp_path / "integration" / "external_algorithm_platform")
+    created = []
+
+    def thread_factory(**kwargs):
+        thread = _DeferredThread(**kwargs)
+        created.append(thread)
+        return thread
+
+    reporter = ExternalAlgorithmAutoSyncReporter(
+        tmp_path,
+        lambda: object(),
+        service=service,
+        thread_factory=thread_factory,
+    )
+
+    assert reporter.report() is True
+    assert created[0].started is True
+    assert reporter.report() is False
+    assert len(created) == 1
+
+    created[0].target()
+    assert service.calls[0][0] == "project-1"
+    assert reporter._thread is None
 
 
 def test_task_worker_owns_auto_sync_hook_only_on_background_storage_role():
