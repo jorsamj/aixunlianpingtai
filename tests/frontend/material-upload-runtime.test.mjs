@@ -109,5 +109,5 @@ test('upload progress is compositor-friendly and high-frequency transfer events 
   assert.match(runtime, /style\.transform = `scaleX/);
   assert.match(runtime, /data-progress="0\.00"/);
   assert.doesNotMatch(runtime, /node\.style\.width =/);
-  assert.match(styles, /\.up411-bar>i\{width:100%;transform-origin:left center;transition:transform/);
+  assert.match(styles, /\.up411-bar>i(?:,\.zip411-progress>i>em)?\{width:100%;transform-origin:left center;transition:transform/);
 });
