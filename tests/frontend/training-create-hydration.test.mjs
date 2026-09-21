@@ -16,10 +16,15 @@ test('training create inputs require complete ready target and recommendation', 
   }), false);
 });
 
-test('first training open hydrates minimal configuration before legacy modal owner runs', async () => {
+test('first training open paints a shell before parallel hydration and then runs the legacy modal owner', async () => {
   const originalWindow = globalThis.window;
   const calls = [];
   let previousStartCalls = 0;
+  const shellCalls = [];
+  let releaseOptions;
+  let releaseRecommendation;
+  const optionsGate = new Promise(resolve => { releaseOptions = resolve; });
+  const recommendationGate = new Promise(resolve => { releaseRecommendation = resolve; });
   const state = {
     targets: [{id: 'stale', status: 'ready'}],
     rec: null,
@@ -39,21 +44,41 @@ test('first training open hydrates minimal configuration before legacy modal own
       projectId: () => 'project-1',
       request: async url => {
         calls.push(url);
-        if (url.startsWith('/api/training_options')) return {
+        if (url.startsWith('/api/training_options')) {
+          await optionsGate;
+          return {
           targets: [{
             id: 'gpu-a800',
             status: 'ready',
             algorithms: [{key: 'yolo11n'}],
             base_models: [{value: 'yolo11n.pt'}],
           }],
-        };
-        if (url === '/api/system/recommendation') return {device: 'cuda:0'};
+          };
+        }
+        if (url === '/api/system/recommendation') {
+          await recommendationGate;
+          return {device: 'cuda:0'};
+        }
         throw new Error(`unexpected request ${url}`);
       },
+      openShell: (aid, token) => shellCalls.push({aid, token}),
+      isShellCurrent: () => true,
+      closeShell: () => shellCalls.push({closed: true}),
     });
-    const result = await runtime.start('alg-1');
+    const pending = runtime.start('alg-1');
+    assert.equal(previousStartCalls, 0);
+    assert.equal(shellCalls.length, 1);
+    assert.equal(shellCalls[0].aid, 'alg-1');
+    assert.deepEqual(calls, [
+      '/api/training_options?project_id=project-1',
+      '/api/system/recommendation',
+    ]);
+    releaseRecommendation();
+    releaseOptions();
+    const result = await pending;
     assert.equal(result, 'opened');
     assert.equal(previousStartCalls, 1);
+    assert.deepEqual(shellCalls.at(-1), {closed: true});
     assert.deepEqual(calls, [
       '/api/training_options?project_id=project-1',
       '/api/system/recommendation',
@@ -77,11 +102,87 @@ test('subsequent training open reuses hydrated configuration', async () => {
       getState: () => state,
       projectId: () => 'project-1',
       request: async () => { requests += 1; return {}; },
+      openShell: () => {},
+      isShellCurrent: () => true,
+      closeShell: () => {},
     });
     await runtime.start('alg-1');
     await runtime.start('alg-1');
     assert.equal(requests, 0);
     assert.equal(opens, 2);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('external preflight starts in parallel with training options and recommendation', async () => {
+  const originalWindow = globalThis.window;
+  const started = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const state = {
+    algorithms: [{id: 'external-1', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN'}],
+    targets: [],
+    rec: null,
+  };
+  globalThis.window = {startAlgorithmTraining429: () => 'opened'};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      request: async url => {
+        started.push(url);
+        await gate;
+        if (url.startsWith('/api/training_options')) return {targets: [{status: 'ready', algorithms: [{key: 'yolo'}], base_models: []}]};
+        return {device: 'cpu'};
+      },
+      preflight: async aid => { started.push(`preflight:${aid}`); await gate; },
+      openShell: () => started.push('shell'),
+      isShellCurrent: () => true,
+      closeShell: () => {},
+    });
+    const pending = runtime.start('external-1');
+    await Promise.resolve();
+    assert.deepEqual(new Set(started), new Set([
+      'shell',
+      '/api/training_options?project_id=project-1',
+      '/api/system/recommendation',
+      'preflight:external-1',
+    ]));
+    release();
+    await pending;
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('closed or superseded shell cannot open a stale training dialog', async () => {
+  const originalWindow = globalThis.window;
+  const opened = [];
+  const currentTokens = new Set();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const state = {targets: [], rec: null};
+  globalThis.window = {startAlgorithmTraining429: aid => opened.push(aid)};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      request: async url => {
+        await gate;
+        if (url.startsWith('/api/training_options')) return {targets: [{status: 'ready', algorithms: [{key: 'yolo'}], base_models: []}]};
+        return {device: 'cpu'};
+      },
+      openShell: (_aid, token) => currentTokens.add(token),
+      isShellCurrent: token => currentTokens.has(token),
+      closeShell: token => currentTokens.delete(token),
+    });
+    const first = runtime.start('alg-1');
+    currentTokens.clear();
+    const second = runtime.start('alg-2');
+    release();
+    await Promise.all([first, second]);
+    assert.deepEqual(opened, ['alg-2']);
   } finally {
     globalThis.window = originalWindow;
   }

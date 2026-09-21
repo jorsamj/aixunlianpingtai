@@ -4442,9 +4442,10 @@ window.installUsability417?.();
       && ['CHANG_LIAN','CHANGLIAN'].includes(String(currentAlgorithm.provider_type||'').toUpperCase());
     if(externalChangLian){
       try{
-        const preflight=await api(`/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}`);
-        const fresh=preflight?.algorithm;
-        if(!preflight?.ready||!fresh)throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
+        const fresh=window.ExternalAlgorithmPlatformRuntime?.preflightTraining
+          ?await window.ExternalAlgorithmPlatformRuntime.preflightTraining(algorithmId)
+          :(await api(`/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}`))?.algorithm;
+        if(!fresh)throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
         const index=(state.algorithms||[]).findIndex(item=>String(item.id)===algorithmId);
         if(index>=0)state.algorithms[index]=fresh;else state.algorithms=[fresh,...(state.algorithms||[])];
       }catch(error){toast(error.message||'训练算法不存在或已被删除，请刷新算法列表后重试');return false}

@@ -210,6 +210,7 @@ export function installExternalAlgorithmPlatformRuntime({
   let configEditing = false;
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
+  const trainingPreflightCache = new Map();
 
   function currentProjectId() {
     return String(projectId?.() || '');
@@ -297,6 +298,32 @@ export function installExternalAlgorithmPlatformRuntime({
       return {ready: false, status: 'missing', reason: 'algorithm', message: '当前训练算法不存在，请刷新算法列表后重试'};
     }
     return externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
+  }
+
+  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000} = {}) {
+    const pid = currentProjectId();
+    const id = String(algorithmId || '').trim();
+    if (!pid || !id) throw new Error('当前训练算法或项目不可用');
+    const key = `${pid}:${id}`;
+    const cached = trainingPreflightCache.get(key);
+    if (!force && cached?.algorithm && Date.now() - cached.loadedAt < maxAgeMs) return cached.algorithm;
+    if (cached?.promise) return cached.promise;
+    const requester = typeof request === 'function' ? request : url => requestJson(url);
+    const promise = (async () => {
+      const body = await requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`);
+      const fresh = body?.algorithm;
+      if (!body?.ready || !fresh) throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
+      if (currentProjectId() !== pid) throw new Error('当前项目已切换，请重新打开训练窗口');
+      const rows = state().algorithms || [];
+      const index = rows.findIndex(item => String(item?.id || '') === id);
+      if (index >= 0) rows[index] = fresh;
+      else state().algorithms = [fresh, ...rows];
+      trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now()});
+      return fresh;
+    })();
+    trainingPreflightCache.set(key, {promise, loadedAt: Date.now()});
+    try { return await promise; }
+    catch (error) { trainingPreflightCache.delete(key); throw error; }
   }
 
   function categoryMatches(categoryId) {
@@ -1080,6 +1107,7 @@ export function installExternalAlgorithmPlatformRuntime({
     syncNow,
     selectedAnalysisId,
     trainingReadiness,
+    preflightTraining,
     decorateTrainingAnalysisSelector,
     decorateNavigation,
     decorateAlgorithmCards,
@@ -1090,6 +1118,7 @@ export function installExternalAlgorithmPlatformRuntime({
       trainingAnalysisObserver?.disconnect();
       unregisterAlgorithmDecorator?.();
       unregisterAlgorithmDecorator = null;
+      trainingPreflightCache.clear();
       if (window.ExternalAlgorithmPlatformRuntime === runtime) window.ExternalAlgorithmPlatformRuntime = null;
       window.__externalAlgorithmPlatformRuntimeInstalled = false;
     },

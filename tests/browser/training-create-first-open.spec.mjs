@@ -14,10 +14,13 @@ async function seedProject(request) {
   return {project, algorithmId: created.algorithm.id};
 }
 
-test('hard refresh first training open hydrates configuration before showing the dialog', async ({page, request}) => {
+test('hard refresh first training open shows a shell before hydrating configuration', async ({page, request}) => {
   const {project} = await seedProject(request);
   let trainingOptionsCalls = 0;
   let recommendationCalls = 0;
+  let holdHydration = false;
+  let releaseHydration;
+  const hydrationGate = new Promise(resolve => { releaseHydration = resolve; });
 
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const response = await route.fetch();
@@ -28,7 +31,9 @@ test('hard refresh first training open hydrates configuration before showing the
   });
   await page.route('**/api/training_options**', route => {
     trainingOptionsCalls += 1;
-    return route.fulfill({
+    return (async () => {
+      if (holdHydration) await hydrationGate;
+      return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({targets: [{
@@ -47,15 +52,19 @@ test('hard refresh first training open hydrates configuration before showing the
         }],
         base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
       }]})
-    });
+      });
+    })();
   });
   await page.route('**/api/system/recommendation', route => {
     recommendationCalls += 1;
-    return route.fulfill({
+    return (async () => {
+      if (holdHydration) await hydrationGate;
+      return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
-    });
+      });
+    })();
   });
   await page.route('**/api/v62/training-devices', route => route.fulfill({
     status: 200,
@@ -69,12 +78,12 @@ test('hard refresh first training open hydrates configuration before showing the
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422532');
+    .toBe('training-create-hydration-422533');
 
   // Reproduce the user's actual sequence: refresh, then open the training dialog once.
   await page.reload();
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422532');
+    .toBe('training-create-hydration-422533');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   expect(await page.evaluate(() => ({
     targetId: state.targets?.[0]?.id,
@@ -88,9 +97,14 @@ test('hard refresh first training open hydrates configuration before showing the
 
   const beforeOptions = trainingOptionsCalls;
   const beforeRecommendation = recommendationCalls;
+  holdHydration = true;
   const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
 
+  const shell = page.locator('[data-training-create-shell="1"]');
+  await expect(shell).toBeVisible({timeout: 1_000});
+  await expect(shell.getByRole('button', {name: '重试'})).toBeDisabled();
+  releaseHydration();
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('#tr429Target')).toHaveValue('first-open-ultralytics');
@@ -243,7 +257,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     await route.fulfill({
       status: 202,
       contentType: 'application/json',
-      body: JSON.stringify({ok: true, task: {id: 'train_feedback_browser'}}),
+      body: JSON.stringify({ok: true, task: {task_id: submitted.task_id, kind: 'TRAINING', task_type: 'TRAINING', status: 'QUEUED', persisted_status: 'QUEUED', phase: 'queued', progress_percent: 0}}),
     });
   });
 
@@ -303,7 +317,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {const body=route.request().postDataJSON(),count=Array.isArray(body?.image_ids)?body.image_ids.length:0;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({requested_count:count,matched_count:count,eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,label_codes:['smoke'],label_counts:{smoke:count},repository_revision:1})});});
-  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{id:'train_benchmark_browser'}})});});
+  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
   await page.addInitScript(projectId => {localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page:'算法列表'}));}, project.id);
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);

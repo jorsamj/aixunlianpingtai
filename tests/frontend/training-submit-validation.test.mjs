@@ -60,8 +60,10 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 
 test('external ChangLian training re-reads algorithm truth before opening and training log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /\/api\/v63\/external-algorithm-platform\/training-preflight\?project_id=/);
-  assert.match(source, /algorithm_id=\$\{encodeURIComponent\(algorithmId\)\}/);
+  const externalRuntime = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(source, /ExternalAlgorithmPlatformRuntime\?\.preflightTraining/);
+  assert.match(externalRuntime, /training-preflight\?project_id=/);
+  assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
   assert.match(source, /externalChangLian=String\(currentAlgorithm\.source_type/);
   assert.match(source, /if\(externalChangLian\)\{/);
   assert.match(source, /训练算法不存在或已被删除/);

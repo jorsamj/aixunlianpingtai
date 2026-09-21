@@ -214,6 +214,7 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   request: api,
+  preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api}),
   notify,
 });
 window.PlatformCore.runtime.trainingCreateHydrationRuntime = trainingCreateHydrationRuntime;

@@ -19,6 +19,10 @@ export function installTrainingCreateHydrationRuntime({
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
+  preflight,
+  openShell,
+  isShellCurrent,
+  closeShell,
   notify = () => {},
 } = {}) {
   if (typeof window === 'undefined') return null;
@@ -28,6 +32,46 @@ export function installTrainingCreateHydrationRuntime({
   if (typeof previousStart !== 'function') return null;
 
   let inflight = null;
+  let openEpoch = 0;
+  let destroyed = false;
+
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+  const defaultOpenShell = (aid, token) => {
+    const state = getState?.() || {};
+    const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
+    const name = algorithm?.name || '训练任务';
+    window.modal?.(`训练 · ${name}`, `<div class="train429-create train-create-loading" data-training-create-shell="1" data-training-algorithm-id="${escapeHtml(aid)}" data-training-open-token="${token}"><div class="train-create-loading-card"><b>正在准备训练配置</b><span data-training-create-status>正在读取训练资源、推荐配置与算法状态…</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-training-create-retry disabled>重试</button></div></div>`, true);
+  };
+  const shellRoot = (token, aid) => {
+    if (typeof document === 'undefined') return null;
+    const root = document.querySelector?.(`[data-training-create-shell="1"][data-training-open-token="${token}"]`);
+    return root && String(root.dataset?.trainingAlgorithmId || '') === String(aid || '') ? root : null;
+  };
+  const defaultIsShellCurrent = (token, aid) => Boolean(shellRoot(token, aid));
+  const defaultCloseShell = (token, aid) => {
+    if (shellRoot(token, aid)) window.closeModal?.();
+  };
+  const showShell = openShell || defaultOpenShell;
+  const shellIsCurrent = isShellCurrent || defaultIsShellCurrent;
+  const dismissShell = closeShell || defaultCloseShell;
+
+  function renderShellError(token, aid, error) {
+    const root = shellRoot(token, aid);
+    if (!root) return;
+    root.classList?.add?.('error');
+    const status = root.querySelector?.('[data-training-create-status]');
+    if (status) status.textContent = error?.message || String(error);
+    const retry = root.querySelector?.('[data-training-create-retry]');
+    if (retry) {
+      retry.disabled = false;
+      retry.addEventListener?.('click', () => {
+        dismissShell(token, aid);
+        void start(aid);
+      }, {once: true});
+    }
+  }
   const hydrate = async ({force = false} = {}) => {
     const state = getState?.() || {};
     if (!force && trainingCreationInputsReady(state)) return state;
@@ -51,18 +95,43 @@ export function installTrainingCreateHydrationRuntime({
   };
 
   const start = async aid => {
+    const token = ++openEpoch;
+    showShell(aid, token);
     try {
-      await hydrate();
+      const state = getState?.() || {};
+      const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
+      const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
+        && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
+      await Promise.all([
+        hydrate(),
+        externalChangLian && typeof preflight === 'function' ? preflight(aid) : Promise.resolve(null),
+      ]);
     } catch (error) {
-      notify(error?.message || String(error));
+      if (!destroyed && token === openEpoch && shellIsCurrent(token, aid)) {
+        renderShellError(token, aid, error);
+        notify(error?.message || String(error));
+      }
       return null;
     }
+    if (destroyed || token !== openEpoch || !shellIsCurrent(token, aid)) return null;
+    dismissShell(token, aid);
     return previousStart(aid);
   };
 
   window.startAlgorithmTraining429 = start;
   window.startAlgorithmTraining423 = start;
-  const runtime = Object.freeze({hydrate, start, build: 'training-create-hydration-422532'});
+  const runtime = Object.freeze({
+    hydrate,
+    start,
+    build: 'training-create-hydration-422533',
+    destroy() {
+      destroyed = true;
+      openEpoch += 1;
+      if (window.startAlgorithmTraining429 === start) window.startAlgorithmTraining429 = previousStart;
+      if (window.TrainingCreateHydrationRuntime === runtime) window.TrainingCreateHydrationRuntime = null;
+      window.__trainingCreateHydrationInstalled = false;
+    },
+  });
   window.TrainingCreateHydrationRuntime = runtime;
   window.__trainingCreateHydrationInstalled = true;
   return runtime;
