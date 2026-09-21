@@ -1,5 +1,6 @@
 """Process-local, atomic storage for the material index."""
 
+import hashlib
 import json
 import threading
 from copy import deepcopy
@@ -15,7 +16,8 @@ from .annotations import atomic_write_json
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
 _CACHE_GUARD = threading.RLock()
-_FileSignature = tuple[int, int, int, int, int] | None
+_FileMetadata = tuple[int, int, int, int, int] | None
+_FileSignature = tuple[int, int, int, int, int, str] | None
 _ROW_CACHE: dict[Path, tuple[_FileSignature, list[dict[str, Any]]]] = {}
 _Result = TypeVar("_Result")
 
@@ -39,7 +41,7 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _file_signature(path: Path) -> _FileSignature:
+def _file_metadata(path: Path) -> _FileMetadata:
     try:
         stat = path.stat()
     except FileNotFoundError:
@@ -51,6 +53,27 @@ def _file_signature(path: Path) -> _FileSignature:
         int(stat.st_ino),
         int(stat.st_dev),
     )
+
+
+def _content_digest(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _file_signature(path: Path) -> _FileSignature:
+    metadata = _file_metadata(path)
+    if metadata is None:
+        return None
+    digest = _content_digest(path)
+    if digest is None:
+        return None
+    return (*metadata, digest)
 
 
 def _cached_rows_shared(path: Path) -> list[dict[str, Any]]:
