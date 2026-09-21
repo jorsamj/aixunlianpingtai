@@ -1,5 +1,13 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
 test('changlian platform page tests draft credentials before manual sync', async ({page}) => {
   let testedPayload = null;
   let savedPayload = null;
@@ -342,9 +350,10 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
     }),
   }));
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await expect.poll(async () => page.evaluate(() => window.ExternalAlgorithmPlatformRuntime?.config?.()?.mode || ''))

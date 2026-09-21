@@ -11,6 +11,7 @@ sys.path.insert(0, str(project_root))
 test_data_dir = Path(tempfile.mkdtemp(prefix="xjalgo-browser-")).resolve()
 os.environ["MC_TRAIN_DATA_DIR"] = str(test_data_dir)
 os.environ["MC_PLATFORM_VERSION"] = "browser-test"
+os.environ["MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS"] = "1"
 # Runtime detection imports Ultralytics in a child process. Keep its settings
 # inside the isolated test repository as well, instead of depending on (or
 # modifying) the signed-in user's AppData configuration.

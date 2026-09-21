@@ -1,5 +1,25 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
+async function runPredictionWithTestImage(page, name, buffer) {
+  await page.evaluate(async ({fileName, bytes}) => {
+    const input = document.getElementById('predFile');
+    if (!input) throw new Error('prediction file input is unavailable');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([Uint8Array.from(bytes)], fileName, {type: 'image/bmp'}));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+    await window.predict();
+  }, {fileName: name, bytes: [...buffer]});
+}
+
 function bmp(width=96,height=72){
   const rowBytes=Math.ceil(width*3/4)*4;
   const buffer=Buffer.alloc(54+rowBytes*height);
@@ -100,16 +120,17 @@ test('formal version prediction enters reviewed online feedback without automati
     })});
   });
 
-  await page.addInitScript(projectId=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));
-  },project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(()=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+  });
   await page.goto('/');
+  await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
   await page.evaluate(()=>window.setPage('测试发布'));
 
   await expect(page.getByRole('button',{name:'开始测试'})).toBeEnabled();
   await expect(page.getByText('线上抽检 / 反馈',{exact:true})).toBeVisible();
-  await page.locator('#predFile').setInputFiles({name:'camera.bmp',mimeType:'image/bmp',buffer:bmp()});
-  await page.getByRole('button',{name:'开始测试'}).click();
+  await runPredictionWithTestImage(page, 'camera.bmp', bmp());
   await expect(page.getByText('正式算法版本可提交抽检反馈')).toBeVisible();
   await page.getByRole('button',{name:'提交抽检反馈'}).click();
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
@@ -193,12 +214,14 @@ test('false-positive feedback requires explicit all-label negative confirmation'
     }})});
   });
 
-  await page.addInitScript(projectId=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));
-  },project.id);
-  await page.goto('/');await page.evaluate(()=>window.setPage('测试发布'));
-  await page.locator('#predFile').setInputFiles({name:'negative.bmp',mimeType:'image/bmp',buffer:bmp()});
-  await page.getByRole('button',{name:'开始测试'}).click();
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(()=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+  });
+  await page.goto('/');
+  await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
+  await page.evaluate(()=>window.setPage('测试发布'));
+  await runPredictionWithTestImage(page, 'negative.bmp', bmp());
   await page.getByRole('button',{name:'提交抽检反馈'}).click();
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
   await create.locator('#feedbackType63').selectOption('false_positive');
@@ -270,15 +293,16 @@ test('pending reviewed feedback can be dismissed without promotion or training',
     }})});
   });
 
-  await page.addInitScript(projectId=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));
-  },project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(()=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+  });
   await page.goto('/');
+  await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
   await page.evaluate(()=>window.setPage('测试发布'));
-  await page.locator('#predFile').setInputFiles({name:'dismiss.bmp',mimeType:'image/bmp',buffer:bmp()});
   const runButton=page.getByRole('button',{name:'开始测试'});
   await expect(runButton).toBeEnabled();
-  await runButton.click();
+  await runPredictionWithTestImage(page, 'dismiss.bmp', bmp());
   await expect.poll(async()=>page.evaluate(()=>state.lastOnlinePrediction63?.prediction_id||''))
     .toBe('prediction-dismiss-1');
   const feedbackButton=page.getByRole('button',{name:'提交抽检反馈'});
@@ -304,7 +328,8 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
   await page.route('**/api/v16/inference_envs',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[]})}));
   await page.route('**/api/v12/projects/'+encoded+'/test_models*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
   await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
-  await page.addInitScript(projectId=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));},project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(()=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));});
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(projectId=>(state.projects||[]).some(row=>String(row.id)===String(projectId)),project.id)).toBe(true);
   await page.evaluate(projectId=>{
@@ -313,7 +338,7 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
     state.project=selected;
     try{
       const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
-      saved.projectId=projectId;saved.page='测试发布';
+      delete saved.projectId;saved.page='测试发布';
       localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
     }catch(_){}
     window.setPage('测试发布');
@@ -401,9 +426,10 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
     })});
   });
 
-  await page.addInitScript(projectId=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'算法列表'}));
-  },project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(()=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'}));
+  });
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(projectId=>(state.projects||[]).some(row=>String(row.id)===String(projectId)),project.id)).toBe(true);
   await page.evaluate(async projectId=>{
@@ -412,7 +438,7 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
     state.project=selected;
     try{
       const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
-      saved.projectId=projectId;saved.page='算法列表';
+      delete saved.projectId;saved.page='算法列表';
       localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
     }catch(_){}
     await window.AlgorithmListRuntime?.refresh?.({render:false});

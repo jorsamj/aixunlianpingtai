@@ -1,5 +1,13 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
 
 function bmp(width = 128, height = 96) {
   const rowBytes = Math.ceil(width * 3 / 4) * 4;
@@ -413,10 +421,11 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
     });
   });
 
-  await page.addInitScript(projectId => {
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
     localStorage.clear();
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '工作台'}));
-  }, project.id);
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '工作台'}));
+  });
   await page.goto('/');
   await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
   await page.evaluate(() => {
