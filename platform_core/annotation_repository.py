@@ -160,29 +160,39 @@ class AnnotationRepository:
             result['annotation_scope'] = self._default_negative_scope()
         return result
 
-    def get(self, image_id):
-        image_id = self._id(image_id)
-        with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
-        if row:
-            return self._decode_persisted_row(row)
-        path = self.project_path / 'annotations' / f'{image_id}.json'
-        legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-        boxes = legacy.get('boxes') or []
-        state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
-        scope = _normalize_scope(legacy.get('annotation_scope'))
-        if state == 'annotated' and not scope:
-            scope = _normalize_scope(box.get('label') or box.get('code') for box in boxes)
-        if state == 'confirmed_empty' and not scope:
+    def _legacy_record(self, image_id: str) -> dict:
+        path = self.project_path / "annotations" / f"{image_id}.json"
+        legacy = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        boxes = legacy.get("boxes") or []
+        state = legacy.get("annotation_state") or (
+            "annotated" if boxes else "unannotated"
+        )
+        scope = _normalize_scope(legacy.get("annotation_scope"))
+        if state == "annotated" and not scope:
+            scope = _normalize_scope(
+                box.get("label") or box.get("code") for box in boxes
+            )
+        if state == "confirmed_empty" and not scope:
             scope = self._default_negative_scope()
         return {
             **legacy,
-            'image_id': image_id,
-            'boxes': boxes,
-            'annotation_state': state,
-            'annotation_scope': scope,
-            'version': 0,
+            "image_id": image_id,
+            "boxes": boxes,
+            "annotation_state": state,
+            "annotation_scope": scope,
+            "version": 0,
         }
+
+    def get(self, image_id):
+        image_id = self._id(image_id)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM annotations WHERE image_id=?",
+                (image_id,),
+            ).fetchone()
+        if row:
+            return self._decode_persisted_row(row)
+        return self._legacy_record(image_id)
 
     def get_many(self, image_ids):
         ids = list(dict.fromkeys(self._id(value) for value in image_ids))
@@ -196,10 +206,16 @@ class AnnotationRepository:
                 f"SELECT * FROM annotations WHERE image_id IN ({placeholders})",
                 ids,
             ).fetchall()
-        result = {str(row["image_id"]): self._decode_persisted_row(row) for row in rows}
+        result = {
+            str(row["image_id"]): self._decode_persisted_row(row)
+            for row in rows
+        }
         for image_id in ids:
             if image_id not in result:
-                result[image_id] = self.get(image_id)
+                # The batch query already proved this ID is absent from SQLite.
+                # Go straight to legacy JSON fallback instead of opening another
+                # connection and repeating the same SELECT once per missing ID.
+                result[image_id] = self._legacy_record(image_id)
         return result
 
     def _content_payload(self, boxes, annotation_state=None, annotation_scope=None):
