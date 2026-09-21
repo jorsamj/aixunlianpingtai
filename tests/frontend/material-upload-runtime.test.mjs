@@ -89,7 +89,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
   const classic = index.match(/<script src="\/static\/app\.js\?v=([^"]+)"><\/script>/);
   const main = index.match(/<script type="module" src="\/static\/main\.mjs\?v=([^"]+)"><\/script>/);
-  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422529"><\/script>/);
+  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422530"><\/script>/);
   assert.ok(classic && main && upload, 'classic app, main runtime and upload bootstrap must all be loaded');
   assert.equal(classic[1], main[1], 'classic app and main runtime must use the same cache-bust release');
   assert.ok(index.indexOf(classic[0]) < index.indexOf(main[0]), 'main runtime must load after classic app');
@@ -98,4 +98,16 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   assert.match(runtime, /window\.doUploadImages426 = input =>/);
   assert.match(runtime, /window\.uploadData424 = \(\) =>/);
   assert.match(runtime, /openBatch414\(\"ready\"/);
+});
+
+
+test('upload progress is compositor-friendly and high-frequency transfer events are frame-coalesced', () => {
+  const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
+  const styles = fs.readFileSync('static/styles.css', 'utf8');
+  assert.match(runtime, /requestAnimationFrame/);
+  assert.match(runtime, /lastTaskCenterProgressAt >= 150/);
+  assert.match(runtime, /style\.transform = `scaleX/);
+  assert.match(runtime, /data-progress="0\.00"/);
+  assert.doesNotMatch(runtime, /node\.style\.width =/);
+  assert.match(styles, /\.up411-bar>i\{width:100%;transform-origin:left center;transition:transform/);
 });
