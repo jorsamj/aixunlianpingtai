@@ -125,6 +125,66 @@ def test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces():
     assert endpoints.weight_create == "/internal/algorithm/algorithm-weight/add"
 
 
+class NeverCalledSession:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        raise AssertionError("invalid mutation payload must fail before any HTTP request")
+
+
+@pytest.mark.parametrize("missing", ["versionName", "versionNo"])
+def test_version_create_requires_complete_version_identity(missing):
+    session = NeverCalledSession()
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=ChangLianEndpoints(),
+        session=session,
+    )
+    payload = {
+        "analysisId": 101,
+        "versionName": "正式版本 V1",
+        "versionNo": "2026.09.21-001",
+    }
+    payload.pop(missing)
+
+    with pytest.raises(ValueError, match=missing):
+        client.version_create(payload)
+
+    assert session.calls == []
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["algoVersionId", "computePlatformId", "chipCode", "fileName", "filePath"],
+)
+def test_weight_create_requires_all_official_publish_fields(missing):
+    session = NeverCalledSession()
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=ChangLianEndpoints(),
+        session=session,
+    )
+    payload = {
+        "algoVersionId": 501,
+        "computePlatformId": 91,
+        "chipCode": "RK3568",
+        "fileName": "model.rknn",
+        "filePath": "https://models.example/model.rknn",
+    }
+    payload.pop(missing)
+
+    with pytest.raises(ValueError, match=missing):
+        client.weight_create(payload)
+
+    assert session.calls == []
+
+
 def test_changlian_auth_audit_redacts_credentials_before_callback():
     session = FakeSession()
     events = []

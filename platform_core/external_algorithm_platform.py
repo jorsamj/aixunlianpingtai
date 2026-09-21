@@ -354,6 +354,10 @@ def _value_from(body: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
+# Primary documented ChangLian success contract is code=0.  The official
+# compilation only declares an int32 and does not enumerate every success
+# value, so 200/SUCCESS remain explicit legacy compatibility until production
+# verification or a corrected official contract closes that OPEN question.
 SUCCESS_BUSINESS_CODES = {"0", "200", "SUCCESS", "success"}
 
 
@@ -787,6 +791,9 @@ class ChangLianClient:
         has_product = body.get("productId") not in (None, "")
         if has_analysis == has_product:
             raise ValueError("新增算法版本时 analysisId 与 productId 必须二选一")
+        for field in ("versionName", "versionNo"):
+            if not str(body.get(field) or "").strip():
+                raise ValueError(f"新增算法版本必须提供 {field}")
         return self._request("POST", self.endpoints.version_create, auth=True, json=body)
 
     def version_edit(self, payload: Mapping[str, Any]) -> Any:
@@ -820,8 +827,9 @@ class ChangLianClient:
 
     def weight_create(self, payload: Mapping[str, Any]) -> Any:
         body = _dump_weight_payload(payload)
-        if body.get("algoVersionId") in (None, ""):
-            raise ValueError("新增算法权重文件必须提供 algoVersionId")
+        for field in ("algoVersionId", "computePlatformId", "chipCode", "fileName", "filePath"):
+            if body.get(field) in (None, "") or (isinstance(body.get(field), str) and not str(body[field]).strip()):
+                raise ValueError(f"新增算法权重文件必须提供 {field}")
         return self._request("POST", self.endpoints.weight_create, auth=True, json=body)
 
     def weight_edit(self, payload: Mapping[str, Any]) -> Any:

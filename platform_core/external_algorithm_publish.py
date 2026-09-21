@@ -74,6 +74,8 @@ def _remote_data(body: Any) -> Any:
         return body
     code = body.get("code")
     success = body.get("success")
+    # code=0 is the primary contract.  200/SUCCESS are retained only as
+    # legacy compatibility while the official int32 success-code enum is OPEN.
     if success is False or (code is not None and str(code) not in {"0", "200", "SUCCESS", "success"}):
         raise RuntimeError(str(body.get("message") or body.get("msg") or body.get("reason") or "新畅联返回失败"))
     if "data" in body:
@@ -431,6 +433,9 @@ class PublishingChangLianClient(ChangLianClient):
 
     def list_product_versions(self, product_id: Any) -> Any:
         return self.version_list_by_product(product_id)
+
+    def list_analysis_versions(self, analysis_id: Any) -> Any:
+        return self.version_list_by_analysis(analysis_id)
 
     def create_weight(self, payload: Mapping[str, Any]) -> Any:
         return self.weight_create(payload)
@@ -826,34 +831,71 @@ class ExternalAlgorithmPublishService:
         self,
         rows: Iterable[Mapping[str, Any]],
         version_name: str,
+        version_no: str,
         *,
         analysis_id: str = "",
-        require_analysis_identity: bool = False,
+        product_id: str = "",
     ) -> str:
-        matches = [
-            dict(row)
-            for row in rows
-            if str(row.get("versionName") or row.get("versionNo") or row.get("name") or "") == str(version_name)
-        ]
-        if not matches:
-            return ""
+        exact_ids: set[str] = set()
+        incomplete_ids: set[str] = set()
+        incomplete_without_id = 0
         expected_analysis = str(analysis_id or "").strip()
-        if expected_analysis:
-            identified = [
-                row for row in matches
-                if self._remote_version_analysis_id(row)
-            ]
-            exact = [
-                row for row in identified
-                if self._remote_version_analysis_id(row) == expected_analysis
-            ]
-            if len(exact) == 1:
-                return self._remote_version_id(exact[0])
-            if exact or identified or require_analysis_identity:
-                return ""
-        if len(matches) != 1:
-            return ""
-        return self._remote_version_id(matches[0])
+        expected_product = str(product_id or "").strip()
+        for source in rows:
+            row = dict(source)
+            remote_name = str(row.get("versionName") or "").strip()
+            remote_no = str(row.get("versionNo") or "").strip()
+            name_matches = bool(remote_name) and remote_name == str(version_name)
+            number_matches = bool(remote_no) and remote_no == str(version_no)
+            remote_analysis = self._remote_version_analysis_id(row)
+            analysis_matches = not expected_analysis or remote_analysis == expected_analysis
+            remote_product = str(row.get("productId") or row.get("product_id") or "").strip()
+            product_matches = not expected_product or not remote_product or remote_product == expected_product
+            remote_id = self._remote_version_id(row)
+            if name_matches and number_matches and analysis_matches and product_matches:
+                if remote_id:
+                    exact_ids.add(remote_id)
+                else:
+                    incomplete_without_id += 1
+                continue
+
+            # A fully populated, explicitly different identity is another
+            # version, not a recovery candidate.  Only a partial row that
+            # could still be the requested identity makes recovery ambiguous.
+            missing_name = not remote_name
+            missing_number = not remote_no
+            missing_analysis = bool(expected_analysis) and not remote_analysis
+            no_explicit_conflict = (
+                (name_matches or missing_name)
+                and (number_matches or missing_number)
+                and (analysis_matches or missing_analysis)
+                and product_matches
+            )
+            has_identity_overlap = name_matches or number_matches
+            if has_identity_overlap and no_explicit_conflict and (
+                missing_name or missing_number or missing_analysis
+            ):
+                if remote_id:
+                    incomplete_ids.add(remote_id)
+                else:
+                    incomplete_without_id += 1
+
+        unresolved_incomplete_ids = incomplete_ids - exact_ids
+        if (
+            len(exact_ids) == 1
+            and not unresolved_incomplete_ids
+            and not incomplete_without_id
+        ):
+            return next(iter(exact_ids))
+        if len(exact_ids) > 1 or unresolved_incomplete_ids or incomplete_without_id:
+            raise PlatformError(
+                "EXTERNAL_VERSION_RECOVERY_AMBIGUOUS",
+                "无法唯一恢复新畅联算法版本",
+                f"versionName={version_name}; versionNo={version_no}; analysisId={expected_analysis or '-'}; exact={len(exact_ids)}; incomplete={len(unresolved_incomplete_ids) + incomplete_without_id}",
+                "远端候选必须同时匹配 versionName、versionNo 和本地绑定的 analysisId；字段不足或多条候选时平台不会猜测或重复创建。",
+                409,
+            )
+        return ""
 
     @staticmethod
     def _trainable_analysis_ids(algorithm: Mapping[str, Any]) -> set[str]:
@@ -892,19 +934,40 @@ class ExternalAlgorithmPublishService:
         client: PublishingChangLianClient,
         product_id: str,
         version_name: str,
+        version_no: str,
         *,
         analysis_id: str = "",
-        require_analysis_identity: bool = False,
     ) -> str:
+        query_errors: list[str] = []
+        combined: list[Dict[str, Any]] = []
         try:
-            return self._remote_version_match(
-                extract_items(client.list_product_versions(product_id)),
-                version_name,
-                analysis_id=analysis_id,
-                require_analysis_identity=require_analysis_identity,
+            combined.extend(extract_items(client.list_product_versions(product_id)))
+        except Exception as error:
+            query_errors.append(f"listByProduct: {error}")
+        if analysis_id:
+            try:
+                combined.extend(extract_items(client.list_analysis_versions(analysis_id)))
+            except Exception as error:
+                query_errors.append(f"listByAnalysis: {error}")
+
+        recovered = self._remote_version_match(
+            combined,
+            version_name,
+            version_no,
+            analysis_id=analysis_id,
+            product_id=product_id,
+        )
+        if recovered:
+            return recovered
+        if query_errors:
+            raise PlatformError(
+                "EXTERNAL_VERSION_RECOVERY_UNAVAILABLE",
+                "无法查询新畅联算法版本进行幂等恢复",
+                "；".join(query_errors),
+                "恢复查询不可用时平台不会继续新增版本；请恢复新畅联查询接口后重试。",
+                502,
             )
-        except Exception:
-            return ""
+        return ""
 
     def _ensure_external_version(self, publication: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any], client: PublishingChangLianClient) -> str:
         existing = str(publication.get("external_algo_version_id") or "")
@@ -912,6 +975,15 @@ class ExternalAlgorithmPublishService:
             return existing
         product_id = str(algorithm.get("external_product_id") or "")
         version_name = str(version.get("version_name") or version.get("id") or "")
+        version_no = str(version.get("version_no") or "").strip()
+        if not version_name.strip() or not version_no:
+            raise PlatformError(
+                "EXTERNAL_VERSION_IDENTITY_INCOMPLETE",
+                "本地算法版本身份不完整",
+                f"versionName={version_name or '-'}; versionNo={version_no or '-'}",
+                "创建或恢复新畅联版本前必须先持久化非空 versionName 和 versionNo。",
+                409,
+            )
         analysis_id = str(version.get("external_analysis_id") or "").strip()
         if not analysis_id:
             raise PlatformError(
@@ -921,32 +993,32 @@ class ExternalAlgorithmPublishService:
                 "平台不会使用算法当前默认 analysisId 或 productId 猜测历史训练归属。",
                 409,
             )
-        require_analysis_identity = len(self._trainable_analysis_ids(algorithm)) > 1
-        recovered = self._recover_external_version(
-            client,
-            product_id,
-            version_name,
-            analysis_id=analysis_id,
-            require_analysis_identity=require_analysis_identity,
-        )
+        try:
+            recovered = self._recover_external_version(
+                client, product_id, version_name, version_no, analysis_id=analysis_id,
+            )
+        except PlatformError as error:
+            self.repository.patch_publication(
+                str(publication["publication_key"]), status="UNKNOWN", last_error=str(error)
+            )
+            raise
         if recovered:
             self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
             return recovered
         payload: Dict[str, Any] = {
             "versionName": version_name,
-            "versionNo": version_name,
+            "versionNo": version_no,
             "analysisId": analysis_id,
         }
         try:
             response = client.create_algorithm_version(payload)
         except Exception as error:
-            recovered = self._recover_external_version(
-                client,
-                product_id,
-                version_name,
-                analysis_id=analysis_id,
-                require_analysis_identity=require_analysis_identity,
-            )
+            try:
+                recovered = self._recover_external_version(
+                    client, product_id, version_name, version_no, analysis_id=analysis_id,
+                )
+            except PlatformError:
+                recovered = ""
             if recovered:
                 self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
                 return recovered
@@ -957,13 +1029,15 @@ class ExternalAlgorithmPublishService:
             ) from error
         version_id = _remote_id(response, ("algoVersionId", "algorithmVersionId", "versionId", "id"))
         if not version_id:
-            version_id = self._recover_external_version(
-                client,
-                product_id,
-                version_name,
-                analysis_id=analysis_id,
-                require_analysis_identity=require_analysis_identity,
-            )
+            try:
+                version_id = self._recover_external_version(
+                    client, product_id, version_name, version_no, analysis_id=analysis_id,
+                )
+            except PlatformError as error:
+                self.repository.patch_publication(
+                    str(publication["publication_key"]), status="UNKNOWN", last_error=str(error)
+                )
+                raise
         if not version_id:
             self.repository.patch_publication(str(publication["publication_key"]), status="UNKNOWN", last_error="新增版本接口未返回 algoVersionId，且版本列表无法反查")
             raise PlatformError(
@@ -1060,19 +1134,81 @@ class ExternalAlgorithmPublishService:
             patch["sync_status"] = "PENDING"
         return self.repository.patch_artifact(str(artifact["artifact_id"]), **patch)
 
+    @staticmethod
+    def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, str]:
+        payload = {
+            "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
+            "chipCode": _canonical_chip_code(artifact.get("chip_code") or ""),
+            "fileName": str(artifact.get("file_name") or "").strip(),
+            "filePath": str(artifact.get("public_url") or "").strip(),
+        }
+        missing = [field for field, value in payload.items() if not value]
+        if missing:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE",
+                "新畅联权重发布字段不完整",
+                "缺少字段：" + ", ".join(missing),
+                "computePlatformId、chipCode、fileName、filePath 全部具备后才允许创建远端算法版本。",
+                409,
+            )
+        return payload
+
+    @classmethod
+    def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, str]:
+        payload = {
+            "algoVersionId": str(external_version_id or "").strip(),
+            **cls._weight_artifact_payload(artifact),
+        }
+        if not payload["algoVersionId"]:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE",
+                "新畅联权重发布字段不完整",
+                "缺少字段：algoVersionId",
+                "algoVersionId、computePlatformId、chipCode、fileName、filePath 全部具备后才允许调用 algorithm-weight/add。",
+                409,
+            )
+        return payload
+
     def _recover_weight(self, client: PublishingChangLianClient, external_version_id: str, artifact: Mapping[str, Any]) -> str:
         try:
             rows = extract_items(client.list_version_weights(external_version_id))
-        except Exception:
-            return ""
+        except Exception as error:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_RECOVERY_UNAVAILABLE",
+                "无法查询新畅联权重进行幂等恢复",
+                str(error),
+                "恢复查询不可用时平台不会继续新增权重；请恢复 listByVersion 后重试。",
+                502,
+            ) from error
+        exact_ids: set[str] = set()
+        related: list[Mapping[str, Any]] = []
         for row in rows:
             same_file = str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
             same_platform = str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
-            same_chip = not artifact.get("chip_code") or str(row.get("chipCode") or "") == str(artifact.get("chip_code") or "")
-            if same_file and same_platform and same_chip:
-                for key in ("weightId", "algorithmWeightId", "id"):
-                    if row.get(key) not in (None, ""):
-                        return str(row[key])
+            remote_chip = _canonical_chip_code(row.get("chipCode") or "")
+            expected_chip = _canonical_chip_code(artifact.get("chip_code") or "")
+            same_chip = bool(remote_chip) and remote_chip == expected_chip
+            remote_path = str(row.get("filePath") or "").strip()
+            expected_path = str(artifact.get("public_url") or "").strip()
+            same_path = not remote_path or remote_path == expected_path
+            if same_file and same_platform and same_chip and same_path:
+                weight_id = self._remote_weight_id(row)
+                if weight_id:
+                    exact_ids.add(weight_id)
+                else:
+                    related.append(row)
+            elif same_file and same_platform and (not remote_chip or same_chip):
+                related.append(row)
+        if len(exact_ids) > 1 or related:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS",
+                "无法唯一恢复新畅联权重文件",
+                f"fileName={artifact.get('file_name') or '-'}; computePlatformId={artifact.get('compute_platform_id') or '-'}; chipCode={artifact.get('chip_code') or '-'}; exact={len(exact_ids)}; related={len(related)}",
+                "恢复必须严格匹配 fileName、computePlatformId、chipCode；远端返回 filePath 时还必须与当前长期地址一致。",
+                409,
+            )
+        if len(exact_ids) == 1:
+            return next(iter(exact_ids))
         return ""
 
     @staticmethod
@@ -1101,13 +1237,7 @@ class ExternalAlgorithmPublishService:
 
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
         current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)
-        payload = {
-            "algoVersionId": external_version_id,
-            "computePlatformId": str(current.get("compute_platform_id") or ""),
-            "chipCode": str(current.get("chip_code") or ""),
-            "fileName": str(current.get("file_name") or ""),
-            "filePath": str(current.get("public_url") or ""),
-        }
+        payload = self._weight_payload(current, external_version_id)
         external_weight_id = str(current.get("external_weight_id") or "")
         if external_weight_id:
             if str(current.get("sync_status") or "").upper() == "SYNCED":
@@ -1152,13 +1282,22 @@ class ExternalAlgorithmPublishService:
                 sync_status="SYNCED",
                 last_error="",
             )
-        recovered = self._recover_weight(client, external_version_id, current)
+        try:
+            recovered = self._recover_weight(client, external_version_id, current)
+        except PlatformError as error:
+            self.repository.patch_artifact(
+                str(current["artifact_id"]), sync_status="UNKNOWN", last_error=str(error)
+            )
+            raise
         if recovered:
             return self.repository.patch_artifact(str(current["artifact_id"]), external_weight_id=recovered, sync_status="SYNCED", last_error="")
         try:
             response = client.create_weight(payload)
         except Exception as error:
-            recovered = self._recover_weight(client, external_version_id, current)
+            try:
+                recovered = self._recover_weight(client, external_version_id, current)
+            except PlatformError:
+                recovered = ""
             if recovered:
                 return self.repository.patch_artifact(str(current["artifact_id"]), external_weight_id=recovered, sync_status="SYNCED", last_error="")
             self.repository.patch_artifact(str(current["artifact_id"]), sync_status="UNKNOWN", last_error=str(error))
@@ -1168,7 +1307,13 @@ class ExternalAlgorithmPublishService:
             ) from error
         weight_id = _remote_id(response, ("weightId", "algorithmWeightId", "id"))
         if not weight_id:
-            weight_id = self._recover_weight(client, external_version_id, current)
+            try:
+                weight_id = self._recover_weight(client, external_version_id, current)
+            except PlatformError as error:
+                self.repository.patch_artifact(
+                    str(current["artifact_id"]), sync_status="UNKNOWN", last_error=str(error)
+                )
+                raise
         if not weight_id:
             self.repository.patch_artifact(str(current["artifact_id"]), sync_status="UNKNOWN", last_error="新增权重接口未返回 weightId，且列表无法反查")
             raise PlatformError(
@@ -1390,6 +1535,19 @@ class ExternalAlgorithmPublishService:
                 external_product_id=str(algorithm.get("external_product_id") or ""),
                 external_analysis_id=str(version.get("external_analysis_id") or ""),
             )
+        # Weight fields other than the not-yet-created algoVersionId must be
+        # complete before any remote mutation.  Otherwise a rejected Weight
+        # payload could leave an empty ChangLian Version behind.
+        try:
+            for uploaded in uploaded_artifacts:
+                self._weight_artifact_payload(uploaded)
+        except PlatformError as error:
+            self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="FAILED",
+                last_error=str(getattr(error, "message", "") or error)[:2000],
+            )
+            raise
         external_version_id = self._ensure_external_version(publication, algorithm, version, client)
         failures: list[str] = []
         synced = 0
@@ -1510,51 +1668,34 @@ class ExternalAlgorithmPublishService:
         if not external_version_id:
             product_id = str(algorithm.get("external_product_id") or "")
             version_name = str(version.get("version_name") or version_id)
+            version_no = str(version.get("version_no") or "").strip()
             analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
-            try:
-                rows = extract_items(client.list_product_versions(product_id))
-            except Exception as error:
+            if not version_no:
                 raise PlatformError(
-                    "EXTERNAL_VERSION_DELETE_LOOKUP_FAILED",
-                    "回退前无法确认新畅联版本状态",
-                    str(error),
-                    "远端版本状态无法确认时不会删除本地版本；请检查新畅联连接后重试。",
-                    502,
-                ) from error
-            external_version_id = self._remote_version_match(
-                rows,
-                version_name,
-                analysis_id=analysis_id,
-                require_analysis_identity=bool(analysis_id and len(self._algorithm_analysis_ids(algorithm)) > 1),
-            )
-            if not external_version_id:
-                name_matches = [
-                    dict(row)
-                    for row in rows
-                    if str(row.get("versionName") or row.get("versionNo") or row.get("name") or "") == version_name
-                ]
-                if not name_matches:
-                    return {"required": True, "status": "not_present", "external_algo_version_id": ""}
-                identified = [
-                    row for row in name_matches
-                    if self._remote_version_analysis_id(row)
-                ]
-                # Only treat as absent when every same-name remote record has an
-                # explicit, different analysis identity. Otherwise deletion is
-                # ambiguous and local state must remain unchanged.
-                if (
-                    analysis_id
-                    and len(identified) == len(name_matches)
-                    and all(self._remote_version_analysis_id(row) != analysis_id for row in identified)
-                ):
-                    return {"required": True, "status": "not_present", "external_algo_version_id": ""}
+                    "EXTERNAL_VERSION_DELETE_AMBIGUOUS",
+                    "回退前缺少完整的新畅联版本身份",
+                    f"versionName={version_name}; versionNo=-",
+                    "远端删除恢复必须同时具备 versionName、versionNo 和已绑定的 analysisId。",
+                    409,
+                )
+            try:
+                external_version_id = self._recover_external_version(
+                    client,
+                    product_id,
+                    version_name,
+                    version_no,
+                    analysis_id=analysis_id,
+                )
+            except PlatformError as error:
                 raise PlatformError(
                     "EXTERNAL_VERSION_DELETE_AMBIGUOUS",
                     "无法唯一确认要删除的新畅联算法版本，已停止本地删除",
-                    f"version_name={version_name}; matches={len(name_matches)}",
-                    "请先在新畅联核对同名版本及 analysisId；平台不会在远端身份不确定时只删除本地记录。",
+                    str(error),
+                    "请先在新畅联核对 versionName、versionNo 和 analysisId；平台不会在远端身份不确定时只删除本地记录。",
                     409,
-                )
+                ) from error
+            if not external_version_id:
+                return {"required": True, "status": "not_present", "external_algo_version_id": ""}
 
         try:
             client.version_remove([external_version_id])

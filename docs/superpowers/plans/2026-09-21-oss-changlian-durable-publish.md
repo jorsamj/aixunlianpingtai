@@ -18,14 +18,14 @@
 - Test: `tests/unit/test_external_algorithm_publish.py`
 - Test: `tests/unit/test_external_algorithm_platform.py`
 
-- [ ] Add failing tests proving `versionNo` comes from durable `version_no`, Version recovery uses product then analysis results, and a near-match never recovers the wrong remote ID.
-- [ ] Run only the new pytest nodes and confirm the expected contract failures.
-- [ ] Implement a version identity object/helper that matches `versionName`, `versionNo`, and analysis/product identity without issuing a second POST.
-- [ ] Add failing tests proving all five Weight fields are required and recovery requires exact canonical `fileName + computePlatformId + chipCode`.
-- [ ] Run the new nodes and confirm the expected failures.
-- [ ] Add minimal fail-closed validation and strict recovery matching.
-- [ ] Keep `code=200` compatibility, label it in source as legacy/OPEN, and retain tests for both `0` and `200`.
-- [ ] Run focused Version/Weight tests and commit the batch.
+- [x] Add failing tests proving `versionNo` comes from durable `version_no`, Version recovery uses product then analysis results, and a near-match never recovers the wrong remote ID.
+- [x] Run only the new pytest nodes and confirm the expected contract failures.
+- [x] Implement strict matching on `versionName + versionNo + bound analysisId`; product/analysis list endpoints are query paths, not weaker identities.
+- [x] Add failing tests proving all five Weight fields are required and recovery requires exact canonical `fileName + computePlatformId + chipCode`, plus returned `filePath` when present.
+- [x] Run the new nodes and confirm the expected failures.
+- [x] Add minimal fail-closed validation and strict recovery matching, including no remote Version POST when Weight prerequisites are incomplete.
+- [x] Keep `code=200` compatibility, label it in source as legacy/OPEN, and retain tests for both `0` and `200`.
+- [x] Run focused Version/Weight tests and commit the batch.
 
 ### Task 2: Separate OSS connection from artifact binding
 
@@ -42,8 +42,9 @@
 
 - [ ] Add failing tests for StorageSource `public_base_url` and artifact binding default `root_prefix=changlian-ai/artifacts/`.
 - [ ] Implement connection/binding persistence without moving material prefixes.
+- [ ] Record that existing Provider `prefix` remains general/legacy scope, while Artifact Binding `root_prefix` is the sole artifact namespace; the canonical builder must include it exactly once.
 - [ ] Add failing tests for the unified training/onnx/rknn/reports key mapping and immutable filename.
-- [ ] Implement one object-key builder and one public-URL builder; replace existing artifact path concatenation.
+- [ ] Implement one object-key builder and one public-URL builder; upload the already-canonical Bucket-relative key without reapplying Provider `prefix`.
 - [ ] Add failing tests for PUT, STAT, READ, DELETE and public URL reachability, including cleanup failure.
 - [ ] Implement the real health flow and pre-Weight artifact URL probe.
 - [ ] Run focused storage/model-artifact tests and one storage UI smoke if markup changed.
@@ -58,9 +59,10 @@
 - Test: `tests/unit/test_model_artifacts.py`
 - Test: `tests/unit/test_external_algorithm_publish.py`
 
+- [ ] Before code changes, publish the approved field-owner/migration table: Version identity/external business status in `AlgorithmSqlStore`; file/storage facts in `ModelArtifactStore`; provider-specific Weight mapping/retries/errors in `ExternalPublicationRepository` by `artifact_id`.
 - [ ] Add failing compatibility tests seeded with old publication/artifact rows.
-- [ ] Migrate canonical version fields to `AlgorithmSqlStore` and artifact/weight fields to `ModelArtifactStore` in one idempotent transaction boundary per repository.
-- [ ] Keep old outbox tables readable while removing formal-truth writes to their duplicate fields.
+- [ ] Migrate canonical version fields to `AlgorithmSqlStore`, artifact facts to `ModelArtifactStore`, and provider-specific remote mappings to `ExternalPublicationRepository` in idempotent repository boundaries.
+- [ ] Keep old tables readable only where migration requires it, then enforce one write owner; do not DROP tables or leave long-lived dual writes.
 - [ ] Add permanent guards that reject new dual-write paths and verify restart recovery.
 - [ ] Run only the three focused repository suites and commit.
 

@@ -59,6 +59,7 @@ class FakePublishingClient:
     last_version_payload = None
     last_weight_payload = None
     last_version_list_path = None
+    last_analysis_version_list_path = None
     last_version_create_path = None
     last_weight_list_path = None
     last_weight_create_path = None
@@ -80,6 +81,7 @@ class FakePublishingClient:
         cls.last_version_payload = None
         cls.last_weight_payload = None
         cls.last_version_list_path = None
+        cls.last_analysis_version_list_path = None
         cls.last_version_create_path = None
         cls.last_weight_list_path = None
         cls.last_weight_create_path = None
@@ -89,6 +91,16 @@ class FakePublishingClient:
     def list_product_versions(self, product_id):
         type(self).last_version_list_path = f"/internal/algorithm/algorithm-version/listByProduct/{product_id}"
         return {"code": 200, "data": list(self.versions)}
+
+    def list_analysis_versions(self, analysis_id):
+        type(self).last_analysis_version_list_path = f"/internal/algorithm/algorithm-version/listByAnalysis/{analysis_id}"
+        return {
+            "code": 200,
+            "data": [
+                row for row in self.versions
+                if str(row.get("analysisId") or "") == str(analysis_id)
+            ],
+        }
 
     def create_algorithm_version(self, payload):
         type(self).last_version_create_path = "/internal/algorithm/algorithm-version/add"
@@ -253,6 +265,19 @@ class AmbiguousAnalysisRecoveringClient(FakePublishingClient):
         raise RuntimeError("connection reset after server commit")
 
 
+class AnalysisFallbackPublishingClient(FakePublishingClient):
+    analysis_versions = []
+
+    @classmethod
+    def reset(cls):
+        super().reset()
+        cls.analysis_versions = []
+
+    def list_analysis_versions(self, analysis_id):
+        type(self).last_analysis_version_list_path = f"/internal/algorithm/algorithm-version/listByAnalysis/{analysis_id}"
+        return {"code": 0, "data": list(self.analysis_versions)}
+
+
 def _project_dir(root: Path, project_id: str) -> Path:
     path = root / "projects" / project_id
     path.mkdir(parents=True, exist_ok=True)
@@ -307,6 +332,7 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
         "versions": [{
             "id": version_id,
             "version_name": "20260917120000",
+            "version_no": "20260917120000",
             "training_status": "SUCCEEDED",
             "artifact_verified": True,
             "stored_path": str(model),
@@ -369,7 +395,7 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
         storage_source_id="default_local",
         public_base_url="https://platform.example",
         target_mappings={
-            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code="PYTORCH"),
             "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
@@ -415,6 +441,7 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
     algorithm["versions"] = [{
         "id": "v-live",
         "version_name": "20260919230000",
+        "version_no": "20260919230000",
         "training_status": "SUCCEEDED",
         "artifact_verified": True,
         "stored_path": str(model),
@@ -551,7 +578,7 @@ def test_published_weight_mapping_change_edits_existing_weight_without_duplicate
         storage_source_id="default_local",
         public_base_url="https://platform.example",
         target_mappings={
-            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code="PYTORCH"),
             "rockchip": TargetMapping(compute_platform_id="cp-onnx", chip_code="RK3568"),
         },
     ))
@@ -913,6 +940,230 @@ def test_timeout_after_remote_commit_recovers_ids_without_duplicate(tmp_path: Pa
     assert result["artifacts"][0]["external_weight_id"] == "recovered-weight"
     assert RecoveringPublishingClient.version_creates == 1
     assert RecoveringPublishingClient.weight_creates == 2
+
+
+def test_publish_uses_distinct_durable_version_name_and_number(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["version_name"] = "正式版本 V1"
+    algorithms[0]["versions"][0]["version_no"] = "2026.09.21-001"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    service = _service(tmp_path, memory)
+
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert FakePublishingClient.last_version_payload == {
+        "versionName": "正式版本 V1",
+        "versionNo": "2026.09.21-001",
+        "analysisId": "analysis-1",
+    }
+
+
+def test_version_recovery_uses_full_identity_then_falls_back_to_analysis(tmp_path: Path):
+    AnalysisFallbackPublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    AnalysisFallbackPublishingClient.versions = [{
+        "algoVersionId": "wrong-version-number",
+        "versionName": "20260917120000",
+        "versionNo": "different-number",
+        "analysisId": "analysis-1",
+    }]
+    AnalysisFallbackPublishingClient.analysis_versions = [{
+        "algoVersionId": "full-identity-version",
+        "versionName": "20260917120000",
+        "versionNo": "20260917120000",
+        "analysisId": "analysis-1",
+    }]
+    service = _service(tmp_path, memory, client_factory=AnalysisFallbackPublishingClient)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["external_algo_version_id"] == "full-identity-version"
+    assert AnalysisFallbackPublishingClient.version_creates == 0
+    assert AnalysisFallbackPublishingClient.last_analysis_version_list_path.endswith("/analysis-1")
+
+
+def test_version_recovery_deduplicates_same_remote_id_across_product_and_analysis_lists(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    FakePublishingClient.versions = [{
+        "algoVersionId": "same-remote-version",
+        "versionName": "20260917120000",
+        "versionNo": "20260917120000",
+        "analysisId": "analysis-1",
+    }]
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["external_algo_version_id"] == "same-remote-version"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.last_version_list_path.endswith("/product-1")
+    assert FakePublishingClient.last_analysis_version_list_path.endswith("/analysis-1")
+
+
+def test_version_recovery_with_multiple_full_identity_matches_fails_unknown_without_post(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    FakePublishingClient.versions = [
+        {
+            "algoVersionId": remote_id,
+            "versionName": "20260917120000",
+            "versionNo": "20260917120000",
+            "analysisId": "analysis-1",
+        }
+        for remote_id in ("duplicate-a", "duplicate-b")
+    ]
+    service = _service(tmp_path, memory)
+
+    with pytest.raises(PlatformError) as error:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert error.value.code == "EXTERNAL_VERSION_RECOVERY_AMBIGUOUS"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "UNKNOWN"
+
+
+def test_version_recovery_with_incomplete_identity_fails_unknown_without_post(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    FakePublishingClient.versions = [{
+        "algoVersionId": "missing-version-number",
+        "versionName": "20260917120000",
+        "analysisId": "analysis-1",
+    }]
+    service = _service(tmp_path, memory)
+
+    with pytest.raises(PlatformError) as error:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert error.value.code == "EXTERNAL_VERSION_RECOVERY_AMBIGUOUS"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_weight_recovery_rejects_same_identity_with_different_returned_file_path(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithm, version = service._algorithm_version("p1", "a1", "v1")
+    publication = service.repository.ensure_publication(project_id="p1", algorithm=algorithm, version=version)
+    discovered = service.discover_artifacts("p1", algorithm, version)[0]
+    artifact = service.repository.upsert_artifact(
+        publication["publication_key"],
+        discovered,
+        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
+    )
+    artifact = service.repository.patch_artifact(
+        artifact["artifact_id"],
+        public_url="https://models.example/current.pt",
+        upload_status="UPLOADED",
+    )
+    FakePublishingClient.weights = [{
+        "weightId": "same-name-wrong-url",
+        "algoVersionId": "remote-v1",
+        "computePlatformId": "cp-rk",
+        "chipCode": "PYTORCH",
+        "fileName": artifact["file_name"],
+        "filePath": "https://models.example/other.pt",
+    }]
+
+    with pytest.raises(PlatformError) as error:
+        service._sync_weight(artifact, "remote-v1", FakePublishingClient())
+
+    assert error.value.code == "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"
+    assert FakePublishingClient.weight_creates == 0
+    stored = service.repository.artifact(artifact["artifact_id"])
+    assert stored["sync_status"] == "UNKNOWN"
+
+
+def test_weight_recovery_never_downgrades_when_remote_chip_code_is_empty(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithm, version = service._algorithm_version("p1", "a1", "v1")
+    publication = service.repository.ensure_publication(project_id="p1", algorithm=algorithm, version=version)
+    discovered = service.discover_artifacts("p1", algorithm, version)[0]
+    artifact = service.repository.upsert_artifact(
+        publication["publication_key"],
+        discovered,
+        {"compute_platform_id": "cp-rk", "chip_code": "PYTORCH"},
+    )
+    artifact = service.repository.patch_artifact(
+        artifact["artifact_id"],
+        public_url="https://models.example/current.pt",
+        upload_status="UPLOADED",
+    )
+    FakePublishingClient.weights = [{
+        "weightId": "missing-chip",
+        "algoVersionId": "remote-v1",
+        "computePlatformId": "cp-rk",
+        "chipCode": "",
+        "fileName": artifact["file_name"],
+        "filePath": artifact["public_url"],
+    }]
+
+    with pytest.raises(PlatformError) as error:
+        service._sync_weight(artifact, "remote-v1", FakePublishingClient())
+
+    assert error.value.code == "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_missing_weight_field_blocks_before_remote_version_or_weight_post(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="https://platform.example",
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
+        },
+    ))
+
+    with pytest.raises(PlatformError) as error:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert error.value.code == "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "FAILED"
+
+    service.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="https://platform.example",
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code="PYTORCH"),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
+        },
+    ))
+    retried = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert retried["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
 
 
 def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path):

@@ -6,6 +6,37 @@
 >
 > 本文件优先于旧文档中的历史 NEXT、Current priority、历史 acceptance SHA、历史部署建议。旧文档仍然保留作为架构与历史证据，但若与本文件及实时 GitHub 冲突，以 **实时 GitHub → 本文件 → 当前 owner 代码** 为准。
 
+## 0B. OSS + 新畅联第一批：Version/Weight 正式合同（最新覆盖）
+
+本批从已同步的远端 `2ff431a7` 开始，只修改 Version/Weight 请求与 UNKNOWN 幂等恢复，没有进入 OSS 配置、Object Key、数据库 migration 或 RK3578 批次。
+
+正式行为：
+
+~~~text
+local version_name + version_no + bound analysisId
+→ listByProduct + listByAnalysis（恢复查询路径）
+→ 完整 AND 身份唯一匹配
+→ recover algoVersionId
+
+任何候选多条 / versionName、versionNo、analysisId 字段不足
+→ status UNKNOWN
+→ 不猜 ID，不 POST version/add
+
+algoVersionId + computePlatformId + chipCode + fileName + filePath
+→ 五字段齐全才允许 weight/add
+
+UNKNOWN Weight
+→ fileName + computePlatformId + 非空 chipCode 严格匹配
+→ 远端有 filePath 时继续严格匹配
+→ 多条、缺字段或冲突 URL：UNKNOWN，不 POST
+~~~
+
+旧 Version payload 把 `versionNo` 复制成 `versionName`；新 payload 分别使用 durable `version_name` 与 `version_no`，并继续优先 `analysisId`。Weight 的四个产物字段在远端 Version mutation 前预检，因此映射缺字段不会先创建空 Version。`code=0` 仍是正式主合同；`code=200/SUCCESS` 暂时保留为明确的 legacy compatibility / OPEN，没有收紧掉。
+
+修改 owner：`platform_core/external_algorithm_platform.py`、`platform_core/external_algorithm_publish.py`，以及两份对应 unit tests。最小验证为新增合同 15 passed（包含两个列表同一远端 ID 去重、FAILED 补齐配置后可重试）、直接影响回归 9 passed，另有 AST 与 `git diff --check`；未跑全量 pytest、integration、浏览器或 Actions。
+
+第二批 OSS 未开始。下一步必须先等用户确认，并遵守：Artifact Binding `root_prefix` 只由统一 builder 拼一次；第三批改数据库前先给字段 owner/migration 表，`external_weight_id` 属于 provider-specific publication mapping，不属于模型文件本体。
+
 ## 0A. 2026-09-21 全站 cache-first 性能最小闭环（最新覆盖）
 
 本轮没有拆掉 v53 snapshot，也没有建立第二套 cache/polling/truth。真实根因和收口如下：
