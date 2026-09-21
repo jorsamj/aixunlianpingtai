@@ -6998,6 +6998,44 @@ def sync_remote_job(project_id: str, job_id: str) -> Dict[str, Any]:
     return job
 
 
+_TRAINING_JOB_ACTIVE_STATUSES = {
+    "queued", "waiting", "pending", "starting", "running",
+    "pausing", "paused", "resuming", "stopping", "cancel_requested",
+}
+_TRAINING_TASK_ACTIVE_STATUSES = {
+    "QUEUED", "WAITING_RESOURCE", "PENDING", "STARTING", "RUNNING",
+    "PAUSING", "PAUSED", "RESUMING", "STOPPING", "CANCEL_REQUESTED",
+}
+
+
+def _training_job_is_active(job: Mapping[str, Any]) -> bool:
+    status = str(job.get("status") or "").strip().lower()
+    task_status = str(
+        job.get("task_status") or job.get("persisted_status") or ""
+    ).strip().upper()
+    return status in _TRAINING_JOB_ACTIVE_STATUSES or task_status in _TRAINING_TASK_ACTIVE_STATUSES
+
+
+def _training_job_index_rows(
+    jobs: Sequence[Mapping[str, Any]],
+    *,
+    history_limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Retain every live task plus a bounded terminal history."""
+    ordered = sorted(
+        (dict(job) for job in jobs if isinstance(job, Mapping)),
+        key=lambda row: str(row.get("created_at") or ""),
+        reverse=True,
+    )
+    active = [row for row in ordered if _training_job_is_active(row)]
+    history = [row for row in ordered if not _training_job_is_active(row)]
+    if history_limit >= 0:
+        history = history[:history_limit]
+    rows = active + history
+    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return rows
+
+
 def sync_jobs_index(project_id: str):
     p = project_dir(project_id)
     jobs_dir = p / "jobs"
@@ -7013,8 +7051,7 @@ def sync_jobs_index(project_id: str):
             except Exception:
                 pass
             jobs.append(job)
-    jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    write_json(jobs_dir / "index.json", jobs[:50])
+    write_json(jobs_dir / "index.json", _training_job_index_rows(jobs))
 
 
 def list_models_internal(project_id: str) -> List[Dict[str, Any]]:
@@ -18327,15 +18364,35 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
     material_store(project_id).patch(patches); return load_images(project_id)
 
+def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
+    """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
+    try:
+        sync_jobs_index(project_id)
+    except Exception:
+        # A bootstrap response may still use the last durable index if one job
+        # cannot be enriched temporarily; never fall back to an older in-memory
+        # snapshot merely because the live overlay failed.
+        pass
+    jobs = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    return jobs if isinstance(jobs, list) else []
+
+
+def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
+    payload = dict(snapshot or {})
+    payload["jobs"] = _v53_live_jobs(project_id)
+    payload["jobs_generated_at"] = now_iso()
+    return payload
+
+
 def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
     # First paint reads repository counters and small metadata indexes only.
     # Materials use v61 pagination; legacy annotation JSON is resolved per image.
     project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
-    jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
+    jobs=_v53_live_jobs(project_id)
     model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
-    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"model_configs":model_configs,"generated_at":now_iso()}
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"model_configs":model_configs,"generated_at":now_iso(),"jobs_generated_at":now_iso()}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
@@ -18392,7 +18449,8 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=F
     global _V53_BOOTSTRAP_SNAPSHOT
     projects=list_projects(); requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""; cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
     if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
-        return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
+        live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,cached_id)
+        return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else choose_project(projects,"",counts); chosen_id=str(chosen.get("id")) if chosen else ""
     projects_with_counts=[{**project,"bootstrap_counts":counts.get(str(project.get("id") or ""),{"images":0,"algorithms":0,"versions":0,"jobs":0})} for project in projects]
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
@@ -18401,7 +18459,9 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=F
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and (refresh or chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")):
         snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
-    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
+    final_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")
+    live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,final_id) if final_id else dict(_V53_BOOTSTRAP_SNAPSHOT)
+    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
 
 
 # ============================================================
