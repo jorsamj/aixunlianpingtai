@@ -85,6 +85,8 @@ test('task center labels terminal cleanup as clear ended, not clear completed', 
   const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
   assert.match(runtime, />清空已结束<\/button>/);
   assert.doesNotMatch(runtime, />清空已完成<\/button>/);
+  assert.match(runtime, /已清空 \$\{cleared\} 条已结束任务/);
+  assert.doesNotMatch(runtime, /已清空 \$\{cleared\} 条已完成任务/);
 });
 
 test('project switching is navigation-owned and has no permanent interval', () => {

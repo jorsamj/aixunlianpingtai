@@ -91,6 +91,7 @@ jobs:
           grep -Fq "main.mjs?v=42.25.128" static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
+          grep -Fq '已清空 ${cleared} 条已结束任务' static/modules/upload-task-center.js
           grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
           grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.()' static/modules/upload-task-center.js
           grep -Fq 'function forgetTerminal()' static/modules/zip-import-runtime.js
