@@ -37,21 +37,21 @@ async function mockDurableZipUpload(page, {
       }),
     });
   });
-  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/parts/\\d+), async route => {
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/parts/\\d+$`), async route => {
     if (route.request().method() !== 'PUT') return route.continue();
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
   });
-  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/complete), async route => {
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/complete$`), async route => {
     if (route.request().method() !== 'POST') return route.continue();
     uploaded = true;
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selecting)});
   });
-  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}/start), async route => {
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}/start$`), async route => {
     if (route.request().method() !== 'POST') return route.continue();
     started = true;
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(running)});
   });
-  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}), async route => {
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}$`), async route => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(started ? done : selecting)});
   });

@@ -26,6 +26,10 @@ jobs:
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
           node --check static/modules/training-task-runtime.js &&
+          node --check tests/browser/navigation-stability.spec.mjs &&
+          node --check tests/browser/material-pagination-performance.spec.mjs &&
+          node --check tests/browser/algorithm-list-performance.spec.mjs &&
+          node --check tests/browser/source-import-completion-scope.spec.mjs &&
           node --check static/modules/material-pagination-runtime.js &&
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
