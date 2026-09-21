@@ -1,6 +1,9 @@
+import hashlib
 import json
 from pathlib import Path
 
+from platform_core.algorithms import list_algorithms
+from platform_core.snapshots import dataset_revision_document, ensure_dataset_revision
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.task_runtime.worker import WorkerContext
 from platform_core.training_tasks import TrainingHandler
@@ -28,7 +31,7 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
         "algorithm_asset_id": "algorithm-one",
         "epochs": 300,
     })
-    artifacts.atomic_write_json(task_id, "snapshot.json", {
+    snapshot = ensure_dataset_revision({
         "schema_version": 3,
         "snapshot_id": "snapshot-one",
         "counts": {"train": 80, "validation": 10, "test": 10, "total": 100},
@@ -36,13 +39,48 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
         "requested": {"test_source": "explicit"},
         "test_seed": 7,
         "validation_seed": 11,
+        "label_schema": [],
+        "images": [],
     })
+    revision = dataset_revision_document(snapshot)
+    artifacts.atomic_write_json(task_id, "snapshot.json", snapshot)
+    artifacts.atomic_write_json(task_id, "dataset-revision.json", revision)
+
     bundle = artifacts.artifact_path(task_id, "work/bundle")
     (bundle / "dataset").mkdir(parents=True)
-    (bundle / "dataset" / "data.yaml").write_text("path: .\ntrain: images/train\nval: images/validation\ntest: images/test\nnames: {0: fire}\n", encoding="utf-8")
+    (bundle / "dataset" / "data.yaml").write_text(
+        "path: .\ntrain: images/train\nval: images/validation\nnames: {0: fire}\n",
+        encoding="utf-8",
+    )
+    artifacts.atomic_write_json(task_id, "work/bundle/snapshot.json", snapshot)
+    artifacts.atomic_write_json(
+        task_id,
+        "work/bundle/dataset-revision.json",
+        revision,
+    )
+    bundle_snapshot = artifacts.artifact_path(task_id, "work/bundle/snapshot.json")
+    bundle_revision = artifacts.artifact_path(
+        task_id,
+        "work/bundle/dataset-revision.json",
+    )
     artifacts.atomic_write_json(task_id, "work/bundle/manifest.json", {
-        "schema_version": 2,
-        "snapshot_id": "snapshot-one",
+        "schema_version": 3,
+        "snapshot_id": snapshot["snapshot_id"],
+        "dataset_revision_schema_version": snapshot[
+            "dataset_revision_schema_version"
+        ],
+        "canonical_annotation_schema_version": snapshot[
+            "canonical_annotation_schema_version"
+        ],
+        "dataset_revision_id": snapshot["dataset_revision_id"],
+        "snapshot_ref": "snapshot.json",
+        "snapshot_sha256": hashlib.sha256(
+            bundle_snapshot.read_bytes()
+        ).hexdigest(),
+        "dataset_revision_ref": "dataset-revision.json",
+        "dataset_revision_sha256": hashlib.sha256(
+            bundle_revision.read_bytes()
+        ).hexdigest(),
         "data_yaml_ref": "dataset/data.yaml",
         "splits": {"train": [], "validation": [], "test": []},
     })
@@ -121,7 +159,7 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
     assert result["training_outcome"] == "target_reached"
     assert result["completion_reason"] == "quality_target_reached"
     assert result["verified_models"][0]["size_bytes"] > 0
-    versions = json.loads((project / "algorithms.json").read_text(encoding="utf-8"))[0]["versions"]
+    versions = list_algorithms(project / "algorithms.json")[0]["versions"]
     assert len(versions) == 1
     assert versions[0]["task_id"] == task_id
     assert versions[0]["training_status"] == "SUCCEEDED"
