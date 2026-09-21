@@ -344,23 +344,27 @@ export function installMaterialPaginationRuntime() {
       const serial = ++requestSerial;
       const expectedPage = state.page;
       try {
-        const [materialPage, unprocessedTotal, processedTotal] = await Promise.all([
-          fetchMaterialPage61(requestedCursor),
+        const totalsPromise = Promise.all([
           fetchStatusTotal61('unprocessed'),
           fetchStatusTotal61('processed'),
         ]);
+        const materialPage = await fetchMaterialPage61(requestedCursor);
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
         info.cursor = requestedCursor;
         info.nextCursor = materialPage.next_cursor || '';
         info.total = Number(materialPage.total || 0);
-        info.unprocessedTotal = unprocessedTotal;
-        info.processedTotal = processedTotal;
         info.page = requestedPage;
         transport.lastPage = materialPage;
         state.materialFilterSignature61 = filterSignature61();
         rememberDatasetPage61();
         const mode = renderPagedDataset61();
+        const [unprocessedTotal, processedTotal] = await totalsPromise;
+        if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
+        info.unprocessedTotal = unprocessedTotal;
+        info.processedTotal = processedTotal;
+        rememberDatasetPage61();
+        decorateDataset61();
         return {stale: false, mode, items: state.images, total: info.total};
       } catch (error) {
         if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
@@ -580,7 +584,7 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422209',
+    build: 'material-pagination-runtime-422210',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
@@ -601,12 +605,14 @@ export function installMaterialPaginationRuntime() {
   window.MaterialPaginationRuntime61 = runtime;
 
   setTimeout(() => {
-    refreshSummary61();
-    if (state.page !== '数据集') return;
+    if (state.page !== '数据集') {
+      refreshSummary61();
+      return;
+    }
     const signature = filterSignature61();
     const needsBootstrap = !hasDatasetShell61() || signature !== state.materialFilterSignature61;
     if (needsBootstrap) loadMaterialPage61({reset: true});
-  }, 250);
-  setTimeout(refreshSummary61, 1200);
+  }, 0);
+  setTimeout(() => { if (state.page !== '数据集') refreshSummary61(); }, 1200);
   return true;
 }

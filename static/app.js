@@ -251,7 +251,7 @@ window.startImportJobV19=async(all)=>{
 };
 
 // 页面启动后加载一次后台导入任务；有运行任务时继续轮询。
-setTimeout(async()=>{ensureImportDock();await loadImportJobs();if((state.importJobs||[]).some(j=>j.status==='running'))startImportPolling();},600);
+setTimeout(async()=>{if(window.ZipImportRuntime)return;ensureImportDock();await loadImportJobs();if((state.importJobs||[]).some(j=>j.status==='running'))startImportPolling();},600);
 
 // -----------------------------
 // v20：批量移动数据用途、飞桨环境检测、训练参数分层、版本报告跟随
@@ -3711,18 +3711,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const dt412=v=>v?String(v).replace('T',' ').replace('Z','').slice(0,19):'-';
 
   // Core first paint: do not wait for model scans / quality / publish / inference lists.
-  window.loadCore412=async function(){
-    await ensureWorkspace(); if(!state.project)return;
+  window.loadCore412=async function({authoritative=false}={}){
+    if(!state.project)await ensureWorkspace(); if(!state.project)return;
     const id=state.project.id;
-    const snapshot=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(id)}&refresh=true`);
+    const snapshot=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(id)}${authoritative?'&refresh=true':''}`);
     state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];
+    state.modelConfigs=snapshot.model_configs||[];state.__coreSnapshotGeneratedAt=Date.parse(snapshot.generated_at||'')||Date.now();
     state.materialSummary61=snapshot.material_summary;state.annotationSummary61=snapshot.annotation_summary;
     if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';
     const full=window.PlatformCore?.materialPaging?.requiresFullMaterialPool(state.page)||false;
     if(window.__materialPaging61)window.__materialPaging61.mode=full?'full':'paged';
     if(full)state.images=await api(`/api/projects/${id}/images`);
-    else if(state.page==='数据集'&&window.reloadMaterialPage61)await window.reloadMaterialPage61();
-    else if(state.page==='数据集'||state.page==='素材接入')state.images=(await api(`/api/v61/projects/${id}/materials?limit=48`)).items||[];
   };
   async function pollAnnotationIndex412(){
     if(!state.project||state.__annPoll412)return; state.__annPoll412=true; const id=state.project.id;
@@ -3740,19 +3739,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!state.project)return;const id=state.project.id,page=String(pageOverride||state.page||''),tasks=[];
     const load=(key,url,field)=>tasks.push(api(url).then(value=>{state[key]=field?(value?.[field]||[]):value}));
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
-    if(['算法列表','训练任务','自动迭代'].includes(page))load('jobs',`/api/projects/${id}/jobs`);
     if(['测试发布','部署测试'].includes(page)){
       load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
       load('testModels',`/api/v12/projects/${id}/test_models`,'items');
       load('inferenceEnvs','/api/v16/inference_envs','items');
     }
     if(['训练任务','测试发布','部署转换','部署产物'].includes(page))load('models',`/api/projects/${id}/models`);
-    if(['模型配置','自动标注','自动标注及清洗'].includes(page))load('modelConfigs','/api/v35/model-configs','items');
     const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected')toast(result.reason?.message||String(result.reason));
     // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
   }
   window.loadPageExtras413=extras412;
-  window.refreshCurrentPage413=async function(){await window.loadCore412();await extras412();if(['部署转换','部署产物','部署资源'].includes(state.page)&&typeof loadDeployData==='function')await loadDeployData(true)};
+  window.refreshCurrentPage413=async function({authoritative=false}={}){if(authoritative)await window.loadCore412({authoritative:true});await extras412();if(['部署转换','部署产物','部署资源'].includes(state.page)&&typeof loadDeployData==='function')await loadDeployData(true)};
   loadAll=window.refreshCurrentPage413;
   window.__clInit=async function(){const view=document.getElementById('view');if(view)view.innerHTML='<div class="boot412"><i></i><b>正在读取算法与素材</b><span>先加载核心数据，其余资源后台补齐</span></div>';await window.loadCore412();render();state.uiReady=true;if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null)};
 
@@ -3828,7 +3825,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // Final routing: do not fall back through older dataset/algorithm render layers.
   const oldRender412=render;
   render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};
-  const top412=renderTop;renderTop=function(){top412();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V412;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;try{await window.loadCore412();if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null);render();toast('已刷新')}finally{r.disabled=false}}};
+  const top412=renderTop;renderTop=function(){top412();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V412;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;try{await window.loadCore412({authoritative:true});if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null);render();toast('已刷新')}finally{r.disabled=false}}};
 })();
 
 
@@ -3839,10 +3836,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  function savedProject(){try{return JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}').projectId||''}catch(e){return ''}}
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0)));return `<div class="boot413"><div class="boot413-card"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span>${esc(st?.stage||'正在启动')}</span><b>${Math.round(p)}%</b></div><i><em style="width:${p}%"></em></i><p>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};if(view)view.innerHTML=boot(st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;if(view)view.innerHTML=boot(st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');x.projectId=state.project?.id||'';x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');x.projectId=state.project?.id||'';x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){const requested=savedProject();if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferred_project_id:requested,force:true})});if(requested&&!force){try{const direct=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(direct);return direct}catch(e){}}await waitReady();const s=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(s);return s};
- window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);await window.refreshCurrentPage413();state.uiReady=true;render()}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
- const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='刷新中';try{await window.refreshCurrentPage413();render();toast('当前页面已刷新')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
+ window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();const page=state.page;if(!state.__extras412)state.__extras412=window.loadPageExtras413?.(page).then(()=>{if(state.page===page)render()}).finally(()=>state.__extras412=null)}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
+ const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='刷新中';try{await window.refreshCurrentPage413({authoritative:true});render();toast('当前页面已刷新')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
 })();
 
 /* ============================================================

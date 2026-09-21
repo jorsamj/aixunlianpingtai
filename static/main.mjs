@@ -36,7 +36,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422209';
+import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422210';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422523';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66006';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -260,6 +260,13 @@ function renderUnknownPage(page) {
   if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面模块尚未就绪</section>`;
 }
 
+function refreshCurrentPageOwner(page) {
+  if (page !== '算法列表') return;
+  const snapshotAge = Date.now() - Number(state.__coreSnapshotGeneratedAt || 0);
+  if (snapshotAge <= 5000) return;
+  void algorithmListRuntime.refresh({render: true, minAgeMs: 5000}).catch(error => notify(error?.message || error));
+}
+
 const navigationStabilityRuntime = installNavigationStability({
   getState: () => state,
   notify,
@@ -286,8 +293,11 @@ const navigationStabilityRuntime = installNavigationStability({
       renderUnknownPage(page);
     }
     window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);
+    refreshCurrentPageOwner(page);
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+
+Promise.resolve(window.__v53InitPromise).then(() => refreshCurrentPageOwner(state.page));
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;
