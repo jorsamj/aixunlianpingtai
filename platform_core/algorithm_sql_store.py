@@ -17,6 +17,10 @@ SCHEMA_VERSION = 2
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
 _INIT_LOCK_TIMEOUT = 30
+_LEGACY_REMOTE_VERSION_FIELDS = frozenset({
+    "external_algo_version_id",
+    "external_publish_status",
+})
 
 
 class AlgorithmSqlStore:
@@ -118,7 +122,11 @@ class AlgorithmSqlStore:
                     if not migrated and count == 0 and self.json_path.exists():
                         legacy = self._read_legacy_json()
                         self._backup_legacy_json()
-                        self._replace_all(conn, legacy)
+                        self._replace_all(
+                            conn,
+                            legacy,
+                            allow_legacy_remote_fields=True,
+                        )
                         self._set_meta(conn, "legacy_json_migrated", "1")
                         self._set_meta(
                             conn,
@@ -219,7 +227,18 @@ class AlgorithmSqlStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                self._replace_all(conn, algorithms)
+                preserved_legacy_remote_fields: dict[str, dict[str, Any]] = {}
+                for row in conn.execute("SELECT * FROM algorithm_versions").fetchall():
+                    current = self._version_from_row(row)
+                    preserved_legacy_remote_fields[str(row["id"])] = {
+                        field: current.get(field)
+                        for field in _LEGACY_REMOTE_VERSION_FIELDS
+                    }
+                self._replace_all(
+                    conn,
+                    algorithms,
+                    preserved_legacy_remote_fields=preserved_legacy_remote_fields,
+                )
                 self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
                 conn.commit()
             except Exception:
@@ -342,6 +361,7 @@ class AlgorithmSqlStore:
         self.ensure_ready()
         algorithm_id = str(algorithm_id)
         version_id = str(version_id)
+        self._reject_legacy_remote_field_mutation(patch)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -353,7 +373,16 @@ class AlgorithmSqlStore:
                 value = self._version_from_row(row)
                 value.update(dict(patch))
                 value["updated_at"] = now
-                self._update_version_conn(conn, algorithm_id, value, row["sort_index"])
+                self._update_version_conn(
+                    conn,
+                    algorithm_id,
+                    value,
+                    row["sort_index"],
+                    preserved_legacy_remote_fields={
+                        field: value.get(field)
+                        for field in _LEGACY_REMOTE_VERSION_FIELDS
+                    },
+                )
                 conn.execute("UPDATE algorithms SET updated_at=? WHERE project_id=? AND id=?", (now, self.project_id, algorithm_id))
                 conn.commit()
             except Exception:
@@ -562,15 +591,58 @@ class AlgorithmSqlStore:
             (str(item.get("name") or ""), str(item.get("remark") or ""), str(item.get("industry") or ""), str(item.get("algorithm_type") or ""), self._nullable_text(item.get("current_version_id")), self._nullable_text(item.get("source_type")), self._nullable_text(item.get("provider_type")), self._nullable_text(item.get("external_product_id")), self._nullable_text(item.get("external_product_code")), self._nullable_text(item.get("external_category_id")), self._nullable_text(item.get("external_analysis_id")), self._nullable_bool(item.get("external_active")), self._nullable_bool(item.get("master_data_readonly")), self._nullable_text(item.get("external_last_synced_at")), self._nullable_text(item.get("created_at")), self._nullable_text(item.get("updated_at")), self._dumps(self._algorithm_payload(item)), self.project_id, str(item.get("id"))),
         )
 
-    def _insert_version_conn(self, conn: sqlite3.Connection, algorithm_id: str, version: Mapping[str, Any], sort_index: int) -> None:
+    @staticmethod
+    def _reject_legacy_remote_field_mutation(version: Mapping[str, Any]) -> None:
+        attempted = sorted(_LEGACY_REMOTE_VERSION_FIELDS.intersection(version.keys()))
+        if attempted:
+            raise PlatformError(
+                "ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY",
+                "旧外部发布字段为只读迁移数据",
+                "、".join(attempted),
+                "请通过 ExternalPublicationRepository 修改 provider-specific 发布状态；AlgorithmSqlStore 仅保留历史值供迁移读取。",
+                409,
+            )
+
+    def _insert_version_conn(
+        self,
+        conn: sqlite3.Connection,
+        algorithm_id: str,
+        version: Mapping[str, Any],
+        sort_index: int,
+        *,
+        allow_legacy_remote_fields: bool = False,
+    ) -> None:
+        if not allow_legacy_remote_fields:
+            self._reject_legacy_remote_field_mutation(version)
         conn.execute(
             """INSERT INTO algorithm_versions (id,algorithm_id,version_name,version_no,training_job_id,framework,training_status,stored_path,model_name,artifact_verified,trainable,external_analysis_id,external_algo_version_id,external_publish_status,created_at,finished_at,sort_index,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (str(version.get("id")), algorithm_id, self._nullable_text(version.get("version_name")), self._nullable_text(version.get("version_no")), self._nullable_text(version.get("task_id") or version.get("job_id") or version.get("training_job_id")), self._nullable_text(version.get("framework")), self._nullable_text(version.get("training_status") or version.get("status")), self._nullable_text(version.get("stored_path")), self._nullable_text(version.get("model_name")), self._nullable_bool(version.get("artifact_verified")), self._nullable_bool(version.get("trainable")), self._nullable_text(version.get("external_analysis_id")), self._nullable_text(version.get("external_algo_version_id")), self._nullable_text(version.get("external_publish_status")), self._nullable_text(version.get("created_at")), self._nullable_text(version.get("finished_at")), int(sort_index), self._dumps(dict(version))),
         )
 
-    def _update_version_conn(self, conn: sqlite3.Connection, algorithm_id: str, version: Mapping[str, Any], sort_index: int) -> None:
+    def _update_version_conn(
+        self,
+        conn: sqlite3.Connection,
+        algorithm_id: str,
+        version: Mapping[str, Any],
+        sort_index: int,
+        *,
+        preserved_legacy_remote_fields: Mapping[str, Any],
+    ) -> None:
+        preserved = dict(version)
+        for field in _LEGACY_REMOTE_VERSION_FIELDS:
+            value = preserved_legacy_remote_fields.get(field)
+            if value is None:
+                preserved.pop(field, None)
+            else:
+                preserved[field] = value
         conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, str(version.get("id"))))
-        self._insert_version_conn(conn, algorithm_id, version, sort_index)
+        self._insert_version_conn(
+            conn,
+            algorithm_id,
+            preserved,
+            sort_index,
+            allow_legacy_remote_fields=True,
+        )
 
     def _replace_analyses_conn(self, conn: sqlite3.Connection, algorithm_id: str, item: Mapping[str, Any]) -> None:
         conn.execute("DELETE FROM algorithm_external_analyses WHERE algorithm_id=?", (algorithm_id,))
@@ -693,7 +765,14 @@ class AlgorithmSqlStore:
         )
         self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
-    def _replace_all(self, conn: sqlite3.Connection, algorithms: Sequence[Mapping[str, Any]]) -> None:
+    def _replace_all(
+        self,
+        conn: sqlite3.Connection,
+        algorithms: Sequence[Mapping[str, Any]],
+        *,
+        allow_legacy_remote_fields: bool = False,
+        preserved_legacy_remote_fields: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
         rows = [dict(item) for item in algorithms]
         ids = [str(item.get("id") or "").strip() for item in rows]
         if any(not value for value in ids):
@@ -776,6 +855,14 @@ class AlgorithmSqlStore:
                         409,
                     )
                 version_ids.add(version_id)
+                if not allow_legacy_remote_fields:
+                    current = dict((preserved_legacy_remote_fields or {}).get(version_id) or {})
+                    for field in _LEGACY_REMOTE_VERSION_FIELDS:
+                        value = current.get(field)
+                        if value is None:
+                            version.pop(field, None)
+                        else:
+                            version[field] = value
                 conn.execute(
                     """INSERT INTO algorithm_versions (
                         id, algorithm_id, version_name, version_no, training_job_id, framework,

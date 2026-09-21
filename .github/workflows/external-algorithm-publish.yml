@@ -134,6 +134,9 @@ jobs:
           grep -Fq "ON external_version_publications(provider, project_id, algorithm_id, version_id)" platform_core/external_algorithm_publish.py
           grep -Fq "ON external_artifact_publications(provider, artifact_id)" platform_core/external_algorithm_publish.py
           grep -q "LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN" platform_core/external_algorithm_publish.py
+          grep -q "ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY" platform_core/algorithm_sql_store.py
+          grep -Fq "self._reject_legacy_remote_field_mutation(patch)" platform_core/algorithm_sql_store.py
+          grep -q "ARTIFACT_STORAGE_MIGRATION_CONFLICT" platform_core/external_algorithm_publish.py
           if grep -Fq "INSERT INTO external_model_artifacts" platform_core/external_algorithm_publish.py; then echo "legacy external_model_artifacts must remain frozen" >&2; exit 1; fi
           if grep -Fq "DELETE FROM external_artifact_publications" platform_core/external_algorithm_publish.py; then echo "publication migration history must not be deleted" >&2; exit 1; fi
           grep -q "test_version_publications_are_unique_per_provider" tests/unit/test_external_algorithm_publish.py
@@ -143,6 +146,12 @@ jobs:
           grep -q "test_publish_uses_model_artifact_and_provider_mapping_single_owners" tests/unit/test_external_algorithm_publish.py
           grep -q "test_conflicting_legacy_and_provider_weight_ids_fail_closed" tests/unit/test_external_algorithm_publish.py
           grep -q "test_legacy_artifact_backfill_is_idempotent_and_old_store_is_frozen" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_runtime_attach_version_rejects_legacy_remote_fields" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_runtime_patch_version_rejects_legacy_remote_fields" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_legacy_remote_fields_remain_readable_and_unrelated_patch_preserves_them" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_existing_canonical_artifact_backfills_missing_legacy_storage_truth_idempotently" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_existing_canonical_artifact_storage_conflict_is_unknown_without_overwrite" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_existing_canonical_artifact_uploaded_at_conflict_is_unknown_without_overwrite" tests/unit/test_external_algorithm_publish.py
           grep -Fq "superseded_by_artifact_id" platform_core/external_algorithm_publish.py
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py

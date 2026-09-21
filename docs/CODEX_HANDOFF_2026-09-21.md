@@ -6,6 +6,16 @@
 >
 > 本文件优先于旧文档中的历史 NEXT、Current priority、历史 acceptance SHA、历史部署建议。旧文档仍然保留作为架构与历史证据，但若与本文件及实时 GitHub 冲突，以 **实时 GitHub → 本文件 → 当前 owner 代码** 为准。
 
+## 0E. Batch 3.1：durable-owner enforcement（最新覆盖）
+
+`AlgorithmSqlStore` 已在 repository 边界冻结历史远端字段：runtime `attach_version` 不得新写 `external_algo_version_id/external_publish_status`，runtime `patch_version` 显式修改会返回 `ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY`。无关 patch 和 full-graph compatibility rewrite 只能机械保留数据库里已有的物理旧值，不能改变旧值或给新版本创建旧值。只有 `algorithms.json → SQLite` 的一次性 legacy migration 可以写入这些物理列；这不代表 AlgorithmSqlStore 恢复远端发布 owner 身份。
+
+Artifact migration 对已经存在且 file identity 一致的 canonical ModelArtifact 继续合并缺失 storage truth：canonical 空值可从 legacy 补齐，已有相同值保持不变并可重复运行；`storage_source_id/object_key/public_url` 的非空冲突或 definitive storage status 冲突不会覆盖 canonical，而是把 provider mapping 标记为 `UNKNOWN` 并写入 `ARTIFACT_STORAGE_MIGRATION_CONFLICT`。`source_path` 明确不参与远端存储 identity 冲突判断。`storage_status=PENDING` 视为尚无确定远端状态，可由 legacy `UPLOADED` 补齐，同时补 `uploaded_at`。
+
+Version legacy migration 的真实触发点也已澄清：`ExternalPublicationRepository.__init__` 只迁移 publication 自身 schema/旧 publication 表；它不会扫描全部 AlgorithmSqlStore。`algorithm_versions.external_algo_version_id/external_publish_status` 是在 publication service/status 访问具体 Version 时，通过 `_version_publication()` 兼容路径惰性迁入 `external_version_publications`，冲突仍进入 `UNKNOWN` 并 fail closed。
+
+最小验证：AlgorithmSqlStore unit 模块 21 passed；外部发布 unit 模块 63 passed；ModelArtifact 直接相关节点 3 passed。不运行全量 pytest、完整 integration、浏览器或全部 Actions。`VERSION.txt` 仍为 `42.24.0`，尚未进入 Batch 4 RK3568/RK3578。
+
 ## 0D. OSS 第三批：durable truth migration（最新覆盖）
 
 第三批把三层 durable owner 真正落到 schema/runtime，而不是只在文档中约定：
@@ -24,7 +34,7 @@ ExternalPublicationRepository
 
 `external_version_publications` 新增 `provider` 与 `version_no`，正式唯一关系是 `provider + project_id + algorithm_id + version_id`；`publication_key` 同样包含 provider。新的 `external_artifact_publications` 只通过 canonical `artifact_id` 引用文件事实，正式唯一关系是 `provider + artifact_id`，不复制 file/path/hash/size/storage/object/public URL。`compute_platform_id` 与 `remote_chip_code` 属于 provider mapping；`model_artifacts.chip_code` 只表示本地产物芯片身份。
 
-迁移为 additive + idempotent：旧 `algorithm_versions.external_algo_version_id/external_publish_status` 和旧 `external_model_artifacts` 物理保留，但只作为兼容迁移源；新 runtime 不再写入。旧 Artifact ID 与 canonical ID 不同时，旧映射保留为 inactive history，并记录 `superseded_by_artifact_id`，不删除历史。旧/新 Version ID 或 Weight ID 冲突时状态进入 `UNKNOWN`，写入明确 `MIGRATION_CONFLICT` 诊断，并在任何远端 POST/DELETE 前 fail closed。
+迁移为 additive + idempotent：旧 `algorithm_versions.external_algo_version_id/external_publish_status` 和旧 `external_model_artifacts` 物理保留，但只作为兼容迁移源；新 runtime 不再写入。AlgorithmSqlStore 旧 Version ID 不由 publication repository 初始化时全库扫描，而是在 publication service/status 访问具体 Version 时惰性迁入。旧 Artifact ID 与 canonical ID 不同时，旧映射保留为 inactive history，并记录 `superseded_by_artifact_id`，不删除历史。旧/新 Version ID 或 Weight ID 冲突时状态进入 `UNKNOWN`，写入明确 `MIGRATION_CONFLICT` 诊断，并在任何远端 POST/DELETE 前 fail closed。
 
 状态接口现在动态投影 `AlgorithmVersion + VersionPublication`；发布、自动发布、UNKNOWN 恢复、Weight 同步和远端回退均读取 publication owner。发布成功不再把远端 ID/status 回写 AlgorithmSqlStore。旧 `external_model_artifacts` 写方法固定返回 `LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN`。
 

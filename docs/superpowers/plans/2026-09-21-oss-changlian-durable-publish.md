@@ -84,6 +84,25 @@
 | Local artifact chip identity | `ModelArtifactRepository.model_artifacts.chip_code` | Represents the actual generated artifact platform. |
 | Provider compute platform/remote chip/Weight ID/sync state | `ExternalPublicationRepository.external_artifact_publications` | Keyed by `provider + artifact_id`; references file truth through `artifact_id` only. |
 
+### Task 3.1: Enforce frozen legacy owners at repository boundaries
+
+**Files:**
+- Modify: `platform_core/algorithm_sql_store.py`
+- Modify: `platform_core/external_algorithm_publish.py`
+- Modify: `.github/workflows/external-algorithm-publish.yml`
+- Modify: `docs/CODEX_HANDOFF_2026-09-21.md`
+- Modify: `docs/CODEX_CURRENT_STATE.md`
+- Test: `tests/unit/test_algorithm_sql_store.py`
+- Test: `tests/unit/test_external_algorithm_publish.py`
+
+- [x] Add failing repository tests proving runtime version attach cannot create legacy remote fields, explicit patch attempts fail closed, legacy JSON migration still preserves old values, and unrelated patches mechanically retain but cannot change them.
+- [x] Add a repository-level legacy-field guard and a migration-only preservation path; keep the physical columns and prevent ordinary runtime mutation, including full-graph replacement.
+- [x] Add failing migration tests for an existing canonical Artifact with missing storage truth, identical storage truth, conflicting storage locators/timestamps, and a repeated migration run.
+- [x] Merge only missing canonical storage truth from the frozen legacy Artifact row. Never compare `source_path` as remote identity; on non-empty canonical/legacy storage conflict, keep canonical values and mark the provider mapping `UNKNOWN` with an explicit migration diagnostic.
+- [x] Correct the handoff wording: AlgorithmSqlStore legacy Version IDs are migrated lazily when the publication service accesses a Version, not by scanning all AlgorithmSqlStore rows in `ExternalPublicationRepository.__init__`.
+- [x] Add permanent guards for the repository mutation fence and storage-conflict fail-closed path.
+- [x] Run only `test_algorithm_sql_store.py`, `test_external_algorithm_publish.py`, and directly affected ModelArtifact nodes; then commit and safe-push without entering Batch 4.
+
 ### Task 4: Audit and adopt RK3578 where locally proven
 
 **Files:**

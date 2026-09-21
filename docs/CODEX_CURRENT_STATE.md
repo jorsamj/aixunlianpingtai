@@ -1,5 +1,14 @@
 # Codex Current State
 
+<!-- PUBLICATION_DURABLE_OWNER_ENFORCEMENT_BATCH3_1_2026_09_21 -->
+> ## CURRENT RESUME POINT — DURABLE OWNER ENFORCEMENT BATCH 3.1 COMPLETE LOCALLY
+>
+> `AlgorithmSqlStore` now enforces the legacy remote-field boundary itself: ordinary version attach rejects `external_algo_version_id/external_publish_status`, explicit patch attempts fail closed, full-graph runtime replacement preserves existing physical legacy values but cannot modify them or create new ones, and only the one-time legacy JSON migration path may populate those columns. This preservation is compatibility evidence, not restored ownership.
+>
+> Existing canonical ModelArtifact rows now merge only missing legacy storage truth. Matching values are idempotent; conflicting non-empty `storage_source_id/object_key/public_url` or definitive storage status keep canonical truth unchanged and set the provider mapping to `UNKNOWN` with `ARTIFACT_STORAGE_MIGRATION_CONFLICT`. `source_path` is not a remote storage identity. AlgorithmSqlStore legacy Version IDs are copied into `external_version_publications` lazily when publication service/status accesses that Version; `ExternalPublicationRepository.__init__` does not scan every AlgorithmSqlStore.
+>
+> Focused evidence: 21 AlgorithmSqlStore tests, 63 external-publish tests, and 3 directly affected ModelArtifact nodes passed. No full pytest/integration/browser/Actions run. VERSION remains 42.24.0; Batch 4 RK3568/RK3578 has not started.
+
 <!-- PUBLICATION_DURABLE_TRUTH_BATCH3_2026_09_21 -->
 > ## CURRENT RESUME POINT — PROVIDER PUBLICATION DURABLE TRUTH BATCH 3 COMPLETE LOCALLY
 >

@@ -496,6 +496,26 @@ def _version(root: Path, project_id: str = "p1", algorithm_id: str = "a1", versi
     return algorithm, version
 
 
+def _inject_legacy_version_remote_fields(
+    root: Path,
+    *,
+    version_id: str = "v1",
+    external_algo_version_id: str = "",
+    external_publish_status: str = "",
+) -> None:
+    """Simulate pre-owner-migration SQLite rows without using runtime writers."""
+    db_path = _project_dir(root, "p1") / "algorithms.sqlite3"
+    with sqlite3.connect(db_path) as database:
+        database.execute(
+            """
+            UPDATE algorithm_versions
+            SET external_algo_version_id=?, external_publish_status=?
+            WHERE id=?
+            """,
+            (external_algo_version_id, external_publish_status, version_id),
+        )
+
+
 def test_version_publications_are_unique_per_provider(tmp_path: Path):
     _seed_external_algorithm(tmp_path)
     algorithm, version = _version(tmp_path)
@@ -590,11 +610,11 @@ def test_repository_migrates_actual_legacy_schema_with_provider_key_once(tmp_pat
 
 def test_legacy_version_remote_identity_backfills_once(tmp_path: Path):
     _seed_external_algorithm(tmp_path)
-    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
-    version = algorithms[0]["versions"][0]
-    version["external_algo_version_id"] = "legacy-version-501"
-    version["external_publish_status"] = "published"
-    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    _inject_legacy_version_remote_fields(
+        tmp_path,
+        external_algo_version_id="legacy-version-501",
+        external_publish_status="published",
+    )
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
 
@@ -631,9 +651,10 @@ def test_conflicting_legacy_and_publication_version_ids_fail_closed(tmp_path: Pa
         external_algo_version_id="new-owner-version-502",
         status="VERSION_READY",
     )
-    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
-    algorithms[0]["versions"][0]["external_algo_version_id"] = "legacy-version-501"
-    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    _inject_legacy_version_remote_fields(
+        tmp_path,
+        external_algo_version_id="legacy-version-501",
+    )
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
     service = _service(tmp_path, memory)
@@ -843,6 +864,162 @@ def test_conflicting_legacy_and_provider_weight_ids_fail_closed(tmp_path: Path):
     assert FakePublishingClient.version_creates == version_creates
     assert FakePublishingClient.weight_creates == weight_creates
     assert FakePublishingClient.weight_edits == weight_edits
+
+
+def _seed_same_id_canonical_and_legacy_storage(
+    root: Path,
+    memory: MemorySecretStore,
+    *,
+    canonical_storage: dict | None = None,
+    legacy_object_key: str = "legacy/models/best.pt",
+    legacy_public_url: str = "https://platform.example/legacy/models/best.pt",
+) -> tuple[str, str]:
+    _configure_external(root, memory)
+    model_path = _seed_external_algorithm(root)
+    service = _service(root, memory)
+    algorithm, version = _version(root)
+    publication = service.repository.ensure_publication(
+        provider=PROVIDER_CHANGLIAN,
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+    digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    artifact_id = "same-id-storage-artifact"
+    service.model_assets.repository.upsert({
+        "artifact_id": artifact_id,
+        "project_id": "p1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "artifact_kind": "original",
+        "target": "original",
+        "chip_code": "",
+        "conversion_job_id": "",
+        "file_name": "best.pt",
+        "source_path": str(model_path),
+        "sha256": digest,
+        "size_bytes": model_path.stat().st_size,
+        "metadata": {},
+    })
+    if canonical_storage:
+        service.model_assets.repository.patch(artifact_id, **canonical_storage)
+    with sqlite3.connect(service.repository.db_path) as database:
+        database.execute(
+            """
+            INSERT INTO external_model_artifacts
+            (artifact_id, publication_key, project_id, algorithm_id, version_id, target,
+             file_name, source_path, source_sha256, size_bytes, compute_platform_id,
+             chip_code, storage_source_id, object_key, public_url, upload_status,
+             external_weight_id, sync_status, last_error, created_at, updated_at)
+            VALUES (?, ?, 'p1', 'a1', 'v1', 'original', 'best.pt', ?, ?, ?,
+                    'cp-rk', 'PYTORCH', 'default_local', ?, ?, 'UPLOADED',
+                    '', 'PENDING', '', '2026-09-21T00:00:00Z', '2026-09-21T01:00:00Z')
+            """,
+            (
+                artifact_id,
+                publication["publication_key"],
+                "D:/moved-working-directory/best.pt",
+                digest,
+                model_path.stat().st_size,
+                legacy_object_key,
+                legacy_public_url,
+            ),
+        )
+    return artifact_id, publication["publication_key"]
+
+
+def test_existing_canonical_artifact_backfills_missing_legacy_storage_truth_idempotently(tmp_path: Path):
+    memory = MemorySecretStore()
+    artifact_id, publication_key = _seed_same_id_canonical_and_legacy_storage(
+        tmp_path, memory,
+    )
+
+    migrated_once = _service(tmp_path, memory)
+    first = migrated_once.model_assets.repository.get(artifact_id)
+    migrated_twice = _service(tmp_path, memory)
+    second = migrated_twice.model_assets.repository.get(artifact_id)
+    mapping = migrated_twice.repository.artifact_publication(
+        artifact_id, provider=PROVIDER_CHANGLIAN,
+    )
+
+    assert first["storage_source_id"] == "default_local"
+    assert first["object_key"] == "legacy/models/best.pt"
+    assert first["public_url"] == "https://platform.example/legacy/models/best.pt"
+    assert first["storage_status"] == "UPLOADED"
+    assert first["uploaded_at"] == "2026-09-21T01:00:00Z"
+    assert second == first
+    assert mapping["publication_key"] == publication_key
+    assert mapping["sync_status"] != "UNKNOWN"
+    with sqlite3.connect(migrated_twice.repository.db_path) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM external_artifact_publications WHERE provider=? AND artifact_id=?",
+            (PROVIDER_CHANGLIAN, artifact_id),
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_existing_canonical_artifact_storage_conflict_is_unknown_without_overwrite(tmp_path: Path):
+    memory = MemorySecretStore()
+    canonical_storage = {
+        "storage_source_id": "default_local",
+        "object_key": "canonical/models/best.pt",
+        "public_url": "https://platform.example/canonical/models/best.pt",
+        "storage_status": "UPLOADED",
+        "storage_error": "",
+        "uploaded_at": "2026-09-21T01:00:00Z",
+    }
+    artifact_id, _publication_key = _seed_same_id_canonical_and_legacy_storage(
+        tmp_path,
+        memory,
+        canonical_storage=canonical_storage,
+        legacy_object_key="legacy/models/best.pt",
+        legacy_public_url="https://platform.example/legacy/models/best.pt",
+    )
+
+    migrated_once = _service(tmp_path, memory)
+    migrated_twice = _service(tmp_path, memory)
+    canonical = migrated_twice.model_assets.repository.get(artifact_id)
+    mapping = migrated_twice.repository.artifact_publication(
+        artifact_id, provider=PROVIDER_CHANGLIAN,
+    )
+
+    assert canonical["object_key"] == canonical_storage["object_key"]
+    assert canonical["public_url"] == canonical_storage["public_url"]
+    assert canonical["storage_status"] == "UPLOADED"
+    assert mapping["sync_status"] == "UNKNOWN"
+    assert "MIGRATION_CONFLICT" in mapping["last_error"]
+    assert "object_key" in mapping["last_error"]
+    assert "public_url" in mapping["last_error"]
+    assert migrated_once.repository.artifact_publication(
+        artifact_id, provider=PROVIDER_CHANGLIAN,
+    )["last_error"] == mapping["last_error"]
+
+
+def test_existing_canonical_artifact_uploaded_at_conflict_is_unknown_without_overwrite(tmp_path: Path):
+    memory = MemorySecretStore()
+    canonical_storage = {
+        "storage_source_id": "default_local",
+        "object_key": "legacy/models/best.pt",
+        "public_url": "https://platform.example/legacy/models/best.pt",
+        "storage_status": "UPLOADED",
+        "storage_error": "",
+        "uploaded_at": "2026-09-21T02:00:00Z",
+    }
+    artifact_id, _publication_key = _seed_same_id_canonical_and_legacy_storage(
+        tmp_path,
+        memory,
+        canonical_storage=canonical_storage,
+    )
+
+    migrated = _service(tmp_path, memory)
+    canonical = migrated.model_assets.repository.get(artifact_id)
+    mapping = migrated.repository.artifact_publication(
+        artifact_id, provider=PROVIDER_CHANGLIAN,
+    )
+
+    assert canonical["uploaded_at"] == canonical_storage["uploaded_at"]
+    assert mapping["sync_status"] == "UNKNOWN"
+    assert "uploaded_at" in mapping["last_error"]
 
 
 def test_synced_changlian_identity_survives_training_choice_conversion_and_publish(tmp_path: Path):

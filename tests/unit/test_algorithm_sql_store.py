@@ -4,6 +4,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from platform_core.algorithms import (
     attach_version,
     create_algorithm,
@@ -14,6 +16,7 @@ from platform_core.algorithms import (
 )
 import platform_core.algorithm_sql_store as algorithm_sql_store_module
 from platform_core.algorithm_sql_store import AlgorithmSqlStore
+from platform_core.errors import PlatformError
 from platform_core.external_algorithm_platform import mirror_products_to_algorithms
 
 
@@ -306,6 +309,119 @@ def test_legacy_json_is_migrated_losslessly_and_sql_becomes_source_of_truth(tmp_
     assert status["legacy_json_migrated"] is True
     assert status["algorithm_count"] == 1
     assert status["version_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("external_algo_version_id", "remote-version-runtime"),
+        ("external_publish_status", "PUBLISHED"),
+    ),
+)
+def test_runtime_attach_version_rejects_legacy_remote_fields(
+    tmp_path: Path, field: str, value: str,
+):
+    project = tmp_path / "projects" / "p-owner-attach"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.create_algorithm({"id": "a1", "name": "owner guard", "versions": []})
+
+    with pytest.raises(PlatformError) as captured:
+        store.attach_version("a1", {
+            "id": f"v-{field}",
+            "version_name": "V1",
+            field: value,
+        })
+
+    assert captured.value.code == "ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY"
+    assert store.read_one("a1")["versions"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("external_algo_version_id", "remote-version-runtime"),
+        ("external_publish_status", "FAILED"),
+    ),
+)
+def test_runtime_patch_version_rejects_legacy_remote_fields(
+    tmp_path: Path, field: str, value: str,
+):
+    project = tmp_path / "projects" / "p-owner-patch"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.create_algorithm({"id": "a1", "name": "owner guard", "versions": []})
+    store.attach_version("a1", {"id": "v1", "version_name": "V1"})
+
+    with pytest.raises(PlatformError) as captured:
+        store.patch_version("a1", "v1", {field: value}, now="2026-09-21T12:00:00Z")
+
+    assert captured.value.code == "ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY"
+    assert field not in store.read_one("a1")["versions"][0]
+
+
+def test_legacy_remote_fields_remain_readable_and_unrelated_patch_preserves_them(tmp_path: Path):
+    project = tmp_path / "projects" / "p-owner-legacy"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    legacy = _legacy_rows()
+    legacy_version = legacy[0]["versions"][0]
+    legacy_version["external_algo_version_id"] = "legacy-remote-version"
+    legacy_version["external_publish_status"] = "PUBLISHED"
+    json_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+
+    migrated = store.read_one("legacy-local")["versions"][0]
+    assert migrated["external_algo_version_id"] == "legacy-remote-version"
+    assert migrated["external_publish_status"] == "PUBLISHED"
+
+    patched = store.patch_version(
+        "legacy-local",
+        "legacy-v1",
+        {"training_status": "FAILED"},
+        now="2026-09-21T12:10:00Z",
+    )
+
+    assert patched["training_status"] == "FAILED"
+    assert patched["external_algo_version_id"] == "legacy-remote-version"
+    assert patched["external_publish_status"] == "PUBLISHED"
+    reread = store.read_one("legacy-local")["versions"][0]
+    assert reread["external_algo_version_id"] == "legacy-remote-version"
+    assert reread["external_publish_status"] == "PUBLISHED"
+
+
+def test_runtime_full_graph_replace_preserves_old_remote_fields_and_drops_new_ones(tmp_path: Path):
+    project = tmp_path / "projects" / "p-owner-replace"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    legacy = _legacy_rows()
+    legacy[0]["versions"][0].update({
+        "external_algo_version_id": "legacy-remote-version",
+        "external_publish_status": "PUBLISHED",
+    })
+    json_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    graph = store.read_all()
+    graph[0]["versions"][0]["external_algo_version_id"] = "forbidden-overwrite"
+    graph[0]["versions"][0]["external_publish_status"] = "FAILED"
+    graph[0]["versions"].append({
+        "id": "runtime-v2",
+        "version_name": "V2",
+        "external_algo_version_id": "forbidden-new-id",
+        "external_publish_status": "PUBLISHED",
+    })
+
+    store.replace_all(graph)
+
+    versions = {row["id"]: row for row in store.read_one("legacy-local")["versions"]}
+    assert versions["legacy-v1"]["external_algo_version_id"] == "legacy-remote-version"
+    assert versions["legacy-v1"]["external_publish_status"] == "PUBLISHED"
+    assert "external_algo_version_id" not in versions["runtime-v2"]
+    assert "external_publish_status" not in versions["runtime-v2"]
 
 
 def test_existing_algorithm_crud_keeps_frontend_shape_on_sql(tmp_path: Path):

@@ -951,6 +951,22 @@ class ExternalAlgorithmPublishService:
                 "sha256": digest,
                 "size_bytes": int(legacy.get("size_bytes") or 0),
             }
+            legacy_storage_status = str(
+                legacy.get("upload_status") or "PENDING"
+            ).upper()
+            if legacy_storage_status == "UPLOADING":
+                legacy_storage_status = "PENDING"
+            legacy_storage = {
+                "storage_source_id": str(legacy.get("storage_source_id") or ""),
+                "object_key": str(legacy.get("object_key") or ""),
+                "public_url": str(legacy.get("public_url") or ""),
+                "storage_status": legacy_storage_status,
+                "uploaded_at": (
+                    str(legacy.get("updated_at") or "") or None
+                    if legacy_storage_status == "UPLOADED"
+                    else None
+                ),
+            }
             if canonical is not None:
                 conflicts = [
                     field for field in (
@@ -973,6 +989,59 @@ class ExternalAlgorithmPublishService:
                                 + ", ".join(conflicts)
                             ),
                         )
+                    continue
+
+                storage_conflicts: list[str] = []
+                storage_changes: Dict[str, Any] = {}
+                for field in ("storage_source_id", "object_key", "public_url"):
+                    canonical_value = str(canonical.get(field) or "").strip()
+                    legacy_value = str(legacy_storage.get(field) or "").strip()
+                    if not legacy_value:
+                        continue
+                    if not canonical_value:
+                        storage_changes[field] = legacy_value
+                    elif canonical_value != legacy_value:
+                        storage_conflicts.append(field)
+
+                canonical_status = str(
+                    canonical.get("storage_status") or "PENDING"
+                ).upper()
+                if legacy_storage_status not in {"", "PENDING"}:
+                    if canonical_status in {"", "PENDING"}:
+                        storage_changes["storage_status"] = legacy_storage_status
+                        if legacy_storage_status == "UPLOADED":
+                            storage_changes["storage_error"] = ""
+                    elif canonical_status != legacy_storage_status:
+                        storage_conflicts.append("storage_status")
+
+                legacy_uploaded_at = str(legacy_storage.get("uploaded_at") or "")
+                canonical_uploaded_at = str(canonical.get("uploaded_at") or "")
+                if legacy_uploaded_at:
+                    if not canonical_uploaded_at:
+                        storage_changes["uploaded_at"] = legacy_uploaded_at
+                    elif canonical_uploaded_at != legacy_uploaded_at:
+                        storage_conflicts.append("uploaded_at")
+
+                if storage_conflicts:
+                    mapping = self.repository.artifact_publication(
+                        artifact_id, provider=PROVIDER_CHANGLIAN,
+                    )
+                    if mapping:
+                        self.repository.patch_artifact_publication(
+                            artifact_id,
+                            provider=PROVIDER_CHANGLIAN,
+                            sync_status="UNKNOWN",
+                            last_error=(
+                                "ARTIFACT_STORAGE_MIGRATION_CONFLICT: canonical and legacy "
+                                "storage truth differ: " + ", ".join(storage_conflicts)
+                            ),
+                        )
+                    continue
+                if storage_changes:
+                    self.model_assets.repository.patch(
+                        artifact_id,
+                        **storage_changes,
+                    )
                 continue
             created = self.model_assets.repository.upsert({
                 "artifact_id": artifact_id,
@@ -996,17 +1065,14 @@ class ExternalAlgorithmPublishService:
                     canonical_artifact_id,
                     provider=PROVIDER_CHANGLIAN,
                 )
-            legacy_storage_status = str(legacy.get("upload_status") or "PENDING").upper()
-            if legacy_storage_status == "UPLOADING":
-                legacy_storage_status = "PENDING"
             self.model_assets.repository.patch(
                 canonical_artifact_id,
-                storage_source_id=str(legacy.get("storage_source_id") or ""),
-                object_key=str(legacy.get("object_key") or ""),
-                public_url=str(legacy.get("public_url") or ""),
-                storage_status=legacy_storage_status,
+                storage_source_id=legacy_storage["storage_source_id"],
+                object_key=legacy_storage["object_key"],
+                public_url=legacy_storage["public_url"],
+                storage_status=legacy_storage["storage_status"],
                 storage_error=str(legacy.get("last_error") or "") if legacy_storage_status == "FAILED" else "",
-                uploaded_at=(str(legacy.get("updated_at") or "") if legacy_storage_status == "UPLOADED" else None),
+                uploaded_at=legacy_storage["uploaded_at"],
             )
 
     def _version_publication(
