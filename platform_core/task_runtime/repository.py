@@ -11,10 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from filelock import FileLock
+
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
 from ..gpu_resources import ensure_gpu_runtime_schema
 
+
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -180,39 +185,81 @@ class TaskRepository:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as database:
-            database.executescript(SCHEMA)
-            columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
-            _add_column_if_missing(
-                database, "tasks", columns, "queue_rank", "INTEGER NOT NULL DEFAULT 0"
-            )
-            _add_column_if_missing(
-                database, "tasks", columns, "resource_wait_reason", "TEXT"
-            )
-            worker_columns = {
-                str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
-            }
-            additive_worker_columns = (
-                ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
-                ("hostname", "TEXT NOT NULL DEFAULT ''"),
-                ("build_id", "TEXT NOT NULL DEFAULT ''"),
-                ("roles", "TEXT NOT NULL DEFAULT '[]'"),
-                ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
-                ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
-            )
-            for name, definition in additive_worker_columns:
-                _add_column_if_missing(
-                    database, "worker_instances", worker_columns, name, definition
-                )
-            ensure_gpu_runtime_schema(database)
+        self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA synchronous=FULL")
         database.execute("PRAGMA busy_timeout=5000")
+        database.execute("PRAGMA synchronous=FULL")
         return database
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"task repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"task repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(SCHEMA)
+                columns = {
+                    str(row[1])
+                    for row in database.execute("PRAGMA table_info(tasks)").fetchall()
+                }
+                _add_column_if_missing(
+                    database, "tasks", columns, "queue_rank", "INTEGER NOT NULL DEFAULT 0"
+                )
+                _add_column_if_missing(
+                    database, "tasks", columns, "resource_wait_reason", "TEXT"
+                )
+                worker_columns = {
+                    str(row[1])
+                    for row in database.execute(
+                        "PRAGMA table_info(worker_instances)"
+                    ).fetchall()
+                }
+                additive_worker_columns = (
+                    ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
+                    ("hostname", "TEXT NOT NULL DEFAULT ''"),
+                    ("build_id", "TEXT NOT NULL DEFAULT ''"),
+                    ("roles", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
+                )
+                for name, definition in additive_worker_columns:
+                    _add_column_if_missing(
+                        database, "worker_instances", worker_columns, name, definition
+                    )
+                ensure_gpu_runtime_schema(database)
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
