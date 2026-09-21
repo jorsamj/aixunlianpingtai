@@ -15,8 +15,10 @@ function block(start, end) {
 test('ordinary core loading uses cached snapshot and explicit refresh owns refresh=true', () => {
   const core = block('window.loadCore412=async function', 'async function pollAnnotationIndex412');
   assert.match(core, /window\.loadCore412=async function\(\{authoritative=false\}=\{\}\)/);
-  assert.match(core, /authoritative\?'&refresh=true':''/);
-  assert.doesNotMatch(core, /snapshot\?preferred_project_id=\$\{encodeURIComponent\(id\)\}&refresh=true/);
+  assert.match(core, /snapshot\$\{authoritative\?'\?refresh=true':''\}/);
+  assert.doesNotMatch(core, /preferred_project_id/);
+  assert.doesNotMatch(core, /snapshot\?refresh=true/);
+  assert.match(source, /loadCore412\(\{authoritative:true\}\)/);
   assert.match(core, /state\.modelConfigs=snapshot\.model_configs\|\|\[\]/);
 });
 
