@@ -30,7 +30,7 @@ test('auto-label active task polling updates rows without replacing the page roo
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(() => page.evaluate(() => window.AutoLabelPollRuntime?.build || null))
-    .toBe('auto-label-poll-422501');
+    .toBe('auto-label-poll-422502');
   expect(await page.evaluate(() => ({
     wrapper: window.AutoLabelPollRuntime?.snapshot?.().classicWrapperOwner,
     timer: window.AutoLabelPollRuntime?.snapshot?.().timerOwner,
@@ -43,6 +43,8 @@ test('auto-label active task polling updates rows without replacing the page roo
 
   await page.evaluate(() => {
     window.__autoLabelStableRoot = document.getElementById('view');
+    window.__autoLabelStableRow = document.querySelector('[data-task-id="auto-browser-1"]');
+    window.__autoLabelStableProgress = window.__autoLabelStableRow?.querySelector('.op427-progress em') || null;
   });
 
   await expect.poll(async () => page.evaluate(() => {
@@ -57,6 +59,12 @@ test('auto-label active task polling updates rows without replacing the page roo
     window.__autoLabelStableRoot === document.getElementById('view')
   ));
   expect(rootStayedStable).toBe(true);
+  expect(await page.evaluate(() => (
+    window.__autoLabelStableRow === document.querySelector('[data-task-id="auto-browser-1"]')
+  ))).toBe(true);
+  expect(await page.evaluate(() => (
+    window.__autoLabelStableProgress === document.querySelector('[data-task-id="auto-browser-1"] .op427-progress em')
+  ))).toBe(true);
 
   await page.evaluate(() => window.setPage('数据集'));
   await expect(page.locator('#title')).toContainText('数据集');

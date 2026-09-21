@@ -122,7 +122,9 @@ jobs:
           done
           grep -Fq 'classicWrapperOwner: false' "$file"
           grep -Fq 'timerOwner: false' "$file"
-          grep -Fq "build: 'auto-label-poll-422501'" "$file"
+          grep -Fq "build: 'auto-label-poll-422502'" "$file"
+          grep -Fq 'patchAutoLabelTaskRows' "$file"
+          grep -Fq 'data-progress=' "$file"
       - name: Retired legacy poll timer compatibility guard
         run: |
           for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do

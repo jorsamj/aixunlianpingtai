@@ -6,6 +6,7 @@ import {annotationTaskView} from '../../static/modules/annotation-task-view.js';
 import {
   hasActiveAutoLabelTask,
   installAutoLabelPollRuntime,
+  patchAutoLabelTaskRows,
   renderAutoLabelTaskRows,
 } from '../../static/modules/auto-label-poll-runtime.js';
 
@@ -180,5 +181,25 @@ test('AutoLabelPollRuntime stays wrapper-free and timer-free', () => {
   }
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'auto-label-poll-422501'/);
+  assert.match(source, /build: 'auto-label-poll-422502'/);
+});
+
+
+test('row patch fallback keeps canonical rendering when DOM patch primitives are unavailable', () => {
+  const body = {innerHTML: ''};
+  const changed = patchAutoLabelTaskRows(body, [{
+    id: 'task-patch',
+    name: '增量标注',
+    status: 'RUNNING',
+    requested_labels: ['fire'],
+    summary: {total: 10, completed: 4, boxes: 8},
+  }], {
+    state: {labels: [{code: 'fire', display_name: '明火'}]},
+    annotationTaskView: taskView,
+  });
+
+  assert.equal(changed, true);
+  assert.match(body.innerHTML, /增量标注/);
+  assert.match(body.innerHTML, /40\.0%/);
+  assert.match(body.innerHTML, /scaleX\(0\.4000\)/);
 });

@@ -45,13 +45,98 @@ export function renderAutoLabelTaskRow(task, {state = {}, annotationTaskView} = 
         : view.status === 'FAILED'
           ? 'err'
           : '';
-  const percent = Number(view.percent || 0);
-  return `<tr data-task-id="${esc(task?.id)}"><td><b>${esc(task?.name || task?.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${statusClass}">${esc(view.statusText || view.status || '-')}</span>${view.runtimeText ? `<div class="muted-line">${esc(view.runtimeText)}</div>` : ''}</td><td><div class="op427-progress"><i><em style="width:${percent}%"></em></i><span>${esc(view.progressText || '-')} · ${percent.toFixed(1)}%</span></div></td><td>${Number(view.boxes || 0)}</td><td>${esc(formatTime(task?.created_at))}<div class="muted-line">${esc(formatElapsed(task))}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${esc(task?.id)}')">详情</button>${view.canReview ? `<button class="btn mini primary" onclick="reviewAiLabel427('${esc(task?.id)}')">审核</button>` : ''}${view.canRetry ? `<button class="btn mini" onclick="retryAiTask60('${esc(task?.id)}')">重试</button>` : ''}</div></td></tr>`;
+  const percent = Math.max(0, Math.min(100, Number(view.percent || 0)));
+  const scale = percent / 100;
+  return `<tr data-task-id="${esc(task?.id)}"><td><b>${esc(task?.name || task?.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${statusClass}">${esc(view.statusText || view.status || '-')}</span>${view.runtimeText ? `<div class="muted-line">${esc(view.runtimeText)}</div>` : ''}</td><td><div class="op427-progress"><i><em data-progress="${percent.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></em></i><span>${esc(view.progressText || '-')} · ${percent.toFixed(1)}%</span></div></td><td>${Number(view.boxes || 0)}</td><td>${esc(formatTime(task?.created_at))}<div class="muted-line">${esc(formatElapsed(task))}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${esc(task?.id)}')">详情</button>${view.canReview ? `<button class="btn mini primary" onclick="reviewAiLabel427('${esc(task?.id)}')">审核</button>` : ''}${view.canRetry ? `<button class="btn mini" onclick="retryAiTask60('${esc(task?.id)}')">重试</button>` : ''}</div></td></tr>`;
 }
 
 export function renderAutoLabelTaskRows(tasks, options = {}) {
   return (tasks || []).map(task => renderAutoLabelTaskRow(task, options)).join('')
     || '<tr><td colspan="6">暂无AI标注任务</td></tr>';
+}
+
+function createAutoLabelRow(body, html) {
+  const doc = body?.ownerDocument || globalThis.document;
+  if (!doc?.createElement) return null;
+  const holder = doc.createElement('tbody');
+  holder.innerHTML = String(html || '').trim();
+  return holder.firstElementChild || null;
+}
+
+function patchAutoLabelProgressCell(currentCell, nextCell) {
+  const currentBar = currentCell?.querySelector?.('.op427-progress em');
+  const nextBar = nextCell?.querySelector?.('.op427-progress em');
+  const currentText = currentCell?.querySelector?.('.op427-progress span');
+  const nextText = nextCell?.querySelector?.('.op427-progress span');
+  if (!currentBar || !nextBar || !currentText || !nextText) {
+    currentCell.innerHTML = nextCell.innerHTML;
+    return;
+  }
+  currentBar.dataset.progress = nextBar.dataset.progress || '';
+  currentBar.style.transform = nextBar.style.transform;
+  currentText.textContent = nextText.textContent;
+}
+
+export function patchAutoLabelTaskRows(body, tasks, options = {}) {
+  if (!body) return false;
+  const rows = Array.isArray(tasks) ? tasks : [];
+  const canPatch = Boolean(
+    (body?.ownerDocument || globalThis.document)?.createElement
+    && typeof body.querySelectorAll === 'function'
+    && typeof body.insertBefore === 'function'
+    && body.children,
+  );
+  if (!canPatch) {
+    body.innerHTML = renderAutoLabelTaskRows(rows, options);
+    return true;
+  }
+
+  if (!rows.length) {
+    if (!body.querySelector?.('.auto-label-empty-row')) {
+      body.innerHTML = '<tr class="auto-label-empty-row"><td colspan="6">暂无AI标注任务</td></tr>';
+    }
+    return true;
+  }
+
+  body.querySelector?.('.auto-label-empty-row')?.remove?.();
+  const existing = new Map(
+    [...body.querySelectorAll('tr[data-task-id]')]
+      .map(row => [String(row.dataset?.taskId || ''), row]),
+  );
+  const wanted = new Set();
+
+  rows.forEach((task, index) => {
+    const id = String(task?.id || '');
+    const nextRow = createAutoLabelRow(body, renderAutoLabelTaskRow(task, options));
+    if (!id || !nextRow) return;
+    wanted.add(id);
+
+    let currentRow = existing.get(id) || null;
+    if (!currentRow) {
+      currentRow = nextRow;
+    } else if (currentRow.cells?.length === nextRow.cells?.length) {
+      for (let cellIndex = 0; cellIndex < nextRow.cells.length; cellIndex += 1) {
+        const currentCell = currentRow.cells[cellIndex];
+        const nextCell = nextRow.cells[cellIndex];
+        if (cellIndex === 2) {
+          patchAutoLabelProgressCell(currentCell, nextCell);
+        } else if (currentCell.innerHTML !== nextCell.innerHTML) {
+          currentCell.innerHTML = nextCell.innerHTML;
+        }
+      }
+    } else {
+      currentRow.replaceWith?.(nextRow);
+      currentRow = nextRow;
+    }
+
+    const reference = body.children[index] || null;
+    if (reference !== currentRow) body.insertBefore(currentRow, reference);
+  });
+
+  for (const [id, row] of existing) {
+    if (!wanted.has(id)) row.remove?.();
+  }
+  return true;
 }
 
 export function hasActiveAutoLabelTask(tasks, annotationTaskView) {
@@ -152,7 +237,7 @@ export function installAutoLabelPollRuntime({
         return false;
       }
       current.annotationTasks60 = tasks;
-      currentBody.innerHTML = renderAutoLabelTaskRows(tasks, {state: current, annotationTaskView});
+      patchAutoLabelTaskRows(currentBody, tasks, {state: current, annotationTaskView});
       schedule(tasks, pollDelay);
       return true;
     } catch (error) {
@@ -170,8 +255,11 @@ export function installAutoLabelPollRuntime({
   }
 
   const runtime = {
-    build: 'auto-label-poll-422501',
+    build: 'auto-label-poll-422502',
     activate,
+    patchRows(body, tasks = state().annotationTasks60 || []) {
+      return patchAutoLabelTaskRows(body, tasks, {state: state(), annotationTaskView});
+    },
     deactivate,
     refreshRows,
     schedule,

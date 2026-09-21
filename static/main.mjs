@@ -22,7 +22,7 @@ import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422532';
-import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
+import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
