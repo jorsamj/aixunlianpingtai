@@ -175,6 +175,26 @@ test('registered page owner is the only renderer for its page', () => {
   cleanup();
 });
 
+test('configured canonical business pages are known without a dedicated module owner', () => {
+  const state = {page: '算法列表'};
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  const runtime = installNavigationStability({
+    getState: () => state,
+    knownPages: ['工作台', '服务节点', '平台对接', '部署产物'],
+    performNavigation(page) { state.page = page; },
+  });
+
+  assert.equal(runtime.isKnownPage('工作台'), true);
+  assert.equal(runtime.isKnownPage('服务节点'), true);
+  assert.equal(runtime.isKnownPage('平台对接'), true);
+  assert.equal(runtime.isKnownPage('部署产物'), true);
+  assert.equal(runtime.isKnownPage('完全未知页面'), false);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('unknown pages are not treated as known business pages', () => {
   const state = {page: '算法列表'};
   globalThis.document = {getElementById() { return {dataset: {}}; }};

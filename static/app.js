@@ -3828,6 +3828,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 (()=>{
  const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
  const RESTORABLE_PAGES413=new Set(['工作台','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','测试发布','检测台','标签管理','部署转换','部署产物','模型配置','训练资源','部署资源','部署插件','组件检测','存储配置','平台对接','服务节点']);
+ window.PlatformCore=window.PlatformCore||{};
+ window.PlatformCore.navigation=window.PlatformCore.navigation||{};
+ window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
  window.__v53BootstrapOwned=true;
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0)));return `<div class="boot413"><div class="boot413-card"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span>${esc(st?.stage||'正在启动')}</span><b>${Math.round(p)}%</b></div><i><em style="width:${p}%"></em></i><p>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};if(view)view.innerHTML=boot(st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;if(view)view.innerHTML=boot(st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}

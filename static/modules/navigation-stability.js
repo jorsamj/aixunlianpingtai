@@ -72,6 +72,7 @@ export function installNavigationStability({
   waitForNavigationReady,
   beforeInvokeNavigation,
   performNavigation,
+  knownPages,
 } = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
@@ -81,6 +82,13 @@ export function installNavigationStability({
   const guard = new NavigationEpochGuard(normalizeNavigationPage(state?.page || ''));
   const pending = new Map();
   const pageOwners = new Map();
+  const suppliedKnownPages = knownPages && typeof knownPages[Symbol.iterator] === 'function'
+    ? [...knownPages]
+    : [];
+  const knownPageNames = new Set([
+    ...KNOWN_PAGE_NAMES,
+    ...suppliedKnownPages.map(normalizeNavigationPage).filter(Boolean),
+  ]);
   const rebindTimers = [];
   let tokenSeq = 0;
   let destroyed = false;
@@ -267,7 +275,7 @@ export function installNavigationStability({
     },
     isKnownPage(page) {
       const normalized = normalizeNavigationPage(page);
-      return KNOWN_PAGE_NAMES.has(normalized) || pageOwners.has(normalized);
+      return knownPageNames.has(normalized) || pageOwners.has(normalized);
     },
     currentPage() {
       return normalizeNavigationPage(currentState().page || '');

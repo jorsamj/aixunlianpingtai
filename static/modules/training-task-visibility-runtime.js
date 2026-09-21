@@ -124,6 +124,9 @@ export function installTrainingTaskVisibilityRuntime({
     appliedSequence = sequence;
     jobsProjectId = String(state().project?.id || jobsProjectId || '');
     if (requestedRender) renderOwned();
+    if (String(options.source || '') !== 'poll') {
+      pollRegistry?.replaceTrainingJobTimer?.();
+    }
     return result;
   }
 

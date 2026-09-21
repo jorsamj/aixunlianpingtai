@@ -261,6 +261,12 @@ function renderUnknownPage(page) {
 }
 
 function refreshCurrentPageOwner(page) {
+  if (page === '训练任务') {
+    void trainingTaskRuntime.refresh({render: true, force: true, source: 'page-owner'}).then(result => {
+      if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();
+    }).catch(error => notify(error?.message || error));
+    return;
+  }
   if (page !== '算法列表') return;
   const snapshotAge = Date.now() - Number(state.__coreSnapshotGeneratedAt || 0);
   if (snapshotAge <= 5000) return;
@@ -280,6 +286,7 @@ const navigationStabilityRuntime = installNavigationStability({
     }
   },
   beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
+  knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;

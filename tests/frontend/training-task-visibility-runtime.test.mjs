@@ -43,6 +43,7 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
     querySelector: selector => selector === '.train428-page' ? dom.root : null,
   };
   const calls = [];
+  let pollRearms = 0;
   const runtime = {
     async refresh(options = {}) {
       calls.push(options);
@@ -52,11 +53,11 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
   globalThis.window = {
     PlatformCore: {runtime: {}},
     TrainingTaskRuntime: runtime,
-    PollRegistryRuntime: {replaceTrainingJobTimer() {}},
+    PollRegistryRuntime: {replaceTrainingJobTimer() { pollRearms += 1; }},
     loadRelated: async () => undefined,
     renderTraining423() {},
   };
-  return {state, dom, runtime, calls};
+  return {state, dom, runtime, calls, pollRearms: () => pollRearms};
 }
 
 test('generic loadRelated cannot overwrite canonical training jobs after runtime ownership', async () => {
@@ -105,6 +106,31 @@ test('loadRelated on training page routes to canonical jobs refresh instead of p
   assert.equal(fixture.calls[0].force, true);
   assert.equal(fixture.calls[0].source, 'related');
   assert.deepEqual(fixture.state.jobs, [{id: 'run-1', status: 'running'}]);
+
+  visibility.destroy();
+  cleanup();
+});
+
+test('canonical refresh re-arms polling after an empty stale snapshot discovers a running task', async () => {
+  const fixture = installFixture({page: '数据集', jobs: []});
+  fixture.runtime.refresh = async options => {
+    fixture.calls.push(options);
+    fixture.state.jobs = [{id: 'live-run', status: 'running', progress_percent: 37}];
+    return {stale: false, jobs: fixture.state.jobs};
+  };
+
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+  fixture.state.page = '训练任务';
+  const before = fixture.pollRearms();
+  await visibility.refresh({render: true, force: true, source: 'page-owner'});
+
+  assert.equal(fixture.pollRearms(), before + 1);
+  assert.match(fixture.dom.body.innerHTML, /live-run/);
+  assert.match(fixture.dom.body.innerHTML, /37%/);
 
   visibility.destroy();
   cleanup();
