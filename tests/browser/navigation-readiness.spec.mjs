@@ -96,6 +96,9 @@ test('startup progress keeps the same boot card while status advances', async ({
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+
   let statusCalls = 0;
   let releaseSecond;
   let releaseReady;
@@ -129,8 +132,12 @@ test('startup progress keeps the same boot card while status advances', async ({
     });
   });
 
-  await page.goto('/');
-  await expect(page.locator('[data-boot-card="1"]')).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => {
+    window.__bootProbePromise = window.loadStartupSnapshot413(false);
+  });
+
+  await expect.poll(() => statusCalls, {timeout: 5_000}).toBeGreaterThan(0);
+  await expect(page.locator('[data-boot-card="1"]')).toHaveCount(1);
   await expect(page.locator('[data-boot-percent]')).toHaveText('10%');
   await page.evaluate(() => {
     window.__stableBootCard = document.querySelector('[data-boot-card="1"]');
@@ -147,6 +154,10 @@ test('startup progress keeps the same boot card while status advances', async ({
   }))).toEqual({card:true, bar:true, transform:'scaleX(0.6000)'});
 
   releaseReady();
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  await page.evaluate(async () => {
+    await window.__bootProbePromise;
+    window.render?.();
+  });
+  await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
