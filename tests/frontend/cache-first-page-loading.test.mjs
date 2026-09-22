@@ -57,3 +57,14 @@ test('frequently revisited operational pages paint before focused revalidation',
   assert.match(clean, /refreshCleanOps427Delta/);
   assert.doesNotMatch(clean, /await loadOps427\(\)/);
 });
+
+
+test('test publish feedback panel paints cached rows before TTL revalidation', () => {
+  assert.match(source, /const ONLINE_FEEDBACK_CACHE_TTL_MS=60\*1000/);
+  assert.match(source, /state\.onlineFeedback63ProjectId===feedbackProjectId&&state\.onlineFeedback63LoadedAt>0/);
+  assert.match(source, /const feedbackRows=hasFeedbackSnapshot\?feedbackRows63\(\):/);
+  assert.match(source, /loadOnlineFeedback63\(\{force:true\}\)">刷新/);
+  assert.match(source, /if\(!hasFeedbackSnapshot\|\|feedbackAge<0\|\|feedbackAge>=ONLINE_FEEDBACK_CACHE_TTL_MS\)void loadOnlineFeedback63\(\)/);
+  assert.match(source, /if\(!force&&sameProject&&state\.onlineFeedback63LoadedAt>0&&age>=0&&age<ONLINE_FEEDBACK_CACHE_TTL_MS\)/);
+  assert.match(source, /state\.onlineFeedback63RefreshPromise&&state\.onlineFeedback63RefreshProjectId===projectId/);
+});

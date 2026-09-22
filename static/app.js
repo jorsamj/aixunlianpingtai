@@ -5143,7 +5143,12 @@ window.installUsability417?.();
 /* v63: reviewable online inference sampling/feedback. */
 (()=>{
   state.onlineFeedback63=state.onlineFeedback63||[];
+  state.onlineFeedback63LoadedAt=Number(state.onlineFeedback63LoadedAt||0);
+  state.onlineFeedback63ProjectId=String(state.onlineFeedback63ProjectId||'');
+  state.onlineFeedback63RefreshPromise=null;
+  state.onlineFeedback63RefreshProjectId='';
   state.lastOnlinePrediction63=state.lastOnlinePrediction63||null;
+  const ONLINE_FEEDBACK_CACHE_TTL_MS=60*1000;
   const predictBeforeFeedback63=window.predict;
   window.predict=async function(){
     const result=await predictBeforeFeedback63?.apply(this,arguments);
@@ -5189,18 +5194,36 @@ window.installUsability417?.();
     }
   }
 
-  window.loadOnlineFeedback63=async function(){
-    if(!pid())return [];
-    try{
-      const result=await api(`/api/v63/projects/${pid()}/online-feedback?limit=100`);
+  window.loadOnlineFeedback63=async function({force=false}={}){
+    const projectId=String(pid()||'');if(!projectId)return [];
+    const sameProject=state.onlineFeedback63ProjectId===projectId;
+    const age=Date.now()-Number(state.onlineFeedback63LoadedAt||0);
+    if(!force&&sameProject&&state.onlineFeedback63LoadedAt>0&&age>=0&&age<ONLINE_FEEDBACK_CACHE_TTL_MS){
+      renderFeedbackRows63();
+      return state.onlineFeedback63||[];
+    }
+    if(state.onlineFeedback63RefreshPromise&&state.onlineFeedback63RefreshProjectId===projectId)return state.onlineFeedback63RefreshPromise;
+    const task=api(`/api/v63/projects/${projectId}/online-feedback?limit=100`).then(result=>{
+      if(String(pid()||'')!==projectId)return state.onlineFeedback63||[];
       state.onlineFeedback63=result.items||[];
+      state.onlineFeedback63ProjectId=projectId;
+      state.onlineFeedback63LoadedAt=Date.now();
       renderFeedbackRows63();
       return state.onlineFeedback63;
-    }catch(error){
+    }).catch(error=>{
       const body=document.getElementById('onlineFeedbackRows63');
-      if(body)body.innerHTML=`<tr><td colspan="6"><div class="alert err">${esc(error.message||error)}</div></td></tr>`;
-      return [];
-    }
+      if(body&&!sameProject)body.innerHTML=`<tr><td colspan="6"><div class="alert err">${esc(error.message||error)}</div></td></tr>`;
+      else if(force)toast(error.message||error);
+      return sameProject?(state.onlineFeedback63||[]):[];
+    }).finally(()=>{
+      if(state.onlineFeedback63RefreshPromise===task){
+        state.onlineFeedback63RefreshPromise=null;
+        state.onlineFeedback63RefreshProjectId='';
+      }
+    });
+    state.onlineFeedback63RefreshPromise=task;
+    state.onlineFeedback63RefreshProjectId=projectId;
+    return task;
   };
 
   renderTest=window.renderTest=function renderTestCanonical63(){
@@ -5213,10 +5236,14 @@ window.installUsability417?.();
       runButton.disabled=!ready;
       runButton.title=ready?'':'正在读取可用测试模型和推理环境';
     }
+    const feedbackProjectId=String(pid()||''),hasFeedbackSnapshot=state.onlineFeedback63ProjectId===feedbackProjectId&&state.onlineFeedback63LoadedAt>0;
+    const feedbackRows=hasFeedbackSnapshot?feedbackRows63():'<tr><td colspan="6">首次读取线上抽检反馈…</td></tr>';
+    const feedbackSummary=hasFeedbackSnapshot?(()=>{const rows=state.onlineFeedback63||[],pending=rows.filter(item=>item.status==='pending_review').length;return `${rows.length} 条 · 待复核 ${pending} 条`})():'首次读取…';
     if(root&&!document.getElementById('onlineFeedback63')){
-      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">正在读取…</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63()">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63"><tr><td colspan="6">正在读取…</td></tr></tbody></table></div></section>`);
+      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">${feedbackSummary}</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63({force:true})">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63">${feedbackRows}</tbody></table></div></section>`);
     }
-    loadOnlineFeedback63();
+    const feedbackAge=Date.now()-Number(state.onlineFeedback63LoadedAt||0);
+    if(!hasFeedbackSnapshot||feedbackAge<0||feedbackAge>=ONLINE_FEEDBACK_CACHE_TTL_MS)void loadOnlineFeedback63();
   };
 
   window.openExternalFeedbackIntake63=function(){
@@ -5254,7 +5281,7 @@ window.installUsability417?.();
         }),
       });
       closeModal();
-      await loadOnlineFeedback63();
+      await loadOnlineFeedback63({force:true});
       await openOnlineFeedbackReview63(result.feedback.id);
     }catch(error){toast(error.message||error);if(button)button.disabled=false}
   };
@@ -5288,7 +5315,7 @@ window.installUsability417?.();
       });
       const feedback=result.feedback||{};
       closeModal();
-      await loadOnlineFeedback63();
+      await loadOnlineFeedback63({force:true});
       if(feedback.result?.needs_manual_annotation){
         toast('反馈样本已进入素材库，请完成人工标注');
         setPage('数据集');
@@ -5310,7 +5337,7 @@ window.installUsability417?.();
       });
       closeModal();
       state.onlineFeedbackReview63=null;
-      await loadOnlineFeedback63();
+      await loadOnlineFeedback63({force:true});
       toast('该反馈已忽略，不会写入素材、标注或训练链');
     }catch(error){toast(error.message||error);if(button)button.disabled=false}
   };
