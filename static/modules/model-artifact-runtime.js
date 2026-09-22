@@ -124,16 +124,17 @@ function ensureStyles() {
   document.head.appendChild(style);
 }
 
-export function installModelArtifactRuntime({getState, notify} = {}) {
+export function installModelArtifactRuntime({getState, notify, pollRegistry} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__modelArtifactRuntimeInstalled) return window.ModelArtifactRuntime;
   const state = () => getState?.() || {};
+  const registry = pollRegistry || window.PollRegistryRuntime;
+  const AUDIT_POLL_KEY = 'model-artifact-audit';
   let config = null;
   let summary = {total: 0, uploaded: 0, failed: 0, pending: 0};
   let auditSummary = {total: 0, success: 0, failed: 0, unknown: 0, avg_duration_ms: 0};
   let logs = [];
   let loading = false;
-  let timer = null;
   let mutationQueued = false;
 
   ensureStyles();
@@ -195,12 +196,55 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     </section>`;
   }
 
+  function auditRowHtml(row) {
+    const p = auditStatusPresentation(row.status);
+    return `<tr data-audit-id="${escapeHtml(row.log_id)}"><td>${escapeHtml(formatTime(row.created_at))}</td><td><span class="ma-pill ${p.cls}">${p.label}</span></td><td>${escapeHtml(operationLabel(row.operation))}</td><td><div class="ma-endpoint" title="${escapeHtml(row.endpoint)}">${escapeHtml(row.method || '')} ${escapeHtml(row.endpoint || '')}</div></td><td>${Number(row.duration_ms || 0)} ms</td><td class="ma-muted">${escapeHtml(row.request_id || '-')}</td><td><button class="btn mini" data-audit-detail="${escapeHtml(row.log_id)}">详情</button></td></tr>`;
+  }
+
   function auditRowsHtml() {
-    if (!logs.length) return `<tr><td colspan="7"><div class="ma-empty">暂无交互记录</div></td></tr>`;
-    return logs.map(row => {
-      const p = auditStatusPresentation(row.status);
-      return `<tr data-audit-id="${escapeHtml(row.log_id)}"><td>${escapeHtml(formatTime(row.created_at))}</td><td><span class="ma-pill ${p.cls}">${p.label}</span></td><td>${escapeHtml(operationLabel(row.operation))}</td><td><div class="ma-endpoint" title="${escapeHtml(row.endpoint)}">${escapeHtml(row.method || '')} ${escapeHtml(row.endpoint || '')}</div></td><td>${Number(row.duration_ms || 0)} ms</td><td class="ma-muted">${escapeHtml(row.request_id || '-')}</td><td><button class="btn mini" data-audit-detail="${escapeHtml(row.log_id)}">详情</button></td></tr>`;
-    }).join('');
+    if (!logs.length) return `<tr class="ma-audit-empty"><td colspan="7"><div class="ma-empty">暂无交互记录</div></td></tr>`;
+    return logs.map(auditRowHtml).join('');
+  }
+
+  function patchAuditRows(body) {
+    if (!body) return false;
+    if (!logs.length) {
+      if (!body.querySelector?.('.ma-audit-empty')) body.innerHTML = auditRowsHtml();
+      return true;
+    }
+
+    body.querySelector?.('.ma-audit-empty')?.remove?.();
+    const existing = new Map(
+      [...body.querySelectorAll('tr[data-audit-id]')]
+        .map(row => [String(row.dataset?.auditId || ''), row]),
+    );
+    const wanted = new Set();
+
+    logs.forEach((item, index) => {
+      const id = String(item?.log_id || '');
+      if (!id) return;
+      wanted.add(id);
+      const html = auditRowHtml(item);
+      let row = existing.get(id) || null;
+      if (!row) {
+        const holder = document.createElement('tbody');
+        holder.innerHTML = html;
+        row = holder.firstElementChild;
+      } else {
+        const holder = document.createElement('tbody');
+        holder.innerHTML = html;
+        const next = holder.firstElementChild;
+        if (next && row.innerHTML !== next.innerHTML) row.innerHTML = next.innerHTML;
+      }
+      if (!row) return;
+      const reference = body.children[index] || null;
+      if (reference !== row) body.insertBefore(row, reference);
+    });
+
+    for (const [id, row] of existing) {
+      if (!wanted.has(id)) row.remove?.();
+    }
+    return true;
   }
 
   async function loadModelConfig() {
@@ -296,10 +340,26 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     });
   }
 
+  function scheduleAuditPoll() {
+    if (!registry?.startTimeout || String(state().page || '') !== PLATFORM_PAGE) {
+      registry?.clear?.(AUDIT_POLL_KEY);
+      return null;
+    }
+    const active = registry.snapshot?.().some(row => row.key === AUDIT_POLL_KEY);
+    if (active) return true;
+    return registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE, async () => {
+      try {
+        if (String(state().page || '') === PLATFORM_PAGE) await refreshLogsOnly();
+      } catch (_) {
+        scheduleAuditPoll();
+      }
+    }, 10000);
+  }
+
   async function refreshLogsOnly() {
     await loadLogs();
     const body = document.getElementById('changlianAuditRows');
-    if (body) body.innerHTML = auditRowsHtml();
+    if (body) patchAuditRows(body);
     const panel = document.querySelector('[data-changlian-audit-panel]');
     if (panel) {
       const stats = panel.querySelectorAll('.ma-stat strong');
@@ -308,6 +368,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
       if (stats[2]) stats[2].textContent = String(Number(auditSummary.failed || 0) + Number(auditSummary.unknown || 0));
       if (stats[3]) stats[3].innerHTML = `${Number(auditSummary.avg_duration_ms || 0)}<small style="font-size:12px;margin-left:3px">ms</small>`;
     }
+    scheduleAuditPoll();
   }
 
   async function renderPanels() {
@@ -339,6 +400,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
       history ? history.insertAdjacentHTML('beforebegin', auditPanel()) : shell.insertAdjacentHTML('beforeend', auditPanel());
       bindPanels();
     }
+    scheduleAuditPoll();
   }
   async function refresh({rerender = false} = {}) {
     const page = String(state().page || '');
@@ -365,20 +427,17 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
 
   const observer = new MutationObserver(schedule);
   observer.observe(document.body, {childList: true, subtree: true});
-  timer = window.setInterval(() => {
-    if (String(state().page || '') === PLATFORM_PAGE) void refreshLogsOnly().catch(() => {});
-  }, 10000);
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65001',
+    build: 'model-artifacts-65002',
     refresh,
     renderPanels,
     openAuditDetail,
     config: () => config,
     destroy() {
       observer.disconnect();
-      if (timer) clearInterval(timer);
+      registry?.clear?.(AUDIT_POLL_KEY);
       window.__modelArtifactRuntimeInstalled = false;
       if (window.ModelArtifactRuntime === runtime) window.ModelArtifactRuntime = null;
     },

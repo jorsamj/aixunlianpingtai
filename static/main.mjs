@@ -11,7 +11,7 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422520';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63015';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
-import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65001';
+import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65002';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422505';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
@@ -165,6 +165,7 @@ window.PlatformCore.runtime.externalAlgorithmPublishRuntime = externalAlgorithmP
 const modelArtifactRuntime = installModelArtifactRuntime({
   getState: () => state,
   notify,
+  pollRegistry,
 });
 window.PlatformCore.runtime.modelArtifactRuntime = modelArtifactRuntime;
 

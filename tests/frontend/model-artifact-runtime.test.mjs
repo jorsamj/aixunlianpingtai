@@ -78,3 +78,15 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /interaction-logs/);
   assert.match(source, /复制诊断信息/);
 });
+
+
+test('audit polling is PollRegistry-owned and audit rows patch by log id', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/model-artifact-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /pollRegistry \|\| window\.PollRegistryRuntime/);
+  assert.match(source, /registry\.startTimeout\(AUDIT_POLL_KEY, PLATFORM_PAGE/);
+  assert.match(source, /function patchAuditRows\(body\)/);
+  assert.match(source, /data-audit-id=/);
+  assert.match(source, /build: 'model-artifacts-65002'/);
+  assert.doesNotMatch(source, /window\.setInterval\(/);
+  assert.doesNotMatch(source, /body\.innerHTML = auditRowsHtml\(\)/);
+});
