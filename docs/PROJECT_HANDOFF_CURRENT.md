@@ -1,3 +1,12 @@
+<!-- LIVE_HANDOFF_2026_09_22 -->
+> ## 2026-09-22 最新覆盖：请先读 `docs/CODEX_HANDOFF_2026-09-22.md`
+>
+> 当前开发已进入“前端 owner 收口后的用户可感知性能优化”阶段。服务节点、训练任务、训练创建、标注工作台、素材分页、模型产物、算法列表等均已连续做 cache-first / snapshot reuse / in-flight dedupe / 原位 patch 收口。
+>
+> 文档写入前代码/测试基线为 `22e52dc0e86c03ad1b30e5547072d2ec3b388487`；该提交只修正 Model Artifact runtime build marker 的过期测试断言（65003 → 65005）。`VERSION.txt` 仍为 `42.24.0`。
+>
+> **不要把上述 SHA 当作当前远端 HEAD。** 接手第一步仍须重读 GitHub 真实远端 HEAD、VERSION、最近 commits 与 Actions。新的 9 月 22 日 handoff 优先于本文后面的历史 NEXT / Current priority / 部署建议。
+
 # 畅联云算法训练平台 — 当前接手总览
 
 <!-- OSS_CONNECTION_BINDING_BATCH2_2026_09_21 -->
