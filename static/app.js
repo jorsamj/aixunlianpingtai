@@ -1025,13 +1025,9 @@ window.installUsability417=function(){
   };
 
   renderDetectBench = window.renderDetectBench = function(){
-    const live=(state.jobs||[]).filter(j=>['queued','running'].includes(j.status));
-    const recent=(state.jobs||[]).slice(0,5);
-    const modelWarn = (state.testModels||[]).length ? '' : '<div class="alert warn">当前没有可测试模型。请先在“训练资源”里检测 Ultralytics/飞桨环境，或完成一次训练任务。</div>';
-    const envWarn = (state.inferenceEnvs||[]).some(e=>e.status==='ready') ? '' : '<div class="alert warn">当前没有可用检测环境。请先到“训练资源”里检测并启用 Ultralytics 或飞桨。</div>';
-    $('#view').innerHTML=`<section class="panel bench-panel"><div class="panel-head"><div><div class="panel-title">检测台</div><div class="subline">独立于发布流程。支持原始模型、新模型、飞桨模型、YOLO模型同图对比。</div></div><div class="row"><button class="btn small" onclick="refreshDetectionBenchDataV3()">刷新模型/环境</button><button class="btn soft small" onclick="resetBench()">清空</button></div></div><div class="panel-body">${modelWarn}${envWarn}<div class="bench-layout"><div class="bench-config"><div class="form one"><div class="field"><label>原始模型 / 对照模型</label><select class="select" id="benchModelA">${modelOptionList(0)}</select></div><div class="field"><label>新模型 / 训练后模型</label><select class="select" id="benchModelB">${modelOptionList(Math.min(1,(state.testModels||[]).length-1))}</select></div><div class="field"><label>置信度</label><div class="row"><input class="input" id="benchConf" value="0.25"><button class="btn mini" onclick="var x=document.getElementById('benchConf'); if(x) x.value='0.01'">0.01</button><button class="btn mini" onclick="var x=document.getElementById('benchConf'); if(x) x.value='0.25'">0.25</button><button class="btn mini" onclick="var x=document.getElementById('benchConf'); if(x) x.value='0.5'">0.5</button></div></div><div class="field"><label>测试图片</label><input id="benchFile" type="file" accept="image/*" class="file" onchange="previewBenchImage()"></div><div class="row wrap"><button class="btn primary" onclick="benchCompare()">同图对比检测</button><button class="btn soft" onclick="benchSingle('benchModelA')">只测左侧</button><button class="btn soft" onclick="benchSingle('benchModelB')">只测右侧</button></div></div></div><div class="bench-preview"><div class="item-title">原图预览</div><div id="benchPreview" class="preview-box">选择图片后显示原图</div><div class="item-sub">建议新模型先用 0.01 低置信度看有没有学习到目标，再提高到 0.25。</div></div></div><div id="benchResult" class="compare-grid"></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">后台训练状态</div><span class="item-sub">检测时仍可观察训练倒计时</span></div><div class="panel-body"><div class="card-list">${live.map(j=>`<div class="item"><div><div class="item-title">${esc(j.algorithm_name||j.id)}</div>${renderJobProgress(j)}</div><span class="pill ${statusPillClass(j.status)}">${esc(j.status_text||statusName(j.status))}</span></div>`).join('')||'<div class="empty">当前没有运行中的训练任务</div>'}</div>${recent.length?`<div class="divider"></div><div class="item-sub">最近任务</div><table class="table mini-table"><tbody>${recent.map(j=>`<tr><td>${esc(j.algorithm_name||j.id)}</td><td>${esc(statusName(j.status))}</td><td>${renderJobProgress(j)}</td></tr>`).join('')}</tbody></table>`:''}</div></section>`;
+    if(typeof window.renderQualityDetectionBench64==='function')return window.renderQualityDetectionBench64();
+    const view=document.getElementById('view');if(view)view.innerHTML='<section class="panel"><div class="panel-body"><div class="loading">模型检测工作台正在加载…</div></div></section>';
   };
-
 
 
   window.predictCore30 = async function(){
@@ -5622,7 +5618,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     modal('检测详情',`<div class="bench64-detail"><section class="bench64-original"><div class="panel-title">原图</div><img src="${row.previewUrl}" alt=""><b>${esc(row.file.webkitRelativePath||row.file.name)}</b></section><div class="bench64-compare">${result(row.a,'A 模型')}${result(row.b,'B 模型')}</div><section class="bench64-review"><div><b>人工核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>用于记录本次检测是否正确：可标记正确、漏检、误检、框不准或类别错误。</p></section></div>`,true);
   };
 
-  window.renderDetectBench=function renderQualityDetectionBench64(){
+  window.renderQualityDetectionBench64=function renderQualityDetectionBench64(){
     const view=document.getElementById('view');if(!view)return;
     const models=detectionModels64(),ready=(state.inferenceEnvs||[]).some(env=>env?.status==='ready');
     const modelNotice=models.length?'': '<div class="alert warn">正在读取可用原始模型和算法版本；如果长时间为空，请检查训练资源。</div>';
