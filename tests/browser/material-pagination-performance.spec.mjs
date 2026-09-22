@@ -130,7 +130,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422211');
+    .toBe('material-pagination-runtime-422212');
 
   await page.evaluate(() => {
     state.data412Tab = 'processed';
@@ -211,7 +211,7 @@ test('quality center navigation does not hydrate the full material pool', async 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422211');
+    .toBe('material-pagination-runtime-422212');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
 
   apiRequests.length = 0;
@@ -225,6 +225,40 @@ test('quality center navigation does not hydrate the full material pool', async 
 
   expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
   expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
+});
+
+
+test('auto-label task page avoids full hydration until the user creates a task', async ({page}) => {
+  const apiRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422212');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
+
+  apiRequests.length = 0;
+  await page.evaluate(() => {
+    state.v427OpsTab = 'label';
+    window.setPage('自动标注及清洗');
+  });
+  await expect(page.locator('#title')).toContainText('自动标注及清洗');
+  await expect(page.getByRole('button', {name: /创建AI标注任务/})).toBeVisible();
+  await page.waitForTimeout(350);
+  expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
+
+  const fullPoolRequest = page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return request.method() === 'GET' && /\/api\/projects\/[^/]+\/images$/.test(url.pathname);
+  });
+  await page.getByRole('button', {name: /创建AI标注任务/}).click();
+  await fullPoolRequest;
+  await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible({timeout: 10_000});
 });
 
 
@@ -261,7 +295,7 @@ test('dataset return paints the cached page before a background refresh replaces
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422211');
+    .toBe('material-pagination-runtime-422212');
   await page.evaluate(() => {
     state.data412Tab = 'processed';
     state.materialQuery61 = '';
