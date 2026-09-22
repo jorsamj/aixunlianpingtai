@@ -40,6 +40,16 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 });
 
 
+test('dataset usability layer installs a decoration hook instead of wrapping the canonical renderer', () => {
+  assert.equal(app.includes('const baseRenderDataset417=window.renderDatasets424;'), false);
+  assert.match(app, /window\.decorateDatasetUsability417=function\(\)/);
+  const start = app.indexOf('function datasetScope412()');
+  const end = app.indexOf('window.setData412Tab=', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /window\.decorateDatasetUsability417\?\.\(\)/);
+});
+
 test('dataset label controls are a direct decoration hook instead of renderer layers', () => {
   assert.equal(app.includes('const baseData414=window.renderDatasets424;'), false);
   assert.equal(app.includes('const baseRenderDatasets427=window.renderDatasets424;'), false);
