@@ -254,28 +254,34 @@ test('connection test uses draft form without saving credentials first', () => {
 
 test('external algorithm decorator is DOM-idempotent under mutation observers', () => {
   const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  const start = source.indexOf('function decorateAlgorithmCards()');
-  const end = source.indexOf('function installAlgorithmDecorator()', start);
-  assert.ok(start >= 0 && end > start);
-  const block = source.slice(start, end);
 
-  assert.match(block, /data-algorithm-source-filter/);
-  assert.match(block, /内部算法/);
-  assert.match(block, /外部算法/);
-  assert.match(block, /data-algorithm-training-status-filter/);
-  assert.match(block, /全部训练状态/);
-  assert.match(block, /renderAlgorithmCategoryPicker/);
-  assert.match(block, /data-category-picker-toggle/);
-  assert.match(block, /data-category-select/);
-  assert.match(block, /data-category-search/);
-  assert.match(block, /categoryPickerSignature/);
-  assert.match(block, /categoryBar\.dataset\.categoryPickerSignature === pickerSignature/);
-  assert.match(block, /data-external-list-sync/);
-  assert.match(block, /同步畅联云/);
-  assert.doesNotMatch(block, /removeAttribute\('data-action'\)/);
-  assert.doesNotMatch(block, /legacyIndustry\.hidden = true/);
-  assert.match(block, /else if \(trainingState\.status === 'stale'\)/);
-  assert.match(block, /if \(!staleBadge\)/);
+  const pickerStart = source.indexOf('function renderAlgorithmCategoryPicker(');
+  const decoratorStart = source.indexOf('function decorateAlgorithmCards()');
+  const decoratorEnd = source.indexOf('function installAlgorithmDecorator()', decoratorStart);
+  assert.ok(pickerStart >= 0 && decoratorStart > pickerStart && decoratorEnd > decoratorStart);
+
+  const pickerBlock = source.slice(pickerStart, decoratorStart);
+  const decoratorBlock = source.slice(decoratorStart, decoratorEnd);
+
+  assert.match(decoratorBlock, /data-algorithm-source-filter/);
+  assert.match(decoratorBlock, /内部算法/);
+  assert.match(decoratorBlock, /外部算法/);
+  assert.match(decoratorBlock, /data-algorithm-training-status-filter/);
+  assert.match(decoratorBlock, /全部训练状态/);
+  assert.match(decoratorBlock, /renderAlgorithmCategoryPicker/);
+
+  assert.match(pickerBlock, /data-category-picker-toggle/);
+  assert.match(pickerBlock, /data-category-select/);
+  assert.match(pickerBlock, /data-category-search/);
+  assert.match(pickerBlock, /categoryPickerSignature/);
+  assert.match(pickerBlock, /categoryBar\.dataset\.categoryPickerSignature === pickerSignature/);
+
+  assert.match(decoratorBlock, /data-external-list-sync/);
+  assert.match(decoratorBlock, /同步畅联云/);
+  assert.doesNotMatch(decoratorBlock, /removeAttribute\('data-action'\)/);
+  assert.doesNotMatch(decoratorBlock, /legacyIndustry\.hidden = true/);
+  assert.match(decoratorBlock, /else if \(trainingState\.status === 'stale'\)/);
+  assert.match(decoratorBlock, /if \(!staleBadge\)/);
 });
 
 
