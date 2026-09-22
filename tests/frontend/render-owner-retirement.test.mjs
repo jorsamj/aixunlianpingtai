@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
 test('fully shadowed v42.9 render wrapper cannot return', () => {
   assert.equal(app.includes('oldRender429'), false);
@@ -28,13 +29,10 @@ test('shadowed early storage render wrapper cannot return', () => {
   );
 });
 
-test('final storage render owner remains the sole storage route wrapper and final page-normalization owner', () => {
-  assert.equal(app.includes('const finalRender=render;'), true);
-  assert.equal(
-    app.includes("render=function(){if(state.page==='存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};"),
-    true,
-  );
-  assert.equal(app.split("if(state.page==='存储配置')").length - 1, 1);
+test('storage navigation is owned directly by the canonical page-owner registry', () => {
+  assert.equal(main.includes("['存储配置', 'renderStorageSources61']"), true);
+  assert.equal(main.includes('canonicalWindowPageRenderers'), true);
+  assert.equal(main.includes('navigationStabilityRuntime.registerPageOwner(page'), true);
   assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
 });
 

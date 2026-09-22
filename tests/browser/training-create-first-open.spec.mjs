@@ -1,5 +1,16 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.fallback({url: url.toString()});
+  });
+  await page.addInitScript(savedPage => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: savedPage}));
+  }, pageName);
+}
+
 async function seedProject(request) {
   const project = await (await request.post('/api/projects', {data: {
     name: `首次训练弹窗-${Date.now()}`,
@@ -72,9 +83,7 @@ test('hard refresh first training open shows a shell before hydrating configurat
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
@@ -162,9 +171,7 @@ test('training target is the only automatic early-stop control', async ({page, r
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
@@ -300,9 +307,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     });
   });
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
@@ -376,7 +381,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {const body=route.request().postDataJSON(),count=Array.isArray(body?.image_ids)?body.image_ids.length:0;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({requested_count:count,matched_count:count,eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,label_codes:['smoke'],label_counts:{smoke:count},repository_revision:1})});});
   await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
-  await page.addInitScript(projectId => {localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page:'算法列表'}));}, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});

@@ -350,6 +350,10 @@ jobs:
           grep -Fq "['标签管理', 'renderLabelManagement414']" static/main.mjs
           grep -Fq "['存储配置', 'renderStorageSources61']" static/main.mjs
           grep -Fq "['训练资源', 'renderResources']" static/main.mjs
+          grep -Fq "['工作台', 'renderDashboardCanonical422']" static/main.mjs
+          grep -Fq 'refreshPageExtrasInBackground(page)' static/main.mjs
+          grep -Fq "source: 'background-data'" static/main.mjs
+          if grep -Fq "requestedPage === '测试发布'" static/main.mjs; then echo 'page navigation must not block on low-frequency extras' >&2; exit 1; fi
           grep -Fq 'navigation: window.PlatformCore?.navigation || {}' static/main.mjs
           grep -Fq 'externalAlgorithmPlatformRuntime?.render?.({reload: true})' static/main.mjs
           grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs

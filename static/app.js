@@ -509,6 +509,7 @@ window.__resourceDiscoveryDependencies={
     const view=document.getElementById('view');if(!view)return;
     view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>存储配置</h2><p>统一管理素材存储，以及训练模型和转换结果的归档位置。</p></div><div class="row"><button class="btn" onclick="renderStorageSources61({force:true})">刷新</button></div></div><section class="panel"><div class="panel-head"><div><div class="panel-title">素材存储</div><div class="subline">素材库、数据集导入和扫描使用这里的存储源；可配置本地、阿里云 OSS、S3 或其他服务器。</div></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><div class="panel-body"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows">${storageRows61()}</div></div></div></section><div id="modelArtifactStorageMount"><section class="panel"><div class="panel-body"><div class="empty">算法产物存储配置正在后台同步…</div></div></section></div><div class="storage61-note"><b>安全与兼容</b><span>AccessKey / Secret 只保存到系统安全凭据库，浏览器不会读取真实密钥。素材与算法产物可以选择不同的 OSS 存储源和目录。</span></div></section>`;
     paintStorageRows61();
+    void window.ModelArtifactRuntime?.renderPanels?.();
     try{
       await loadStorageSources61({force});
       if(state.page==='存储配置')paintStorageRows61();
@@ -2203,16 +2204,19 @@ window.installUsability417=function(){
 // v41: 厂商部署插件中心
 // ============================================================
 (function(){
-  state.deployPlugins=[];
+  state.deployPlugins=state.deployPlugins||[];
+  state.deployPluginsLoadedAt=Number(state.deployPluginsLoadedAt||0);
+  const DEPLOY_PLUGIN_CACHE_TTL_MS=5*60*1000;
   const pluginState=s=>`<span class="pill ${s==='ready'?'ok':'err'}">${s==='ready'?'可用':'缺少 SDK/工具链'}</span>`;
-  window.loadDeployPluginsV41=async()=>{const r=await safe(api('/api/v41/deploy/plugins'));state.deployPlugins=r?.items||[];state.deployHostOs=r?.host_os||'';return state.deployPlugins};
+  window.loadDeployPluginsV41=async({force=false}={})=>{const age=Date.now()-Number(state.deployPluginsLoadedAt||0);if(!force&&state.deployPluginsLoadedAt>0&&age>=0&&age<DEPLOY_PLUGIN_CACHE_TTL_MS)return state.deployPlugins;const r=await safe(api('/api/v41/deploy/plugins'));if(r){state.deployPlugins=r.items||[];state.deployHostOs=r.host_os||'';state.deployPluginsLoadedAt=Date.now()}return state.deployPlugins};
   function pluginCard(p){
     const chips=(p.chips||[]).slice(0,7).map(x=>`<span class="chip-tag">${esc(x)}</span>`).join('');
     return `<div class="deploy-resource-card ${p.status==='ready'?'is-ready':''}"><div class="deploy-res-head"><div class="deploy-res-logo">${p.id==='rockchip'?'RK':p.id==='ascend'?'A':p.id==='sophon'?'BM':p.id==='tensorrt'?'N':'ON'}</div><div class="grow"><div class="item-title">${esc(p.name)}</div><div class="item-sub">${esc(p.sdk)} · 输出 ${esc(p.output)}</div></div>${pluginState(p.status)}</div><div class="deploy-capabilities">${chips||'<span class="muted-line">通用/由环境决定</span>'}</div><div class="item-sub deploy-message">${esc(p.description||'')}</div><div class="row end"><button class="btn mini" onclick="setPage('部署资源')">配置资源</button>${p.id==='rockchip'?(state.deployHostOs==='windows'?'<button class="btn mini primary" onclick="setPage(\'部署资源\')">配置 Linux / WSL2 节点</button>':'<button class="btn mini primary" onclick="openRknnSdkInstallerV41()">安装官方 SDK</button>'):''}</div></div>`;
   }
-  window.renderDeployPluginsV41=async()=>{
-    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署插件</div><div class="subline">平台适配层调用厂商官方 SDK / 编译器</div></div><button class="btn" onclick="renderDeployPluginsV41()">重新检测</button></div><div class="panel-body" id="pluginGridV41"><div class="loading">正在检测插件...</div></div></section>`;
-    await loadDeployPluginsV41();const box=document.getElementById('pluginGridV41');if(box)box.innerHTML=`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`;
+  window.renderDeployPluginsV41=async({force=false}={})=>{
+    const hasSnapshot=state.deployPluginsLoadedAt>0;
+    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署插件</div><div class="subline">平台适配层调用厂商官方 SDK / 编译器</div></div><button class="btn" onclick="renderDeployPluginsV41({force:true})">重新检测</button></div><div class="panel-body" id="pluginGridV41">${hasSnapshot?`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`:'<div class="loading">首次检测部署插件...</div>'}</div></section>`;
+    await loadDeployPluginsV41({force});const box=document.getElementById('pluginGridV41');if(box)box.innerHTML=`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`;
   };
   window.openRknnSdkInstallerV41=async()=>{
     if(!state.deployLoaded)await loadDeployData(true);
@@ -2572,6 +2576,10 @@ window.installUsability417=function(){
   window.retryAutoTask422=async id=>{try{await api(`/api/v42/projects/${pid()}/prelabel-tasks/${id}/retry`,{method:'POST'});await refreshAuto422();toast('任务已重新创建')}catch(e){toast(e.message||e)}};
 
   window.renderDashboard422=renderDashboard422;
+  window.renderDashboardCanonical422=function(){
+    renderDashboard422();
+    if(!state.v42?.loaded)void load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});
+  };
   const render422Base=render;
   render=function(){
     if(state.page==='新建算法'||state.page==='自动迭代'){window.setPage?.('算法列表');return}

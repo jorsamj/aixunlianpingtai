@@ -280,8 +280,32 @@ function renderUnknownPage(page) {
   if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面不存在或已下线</section>`;
 }
 
+const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
+const pageExtrasLoadedAt = new Map();
+const pageExtrasInflight = new Map();
+const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '测试发布', '部署转换', '部署产物']);
+
+function refreshPageExtrasInBackground(page, {force = false} = {}) {
+  if (!PAGE_EXTRAS_OWNERS.has(page) || typeof window.loadPageExtras413 !== 'function') return null;
+  const age = Date.now() - Number(pageExtrasLoadedAt.get(page) || 0);
+  if (!force && pageExtrasLoadedAt.has(page) && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
+  if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
+  const task = Promise.resolve(window.loadPageExtras413(page)).then(() => {
+    pageExtrasLoadedAt.set(page, Date.now());
+    if (state.page !== page) return;
+    if (navigationStabilityRuntime.hasPageOwner(page)) {
+      navigationStabilityRuntime.renderPage(page, {source: 'background-data'});
+    } else {
+      render();
+    }
+  }).catch(error => notify(error?.message || error)).finally(() => pageExtrasInflight.delete(page));
+  pageExtrasInflight.set(page, task);
+  return task;
+}
+
 function refreshCurrentPageOwner(page) {
   trainingProgressStreamRuntime?.syncPage?.(page);
+  void refreshPageExtrasInBackground(page);
   if (page === '数据集' || page === '自动标注及清洗') {
     window.MaterialBatchRuntime62?.resume?.();
   }
@@ -307,11 +331,8 @@ const navigationStabilityRuntime = installNavigationStability({
   requestScope: pageRequestScope,
   pollRegistry,
   persistNavigationState: currentState => persistUiState(currentState),
-  waitForNavigationReady: async requestedPage => {
+  waitForNavigationReady: async () => {
     if (!state.uiReady && window.__v53InitPromise) await window.__v53InitPromise;
-    if (requestedPage === '测试发布' && typeof window.loadPageExtras413 === 'function') {
-      await window.loadPageExtras413(requestedPage);
-    }
   },
   beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
@@ -337,7 +358,7 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 // renderers remain compatibility entry points, but navigation no longer walks
 // through the chained render() override stack.
 const canonicalWindowPageRenderers = new Map([
-  ['工作台', 'renderDashboard422'],
+  ['工作台', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
   ['测试发布', 'renderTest'],
   ['检测台', 'renderDetectBench'],

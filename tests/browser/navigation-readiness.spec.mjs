@@ -81,7 +81,7 @@ test('persisted service-node page has its owner installed in the main runtime be
     owner: Boolean(window.NavigationStability?.hasPageOwner?.('服务节点')),
   })), {timeout: 15_000}).toEqual({
     uiReady: true,
-    runtime: 'service-node-runtime-422537',
+    runtime: 'service-node-runtime-422539',
     owner: true,
   });
   await expect(page.locator('#title')).toHaveText('服务节点');

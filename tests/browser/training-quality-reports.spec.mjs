@@ -4,6 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 
+async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.fallback({url: url.toString()});
+  });
+  await page.addInitScript(savedPage => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: savedPage}));
+  }, pageName);
+}
+
 function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   const rowBytes = Math.ceil(width * 3 / 4) * 4;
   const buffer = Buffer.alloc(54 + rowBytes * height);
@@ -115,9 +126,7 @@ async function selectAllTrainingMaterials(page, trainingDialog) {
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {
   const {project} = await seedTrainingProject(request);
   await routeReadyTrainingRuntime(page);
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await page.getByRole('button', {name: /算法列表/}).click();
   const algorithmCard = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
@@ -166,9 +175,7 @@ test('training submit sends the selected candidate pool and configured experimen
     submitted = route.request().postDataJSON();
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, job: {id: 'browser-job', status: 'queued'}})});
   });
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
@@ -201,9 +208,7 @@ test('training submit sends the selected candidate pool and configured experimen
 test('training material selection does not depend on dataset groups and supports exact batch selection', async ({page, request}) => {
   const {project, algorithm} = await seedTrainingProject(request);
   await routeReadyTrainingRuntime(page);
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await page.getByRole('button', {name: /算法列表/}).click();
   await page.evaluate(async algorithmId => {
@@ -255,9 +260,7 @@ test('versioned training locks the latest version and projects the current rando
       version_id: 'latest-version', version_name: 'v3', model_name: 'latest-best.pt', path: 'C:/models/latest-best.pt'
     }})});
   });
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
@@ -293,9 +296,7 @@ test('training queue displays numeric priorities and orders each resource by pri
     contentType: 'application/json',
     body: JSON.stringify(queuedJobs),
   }));
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '训练任务'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '训练任务');
   await page.goto('/');
   await expect(page.locator('.nav-project-v')).toHaveText(project.name);
   await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
@@ -357,9 +358,7 @@ test('training report shows requested epochs actual epochs stop reason and targe
       },
     }),
   }));
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 

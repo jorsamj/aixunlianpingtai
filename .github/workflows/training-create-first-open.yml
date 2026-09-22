@@ -80,6 +80,9 @@ jobs:
           if grep -Fq 'id="ts428Low"' static/app.js; then echo 'training target UI must not expose low-score runtime stop' >&2; exit 1; fi
           if grep -Fq 'id="ts428Patience"' static/app.js; then echo 'target training UI must not expose a competing patience stop control' >&2; exit 1; fi
           grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq "preferred_project_id" tests/browser/training-create-first-open.spec.mjs
+          grep -Fq "preferred_project_id" tests/browser/training-quality-reports.spec.mjs
+          if grep -Fq "JSON.stringify({projectId, page" tests/browser/training-create-first-open.spec.mjs tests/browser/training-quality-reports.spec.mjs; then echo 'browser tests must not restore production localStorage project selection' >&2; exit 1; fi
           grep -Fq 'training target is the only automatic early-stop control' tests/browser/training-create-first-open.spec.mjs
           test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
           stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
