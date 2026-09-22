@@ -43,7 +43,6 @@ const OWNER_FUNCTIONS = {
     'retryAiTask60', 'showAiTask60'
   ],
   '视频切帧': ['refreshVideoTasksOnly', 'refreshVideo424Delta', 'stopVideo424'],
-  '部署转换': ['loadDeployData', 'refreshDeployTasks', 'refreshDeployJobsV39'],
 };
 
 const PAGE_RENDERERS = {
@@ -54,7 +53,6 @@ const PAGE_RENDERERS = {
   '素材接入': ['renderSources422'],
   '自动标注及清洗': ['renderAutoLabel422', 'renderAutoLabel424', 'renderOps427'],
   '视频切帧': ['renderVideoFrameTasks', 'renderVideo424'],
-  '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
 };
 
 const KNOWN_PAGE_NAMES = new Set([
