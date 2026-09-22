@@ -781,8 +781,7 @@ window.__resourceDiscoveryDependencies={
       finally{if(button?.isConnected)button.disabled=false}
     };
 
-    const previousCloseImport=window.closeModal;
-    window.closeModal=async function(){if(document.getElementById('si61ImportShell'))abortPolling();return previousCloseImport?.()};
+    window.beforeCloseStorageImport61=function(){if(document.getElementById('si61ImportShell'))abortPolling()};
     return true;
   };
 
@@ -2578,6 +2577,7 @@ window.installUsability417=function(){
     oldClose424();
   };
   window.closeModal=closeModal;
+  window.closeModalCore424=closeModal;
   window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))oldClose424()};
 
   // ---------- all images are one logical data pool ----------
@@ -4728,12 +4728,12 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);stage.insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
   };
 
-  const previousClose=window.closeModal;
-  window.closeModal=async function(){
+  window.closeModal=async function closeModalCanonical420(){
+    window.beforeCloseStorageImport61?.();
     const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers.at(-1);
     if(top?.querySelector('.ann420-stable')&&state.annotationWorkbench?.dirty){const ok=await window.saveAnn(true);if(!ok)return false}
     if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;state.annotationWorkbench?.invalidate();state.annotationWorkbench=null;state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420=''}
-    return previousClose?.();
+    return window.closeModalCore424?.();
   };
 })();
 
