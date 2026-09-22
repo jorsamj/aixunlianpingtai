@@ -18174,7 +18174,11 @@ async def create_deployment_test(
     model_name: str = Form(""), model_source: str = Form("project"),
     local_path: str = Form(""), algorithm_id: str = Form(""), version_id: str = Form(""),
     conf: float = Form(0.25), inference_framework: str = Form("ultralytics"),
-    inference_env_id: str = Form(""), file: UploadFile = File(...),
+    inference_env_id: str = Form(""),
+    detection_batch_id: str = Form(""), detection_item_index: int = Form(-1),
+    detection_item_total: int = Form(0), detection_side: str = Form(""),
+    model_label: str = Form(""), original_filename: str = Form(""),
+    file: UploadFile = File(...),
 ):
     get_project(project_id)
     model_resolution = _resolve_v61_test_model(
@@ -18200,6 +18204,23 @@ async def create_deployment_test(
     input_path.write_bytes(await file.read())
     if input_path.stat().st_size <= 0:
         raise HTTPException(status_code=400, detail="测试图片为空")
+    batch_id = str(detection_batch_id or "").strip()
+    if batch_id:
+        if (
+            len(batch_id) > 64
+            or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in batch_id)
+        ):
+            raise HTTPException(status_code=400, detail="检测批次 ID 无效")
+        if detection_item_index < 0 or detection_item_index >= 100000:
+            raise HTTPException(status_code=400, detail="检测图片序号无效")
+        if detection_item_total <= 0 or detection_item_total > 100000:
+            raise HTTPException(status_code=400, detail="检测批次图片数量无效")
+        side = str(detection_side or "").strip().upper()
+        if side not in {"A", "B"}:
+            raise HTTPException(status_code=400, detail="检测模型侧必须是 A 或 B")
+    else:
+        side = ""
+    safe_original_name = Path(str(original_filename or file.filename or "test.jpg")).name[:255]
     request = {
         "model_path": model_path,
         "model_reference": model_reference,
@@ -18208,10 +18229,30 @@ async def create_deployment_test(
         "downloadable": model_resolution.downloadable,
         "environment_status": model_resolution.environment_status,
         "input_path": str(input_path), "output_path": str(output_path),
+        "input_image_url": f"/data/projects/{project_id}/predictions/{task_id}/input{extension}",
         "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
         "framework": framework, "python_path": python_path,
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
         "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
+        "model_identity": {
+            "label": str(model_label or "").strip()[:300],
+            "model_name": str(model_name or "").strip()[:300],
+            "model_source": str(model_source or "project").strip()[:80],
+            "algorithm_id": str(algorithm_id or "").strip()[:128],
+            "version_id": str(version_id or "").strip()[:128],
+            "framework": framework,
+            "runtime_format": suffix.lstrip("."),
+        },
+        "detection_batch": (
+            {
+                "batch_id": batch_id,
+                "item_index": int(detection_item_index),
+                "item_total": int(detection_item_total),
+                "side": side,
+                "original_filename": safe_original_name,
+            }
+            if batch_id else None
+        ),
     }
     try:
         remote_execution = _remote_execution_transport_service().stage_deployment_test(
@@ -18260,6 +18301,166 @@ def cancel_deployment_test(project_id: str, task_id: str):
     _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
     return public_deployment_test(shared_task_repository().request_cancel(task_id))
 
+
+class DetectionBatchReviewReq(BaseModel):
+    review: Literal["correct", "missed", "false_positive", "box_inaccurate", "wrong_class"]
+    note: str = ""
+
+
+def _iter_detection_batch_rows(project_id: str, batch_id: str = "", *, scan_limit: int = 2000):
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    cursor = None
+    scanned = 0
+    expected = str(batch_id or "").strip()
+    while scanned < scan_limit:
+        page = repository.list(
+            project_id=project_id,
+            kinds=(TaskKind.DEPLOYMENT_TEST,),
+            limit=min(100, scan_limit - scanned),
+            cursor=cursor,
+        )
+        if not page.items:
+            break
+        scanned += len(page.items)
+        for task in page.items:
+            request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            batch = request.get("detection_batch") if isinstance(request, dict) else None
+            if not isinstance(batch, dict) or not batch.get("batch_id"):
+                continue
+            if expected and str(batch.get("batch_id")) != expected:
+                continue
+            result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+            review = artifacts.read_json(task.task_id, "detection_review.json", default={})
+            yield task, request, result if isinstance(result, dict) else {}, review if isinstance(review, dict) else {}
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+
+def _public_detection_batch(project_id: str, batch_id: str, rows):
+    repository = shared_task_repository()
+    grouped: Dict[int, Dict[str, Any]] = {}
+    created_values: List[str] = []
+    total = 0
+    for task, request, result, review in rows:
+        meta = request.get("detection_batch") or {}
+        index = int(meta.get("item_index") or 0)
+        total = max(total, int(meta.get("item_total") or 0))
+        item = grouped.setdefault(index, {
+            "index": index,
+            "original_filename": str(meta.get("original_filename") or ""),
+            "review": {},
+            "models": {},
+        })
+        side = str(meta.get("side") or "").upper()
+        truth = task_to_public(task, repository)
+        model = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
+        public_result = {
+            "task_id": task.task_id,
+            "status": truth.get("status"),
+            "progress_percent": truth.get("progress_percent"),
+            "phase": truth.get("phase"),
+            "model": model,
+            "input_image_url": str(request.get("input_image_url") or ""),
+            "result_image_url": str((result or {}).get("image_url") or request.get("image_url") or ""),
+            "detections": list((result or {}).get("detections") or []),
+            "preprocess_ms": (result or {}).get("preprocess_ms"),
+            "inference_ms": (result or {}).get("inference_ms"),
+            "postprocess_ms": (result or {}).get("postprocess_ms"),
+            "total_elapsed_ms": (result or {}).get("total_elapsed_ms"),
+            "error": truth.get("error") or truth.get("error_message") or "",
+        }
+        if side in {"A", "B"}:
+            item["models"][side] = public_result
+        if review and review.get("review"):
+            item["review"] = {
+                "review": str(review.get("review") or ""),
+                "note": str(review.get("note") or ""),
+                "updated_at": str(review.get("updated_at") or ""),
+            }
+        created = str(getattr(task, "created_at", "") or truth.get("created_at") or "")
+        if created:
+            created_values.append(created)
+    items = [grouped[index] for index in sorted(grouped)]
+    completed = sum(
+        1 for item in items
+        if item["models"] and all(
+            str(model.get("status") or "") in {"SUCCEEDED", "FAILED", "CANCELLED"}
+            for model in item["models"].values()
+        )
+    )
+    failed = sum(
+        1 for item in items
+        if any(str(model.get("status") or "") == "FAILED" for model in item["models"].values())
+    )
+    return {
+        "batch_id": batch_id,
+        "total": total or len(items),
+        "created_items": len(items),
+        "completed_items": completed,
+        "failed_items": failed,
+        "created_at": min(created_values) if created_values else "",
+        "updated_at": max(created_values) if created_values else "",
+        "items": items,
+    }
+
+
+@app.get("/api/v64/projects/{project_id}/detection-batches")
+def list_detection_batches(project_id: str, limit: int = Query(default=12, ge=1, le=50)):
+    get_project(project_id)
+    grouped: Dict[str, list] = {}
+    order: List[str] = []
+    for row in _iter_detection_batch_rows(project_id, scan_limit=1500):
+        meta = row[1].get("detection_batch") or {}
+        batch_id = str(meta.get("batch_id") or "")
+        if not batch_id:
+            continue
+        if batch_id not in grouped:
+            if len(order) >= limit:
+                continue
+            grouped[batch_id] = []
+            order.append(batch_id)
+        grouped[batch_id].append(row)
+    return {
+        "ok": True,
+        "items": [
+            {key: value for key, value in _public_detection_batch(project_id, batch_id, grouped[batch_id]).items() if key != "items"}
+            for batch_id in order
+        ],
+    }
+
+
+@app.get("/api/v64/projects/{project_id}/detection-batches/{batch_id}")
+def get_detection_batch(project_id: str, batch_id: str):
+    get_project(project_id)
+    rows = list(_iter_detection_batch_rows(project_id, batch_id, scan_limit=5000))
+    if not rows:
+        raise HTTPException(status_code=404, detail="检测批次不存在")
+    return {"ok": True, "batch": _public_detection_batch(project_id, batch_id, rows)}
+
+
+@app.post("/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/{item_index}/review")
+def review_detection_batch_item(project_id: str, batch_id: str, item_index: int, payload: DetectionBatchReviewReq):
+    get_project(project_id)
+    rows = [
+        row for row in _iter_detection_batch_rows(project_id, batch_id, scan_limit=5000)
+        if int((row[1].get("detection_batch") or {}).get("item_index") or 0) == int(item_index)
+    ]
+    if not rows:
+        raise HTTPException(status_code=404, detail="检测结果不存在")
+    review = {
+        "schema_version": 1,
+        "batch_id": str(batch_id),
+        "item_index": int(item_index),
+        "review": payload.review,
+        "note": str(payload.note or "").strip()[:1000],
+        "updated_at": now_iso(),
+    }
+    artifacts = shared_task_artifacts()
+    for task, _, _, _ in rows:
+        artifacts.atomic_write_json(task.task_id, "detection_review.json", review)
+    return {"ok": True, "review": review}
 
 
 # ============================================================
