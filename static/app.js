@@ -2607,7 +2607,33 @@ window.installUsability417=function(){
     bb.innerHTML=boxes.map((b,i)=>`<div class="boxrow424 ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}</span><select class="select" onclick="event.stopPropagation()" onchange="changeBoxLabel424(${i},this.value)">${labels.map(l=>`<option value="${l.class_id}" ${l.class_id===b.class_id?'selected':''}>${esc(l.display_name||l.code)}</option>`).join('')}</select><b>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</b></div>`).join('')||'<div class="muted">暂无框</div>';
   };
   window.changeBoxLabel424=function(i,cid){const l=(state.labels||[]).find(x=>String(x.class_id)===String(cid));const b=state.ann?.boxes?.[i];if(!l||!b)return;pushHistory();b.class_id=l.class_id;b.label=l.code;state.activeBox=i;markDirty();drawBoxes();renderAnnSide()};
-  drawBoxes=function(){const st=document.getElementById('annStage');if(!st)return;st.querySelectorAll('.box,.drawBox').forEach(x=>x.remove());const size=imageSize();(state.ann?.boxes||[]).forEach((b,i)=>{const l=(state.labels||[]).find(x=>x.class_id===b.class_id)||{};const el=document.createElement('div');el.className='box box424 '+(state.activeBox===i?'active':'');el.dataset.i=i;Object.assign(el.style,{left:b.x1/size.w*100+'%',top:b.y1/size.h*100+'%',width:(b.x2-b.x1)/size.w*100+'%',height:(b.y2-b.y1)/size.h*100+'%',borderColor:l.color||'#ef4444'});el.innerHTML=`<div class="boxTag" style="background:${l.color||'#ef4444'}">${esc(l.display_name||b.label)}</div>${state.activeBox===i?'<i class="handle424 nw" data-h="nw"></i><i class="handle424 ne" data-h="ne"></i><i class="handle424 sw" data-h="sw"></i><i class="handle424 se" data-h="se"></i>':''}`;el.onclick=e=>{e.stopPropagation();state.activeBox=i;drawBoxes();renderAnnSide()};st.appendChild(el)})};
+  drawBoxes=function(){
+    const st=document.getElementById('annStage');if(!st)return;
+    const size=imageSize(),boxes=state.ann?.boxes||[],labels=state.labels||[];
+    const existing=new Map([...st.querySelectorAll('.box424')].map(node=>[String(node.dataset.boxKey||node.dataset.i||''),node]));
+    const keep=new Set();
+    boxes.forEach((b,i)=>{
+      const key=String(b.id||`index:${i}`);keep.add(key);
+      const l=labels.find(x=>Number(x.class_id)===Number(b.class_id))||{};
+      let el=existing.get(key);
+      if(!el){
+        el=document.createElement('div');el.className='box box424';el.dataset.boxKey=key;
+        const tag=document.createElement('div');tag.className='boxTag';el.appendChild(tag);
+        el.onclick=e=>{e.stopPropagation();state.activeBox=Number(el.dataset.i);drawBoxes();renderAnnSide()};
+        st.appendChild(el);
+      }
+      el.dataset.i=String(i);
+      el.classList.toggle('active',Number(state.activeBox)===i);
+      Object.assign(el.style,{left:b.x1/size.w*100+'%',top:b.y1/size.h*100+'%',width:(b.x2-b.x1)/size.w*100+'%',height:(b.y2-b.y1)/size.h*100+'%',borderColor:l.color||'#ef4444'});
+      const tag=el.querySelector('.boxTag');if(tag){tag.style.background=l.color||'#ef4444';tag.textContent=l.display_name||b.label||'目标'}
+      const active=Number(state.activeBox)===i;
+      const handles=[['nw','nw'],['ne','ne'],['sw','sw'],['se','se']];
+      if(active){
+        for(const [name,cls] of handles){if(!el.querySelector(`[data-h="${name}"]`)){const h=document.createElement('i');h.className=`handle424 ${cls}`;h.dataset.h=name;el.appendChild(h)}}
+      }else el.querySelectorAll('.handle424').forEach(node=>node.remove());
+    });
+    for(const [key,node] of existing){if(!keep.has(key))node.remove()}
+  };
   bindAnnotationEvents=function(){const st=document.getElementById('annStage'),im=document.getElementById('annImg');if(!st||!im||st.dataset.bound424==='1')return;st.dataset.bound424='1';let mode='',start=null,temp=null,boxIndex=-1,orig=null,handle='';function pos(e){const r=im.getBoundingClientRect(),size=imageSize();return{x:Math.max(0,Math.min(size.w,(e.clientX-r.left)/Math.max(1,r.width)*size.w)),y:Math.max(0,Math.min(size.h,(e.clientY-r.top)/Math.max(1,r.height)*size.h))}}function redrawTemp(p){if(!start||!temp)return;const size=imageSize(),x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);Object.assign(temp.style,{left:x1/size.w*100+'%',top:y1/size.h*100+'%',width:(x2-x1)/size.w*100+'%',height:(y2-y1)/size.h*100+'%'})}st.addEventListener('mousedown',e=>{if(e.button!==0)return;const h=e.target.closest('.handle424'),bx=e.target.closest('.box424');start=pos(e);if(h&&bx){e.preventDefault();mode='resize';boxIndex=+bx.dataset.i;handle=h.dataset.h;orig={...state.ann.boxes[boxIndex]};pushHistory();return}if(bx){e.preventDefault();mode='move';boxIndex=+bx.dataset.i;orig={...state.ann.boxes[boxIndex]};state.activeBox=boxIndex;pushHistory();return}e.preventDefault();mode='draw';temp=document.createElement('div');temp.className='drawBox';st.appendChild(temp);redrawTemp(start)});window.addEventListener('mousemove',e=>{if(!mode||!start)return;const p=pos(e),size=imageSize();if(mode==='draw'){redrawTemp(p);return}const b=state.ann.boxes[boxIndex];if(!b)return;if(mode==='move'){const dx=p.x-start.x,dy=p.y-start.y,w=orig.x2-orig.x1,h=orig.y2-orig.y1;b.x1=Math.max(0,Math.min(size.w-w,orig.x1+dx));b.y1=Math.max(0,Math.min(size.h-h,orig.y1+dy));b.x2=b.x1+w;b.y2=b.y1+h}else{let x1=orig.x1,y1=orig.y1,x2=orig.x2,y2=orig.y2;if(handle.includes('w'))x1=Math.min(p.x,x2-3);if(handle.includes('e'))x2=Math.max(p.x,x1+3);if(handle.includes('n'))y1=Math.min(p.y,y2-3);if(handle.includes('s'))y2=Math.max(p.y,y1+3);Object.assign(b,{x1,y1,x2,y2})}markDirty();drawBoxes()});window.addEventListener('mouseup',e=>{if(!mode||!start)return;const p=pos(e);if(mode==='draw'){const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);temp?.remove();if(x2-x1>5&&y2-y1>5){const l=(state.labels||[]).find(x=>x.class_id===state.activeLabel)||state.labels[0];if(l){pushHistory();state.ann.boxes.push({id:String(Date.now()).slice(-10),class_id:l.class_id,label:l.code,x1:Math.round(x1),y1:Math.round(y1),x2:Math.round(x2),y2:Math.round(y2)});state.activeBox=state.ann.boxes.length-1;markDirty()}}}else{markDirty()}mode='';start=null;temp=null;boxIndex=-1;orig=null;drawBoxes();renderAnnSide()})};
 
   // ---------- video frame tasks ----------
@@ -3887,17 +3913,27 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const unwrapAlgorithm414=r=>window.PlatformCore?.algorithms?.unwrapAlgorithmResponse(r)||(r?.algorithm||r);
   const iterationPresentation414=b=>window.PlatformCore?.training?.iterationBasePresentation(b)||(b==null?{title:'正在读取当前版本…',detail:'',status:'loading'}:b.error?{title:'读取失败',detail:String(b.error),status:'error'}:b.version_name?{title:`从当前版本继续：${b.version_name}`,detail:b.model_name||'模型权重',status:'version'}:{title:'首次训练：使用所选母模型',detail:'后续版本会自动以上一个可用版本继续训练',status:'mother'});
 
+  const labelSchemaCacheKey414=()=>`mc_label_schema_v1:${pid()||'default'}`;
+  function persistLabelSchema414(rows){
+    try{localStorage.setItem(labelSchemaCacheKey414(),JSON.stringify({ts:Date.now(),items:rows||[]}))}catch(_){}
+  }
+  function restoreLabelSchema414(){
+    if((state.labels||[]).length)return state.labels;
+    try{
+      const cached=JSON.parse(localStorage.getItem(labelSchemaCacheKey414())||'null');
+      if(Array.isArray(cached?.items)&&cached.items.length){state.labels=cached.items;return state.labels}
+    }catch(_){}
+    return state.labels||[];
+  }
   async function refreshLabels414(withUsage=false){
+    restoreLabelSchema414();
     const r=await api(withUsage?`/api/v54/projects/${pid()}/label-schema`:`/api/v12/projects/${pid()}/labels`);
     state.labels=(r.items||[]);
+    persistLabelSchema414(state.labels);
     if(withUsage){state.label414Usage=r.items||[];state.label414UsageLoadedAt=Date.now()}
     return state.labels;
   }
-  async function refreshImages414(){
-    const rows=await api(`/api/projects/${pid()}/images`);
-    if(Array.isArray(rows))state.images=rows;
-    return state.images||[];
-  }
+  window.restoreLabelSchema414=restoreLabelSchema414;
   window.refreshLabels414=refreshLabels414;
 
   // ---------- visible configuration center: label schema ----------
@@ -3971,9 +4007,48 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
   renderAnnSide=function(){
     const labels=state.labels||[],a=document.getElementById('annLabels'),bb=document.getElementById('annBoxes');
-    if(a)a.innerHTML=labels.map(l=>`<button class="ann414-label ${Number(state.activeLabel)===Number(l.class_id)?'active':''}" onclick="state.activeLabel=${Number(l.class_id)};renderAnnSide()"><i style="background:${esc(l.color||'#64748b')}"></i><span><b>${esc(l.code)}</b><em>${esc(l.display_name||l.code)}</em></span><kbd>${esc(l.hotkey||'')}</kbd></button>`).join('')||'<div class="muted">暂无可用标签</div>';
+    if(a){
+      const signature=labels.map(l=>[l.class_id,l.code,l.display_name,l.color,l.hotkey,Number(state.activeLabel)===Number(l.class_id)?1:0].join(':')).join('|');
+      if(a.dataset.signature!==signature){
+        a.dataset.signature=signature;
+        a.innerHTML=labels.map(l=>`<button class="ann414-label ${Number(state.activeLabel)===Number(l.class_id)?'active':''}" onclick="state.activeLabel=${Number(l.class_id)};renderAnnSide()"><i style="background:${esc(l.color||'#64748b')}"></i><span><b>${esc(l.code)}</b><em>${esc(l.display_name||l.code)}</em></span><kbd>${esc(l.hotkey||'')}</kbd></button>`).join('')||'<div class="muted">暂无可用标签</div>';
+      }
+    }
     const boxes=state.ann?.boxes||[];
-    if(bb)bb.innerHTML=boxes.map((b,i)=>{const l=labels.find(x=>Number(x.class_id)===Number(b.class_id));return `<div class="ann414-boxrow ${Number(state.activeBox)===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span><i style="background:${esc(l?.color||'#64748b')}"></i><b>${i+1}. ${esc(l?.code||b.label||'unknown')}</b><em>${esc(l?.display_name||'')}</em></span><select class="select" onclick="event.stopPropagation()" onchange="relabelBox414(${i},this.value)">${labels.map(x=>`<option value="${Number(x.class_id)}" ${Number(x.class_id)===Number(b.class_id)?'selected':''}>${esc(x.code)}${x.display_name&&x.display_name!==x.code?' · '+esc(x.display_name):''}</option>`).join('')}</select></div>`}).join('')||'<div class="muted">暂无框。选择标签后，在图片上拖拽即可。</div>';
+    if(bb){
+      const rows=new Map([...bb.querySelectorAll('[data-ann-box-key]')].map(node=>[String(node.dataset.annBoxKey),node]));
+      const keep=new Set();
+      if(!boxes.length){if(bb.dataset.empty!=='1'){bb.replaceChildren();const empty=document.createElement('div');empty.className='muted';empty.textContent='暂无框。选择标签后，在图片上拖拽即可。';bb.appendChild(empty);bb.dataset.empty='1'}}
+      else{
+        if(bb.dataset.empty==='1'){bb.replaceChildren();bb.dataset.empty='0';rows.clear()}
+        boxes.forEach((b,i)=>{
+          const key=String(b.id||`index:${i}`);keep.add(key);
+          const l=labels.find(x=>Number(x.class_id)===Number(b.class_id));
+          let row=rows.get(key);
+          if(!row){
+            row=document.createElement('div');row.className='ann414-boxrow';row.dataset.annBoxKey=key;
+            const summary=document.createElement('span'),dot=document.createElement('i'),title=document.createElement('b'),subtitle=document.createElement('em'),select=document.createElement('select');
+            select.className='select';select.onclick=event=>event.stopPropagation();select.onchange=()=>window.relabelBox414(Number(row.dataset.i),select.value);
+            summary.append(dot,title,subtitle);row.append(summary,select);
+            row.onclick=()=>{state.activeBox=Number(row.dataset.i);drawBoxes();renderAnnSide()};
+            bb.appendChild(row);
+          }
+          row.dataset.i=String(i);row.classList.toggle('active',Number(state.activeBox)===i);
+          const dot=row.querySelector('span i'),title=row.querySelector('span b'),subtitle=row.querySelector('span em'),select=row.querySelector('select');
+          if(dot)dot.style.background=l?.color||'#64748b';
+          if(title)title.textContent=`${i+1}. ${l?.code||b.label||'unknown'}`;
+          if(subtitle)subtitle.textContent=l?.display_name||'';
+          if(select){
+            const optionSignature=labels.map(x=>`${x.class_id}:${x.code}:${x.display_name||''}`).join('|');
+            if(select.dataset.signature!==optionSignature){select.dataset.signature=optionSignature;select.innerHTML=labels.map(x=>`<option value="${Number(x.class_id)}">${esc(x.code)}${x.display_name&&x.display_name!==x.code?' · '+esc(x.display_name):''}</option>`).join('')}
+            select.value=String(b.class_id);
+          }
+        });
+        for(const [key,row] of rows){if(!keep.has(key))row.remove()}
+      }
+    }
+    const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(boxes.length);
+    const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=!!state.annotationHydrating420||!!state.annotationLoadError420||boxes.length>0;
   };
   window.relabelBox414=function(i,classId){const b=state.ann?.boxes?.[i],l=(state.labels||[]).find(x=>Number(x.class_id)===Number(classId));if(!b||!l)return;try{pushHistory()}catch(_){};b.class_id=l.class_id;b.label=l.code;state.activeBox=i;markDirty();drawBoxes();renderAnnSide()};
 
@@ -4580,6 +4655,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function ensureShell(){
     if(document.querySelector('.ann420-stable'))return;
     modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button data-ann420-edit="1" class="btn small" onclick="undoAnn()">撤销</button><button data-ann420-edit="1" class="btn small" onclick="redoAnn()">重做</button><button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“配置中心 → 标签管理”。拖拽新建框；切换图片前自动保存；画布和弹窗不会重复创建。</div></aside></div>`,true);
+    const canvas=document.querySelector('.ann420-stable .ann-canvas-wrap');
+    if(canvas&&!canvas.dataset.wheelZoomBound){
+      canvas.dataset.wheelZoomBound='1';
+      canvas.addEventListener('wheel',event=>{if(!event.target.closest('#annStage'))return;event.preventDefault();window.zoomAnn?.(event.deltaY<0?0.1:-0.1)},{passive:false});
+    }
   }
 
   function updateShell(){
@@ -4587,10 +4667,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const loading=!!state.annotationHydrating420,error=String(state.annotationLoadError420||''),locked=loading||!!error;
     const ids=queueIds(),at=Math.max(0,ids.indexOf(String(image.id))),visible=workbenchApi()?.queueWindow(ids,String(image.id),9)||ids;
     const queue=document.getElementById('ann420Queue');
-    if(queue)queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${row.annotated?`${row.box_count||0} 框`:'待标注'}</em></span></button>`:''}).join('');
+    if(queue){const signature=visible.map(id=>{const row=imageById(id);return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${row.annotated?`${row.box_count||0} 框`:'待标注'}</em></span></button>`:''}).join('')}}
     const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
     const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
-    const select=document.getElementById('ann420Label');if(select){select.innerHTML=(state.labels||[]).map(label=>`<option value="${Number(label.class_id)}" ${Number(state.activeLabel)===Number(label.class_id)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');select.disabled=locked||!(state.labels||[]).length}
+    const select=document.getElementById('ann420Label');if(select){const labels=state.labels||[],signature=labels.map(label=>`${label.class_id}:${label.code}:${label.display_name||''}`).join('|');if(select.dataset.signature!==signature){select.dataset.signature=signature;select.innerHTML=labels.map(label=>`<option value="${Number(label.class_id)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}if(state.activeLabel!=null)select.value=String(state.activeLabel);select.disabled=locked||!labels.length}
     const previous=document.getElementById('ann420Prev'),next=document.getElementById('ann420Next');
     if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
     if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
@@ -4608,6 +4688,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function prepareAnnotationShell420(id){
     const image=imageById(id);if(!image)return;
+    if(!(state.labels||[]).length)window.restoreLabelSchema414?.();
     state.activeImage=image;state.ann=provisionalAnnotation420(image);
     const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
     state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];
@@ -4670,7 +4751,15 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
     return ok;
   };
-  window.confirmEmptyAnnotation420=()=>window.saveAnn(false,{confirmEmpty:true});
+  window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420(){
+    const button=document.getElementById('ann420ConfirmEmpty');
+    if(button?.disabled||state.annotationHydrating420||state.annotationLoadError420)return false;
+    if((state.ann?.boxes?.length||0)>0)return false;
+    if(button){button.disabled=true;button.textContent='确认中…'}
+    const ok=await window.saveAnn(false,{confirmEmpty:true});
+    if(!ok&&button){button.disabled=false;button.textContent='确认无目标'}
+    return ok;
+  };
 
   window.patchMaterialCard412=function(image){
     if(!image)return;const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));if(!card)return;
