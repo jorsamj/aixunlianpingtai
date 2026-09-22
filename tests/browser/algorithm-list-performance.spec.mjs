@@ -47,6 +47,18 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   const card = page.locator('.alg428-card').filter({hasText: '性能验收算法'});
   await expect(card).toBeVisible();
+  await page.evaluate(() => {
+    window.__stableAlgorithmCard = document.querySelector('[data-algorithm-id="algo-perf-1"]');
+    window.AlgorithmListRuntime.setFilters({query: '性能验收'}, {render: true});
+  });
+  await expect(card).toBeVisible();
+  expect(await page.evaluate(() => (
+    window.__stableAlgorithmCard === document.querySelector('[data-algorithm-id="algo-perf-1"]')
+  ))).toBe(true);
+  await page.evaluate(() => window.AlgorithmListRuntime.setFilters({query: ''}, {render: true}));
+  expect(await page.evaluate(() => (
+    window.__stableAlgorithmCard === document.querySelector('[data-algorithm-id="algo-perf-1"]')
+  ))).toBe(true);
   await card.locator('.alg428-main').click();
   await expect(card).toHaveClass(/open/);
   await expect(card.locator('.alg428-version-row')).toHaveCount(1);

@@ -3789,7 +3789,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       &&(ind==='all'||a.industry===ind)
       &&(typ==='all'||a.algorithm_type===typ)
     );
-    box.innerHTML=rows.map(a=>{
+    const views=rows.map(a=>{
       const vs=a.versions||[];
       const current=vs.find(v=>String(v.id||'')===String(a.current_version_id||''))||vs[0];
       const open=!!state.alg428Expanded?.[a.id];
@@ -3801,7 +3801,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         : current
           ? '<span class="alg429-last is-trained">已训练</span>'
           : '<span class="alg429-last">未训练</span>';
-      return `<article class="alg428-card alg428-asset-row ${open?'open':''}" data-algorithm-id="${esc(a.id)}">
+      const html=`<article class="alg428-card alg428-asset-row ${open?'open':''}" data-algorithm-id="${esc(a.id)}">
         <div class="alg428-main alg428-asset-main" onclick="toggleAlgorithm412('${a.id}')">
           <div class="alg428-asset-name">
             <div class="alg428-logo">${esc((a.name||'算').slice(0,1))}</div>
@@ -3826,7 +3826,59 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         </div>
         ${open?`<div class="alg428-versions"><div class="alg428-version-head"><b>迭代版本</b><span>当前版本决定后续训练、转换与检测的默认起点</span></div>${vs.length?vs.map(v=>verRow412(a,v)).join(''):'<div class="empty alg428-empty">暂无版本，点击“训练”开始第一次迭代</div>'}</div>`:''}
       </article>`;
-    }).join('')||'<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
+      const signature=JSON.stringify({
+        algorithm:a,
+        open,
+        trainingCount,
+        run:run?{
+          id:run.id,status:run.status,status_text:run.status_text,
+          progress_percent:run.progress_percent,current_epoch:run.current_epoch,
+          total_epochs:run.total_epochs,phase:run.phase,updated_at:run.updated_at,
+        }:null,
+      });
+      return {id:String(a.id||''),html,signature};
+    });
+
+    const createCard=view=>{
+      const holder=document.createElement('div');
+      holder.innerHTML=view.html.trim();
+      const card=holder.firstElementChild;
+      if(card)card.__algorithmRenderSignature=view.signature;
+      return card;
+    };
+    const canPatch=typeof document.createElement==='function'
+      &&typeof box.querySelectorAll==='function'
+      &&typeof box.insertBefore==='function'
+      &&box.children;
+    if(!canPatch){
+      box.innerHTML=views.map(view=>view.html).join('')||'<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
+      queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
+      return;
+    }
+    if(!views.length){
+      if(!box.querySelector('.alg428-list-empty'))box.innerHTML='<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
+      queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
+      return;
+    }
+
+    box.querySelector('.alg428-list-empty')?.remove();
+    const existing=new Map([...box.querySelectorAll('.alg428-card[data-algorithm-id]')].map(card=>[String(card.dataset.algorithmId||''),card]));
+    const wanted=new Set();
+    views.forEach((view,index)=>{
+      wanted.add(view.id);
+      let card=existing.get(view.id)||null;
+      if(!card||card.__algorithmRenderSignature!==view.signature){
+        const nextCard=createCard(view);
+        if(!nextCard)return;
+        if(card)card.replaceWith(nextCard);
+        card=nextCard;
+      }
+      const reference=box.children[index]||null;
+      if(reference!==card)box.insertBefore(card,reference);
+    });
+    for(const [id,card] of existing){
+      if(!wanted.has(id))card.remove();
+    }
     queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
   };
   window.renderAlgorithms423=function(){
