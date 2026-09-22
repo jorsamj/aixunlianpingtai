@@ -5191,6 +5191,7 @@ window.installUsability417?.();
     const visible=selected==='all'?all:all.filter(row=>storageApi()?.sourceMatches(row,selected));
     [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
     if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)loadStorageSources61().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
+    window.renderSupplementDataBanner63?.();
   };
   if(window.__storageOpenUpload61)window.openDataUpload426=window.__storageOpenUpload61;
   if(window.__storageDoUploadImages61)window.doUploadImages426=window.__storageDoUploadImages61;
@@ -5438,13 +5439,7 @@ window.installUsability417?.();
     root.insertAdjacentHTML('afterbegin',`<div class="alert soft iteration-action429 iteration-feedback-candidates63"><b>补数据草稿</b><span>${candidateSet?`已冻结反馈候选 ${count} 张 · Candidate Set ${esc(String(candidateSet.candidate_set_id||'').slice(0,12))}`:'当前没有已冻结反馈候选'}${labels.length?` · 优先标签：${labels.map(esc).join('、')}`:''}</span><span>当前仅冻结候选范围，尚未生成 Dataset Revision、Snapshot 或训练任务。</span><div class="row end">${filterButton}</div></div>`);
   }
 
-  const datasetRenderFeedback63=window.renderDatasets424;
-  window.renderDatasets424=function(){
-    const all=state.images||[],ids=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
-    if(state.iterationFeedbackOnly63&&ids.size)state.images=all.filter(row=>ids.has(String(row.id)));
-    try{datasetRenderFeedback63?.()}finally{state.images=all}
-    renderSupplementDataBanner63();
-  };
+  window.renderSupplementDataBanner63=renderSupplementDataBanner63;
   window.toggleSupplementFeedbackOnly63=function(){
     state.iterationFeedbackOnly63=!state.iterationFeedbackOnly63;
     state.data429Page=1;

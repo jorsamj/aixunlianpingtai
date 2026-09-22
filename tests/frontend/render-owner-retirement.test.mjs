@@ -39,6 +39,13 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
   assert.equal(app.includes('return previousRenderOps?.()'), false);
 });
 
+
+test('dataset feedback banner is a post-render hook instead of another renderer wrapper', () => {
+  assert.match(app, /window\.renderSupplementDataBanner63=renderSupplementDataBanner63/);
+  assert.match(app, /window\.renderSupplementDataBanner63\?\.\(\)/);
+  assert.equal(app.includes('const datasetRenderFeedback63=window.renderDatasets424;'), false);
+});
+
 test('video navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('视频切帧'/);
 });
