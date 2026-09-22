@@ -1112,11 +1112,6 @@ window.installUsability417=function(){
     const isPaddle = engine.includes('paddle');
     return `<div class="diag-box"><b>0 个结果排查</b><div>这不一定是系统坏了，通常是模型还没学会或置信度太高。</div><ol><li>先把置信度调到 <b>0.01</b> 再测一次。</li><li>确认测试图片和训练标签一致，例如训练的是 fire/smoke，就不要拿未标该类的图测。</li><li>当前小样本飞桨模型通常需要更多数据：每类至少 50～100 张起步，烟火类建议更多。</li><li>${isPaddle?'飞桨 .pdparams 当前优先返回绘制图；如果图上也没有框，说明模型没有给出有效预测。':'YOLO 模型如果也无框，优先检查标注和数据量。'}</li></ol></div>`;
   }
-  const oldRenderDetectionResult = window.renderDetectionResult;
-  window.renderDetectionResult=function(r,title){
-    const html = (oldRenderDetectionResult?oldRenderDetectionResult(r,title):'') || '';
-    return html + zeroResultAdvice(r);
-  };
   window.openExportModel=function(modelName){
     const m=(state.pending||[]).find(x=>x.name===modelName)||{};
     const isPaddle = ['pdparams','pdmodel','pdiparams'].includes(String(m.type||'').toLowerCase()) || m.framework==='paddle';
@@ -1153,7 +1148,7 @@ window.installUsability417=function(){
     const v=(a&&a.value)|| (b&&b.value) || '0.25';
     const n=parseFloat(v); return Number.isFinite(n)?n:0.25;
   }
-  window.renderDetectionResult = function(r,title){
+  window.renderDetectionResultCore31 = function renderDetectionResultCore31(r,title){
     r = r || {};
     const dets = Array.isArray(r.detections) ? r.detections : [];
     const conf = currentConf();
@@ -1163,7 +1158,8 @@ window.installUsability417=function(){
     const note = r.note ? `<div class="alert warn mini-alert">${_esc(r.note)}</div>` : '';
     const img = r.image_url ? `<div class="result-img-wrap"><img class="result-img" src="${_esc(r.image_url)}"></div>` : '';
     return `<div class="compare-card enhanced-result"><div class="compare-head"><div><b>${_esc(title||'检测结果')}</b><div class="item-sub">${_esc(r.model||'')} · ${_esc(r.engine||'')} · ${_esc(r.elapsed_ms||0)}ms</div></div><span class="pill ${dets.length?'ok':'warn'}">${dets.length} 个结果</span></div>${lowConfTip}${note}${img}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table>${zero}</div>`;
-  };
+  };  window.renderDetectionResult=window.renderDetectionResultCore31;
+
 })();
 
 // ===== v32: 真实导出配置 + 导出错误中文化 =====
@@ -5056,7 +5052,6 @@ window.installUsability417?.();
 
 /* Persistent deployment tests: upload returns immediately and a Worker performs real Runtime inference. */
 (()=>{
-  const previousResult=window.renderDetectionResult;
   function patchDeploymentTestProgress(task,taskId,model){
     const output=document.getElementById('benchResult');if(!output)return false;
     let list=output.querySelector('[data-deployment-live-list]');
@@ -5073,8 +5068,8 @@ window.installUsability417?.();
     if(detail)detail.textContent=[view.runtimeText,view.phase].filter(Boolean).join(' · ');
     return true;
   }
-  window.renderDetectionResult=function(result,title){
-    const html=previousResult?.(result,title)||'',metrics=`<div class="report429-kpis"><div><span>预处理</span><b>${Number(result?.preprocess_ms||0).toFixed(2)} ms</b></div><div><span>模型推理</span><b>${Number(result?.inference_ms||0).toFixed(2)} ms</b></div><div><span>后处理</span><b>${Number(result?.postprocess_ms||0).toFixed(2)} ms</b></div><div><span>任务总耗时</span><b>${Number(result?.total_elapsed_ms||result?.elapsed_ms||0).toFixed(2)} ms</b></div></div>`;
+  window.renderDetectionResult=function renderDetectionResultCanonical61(result,title){
+    const html=window.renderDetectionResultCore31?.(result,title)||'',metrics=`<div class="report429-kpis"><div><span>预处理</span><b>${Number(result?.preprocess_ms||0).toFixed(2)} ms</b></div><div><span>模型推理</span><b>${Number(result?.inference_ms||0).toFixed(2)} ms</b></div><div><span>后处理</span><b>${Number(result?.postprocess_ms||0).toFixed(2)} ms</b></div><div><span>任务总耗时</span><b>${Number(result?.total_elapsed_ms||result?.elapsed_ms||0).toFixed(2)} ms</b></div></div>`;
     return html+metrics;
   };
   window.benchPredictOne=async function(selectId,file,conf){

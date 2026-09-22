@@ -128,6 +128,15 @@ test('test and detection pages are canonical owners', () => {
   assert.match(main, /\['检测台', 'renderDetectBench'\]/);
 });
 
+test('detection result rendering uses an explicit core helper and one final owner', () => {
+  assert.match(app, /window\.renderDetectionResultCore31 = function renderDetectionResultCore31\(r,title\)/);
+  assert.match(app, /window\.renderDetectionResult=window\.renderDetectionResultCore31/);
+  assert.match(app, /window\.renderDetectionResult=function renderDetectionResultCanonical61\(result,title\)/);
+  assert.match(app, /window\.renderDetectionResultCore31\?\.\(result,title\)/);
+  assert.equal(app.includes('const oldRenderDetectionResult = window.renderDetectionResult;'), false);
+  assert.equal(app.includes('const previousResult=window.renderDetectionResult;'), false);
+});
+
 
 test('test publish page resolves through a named core helper and one canonical final owner', () => {
   assert.match(app, /window\.renderTestCore30=function renderTestCore30\(\)/);
