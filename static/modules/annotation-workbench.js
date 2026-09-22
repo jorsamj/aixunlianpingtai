@@ -85,6 +85,11 @@ export function createAnnotationWorkbench({
       apply(result, token);
       return true;
     },
+    cancel() {
+      requestToken += 1;
+      activeId = null;
+      dirty = false;
+    },
     invalidate(id = null) {
       requestToken += 1;
       cacheGeneration += 1;

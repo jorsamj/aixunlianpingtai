@@ -90,3 +90,21 @@ test('remember replaces cached annotation truth after a save', async () => {
   assert.equal(loads, 1);
   assert.deepEqual(applied.at(-1).boxes, [{label: 'person'}]);
 });
+
+
+test('closing the workbench can cancel pending apply without throwing away the short-lived cache', async () => {
+  let loads = 0;
+  const applied = [];
+  const workbench = createAnnotationWorkbench({
+    load: async id => { loads += 1; return {image_id: id}; },
+    save: async () => true,
+    apply: value => applied.push(value.image_id),
+  });
+
+  await workbench.open('one');
+  workbench.cancel();
+  await workbench.open('one');
+
+  assert.equal(loads, 1);
+  assert.deepEqual(applied, ['one', 'one']);
+});

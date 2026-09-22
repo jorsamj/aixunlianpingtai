@@ -4674,7 +4674,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     window.beforeCloseStorageImport61?.();
     const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers.at(-1);
     if(top?.querySelector('.ann420-stable')&&state.annotationWorkbench?.dirty){const ok=await window.saveAnn(true);if(!ok)return false}
-    if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;state.annotationWorkbench?.invalidate();state.annotationWorkbench=null;state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420=''}
+    if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;const workbench=state.annotationWorkbench;if(typeof workbench?.cancel==='function')workbench.cancel();else workbench?.invalidate?.();state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420=''}
     return window.closeModalCore424?.();
   };
 })();

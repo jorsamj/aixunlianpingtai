@@ -28,3 +28,14 @@ test('AI submit and reference selection keep current owners', () => {
   assert.match(app,/window\.toggleRefCore429=function\(id\)/);
   assert.match(app,/window\.toggleRef429=function\(id\)\{const key=String\(id\)/);
 });
+
+
+test('closing manual annotation preserves the short-lived workbench cache while cancelling stale apply', () => {
+  const start = app.indexOf('window.closeModal=async function closeModalCanonical420()');
+  const end = app.indexOf('\n  };', start);
+  assert.ok(start >= 0 && end > start);
+  const closeOwner = app.slice(start, end);
+  assert.match(closeOwner, /typeof workbench\?\.cancel==='function'/);
+  assert.match(closeOwner, /workbench\.cancel\(\)/);
+  assert.doesNotMatch(closeOwner, /state\.annotationWorkbench=null/);
+});
