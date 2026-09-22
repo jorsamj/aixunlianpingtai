@@ -73,7 +73,7 @@ window.redoAnn=()=>{if(!state.annRedo.length)return;pushHistory();state.ann.boxe
 window.zoomAnn=d=>{state.annZoom=Math.max(.5,Math.min(2.2,(state.annZoom||1)+d));const st=$('#annStage');if(st)st.style.transform=`scale(${state.annZoom})`;const z=$('#zoomText');if(z)z.textContent=Math.round(state.annZoom*100)+'%'};
 window.prevImage=async()=>{const i=imgIndex();if(i>0){if(state.annDirty)await saveAnn(true);openAnnotation(state.images[i-1].id)}};
 window.nextImage=async()=>{const i=imgIndex();if(i>=0&&i<state.images.length-1){if(state.annDirty)await saveAnn(true);openAnnotation(state.images[i+1].id)}};
-document.addEventListener('keydown',e=>{if(!state.activeImage)return;if(e.key>='1'&&e.key<='9'){const hit=state.labels.find(l=>l.hotkey===e.key)||state.labels[+e.key-1];if(hit){state.activeLabel=hit.class_id;renderAnnSide();toast(`当前标签：${hit.display_name}`)}}if(e.key==='Delete')deleteActiveBox();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveAnn(false)}if(e.key==='ArrowLeft')prevImage();if(e.key==='ArrowRight')nextImage()});
+document.addEventListener('keydown',e=>{if(!state.activeImage)return;const locked=!!state.annotationHydrating420||!!state.annotationLoadError420;if(!locked&&e.key>='1'&&e.key<='9'){const hit=state.labels.find(l=>l.hotkey===e.key)||state.labels[+e.key-1];if(hit){state.activeLabel=hit.class_id;renderAnnSide();toast(`当前标签：${hit.display_name}`)}}if(!locked&&e.key==='Delete')deleteActiveBox();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!locked)saveAnn(false)}if(e.key==='ArrowLeft'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Prev')?.click();else prevImage()}if(e.key==='ArrowRight'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Next')?.click();else nextImage()}});
 
 function renderTraining(){const rec=state.rec?.recommendation||{};$('#view').innerHTML=`<div class="grid2"><section class="panel"><div class="panel-head"><div class="panel-title">创建训练任务</div><span class="pill ok">推荐 ${esc(rec.model||'yolo11n.pt')} / ${esc(rec.device||'cpu')}</span></div><div class="panel-body"><div class="form two"><div class="field"><label>训练数据集</label><select class="select" id="trainDataset">${state.datasets.map(d=>`<option value="${d.id}" ${d.id===state.datasetId?'selected':''}>${esc(d.name)}（${d.images}图）</option>`).join('')}</select></div><div class="field"><label>训练资源</label><select class="select" id="target" onchange="fillTrain()">${state.targets.map(t=>`<option value="${t.id}">${esc(t.name)} / ${t.type==='server'?'服务器':'本机'}</option>`).join('')}</select></div><div class="field"><label>训练算法</label><select class="select" id="alg" onchange="applyAlg()"></select></div><div class="field"><label>基础模型权重</label><select class="select" id="model"></select></div><div class="field"><label>训练轮次</label><input class="input" id="epochs" value="${rec.epochs||20}"></div><div class="field"><label>图片尺寸</label><input class="input" id="imgsz" value="${rec.imgsz||640}"></div><div class="field"><label>批大小</label><input class="input" id="batch" value="${rec.batch||4}"></div><div class="field"><label>训练设备</label><input class="input" id="device" value="${rec.device||'cpu'}"></div></div><div class="divider"></div><button class="btn primary" onclick="startTrain()">开始训练</button></div></section><section class="panel"><div class="panel-head"><div class="panel-title">任务列表</div><button class="btn small" onclick="loadAll().then(render)">刷新</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>操作</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td>${esc(j.algorithm_name||j.id)}</td><td><span class="pill ${j.status==='done'||j.status==='finished'?'ok':j.status==='failed'?'err':'warn'}">${statusName(j.status)}</span></td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td><div class="row"><button class="btn small" onclick="showLog('${j.id}')">日志</button><button class="btn small danger" onclick="stopJob('${j.id}')">停止</button><button class="btn small danger" onclick="deleteJob('${j.id}')">删除</button></div></td></tr>`).join('')||'<tr><td colspan="4">暂无训练任务</td></tr>'}</tbody></table></div></section></div><section class="panel"><div class="panel-head"><div class="panel-title">训练日志</div></div><div class="panel-body"><pre id="log" class="log">选择任务查看日志</pre></div></section>`;fillTrain()}
 function curTarget(){return state.targets.find(t=>t.id===$('#target')?.value)||state.targets[0]}
@@ -4573,45 +4573,71 @@ window.installUsability417?.();
   const queueIds=()=>Array.isArray(state.annotationQueue414)&&state.annotationQueue414.length?state.annotationQueue414.map(String):state.activeImage?[String(state.activeImage.id)]:[];
   const imageById=id=>(state.images||[]).find(x=>String(x.id)===String(id));
   const preload=url=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(true);image.onerror=()=>reject(new Error('图片加载失败'));image.src=url});
+  const provisionalAnnotation420=image=>({
+    boxes:(image?.annotation_preview||[]).map(box=>({...box})),
+  });
 
   function ensureShell(){
     if(document.querySelector('.ann420-stable'))return;
-    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button class="btn small" onclick="undoAnn()">撤销</button><button class="btn small" onclick="redoAnn()">重做</button><button class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“配置中心 → 标签管理”。拖拽新建框；切换图片前自动保存；画布和弹窗不会重复创建。</div></aside></div>`,true);
+    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button data-ann420-edit="1" class="btn small" onclick="undoAnn()">撤销</button><button data-ann420-edit="1" class="btn small" onclick="redoAnn()">重做</button><button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“配置中心 → 标签管理”。拖拽新建框；切换图片前自动保存；画布和弹窗不会重复创建。</div></aside></div>`,true);
   }
 
   function updateShell(){
     const image=state.activeImage;if(!image)return;ensureShell();
+    const loading=!!state.annotationHydrating420,error=String(state.annotationLoadError420||''),locked=loading||!!error;
     const ids=queueIds(),at=Math.max(0,ids.indexOf(String(image.id))),visible=workbenchApi()?.queueWindow(ids,String(image.id),9)||ids;
     const queue=document.getElementById('ann420Queue');
     if(queue)queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${row.annotated?`${row.box_count||0} 框`:'待标注'}</em></span></button>`:''}).join('');
     const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
     const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
-    const select=document.getElementById('ann420Label');if(select)select.innerHTML=(state.labels||[]).map(label=>`<option value="${Number(label.class_id)}" ${Number(state.activeLabel)===Number(label.class_id)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');
+    const select=document.getElementById('ann420Label');if(select){select.innerHTML=(state.labels||[]).map(label=>`<option value="${Number(label.class_id)}" ${Number(state.activeLabel)===Number(label.class_id)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');select.disabled=locked||!(state.labels||[]).length}
     const previous=document.getElementById('ann420Prev'),next=document.getElementById('ann420Next');
     if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
     if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
     const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(state.ann?.boxes?.length||0);
-    const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=(state.ann?.boxes?.length||0)>0;
+    const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=locked||(state.ann?.boxes?.length||0)>0;
+    const saveButton=document.getElementById('ann414Save');if(saveButton){saveButton.disabled=locked;saveButton.textContent=loading?'读取中…':'保存并继续'}
+    document.querySelectorAll('.ann420-stable [data-ann420-edit="1"]').forEach(button=>{button.disabled=locked});
+    const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent=loading?'正在读取标注…':error?'读取失败':state.annDirty?'未保存':'已保存';
+    const boxes=document.getElementById('annBoxes');if(boxes){boxes.style.pointerEvents=locked?'none':'';boxes.style.opacity=locked?'.62':''}
     const img=document.getElementById('annImg');if(img&&img.src!==new URL(image.url,location.href).href)img.src=image.url;
-    const stage=document.getElementById('annStage');if(stage){stage.style.transform=`scale(${state.annZoom||1})`;stage.classList.toggle('disabled',!(state.labels||[]).length)}
-    requestAnimationFrame(()=>{drawBoxes();if((state.labels||[]).length)bindAnnotationEvents();renderAnnSide()});
+    const stage=document.getElementById('annStage');if(stage){stage.style.transform=`scale(${state.annZoom||1})`;stage.classList.toggle('disabled',locked||!(state.labels||[]).length)}
+    requestAnimationFrame(()=>{drawBoxes();if(!locked&&(state.labels||[]).length)bindAnnotationEvents();renderAnnSide()});
+  }
+
+  function prepareAnnotationShell420(id){
+    const image=imageById(id);if(!image)return;
+    state.activeImage=image;state.ann=provisionalAnnotation420(image);
+    const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
+    state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];
+    state.annotationHydrating420=true;state.annotationLoadError420='';updateShell();
+  }
+
+  function prefetchAnnotationNeighbors420(id){
+    const ids=queueIds(),at=ids.indexOf(String(id)),neighbors=[ids[at-1],ids[at+1]].filter(Boolean);
+    if(neighbors.length)void state.annotationWorkbench?.prefetch?.(neighbors);
+    for(const neighbor of neighbors){const image=imageById(neighbor);if(image?.url)void preload(image.url).catch(()=>{})}
   }
 
   function ensureWorkbench(){
     if(state.annotationWorkbench)return state.annotationWorkbench;
     const api=workbenchApi();if(!api)return null;
     state.annotationWorkbench=api.createAnnotationWorkbench({
+      beforeLoad:id=>prepareAnnotationShell420(id),
+      cacheTtlMs:60*1000,
       load:async id=>{
         const image=imageById(id);if(!image)throw new Error('图片不存在或尚未加载');
-        if(!(state.labels||[]).length&&typeof refreshLabels414==='function')await refreshLabels414(false);
-        const response=await apiRequestAnnotation420(id);
+        const labelsPromise=!(state.labels||[]).length&&typeof refreshLabels414==='function'?refreshLabels414(false):Promise.resolve();
+        const [response]=await Promise.all([apiRequestAnnotation420(id),labelsPromise]);
         return {image:response?.image||image,annotation:response?.annotation||{boxes:[]}};
       },
       save:async()=>window.saveAnn(true),
       apply:value=>{
+        state.annotationHydrating420=false;state.annotationLoadError420='';
         state.activeImage=value.image;state.ann=value.annotation||{boxes:[]};if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
         const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
         state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];updateShell();
+        prefetchAnnotationNeighbors420(state.activeImage?.id);
       }
     });
     return state.annotationWorkbench;
@@ -4621,7 +4647,10 @@ window.installUsability417?.();
   window.openAnnotation=async function(id){
     const key=String(id);if(!imageById(key))return toast('图片不存在或尚未加载');
     if(!Array.isArray(state.annotationQueue414)||!state.annotationQueue414.some(value=>String(value)===key))state.annotationQueue414=[key];
-    try{return await ensureWorkbench()?.open(key)}catch(error){toast(`打开标注失败：${error.message||error}`);return false}
+    try{return await ensureWorkbench()?.open(key)}catch(error){
+      state.annotationHydrating420=false;state.annotationLoadError420=String(error?.message||error||'标注读取失败');updateShell();
+      toast(`打开标注失败：${error.message||error}`);return false
+    }
   };
   window.goAnnotation417=id=>window.openAnnotation(id);
   window.renderAnnotator=updateShell;
@@ -4631,7 +4660,14 @@ window.installUsability417?.();
   const previousSave=window.saveAnn;
   window.saveAnn=async function(silent=false,options={}){
     const savedId=String(state.activeImage?.id||''),ok=await previousSave?.(silent,options);
-    if(ok){state.annotationWorkbench?.markSaved();patchMaterialCard412(state.activeImage)}
+    if(ok){
+      state.annotationWorkbench?.markSaved();
+      state.annotationWorkbench?.remember?.(savedId,{
+        image:{...(state.activeImage||{})},
+        annotation:{...(state.ann||{}),boxes:(state.ann?.boxes||[]).map(box=>({...box}))},
+      });
+      patchMaterialCard412(state.activeImage);
+    }
     if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
     return ok;
   };
@@ -4648,7 +4684,7 @@ window.installUsability417?.();
   window.closeModal=async function(){
     const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers.at(-1);
     if(top?.querySelector('.ann420-stable')&&state.annotationWorkbench?.dirty){const ok=await window.saveAnn(true);if(!ok)return false}
-    if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;state.annotationWorkbench?.invalidate();state.annotationWorkbench=null;state.annotationQueue414=[];state.activeImage=null}
+    if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;state.annotationWorkbench?.invalidate();state.annotationWorkbench=null;state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420=''}
     return previousClose?.();
   };
 })();
