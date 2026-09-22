@@ -15,17 +15,6 @@ async function loadAll(){await ensureWorkspace();await loadRelated();state.targe
 async function loadRelated(){if(!state.project)return;const pid=state.project.id;const info=await safe(api(`/api/projects/${pid}`));if(info){state.project=info.project;state.jobs=info.jobs||[];state.models=info.models||[]}state.datasets=(await safe(api(`/api/projects/${pid}/datasets`)))?.items||[];if(!state.datasets.length){await safe(api(`/api/projects/${pid}/datasets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认数据集',description:'',kind:'mixed'})}));state.datasets=(await safe(api(`/api/projects/${pid}/datasets`)))?.items||[]}if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';state.images=await safe(api(`/api/projects/${pid}/images?dataset_id=${state.datasetId}`))||[];state.labels=(await safe(api(`/api/v12/projects/${pid}/labels`)))?.items||[];state.algorithms=(await safe(api(`/api/v12/projects/${pid}/algorithms`)))?.items||[];state.pending=(await safe(api(`/api/v12/projects/${pid}/publish/pending`)))?.items||[];state.testModels=(await safe(api(`/api/v12/projects/${pid}/test_models`)))?.items||[]}
 function statusName(s){return ({queued:'排队中',running:'训练中',done:'已完成',finished:'已完成',failed:'失败',stopped:'已停止'}[s]||s||'-')}
 function render(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest}[state.page]||renderAlgorithms)()}
-function renderNav(){$('#nav').innerHTML=navs.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span>${n}</span><span>›</span></button>`).join('')}
-function renderTop(){$('#crumb').textContent='畅联云算法训练';$('#title').textContent=state.page;$('#refreshBtn').onclick=async()=>{await loadAll();render();toast('已刷新')}}
-function renderSummary(){
-  const imgs=state.images.length;
-  const ann=state.images.filter(i=>(i.box_count||0)>0).length;
-  const boxes=state.images.reduce((a,b)=>a+(b.box_count||0),0);
-  const ready=state.targets.filter(t=>t.status==='ready').length;
-  const pending=state.pending.length;
-  const done=state.jobs.filter(j=>['done','finished'].includes(j.status)).length;
-  $('#summary').innerHTML=`<div class="stat"><div class="k">算法</div><div class="v">${state.algorithms.length}</div></div><div class="stat"><div class="k">训练资源</div><div class="v">${ready}</div></div><div class="stat"><div class="k">图片 / 已标注</div><div class="v">${imgs}/${ann}</div></div><div class="stat"><div class="k">标注框</div><div class="v">${boxes}</div></div><div class="stat"><div class="k">待发布 / 已训练</div><div class="v">${pending}/${done}</div></div>`;
-}
 function pid(){return state.project?.id}
 async function reload(){await loadAll();render()}
 
@@ -1395,59 +1384,9 @@ window.installUsability417=function(){
   };
 
 
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    const ver=esc(state.versionInfo?.version||APP_VERSION);
-    $('#nav').innerHTML=`
-      <div class="nav-project">
-        <div class="nav-project-k">当前项目</div>
-        <div class="nav-project-v" title="${projectName}">${projectName}</div>
-      </div>
-      ${GROUPS.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`
-        <button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')">
-          <span class="nav-left"><i>${iconFor(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span>
-        </button>`).join('')}</div>`).join('')}
-      <div class="nav-footer"><span>Version</span><b>v${ver}</b></div>`;
-  };
-
-  renderTop=function(){
-    const map={
-      '工作台':['总览','从数据准备到训练部署的一站式工作流'],
-      '数据集':['数据准备','上传、划分、标注、质检、导出'],
-      '视频切帧':['数据准备','上传视频并按任务自动抽帧'],
-      '自动标注':['数据准备','选择大模型服务批量预标注素材'],
-      '训练资源':['环境接入','Ultralytics / 飞桨 / 训练服务器'],
-      '训练任务':['模型训练','创建任务、看进度、看日志'],
-      '测试发布':['模型验证','单模型测试、发布、部署导出'],
-      '检测台':['模型对比','原始模型与新模型同图检测'],
-      '算法列表':['资产管理','算法版本、训练报告、模型归档']
-    };
-    const [crumb,sub]=map[state.page]||['畅联云算法训练',''];
-    $('#crumb').textContent=crumb;
-    $('#title').innerHTML=`${state.page}<span class="title-sub">${esc(sub)}</span>`;
-    $('#refreshBtn').textContent='刷新数据';
-    $('#refreshBtn').onclick=async()=>{await loadAll();render();toast('已刷新，页面选择已保留')};
-    const right=$('.top-right');
-    if(right && !$('#versionBadge')){
-      right.insertAdjacentHTML('afterbegin',`<span id="versionBadge" class="version-badge">v${esc(state.versionInfo?.version||APP_VERSION)}</span>`);
-    }else if($('#versionBadge')) $('#versionBadge').textContent='v'+(state.versionInfo?.version||APP_VERSION);
-  };
-
-  renderSummary=function(){
-    const imgs=state.images.length;
-    const ann=state.images.filter(i=>(i.box_count||0)>0).length;
-    const boxes=state.images.reduce((a,b)=>a+(b.box_count||0),0);
-    const ready=state.targets.filter(t=>t.status==='ready').length;
-    const running=state.jobs.filter(j=>j.status==='running').length;
-    const trained=state.jobs.filter(j=>['done','finished'].includes(j.status)).length;
-    $('#summary').innerHTML=`
-      <div class="stat accent"><div class="k">素材图片</div><div class="v">${imgs}</div><div class="s">已标注 ${ann}</div></div>
-      <div class="stat"><div class="k">标注框</div><div class="v">${boxes}</div><div class="s">用于训练质检</div></div>
-      <div class="stat"><div class="k">训练资源</div><div class="v">${ready}</div><div class="s">可用环境</div></div>
-      <div class="stat"><div class="k">训练任务</div><div class="v">${running}/${trained}</div><div class="s">运行中 / 已完成</div></div>
-      <div class="stat"><div class="k">算法版本</div><div class="v">${state.algorithms.reduce((a,b)=>a+((b.versions||[]).length),0)}</div><div class="s">可归档交付</div></div>`;
-  };
-
+  
+  
+  
   function stepCard(n,title,desc,page,btn='进入'){
     return `<div class="flow-card" onclick="setPage('${page}')"><div class="flow-no">${n}</div><div><div class="flow-title">${title}</div><div class="flow-desc">${desc}</div><button class="btn small soft">${btn}</button></div></div>`;
   }
@@ -1490,29 +1429,8 @@ window.installUsability417=function(){
     {title:'训练验证',items:['训练任务','测试发布','检测台']},
     {title:'系统配置',items:['模型配置','训练资源']},
   ];
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    const ver=esc(state.versionInfo?.version||APP_VERSION_V35);
-    $('#nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${projectName}">${projectName}</div></div>
-      ${V35_GROUPS.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${v35Icon(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}
-      <div class="nav-footer"><span>Version</span><b>v${ver}</b></div>`;
-  };
-
-  renderTop=function(){
-    const map={
-      '工作台':['总览',''], '算法列表':['资产管理',''], '数据集':['数据准备',''], '视频切帧':['数据准备',''], '自动标注':['数据准备',''],
-      '训练任务':['模型训练',''], '测试发布':['模型验证',''], '检测台':['模型对比',''], '训练资源':['系统配置',''], '模型配置':['系统配置','本地模型、云端模型和标注提示词']
-    };
-    const [crumb,sub]=map[state.page]||['畅联云算法训练',''];
-    $('#crumb').textContent=crumb;
-    $('#title').innerHTML=`${state.page}${sub?`<span class="title-sub">${esc(sub)}</span>`:''}`;
-    $('#refreshBtn').textContent='刷新';
-    $('#refreshBtn').onclick=async()=>{const cur=state.page;await loadAll();state.page=cur;render();toast('已刷新')};
-    const right=$('.top-right');
-    if(right && !$('#versionBadge')) right.insertAdjacentHTML('afterbegin',`<span id="versionBadge" class="version-badge">v${esc(state.versionInfo?.version||APP_VERSION_V35)}</span>`);
-    if($('#versionBadge')) $('#versionBadge').textContent='v'+(state.versionInfo?.version||APP_VERSION_V35);
-  };
-
+  
+  
 
   function setBtnBusy(btn, busy, text){
     if(!btn)return;
@@ -1789,30 +1707,9 @@ window.installUsability417=function(){
   };
   try{if(localStorage.getItem('mc_sidebar_collapsed_v37')==='1')document.body.classList.add('sidebar-collapsed')}catch(e){}
 
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${projectName}">${projectName}</div></div>${MENU_GROUPS.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" title="${n}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>版本</span><b>v${V37_VERSION}</b></div>`;
-  };
-
-  renderTop=function(){
-    const meta=PAGE_META[state.page]||['畅联云算法训练',''];
-    const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
-    if(crumb)crumb.textContent=meta[0]; if(title)title.textContent=state.page; if(desc)desc.textContent=meta[1];
-    const project=document.querySelector('#projectBadge span:last-child');if(project)project.textContent=state.project?.name||'默认空间';
-    const version=document.getElementById('versionBadge');if(version)version.textContent='v'+V37_VERSION;
-    const refresh=document.getElementById('refreshBtn');
-    if(refresh){refresh.textContent='刷新';refresh.onclick=async function(){const old=refresh.innerHTML;refresh.disabled=true;refresh.innerHTML='<span class="tiny-spinner"></span>刷新中';const page=state.page;try{await loadAll();state.page=page;render();toast('已刷新')}finally{refresh.disabled=false;refresh.innerHTML=old}}}
-  };
-
-  renderSummary=function(){
-    const box=document.getElementById('summary');if(!box)return;
-    if(state.page!=='工作台'){box.classList.add('is-hidden');box.innerHTML='';return}
-    box.classList.remove('is-hidden');
-    const imgs=(state.images||[]).length,ann=(state.images||[]).filter(i=>(i.box_count||0)>0).length,boxes=(state.images||[]).reduce((a,b)=>a+(b.box_count||0),0);
-    const running=(state.jobs||[]).filter(j=>j.status==='running'||j.status==='queued').length,done=(state.jobs||[]).filter(j=>isDone(j.status)).length,ready=(state.targets||[]).filter(t=>t.status==='ready').length;
-    box.innerHTML=`<div class="stat"><div class="k">素材图片</div><div class="v">${imgs}</div><div class="s">已标注 ${ann}</div></div><div class="stat"><div class="k">标注框</div><div class="v">${boxes}</div><div class="s">当前项目</div></div><div class="stat"><div class="k">训练任务</div><div class="v">${running}</div><div class="s">运行或排队</div></div><div class="stat"><div class="k">已完成训练</div><div class="v">${done}</div><div class="s">可进入测试</div></div><div class="stat"><div class="k">算法版本</div><div class="v">${totalVersions()}</div><div class="s">资源可用 ${ready}</div></div>`;
-  };
-
+  
+  
+  
 
 
 
@@ -1867,19 +1764,7 @@ window.installUsability417=function(){
   function statusPill(s){return `<span class="pill ${s==='ready'||s==='done'?'ok':s==='failed'||s==='missing'?'err':'warn'}">${esc(({ready:'可用',missing:'不可用',unchecked:'未检测',queued:'排队中',waiting_resource:'等待资源',running:'转换中',done:'已完成',failed:'失败',stopped:'已停止',blocked_by_hardware:'硬件不足',blocked_by_environment:'环境不可用'}[s]||s||'-'))}</span>`}
 
   // Replace final v37 navigation while keeping the existing pages unchanged.
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${projectName}">${projectName}</div></div>${MENUS.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" title="${n}" onclick="setPage('${n}')"><span class="nav-left"><i>${menuIcon(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>版本</span><b>v${V39}</b></div>`;
-  };
-  renderTop=function(){
-    const meta=META[state.page]||['畅联云算法训练',''];
-    const c=document.getElementById('crumb'),t=document.getElementById('title'),d=document.getElementById('pageDesc');
-    if(c)c.textContent=meta[0];if(t)t.textContent=state.page;if(d)d.textContent=meta[1];
-    const p=document.querySelector('#projectBadge span:last-child');if(p)p.textContent=state.project?.name||'默认空间';
-    const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V39;
-    const r=document.getElementById('refreshBtn');if(r){r.textContent='刷新';r.onclick=async()=>{r.disabled=true;try{if(['部署转换','部署产物','部署资源'].includes(state.page)){await loadDeployData(true);render()}else{const page=state.page;await loadAll();state.page=page;render()}toast('已刷新')}finally{r.disabled=false}}}
-  };
-
+    
   const DEPLOY_CACHE_TTL_MS=10*60*1000;
   function restoreDeployCacheV39(){
     if(!pid())return null;
@@ -2189,11 +2074,7 @@ window.installUsability417=function(){
     '质量中心':'<path d="M4 18V9M10 18V5M16 18v-7M22 18V3"/><path d="M2 21h21"/>',
   };
   function icon42(n){if(EXTRA_ICON[n])return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${EXTRA_ICON[n]}</svg>`;try{return menuIcon(n)}catch(e){return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor"/></svg>'}}
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${projectName}">${projectName}</div></div>${CORE_MENUS.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" title="${n}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon42(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>版本</span><b>v${V42}</b></div>`;
-  };
-  const META42={
+    const META42={
     '新建算法':['算法生产','从业务场景创建新算法，不要求先懂训练参数'],
     '自动迭代':['算法生产','线上抽查、补样、标注、重训和质量门禁'],
     '素材接入':['数据中心','接入目录、视频流或业务系统接口'],
@@ -2319,8 +2200,7 @@ window.installUsability417=function(){
 // ============================================================
 (function(){
   const V='42.24.0';
-  renderSummary=function(){const box=document.getElementById('summary');if(box){box.classList.add('is-hidden');box.innerHTML=''}};
-  function simplifyEmpty(el){
+    function simplifyEmpty(el){
     const t=(el.textContent||'').trim();
     if(!t)return;
     if(/请先|先创建|建议|你仍然可以|点击|例如|需要先|请到/.test(t)){
@@ -2391,11 +2271,7 @@ window.installUsability417=function(){
     '模型配置':['资源配置',''],'训练资源':['资源配置',''],'部署资源':['资源配置',''],'部署插件':['资源配置',''],'组件检测':['资源配置','']
   };
   function icon422(name){const p=ICON422[name]||'<circle cx="12" cy="12" r="8"/>';return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`}
-  renderNav=function(){
-    const pn=esc(state.project?.name||'默认空间');
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${pn}">${pn}</div></div>${MENU422.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon422(n)}</i><b>${n}</b></span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>版本</span><b>v${V422}</b></div>`;
-  };
-  function fmt422(v){return Number(v||0).toLocaleString('zh-CN')}
+    function fmt422(v){return Number(v||0).toLocaleString('zh-CN')}
   function pct423(v){if(v==null||Number.isNaN(Number(v)))return '-';const n=Number(v);return (n>1?n:n*100).toFixed(1)+'%'}
   function dt423(v){return v?String(v).replace('T',' ').slice(0,19):'-'}
   function status423(s){const names={queued:'排队中',running:'运行中',done:'已完成',finished:'已完成',completed:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',stopped:'已停止',ready:'正常',unchecked:'未检测',disabled:'已停用'};const normalized=String(s||'').toLowerCase();const cls=['done','finished','completed','succeeded','success','ready'].includes(normalized)?'ok':normalized==='failed'?'err':'warn';return `<span class="pill ${cls}">${esc(names[s]||s||'-')}</span>`}
@@ -2666,11 +2542,7 @@ window.installUsability417=function(){
     {title:'部署中心',items:['部署转换','部署产物']},
     {title:'资源配置',items:['模型配置','训练资源','部署资源']},
   ];
-  renderNav=function(){
-    const projectName=esc(state.project?.name||'默认空间');
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${projectName}</div></div>${GROUPS424.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon424(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>Version</span><b>v${V424}</b></div>`;
-  };
-  renderSummary=function(){const el=document.getElementById('summary');if(el){el.innerHTML='';el.style.display='none'}};
+    renderSummary=function(){const el=document.getElementById('summary');if(el){el.innerHTML='';el.style.display='none'}};
   // ---------- quality center ----------
   function pct424(v){if(v==null||isNaN(Number(v)))return '-';const n=Number(v);return (n<=1?n*100:n).toFixed(1)+'%'}
   function fmtSize424(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1024**2)return(n/1024).toFixed(1)+' KB';if(n<1024**3)return(n/1024**2).toFixed(1)+' MB';return(n/1024**3).toFixed(2)+' GB'}
@@ -3060,17 +2932,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // ----- simpler navigation, advanced deploy/resources hidden by default -----
   window.toggleAdvanced427=function(){state.v427Advanced=!state.v427Advanced;localStorage.setItem('cl_v427_advanced',state.v427Advanced?'1':'0');renderNav()};
   const icon427={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',测试发布:'✓',检测台:'◎',部署转换:'⇄',部署产物:'▥',模型配置:'◉',训练资源:'▧',部署资源:'⬡'};
-  renderNav=function(){
-    const groups=[
-      {title:'总览',items:['工作台','质量中心']},
-      {title:'算法生产',items:['算法列表','训练任务']},
-      {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗']},
-      {title:'测试评测',items:['测试发布','检测台']},
-    ];
-    if(state.v427Advanced){groups.push({title:'部署中心',items:['部署转换','部署产物']},{title:'资源配置',items:['模型配置','训练资源','部署资源']})}
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon427[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V427}</b></div>`;
-  };
-
+  
   // ----- dataset cards: edit + whole-card selection + compact filter -----
   function matching427(){return dataMatch426?dataMatch426():[]}
   function selectOrPreview427(id){if(state.data426DeleteMode||state.data426MoveMode){const on=!state.data424Selected.has(id);on?state.data424Selected.add(id):state.data424Selected.delete(id);renderDataCards426();return}previewData426(id)}
