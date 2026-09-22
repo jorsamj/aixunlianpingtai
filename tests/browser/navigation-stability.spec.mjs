@@ -355,7 +355,7 @@ test('formal version marker stays stable across final render owners and delayed 
   await page.waitForTimeout(1_800);
   await expectFormalVersion();
 
-  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '部署资源', '存储配置']) {
+  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '模型配置', '存储配置']) {
     await page.evaluate(next => window.setPage(next), route);
     await expect(page.locator('#title')).toContainText(route);
     await expectFormalVersion();
@@ -1110,7 +1110,7 @@ test('platform integration is installed as a canonical navigation owner', async 
 });
 
 
-test('all formal utility and deployment pages avoid unknown-module fallback', async ({page}) => {
+test('formal utility pages avoid unknown-module fallback and retired deployment routes normalize safely', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -1121,11 +1121,7 @@ test('all formal utility and deployment pages avoid unknown-module fallback', as
     '工作台',
     '质量中心',
     '标签管理',
-    '部署转换',
-    '部署产物',
     '模型配置',
-    '部署资源',
-    '部署插件',
     '组件检测',
     '平台对接',
     '服务节点',
@@ -1141,8 +1137,23 @@ test('all formal utility and deployment pages avoid unknown-module fallback', as
     await expect(page.locator('#title')).toHaveText(target);
     const fallback = page.locator('#view [data-unknown-page]');
     await expect(fallback, `formal page ${target} must have a concrete renderer owner`).toHaveCount(0);
-    await expect(page.locator('#view'), `formal page ${target} must not show legacy module readiness copy`).not.toContainText('当前页面模块尚未就绪');
-    await expect(page.locator('#view'), `formal page ${target} must not show unknown page fallback`).not.toContainText('当前页面不存在或已下线');
+    await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
+    await expect(page.locator('#view')).not.toContainText('当前页面不存在或已下线');
+  }
+
+  const aliases = [
+    ['部署转换', '算法列表'],
+    ['部署产物', '算法列表'],
+    ['部署资源', '模型配置'],
+    ['部署插件', '模型配置'],
+  ];
+  for (const [legacy, canonical] of aliases) {
+    await page.evaluate(async name => {
+      const result = window.setPage(name);
+      if (result && typeof result.then === 'function') await result;
+    }, legacy);
+    await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(canonical);
+    await expect(page.locator('#title')).toHaveText(canonical);
   }
 
   expect(pageErrors).toEqual([]);
