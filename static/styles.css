@@ -639,3 +639,11 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ann420-stable .box424{transition:border-color .08s ease,box-shadow .08s ease}
 .ann420-stable .box424 .boxTag{pointer-events:none}
 @media(max-width:1180px){.ann420-stable{grid-template-columns:170px minmax(0,1fr)}.ann420-stable .ann-side{grid-column:1/-1;height:auto;max-height:240px;border-left:0;border-top:1px solid #e2e8f0}.ann420-stable .ann417-queue{min-height:0}}
+
+
+/* v64 durable detection history */
+.bench64-history-row{width:100%;display:grid;grid-template-columns:minmax(0,1.8fr) 110px 90px auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;text-align:left;cursor:pointer;margin-bottom:7px}
+.bench64-history-row:hover{border-color:#93c5fd;background:#f8fbff;box-shadow:0 5px 18px rgba(15,23,42,.04)}
+.bench64-history-row>span:first-child{min-width:0}.bench64-history-row b,.bench64-history-row em{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bench64-history-row b{font-size:12px}.bench64-history-row em{margin-top:3px;color:#94a3b8;font-size:10px;font-style:normal}
+.bench64-history-row>span:not(:first-child){color:#64748b;font-size:12px}.bench64-history-row strong{color:#2563eb;font-size:12px;white-space:nowrap}
+@media(max-width:760px){.bench64-history-row{grid-template-columns:minmax(0,1fr) auto}.bench64-history-row>span:nth-child(2),.bench64-history-row>span:nth-child(3){display:none}}
