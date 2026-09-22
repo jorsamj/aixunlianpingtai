@@ -130,7 +130,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422210');
+    .toBe('material-pagination-runtime-422211');
 
   await page.evaluate(() => {
     state.data412Tab = 'processed';
@@ -201,6 +201,33 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 });
 
 
+test('quality center navigation does not hydrate the full material pool', async ({page}) => {
+  const apiRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422211');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
+
+  apiRequests.length = 0;
+  await page.evaluate(() => {
+    state.qualityCenterTab411 = 'overview';
+    window.setPage('质量中心');
+  });
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.getByRole('button', {name: '质量概览'})).toBeVisible();
+  await page.waitForTimeout(350);
+
+  expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
+});
+
+
 test('dataset return paints the cached page before a background refresh replaces it', async ({page}) => {
   const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
   let mainReads = 0;
@@ -234,7 +261,7 @@ test('dataset return paints the cached page before a background refresh replaces
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422210');
+    .toBe('material-pagination-runtime-422211');
   await page.evaluate(() => {
     state.data412Tab = 'processed';
     state.materialQuery61 = '';
