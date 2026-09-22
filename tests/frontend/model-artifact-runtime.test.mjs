@@ -91,7 +91,7 @@ test('audit polling is PollRegistry-owned and audit rows patch by log id', () =>
   assert.match(source, /registry\.startTimeout\(AUDIT_POLL_KEY, PLATFORM_PAGE/);
   assert.match(source, /function patchAuditRows\(body\)/);
   assert.match(source, /data-audit-id=/);
-  assert.match(source, /build: 'model-artifacts-65003'/);
+  assert.match(source, /build: 'model-artifacts-65005'/);
   assert.doesNotMatch(source, /window\.setInterval\(/);
   assert.doesNotMatch(source, /body\.innerHTML = auditRowsHtml\(\)/);
 });
