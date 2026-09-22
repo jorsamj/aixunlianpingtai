@@ -22,6 +22,7 @@ export class NavigationEpochGuard {
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
   if (requested === '自动标注') return '自动标注及清洗';
+  if (requested === '测试发布' || requested === '检测台') return '质量中心';
   if (requested === '新建算法' || requested === '自动迭代') return '算法列表';
   return requested;
 }
@@ -56,12 +57,11 @@ const PAGE_RENDERERS = {
 
 const KNOWN_PAGE_NAMES = new Set([
   ...Object.keys(PAGE_RENDERERS),
-  '测试发布', '检测台', '标签管理', '存储配置',
+  '质量中心', '标签管理', '存储配置',
 ]);
 
 function ownersFor(page) {
   if (page === '自动标注及清洗') return ['自动标注', '自动标注及清洗'];
-  if (page === '训练任务') return ['训练任务', '检测台'];
   return [page];
 }
 
