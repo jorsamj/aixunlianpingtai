@@ -5,7 +5,7 @@ from platform_core.remote_execution_transport import RemoteExecutionTransportErr
 from platform_core.task_runtime import TaskKind
 
 
-def _create_deployment_task(client, seeded_project, tmp_path, monkeypatch):
+def _create_deployment_task(client, seeded_project, tmp_path, monkeypatch, extra_data=None):
     project_id, _image = seeded_project
     model = tmp_path / "model.onnx"
     model.write_bytes(b"onnx-test-model")
@@ -20,9 +20,11 @@ def _create_deployment_task(client, seeded_project, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(app_module, "_resolve_v61_test_model", lambda *args, **kwargs: resolution)
     monkeypatch.setattr(app_module, "resolve_inference_python", lambda *args, **kwargs: str(Path(app_module.sys.executable)))
+    payload = {"model_name": "model.onnx", "model_source": "project", "inference_framework": "ultralytics"}
+    payload.update(extra_data or {})
     response = client.post(
         f"/api/v61/projects/{project_id}/deployment-tests",
-        data={"model_name": "model.onnx", "model_source": "project", "inference_framework": "ultralytics"},
+        data=payload,
         files={"file": ("test.jpg", b"real-image-bytes", "image/jpeg")},
     )
     assert response.status_code == 202, response.text
@@ -187,3 +189,139 @@ def test_deployment_test_business_projection_preserves_durable_resource_wait_tru
     assert business["worker_id"] == unified["worker_id"]
     assert business["progress"] == unified["progress_percent"]
     assert business["stage"] == unified["phase"]
+
+
+
+def test_detection_batch_metadata_history_and_review_are_durable(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    batch_id = "bench-api-test-1"
+    project_id, _model, task = _create_deployment_task(
+        client,
+        seeded_project,
+        tmp_path,
+        monkeypatch,
+        extra_data={
+            "detection_batch_id": batch_id,
+            "detection_item_index": "0",
+            "detection_item_total": "1",
+            "detection_side": "A",
+            "model_label": "算法版本：烟火 / v1",
+            "original_filename": "folder/fire-001.jpg",
+        },
+    )
+    request = app_module.shared_task_artifacts().read_json(task["id"], "request.json")
+    assert request["detection_batch"] == {
+        "batch_id": batch_id,
+        "item_index": 0,
+        "item_total": 1,
+        "side": "A",
+        "original_filename": "fire-001.jpg",
+    }
+    assert request["model_identity"]["label"] == "算法版本：烟火 / v1"
+    assert request["input_image_url"].endswith(f"/predictions/{task['id']}/input.jpg")
+
+    blocked = client.post(
+        f"/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/0/review",
+        json={"review": "correct", "note": "尚未结束"},
+    )
+    assert blocked.status_code == 409
+    assert "尚未结束" in blocked.text
+
+    repository = app_module.shared_task_repository()
+    lease = repository.claim_next(
+        "deployment-batch-test-worker",
+        [TaskKind.DEPLOYMENT_TEST],
+        {"deployment.runtime"},
+    )
+    assert lease is not None
+    assert lease.task.task_id == task["id"]
+    result_ref = "result.json"
+    app_module.shared_task_artifacts().atomic_write_json(
+        task["id"],
+        result_ref,
+        {
+            "task_id": task["id"],
+            "image_url": f"/data/projects/{project_id}/predictions/{task['id']}/result.jpg",
+            "detections": [{
+                "label": "smoke", "confidence": 0.91,
+                "x1": 5, "y1": 6, "x2": 50, "y2": 60,
+            }],
+            "inference_ms": 12.5,
+            "total_elapsed_ms": 18.0,
+        },
+    )
+    repository.finish(
+        task["id"],
+        lease.lease_token,
+        app_module.TaskStatus.SUCCEEDED,
+        result_ref=result_ref,
+    )
+
+    detail = client.get(
+        f"/api/v64/projects/{project_id}/detection-batches/{batch_id}"
+    )
+    assert detail.status_code == 200, detail.text
+    batch = detail.json()["batch"]
+    assert batch["batch_id"] == batch_id
+    assert batch["total"] == 1
+    assert batch["completed_items"] == 1
+    assert batch["failed_items"] == 0
+    assert batch["items"][0]["original_filename"] == "fire-001.jpg"
+    assert batch["items"][0]["models"]["A"]["detections"][0]["label"] == "smoke"
+    assert batch["items"][0]["models"]["A"]["model"]["label"] == "算法版本：烟火 / v1"
+    assert batch["items"][0]["models"]["A"]["input_image_url"].endswith(
+        f"/predictions/{task['id']}/input.jpg"
+    )
+
+    review = client.post(
+        f"/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/0/review",
+        json={"review": "box_inaccurate", "note": "框偏大"},
+    )
+    assert review.status_code == 200, review.text
+    assert review.json()["review"]["review"] == "box_inaccurate"
+
+    repeated = client.get(
+        f"/api/v64/projects/{project_id}/detection-batches/{batch_id}"
+    ).json()["batch"]
+    assert repeated["items"][0]["review"]["review"] == "box_inaccurate"
+    assert repeated["items"][0]["review"]["note"] == "框偏大"
+
+    history = client.get(
+        f"/api/v64/projects/{project_id}/detection-batches?limit=12"
+    )
+    assert history.status_code == 200, history.text
+    row = next(item for item in history.json()["items"] if item["batch_id"] == batch_id)
+    assert row["completed_items"] == 1
+    assert row["created_items"] == 1
+
+
+def test_detection_batch_rejects_invalid_identity(client, seeded_project, tmp_path, monkeypatch):
+    project_id, _image = seeded_project
+    model = tmp_path / "model-invalid.onnx"
+    model.write_bytes(b"onnx-test-model")
+    resolution = app_module.ModelResolution(
+        status="FOUND",
+        path=model,
+        reference=model.name,
+        source="project",
+        downloadable=False,
+        environment_status="AVAILABLE",
+        searched_locations=(str(model),),
+    )
+    monkeypatch.setattr(app_module, "_resolve_v61_test_model", lambda *args, **kwargs: resolution)
+    monkeypatch.setattr(app_module, "resolve_inference_python", lambda *args, **kwargs: str(Path(app_module.sys.executable)))
+    response = client.post(
+        f"/api/v61/projects/{project_id}/deployment-tests",
+        data={
+            "model_name": "model-invalid.onnx",
+            "model_source": "project",
+            "detection_batch_id": "bad batch id!",
+            "detection_item_index": "0",
+            "detection_item_total": "1",
+            "detection_side": "A",
+        },
+        files={"file": ("test.jpg", b"real-image-bytes", "image/jpeg")},
+    )
+    assert response.status_code == 400
+    assert "批次 ID" in response.text
