@@ -18,6 +18,8 @@ test('training creation uses one canonical app owner instead of start-owner wrap
     'const baseShowIteration417=window.showIterationBase414;',
     'const baseOpenSettings415=window.openTrainSettings429||window.openTrainSettings428;',
     'const baseOpenSettings417=window.openTrainSettings429;',
+    'const _oldSaveTrainSettings429 = window.saveTrainSettings428;',
+    'const baseSaveSettings415=window.saveTrainSettings428;',
   ]) assert.equal(app.includes(token), false, token);
   assert.equal((app.match(/window\.startAlgorithmTraining429=/g) || []).length, 1);
   assert.match(app, /window\.openTrainingCreateDialog429=function\(aid\)/);
@@ -33,6 +35,8 @@ test('training creation uses one canonical app owner instead of start-owner wrap
   assert.match(app, /window\.refreshTrainCore429=function\(\)/);
   assert.match(app, /window\.toggleTrainImageCore429=function\(id\)/);
   assert.match(app, /window\.showIterationBaseCore414=function\(aid\)/);
+  assert.match(app, /window\.saveTrainSettingsCore428=function\(\)/);
+  assert.match(app, /window\.saveTrainSettings428=function saveTrainingSettingsCanonical428\(\)/);
 });
 
 test('hydration runtime depends on the canonical form owner explicitly', () => {
