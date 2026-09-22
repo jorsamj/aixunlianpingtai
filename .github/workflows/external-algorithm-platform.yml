@@ -133,7 +133,7 @@ jobs:
           grep -q "data-external-stale" static/modules/external-algorithm-platform.js
           grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
           grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
-          grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
+          grep -Fq "categoryPickerBound" static/modules/external-algorithm-platform.js
           grep -Fq 'dataset.algorithmSourceFilter' static/modules/external-algorithm-platform.js
           grep -Fq '内部算法' static/modules/external-algorithm-platform.js
           grep -Fq '外部算法' static/modules/external-algorithm-platform.js
