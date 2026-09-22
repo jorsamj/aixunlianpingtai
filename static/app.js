@@ -4937,7 +4937,17 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   function renderAiTaskRows60(tasks){const body=document.getElementById('ai60TaskRows');if(!body)return;if(window.AutoLabelPollRuntime?.patchRows?.(body,tasks))return;body.innerHTML=tasks.map(taskRow).join('')||'<tr><td colspan="6">暂无AI标注任务</td></tr>'}
   function renderAiTaskPage60({loading=false}={}){
-    document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows">${loading?'<tr><td colspan="6">首次读取AI标注任务…</td></tr>':''}</tbody></table></div></section></section>`;
+    const view=document.getElementById('view');if(!view)return;
+    let shell=view.querySelector(':scope > .ops427[data-ai-task-shell="1"]');
+    if(!shell){
+      const mount=document.createElement('section');mount.className='ops427';mount.dataset.aiTaskShell='1';
+      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div></section>`;
+      view.replaceChildren(mount);shell=mount;
+    }
+    shell.querySelector('[data-ai-tab="label"]')?.classList.add('on');
+    shell.querySelector('[data-ai-tab="clean"]')?.classList.remove('on');
+    const body=shell.querySelector('#ai60TaskRows');
+    if(loading&&body&&!body.children.length)body.innerHTML='<tr data-ai-loading-row="1"><td colspan="6">首次读取AI标注任务…</td></tr>';
     if(!loading)renderAiTaskRows60(state.annotationTasks60||[]);
   }
   const AI_TASK_PAGE_ENTRY_REUSE_MS=5000;
