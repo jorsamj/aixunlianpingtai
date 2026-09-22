@@ -92,6 +92,7 @@ const trainingDraftRuntime = installTrainingDraftRuntime({
 const trainingDraftControlsRuntime = installTrainingDraftControls({trainingDraftRuntime});
 
 window.PlatformCore = {
+  navigation: window.PlatformCore?.navigation || {},
   actions: actionRegistry,
   modalStack,
   messageFromApiError,

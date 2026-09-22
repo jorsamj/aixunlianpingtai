@@ -165,3 +165,25 @@ test('startup progress keeps the same boot card while status advances', async ({
   await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('main runtime preserves the canonical page registry created by classic app bootstrap', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  const registry = await page.evaluate(() => ({
+    pages: [...(window.PlatformCore?.navigation?.knownPages || [])],
+    workbenchKnown: Boolean(window.NavigationStability?.isKnownPage?.('工作台')),
+    qualityKnown: Boolean(window.NavigationStability?.isKnownPage?.('质量中心')),
+    modelKnown: Boolean(window.NavigationStability?.isKnownPage?.('模型配置')),
+  }));
+  expect(registry.workbenchKnown).toBe(true);
+  expect(registry.qualityKnown).toBe(true);
+  expect(registry.modelKnown).toBe(true);
+  expect(registry.pages).toContain('工作台');
+  expect(registry.pages).toContain('平台对接');
+  expect(registry.pages).toContain('服务节点');
+  expect(pageErrors).toEqual([]);
+});
