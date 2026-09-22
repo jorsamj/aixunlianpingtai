@@ -3250,13 +3250,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.()
   };
-  function paintOps427(){const tab=state.v427OpsTab;const rows=tab==='clean'?cleanTaskRows427(state.clean427):(state.prelabel427||[]).map(t=>`<tr><td><b>${esc(t.name||t.id)}</b><div class="muted-line">${esc((t.requested_labels||[t.target_label]).filter(Boolean).join('、'))}</div></td><td>${pill427(t.status)}</td><td>${opProgress427(t)}</td><td>${t.boxes_added||0}</td><td>${fileTime427(t.created_at)}<div class="muted-line">${fileTime427(t.finished_at||t.finished_scan_at)}</div></td><td><div class="row"><button class="btn mini" onclick="showTaskProgress427('label','${t.id}')">详情</button>${t.status==='awaiting_confirmation'?`<button class="btn mini primary" onclick="reviewAiLabel427('${t.id}')">确认结果</button>`:''}</div></td></tr>`).join('')||'<tr><td colspan="6">暂无任务</td></tr>';document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button class="${tab==='label'?'on':''}" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button class="${tab==='clean'?'on':''}" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="${tab==='label'?'createAiLabel427()':'createClean427()'}">＋ 创建${tab==='label'?'AI标注':'清洗'}任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>${tab==='clean'?'真实处理进度':'处理进度'}</th><th>${tab==='label'?'候选框':'问题图片'}</th><th>时间</th><th>操作</th></tr></thead><tbody${tab==='clean'?' id="clean427TaskRows"':''}>${rows}</tbody></table></div></section></section>`;if(tab==='clean')window.PollRegistryRuntime?.replaceCleanTaskTimer?.()}
-  window.renderOps427=function(){
-    const tab=state.v427OpsTab;
-    paintOps427();
-    if(tab==='clean'){void window.refreshCleanOps427Delta?.();return}
-    void loadOps427().then(()=>{if(state.page==='自动标注及清洗'&&state.v427OpsTab===tab)paintOps427()});
-  };
+  function renderCleanOps427(){
+    const rows=cleanTaskRows427(state.clean427);
+    document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button class="on" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createClean427()">＋ 创建清洗任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>问题图片</th><th>时间</th><th>操作</th></tr></thead><tbody id="clean427TaskRows">${rows}</tbody></table></div></section></section>`;
+    window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
+    void window.refreshCleanOps427Delta?.();
+  }
+  window.renderCleanOps427=renderCleanOps427;
 
   // ----- model config: prompt lives with model -----
 
@@ -4853,7 +4853,6 @@ window.installUsability417?.();
 /* Persistent v60 AI annotation UI: real worker progress, durable review, no HTTP-thread inference. */
 (()=>{
   const previousShowTask=window.showTaskProgress427;
-  const previousRenderOps=window.renderOps427;
   state.annotationTasks60=state.annotationTasks60||[];
   state.annotationTasks60LoadedAt=Number(state.annotationTasks60LoadedAt||0);
   state.annotationTasks60RefreshPromise=null;
@@ -4939,7 +4938,7 @@ window.installUsability417?.();
     return state.annotationTasks60RefreshPromise;
   }
   window.renderOps427=function(){
-    if((state.v427OpsTab||'label')==='clean'){window.AutoLabelPollRuntime?.deactivate?.();return previousRenderOps?.()}
+    if((state.v427OpsTab||'label')==='clean'){window.AutoLabelPollRuntime?.deactivate?.();return window.renderCleanOps427?.()}
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
     const hasSnapshot=Number(state.annotationTasks60LoadedAt||0)>0||(state.annotationTasks60||[]).length>0;
     renderAiTaskPage60({loading:!hasSnapshot});

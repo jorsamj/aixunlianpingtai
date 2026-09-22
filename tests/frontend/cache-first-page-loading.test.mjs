@@ -52,8 +52,8 @@ test('frequently revisited operational pages paint before focused revalidation',
   assert.match(finalAuto, /renderAiTaskPage60\(\{loading:!hasSnapshot\}\)/);
   assert.ok(finalAuto.indexOf('renderAiTaskPage60') < finalAuto.indexOf('refreshAnnotationTasks60()'));
 
-  const clean = block('function paintOps427()', '\n\n  // ----- model config: prompt lives with model -----');
-  assert.match(clean, /paintOps427\(\);/);
+  const clean = block('function renderCleanOps427()', '\n\n  // ----- model config: prompt lives with model -----');
+  assert.match(clean, /document\.getElementById\('view'\)\.innerHTML/);
   assert.match(clean, /refreshCleanOps427Delta/);
   assert.doesNotMatch(clean, /await loadOps427\(\)/);
 });

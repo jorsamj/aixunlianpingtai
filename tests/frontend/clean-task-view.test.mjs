@@ -68,6 +68,8 @@ test('final clean tab consumes the clean task view and PollRegistry lifecycle', 
   assert.match(source, /function cleanTaskView427\(t\)/);
   assert.match(source, /PlatformCore\?\.cleaning\?\.cleanTaskView\?\.\(t\)/);
   assert.match(source, /window\.PollRegistryRuntime\?\.replaceCleanTaskTimer\?\.\(\)/);
+  assert.match(source, /function renderCleanOps427\(\)/);
+  assert.match(source, /window\.renderCleanOps427=renderCleanOps427/);
   assert.match(source, /id="clean427TaskRows"/);
   assert.match(source, /function patchCleanTaskRows427\(body,tasks\)/);
   assert.match(source, /patchCleanTaskRows427\(body,state\.clean427\|\|\[\]\)/);

@@ -31,6 +31,14 @@ test('auto-label cleanup navigation is a canonical owner', () => {
   assert.doesNotMatch(app, /state\.page==='自动标注'\).*renderAutoLabel/);
 });
 
+
+test('auto-label and cleaning tabs dispatch to direct owners without previous renderer capture', () => {
+  assert.match(app, /window\.renderCleanOps427=renderCleanOps427/);
+  assert.match(app, /return window\.renderCleanOps427\?\.\(\)/);
+  assert.equal(app.includes('const previousRenderOps=window.renderOps427;'), false);
+  assert.equal(app.includes('return previousRenderOps?.()'), false);
+});
+
 test('video navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('视频切帧'/);
 });
