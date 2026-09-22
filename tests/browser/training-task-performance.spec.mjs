@@ -206,8 +206,6 @@ test('batch mode appears on demand and pauses eligible tasks with one canonical 
   page.on('pageerror',error=>pageErrors.push(error));
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout:15_000});
-  await page.evaluate(()=>window.setPage('训练任务'));
-  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible({timeout:10_000});
   const projectId=await page.evaluate(()=>state.project?.id);
   expect(projectId).toBeTruthy();
   const encoded=encodeURIComponent(projectId);
@@ -236,6 +234,8 @@ test('batch mode appears on demand and pauses eligible tasks with one canonical 
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true})});
   });
 
+  await page.evaluate(()=>window.setPage('训练任务'));
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible({timeout:10_000});
   await page.evaluate(()=>window.TrainingTaskRuntime.refresh({render:true,force:true,source:'test'}));
   const row=page.locator('[data-job-id="batch-browser-1"]');
   await expect(row).toContainText('批量烟火检测');
