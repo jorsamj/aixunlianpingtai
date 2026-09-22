@@ -128,6 +128,13 @@ test('test and detection pages are canonical owners', () => {
   assert.match(main, /\['检测台', 'renderDetectBench'\]/);
 });
 
+test('shadowed test and detection page renderers are physically retired', () => {
+  assert.equal(app.includes('window.renderDetectBench = function(){'), false);
+  assert.equal(app.includes('renderTest = window.renderTest = function(){'), false);
+  assert.match(app, /renderDetectBench = window\.renderDetectBench = function\(\)/);
+  assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
+});
+
 test('detection result rendering uses an explicit core helper and one final owner', () => {
   assert.match(app, /window\.renderDetectionResultCore31 = function renderDetectionResultCore31\(r,title\)/);
   assert.match(app, /window\.renderDetectionResult=window\.renderDetectionResultCore31/);
