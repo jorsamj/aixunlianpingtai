@@ -13,6 +13,7 @@ import {
   externalCategoryVisibleRows,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
+  safeExternalPlatformConfigSnapshot,
 } from '../../static/modules/external-algorithm-platform.js';
 
 test('external algorithm source is explicit and provider-labelled', () => {
@@ -52,6 +53,40 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.cache.product_count, 5);
   assert.equal(external.endpoints.product_list, '/custom/products');
   assert.equal(external.endpoints.category_tree, '/internal/base/category/tree');
+});
+
+test('persisted external platform snapshot is explicitly redacted', () => {
+  const normalized = normalizeExternalPlatformConfig({
+    config: {
+      mode: 'external',
+      provider: 'changlian',
+      base_url: 'https://example.test',
+      credentials: {
+        configured: true,
+        masked: 'AK-****1234',
+        available: true,
+        backend: 'encrypted_file',
+        writable: true,
+        access_key: 'plain-ak-must-not-persist',
+        access_secret: 'plain-secret-must-not-persist',
+        token: 'bearer-must-not-persist',
+      },
+      cache: {product_count: 5, master_data_digest: 'digest-1'},
+      last_sync: {status: 'success', counts: {products: 5}},
+    },
+  });
+  const snapshot = safeExternalPlatformConfigSnapshot(normalized);
+  const serialized = JSON.stringify(snapshot);
+  assert.equal(snapshot.baseUrl, 'https://example.test');
+  assert.equal(snapshot.credentials.configured, true);
+  assert.equal(snapshot.credentials.masked, 'AK-****1234');
+  assert.equal(snapshot.cache.master_data_digest, 'digest-1');
+  assert.doesNotMatch(serialized, /plain-ak-must-not-persist/);
+  assert.doesNotMatch(serialized, /plain-secret-must-not-persist/);
+  assert.doesNotMatch(serialized, /bearer-must-not-persist/);
+  assert.equal(Object.hasOwn(snapshot.credentials, 'access_key'), false);
+  assert.equal(Object.hasOwn(snapshot.credentials, 'access_secret'), false);
+  assert.equal(Object.hasOwn(snapshot.credentials, 'token'), false);
 });
 
 test('external analysis options require exact status=1 and analysisType=1', () => {
@@ -244,6 +279,10 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /配置已锁定，请先点击“编辑配置”再修改/);
   assert.match(source, /if \(reload\) configEditing = false/);
   assert.match(source, /PLATFORM_PAGE_CACHE_TTL_MS = 60 \* 1000/);
+  assert.match(source, /PLATFORM_CONFIG_SNAPSHOT_KEY = 'cl_external_platform_config_snapshot_v1'/);
+  assert.match(source, /PLATFORM_CONFIG_SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(source, /restoreConfigSnapshot\(\);/);
+  assert.match(source, /persistConfigSnapshot\(\);/);
   assert.match(source, /const hasSnapshot = paintCachedPage\(\)/);
   assert.match(source, /if \(config && \(!reload \|\| \(!force && fresh\)\)\) return true/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);

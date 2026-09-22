@@ -1,5 +1,7 @@
 const PAGE = '平台对接';
 const API_ROOT = '/api/v63/external-algorithm-platform';
+const PLATFORM_CONFIG_SNAPSHOT_KEY = 'cl_external_platform_config_snapshot_v1';
+const PLATFORM_CONFIG_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function rawFetch() {
   const scoped = window.fetch;
@@ -234,6 +236,83 @@ export function normalizeExternalPlatformConfig(body = {}) {
   };
 }
 
+export function safeExternalPlatformConfigSnapshot(current = {}) {
+  const normalized = Object.prototype.hasOwnProperty.call(current || {}, 'baseUrl')
+    ? current
+    : normalizeExternalPlatformConfig(current);
+  const credentials = normalized?.credentials || {};
+  const summary = normalized?.apiDocumentSummary || {};
+  const cache = normalized?.cache || {};
+  const last = normalized?.lastSync || null;
+  const lastCounts = last?.counts || {};
+  const endpoints = normalized?.endpoints || {};
+  return {
+    mode: normalized?.mode === 'external' ? 'external' : 'local',
+    provider: String(normalized?.provider || 'changlian'),
+    providerName: String(normalized?.providerName || '新畅联'),
+    baseUrl: String(normalized?.baseUrl || ''),
+    autoSyncEnabled: Boolean(normalized?.autoSyncEnabled),
+    autoSyncIntervalSeconds: Number(normalized?.autoSyncIntervalSeconds || 60),
+    autoPublishEnabled: Boolean(normalized?.autoPublishEnabled),
+    authMode: String(normalized?.authMode || 'test_sign_bridge'),
+    businessAuthMode: String(normalized?.businessAuthMode || 'authorization_bearer'),
+    credentials: {
+      configured: credentials.configured === true,
+      masked: String(credentials.masked || ''),
+      ...(credentials.available === true || credentials.available === false ? {available: credentials.available} : {}),
+      backend: String(credentials.backend || ''),
+      ...(credentials.writable === true || credentials.writable === false ? {writable: credentials.writable} : {}),
+      environment_name: String(credentials.environment_name || ''),
+    },
+    apiDocuments: (Array.isArray(normalized?.apiDocuments) ? normalized.apiDocuments : []).map(item => ({
+      key: String(item?.key || ''),
+      group: String(item?.group || ''),
+      title: String(item?.title || ''),
+      doc_url: String(item?.doc_url || ''),
+      status: String(item?.status || ''),
+      method: String(item?.method || ''),
+      path: String(item?.path || ''),
+    })),
+    apiDocumentSummary: {
+      total: Number(summary.total || 0),
+      wired: Number(summary.wired || 0),
+      documented: Number(summary.documented || 0),
+      reference: Number(summary.reference || 0),
+    },
+    endpoints: {
+      test_sign: String(endpoints.test_sign || '/internal/auth/test-sign'),
+      token: String(endpoints.token || '/internal/auth/token'),
+      category_tree: String(endpoints.category_tree || '/internal/base/category/tree'),
+      product_list: String(endpoints.product_list || '/internal/algorithm/product-ai/listAll'),
+      analysis_by_product: String(endpoints.analysis_by_product || '/internal/algorithm/algorithm-analysis/listByProduct/{productId}'),
+      compute_platform_list: String(endpoints.compute_platform_list || '/internal/base/compute-platform/listAll'),
+      version_create: String(endpoints.version_create || '/internal/algorithm/algorithm-version/add'),
+      weight_create: String(endpoints.weight_create || '/internal/algorithm/algorithm-weight/add'),
+    },
+    updatedAt: String(normalized?.updatedAt || ''),
+    lastSync: last ? {
+      status: String(last.status || ''),
+      sync_type: String(last.sync_type || ''),
+      started_at: String(last.started_at || ''),
+      finished_at: String(last.finished_at || ''),
+      counts: {
+        categories: Number(lastCounts.categories || 0),
+        products: Number(lastCounts.products || 0),
+        analyses: Number(lastCounts.analyses || 0),
+        compute_platforms: Number(lastCounts.compute_platforms || 0),
+      },
+    } : null,
+    cache: {
+      category_count: Number(cache.category_count || 0),
+      product_count: Number(cache.product_count || 0),
+      analysis_count: Number(cache.analysis_count || 0),
+      compute_platform_count: Number(cache.compute_platform_count || 0),
+      master_data_digest: String(cache.master_data_digest || ''),
+      updated_at: String(cache.updated_at || ''),
+    },
+  };
+}
+
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, match => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -268,6 +347,39 @@ export function installExternalAlgorithmPlatformRuntime({
   let config = null;
   let history = [];
   let pageLoadedAt = 0;
+
+  function persistConfigSnapshot() {
+    if (!config) return false;
+    try {
+      window.localStorage?.setItem(PLATFORM_CONFIG_SNAPSHOT_KEY, JSON.stringify({
+        ts: Date.now(),
+        config: safeExternalPlatformConfigSnapshot(config),
+      }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function restoreConfigSnapshot() {
+    try {
+      const payload = JSON.parse(window.localStorage?.getItem(PLATFORM_CONFIG_SNAPSHOT_KEY) || 'null');
+      const ts = Number(payload?.ts || 0);
+      const age = Date.now() - ts;
+      if (!payload?.config || !ts || age < 0 || age > PLATFORM_CONFIG_SNAPSHOT_MAX_AGE_MS) {
+        window.localStorage?.removeItem(PLATFORM_CONFIG_SNAPSHOT_KEY);
+        return false;
+      }
+      config = safeExternalPlatformConfigSnapshot(payload.config);
+      state().externalAlgorithmPlatformConfig = config;
+      return true;
+    } catch (_) {
+      try { window.localStorage?.removeItem(PLATFORM_CONFIG_SNAPSHOT_KEY); } catch (_) {}
+      return false;
+    }
+  }
+
+  restoreConfigSnapshot();
   const PLATFORM_PAGE_CACHE_TTL_MS = 60 * 1000;
   let cacheData = {categories: [], products: [], analyses_by_product: {}, compute_platforms: []};
   let loading = false;
@@ -306,6 +418,7 @@ export function installExternalAlgorithmPlatformRuntime({
       const body = await requestJson(`${API_ROOT}/config`);
       config = normalizeExternalPlatformConfig(body);
       state().externalAlgorithmPlatformConfig = config;
+      persistConfigSnapshot();
       return config;
     } catch (error) {
       if (!silent) notify?.(error?.message || error);
@@ -1063,6 +1176,7 @@ export function installExternalAlgorithmPlatformRuntime({
     });
     config = normalizeExternalPlatformConfig(body);
     state().externalAlgorithmPlatformConfig = config;
+    persistConfigSnapshot();
     configEditing = false;
     if (!quiet) notify?.('平台对接配置已保存并锁定，后续将持续使用此配置');
     return config;
