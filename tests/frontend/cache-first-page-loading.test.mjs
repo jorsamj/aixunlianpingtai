@@ -188,3 +188,15 @@ test('fresh startup snapshot suppresses redundant page extras and second navigat
   assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
   assert.ok(refresh.indexOf('return null') < refresh.indexOf('window.loadPageExtras413(page)'));
 });
+
+
+test('algorithm list revisit reuses the startup or focused snapshot for thirty seconds', () => {
+  const start = main.indexOf('const ALGORITHM_PAGE_ENTRY_REUSE_MS = 30 * 1000;');
+  const end = main.indexOf('\n\nconst navigationStabilityRuntime', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = main.slice(start, end);
+  assert.match(owner, /snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS/);
+  assert.match(owner, /algorithmListRuntime\.refresh\(\{render: true, minAgeMs: ALGORITHM_PAGE_ENTRY_REUSE_MS\}\)/);
+  assert.doesNotMatch(owner, /snapshotAge <= 5000/);
+  assert.doesNotMatch(owner, /minAgeMs: 5000/);
+});

@@ -351,6 +351,8 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
   return task;
 }
 
+const ALGORITHM_PAGE_ENTRY_REUSE_MS = 30 * 1000;
+
 function refreshCurrentPageOwner(page) {
   trainingProgressStreamRuntime?.syncPage?.(page);
   void refreshPageExtrasInBackground(page);
@@ -375,8 +377,8 @@ function refreshCurrentPageOwner(page) {
   }
   if (page !== '算法列表') return;
   const snapshotAge = Date.now() - Number(state.__coreSnapshotGeneratedAt || 0);
-  if (snapshotAge <= 5000) return;
-  void algorithmListRuntime.refresh({render: true, minAgeMs: 5000}).catch(error => notify(error?.message || error));
+  if (snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS) return;
+  void algorithmListRuntime.refresh({render: true, minAgeMs: ALGORITHM_PAGE_ENTRY_REUSE_MS}).catch(error => notify(error?.message || error));
 }
 
 const navigationStabilityRuntime = installNavigationStability({
