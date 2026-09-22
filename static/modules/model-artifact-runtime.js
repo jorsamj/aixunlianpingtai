@@ -132,6 +132,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   const AUDIT_POLL_KEY = 'model-artifact-audit';
   let config = null;
   let configLoadedAt = 0;
+  let configInflight = null;
   const MODEL_CONFIG_CACHE_TTL_MS = 2 * 60 * 1000;
   let summary = {total: 0, uploaded: 0, failed: 0, pending: 0};
   let auditSummary = {total: 0, success: 0, failed: 0, unknown: 0, avg_duration_ms: 0};
@@ -258,11 +259,19 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   async function loadModelConfig({force = false} = {}) {
     const age = Date.now() - Number(configLoadedAt || 0);
     if (!force && config && configLoadedAt > 0 && age >= 0 && age < MODEL_CONFIG_CACHE_TTL_MS) return config;
-    const body = await requestJson(`${MODEL_API}/config`);
-    config = normalizeModelArtifactConfig(body);
-    summary = config.summary;
-    configLoadedAt = Date.now();
-    return config;
+    if (configInflight) return configInflight;
+    const request = requestJson(`${MODEL_API}/config`).then(body => {
+      config = normalizeModelArtifactConfig(body);
+      summary = config.summary;
+      configLoadedAt = Date.now();
+      return config;
+    });
+    configInflight = request;
+    try {
+      return await request;
+    } finally {
+      if (configInflight === request) configInflight = null;
+    }
   }
 
   async function loadLogs() {

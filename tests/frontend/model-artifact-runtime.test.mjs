@@ -79,6 +79,9 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /复制诊断信息/);
   assert.match(source, /MODEL_CONFIG_CACHE_TTL_MS = 2 \* 60 \* 1000/);
   assert.match(source, /loadModelConfig\(\{force = false\} = \{\}\)/);
+  assert.match(source, /let configInflight = null/);
+  assert.match(source, /if \(configInflight\) return configInflight/);
+  assert.match(source, /if \(configInflight === request\) configInflight = null/);
 });
 
 
