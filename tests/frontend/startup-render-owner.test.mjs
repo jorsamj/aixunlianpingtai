@@ -47,6 +47,33 @@ test('v42 dashboard renderer only calls helpers from its own scope', () => {
 });
 
 
+test('canonical dashboard refreshes only focused source and quality extras without broad load42 repaint', () => {
+  const canonicalStart = app.indexOf('window.renderDashboardCanonical422=function()');
+  const canonicalEnd = app.indexOf('\n  };', canonicalStart);
+  assert.ok(canonicalStart >= 0 && canonicalEnd > canonicalStart);
+  const canonical = app.slice(canonicalStart, canonicalEnd);
+  assert.match(canonical, /renderDashboard422\(\)/);
+  assert.match(canonical, /refreshDashboardExtras422\(\)/);
+  assert.match(canonical, /patchDashboardExtras422\(\)/);
+  assert.doesNotMatch(canonical, /load42\(/);
+
+  const refreshStart = app.indexOf('async function refreshDashboardExtras422');
+  const refreshEnd = app.indexOf('\n  function patchDashboardExtras422', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  const refresh = app.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /\/api\/v42\/projects\/\$\{projectId\}\/sources/);
+  assert.match(refresh, /\/api\/v42\/projects\/\$\{projectId\}\/quality-overview/);
+  assert.doesNotMatch(refresh, /industry-templates|iteration-policies|iteration-runs|algorithm-blueprints/);
+
+  const patchStart = app.indexOf('function patchDashboardExtras422()');
+  const patchEnd = app.indexOf('\n  async function loadSourcesOnly422', patchStart);
+  const patch = app.slice(patchStart, patchEnd);
+  assert.match(patch, /data-dashboard-source-summary/);
+  assert.match(patch, /data-dashboard-quality-map/);
+  assert.doesNotMatch(patch, /innerHTML\s*=/);
+});
+
+
 test('startup progress patches one stable boot card instead of rebuilding the whole view', () => {
   const start = app.indexOf('function boot(st)');
   const end = app.indexOf('function apply(s)', start);
