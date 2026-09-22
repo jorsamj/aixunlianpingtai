@@ -4774,6 +4774,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }).finally(()=>{state.annotationTasks60RefreshPromise=null});
     return state.annotationTasks60RefreshPromise;
   }
+  window.refreshAnnotationTasks60=refreshAnnotationTasks60;
   window.renderOps427=function(){
     if((state.v427OpsTab||'label')==='clean'){window.AutoLabelPollRuntime?.deactivate?.();return window.renderCleanOps427?.()}
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();

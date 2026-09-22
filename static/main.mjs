@@ -22,7 +22,7 @@ import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422550';
-import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
+import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
@@ -237,6 +237,10 @@ const autoLabelPollRuntime = installAutoLabelPollRuntime({
   getState: () => state,
   pollRegistry,
   annotationTaskView,
+  loadTasks: () => {
+    if (typeof window.refreshAnnotationTasks60 !== 'function') throw new Error('AI标注任务数据加载器尚未就绪');
+    return window.refreshAnnotationTasks60();
+  },
   notify,
 });
 window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;

@@ -159,6 +159,7 @@ export function installAutoLabelPollRuntime({
   getState,
   pollRegistry,
   annotationTaskView,
+  loadTasks,
   notify,
   pollDelay = 1800,
   retryDelay = 4000,
@@ -173,6 +174,7 @@ export function installAutoLabelPollRuntime({
   }
 
   const state = () => getState?.() || {};
+  const taskLoader = typeof loadTasks === 'function' ? loadTasks : requestTasks;
   let destroyed = false;
   let refreshing = false;
 
@@ -225,7 +227,7 @@ export function installAutoLabelPollRuntime({
 
     refreshing = true;
     try {
-      const tasks = await requestTasks(projectId);
+      const tasks = await taskLoader(projectId);
       const current = state();
       if (!ownsCurrentView(current)) {
         clearManaged();

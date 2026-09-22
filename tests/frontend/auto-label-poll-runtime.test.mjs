@@ -117,24 +117,22 @@ test('runtime leaves renderer untouched and owns polling only through PollRegist
   };
 
   const originalRenderOps = async () => 'app-owned-render';
+  let loaderCalls = 0;
+  const doneTasks = [{
+    id: 'done-1', name: '完成任务', status: 'SUCCEEDED', requested_labels: ['fire'],
+    created_at: '2026-09-11T00:00:00Z', updated_at: '2026-09-11T00:00:05Z',
+    summary: {total: 10, completed: 10, boxes: 12},
+  }];
   globalThis.window = {
     renderOps427: originalRenderOps,
-    fetch: async () => ({
-      ok: true,
-      async json() {
-        return {items: [{
-          id: 'done-1', name: '完成任务', status: 'SUCCEEDED', requested_labels: ['fire'],
-          created_at: '2026-09-11T00:00:00Z', updated_at: '2026-09-11T00:00:05Z',
-          summary: {total: 10, completed: 10, boxes: 12},
-        }]};
-      },
-    }),
+    fetch: async () => { throw new Error('raw polling fetch must not run when canonical loader is injected'); },
   };
 
   const runtime = installAutoLabelPollRuntime({
     getState: () => state,
     pollRegistry,
     annotationTaskView: taskView,
+    loadTasks: async () => { loaderCalls += 1; return doneTasks; },
     pollDelay: 1800,
   });
 
@@ -148,6 +146,7 @@ test('runtime leaves renderer untouched and owns polling only through PollRegist
   const currentView = document.getElementById('view');
   await managed.callback();
 
+  assert.equal(loaderCalls, 1, 'polling must share the canonical task loader instead of issuing a parallel raw fetch');
   assert.equal(document.getElementById('view'), currentView, 'polling must not replace the page root');
   assert.match(tbody.innerHTML, /完成任务/);
   assert.match(tbody.innerHTML, /已完成/);
@@ -181,6 +180,8 @@ test('AutoLabelPollRuntime stays wrapper-free and timer-free', () => {
   }
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
+  assert.match(source, /const taskLoader = typeof loadTasks === 'function' \? loadTasks : requestTasks/);
+  assert.match(source, /const tasks = await taskLoader\(projectId\)/);
   assert.match(source, /build: 'auto-label-poll-422502'/);
 });
 
