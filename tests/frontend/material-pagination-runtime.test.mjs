@@ -88,6 +88,19 @@ test('identical material page loads are single-flight instead of issuing duplica
   assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedCursor, requestedPage\]\)/);
 });
 
+test('legacy full material hydration reuses a recent snapshot and single-flights revalidation', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(runtime, /const FULL_MATERIAL_REVISIT_REUSE_MS = 10 \* 1000/);
+  assert.match(runtime, /let fullPoolFlight = null/);
+  assert.match(runtime, /if \(fullPoolFlight && fullPoolFlightProjectId === pid\) return fullPoolFlight/);
+  assert.match(runtime, /fullPool = restoreFullPool61\(\)/);
+  assert.match(runtime, /fullPoolFresh: Boolean\(fullPool\?\.fresh\) && !leavingDataset/);
+  assert.match(runtime, /if \(navigation\?\.fullPoolFresh\) return true/);
+  assert.match(runtime, /const images = await loadFullPool61\(\)/);
+  assert.match(runtime, /invalidateFullPool61\(\);\n    const result = await loadMaterialPage61/);
+});
+
+
 test('page renders cannot overwrite the current UI version with 42.22.0', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /badge\.textContent='v42\.22\.0'/);

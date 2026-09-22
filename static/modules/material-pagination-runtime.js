@@ -65,6 +65,10 @@ export function installMaterialPaginationRuntime() {
   let suppressCardReload = false;
   let refreshBusy = false;
   let cachedEntryPending = false;
+  const FULL_MATERIAL_REVISIT_REUSE_MS = 10 * 1000;
+  let fullPoolCache = {projectId: '', items: [], loadedAt: 0};
+  let fullPoolFlight = null;
+  let fullPoolFlightProjectId = '';
 
   state.materialQuery61 = state.materialQuery61 || '';
   state.materialAnnotated61 = state.materialAnnotated61 || 'all';
@@ -76,6 +80,64 @@ export function installMaterialPaginationRuntime() {
 
   const projectId = () => String(state.project?.id || '');
   const isPagedDataset = () => state.page === '数据集' && transport.mode === 'paged';
+
+  function fullPoolSnapshot61() {
+    const pid = projectId();
+    if (!pid || fullPoolCache.projectId !== pid || !Array.isArray(fullPoolCache.items)) return null;
+    const age = Date.now() - Number(fullPoolCache.loadedAt || 0);
+    return {
+      items: fullPoolCache.items.slice(),
+      fresh: fullPoolCache.loadedAt > 0 && age >= 0 && age < FULL_MATERIAL_REVISIT_REUSE_MS,
+    };
+  }
+
+  function rememberFullPool61(items, {fresh = false} = {}) {
+    const pid = projectId();
+    if (!pid || !Array.isArray(items)) return null;
+    const sameProject = fullPoolCache.projectId === pid;
+    fullPoolCache = {
+      projectId: pid,
+      items: items.slice(),
+      loadedAt: fresh ? Date.now() : (sameProject ? Number(fullPoolCache.loadedAt || 0) : 0),
+    };
+    return fullPoolCache;
+  }
+
+  function restoreFullPool61() {
+    const snapshot = fullPoolSnapshot61();
+    if (!snapshot) return null;
+    state.images = snapshot.items.slice();
+    return snapshot;
+  }
+
+  function invalidateFullPool61() {
+    if (fullPoolCache.projectId === projectId()) fullPoolCache.loadedAt = 0;
+  }
+
+  async function loadFullPool61() {
+    const pid = projectId();
+    if (!pid) return [];
+    if (fullPoolFlight && fullPoolFlightProjectId === pid) return fullPoolFlight;
+    const run = (async () => {
+      const images = await responseJson(await materialFetch(`/api/projects/${encodeURIComponent(pid)}/images`, {
+        headers: {Accept: 'application/json'},
+        credentials: 'same-origin',
+      }));
+      const rows = Array.isArray(images) ? images : [];
+      if (projectId() === pid) rememberFullPool61(rows, {fresh: true});
+      return rows;
+    })();
+    fullPoolFlight = run;
+    fullPoolFlightProjectId = pid;
+    try {
+      return await run;
+    } finally {
+      if (fullPoolFlight === run) {
+        fullPoolFlight = null;
+        fullPoolFlightProjectId = '';
+      }
+    }
+  }
 
   function filters61() {
     const tab = state.data412Tab || 'unprocessed';
@@ -471,6 +533,7 @@ export function installMaterialPaginationRuntime() {
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
   window.materialSelectedIds61 = () => [...(state.data412Selected || new Set())].map(String);
   window.reloadMaterialPage61 = async () => {
+    invalidateFullPool61();
     const result = await loadMaterialPage61({reset: true});
     try { await window.ZipImportRuntime?.reconcile?.('material-page'); } catch (_) {}
     return result;
@@ -479,6 +542,7 @@ export function installMaterialPaginationRuntime() {
   const baseMarkReady = window.markReady412;
   window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {
     const result = await baseMarkReady?.(imageIds);
+    invalidateFullPool61();
     if (isPagedDataset()) await loadMaterialPage61({reset: true});
     return result;
   };
@@ -525,17 +589,29 @@ export function installMaterialPaginationRuntime() {
 
   function beforeNavigate61(page) {
     const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
-    const leavingDataset = state.page === '数据集' && target !== '数据集' && transport.mode === 'paged';
+    const current = String(state.page || '');
+    const leavingDataset = current === '数据集' && target !== '数据集' && transport.mode === 'paged';
+    const leavingFull = requiresFullMaterialPool(current) && transport.mode === 'full';
     if (leavingDataset) rememberDatasetPage61();
+    if (leavingFull) rememberFullPool61(state.images);
     const full = requiresFullMaterialPool(target);
     transport.mode = full ? 'full' : 'paged';
     let restored = false;
+    let fullPool = null;
     if (target === '数据集') {
       restored = restoreDatasetPage61();
       if (!restored) state.materialFilterSignature61 = '';
       state.materialShellSignature61 = '';
+    } else if (full) {
+      fullPool = restoreFullPool61();
     }
-    return Object.freeze({target, full, restored});
+    return Object.freeze({
+      target,
+      full,
+      restored,
+      fullPoolRestored: Boolean(fullPool),
+      fullPoolFresh: Boolean(fullPool?.fresh) && !leavingDataset,
+    });
   }
 
   function afterNavigate61(page, navigation) {
@@ -543,15 +619,11 @@ export function installMaterialPaginationRuntime() {
     const full = navigation?.full === true || (navigation?.full == null && requiresFullMaterialPool(target));
     if (full) {
       const action = window.NavigationStability?.action?.(target);
+      if (navigation?.fullPoolFresh) return true;
       setTimeout(async () => {
         try {
           if (state.page !== target) return;
-          const pid = projectId();
-          if (!pid) return;
-          const images = await responseJson(await materialFetch(`/api/projects/${encodeURIComponent(pid)}/images`, {
-            headers: {Accept: 'application/json'},
-            credentials: 'same-origin',
-          }));
+          const images = await loadFullPool61();
           const commit = () => {
             state.images = Array.isArray(images) ? images : [];
             if (typeof window.render === 'function') window.render();
@@ -603,6 +675,8 @@ export function installMaterialPaginationRuntime() {
         shellSignature: state.materialShellSignature61 || '',
         cachedItems: Array.isArray(state.materialPageCache61?.items) ? state.materialPageCache61.items.length : 0,
         cachedEntryPending,
+        fullPoolCachedItems: Array.isArray(fullPoolCache.items) ? fullPoolCache.items.length : 0,
+        fullPoolInflight: Boolean(fullPoolFlight),
       };
     },
   };
