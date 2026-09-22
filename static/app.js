@@ -3226,27 +3226,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.editData427=function(id){const x=(state.images||[]).find(a=>a.id===id);if(!x)return;modal('编辑数据',`<div class="form"><div class="field"><label>名称</label><input id="data427Name" class="input" value="${esc(x.filename)}"></div><div class="data427-edit-meta"><span>大小 ${fmtSize424(x.size_bytes)}</span><span>${x.width||'-'}×${x.height||'-'}</span><span>${x.annotated?'已标注':'未标注'}</span></div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveData427('${id}')">保存</button></div>`,false)};
   window.saveData427=async function(id){const name=document.getElementById('data427Name')?.value.trim();if(!name)return toast('请输入名称');try{const r=await api(`/api/v47/projects/${pid()}/images/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const i=(state.images||[]).findIndex(x=>x.id===id);if(i>=0)Object.assign(state.images[i],r.image||{});closeModal();renderDatasets424();toast('名称已更新')}catch(e){toast(e.message||e)}};
 
-  const baseRenderDatasets427=window.renderDatasets424;
-  window.renderDatasets424=function(){
-    const storageApi427=()=>window.PlatformCore?.storage;
-    const all=state.images||[],selected=state.materialSourceFilter61||'all';
-    const feedbackIds=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
-    let visible=selected==='all'?all:all.filter(row=>storageApi427()?.sourceMatches(row,selected));
-    if(state.iterationFeedbackOnly63&&feedbackIds.size)visible=visible.filter(row=>feedbackIds.has(String(row.id)));
-    state.images=visible;
-    try{
-      baseRenderDatasets427();
-      const sel=document.getElementById('data426Ann');if(sel)sel.classList.add('compact427');
-      const toolbar=document.querySelector('.data426-toolbar');
-      if(toolbar&&!toolbar.querySelector('.clean-short427'))toolbar.insertAdjacentHTML('beforeend',`<button class="btn clean-short427" onclick="createClean427({image_ids:matching427().map(x=>x.id)})">一键清洗当前筛选</button><button class="btn clean-short427" onclick="createAiLabel427({image_ids:matching427().filter(x=>!x.annotated).map(x=>x.id)})">AI标注当前未标注</button>`);
-      window.decorateDatasetControls414?.();
-    }finally{state.images=all}
-    const toolbar=document.querySelector('.data426-toolbar');
-    if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi427()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
-    [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi427()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
-    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)window.loadStorageSources61?.().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
-    window.renderSupplementDataBanner63?.();
-  };
+
 
   // ----- upload result review -----
   function uploadReview427(ids,title='上传完成'){state.v427UploadIds=ids||[];const rows=(state.images||[]).filter(x=>state.v427UploadIds.includes(x.id));modal(title,`<div class="uploadreview427"><div class="uploadreview427-head"><div><b>已入库 ${rows.length} 张图片</b><span>可以先查看，再清洗或AI标注</span></div><div class="row"><button class="btn" onclick="createClean427({image_ids:state.v427UploadIds})">一键清洗</button><button class="btn primary" onclick="createAiLabel427({image_ids:state.v427UploadIds.filter(id=>!(state.images.find(x=>x.id===id)?.annotated))})">一键AI标注</button></div></div><div class="uploadreview427-grid">${rows.slice(0,120).map(x=>`<button onclick="previewData426('${x.id}')"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${x.annotated?'已标注':'未标注'} · ${fmtSize424(x.size_bytes)}</span></button>`).join('')||'<div class="empty">没有新增图片</div>'}</div></div>`,true)}
