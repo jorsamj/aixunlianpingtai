@@ -1,3 +1,12 @@
+<!-- LIVE_CURRENT_STATE_2026_09_22 -->
+> ## 2026-09-22 LIVE CURRENT STATE — 先读 `docs/CODEX_HANDOFF_2026-09-22.md`
+>
+> 当前最高优先级交接已迁到 `docs/CODEX_HANDOFF_2026-09-22.md`。本文件后面的 2026-09-20 / 2026-09-21 priority、NEXT、旧部署候选只作为历史证据，不得覆盖实时 GitHub 与 9 月 22 日 handoff。
+>
+> 9 月 22 日主线：前端 public owner / wrapper 主体已基本收口，继续解决“页面每次点击加载中、切回页面重复等待、创建训练首开卡顿、标注弹窗重开慢”等用户可感知问题。优化原则固定为 cache-first、stale-while-revalidate、in-flight dedupe、scoped refresh、PollRegistry lifecycle、DOM in-place patch；禁止恢复 broad `loadAll()`、raw timers、第二套 truth。
+>
+> 文档更新前最后一个代码/测试基线：`22e52dc0e86c03ad1b30e5547072d2ec3b388487`，`VERSION.txt = 42.24.0`。接手必须重新读取远端真实 HEAD 和最新 Actions，不得假定该 SHA 仍是当前 HEAD。
+
 # Codex Current State
 
 <!-- PUBLICATION_DURABLE_OWNER_ENFORCEMENT_BATCH3_1_2026_09_21 -->
