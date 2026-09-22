@@ -18,7 +18,7 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
   assert.match(finalSubmitBody, /const task=await api\(taskApi\(\),/);
   assert.doesNotMatch(finalSubmitBody, /\/api\/v3[35]\/projects/);
 
-  const finalRender = source.lastIndexOf('window.renderOps427=async function()');
+  const finalRender = source.lastIndexOf('window.renderOps427=function()');
   const legacyRender = source.lastIndexOf('window.renderAutoLabel422=async function()');
   assert.ok(finalRender > legacyRender, 'v60 task list must remain the final auto-label page owner');
   assert.match(source.slice(finalRender), /AI自动标注/);

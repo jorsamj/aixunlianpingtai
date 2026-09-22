@@ -33,3 +33,27 @@ test('extras do not duplicate jobs or model configs already carried by snapshot'
   assert.doesNotMatch(extras, /\/jobs/);
   assert.doesNotMatch(extras, /modelConfigs|model-configs/);
 });
+
+
+test('frequently revisited operational pages paint before focused revalidation', () => {
+  const sources = block('window.renderSources422=function()', '\n  window.refreshSources422=refreshSources422;');
+  assert.doesNotMatch(sources, /async function\(\)\{await loadSourcesOnly422/);
+  assert.ok(sources.indexOf("document.getElementById('view').innerHTML") < sources.indexOf('loadSourcesOnly422()'));
+  assert.match(sources, /SOURCE422_CACHE_TTL_MS/);
+
+  const video = block('window.renderVideo424=function()', '\n  window.createVideoTask424=function()');
+  assert.ok(video.indexOf("document.getElementById('view').innerHTML") < video.indexOf('refreshVideo424Delta()'));
+  assert.match(video, /data-video-loading/);
+
+  const finalAutoStart = source.lastIndexOf('window.renderOps427=function()');
+  const finalAutoEnd = source.indexOf('\n\n  function candidateOverlay', finalAutoStart);
+  assert.ok(finalAutoStart >= 0 && finalAutoEnd > finalAutoStart);
+  const finalAuto = source.slice(finalAutoStart, finalAutoEnd);
+  assert.match(finalAuto, /renderAiTaskPage60\(\{loading:!hasSnapshot\}\)/);
+  assert.ok(finalAuto.indexOf('renderAiTaskPage60') < finalAuto.indexOf('refreshAnnotationTasks60()'));
+
+  const clean = block('function paintOps427()', '\n\n  // ----- model config: prompt lives with model -----');
+  assert.match(clean, /paintOps427\(\);/);
+  assert.match(clean, /refreshCleanOps427Delta/);
+  assert.doesNotMatch(clean, /await loadOps427\(\)/);
+});
