@@ -20,6 +20,7 @@ test('stable annotation workbench owns annotation public actions', () => {
   assert.match(app,/window\.openAnnotation=async function\(id\)\{\n    const key=String\(id\)/);
   assert.match(app,/window\.goAnnotation417=id=>window\.openAnnotation\(id\)/);
   assert.match(app,/window\.renderAnnotator=updateShell/);
+  assert.match(app,/beforeLoad:\(id,\{cached\}=\{\}\)=>\{if\(!cached\)prepareAnnotationShell420\(id\)\}/);
 });
 
 test('AI submit and reference selection keep current owners', () => {

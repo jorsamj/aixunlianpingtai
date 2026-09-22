@@ -4623,7 +4623,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(state.annotationWorkbench)return state.annotationWorkbench;
     const api=workbenchApi();if(!api)return null;
     state.annotationWorkbench=api.createAnnotationWorkbench({
-      beforeLoad:id=>prepareAnnotationShell420(id),
+      beforeLoad:(id,{cached}={})=>{if(!cached)prepareAnnotationShell420(id)},
       cacheTtlMs:60*1000,
       load:async id=>{
         const image=imageById(id);if(!image)throw new Error('图片不存在或尚未加载');
