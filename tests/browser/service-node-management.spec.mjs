@@ -44,6 +44,21 @@ test('service node page shows live resources and creates Agent credentials', asy
   let nodes = [node()];
   let createdPayload = null;
 
+  await page.route(/\/api\/v63\/service-nodes\/gpu-a800-01\/connectivity-test$/, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        network_reachable: true,
+        network_target: 'http://10.0.0.20:8030',
+        heartbeat_online: false,
+        heartbeat_age_seconds: null,
+        heartbeat_message: '尚未收到有效 Agent 心跳'
+      })
+    });
+  });
+
   await page.route(/\/api\/v63\/service-nodes$/, async route => {
     const method = route.request().method();
     if (method === 'GET') {
@@ -107,6 +122,14 @@ test('service node page shows live resources and creates Agent credentials', asy
     shell: window.__serviceNodeStableShell === document.querySelector('[data-service-node-page="1"]'),
     card: window.__serviceNodeStableCard === document.querySelector('[data-node-card="gpu-a800-01"]'),
   }))).toEqual({shell: true, card: true});
+
+  nodes = [node({status: 'NEVER_CONNECTED', online: false, reachable: false, heartbeat_age_seconds: null})];
+  await page.evaluate(() => window.ServiceNodeRuntime.refresh({paint: true, silent: true}));
+  await expect(a800).toContainText('未收到心跳');
+  await expect(a800).toContainText('未测试');
+  await a800.getByRole('button', {name: '测试联通'}).click();
+  await expect(a800).toContainText('网络可达');
+  await expect(a800).toContainText('未收到心跳');
 
   // Modal lifecycle must not consume the node-card action owner.
   await page.getByRole('button', {name: /新增服务节点/}).click();

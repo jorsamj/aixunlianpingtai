@@ -48,8 +48,8 @@ jobs:
       - name: Permanent service-node UI guards
         shell: bash
         run: |
-          grep -Fq 'service-node-bootstrap.mjs?v=422536' static/index.html
-          grep -Fq "installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422536'" static/main.mjs
+          grep -Fq 'service-node-bootstrap.mjs?v=422537' static/index.html
+          grep -Fq "installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537'" static/main.mjs
           grep -Fq 'window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;' static/main.mjs
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
@@ -59,6 +59,9 @@ jobs:
           grep -Fq '>测试联通</button>' static/modules/service-node-runtime.js
           grep -Fq 'network_reachable' static/modules/service-node-runtime.js
           grep -Fq 'heartbeat_online' static/modules/service-node-runtime.js
+          grep -Fq 'nodeConnectivityMeta' static/modules/service-node-runtime.js
+          grep -Fq 'data-node-network-state' static/modules/service-node-runtime.js
+          grep -Fq '网络测试：' static/modules/service-node-runtime.js
           grep -Fq 'probe_service_node_address' platform_core/service_nodes.py
           grep -Fq 'network_reachable' platform_core/service_nodes.py
           grep -Fq 'heartbeat_online' platform_core/service_nodes.py

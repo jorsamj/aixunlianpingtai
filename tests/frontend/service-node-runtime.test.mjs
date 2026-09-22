@@ -7,6 +7,7 @@ import {
   capabilityLabel,
   formatBytes,
   nodeStatusMeta,
+  nodeConnectivityMeta,
   renderNodeCard,
   safePercent,
 } from '../../static/modules/service-node-runtime.js';
@@ -22,6 +23,9 @@ test('service node helpers keep resource values truthful', () => {
   assert.deepEqual(nodeStatusMeta('ONLINE'), {label: 'Agent 在线', className: 'ok'});
   assert.deepEqual(nodeStatusMeta('OFFLINE'), {label: '心跳超时', className: 'err'});
   assert.deepEqual(nodeStatusMeta('NEVER_CONNECTED'), {label: '未收到心跳', className: 'warn'});
+  assert.deepEqual(nodeConnectivityMeta(null), {label: '未测试', className: 'muted'});
+  assert.deepEqual(nodeConnectivityMeta({network_reachable: true}), {label: '网络可达', className: 'ok'});
+  assert.deepEqual(nodeConnectivityMeta({network_reachable: false}), {label: '网络不可达', className: 'err'});
 });
 
 test('service node card renders observed GPU/runtime/task truth without secrets', () => {
@@ -59,7 +63,25 @@ test('service node card renders observed GPU/runtime/task truth without secrets'
   assert.match(html, /42%/);
   assert.match(html, /测试联通/);
   assert.match(html, /data-node-action="test"/);
+  assert.match(html, /Agent 心跳/);
+  assert.match(html, /网络测试/);
+  assert.match(html, /未测试/);
   assert.doesNotMatch(html, /agent_token|token_hash/i);
+});
+
+test('service node card separates network reachability from Agent heartbeat truth', () => {
+  const html = renderNodeCard({
+    node_id: 'node-network-ok-no-heartbeat',
+    display_name: '网络可达但未心跳',
+    status: 'NEVER_CONNECTED',
+    enabled: true,
+    connection_mode: 'agent',
+    heartbeat_age_seconds: null,
+    resources: {}, runtime: {}, process: {},
+  }, {network_reachable: true});
+  assert.match(html, /未收到心跳/);
+  assert.match(html, /网络可达/);
+  assert.doesNotMatch(html, /Agent 在线/);
 });
 
 test('agent launch commands carry the one-time token for both Linux and Windows', () => {

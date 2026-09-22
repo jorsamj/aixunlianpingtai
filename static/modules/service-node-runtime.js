@@ -81,6 +81,13 @@ export function nodeStatusMeta(status) {
   })[key] || {label: key || '未知', className: 'warn'};
 }
 
+export function nodeConnectivityMeta(result) {
+  if (!result || typeof result !== 'object') return {label: '未测试', className: 'muted'};
+  if (result.network_reachable === true) return {label: '网络可达', className: 'ok'};
+  if (result.network_reachable === false) return {label: '网络不可达', className: 'err'};
+  return {label: result.network_error ? '无法测试' : '未配置测试', className: 'warn'};
+}
+
 export function buildAgentCommands({origin, nodeId, token, capabilities = []}) {
   const base = String(origin || '').replace(/\/$/, '');
   const id = String(nodeId || '');
@@ -144,8 +151,9 @@ function taskRows(node) {
   return tasks.map(task => `<div class="node633-task"><div><b>${escapeHtml(task.kind || '-')}</b><span>${escapeHtml(task.task_id || '-')}</span></div><div><span>${escapeHtml(task.stage || task.status || '-')}</span><b>${Math.round(Number(task.progress || 0))}%</b></div></div>`).join('');
 }
 
-export function renderNodeCard(node) {
+export function renderNodeCard(node, connectivity = null) {
   const status = nodeStatusMeta(node?.status);
+  const network = nodeConnectivityMeta(connectivity);
   const cpu = node?.resources?.cpu || {};
   const memory = node?.resources?.memory || {};
   const disk = node?.resources?.disk || {};
@@ -161,7 +169,7 @@ export function renderNodeCard(node) {
   const diskPercent = safePercent(disk.usage_percent) ?? (Number(disk.total_bytes) > 0 ? Number(disk.used_bytes || 0) / Number(disk.total_bytes) * 100 : null);
   return `<article class="node633-card" data-node-card="${escapeHtml(node?.node_id || '')}">
     <header class="node633-card-head"><div><div class="node633-title"><b>${escapeHtml(node?.display_name || node?.node_id || '未命名节点')}</b><span class="pill ${status.className}">${escapeHtml(status.label)}</span></div><p>${escapeHtml(node?.node_id || '-')} · ${escapeHtml(node?.hostname || '尚未上报主机名')}</p></div><div class="node633-actions"><button class="btn small" data-node-action="test" data-node-id="${escapeHtml(node?.node_id || '')}">测试联通</button><button class="btn small" data-node-action="edit" data-node-id="${escapeHtml(node?.node_id || '')}">编辑</button><button class="btn small ${node?.enabled ? 'soft' : 'primary'}" data-node-action="toggle" data-node-id="${escapeHtml(node?.node_id || '')}">${node?.enabled ? '停用' : '启用'}</button><button class="btn small" data-node-action="rotate" data-node-id="${escapeHtml(node?.node_id || '')}">轮换 Token</button><button class="btn small danger" data-node-action="delete" data-node-id="${escapeHtml(node?.node_id || '')}">删除</button></div></header>
-    <div class="node633-meta-grid"><div><span>连接方式</span><b>${node?.connection_mode === 'local' ? '本机 Agent' : '远程 Agent'}</b></div><div><span>最后心跳</span><b>${escapeHtml(timeAgo(node?.heartbeat_age_seconds))}</b></div><div><span>系统</span><b>${escapeHtml([node?.os_name, node?.architecture].filter(Boolean).join(' / ') || '-')}</b></div><div><span>Agent / Build</span><b>${escapeHtml([node?.agent_version, node?.build_id].filter(Boolean).join(' / ') || '-')}</b></div></div>
+    <div class="node633-meta-grid"><div><span>连接方式</span><b>${node?.connection_mode === 'local' ? '本机 Agent' : '远程 Agent'}</b></div><div><span>Agent 心跳</span><b>${escapeHtml(status.label)} · ${escapeHtml(timeAgo(node?.heartbeat_age_seconds))}</b></div><div><span>网络测试</span><b class="node633-network-${network.className}" data-node-network-state>${escapeHtml(network.label)}</b></div><div><span>系统</span><b>${escapeHtml([node?.os_name, node?.architecture].filter(Boolean).join(' / ') || '-')}</b></div><div><span>Agent / Build</span><b>${escapeHtml([node?.agent_version, node?.build_id].filter(Boolean).join(' / ') || '-')}</b></div></div>
     <section class="node633-cap-section"><div><span>允许能力</span>${capabilityChips(node?.allowed_capabilities, 'allowed')}</div><div><span>已上报能力</span>${capabilityChips(node?.reported_capabilities, 'reported')}</div><div><span>当前可调度能力</span>${capabilityChips(node?.effective_capabilities, 'effective')}</div></section>
     <div class="node633-resource-grid">${meter('CPU', cpu.usage_percent, `${cpu.physical_cores ?? '-'} 物理核 / ${cpu.logical_cores ?? '-'} 逻辑核`)}${meter('内存', memoryPercent, `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} · 可用 ${formatBytes(memory.available_bytes)}`)}${meter('磁盘', diskPercent, `${disk.path || '-'} · ${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} · 空闲 ${formatBytes(disk.free_bytes)}`)}</div>
     <div class="node633-gpus">${gpuCards(node)}</div>
@@ -197,6 +205,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let loading = false;
   let loadedOnce = false;
   let destroyed = false;
+  const connectivityResults = new Map();
   let navObserver = null;
   let unregisterPageOwner = null;
 
@@ -239,7 +248,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
 
   function nodeListHtml() {
     return nodes.length
-      ? nodes.map(renderNodeCard).join('')
+      ? nodes.map(node => renderNodeCard(node, connectivityResults.get(String(node?.node_id || '')))).join('')
       : '<div class="empty node633-empty">暂无服务节点。新增节点后，在目标服务器运行 Node Agent 完成注册心跳。</div>';
   }
 
@@ -249,7 +258,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
 
   function createNodeCardElement(list, node) {
     const holder = document.createElement('div');
-    holder.innerHTML = renderNodeCard(node).trim();
+    holder.innerHTML = renderNodeCard(node, connectivityResults.get(String(node?.node_id || ''))).trim();
     return holder.firstElementChild || null;
   }
 
@@ -466,6 +475,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     }
     try {
       const result = await requestJson(`${API_ROOT}/${encodeURIComponent(nodeId)}/connectivity-test`, {method: 'POST'});
+      connectivityResults.set(String(nodeId), {...result, tested_at: Date.now()});
       const ageText = Number.isFinite(Number(result?.heartbeat_age_seconds))
         ? ` · 最近心跳 ${timeAgo(result.heartbeat_age_seconds)}`
         : '';
@@ -477,7 +487,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
         : result?.network_reachable === false
           ? `网络不可达（${result?.network_target || node.agent_url || 'Agent 地址'}）`
           : (result?.network_error || '未配置 Agent 地址，无法测试网络可达性');
-      notify?.(`${networkText} · ${heartbeatText}`);
+      notify?.(`网络测试：${networkText} · Agent 状态：${heartbeatText}`);
       await refresh({paint: true, silent: true});
       return result;
     } catch (error) {
@@ -552,7 +562,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   decorateNavigation();
 
   const runtime = {
-    build: 'service-node-runtime-422536',
+    build: 'service-node-runtime-422537',
     page: PAGE,
     load,
     render,
