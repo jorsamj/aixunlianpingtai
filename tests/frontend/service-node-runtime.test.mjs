@@ -12,6 +12,8 @@ import {
   safePercent,
 } from '../../static/modules/service-node-runtime.js';
 
+const mainSource = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+
 test('service node helpers keep resource values truthful', () => {
   assert.equal(formatBytes(40 * 1024 * 1024 * 1024), '40.0 GB');
   assert.equal(formatBytes(undefined), '-');
@@ -186,4 +188,15 @@ test('service node mutations invalidate dependent training and deployment plugin
   assert.match(source, /window\.invalidateTrainingDeviceCacheV3\?\.\(\)/);
   assert.match(source, /window\.invalidateDeployPluginCacheV41\?\.\(\)/);
   assert.ok((source.match(/invalidateResourceCaches\(\);/g) || []).length >= 4);
+});
+
+
+test('service node navigation has one render owner and no duplicate main refresh call', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /registerPageOwner\?\.\(PAGE,[\s\S]*?return render\(\)/);
+  const refreshStart = mainSource.indexOf('function refreshCurrentPageOwner(page)');
+  const refreshEnd = mainSource.indexOf('\n}\n\nconst navigationStabilityRuntime', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  const refreshOwner = mainSource.slice(refreshStart, refreshEnd);
+  assert.doesNotMatch(refreshOwner, /ServiceNodeRuntime\?\.render/);
 });

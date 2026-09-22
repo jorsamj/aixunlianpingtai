@@ -326,10 +326,6 @@ function refreshCurrentPageOwner(page) {
   if (page === '数据集' || page === '自动标注及清洗') {
     window.MaterialBatchRuntime62?.resume?.();
   }
-  if (page === '服务节点') {
-    void window.ServiceNodeRuntime?.render?.({reload: true, silent: true});
-    return;
-  }
   if (page === '训练任务') {
     void trainingTaskRuntime.refresh({render: true, force: true, source: 'page-owner'}).then(result => {
       if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();
