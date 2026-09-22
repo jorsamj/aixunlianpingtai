@@ -23,6 +23,8 @@ export function normalizeNavigationPage(page) {
   const requested = String(page || '');
   if (requested === '自动标注') return '自动标注及清洗';
   if (requested === '测试发布' || requested === '检测台') return '质量中心';
+  if (requested === '部署转换' || requested === '部署产物') return '算法列表';
+  if (requested === '部署资源' || requested === '部署插件') return '模型配置';
   if (requested === '新建算法' || requested === '自动迭代') return '算法列表';
   return requested;
 }
