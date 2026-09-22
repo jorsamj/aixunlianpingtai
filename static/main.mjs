@@ -270,7 +270,19 @@ const resourceDiscoveryRuntime = installResourceDiscoveryRuntime({...window.__re
 window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 
 function renderNavigationChrome() {
-  window.renderNav?.();
+  const nav = document.getElementById('nav');
+  const buttons = nav ? [...nav.querySelectorAll('.nav-btn')] : [];
+  if (!nav || !buttons.length) {
+    window.renderNav?.();
+  } else {
+    const currentPage = String(state.page || '');
+    buttons.forEach(button => {
+      const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
+      button.classList.toggle('active', label === currentPage);
+    });
+    const project = nav.querySelector('.nav-project-v');
+    if (project) project.textContent = state.project?.name || '默认空间';
+  }
   window.renderTop?.();
   window.renderSummary?.();
 }

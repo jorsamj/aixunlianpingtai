@@ -137,3 +137,16 @@ test('normal navigation is synchronous once startup data is ready', () => {
   assert.match(readiness, /return null/);
   assert.doesNotMatch(readiness, /async|await/);
 });
+
+
+test('ordinary page navigation patches chrome state without rebuilding the sidebar', () => {
+  const start = main.indexOf('function renderNavigationChrome()');
+  const end = main.indexOf('\n\nfunction applyPostRenderNormalization', start);
+  assert.ok(start >= 0 && end > start);
+  const chrome = main.slice(start, end);
+  assert.match(chrome, /querySelectorAll\('\.nav-btn'\)/);
+  assert.match(chrome, /classList\.toggle\('active', label === currentPage\)/);
+  assert.match(chrome, /nav\.querySelector\('\.nav-project-v'\)/);
+  assert.match(chrome, /if \(!nav \|\| !buttons\.length\)/);
+  assert.equal((chrome.match(/window\.renderNav\?\.\(\)/g) || []).length, 1);
+});
