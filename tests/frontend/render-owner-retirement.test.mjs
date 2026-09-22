@@ -160,6 +160,11 @@ test('configuration pages are canonical owners', () => {
 });
 
 
+test('shadowed training-resource page renderers are physically retired', () => {
+  assert.equal((app.match(/\bfunction renderResources\(\)\s*\{/g) || []).length, 1);
+  assert.match(app, /window\.renderResourceBasePage=renderResources/);
+});
+
 test('training resource page composes an explicit base owner instead of wrapping the previous renderer', () => {
   assert.match(app, /window\.renderResourceBasePage=renderResources/);
   assert.equal(app.includes('previousRenderResources'), false);
