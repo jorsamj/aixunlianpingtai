@@ -2446,6 +2446,9 @@ window.installUsability417=function(){
     renderDashboard422();
     void refreshDashboardExtras422().then(changed=>{if(changed)patchDashboardExtras422()});
   };
+  // Legacy bootstrap resolves RENDER_MAP dynamically; keep its dashboard entry
+  // on the same final cache-first owner before canonical startup begins.
+  window.renderHomeDashboard=renderHomeDashboard=window.renderDashboardCanonical422;
 })();
 
 // ============================================================
