@@ -798,16 +798,6 @@ window.__resourceDiscoveryDependencies={
     return true;
   };
 
-  const previousDatasetRender61=window.renderDatasets424;
-  window.renderDatasets424=function(){
-    const all=state.images||[],selected=state.materialSourceFilter61;
-    if(selected!=='all')state.images=all.filter(row=>storageApi()?.sourceMatches(row,selected));
-    try{previousDatasetRender61()}finally{state.images=all}
-    const toolbar=document.querySelector('.data426-toolbar');if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
-    const visible=selected==='all'?all:all.filter(row=>storageApi()?.sourceMatches(row,selected));[...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta');if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi()?.storageSourceLabel((state.storageSources61||[]).find(source=>source.id===(row.storage_source_id||'default_local')))||row.storage_type||'本地')}</span>`) });
-    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)loadStorageSources61().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
-  };
-
   window.openDataUpload426=async function(){
     try{await loadStorageSources61()}catch(_){}
     const sources=storageApi()?.enabledStorageSources(state.storageSources61)||[],preferred=storageApi()?.defaultStorageSource(sources);

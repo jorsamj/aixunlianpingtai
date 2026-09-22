@@ -40,6 +40,10 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 });
 
 
+test('shadowed storage dataset renderer is physically retired', () => {
+  assert.equal(app.includes('const previousDatasetRender61=window.renderDatasets424;'), false);
+});
+
 test('dataset usability layer installs a decoration hook instead of wrapping the canonical renderer', () => {
   assert.equal(app.includes('const baseRenderDataset417=window.renderDatasets424;'), false);
   assert.match(app, /window\.decorateDatasetUsability417=function\(\)/);
