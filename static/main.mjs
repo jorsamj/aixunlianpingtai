@@ -43,7 +43,7 @@ import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66007';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
@@ -245,6 +245,7 @@ installMaterialBatchRuntime({
   selectedIds: () => window.materialSelectedIds61?.() || [],
   filteredSpec: () => window.materialBatchFilters61?.() || {},
   notify,
+  pollRegistry,
   refresh: async () => {
     state.data412Selected?.clear?.();
     state.data412DeleteMode = false;
@@ -274,6 +275,9 @@ function renderUnknownPage(page) {
 
 function refreshCurrentPageOwner(page) {
   trainingProgressStreamRuntime?.syncPage?.(page);
+  if (page === '数据集' || page === '自动标注及清洗') {
+    window.MaterialBatchRuntime62?.resume?.();
+  }
   if (page === '服务节点') {
     void window.ServiceNodeRuntime?.render?.({reload: true, silent: true});
     return;

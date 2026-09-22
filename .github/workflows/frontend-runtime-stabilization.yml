@@ -45,6 +45,7 @@ jobs:
           node --check static/modules/auto-label-poll-runtime.js &&
           node --check static/modules/upload-task-center.js &&
           node --check static/modules/material-upload-runtime.js &&
+          node --check static/modules/material-batches.js &&
           node --check static/modules/zip-import-runtime.js &&
           node --check static/modules/ui-state.js &&
           node --check static/main.mjs
@@ -155,6 +156,9 @@ jobs:
           grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
           grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
           grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
+          grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
+          grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
+          if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
           if grep -Fq 'setTimeout(' static/modules/resource-discovery.js; then echo 'resource discovery polling must stay PollRegistry-owned' >&2; exit 1; fi
           if grep -Fq 'live.outerHTML =' static/modules/resource-discovery.js; then echo 'resource discovery progress must patch in place' >&2; exit 1; fi
       - name: Video PollRegistry direct owner guard
