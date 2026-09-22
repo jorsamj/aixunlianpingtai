@@ -11,10 +11,14 @@ function owner(startMarker,endMarker){
   return source.slice(start,end);
 }
 
-test('deployment cache honors TTL and refreshes authoritative artifacts before reuse',()=>{
+test('deployment cache helper owns TTL and warm reuse revalidates authoritative artifacts',()=>{
+  const restore=owner('  function restoreDeployCacheV39(){','  function primeDeployRenderV39');
+  assert.match(restore,/const age=Date\.now\(\)-Number\(cached\.ts\|\|0\)/);
+  assert.match(restore,/fresh:age>=0&&age<DEPLOY_CACHE_TTL_MS/);
   const load=owner('  async function loadDeployData(force=false){','  window.loadDeployData=loadDeployData;');
-  assert.match(load,/Date\.now\(\)-Number\(cached\.ts\|\|0\)<ttl/);
-  assert.match(load,/await refreshDeployArtifactsV39\(\)/);
+  assert.match(load,/const cached=restoreDeployCacheV39\(\)/);
+  assert.match(load,/if\(cached\?\.fresh\)/);
+  assert.match(load,/void refreshDeployArtifactsV39\(\)/);
 });
 
 test('deployment polling refreshes artifacts when a conversion enters a successful terminal state',()=>{
