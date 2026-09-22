@@ -167,3 +167,12 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
   assert.match(chrome, /if \(!nav \|\| !buttons\.length\)/);
   assert.equal((chrome.match(/window\.renderNav\?\.\(\)/g) || []).length, 1);
 });
+
+
+test('deploy artifact page reuses the current snapshot before background revalidation', () => {
+  assert.match(source, /const DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS=30\*1000/);
+  const artifacts = block('window.renderDeployArtifacts=function()', '\n\n  // Add deployment action to algorithm version management.');
+  assert.match(artifacts, /Date\.now\(\)-Number\(state\.deployArtifactsRefreshedAt\|\|0\)>DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS/);
+  assert.ok(artifacts.indexOf("const rows=(state.deployArtifacts||[])") > artifacts.indexOf('primeDeployRenderV39'));
+  assert.doesNotMatch(artifacts, /deployArtifactsRefreshedAt\|\|0\)>1000/);
+});

@@ -1742,6 +1742,7 @@ window.installUsability417=function(){
   // Replace final v37 navigation while keeping the existing pages unchanged.
     
   const DEPLOY_CACHE_TTL_MS=10*60*1000;
+  const DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS=30*1000;
   function restoreDeployCacheV39(){
     if(!pid())return null;
     const cacheKey=`cl_algo_deploy_cache_${pid()}`;
@@ -1956,7 +1957,7 @@ window.installUsability417=function(){
 
   window.renderDeployArtifacts=function(){
     if(!primeDeployRenderV39('部署产物',window.renderDeployArtifacts,'首次读取部署产物...'))return;
-    if(!state.deployArtifactsRefreshing&&Date.now()-Number(state.deployArtifactsRefreshedAt||0)>1000){
+    if(!state.deployArtifactsRefreshing&&Date.now()-Number(state.deployArtifactsRefreshedAt||0)>DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS){
       state.deployArtifactsRefreshing=true;
       refreshDeployArtifactsV39().finally(()=>{state.deployArtifactsRefreshing=false;if(state.page==='部署产物')window.renderDeployArtifacts()});
     }
