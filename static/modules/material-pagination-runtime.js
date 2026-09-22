@@ -1,10 +1,9 @@
 export const FULL_MATERIAL_PAGES = new Set([
-  // Training selection is server-paged by TrainingMaterialPickerRuntime and must
-  // not hydrate the complete image pool merely by visiting the task page.
-  // Only remaining legacy AI/quality selectors still require state.images.
+  // Training selection and the canonical Quality Center are server/API-driven
+  // and must not hydrate the complete image pool merely by visiting the page.
+  // Only the remaining legacy AI selectors still require state.images.
   '自动标注',
   '自动标注及清洗',
-  '质量中心',
 ]);
 
 export function requiresFullMaterialPool(page) {
@@ -660,7 +659,7 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422210',
+    build: 'material-pagination-runtime-422211',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
