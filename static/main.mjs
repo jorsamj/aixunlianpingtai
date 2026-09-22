@@ -324,6 +324,13 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
 function refreshCurrentPageOwner(page) {
   trainingProgressStreamRuntime?.syncPage?.(page);
   void refreshPageExtrasInBackground(page);
+  if (page === '存储配置') {
+    const task = window.StorageCacheRuntime?.refresh?.({
+      sources: window.getStorageSourcesSnapshot61?.() || [],
+      force: false,
+    });
+    if (task && typeof task.catch === 'function') void task.catch(error => notify(error?.message || error));
+  }
   if (page === '部署转换' && typeof window.refreshDeployJobsForVisitV39 === 'function') {
     void window.refreshDeployJobsForVisitV39().catch(error => notify(error?.message || error));
   }

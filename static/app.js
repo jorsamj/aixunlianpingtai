@@ -483,6 +483,7 @@ window.__resourceDiscoveryDependencies={
     }finally{state.storageSourcesLoading61=false}
   }
   window.loadStorageSources61=loadStorageSources61;
+  window.getStorageSourcesSnapshot61=()=>[...(state.storageSources61||[])];
 
   const typeName61=type=>({local:'本地存储',oss:'阿里云 OSS',s3:'S3 兼容',remote:'其他服务器'}[type]||type||'-');
   const health61=source=>source.health_status==='OK'||source.health_status==='AVAILABLE';
@@ -499,10 +500,15 @@ window.__resourceDiscoveryDependencies={
     const view=document.getElementById('view');if(!view)return;
     view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>存储配置</h2><p>统一管理素材存储，以及训练模型和转换结果的归档位置。</p></div><div class="row"><button class="btn" onclick="renderStorageSources61({force:true})">刷新</button></div></div><section class="panel"><div class="panel-head"><div><div class="panel-title">素材存储</div><div class="subline">素材库、数据集导入和扫描使用这里的存储源；可配置本地、阿里云 OSS、S3 或其他服务器。</div></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><div class="panel-body"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows">${storageRows61()}</div></div></div></section><div id="modelArtifactStorageMount"><section class="panel"><div class="panel-body"><div class="empty">算法产物存储配置正在后台同步…</div></div></section></div><div class="storage61-note"><b>安全与兼容</b><span>AccessKey / Secret 只保存到系统安全凭据库，浏览器不会读取真实密钥。素材与算法产物可以选择不同的 OSS 存储源和目录。</span></div></section>`;
     paintStorageRows61();
+    window.StorageCacheRuntime?.decorate?.(state.storageSources61||[]);
     void window.ModelArtifactRuntime?.renderPanels?.();
     try{
       await loadStorageSources61({force});
-      if(state.page==='存储配置')paintStorageRows61();
+      if(state.page==='存储配置'){
+        paintStorageRows61();
+        window.StorageCacheRuntime?.decorate?.(state.storageSources61||[]);
+        if(force)void window.StorageCacheRuntime?.refresh?.({sources:state.storageSources61||[],force:true});
+      }
       await window.ModelArtifactRuntime?.refresh?.({rerender:true,force});
     }catch(error){
       if(!state.storageSourcesLoadedAt61){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
@@ -618,10 +624,11 @@ window.__resourceDiscoveryDependencies={
     if(type==='s3')return `<div class="field"><label>Endpoint</label><input id="ss61Endpoint" class="input" value="${esc(c.endpoint||'')}" placeholder="AWS 可留空"></div><div class="field"><label>Region</label><input id="ss61Region" class="input" value="${esc(c.region||'')}"></div><div class="field"><label>Bucket *</label><input id="ss61Bucket" class="input" value="${esc(c.bucket||'')}"></div><div class="field"><label>Prefix</label><input id="ss61Prefix" class="input" value="${esc(c.prefix||'')}"></div><div class="field"><label>Access Key</label><input id="ss61Access" class="input" autocomplete="off"></div><div class="field"><label>Secret Key</label><input id="ss61Secret" type="password" class="input" autocomplete="new-password">${secret}</div><label class="field check"><input id="ss61Ssl" type="checkbox" ${c.use_ssl!==false?'checked':''}> 使用 SSL</label>`;
     return `<div class="field"><label>服务器地址 *</label><input id="ss61Base" class="input" value="${esc(c.base_url||'')}" placeholder="https://materials.example.com"></div><div class="field"><label>命名空间 *</label><input id="ss61Namespace" class="input" value="${esc(c.namespace||'')}"></div><div class="field"><label>根目录</label><input id="ss61Root" class="input" value="${esc(c.root||'')}"></div><div class="field"><label>API Token</label><input id="ss61Token" type="password" class="input" autocomplete="new-password">${secret}</div>`;
   }
-  window.storageTypeChanged61=function(){const type=document.getElementById('ss61Type')?.value||'local',source=(state.storageSources61||[]).find(row=>row.id===state.storageEditing61)||{};const box=document.getElementById('ss61Fields');if(box)box.innerHTML=sourceFields61(type,source)};
+  window.storageTypeChanged61=function(){const type=document.getElementById('ss61Type')?.value||'local',source=(state.storageSources61||[]).find(row=>row.id===state.storageEditing61)||{};const box=document.getElementById('ss61Fields');if(box)box.innerHTML=sourceFields61(type,source);window.StorageCacheRuntime?.decorateEditor?.()};
   window.openStorageSource61=async function(id=''){
     await loadStorageSources61();const source=(state.storageSources61||[]).find(row=>row.id===id)||null;state.storageEditing61=id||'';const type=source?.type||'local';
     modal(source?'编辑存储源':'新增存储源',`<div class="storage61-form"><div class="form two"><div class="field"><label>名称 *</label><input id="ss61Name" class="input" value="${esc(source?.name||'')}"></div><div class="field"><label>类型 *</label><select id="ss61Type" class="select" onchange="storageTypeChanged61()" ${source?'disabled':''}>${Object.entries({local:'本地存储',oss:'阿里云 OSS',s3:'S3 兼容（AWS / MinIO）',remote:'其他服务器素材源'}).map(([value,label])=>`<option value="${value}" ${value===type?'selected':''}>${label}</option>`).join('')}</select></div></div><div id="ss61Fields" class="form two">${sourceFields61(type,source||{})}</div><label class="field check"><input id="ss61Enabled" type="checkbox" ${source?.enabled===false?'':'checked'}> 启用该存储源</label><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveStorageSource61()">保存</button></div></div>`,true);
+    window.StorageCacheRuntime?.decorateEditor?.();
   };
   function sourceValues61(){return {name:document.getElementById('ss61Name')?.value,type:document.getElementById('ss61Type')?.value,root:document.getElementById('ss61Root')?.value,endpoint:document.getElementById('ss61Endpoint')?.value,region:document.getElementById('ss61Region')?.value,bucket:document.getElementById('ss61Bucket')?.value,public_base_url:document.getElementById('ss61PublicBaseUrl')?.value,prefix:document.getElementById('ss61Prefix')?.value,access_key_id:document.getElementById('ss61Access')?.value,access_key_secret:document.getElementById('ss61Secret')?.value,secret_access_key:document.getElementById('ss61Secret')?.value,use_ssl:document.getElementById('ss61Ssl')?.checked,base_url:document.getElementById('ss61Base')?.value,namespace:document.getElementById('ss61Namespace')?.value,token:document.getElementById('ss61Token')?.value,enabled:document.getElementById('ss61Enabled')?.checked!==false}}
   window.saveStorageSource61=async function(){try{const payload=storageApi().buildStorageSourcePayload(sourceValues61()),id=state.storageEditing61;await api(id?`/api/v61/storage-sources/${id}`:'/api/v61/storage-sources',{method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadStorageSources61({force:true});renderStorageSources61();toast('存储配置已保存')}catch(error){toast(error.message||error)}};

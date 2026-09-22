@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   formatCacheBytes,
@@ -156,4 +157,26 @@ test('cache report becomes stale when reporter heartbeat advances but report hoo
   assert.equal(view.nodes[0].state, '上报已过期');
   assert.equal(view.snapshotNodeCount, 0);
   assert.equal(view.unknownSnapshotNodeCount, 1);
+});
+
+
+const runtimeSource = fs.readFileSync(new URL('../../static/modules/storage-cache-runtime.js', import.meta.url), 'utf8');
+const appSource = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const mainSource = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+
+test('storage cache decorations do not wrap canonical public owners or refetch storage sources', () => {
+  for (const token of ['originalRender', 'originalOpen', 'originalTypeChanged', '__storageCacheRuntimeWrapped']) {
+    assert.equal(runtimeSource.includes(token), false, token);
+  }
+  assert.doesNotMatch(runtimeSource, /window\.renderStorageSources61\s*=/);
+  assert.doesNotMatch(runtimeSource, /window\.openStorageSource61\s*=/);
+  assert.doesNotMatch(runtimeSource, /window\.storageTypeChanged61\s*=/);
+  assert.doesNotMatch(runtimeSource, /fetchImpl\('\/api\/v61\/storage-sources'/);
+  assert.match(runtimeSource, /WORKER_CACHE_TTL_MS = 2 \* 60 \* 1000/);
+  assert.match(runtimeSource, /workerInflight/);
+  assert.match(appSource, /window\.getStorageSourcesSnapshot61=/);
+  assert.match(appSource, /window\.StorageCacheRuntime\?\.decorate\?\./);
+  assert.match(appSource, /window\.StorageCacheRuntime\?\.decorateEditor\?\./);
+  assert.match(mainSource, /page === '存储配置'/);
+  assert.match(mainSource, /StorageCacheRuntime\?\.refresh/);
 });
