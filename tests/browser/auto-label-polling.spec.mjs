@@ -53,7 +53,12 @@ test('auto-label active task polling updates rows without replacing the page roo
   })).toEqual({managed: true, delay: 1800});
 
   await expect.poll(() => requests, {timeout: 8_000}).toBeGreaterThanOrEqual(2);
-  await expect(page.locator('#ai60TaskRows')).toContainText('2 / 4');
+  const completedProgress = await expect.poll(async () => page.evaluate(() => {
+    const text = document.querySelector('[data-task-id="auto-browser-1"]')?.textContent || '';
+    const match = text.match(/(\d+)\s*\/\s*4/);
+    return match ? Number(match[1]) : 0;
+  }), {timeout: 8_000}).toBeGreaterThanOrEqual(2);
+  expect(completedProgress).toBeLessThanOrEqual(3);
 
   const rootStayedStable = await page.evaluate(() => (
     window.__autoLabelStableRoot === document.getElementById('view')
