@@ -3317,7 +3317,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
     if(confirmed.action==='business_validation'){
       state.businessValidationEntry=confirmed.validation_entry||{};
-      closeModal();setPage('测试发布');
+      closeModal();setPage('质量中心');void window.setQualityCenterTab411?.('detect');
       setTimeout(()=>{
         const root=document.getElementById('view');
         if(root&&!root.querySelector('.iteration-action429')){
@@ -3924,7 +3924,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
   '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
   '平台对接':'系统与对接','服务节点':'系统与对接',
- });;
+ });
  renderTop=function renderTopCanonical413(){
    const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
    if(crumb)crumb.textContent=TOP_CRUMB413[state.page]||'畅联云算法训练';
@@ -5255,11 +5255,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   // expose the retired URL-pull / automatic-retraining owner.
   window.openAuditConnect42=window.openExternalFeedbackIntake63;
   window.openPolicy42=function(){
-    window.setPage?.('测试发布');
-    toast('旧自动迭代策略已停用，请从线上抽检 / 反馈进入人工复核闭环');
+    window.setPage?.('质量中心');void window.setQualityCenterTab411?.('detect');
+    toast('旧自动迭代策略已停用，请从质量中心的模型检测进入人工核验');
   };
   window.runPolicy42=window.openPolicy42;
-  window.renderIterationV42=function(){window.setPage?.('测试发布')};
+  window.renderIterationV42=function(){window.setPage?.('质量中心');void window.setQualityCenterTab411?.('detect')};
   window.openPredictionFeedback63=function(){
     const prediction=state.lastOnlinePrediction63;
     if(!prediction?.feedback_eligible)return toast('当前结果不是可追溯的正式算法版本测试');
