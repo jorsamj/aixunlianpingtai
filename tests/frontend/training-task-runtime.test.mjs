@@ -80,17 +80,20 @@ test('successive jobs responses replace status progress epoch and elapsed row tr
     projectId: () => state.project.id,
   });
   await runtime.refresh({source: 'poll'});
-  assert.match(body.innerHTML, /3\/100 · 3%/);
+  assert.match(body.innerHTML, /Epoch 3\/100/);
+  assert.match(body.innerHTML, /3%/);
   assert.match(body.innerHTML, />30s</);
 
   await runtime.refresh({source: 'poll'});
-  assert.match(body.innerHTML, /4\/100 · 4%/);
+  assert.match(body.innerHTML, /Epoch 4\/100/);
+  assert.match(body.innerHTML, /4%/);
   assert.match(body.innerHTML, />45s</);
 
   state.train428Tab = 'history';
   await runtime.refresh({source: 'poll'});
   assert.match(body.innerHTML, /已完成/);
-  assert.match(body.innerHTML, /100\/100 · 100%/);
+  assert.match(body.innerHTML, /Epoch 100\/100/);
+  assert.match(body.innerHTML, /100%/);
   assert.doesNotMatch(body.innerHTML, /训练中/);
   assert.equal(activeCount.textContent, '0');
   assert.equal(historyCount.textContent, '1');
@@ -360,7 +363,8 @@ test('completed training below requested epochs is shown as early completion ins
   });
   assert.match(html, /已完成/);
   assert.match(html, /Early Stopping，提前完成/);
-  assert.match(html, /180\/300 · 100%/);
+  assert.match(html, /Epoch 180\/300/);
+  assert.match(html, /100%/);
   assert.doesNotMatch(html, /训练中/);
 });
 
@@ -420,7 +424,7 @@ test('visible training jobs prefer backend-proven queue positions within one res
 });
 
 
-test('active training row exposes the 11 requested task fields', () => {
+test('active training row exposes the 10 product-facing task fields without internal ids or framework noise', () => {
   const html = trainingTaskRow({
     id: 'train-11',
     status: 'running',
@@ -439,11 +443,14 @@ test('active training row exposes the 11 requested task fields', () => {
     current_item: 'Epoch 12/30',
     started_at: '2026-09-20T10:00:00Z',
   });
-  assert.equal((html.match(/<td/g) || []).length, 11);
+  assert.equal((html.match(/<td/g) || []).length, 10);
   assert.match(html, /安全帽检测/);
   assert.match(html, /第 3 次迭代/);
-  assert.match(html, /Ultralytics \/ YOLO/);
+  assert.match(html, />3<\/span>/);
   assert.match(html, /42%/);
+  assert.doesNotMatch(html, /alg-11/);
+  assert.doesNotMatch(html, /train-11/);
+  assert.doesNotMatch(html, /Ultralytics \/ YOLO/);
   assert.match(html, /详情/);
   assert.match(html, /日志/);
   assert.match(html, /暂停/);

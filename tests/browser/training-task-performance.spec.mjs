@@ -79,6 +79,10 @@ test('training task refresh and actions patch the final table without rebuilding
     .toBe(false);
   await expect(page.locator('.train428-table tbody')).toContainText('局部刷新训练');
   await expect(page.locator('.train428-table tbody')).toContainText('37%');
+  await expect(page.locator('.train428-table thead')).not.toContainText('执行框架');
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible();
+  await expect(page.locator('[data-job-id="job-focused-1"]')).not.toContainText('job-focused-1');
+  await expect(page.locator('[data-job-id="job-focused-1"]')).not.toContainText('Ultralytics / YOLO');
   await expect(page.locator('.train428-page')).toHaveAttribute('data-performance-marker', 'preserve-me');
   await page.evaluate(() => {
     window.__trainingStableRow = document.querySelector('[data-job-id="job-focused-1"]');

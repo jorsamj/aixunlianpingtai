@@ -273,45 +273,34 @@ export function trainingTaskRow(job) {
   const successful = ['done', 'finished', 'completed', 'succeeded', 'success'].includes(status);
   const terminalMeta = terminalRuntimeMeta(job, stage);
   const epochStarted = Number(progress.epoch || 0) > 0;
-  const recoveryMeta = job?.recovery?.available === true ? '可恢复 · Checkpoint 已保留' : '';
-  const progressParts = [];
-
-  if (completionMeta) progressParts.push(completionMeta);
-  if (done && !successful) {
-    if (terminalMeta) progressParts.push(terminalMeta);
-    if (epochStarted) {
-      progressParts.push(`Epoch ${progress.epoch}/${totalEpochs}`);
-      if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
-        progressParts.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
-      }
-    }
-    progressParts.push(`${percent.toFixed(0)}%`);
-  } else if (epochStarted) {
-    progressParts.push(`Epoch ${progress.epoch}/${totalEpochs}`);
-    if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
-      progressParts.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
-    }
-    progressParts.push(`${percent.toFixed(0)}%`);
-    const item = String(job?.current_item || '').trim();
-    if (item && item !== String(progress.epoch) && !item.includes(`Epoch ${progress.epoch}/${totalEpochs}`)) progressParts.push(item);
-  } else if (done) {
-    progressParts.push(`${percent.toFixed(0)}%`);
-  } else {
-    progressParts.push(stage.label);
-    progressParts.push(`${percent.toFixed(0)}%`);
-    if (stage.detail) progressParts.push(stage.detail);
-  }
-
-  const algorithmName = job.asset_algorithm_name || job.algorithm_name || job.asset_algorithm_id || job.algorithm_asset_id || '-';
-  const taskName = job.task_name || job.run_name || job.auto_version_name || job.id;
-  const framework = job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO';
-  const priorityMeta = [`优先级 ${priorityValue(job)}`, queueMeta, recoveryMeta].filter(Boolean).join(' · ');
-  const stageMeta = [stage.label, stage.detail].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(' · ');
+  const recoveryMeta = job?.recovery?.available === true ? 'Checkpoint 已保留' : '';
+  const algorithmName = job.asset_algorithm_name || job.algorithm_name || '未命名算法';
+  const taskName = job.task_name || job.run_name || job.auto_version_name || '训练任务';
   const progressScale = Math.max(0, Math.min(100, percent)) / 100;
   const clockActive = ['starting', 'running', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status);
   const elapsedClock = progress.elapsedSeconds === null || progress.elapsedSeconds === undefined ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
   const etaClock = progress.etaSeconds === null || progress.etaSeconds === undefined ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
-  return `<tr data-job-id="${esc(job.id)}" data-clock-active="${clockActive ? '1' : '0'}"><td><div class="train428-taskname"><b>${esc(algorithmName)}</b><span>${esc(job.asset_algorithm_id || job.algorithm_asset_id || '')}</span></div></td><td><div class="train428-taskname"><b>${esc(taskName)}</b><span>${esc(job.id)}</span>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><div class="train428-priority"><b>${priorityValue(job)}</b><small>${esc(priorityMeta)}</small></div></td><td><div class="train428-resource"><b>${esc(framework)}</b><span>${esc(resourceName(job))}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${progressScale.toFixed(4)})"></i></div><span class="train428-progress-txt">${esc(progressParts.join(' · '))}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsedClock}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaClock}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageMeta && stageMeta !== stage.label ? `<small>${esc(stageMeta)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
+
+  const progressMeta = [];
+  if (completionMeta) progressMeta.push(completionMeta);
+  if (epochStarted) {
+    progressMeta.push(`Epoch ${progress.epoch}/${totalEpochs}`);
+    if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
+      progressMeta.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
+    }
+  } else if (!done) {
+    progressMeta.push(stage.label);
+  }
+  if (done && !successful && terminalMeta && !progressMeta.includes(terminalMeta)) {
+    progressMeta.push(terminalMeta);
+  }
+
+  const stageDetails = [stage.detail, queueMeta, workerMeta, recoveryMeta]
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join(' · ');
+
+  return `<tr data-job-id="${esc(job.id)}" data-clock-active="${clockActive ? '1' : '0'}"><td><div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${progressScale.toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsedClock}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaClock}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td><span class="train428-started">${esc(dateText(job.started_at || job.created_at))}</span></td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {

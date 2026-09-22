@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422526';
+import {formatTrainingDuration, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422527';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([
@@ -112,14 +112,32 @@ export function installTrainingTaskVisibilityRuntime({
     return String(state().project?.id || '') === String(projectId || '');
   }
 
+  function trainingShellHtml() {
+    return `<section class="train428-page train428-page-v2" data-training-task-shell="canonical">
+      <div class="train428-toolbar-v2">
+        <div class="train428-tabs" role="tablist" aria-label="训练任务视图">
+          <button type="button" class="on" onclick="setTrainTab428('active')">进行中 <span>0</span></button>
+          <button type="button" onclick="setTrainTab428('history')">历史记录 <span>0</span></button>
+        </div>
+        <div class="train428-toolbar-actions">
+          <button type="button" class="btn mini train428-refresh" onclick="refreshTrainPage428()">刷新</button>
+        </div>
+      </div>
+      <section class="panel train428-table-panel"><div class="table-wrap"><table class="table train428-table">
+        <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table></div></section>
+    </section>`;
+  }
+
   function ensureShell() {
     if (!doc || String(state().page || '') !== TRAINING_PAGE) return null;
-    let root = doc.querySelector?.('.train428-page');
-    if (!root && typeof legacyRender === 'function') {
-      legacyRender();
-      root = doc.querySelector?.('.train428-page');
-    }
-    return root || null;
+    let root = doc.querySelector?.('.train428-page[data-training-task-shell="canonical"]');
+    if (root) return root;
+    const view = doc.getElementById?.('view');
+    if (!view) return null;
+    view.innerHTML = trainingShellHtml();
+    return view.querySelector?.('.train428-page[data-training-task-shell="canonical"]') || null;
   }
 
   function createTrainingRow(html) {
@@ -162,7 +180,7 @@ export function installTrainingTaskVisibilityRuntime({
     for (let index = 0; index < nextRow.cells.length; index += 1) {
       const currentCell = currentRow.cells[index];
       const nextCell = nextRow.cells[index];
-      if (index === 5) {
+      if (index === 4) {
         patchProgressCell(currentCell, nextCell);
       } else if (currentCell.innerHTML !== nextCell.innerHTML) {
         currentCell.innerHTML = nextCell.innerHTML;
@@ -180,7 +198,7 @@ export function installTrainingTaskVisibilityRuntime({
     );
     if (!canPatch) {
       body.innerHTML = visible.map(trainingTaskRow).join('')
-        || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
+        || '<tr><td colspan="10" class="empty-row">暂无记录</td></tr>';
       renderedRows.clear();
       for (const job of visible) renderedRows.set(String(job?.id || ''), trainingTaskRow(job));
       return;
@@ -188,7 +206,7 @@ export function installTrainingTaskVisibilityRuntime({
 
     if (!visible.length) {
       if (!body.querySelector?.('.empty-row')) {
-        body.innerHTML = '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="empty-row">暂无记录</td></tr>';
       }
       renderedRows.clear();
       return;
@@ -341,7 +359,7 @@ export function installTrainingTaskVisibilityRuntime({
   }
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422524',
+    build: 'training-task-visibility-422525',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
