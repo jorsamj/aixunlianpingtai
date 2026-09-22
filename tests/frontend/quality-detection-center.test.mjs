@@ -114,6 +114,25 @@ test('formal algorithm-version detection can explicitly enter the existing revie
   assert.match(source, /提交后先进入待复核，不会自动修改数据集或启动训练/);
 });
 
+test('quality detection keeps its mounted shell stable across background model refreshes', () => {
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(source, /data-quality-detection-shell="1"/);
+  assert.match(source, /function patchBenchModelBrowser64\(side\)/);
+  assert.match(source, /select\.dataset\.modelsSignature!==signature/);
+  assert.match(source, /if\(!shell\)\{\s*view\.innerHTML=qualityDetectionShell64\(models,ready\)/);
+  assert.match(source, /else\{\s*const notices=document\.getElementById\('benchNotices64'\)/);
+  assert.match(source, /if\(mounted\)\{\s*window\.renderBenchFileQueue64\(\)/);
+
+  const renderStart = source.indexOf('window.renderQualityDetectionBench64=function renderQualityDetectionBench64()');
+  const renderEnd = source.indexOf('\n  };', renderStart);
+  const render = source.slice(renderStart, renderEnd);
+  assert.equal((render.match(/view\.innerHTML=/g) || []).length, 1);
+  const stableBranch = render.slice(render.indexOf('}else{'), render.indexOf('if(mounted)'));
+  assert.doesNotMatch(stableBranch, /view\.innerHTML=/);
+  assert.doesNotMatch(stableBranch, /renderBenchFileQueue64/);
+});
+
 test('quality center renders the reviewed feedback and external-intake panel', () => {
   assert.match(app, /window\.renderOnlineFeedbackPanel63=function/);
   const start = app.lastIndexOf('v64: quality-center model detection workbench');
