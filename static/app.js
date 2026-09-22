@@ -5211,7 +5211,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     });
     if(task.status!=='SUCCEEDED')throw new Error(task.error||`部署测试未通过：${task.status}`);
     const completed=await api(`/api/v61/projects/${pid()}/deployment-tests/${taskId}`);
-    return {r:completed.result||{},m:model,env};
+    return {r:completed.result||{},m:model,env,task_id:taskId};
   };
 })();
 
@@ -5315,6 +5315,19 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     return task;
   };
 
+  window.renderOnlineFeedbackPanel63=function(root=document.getElementById('view')){
+    if(!root)return false;
+    const feedbackProjectId=String(pid()||''),hasFeedbackSnapshot=state.onlineFeedback63ProjectId===feedbackProjectId&&state.onlineFeedback63LoadedAt>0;
+    const feedbackRows=hasFeedbackSnapshot?feedbackRows63():'<tr><td colspan="6">首次读取线上抽检反馈…</td></tr>';
+    const feedbackSummary=hasFeedbackSnapshot?(()=>{const rows=state.onlineFeedback63||[],pending=rows.filter(item=>item.status==='pending_review').length;return `${rows.length} 条 · 待复核 ${pending} 条`})():'首次读取…';
+    if(!root.querySelector('#onlineFeedback63')){
+      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel online-feedback-quality63"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本检测可显式提交人工复核；只有复核确认后才允许提升为素材或标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">${feedbackSummary}</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63({force:true})">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63">${feedbackRows}</tbody></table></div></section>`);
+    }else renderFeedbackRows63();
+    const feedbackAge=Date.now()-Number(state.onlineFeedback63LoadedAt||0);
+    if(!hasFeedbackSnapshot||feedbackAge<0||feedbackAge>=ONLINE_FEEDBACK_CACHE_TTL_MS)void loadOnlineFeedback63();
+    return true;
+  };
+
   renderTest=window.renderTest=function renderTestCanonical63(){
     window.renderTestCore30?.();
     const root=document.getElementById('view');
@@ -5325,14 +5338,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       runButton.disabled=!ready;
       runButton.title=ready?'':'正在读取可用测试模型和推理环境';
     }
-    const feedbackProjectId=String(pid()||''),hasFeedbackSnapshot=state.onlineFeedback63ProjectId===feedbackProjectId&&state.onlineFeedback63LoadedAt>0;
-    const feedbackRows=hasFeedbackSnapshot?feedbackRows63():'<tr><td colspan="6">首次读取线上抽检反馈…</td></tr>';
-    const feedbackSummary=hasFeedbackSnapshot?(()=>{const rows=state.onlineFeedback63||[],pending=rows.filter(item=>item.status==='pending_review').length;return `${rows.length} 条 · 待复核 ${pending} 条`})():'首次读取…';
-    if(root&&!document.getElementById('onlineFeedback63')){
-      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">${feedbackSummary}</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63({force:true})">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63">${feedbackRows}</tbody></table></div></section>`);
-    }
-    const feedbackAge=Date.now()-Number(state.onlineFeedback63LoadedAt||0);
-    if(!hasFeedbackSnapshot||feedbackAge<0||feedbackAge>=ONLINE_FEEDBACK_CACHE_TTL_MS)void loadOnlineFeedback63();
+    window.renderOnlineFeedbackPanel63?.(root);
   };
 
   window.openExternalFeedbackIntake63=function(){
@@ -5727,19 +5733,36 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       void window.loadDetectionBatches64?.({force:true});
     }catch(error){if(status)status.textContent='保存失败';toast(error.message||error)}
   };
+  function canSubmitBenchFeedback64(value){
+    return !!value?.task_id&&String(value?.m?.model_source||'').toLowerCase()==='algorithm_version'&&value?.m?.algorithm_id&&value?.m?.version_id;
+  }
+  window.openBenchFeedback64=async function(index,side){
+    const row=state.benchBatch64?.results?.[Number(index)],value=String(side||'').toUpperCase()==='B'?row?.b:row?.a;
+    if(!row||!canSubmitBenchFeedback64(value))return toast('只有正式算法版本的真实检测结果可以提交抽检反馈');
+    const button=window.event?.currentTarget;if(button){button.disabled=true;button.textContent='正在准备证据…'}
+    try{
+      const prediction=await api(`/api/v64/projects/${pid()}/deployment-tests/${encodeURIComponent(value.task_id)}/feedback-evidence`,{method:'POST'});
+      state.lastOnlinePrediction63=prediction;
+      closeModal();
+      window.openPredictionFeedback63?.();
+    }catch(error){toast(error.message||error);if(button){button.disabled=false;button.textContent='提交抽检反馈'}}
+  };
+
   window.openBenchResult64=function(index){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||row.status!=='done')return;
     if(!row.previewUrl&&row.file instanceof File)row.previewUrl=URL.createObjectURL(row.file);
     const originalUrl=row.inputImageUrl||row.previewUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
     const result=(value,fallback)=>value?window.renderDetectionResult(value.r,resultName64(value,fallback)):'<div class="bench64-result-empty">本模式未运行该模型</div>';
     const reviewButtons=Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn mini ${row.review===key?'primary':'soft'}" onclick="markBenchReview64(${Number(index)},'${key}')">${label}</button>`).join('');
-    modal('检测详情',`<div class="bench64-detail"><section class="bench64-original"><div class="panel-title">原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'A 模型')}${result(row.b,'B 模型')}</div><section class="bench64-review"><div><b>人工核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>用于记录本次检测是否正确：可标记正确、漏检、误检、框不准或类别错误。</p></section></div>`,true);
+    const feedbackActions=[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side,value])=>`<button class="btn primary" onclick="openBenchFeedback64(${Number(index)},'${side}')">${side} 模型 · 提交抽检反馈</button>`).join('');
+    modal('检测详情',`<div class="bench64-detail"><section class="bench64-original"><div class="panel-title">原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'A 模型')}${result(row.b,'B 模型')}</div><section class="bench64-review"><div><b>检测质量核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>这里只记录本次检测质量，不会修改训练真值。</p></section>${feedbackActions?`<section class="bench64-feedback"><div><b>进入抽检复核</b><span>仅正式算法版本可提交。提交后先进入待复核，不会自动修改数据集或启动训练。</span></div><div class="row wrap">${feedbackActions}</div></section>`:''}</div>`,true);
   };
 
   function durableSide64(model){
     if(!model)return null;
     const identity=model.model||{};
     return {
+      task_id:model.task_id||'',
       m:{label:identity.label||identity.model_name||identity.model_source||'模型',...identity},
       r:{
         detections:model.detections||[],image_url:model.result_image_url||'',input_image_url:model.input_image_url||'',
@@ -5785,6 +5808,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const modelNotice=models.length?'': '<div class="alert warn">正在读取可用原始模型和算法版本；如果长时间为空，请检查训练资源。</div>';
     const envNotice=ready?'':'<div class="alert warn">当前未发现可用推理 Runtime。原始模型和算法版本仍可选择，但开始检测前需要先准备训练资源。</div>';
     view.innerHTML=`<div class="bench64-shell">${modelNotice}${envNotice}<section class="bench64-head"><div><span>质量中心 · 模型检测</span><h2>同一批图片，直接比较两个真实模型</h2><p>A、B 两侧都可以选择原始模型或任意算法版本。支持单图、多选图片和整个文件夹。</p></div><div class="row"><button class="btn" onclick="refreshDetectionBenchDataV3()">刷新模型</button><button class="btn soft" onclick="clearBenchFiles64()">清空本次</button></div></section><div class="bench64-model-grid">${modelBrowser64('A','A 模型 / 原始对照','可选官方原始模型，也可以选择任意算法版本')}${modelBrowser64('B','B 模型 / 新模型','同样可以选择原始模型或任意算法版本')}</div><section class="panel bench64-controls"><div class="panel-body"><div class="form three"><div class="field"><label>检测模式</label><select id="benchMode64" class="select"><option value="compare">同图 A / B 对比</option><option value="a">只测 A 模型</option><option value="b">只测 B 模型</option></select></div><div class="field"><label>置信度</label><input id="benchConf" class="input" type="number" min="0.001" max="1" step="0.01" value="0.25"></div><div class="field"><label>图片来源</label><div class="row wrap"><button class="btn" onclick="document.getElementById('benchFiles64').click()">选择图片</button><button class="btn" onclick="document.getElementById('benchFolder64').click()">选择文件夹</button></div><input id="benchFiles64" type="file" accept="image/*" multiple hidden onchange="addBenchFiles64(this)"><input id="benchFolder64" type="file" accept="image/*" multiple webkitdirectory directory hidden onchange="addBenchFiles64(this)"></div></div><div class="bench64-files"><div><b id="benchFileCount64">尚未选择图片</b><span>可单选、多选；文件夹会递归带入其中的图片并自动忽略非图片文件。</span></div><div id="benchFileList64" class="bench64-file-list"></div></div><div class="bench64-preview-run"><div id="benchPreview64" class="bench64-preview"><span>选择图片后在这里预览</span></div><div class="bench64-run"><b>开始检测前确认</b><span>批量任务按图片顺序执行，避免同时抢占同一个 GPU / Runtime。</span><button id="benchRun64" class="btn primary" onclick="runBenchBatch64()">开始本次检测</button><div id="benchResult" class="bench64-live"></div></div></div></div></section><section class="panel bench64-results"><div class="panel-head"><div><div class="panel-title">本次检测结果</div><div class="subline">点击任意已完成图片查看原图、A/B 检测图、目标明细和人工核验。</div></div></div><div class="panel-body"><div id="benchBatchSummary64"></div><div id="benchBatchList64" class="bench64-result-list"></div></div></section><section class="panel bench64-history"><div class="panel-head"><div><div class="panel-title">最近检测批次</div><div class="subline">检测任务和人工核验保存在服务端，刷新页面后仍可继续查看。</div></div><button class="btn small" onclick="loadDetectionBatches64({force:true})">刷新</button></div><div class="panel-body" id="benchRecentBatches64"></div></section></div>`;
-    window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();void window.loadDetectionBatches64();
+    window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
   };
 })();
