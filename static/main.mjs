@@ -21,7 +21,7 @@ import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgo
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
-import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422534';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422535';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
@@ -227,6 +227,7 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
   projectId: () => state.project?.id,
   request: api,
   preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api}),
+  openTrainingForm: window.openTrainingCreateCanonical429,
   notify,
 });
 window.PlatformCore.runtime.trainingCreateHydrationRuntime = trainingCreateHydrationRuntime;

@@ -859,8 +859,7 @@ window.installUsability417=function(){
   window.toggleTrainImage429=function(id){baseToggleTrain417?.(id);refreshProjected417()};
   const baseShowIteration417=window.showIterationBase414;
   window.showIterationBase414=function(aid){baseShowIteration417?.(aid);const base=state.iteration414?.[aid],root=document.querySelector('.train429-create'),select=root?.querySelector('#tr429Alg'),field=select?.closest('.field'),model=root?.querySelector('#tr429Model');if(base?.version_name){if(field){select.innerHTML='';select.style.display='none';let locked=field.querySelector('.iteration417-engine');if(!locked){locked=document.createElement('div');locked.className='input iteration417-engine';field.appendChild(locked)}field.querySelector('label').textContent='训练引擎（迭代任务锁定）';locked.textContent='Ultralytics Detect'}if(model)model.textContent=`${base.version_name} · ${base.model_name||'最新模型成果'}`}refreshProjected417()};
-  const baseStartTraining417=window.startAlgorithmTraining429;
-  window.startAlgorithmTraining429=async function(aid){const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),latest=a?.versions?.[0],pending=baseStartTraining417?.(aid);if(latest)state.iteration414[aid]={version_id:latest.id,version_name:latest.version_name,model_name:latest.model_name,path:latest.stored_path||latest.path||''};window.refreshTrain429?.();if(latest)showIterationBase414(aid);[30,180].forEach(delay=>setTimeout(()=>{if(latest&&!state.iteration414?.[aid]?.version_name)state.iteration414[aid]={version_id:latest.id,version_name:latest.version_name,model_name:latest.model_name,path:latest.stored_path||latest.path||''};if(latest)showIterationBase414(aid);refreshProjected417()},delay));const result=await pending;refreshProjected417();return result};
+  window.syncTrainingIteration417=function(aid){const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),latest=a?.versions?.[0];if(latest)state.iteration414[aid]={version_id:latest.id,version_name:latest.version_name,model_name:latest.model_name,path:latest.stored_path||latest.path||''};window.refreshTrain429?.();if(latest)showIterationBase414(aid);[30,180].forEach(delay=>setTimeout(()=>{if(latest&&!state.iteration414?.[aid]?.version_name)state.iteration414[aid]={version_id:latest.id,version_name:latest.version_name,model_name:latest.model_name,path:latest.stored_path||latest.path||''};if(latest)showIterationBase414(aid);refreshProjected417()},delay));refreshProjected417();return latest||null};
   const baseOpenSettings417=window.openTrainSettings429;
   window.openTrainSettings429=function(){const result=baseOpenSettings417?.();setTimeout(()=>{const base=state.iteration414?.[state.trainingDraft?.algorithmId],model=document.getElementById('ts428Model');if(base?.version_name&&model){const text=`${base.version_name} · ${base.model_name||'最新模型成果'}`;if(model.tagName==='SELECT'){model.innerHTML=`<option value="${esc(base.path||base.model_name||'latest')}">${esc(text)}</option>`;model.value=base.path||base.model_name||'latest'}else model.value=text;model.readOnly=true;model.disabled=true;const label=model.closest('.field')?.querySelector('label');if(label)label.textContent='迭代起点（锁定最新版本）'}},30);return result};
   window.openTrainSettings428=window.openTrainSettings429;
@@ -3454,8 +3453,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function selectedTrainAlg429(){const t=selectedTarget429(),k=document.getElementById('tr429Alg')?.value;return(t?.algorithms||[]).find(x=>x.key===k)}
   function pool429(){return(state.images||[]).filter(x=>processed429(x)&&x.annotated)}
   function cfg429(){return window.trainingConfigCanonical428()}
-  window.startAlgorithmTraining429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId='train_'+(globalThis.crypto?.randomUUID?.().replace(/-/g,'').slice(0,20)||Math.random().toString(16).slice(2,22));const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请展开高级功能后配置训练资源');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[]});modal(`训练 · ${a.name}`,`<div class="train428-create train429-create train-create-saas" data-algorithm-id="${esc(a.id)}"><div class="train-create-layout"><div class="train-create-left"><section class="train428-panel train-ui-card train-ui-algorithm-card"><header><span class="train-ui-card-icon">⬡</span><div><b>训练算法</b><small>沿用当前算法版本关系与训练资源</small></div></header><div class="form two"><div class="field"><label>训练资源</label><select id="tr429Target" class="select" onchange="trainTarget429()">${ts.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.framework==='paddle'?'Paddle':'Ultralytics'}</option>`).join('')}</select></div><div class="field"><label>训练算法</label><select id="tr429Alg" class="select" onchange="trainAlg429()"></select></div><div class="field"><label>算法名称</label><input class="input" value="${esc(a.name)}" readonly></div><div class="field"><label>本次训练任务 ID</label><input id="tr429TaskId" class="input" value="${esc(plannedTaskId)}" readonly></div><div class="field"><label>任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"><small>1 最高，数字越大优先级越低</small></div></div></section><section class="train428-panel train-ui-card train-ui-data-card"><header><span class="train-ui-card-icon">▣</span><div><b>训练数据集</b><small>统一素材池 · 仅使用本次明确选择的图片</small></div></header><div class="train429-data-summary"><div><span>本次训练素材</span><b id="tr429Count">${window.TrainingDraftRuntime?.materialIds?.().length||0} 张</b></div><div><span>包含标签</span><b id="tr429Labels">-</b></div><div><span>划分方式</span><b>随机抽取试验集</b></div></div><div class="row"><button class="btn" onclick="openTrainPicker429()">选择训练素材</button><button class="btn" onclick="trainQuality429()">数据质量</button></div></section><section class="train428-panel train428-wide train-ui-card train-ui-config-card"><details class="train-ui-advanced"><summary><span class="train-ui-card-icon">⚙</span><div><b>进阶配置（可选）</b><small>保持当前参数语义与默认值</small></div><i>⌄</i></summary><div class="train-ui-advanced-body"><div class="train428-config-summary"><div><span>基础模型</span><b id="tr429Model">-</b></div><div><span>总轮数</span><b id="tr429Epoch">100</b></div><div><span>图片尺寸</span><b id="tr429Size">640</b></div><div><span>Batch</span><b id="tr429Batch">8</b></div><div><span>阶段检查</span><b id="tr429Gate">-</b></div><div><span>达标后转换</span><b id="tr429Convert">不自动转换</b></div></div><button class="btn train-ui-edit-config" onclick="openTrainSettings429()">编辑全部训练参数</button></div></details></section></div><aside class="train-create-right"><section class="train-ui-card train-ui-labels-card"><header><span class="train-ui-card-icon">◇</span><div><b>本次训练标签选择</b><small>标签状态继续由 Training Draft 管理</small></div></header><label class="train-ui-label-search"><span>⌕</span><input id="trainUiLabelSearch" type="search" placeholder="搜索标签"></label><div id="trainUiLabelSlot" class="train-ui-label-slot"><div class="train-ui-label-wait">选择训练素材后显示可训练标签</div></div></section><section class="train-ui-card train-ui-summary-card"><header><span class="train-ui-card-icon">▤</span><div><b>训练摘要</b><small>随当前训练草稿实时更新</small></div></header><div id="trainUiSummary" class="train-ui-summary"></div></section></aside></div><div id="tr429Estimate" class="estimate424"></div><div class="row end train428-footer"><button class="btn train-ui-cancel" onclick="closeModal()">取消</button><button class="btn primary train-ui-submit" onclick="submitTrain429()"><span>▶</span>开始训练</button></div></div>`,true);setTimeout(trainTarget429,20);refreshTrain429()};
-  window.startAlgorithmTraining423=window.startAlgorithmTraining429;
+  window.openTrainingCreateDialog429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId='train_'+(globalThis.crypto?.randomUUID?.().replace(/-/g,'').slice(0,20)||Math.random().toString(16).slice(2,22));const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请展开高级功能后配置训练资源');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[]});modal(`训练 · ${a.name}`,`<div class="train428-create train429-create train-create-saas" data-algorithm-id="${esc(a.id)}"><div class="train-create-layout"><div class="train-create-left"><section class="train428-panel train-ui-card train-ui-algorithm-card"><header><span class="train-ui-card-icon">⬡</span><div><b>训练算法</b><small>沿用当前算法版本关系与训练资源</small></div></header><div class="form two"><div class="field"><label>训练资源</label><select id="tr429Target" class="select" onchange="trainTarget429()">${ts.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.framework==='paddle'?'Paddle':'Ultralytics'}</option>`).join('')}</select></div><div class="field"><label>训练算法</label><select id="tr429Alg" class="select" onchange="trainAlg429()"></select></div><div class="field"><label>算法名称</label><input class="input" value="${esc(a.name)}" readonly></div><div class="field"><label>本次训练任务 ID</label><input id="tr429TaskId" class="input" value="${esc(plannedTaskId)}" readonly></div><div class="field"><label>任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"><small>1 最高，数字越大优先级越低</small></div></div></section><section class="train428-panel train-ui-card train-ui-data-card"><header><span class="train-ui-card-icon">▣</span><div><b>训练数据集</b><small>统一素材池 · 仅使用本次明确选择的图片</small></div></header><div class="train429-data-summary"><div><span>本次训练素材</span><b id="tr429Count">${window.TrainingDraftRuntime?.materialIds?.().length||0} 张</b></div><div><span>包含标签</span><b id="tr429Labels">-</b></div><div><span>划分方式</span><b>随机抽取试验集</b></div></div><div class="row"><button class="btn" onclick="openTrainPicker429()">选择训练素材</button><button class="btn" onclick="trainQuality429()">数据质量</button></div></section><section class="train428-panel train428-wide train-ui-card train-ui-config-card"><details class="train-ui-advanced"><summary><span class="train-ui-card-icon">⚙</span><div><b>进阶配置（可选）</b><small>保持当前参数语义与默认值</small></div><i>⌄</i></summary><div class="train-ui-advanced-body"><div class="train428-config-summary"><div><span>基础模型</span><b id="tr429Model">-</b></div><div><span>总轮数</span><b id="tr429Epoch">100</b></div><div><span>图片尺寸</span><b id="tr429Size">640</b></div><div><span>Batch</span><b id="tr429Batch">8</b></div><div><span>阶段检查</span><b id="tr429Gate">-</b></div><div><span>达标后转换</span><b id="tr429Convert">不自动转换</b></div></div><button class="btn train-ui-edit-config" onclick="openTrainSettings429()">编辑全部训练参数</button></div></details></section></div><aside class="train-create-right"><section class="train-ui-card train-ui-labels-card"><header><span class="train-ui-card-icon">◇</span><div><b>本次训练标签选择</b><small>标签状态继续由 Training Draft 管理</small></div></header><label class="train-ui-label-search"><span>⌕</span><input id="trainUiLabelSearch" type="search" placeholder="搜索标签"></label><div id="trainUiLabelSlot" class="train-ui-label-slot"><div class="train-ui-label-wait">选择训练素材后显示可训练标签</div></div></section><section class="train-ui-card train-ui-summary-card"><header><span class="train-ui-card-icon">▤</span><div><b>训练摘要</b><small>随当前训练草稿实时更新</small></div></header><div id="trainUiSummary" class="train-ui-summary"></div></section></aside></div><div id="tr429Estimate" class="estimate424"></div><div class="row end train428-footer"><button class="btn train-ui-cancel" onclick="closeModal()">取消</button><button class="btn primary train-ui-submit" onclick="submitTrain429()"><span>▶</span>开始训练</button></div></div>`,true);setTimeout(trainTarget429,20);refreshTrain429()};
+  window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;
   window.trainTarget429=function(){const t=selectedTarget429(),sel=document.getElementById('tr429Alg');if(!sel)return;sel.innerHTML=(t?.algorithms||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.name||x.short_name||x.key)}</option>`).join('')||'<option value="">当前资源没有可执行训练算法</option>';const c=cfg429();c.device=t?.type==='server'?'0':(t?.recommendation?.device||'cpu');window.TrainingDraftRuntime?.update?.({config:c,resource:{device:c.device}});trainAlg429()};
   window.trainAlg429=function(){const x=selectedTrainAlg429(),c=cfg429(),t=selectedTarget429();if(x){c.model=x.base_model||c.model;c.epochs=x.default_epochs||c.epochs;c.imgsz=x.default_imgsz||c.imgsz;c.batch=x.default_batch||c.batch}if(!c.model){const m=(t?.base_models||[])[0];c.model=m?.value||m?.label||''}window.TrainingDraftRuntime?.update?.({config:c,resource:{batch:c.batch}});refreshTrain429()};
   function selectedLabels429(){const ids=new Set(window.TrainingDraftRuntime?.materialIds?.()||[]),l=new Set();(state.images||[]).forEach(x=>{if(ids.has(x.id))(x.labels||[]).forEach(v=>l.add(v))});return[...l]}
@@ -4118,11 +4117,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.saveEditAlgorithm414=async id=>{const payload={name:(document.getElementById('alg414EditName')?.value||'').trim(),industry:(document.getElementById('alg414EditIndustry')?.value||'').trim(),algorithm_type:document.getElementById('alg414EditType')?.value||'',remark:(document.getElementById('alg414EditRemark')?.value||'').trim()};if(!payload.name)return toast('请输入算法名称');try{const r=await api(`/api/v12/projects/${pid()}/algorithms/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),item=unwrapAlgorithm414(r);const i=(state.algorithms||[]).findIndex(x=>String(x.id)===String(id));if(i>=0)state.algorithms[i]=item;closeModal();renderAlgorithms423();toast('算法已更新')}catch(e){toast(e.message||e)}};
   window.delAlgorithm=async id=>{const a=(state.algorithms||[]).find(x=>String(x.id)===String(id));if(!a)return;if(!confirm(`确认删除算法“${a.name}”？`))return;try{await api(`/api/v12/projects/${pid()}/algorithms/${id}`,{method:'DELETE'});state.algorithms=(state.algorithms||[]).filter(x=>String(x.id)!==String(id));renderAlgorithms423();toast('算法已删除')}catch(e){toast(e.message||e)}};
 
-  // ---------- training iteration: make actual previous-version base visible ----------
-  const startAlg414=window.startAlgorithmTraining429;
-  window.startAlgorithmTraining429=async function(aid){
-    startAlg414(aid);state.iteration414[aid]=null;
-    try{const r=await api(`/api/v54/projects/${pid()}/algorithms/${aid}/iteration-base?framework=ultralytics`);state.iteration414[aid]=r.base||{};setTimeout(()=>showIterationBase414(aid),20)}catch(e){state.iteration414[aid]={error:String(e.message||e)};setTimeout(()=>showIterationBase414(aid),20)}
+  // ---------- training iteration: authoritative base refresh ----------
+  window.loadTrainingIterationBase414=async function(aid){
+    if(!Object.prototype.hasOwnProperty.call(state.iteration414,aid))state.iteration414[aid]=null;
+    try{const r=await api(`/api/v54/projects/${pid()}/algorithms/${aid}/iteration-base?framework=ultralytics`);state.iteration414[aid]=r.base||{}}
+    catch(e){state.iteration414[aid]={error:String(e.message||e)}}
+    setTimeout(()=>showIterationBase414(aid),20);
+    return state.iteration414[aid];
   };
   window.showIterationBase414=function(aid){const dynamic=[...document.querySelectorAll('.v424-modal-layer')].at(-1),layer=dynamic||document.querySelector('#modal:not(.hidden)'),body=layer?.querySelector('.modal-body');if(!body)return;let box=body.querySelector('.iteration414');if(!box){box=document.createElement('div');box.className='iteration414';body.prepend(box)}const p=iterationPresentation414(state.iteration414[aid]);box.innerHTML=`<span>迭代起点</span><b>${esc(p.title)}</b>${p.detail?`<em>${esc(p.detail)}</em>`:''}`};
 
@@ -4227,7 +4228,6 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
 /* v42.15 training contract: one candidate pool, configurable per-run random
  * experiment holdout, and a complete collapsed advanced-parameter panel. */
 (()=>{
-  const baseStartTraining415=window.startAlgorithmTraining429;
   const baseRefreshTraining415=window.refreshTrain429;
   const baseOpenSettings415=window.openTrainSettings429||window.openTrainSettings428;
   const baseSaveSettings415=window.saveTrainSettings428;
@@ -4245,11 +4245,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const input=root.querySelector('#tr429ExperimentPercent');
     input?.addEventListener('input',()=>{const v=Math.max(1,Math.min(99,Number(input.value)||20));state.train429ExperimentPercent=v;const note=root.querySelector('.train429-split-summary b');if(note)note.textContent=`${train} / ${exp}${unassigned?` · 未分配 ${unassigned}`:''}`});
   }
-  window.startAlgorithmTraining429=async function(aid){
+  window.prepareTrainingExperiment415=function(){
     state.train429ExperimentPercent=Number(state.train429ExperimentPercent||20);
-    const result=baseStartTraining415?.(aid);
+    installExperimentControl415();
     [30,160,500].forEach(delay=>setTimeout(installExperimentControl415,delay));
-    return result;
   };
   window.refreshTrain429=function(){baseRefreshTraining415?.();installExperimentControl415()};
 
@@ -4371,7 +4370,6 @@ window.installUsability417?.();
 
 /* Durable v3 exact-material training split UI. The worker only sees user-selected image ids. */
 (()=>{
-  const previousStart=window.startAlgorithmTraining429;
   const trainingApi=()=>window.PlatformCore?.training;
   const num=(id,fallback)=>{const value=Number(document.getElementById(id)?.value);return Number.isFinite(value)?value:fallback};
   const splitState=()=>{
@@ -4549,40 +4547,32 @@ window.installUsability417?.();
     state.trainingDevicesV3LoadedAt=0;
     try{localStorage.removeItem(trainingDeviceCacheKeyV3())}catch(_){}
   };
-  window.startAlgorithmTraining429=async function(aid){
+  window.openTrainingCreateCanonical429=async function(aid){
     if(!state.uiReady&&window.__v53InitPromise)await window.__v53InitPromise;
     const algorithmId=String(aid||'');
     const currentAlgorithm=(state.algorithms||[]).find(item=>String(item.id)===algorithmId);
     if(!currentAlgorithm){toast('训练算法不存在或已被删除，请刷新算法列表后重试');return false}
-    const externalChangLian=String(currentAlgorithm.source_type||'').toUpperCase()==='EXTERNAL'
-      && ['CHANG_LIAN','CHANGLIAN'].includes(String(currentAlgorithm.provider_type||'').toUpperCase());
-    if(externalChangLian){
-      try{
-        const fresh=window.ExternalAlgorithmPlatformRuntime?.preflightTraining
-          ?await window.ExternalAlgorithmPlatformRuntime.preflightTraining(algorithmId)
-          :(await api(`/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}`))?.algorithm;
-        if(!fresh)throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
-        const index=(state.algorithms||[]).findIndex(item=>String(item.id)===algorithmId);
-        if(index>=0)state.algorithms[index]=fresh;else state.algorithms=[fresh,...(state.algorithms||[])];
-      }catch(error){toast(error.message||'训练算法不存在或已被删除，请刷新算法列表后重试');return false}
-    }
-    if(!(state.targets||[]).some(target=>target.status==='ready')){
-      const options=await api(`/api/training_options?project_id=${pid()}`);
-      state.targets=options?.targets||[];
-    }
+    if(!(state.targets||[]).some(target=>target.status==='ready')){toast('训练配置尚未准备完成，请重试');return false}
     const cachedDevices=state.trainingDevicesV3?.options?.length?state.trainingDevicesV3:restoreTrainingDeviceCacheV3();
     const hasCachedDevices=Boolean(cachedDevices?.options?.length);
     const cacheFresh=hasCachedDevices&&Date.now()-Number(state.trainingDevicesV3LoadedAt||0)<TRAINING_DEVICE_CACHE_TTL_MS;
-    if(!hasCachedDevices){state.trainingDevicesV3={options:[{id:'auto',label:'自动（优先 GPU）',type:'auto',available:true}],recommended:'auto',loading:true}}
-    state.trainingBenchmarkReuse={algorithm_id:String(aid||''),available:false,loading:true,load_error:false,reason:''};
-    const resultPromise=previousStart?.(aid);
+    if(!hasCachedDevices)state.trainingDevicesV3={options:[{id:'auto',label:'自动（优先 GPU）',type:'auto',available:true}],recommended:'auto',loading:true};
+    state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:true,load_error:false,reason:''};
+    const result=window.openTrainingCreateDialog429?.(algorithmId);
+    if(result===false)return false;
+    window.syncTrainingIteration417?.(algorithmId);
+    window.prepareTrainingExperiment415?.();
     const applyDevices=(devices,{persist=true}={})=>{state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const recommendedDevice=devices?.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;renderSplit()};
-    // Persisted stale-while-revalidate: cached hardware survives browser reloads.
-    // The training worker still performs authoritative device validation before execution.
     if(hasCachedDevices)applyDevices(cachedDevices,{persist:false});
-    if(!cacheFresh)api('/api/v62/training-devices').then(devices=>applyDevices(devices,{persist:true})).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})
-    const result=await resultPromise;window.TrainingDraftRuntime?.update?.({algorithmId:String(aid||'')});loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
+    if(!cacheFresh)void api('/api/v62/training-devices').then(devices=>applyDevices(devices,{persist:true})).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}});
+    window.TrainingDraftRuntime?.update?.({algorithmId});
+    void window.loadTrainingIterationBase414?.(algorithmId);
+    void loadTrainingBenchmarkReuseV1(algorithmId);
+    [40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));
+    return await Promise.resolve(result);
   };
+  window.startAlgorithmTraining429=window.openTrainingCreateCanonical429;
+  window.startAlgorithmTraining423=window.openTrainingCreateCanonical429;
   const successfulTrainStatus429=status=>['done','finished','completed','succeeded','success'].includes(String(status||'').toLowerCase());
   const trainingStatusText429=status=>({queued:'排队中',waiting:'等待资源',pending:'等待中',starting:'启动中',running:'训练中',pausing:'暂停中',paused:'已暂停',resuming:'恢复中',stopping:'停止中',cancel_requested:'取消中',done:'已完成',finished:'已完成',completed:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',stopped:'已停止',cancelled:'已取消',canceled:'已取消'})[String(status||'').toLowerCase()]||String(status||'-');
   function trainRunCenter429(job,log){

@@ -20,6 +20,7 @@ export function installTrainingCreateHydrationRuntime({
     return response.json();
   },
   preflight,
+  openTrainingForm,
   openShell,
   isShellCurrent,
   closeShell,
@@ -28,8 +29,8 @@ export function installTrainingCreateHydrationRuntime({
   if (typeof window === 'undefined') return null;
   if (window.__trainingCreateHydrationInstalled) return window.TrainingCreateHydrationRuntime || null;
 
-  const previousStart = window.startAlgorithmTraining429;
-  if (typeof previousStart !== 'function') return null;
+  const openForm = openTrainingForm || window.openTrainingCreateCanonical429;
+  if (typeof openForm !== 'function') return null;
 
   let inflight = null;
   let openEpoch = 0;
@@ -105,7 +106,7 @@ export function installTrainingCreateHydrationRuntime({
 
     // Cached internal training inputs are already usable. Open the real form immediately
     // instead of flashing a temporary preparation modal on every click.
-    if (!needsPreparation) return previousStart(aid);
+    if (!needsPreparation) return openForm(aid);
 
     showShell(aid, token);
     try {
@@ -122,7 +123,7 @@ export function installTrainingCreateHydrationRuntime({
     }
     if (destroyed || token !== openEpoch || !shellIsCurrent(token, aid)) return null;
     dismissShell(token, aid);
-    return previousStart(aid);
+    return openForm(aid);
   };
 
   window.startAlgorithmTraining429 = start;
@@ -130,11 +131,11 @@ export function installTrainingCreateHydrationRuntime({
   const runtime = Object.freeze({
     hydrate,
     start,
-    build: 'training-create-hydration-422533',
+    build: 'training-create-hydration-422535',
     destroy() {
       destroyed = true;
       openEpoch += 1;
-      if (window.startAlgorithmTraining429 === start) window.startAlgorithmTraining429 = previousStart;
+      if (window.startAlgorithmTraining429 === start) window.startAlgorithmTraining429 = openForm;
       if (window.TrainingCreateHydrationRuntime === runtime) window.TrainingCreateHydrationRuntime = null;
       window.__trainingCreateHydrationInstalled = false;
     },
