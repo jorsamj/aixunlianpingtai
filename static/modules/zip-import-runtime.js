@@ -307,8 +307,6 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     return removed.size;
   }
 
-  const originalReload=window.reloadMaterialPage61;
-  if(typeof originalReload==='function'&&!originalReload.__zipImportDurableWrapped){const wrapped=async function(...args){const out=await originalReload.apply(this,args);reconcile('material-page').catch(()=>{});return out};wrapped.__zipImportDurableWrapped=true;window.reloadMaterialPage61=wrapped}
   const runtime={upload,reconcile,open,confirmLabels,forgetTerminal,snapshot:()=>({jobs:[...jobs],current}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>upload(input).catch(()=>{});

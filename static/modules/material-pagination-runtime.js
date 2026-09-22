@@ -470,7 +470,11 @@ export function installMaterialPaginationRuntime() {
   };
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
   window.materialSelectedIds61 = () => [...(state.data412Selected || new Set())].map(String);
-  window.reloadMaterialPage61 = () => loadMaterialPage61({reset: true});
+  window.reloadMaterialPage61 = async () => {
+    const result = await loadMaterialPage61({reset: true});
+    try { await window.ZipImportRuntime?.reconcile?.('material-page'); } catch (_) {}
+    return result;
+  };
 
   const baseMarkReady = window.markReady412;
   window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {

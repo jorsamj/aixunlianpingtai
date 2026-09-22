@@ -220,11 +220,12 @@ function renderImportPicker(job){
 }
 window.toggleImportChecks=(checked)=>{$$('.impChk').forEach(x=>x.checked=checked)};
 window.startImportJobV19=async(all)=>{
+  window.ZipImportRuntimeLegacyBridge?.beforeStart?.();
   const job=state.activeImportJob;if(!job)return toast('没有可解析的导入任务');
   const selected=all?[]:$$('.impChk').filter(x=>x.checked).map(x=>x.value);
   if(!all&&!selected.length)return toast('请选择至少一张图片，或点击解析全部');
   const r=await safe(api(`/api/v19/projects/${pid()}/import/jobs/${job.id}/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected_paths:selected})}));
-  if(r){toast('已缩放到后台解析，右下角可查看进度');closeModal();await loadImportJobs();startImportPolling(job.id);}
+  if(r){toast('已缩放到后台解析，右下角可查看进度');closeModal();await loadImportJobs();startImportPolling(job.id);await window.ZipImportRuntimeLegacyBridge?.afterStart?.();}
 };
 
 // 页面启动后加载一次后台导入任务；有运行任务时继续轮询。
