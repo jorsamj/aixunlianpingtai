@@ -91,7 +91,7 @@ jobs:
           if grep -Fq 'setInterval(switchProject, 1500)' static/modules/upload-task-center.js; then echo "upload task center project switching must be navigation-owned" >&2; exit 1; fi
           grep -Fq 'uploadTaskCenterRuntime.switchProject?.()' static/main.mjs
           grep -Fq "upload-task-center.js?v=66008" static/main.mjs
-          grep -Fq "main.mjs?v=42.25.161" static/index.html
+          grep -Fq "main.mjs?v=42.25.162" static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
           grep -Fq '已清空 ${cleared} 条已结束任务' static/modules/upload-task-center.js

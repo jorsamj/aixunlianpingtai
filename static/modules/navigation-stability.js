@@ -91,7 +91,6 @@ export function installNavigationStability({
     ...KNOWN_PAGE_NAMES,
     ...suppliedKnownPages.map(normalizeNavigationPage).filter(Boolean),
   ]);
-  const rebindTimers = [];
   let tokenSeq = 0;
   let destroyed = false;
 
@@ -250,12 +249,10 @@ export function installNavigationStability({
     });
   }
 
-  // app.js contains historical override layers; some functions are assigned late.
-  // Re-check briefly so the final implementation, not an earlier override, is guarded.
+  // app.js is fully evaluated before main.mjs installs navigation ownership.
+  // Late ES-module owners explicitly rebind after installation; timer-based
+  // re-wrapping made renderer ownership timing-dependent.
   wrapKnownFunctions();
-  for (const delay of [50, 250, 800, 1800]) {
-    rebindTimers.push(setTimeout(() => wrapKnownFunctions(), delay));
-  }
 
   const api = {
     guard,
@@ -290,6 +287,7 @@ export function installNavigationStability({
       return guard.token(normalizeNavigationPage(ownerPage || currentState().page));
     },
     wrapKnownFunctions,
+    rebindOwners: wrapKnownFunctions,
     action(ownerPage = currentState().page) {
       const normalizedOwner = normalizeNavigationPage(ownerPage || currentState().page || '');
       const token = guard.token(normalizedOwner);
@@ -311,8 +309,6 @@ export function installNavigationStability({
     },
     destroy() {
       destroyed = true;
-      for (const timer of rebindTimers) clearTimeout(timer);
-      rebindTimers.length = 0;
       pending.clear();
       pageOwners.clear();
       if (typeof window !== 'undefined') {

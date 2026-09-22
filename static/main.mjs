@@ -4,7 +4,7 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422513';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422514';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
@@ -21,7 +21,7 @@ import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgo
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
-import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422532';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422534';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
@@ -42,7 +42,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422538';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -332,6 +332,29 @@ const navigationStabilityRuntime = installNavigationStability({
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+
+// Core product pages now have one navigation owner each. Historical app.js
+// renderers remain compatibility entry points, but navigation no longer walks
+// through the chained render() override stack.
+const canonicalPageOwnerDisposers = [
+  navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),
+  navigationStabilityRuntime.registerPageOwner('训练任务', () => {
+    if (window.TrainingTaskVisibilityRuntime?.render) return window.TrainingTaskVisibilityRuntime.render();
+    return window.renderTraining423?.();
+  }),
+  navigationStabilityRuntime.registerPageOwner('数据集', () => window.renderDatasets424?.()),
+  navigationStabilityRuntime.registerPageOwner('自动标注及清洗', () => {
+    if (typeof window.renderOps427 === 'function') return window.renderOps427();
+    return window.renderAutoLabel422?.();
+  }),
+  navigationStabilityRuntime.registerPageOwner('视频切帧', () => {
+    if (typeof window.renderVideo424 === 'function') return window.renderVideo424();
+    return window.renderVideoFrameTasks?.();
+  }),
+];
+window.PlatformCore.runtime.canonicalPageOwners = {
+  destroy() { canonicalPageOwnerDisposers.splice(0).forEach(dispose => dispose?.()); },
+};
 
 // External platform integration is a canonical business page. Own it directly
 // instead of falling through the historical render override chain.

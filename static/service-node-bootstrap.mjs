@@ -1,4 +1,4 @@
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422538';
 
 function boot() {
   if (window.__serviceNodeRuntimeInstalled) return;

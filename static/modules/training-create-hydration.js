@@ -96,12 +96,19 @@ export function installTrainingCreateHydrationRuntime({
 
   const start = async aid => {
     const token = ++openEpoch;
+    const state = getState?.() || {};
+    const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
+    const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
+      && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
+    const needsHydration = !trainingCreationInputsReady(state);
+    const needsPreparation = needsHydration || externalChangLian;
+
+    // Cached internal training inputs are already usable. Open the real form immediately
+    // instead of flashing a temporary preparation modal on every click.
+    if (!needsPreparation) return previousStart(aid);
+
     showShell(aid, token);
     try {
-      const state = getState?.() || {};
-      const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
-      const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
-        && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
       await Promise.all([
         hydrate(),
         externalChangLian && typeof preflight === 'function' ? preflight(aid) : Promise.resolve(null),

@@ -92,6 +92,7 @@ test('subsequent training open reuses hydrated configuration', async () => {
   const originalWindow = globalThis.window;
   let requests = 0;
   let opens = 0;
+  let shells = 0;
   const state = {
     targets: [{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}],
     rec: {device: 'cuda:0'},
@@ -102,7 +103,7 @@ test('subsequent training open reuses hydrated configuration', async () => {
       getState: () => state,
       projectId: () => 'project-1',
       request: async () => { requests += 1; return {}; },
-      openShell: () => {},
+      openShell: () => { shells += 1; },
       isShellCurrent: () => true,
       closeShell: () => {},
     });
@@ -110,6 +111,7 @@ test('subsequent training open reuses hydrated configuration', async () => {
     await runtime.start('alg-1');
     assert.equal(requests, 0);
     assert.equal(opens, 2);
+    assert.equal(shells, 0, 'hydrated internal training must open without a loading shell');
   } finally {
     globalThis.window = originalWindow;
   }

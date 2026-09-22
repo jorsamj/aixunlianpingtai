@@ -493,6 +493,7 @@ export function installTrainingTaskVisibilityRuntime({
 
   window.TrainingTaskVisibilityRuntime = visibilityRuntime;
   window.__trainingTaskVisibilityRuntimeInstalled = true;
+  window.NavigationStability?.rebindOwners?.();
   if (window.PlatformCore?.runtime) {
     window.PlatformCore.runtime.trainingTaskVisibilityRuntime = visibilityRuntime;
   }

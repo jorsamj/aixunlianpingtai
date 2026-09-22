@@ -4608,6 +4608,8 @@ window.installUsability417?.();
     }
     renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
   }
+  const TRAINING_DEVICE_CACHE_TTL_MS=10*60*1000;
+  window.invalidateTrainingDeviceCacheV3=()=>{state.trainingDevicesV3LoadedAt=0};
   window.startAlgorithmTraining429=async function(aid){
     if(!state.uiReady&&window.__v53InitPromise)await window.__v53InitPromise;
     const algorithmId=String(aid||'');
@@ -4630,12 +4632,16 @@ window.installUsability417?.();
       state.targets=options?.targets||[];
     }
     const cachedDevices=state.trainingDevicesV3;
-    const cacheFresh=Boolean(cachedDevices?.options?.length)&&Date.now()-Number(state.trainingDevicesV3LoadedAt||0)<60000;
-    if(!cachedDevices?.options?.length){state.trainingDevicesV3={options:[{id:'auto',label:'自动（优先 GPU）',type:'auto',available:true}],recommended:'auto',loading:true}}
+    const hasCachedDevices=Boolean(cachedDevices?.options?.length);
+    const cacheFresh=hasCachedDevices&&Date.now()-Number(state.trainingDevicesV3LoadedAt||0)<TRAINING_DEVICE_CACHE_TTL_MS;
+    if(!hasCachedDevices){state.trainingDevicesV3={options:[{id:'auto',label:'自动（优先 GPU）',type:'auto',available:true}],recommended:'auto',loading:true}}
     state.trainingBenchmarkReuse={algorithm_id:String(aid||''),available:false,loading:true,load_error:false,reason:''};
     const resultPromise=previousStart?.(aid);
     const applyDevices=devices=>{state.trainingDevicesV3={...devices,loading:false};state.trainingDevicesV3LoadedAt=Date.now();const recommendedDevice=devices?.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;renderSplit()};
-    if(cacheFresh){applyDevices(cachedDevices)}else{api('/api/v62/training-devices').then(applyDevices).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})}
+    // Stale-while-revalidate: cached hardware opens instantly; only stale/missing
+    // inventory is refreshed in the background.
+    if(hasCachedDevices)applyDevices(cachedDevices);
+    if(!cacheFresh)api('/api/v62/training-devices').then(applyDevices).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})
     const result=await resultPromise;window.TrainingDraftRuntime?.update?.({algorithmId:String(aid||'')});loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
   const successfulTrainStatus429=status=>['done','finished','completed','succeeded','success'].includes(String(status||'').toLowerCase());
