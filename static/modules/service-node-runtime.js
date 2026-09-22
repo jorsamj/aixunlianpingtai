@@ -237,7 +237,10 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
 
   const currentPage = () => String(window.NavigationStability?.currentPage?.() || '').trim();
   const findNode = nodeId => nodes.find(node => String(node.node_id) === String(nodeId));
-  const invalidateTrainingDevices = () => window.invalidateTrainingDeviceCacheV3?.();
+  const invalidateResourceCaches = () => {
+    window.invalidateTrainingDeviceCacheV3?.();
+    window.invalidateDeployPluginCacheV41?.();
+  };
 
   function clearPoll() { window.PollRegistryRuntime?.clear?.(POLL_KEY); }
   function armPoll() {
@@ -464,13 +467,13 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       try {
         if (node) {
           await requestJson(`${API_ROOT}/${encodeURIComponent(node.node_id)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-          invalidateTrainingDevices();
+          invalidateResourceCaches();
           window.closeModal?.();
           await refresh({paint: true});
           notify?.('服务节点配置已保存');
         } else {
           const created = await requestJson(API_ROOT, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({node_id: nodeId, ...payload})});
-          invalidateTrainingDevices();
+          invalidateResourceCaches();
           await refresh({paint: true, silent: true});
           showToken(created.node, created.agent_token);
         }
@@ -540,7 +543,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (!node) return;
     try {
       await requestJson(`${API_ROOT}/${encodeURIComponent(nodeId)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: !node.enabled})});
-      invalidateTrainingDevices();
+      invalidateResourceCaches();
       await refresh({paint: true});
       notify?.(node.enabled ? '节点已停用' : '节点已启用');
     } catch (error) { notify?.(error?.message || error); }
@@ -561,7 +564,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (!node || !window.confirm?.(`确认删除服务节点“${node.display_name || nodeId}”？运行中的 Worker/任务存在时服务器会拒绝删除。`)) return;
     try {
       await requestJson(`${API_ROOT}/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
-      invalidateTrainingDevices();
+      invalidateResourceCaches();
       await refresh({paint: true});
       notify?.('服务节点已删除');
     } catch (error) { notify?.(error?.message || error); }

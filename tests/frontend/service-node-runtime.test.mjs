@@ -178,3 +178,12 @@ test('service node page restores a persisted snapshot before live revalidation',
   assert.match(source, /persistNodeSnapshot\(\);/);
   assert.match(source, /if \(hasSnapshot\) \{\s*paintSummary\(\);\s*paintPage\(\);/);
 });
+
+
+test('service node mutations invalidate dependent training and deployment plugin caches', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /const invalidateResourceCaches = \(\) => \{/);
+  assert.match(source, /window\.invalidateTrainingDeviceCacheV3\?\.\(\)/);
+  assert.match(source, /window\.invalidateDeployPluginCacheV41\?\.\(\)/);
+  assert.ok((source.match(/invalidateResourceCaches\(\);/g) || []).length >= 4);
+});

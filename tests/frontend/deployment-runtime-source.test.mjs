@@ -58,3 +58,25 @@ test('deployment pages paint cached low-frequency data before background refresh
   assert.doesNotMatch(source,/正在读取模型与部署资源\.\.\./);
   assert.doesNotMatch(source,/正在读取部署产物\.\.\./);
 });
+
+
+test('deployment plugin page restores only a sanitized persisted card snapshot',()=> {
+  assert.match(source,/const DEPLOY_PLUGIN_CACHE_KEY='cl_deploy_plugins_v41_snapshot'/);
+  assert.match(source,/function restoreDeployPluginCacheV41\(\)/);
+  assert.match(source,/function persistDeployPluginCacheV41\(\)/);
+  assert.match(source,/restoreDeployPluginCacheV41\(\);/);
+  assert.match(source,/state\.deployPluginsLoadedAt>0\|\|\(state\.deployPlugins\|\|\[\]\)\.length>0/);
+  const shapeStart=source.indexOf('const deployPluginCacheRowV41=');
+  const shapeEnd=source.indexOf('function restoreDeployPluginCacheV41()',shapeStart);
+  assert.ok(shapeStart>=0&&shapeEnd>shapeStart);
+  const shape=source.slice(shapeStart,shapeEnd);
+  assert.match(shape,/id:p\?\.id/);
+  assert.match(shape,/configured_count/);
+  assert.doesNotMatch(shape,/resources/);
+  assert.doesNotMatch(shape,/api_key|secret|token/i);
+});
+
+test('deployment plugin cache is invalidated by deployment resource mutations',()=> {
+  assert.match(source,/window\.invalidateDeployPluginCacheV41=\(\)=>/);
+  assert.ok((source.match(/window\.invalidateDeployPluginCacheV41\?\.\(\)/g)||[]).length>=5);
+});
