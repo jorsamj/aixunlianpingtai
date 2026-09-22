@@ -68,3 +68,23 @@ test('test publish feedback panel paints cached rows before TTL revalidation', (
   assert.match(source, /if\(!force&&sameProject&&state\.onlineFeedback63LoadedAt>0&&age>=0&&age<ONLINE_FEEDBACK_CACHE_TTL_MS\)/);
   assert.match(source, /state\.onlineFeedback63RefreshPromise&&state\.onlineFeedback63RefreshProjectId===projectId/);
 });
+
+
+test('test publish manual refresh is page-scoped instead of using broad loadAll', () => {
+  const testStart = source.indexOf('window.renderTestCore30=function renderTestCore30()');
+  const testEnd = source.indexOf('window.renderTest=window.renderTestCore30;', testStart);
+  assert.ok(testStart >= 0 && testEnd > testStart);
+  const testPage = source.slice(testStart, testEnd);
+  assert.match(testPage, /onclick="refreshTestPageDataV3\(\)">刷新环境\/模型<\/button>/);
+  assert.doesNotMatch(testPage, /loadAll\(\)\.then\(render\)/);
+
+  const refreshStart = source.indexOf('window.refreshTestPageDataV3=async function()');
+  const refreshEnd = source.indexOf('\n  window.refreshCurrentPage413=', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  const refresh = source.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /await extras412\('测试发布'\)/);
+  assert.match(refresh, /state\.page===page&&page==='测试发布'/);
+  assert.doesNotMatch(refresh, /loadAll\(/);
+  assert.doesNotMatch(refresh, /loadCore412\(/);
+  assert.doesNotMatch(refresh, /loadRelated\(/);
+});
