@@ -1050,3 +1050,41 @@ test('model config save appears immediately without broad related refresh', asyn
   expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('all formal utility and deployment pages avoid unknown-module fallback', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+
+  const pages = [
+    '工作台',
+    '质量中心',
+    '标签管理',
+    '部署转换',
+    '部署产物',
+    '模型配置',
+    '部署资源',
+    '部署插件',
+    '组件检测',
+    '平台对接',
+    '服务节点',
+  ];
+
+  for (const target of pages) {
+    await page.evaluate(async name => {
+      const result = window.setPage(name);
+      if (result && typeof result.then === 'function') await result;
+    }, target);
+
+    await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(target);
+    await expect(page.locator('#title')).toHaveText(target);
+    await expect(page.locator('#view [data-unknown-page]')).toHaveCount(0);
+    await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
+    await expect(page.locator('#view')).not.toContainText('当前页面不存在或已下线');
+  }
+
+  expect(pageErrors).toEqual([]);
+});
