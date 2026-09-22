@@ -320,6 +320,15 @@ const navigationStabilityRuntime = installNavigationStability({
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
 
+// External platform integration is a canonical business page. Own it directly
+// instead of falling through the historical render override chain.
+const unregisterExternalPlatformPageOwner = navigationStabilityRuntime.registerPageOwner('平台对接', () => (
+  externalAlgorithmPlatformRuntime?.render?.({reload: true})
+));
+window.PlatformCore.runtime.externalPlatformPageOwner = {
+  destroy() { unregisterExternalPlatformPageOwner?.(); },
+};
+
 // Component detection is a canonical business page. Own it directly instead of
 // depending on the historical app.js render override chain racing with navigation.
 const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner('组件检测', () => (

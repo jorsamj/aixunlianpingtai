@@ -153,8 +153,9 @@ test('startup progress keeps the same boot card while status advances', async ({
   expect(await page.evaluate(() => ({
     card: window.__stableBootCard === document.querySelector('[data-boot-card="1"]'),
     bar: window.__stableBootBar === document.querySelector('[data-boot-progress-bar]'),
+    progress: document.querySelector('[data-boot-progress-bar]')?.dataset.progress || '',
     transform: document.querySelector('[data-boot-progress-bar]')?.style.transform || '',
-  }))).toEqual({card:true, bar:true, transform:'scaleX(0.6000)'});
+  }))).toEqual({card:true, bar:true, progress:'60.00', transform:'scaleX(0.6)'});
 
   releaseReady();
   await page.evaluate(async () => {

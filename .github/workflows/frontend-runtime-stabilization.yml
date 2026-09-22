@@ -325,6 +325,8 @@ jobs:
           grep -Fq "'deploy-jobs-v39','部署转换'" static/app.js
           grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422536';" static/main.mjs
           grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
+          grep -Fq "registerPageOwner('平台对接'" static/main.mjs
+          grep -Fq 'externalAlgorithmPlatformRuntime?.render?.({reload: true})' static/main.mjs
           grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs
           grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
           grep -Fq 'pageLoadFlight && pageLoadFlightKey === flightKey' static/modules/material-pagination-runtime.js

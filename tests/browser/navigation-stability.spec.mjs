@@ -1052,6 +1052,38 @@ test('model config save appears immediately without broad related refresh', asyn
 });
 
 
+test('platform integration is installed as a canonical navigation owner', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.route('**/api/v63/external-algorithm-platform/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith('/config')
+      ? {mode:'local', provider:'changlian', base_url:'', credentials:{configured:false, available:true}}
+      : path.endsWith('/history')
+        ? {items:[]}
+        : path.endsWith('/cache')
+          ? {categories:[], products:[], analyses:[], compute_platforms:[]}
+          : {ready:true, status:'local'};
+    await route.fulfill({status:200, contentType:'application/json', body:JSON.stringify(body)});
+  });
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout:15_000}).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(window.NavigationStability?.hasPageOwner?.('平台对接'))))
+    .toBe(true);
+
+  await page.evaluate(async () => {
+    const result = window.setPage('平台对接');
+    if (result && typeof result.then === 'function') await result;
+  });
+  await expect(page.locator('#title')).toHaveText('平台对接');
+  await expect(page.locator('[data-external-platform-page="1"]')).toBeVisible({timeout:10_000});
+  await expect(page.locator('#view [data-unknown-page]')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+
 test('all formal utility and deployment pages avoid unknown-module fallback', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -1081,9 +1113,10 @@ test('all formal utility and deployment pages avoid unknown-module fallback', as
 
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(target);
     await expect(page.locator('#title')).toHaveText(target);
-    await expect(page.locator('#view [data-unknown-page]')).toHaveCount(0);
-    await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
-    await expect(page.locator('#view')).not.toContainText('当前页面不存在或已下线');
+    const fallback = page.locator('#view [data-unknown-page]');
+    await expect(fallback, `formal page ${target} must have a concrete renderer owner`).toHaveCount(0);
+    await expect(page.locator('#view'), `formal page ${target} must not show legacy module readiness copy`).not.toContainText('当前页面模块尚未就绪');
+    await expect(page.locator('#view'), `formal page ${target} must not show unknown page fallback`).not.toContainText('当前页面不存在或已下线');
   }
 
   expect(pageErrors).toEqual([]);
