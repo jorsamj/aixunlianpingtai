@@ -3227,7 +3227,26 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.saveData427=async function(id){const name=document.getElementById('data427Name')?.value.trim();if(!name)return toast('请输入名称');try{const r=await api(`/api/v47/projects/${pid()}/images/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});const i=(state.images||[]).findIndex(x=>x.id===id);if(i>=0)Object.assign(state.images[i],r.image||{});closeModal();renderDatasets424();toast('名称已更新')}catch(e){toast(e.message||e)}};
 
   const baseRenderDatasets427=window.renderDatasets424;
-  window.renderDatasets424=function(){baseRenderDatasets427();const sel=document.getElementById('data426Ann');if(sel)sel.classList.add('compact427');const toolbar=document.querySelector('.data426-toolbar');if(toolbar&&!toolbar.querySelector('.clean-short427'))toolbar.insertAdjacentHTML('beforeend',`<button class="btn clean-short427" onclick="createClean427({image_ids:matching427().map(x=>x.id)})">一键清洗当前筛选</button><button class="btn clean-short427" onclick="createAiLabel427({image_ids:matching427().filter(x=>!x.annotated).map(x=>x.id)})">AI标注当前未标注</button>`)};
+  window.renderDatasets424=function(){
+    const storageApi427=()=>window.PlatformCore?.storage;
+    const all=state.images||[],selected=state.materialSourceFilter61||'all';
+    const feedbackIds=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
+    let visible=selected==='all'?all:all.filter(row=>storageApi427()?.sourceMatches(row,selected));
+    if(state.iterationFeedbackOnly63&&feedbackIds.size)visible=visible.filter(row=>feedbackIds.has(String(row.id)));
+    state.images=visible;
+    try{
+      baseRenderDatasets427();
+      const sel=document.getElementById('data426Ann');if(sel)sel.classList.add('compact427');
+      const toolbar=document.querySelector('.data426-toolbar');
+      if(toolbar&&!toolbar.querySelector('.clean-short427'))toolbar.insertAdjacentHTML('beforeend',`<button class="btn clean-short427" onclick="createClean427({image_ids:matching427().map(x=>x.id)})">一键清洗当前筛选</button><button class="btn clean-short427" onclick="createAiLabel427({image_ids:matching427().filter(x=>!x.annotated).map(x=>x.id)})">AI标注当前未标注</button>`);
+      window.decorateDatasetControls414?.();
+    }finally{state.images=all}
+    const toolbar=document.querySelector('.data426-toolbar');
+    if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi427()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
+    [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi427()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
+    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)window.loadStorageSources61?.().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
+    window.renderSupplementDataBanner63?.();
+  };
 
   // ----- upload result review -----
   function uploadReview427(ids,title='上传完成'){state.v427UploadIds=ids||[];const rows=(state.images||[]).filter(x=>state.v427UploadIds.includes(x.id));modal(title,`<div class="uploadreview427"><div class="uploadreview427-head"><div><b>已入库 ${rows.length} 张图片</b><span>可以先查看，再清洗或AI标注</span></div><div class="row"><button class="btn" onclick="createClean427({image_ids:state.v427UploadIds})">一键清洗</button><button class="btn primary" onclick="createAiLabel427({image_ids:state.v427UploadIds.filter(id=>!(state.images.find(x=>x.id===id)?.annotated))})">一键AI标注</button></div></div><div class="uploadreview427-grid">${rows.slice(0,120).map(x=>`<button onclick="previewData426('${x.id}')"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${x.annotated?'已标注':'未标注'} · ${fmtSize424(x.size_bytes)}</span></button>`).join('')||'<div class="empty">没有新增图片</div>'}</div></div>`,true)}
@@ -4282,32 +4301,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // ---------- dataset: labels strictly from label library ----------
   function filterLabelItems414(){return (state.labels||[]).filter(l=>l&&l.code&&l.status!=='disabled'&&l.status!=='inactive')}
-  const baseData414=window.renderDatasets424;
-  window.renderDatasets424=function(){
-    const storageApi414=()=>window.PlatformCore?.storage;
-    const all=state.images||[],selected=state.materialSourceFilter61||'all';
-    const feedbackIds=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
-    let visible=selected==='all'?all:all.filter(row=>storageApi414()?.sourceMatches(row,selected));
-    if(state.iterationFeedbackOnly63&&feedbackIds.size)visible=visible.filter(row=>feedbackIds.has(String(row.id)));
-    state.images=visible;
-    try{
-      baseData414();
-      if(state.data412Tab==='processed'){
-        const chips=document.querySelector('.data426-filtertop .data426-chips');
-        if(chips){const labs=filterLabelItems414();chips.innerHTML=`<button class="data426-chip clear ${state.data412Labels.size?'':'on'}" onclick="clearLabels412()">全部</button>${labs.map(l=>`<button class="data426-chip ${state.data412Labels.has(l.code)?'on':''}" onclick="toggleLabel412('${esc(l.code)}')"><b>${esc(l.code)}</b>${l.display_name&&l.display_name!==l.code?`<small>${esc(l.display_name)}</small>`:''}</button>`).join('')}`}
-      }
-      if(state.data412Tab==='unprocessed'){
-        const head=document.querySelector('.data426-head .row');
-        if(head&&!head.querySelector('.batch414-clean'))head.insertAdjacentHTML('afterbegin',`<button class="btn batch414-clean" onclick="openBatch414('clean')">批量清洗</button><button class="btn batch414-ready" onclick="openBatch414('ready')">批量无需清洗</button>`);
-        // Hide older broad actions to avoid duplicate semantics.
-        [...document.querySelectorAll('.data426-head .row > button')].forEach(b=>{if(['清洗当前素材','当前素材无需清洗'].includes(b.textContent.trim()))b.style.display='none'});
-      }
-    }finally{state.images=all}
-    const toolbar=document.querySelector('.data426-toolbar');
-    if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi414()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
-    [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi414()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
-    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)loadStorageSources61().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
-    window.renderSupplementDataBanner63?.();
+  window.decorateDatasetControls414=function(){
+    if(state.data412Tab==='processed'){
+      const chips=document.querySelector('.data426-filtertop .data426-chips');
+      if(chips){const labs=filterLabelItems414();chips.innerHTML=`<button class="data426-chip clear ${state.data412Labels.size?'':'on'}" onclick="clearLabels412()">全部</button>${labs.map(l=>`<button class="data426-chip ${state.data412Labels.has(l.code)?'on':''}" onclick="toggleLabel412('${esc(l.code)}')"><b>${esc(l.code)}</b>${l.display_name&&l.display_name!==l.code?`<small>${esc(l.display_name)}</small>`:''}</button>`).join('')}`}
+    }
+    if(state.data412Tab==='unprocessed'){
+      const head=document.querySelector('.data426-head .row');
+      if(head&&!head.querySelector('.batch414-clean'))head.insertAdjacentHTML('afterbegin',`<button class="btn batch414-clean" onclick="openBatch414('clean')">批量清洗</button><button class="btn batch414-ready" onclick="openBatch414('ready')">批量无需清洗</button>`);
+      [...document.querySelectorAll('.data426-head .row > button')].forEach(b=>{if(['清洗当前素材','当前素材无需清洗'].includes(b.textContent.trim()))b.style.display='none'});
+    }
   };
   window.openBatch414=function(mode,ids=null){
     const candidates=ids?[...(state.recentUploadedMaterials61||[]),...(state.images||[])]:state.images||[],all=[...new Map(candidates.map(x=>[String(x.id),x])).values()].filter(x=>!x.annotation_index_pending&&!isProcessed414(x)&&!x.annotated),allowed=new Set((ids||all.map(x=>x.id)).map(String));const rows=all.filter(x=>allowed.has(String(x.id)));if(!rows.length)return toast('没有可操作的未处理素材');state.batch414Selected=new Set(rows.map(x=>String(x.id)));

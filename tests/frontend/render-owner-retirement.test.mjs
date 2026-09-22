@@ -40,6 +40,18 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 });
 
 
+test('dataset label controls are a direct decoration hook instead of a renderer layer', () => {
+  assert.equal(app.includes('const baseData414=window.renderDatasets424;'), false);
+  assert.match(app, /window\.decorateDatasetControls414=function\(\)/);
+  const start = app.indexOf('const baseRenderDatasets427=window.renderDatasets424;');
+  const end = app.indexOf('// ----- upload result review -----', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /window\.decorateDatasetControls414\?\.\(\)/);
+  assert.match(owner, /state\.iterationFeedbackOnly63&&feedbackIds\.size/);
+  assert.match(owner, /id="materialSource61"/);
+});
+
 test('dataset storage and feedback filters live in the active dataset owner without a final wrapper', () => {
   assert.equal(app.includes('const finalDataset=window.renderDatasets424;'), false);
   const start = app.indexOf('const baseData414=window.renderDatasets424;');
