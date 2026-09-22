@@ -229,6 +229,11 @@ def test_detection_batch_metadata_history_and_review_are_durable(
     assert "尚未结束" in blocked.text
 
     repository = app_module.shared_task_repository()
+    # This integration test shares the durable task repository with earlier cases.
+    # Promote only this task through the real queue contract instead of assuming
+    # it happens to be the next previously-created deployment task.
+    promoted = repository.promote(task["id"])
+    assert promoted.task_id == task["id"]
     lease = repository.claim_next(
         "deployment-batch-test-worker",
         [TaskKind.DEPLOYMENT_TEST],
