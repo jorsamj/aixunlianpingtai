@@ -5103,11 +5103,14 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const html=window.renderDetectionResultCore31?.(result,title)||'',metrics=`<div class="report429-kpis"><div><span>预处理</span><b>${Number(result?.preprocess_ms||0).toFixed(2)} ms</b></div><div><span>模型推理</span><b>${Number(result?.inference_ms||0).toFixed(2)} ms</b></div><div><span>后处理</span><b>${Number(result?.postprocess_ms||0).toFixed(2)} ms</b></div><div><span>任务总耗时</span><b>${Number(result?.total_elapsed_ms||result?.elapsed_ms||0).toFixed(2)} ms</b></div></div>`;
     return html+metrics;
   };
-  window.benchPredictOne=async function(selectId,file,conf){
+  window.benchPredictOne=async function(selectId,file,conf,batchMeta=null){
     if(!file)throw new Error('请选择测试图片');const select=document.getElementById(selectId),model=(state.testModels||[])[Number(select?.value)];if(!model)throw new Error('请选择可用测试模型');
     const format=String(model.runtime_format||String(model.path||'').split('.').pop()||'').toLowerCase(),vendor=['rknn','om','bmodel'].includes(format),framework=model.framework||'ultralytics';
     const env=vendor?{}:(state.inferenceEnvs||[]).find(item=>item.framework===framework&&item.status==='ready');if(!vendor&&!env)throw new Error(`当前没有可用的${framework==='paddle'?'Paddle':'Ultralytics'} Runtime`);
-    const form=new FormData();form.append('file',file);form.append('model_name',model.model_name||model.path||'');form.append('model_source',model.model_source||'project');form.append('local_path',model.path||'');form.append('algorithm_id',model.algorithm_id||'');form.append('version_id',model.version_id||'');form.append('conf',conf||.25);form.append('inference_framework',framework);form.append('inference_env_id',env?.id||'');
+    const form=new FormData();form.append('file',file);form.append('model_name',model.model_name||model.path||'');form.append('model_source',model.model_source||'project');form.append('local_path',model.path||'');form.append('algorithm_id',model.algorithm_id||'');form.append('version_id',model.version_id||'');form.append('conf',conf||.25);form.append('inference_framework',framework);form.append('inference_env_id',env?.id||'');form.append('model_label',model.label||model.model_name||model.path||'');
+    if(batchMeta?.batch_id){
+      form.append('detection_batch_id',String(batchMeta.batch_id));form.append('detection_item_index',String(batchMeta.item_index??0));form.append('detection_item_total',String(batchMeta.item_total??1));form.append('detection_side',String(batchMeta.side||''));form.append('original_filename',String(batchMeta.original_filename||file.name||''));
+    }
     let task=await api(`/api/v61/projects/${pid()}/deployment-tests`,{method:'POST',body:form});const taskId=task.id||task.task_id;
     if(!taskId)throw new Error('部署测试任务创建失败');
     task=await window.PlatformCore.taskPoller.waitForTaskTerminal({
@@ -5492,7 +5495,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function modelGroup64(model){
     const source=String(model?.model_source||'');
     if(source==='builtin')return '原始 / 基础模型';
-    if(source==='algorithm_version')return '算法版本';
+    if(source==='algorithm_version'){
+      const algorithm=(state.algorithms||[]).find(row=>String(row.id)===String(model?.algorithm_id||''));
+      return `算法 · ${algorithm?.name||algorithm?.code||model?.algorithm_id||'未命名'}`;
+    }
     if(['project','local'].includes(source))return '项目 / 本机模型';
     if(source.startsWith('paddle'))return 'Paddle 模型';
     if(source==='deployment_artifact')return '可推理转换产物';
@@ -5601,7 +5607,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const a=document.getElementById('benchModelA'),b=document.getElementById('benchModelB');
     if((mode==='compare'||mode==='a')&&!a?.value)return toast('请选择 A 模型');
     if((mode==='compare'||mode==='b')&&!b?.value)return toast('请选择 B 模型');
-    const runId=`bench-${Date.now()}`,run={id:runId,mode,total:files.length,completed:0,success:0,failed:0,running:true,cancelled:false,results:files.map((file,index)=>({id:`${runId}-${index}`,file,status:'pending',a:null,b:null,error:'',review:''}))};
+    const runId=`bench-${Date.now()}`,run={id:runId,mode,total:files.length,completed:0,success:0,failed:0,running:true,cancelled:false,results:files.map((file,index)=>({id:`${runId}-${index}`,batchId:runId,itemIndex:index,file,status:'pending',a:null,b:null,error:'',review:'',reviewNote:''}))};
     state.benchBatch64=run;renderBenchBatch64();
     const button=document.getElementById('benchRun64');if(button){button.disabled=true;button.textContent='检测进行中…'}
     try{
@@ -5609,9 +5615,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         if(run.cancelled||state.benchBatch64!==run)break;
         const row=run.results[index];row.status='running';patchBenchRow64(index);
         try{
-          if(mode==='compare'||mode==='a')row.a=await window.benchPredictOne('benchModelA',row.file,conf);
+          if(mode==='compare'||mode==='a')row.a=await window.benchPredictOne('benchModelA',row.file,conf,{batch_id:run.id,item_index:index,item_total:run.total,side:'A',original_filename:row.file.webkitRelativePath||row.file.name});
           if(run.cancelled||state.benchBatch64!==run)break;
-          if(mode==='compare'||mode==='b')row.b=await window.benchPredictOne('benchModelB',row.file,conf);
+          if(mode==='compare'||mode==='b')row.b=await window.benchPredictOne('benchModelB',row.file,conf,{batch_id:run.id,item_index:index,item_total:run.total,side:'B',original_filename:row.file.webkitRelativePath||row.file.name});
           row.status='done';run.success+=1;
         }catch(error){row.status='failed';row.error=String(error?.message||error);run.failed+=1}
         run.completed+=1;patchBenchRow64(index);
@@ -5619,20 +5625,72 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }finally{
       run.running=false;summary64();
       if(button){button.disabled=false;button.textContent='开始本次检测'}
+      void window.loadDetectionBatches64?.({force:true});
     }
   };
 
-  window.markBenchReview64=function(index,value){
+  window.markBenchReview64=async function(index,value){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||!REVIEW_NAMES64[value])return;
-    row.review=value;patchBenchRow64(Number(index));
-    const status=document.getElementById('benchReviewStatus64');if(status)status.textContent=`已标记：${REVIEW_NAMES64[value]}`;
+    const status=document.getElementById('benchReviewStatus64');if(status)status.textContent='正在保存核验…';
+    try{
+      if(row.batchId){
+        await api(`/api/v64/projects/${pid()}/detection-batches/${encodeURIComponent(row.batchId)}/items/${Number(row.itemIndex??index)}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({review:value,note:row.reviewNote||''})});
+      }
+      row.review=value;patchBenchRow64(Number(index));
+      if(status)status.textContent=`已保存：${REVIEW_NAMES64[value]}`;
+      void window.loadDetectionBatches64?.({force:true});
+    }catch(error){if(status)status.textContent='保存失败';toast(error.message||error)}
   };
   window.openBenchResult64=function(index){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||row.status!=='done')return;
-    if(!row.previewUrl)row.previewUrl=URL.createObjectURL(row.file);
+    if(!row.previewUrl&&row.file instanceof File)row.previewUrl=URL.createObjectURL(row.file);
+    const originalUrl=row.inputImageUrl||row.previewUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
     const result=(value,fallback)=>value?window.renderDetectionResult(value.r,resultName64(value,fallback)):'<div class="bench64-result-empty">本模式未运行该模型</div>';
     const reviewButtons=Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn mini ${row.review===key?'primary':'soft'}" onclick="markBenchReview64(${Number(index)},'${key}')">${label}</button>`).join('');
-    modal('检测详情',`<div class="bench64-detail"><section class="bench64-original"><div class="panel-title">原图</div><img src="${row.previewUrl}" alt=""><b>${esc(row.file.webkitRelativePath||row.file.name)}</b></section><div class="bench64-compare">${result(row.a,'A 模型')}${result(row.b,'B 模型')}</div><section class="bench64-review"><div><b>人工核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>用于记录本次检测是否正确：可标记正确、漏检、误检、框不准或类别错误。</p></section></div>`,true);
+    modal('检测详情',`<div class="bench64-detail"><section class="bench64-original"><div class="panel-title">原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'A 模型')}${result(row.b,'B 模型')}</div><section class="bench64-review"><div><b>人工核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>用于记录本次检测是否正确：可标记正确、漏检、误检、框不准或类别错误。</p></section></div>`,true);
+  };
+
+  function durableSide64(model){
+    if(!model)return null;
+    const identity=model.model||{};
+    return {
+      m:{label:identity.label||identity.model_name||identity.model_source||'模型',...identity},
+      r:{
+        detections:model.detections||[],image_url:model.result_image_url||'',input_image_url:model.input_image_url||'',
+        preprocess_ms:model.preprocess_ms,inference_ms:model.inference_ms,postprocess_ms:model.postprocess_ms,total_elapsed_ms:model.total_elapsed_ms,
+      }
+    };
+  }
+  function batchFromDurable64(batch){
+    const items=batch?.items||[],results=items.map(item=>{
+      const a=durableSide64(item.models?.A),b=durableSide64(item.models?.B),statuses=[item.models?.A?.status,item.models?.B?.status].filter(Boolean);
+      const failed=statuses.some(status=>status==='FAILED'),pending=statuses.some(status=>!['SUCCEEDED','FAILED','CANCELLED'].includes(String(status||'')));
+      return {
+        id:`${batch.batch_id}-${item.index}`,batchId:batch.batch_id,itemIndex:Number(item.index||0),
+        file:{name:item.original_filename||`图片 ${Number(item.index||0)+1}`},originalFilename:item.original_filename||'',inputImageUrl:item.models?.A?.input_image_url||item.models?.B?.input_image_url||'',
+        status:pending?'running':failed?'failed':'done',a,b,error:item.models?.A?.error||item.models?.B?.error||'',review:item.review?.review||'',reviewNote:item.review?.note||''
+      };
+    });
+    return {id:batch.batch_id,mode:'restored',total:Number(batch.total||results.length),completed:Number(batch.completed_items||0),success:Math.max(0,Number(batch.completed_items||0)-Number(batch.failed_items||0)),failed:Number(batch.failed_items||0),running:false,cancelled:false,results};
+  }
+  window.renderDetectionBatchHistory64=function(){
+    const root=document.getElementById('benchRecentBatches64');if(!root)return;
+    const rows=state.detectionBatches64||[];
+    root.innerHTML=rows.length?rows.map(batch=>`<button class="bench64-history-row" onclick="openDetectionBatch64('${escAttr64(batch.batch_id)}')"><span><b>${esc(batch.batch_id)}</b><em>${esc(batch.created_at||'')}</em></span><span>${Number(batch.created_items||0)} / ${Number(batch.total||0)} 张</span><span>${Number(batch.failed_items||0)} 失败</span><strong>查看结果 ›</strong></button>`).join(''):'<div class="bench64-empty"><b>暂无历史检测批次</b><span>完成一次批量检测后会出现在这里。</span></div>';
+  };
+  window.loadDetectionBatches64=async function({force=false}={}){
+    const now=Date.now(),age=now-Number(state.detectionBatches64LoadedAt||0);
+    if(!force&&state.detectionBatches64LoadedAt&&age>=0&&age<30000){window.renderDetectionBatchHistory64();return state.detectionBatches64||[]}
+    if(state.detectionBatches64Promise)return state.detectionBatches64Promise;
+    const task=api(`/api/v64/projects/${pid()}/detection-batches?limit=12`).then(result=>{state.detectionBatches64=result.items||[];state.detectionBatches64LoadedAt=Date.now();window.renderDetectionBatchHistory64();return state.detectionBatches64}).catch(error=>{const root=document.getElementById('benchRecentBatches64');if(root)root.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`;return []}).finally(()=>{if(state.detectionBatches64Promise===task)state.detectionBatches64Promise=null});
+    state.detectionBatches64Promise=task;return task;
+  };
+  window.openDetectionBatch64=async function(batchId){
+    try{
+      const result=await api(`/api/v64/projects/${pid()}/detection-batches/${encodeURIComponent(batchId)}`),batch=result.batch;
+      state.benchBatch64=batchFromDurable64(batch);window.renderBenchBatch64();
+      document.querySelector('.bench64-results')?.scrollIntoView?.({behavior:'smooth',block:'start'});
+    }catch(error){toast(error.message||error)}
   };
 
   window.renderQualityDetectionBench64=function renderQualityDetectionBench64(){
@@ -5640,7 +5698,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const models=detectionModels64(),ready=(state.inferenceEnvs||[]).some(env=>env?.status==='ready');
     const modelNotice=models.length?'': '<div class="alert warn">正在读取可用原始模型和算法版本；如果长时间为空，请检查训练资源。</div>';
     const envNotice=ready?'':'<div class="alert warn">当前未发现可用推理 Runtime。原始模型和算法版本仍可选择，但开始检测前需要先准备训练资源。</div>';
-    view.innerHTML=`<div class="bench64-shell">${modelNotice}${envNotice}<section class="bench64-head"><div><span>质量中心 · 模型检测</span><h2>同一批图片，直接比较两个真实模型</h2><p>A、B 两侧都可以选择原始模型或任意算法版本。支持单图、多选图片和整个文件夹。</p></div><div class="row"><button class="btn" onclick="refreshDetectionBenchDataV3()">刷新模型</button><button class="btn soft" onclick="clearBenchFiles64()">清空本次</button></div></section><div class="bench64-model-grid">${modelBrowser64('A','A 模型 / 原始对照','可选官方原始模型，也可以选择任意算法版本')}${modelBrowser64('B','B 模型 / 新模型','同样可以选择原始模型或任意算法版本')}</div><section class="panel bench64-controls"><div class="panel-body"><div class="form three"><div class="field"><label>检测模式</label><select id="benchMode64" class="select"><option value="compare">同图 A / B 对比</option><option value="a">只测 A 模型</option><option value="b">只测 B 模型</option></select></div><div class="field"><label>置信度</label><input id="benchConf" class="input" type="number" min="0.001" max="1" step="0.01" value="0.25"></div><div class="field"><label>图片来源</label><div class="row wrap"><button class="btn" onclick="document.getElementById('benchFiles64').click()">选择图片</button><button class="btn" onclick="document.getElementById('benchFolder64').click()">选择文件夹</button></div><input id="benchFiles64" type="file" accept="image/*" multiple hidden onchange="addBenchFiles64(this)"><input id="benchFolder64" type="file" accept="image/*" multiple webkitdirectory directory hidden onchange="addBenchFiles64(this)"></div></div><div class="bench64-files"><div><b id="benchFileCount64">尚未选择图片</b><span>可单选、多选；文件夹会递归带入其中的图片并自动忽略非图片文件。</span></div><div id="benchFileList64" class="bench64-file-list"></div></div><div class="bench64-preview-run"><div id="benchPreview64" class="bench64-preview"><span>选择图片后在这里预览</span></div><div class="bench64-run"><b>开始检测前确认</b><span>批量任务按图片顺序执行，避免同时抢占同一个 GPU / Runtime。</span><button id="benchRun64" class="btn primary" onclick="runBenchBatch64()">开始本次检测</button><div id="benchResult" class="bench64-live"></div></div></div></div></section><section class="panel bench64-results"><div class="panel-head"><div><div class="panel-title">本次检测结果</div><div class="subline">点击任意已完成图片查看原图、A/B 检测图、目标明细和人工核验。</div></div></div><div class="panel-body"><div id="benchBatchSummary64"></div><div id="benchBatchList64" class="bench64-result-list"></div></div></section></div>`;
-    window.renderBenchFileQueue64();window.renderBenchBatch64();
+    view.innerHTML=`<div class="bench64-shell">${modelNotice}${envNotice}<section class="bench64-head"><div><span>质量中心 · 模型检测</span><h2>同一批图片，直接比较两个真实模型</h2><p>A、B 两侧都可以选择原始模型或任意算法版本。支持单图、多选图片和整个文件夹。</p></div><div class="row"><button class="btn" onclick="refreshDetectionBenchDataV3()">刷新模型</button><button class="btn soft" onclick="clearBenchFiles64()">清空本次</button></div></section><div class="bench64-model-grid">${modelBrowser64('A','A 模型 / 原始对照','可选官方原始模型，也可以选择任意算法版本')}${modelBrowser64('B','B 模型 / 新模型','同样可以选择原始模型或任意算法版本')}</div><section class="panel bench64-controls"><div class="panel-body"><div class="form three"><div class="field"><label>检测模式</label><select id="benchMode64" class="select"><option value="compare">同图 A / B 对比</option><option value="a">只测 A 模型</option><option value="b">只测 B 模型</option></select></div><div class="field"><label>置信度</label><input id="benchConf" class="input" type="number" min="0.001" max="1" step="0.01" value="0.25"></div><div class="field"><label>图片来源</label><div class="row wrap"><button class="btn" onclick="document.getElementById('benchFiles64').click()">选择图片</button><button class="btn" onclick="document.getElementById('benchFolder64').click()">选择文件夹</button></div><input id="benchFiles64" type="file" accept="image/*" multiple hidden onchange="addBenchFiles64(this)"><input id="benchFolder64" type="file" accept="image/*" multiple webkitdirectory directory hidden onchange="addBenchFiles64(this)"></div></div><div class="bench64-files"><div><b id="benchFileCount64">尚未选择图片</b><span>可单选、多选；文件夹会递归带入其中的图片并自动忽略非图片文件。</span></div><div id="benchFileList64" class="bench64-file-list"></div></div><div class="bench64-preview-run"><div id="benchPreview64" class="bench64-preview"><span>选择图片后在这里预览</span></div><div class="bench64-run"><b>开始检测前确认</b><span>批量任务按图片顺序执行，避免同时抢占同一个 GPU / Runtime。</span><button id="benchRun64" class="btn primary" onclick="runBenchBatch64()">开始本次检测</button><div id="benchResult" class="bench64-live"></div></div></div></div></section><section class="panel bench64-results"><div class="panel-head"><div><div class="panel-title">本次检测结果</div><div class="subline">点击任意已完成图片查看原图、A/B 检测图、目标明细和人工核验。</div></div></div><div class="panel-body"><div id="benchBatchSummary64"></div><div id="benchBatchList64" class="bench64-result-list"></div></div></section><section class="panel bench64-history"><div class="panel-head"><div><div class="panel-title">最近检测批次</div><div class="subline">检测任务和人工核验保存在服务端，刷新页面后仍可继续查看。</div></div><button class="btn small" onclick="loadDetectionBatches64({force:true})">刷新</button></div><div class="panel-body" id="benchRecentBatches64"></div></section></div>`;
+    window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();void window.loadDetectionBatches64();
   };
 })();
