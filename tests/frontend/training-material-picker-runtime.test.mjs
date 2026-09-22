@@ -33,6 +33,7 @@ test('training picker keeps TrainingDraftRuntime as the selection truth owner wi
   assert.doesNotMatch(source, /\.apply\(this, arguments\)/);
   assert.doesNotMatch(source, /state\(\)\.trainingDraft\s*=/);
   assert.match(source, /trainingDraftRuntime\.update\(patch\)/);
+  assert.match(source, /window\.refreshTrainingMaterialSelectionUiV3\?\.\(\)/);
   assert.match(source, /window\.confirmTrainMaterialPickerV3 = function confirmPicker/);
   assert.match(main, /installTrainingMaterialPickerRuntime/);
   assert.match(main, /trainingDraftRuntime,/);

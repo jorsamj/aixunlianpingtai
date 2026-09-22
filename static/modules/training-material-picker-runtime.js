@@ -492,7 +492,7 @@ export function installTrainingMaterialPickerRuntime({
     });
     trainingDraftRuntime.update(patch);
     window.closeModal?.();
-    window.refreshTrainingCreateUi?.();
+    window.refreshTrainingMaterialSelectionUiV3?.();
     return true;
   };
 

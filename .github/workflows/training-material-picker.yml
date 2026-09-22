@@ -73,6 +73,8 @@ jobs:
           grep -Fq "bulkSelectionOwner: 'server'" static/modules/training-material-picker-runtime.js
           grep -Fq 'trainingMaterialSelectionPatch' static/modules/training-material-picker-runtime.js
           grep -Fq 'trainingDraftRuntime.update(patch)' static/modules/training-material-picker-runtime.js
+          grep -Fq 'window.refreshTrainingMaterialSelectionUiV3?.()' static/modules/training-material-picker-runtime.js
+          grep -Fq 'window.refreshTrainingMaterialSelectionUiV3=renderSplit' static/app.js
           if grep -Fq 'legacyConfirm' static/modules/training-material-picker-runtime.js; then
             echo 'training material picker must not wrap the legacy confirm owner' >&2
             exit 1

@@ -4414,6 +4414,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     // TrainingSubmitRuntime is the sole owner of submit-button readiness.
     // Legacy renderSplit must never write the disabled state from train428/train429 mirrors.
   }
+  window.refreshTrainingMaterialSelectionUiV3=renderSplit;
   function pickerRows(){const p=state.trainMaterialPickerV3;if(!p)return[];const blocked=splitState().mode==='independent_test_set'?splitState()[otherRole(p.role)]:new Set();return(trainingApi()?.filterTrainingMaterials(state.images||[],{query:p.query,labelCodes:[...p.labels]})||[]).filter(row=>!blocked.has(imageId(row)))}
   function renderPicker(){
     const p=state.trainMaterialPickerV3,grid=document.getElementById('trV3Grid');if(!p||!grid)return;const rows=pickerRows(),pages=Math.max(1,Math.ceil(rows.length/p.pageSize));p.page=Math.min(Math.max(1,p.page),pages);const start=(p.page-1)*p.pageSize,current=rows.slice(start,start+p.pageSize);
