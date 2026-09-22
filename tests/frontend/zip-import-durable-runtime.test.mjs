@@ -60,7 +60,7 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   assert.match(appSource,/导入素材 \/ 标注/);
   assert.match(source,/function forgetTerminal\(\)/);
   assert.match(source,/knownJobs\.delete\(id\)/);
-  assert.match(source,/检测到外部标签后，必须先统一到平台标签再正式入库/);
+  assert.match(source,/请统一到平台标签后再入库/);
   assert.doesNotMatch(source,/\/api\/v18\/projects/);
   assert.match(appSource,/onclick="doImportUploadV19\(\)">开始导入/);
   assert.match(bootstrap,/const durableUploadFromImportModal = \(\) =>/);

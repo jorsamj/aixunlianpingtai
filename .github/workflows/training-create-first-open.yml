@@ -53,19 +53,21 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'installTrainingCreateHydrationRuntime' static/main.mjs
-          grep -Fq "training-create-hydration-422533" static/modules/training-create-hydration.js
+          grep -Fq "training-create-hydration-422535" static/modules/training-create-hydration.js
           grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
           grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
-          grep -Fq '/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}' static/app.js
+          grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
+          grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
           grep -Fq 'refreshTrainRunCenter429' static/app.js
           grep -Fq 'annPointerAbort' static/app.js
-          grep -Fq 'saveAnn411(silent,options)' static/app.js
-          grep -Fq 'baseSaveAnnotation417?.(silent,options)' static/app.js
+          grep -Fq 'window.saveAnnotationCore420=async function(silent=false,options={})' static/app.js
+          grep -Fq 'window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={})' static/app.js
+          if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
           grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
-          grep -Fq 'external ChangLian training re-reads algorithm truth before opening and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
           grep -Fq 'legacy training shell uses same-scope status helper before final visibility runtime takes ownership' tests/frontend/training-submit-validation.test.mjs
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js

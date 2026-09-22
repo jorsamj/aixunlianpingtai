@@ -63,7 +63,9 @@ jobs:
         run: |
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           grep -Fq 'feedback_eligible' app.py
-          grep -Fq 'predictBeforeFeedback63' static/app.js
+          grep -Fq 'window.predictCore12=async()=>{' static/app.js
+          grep -Fq 'window.predict=async function predictCanonicalFeedback63()' static/app.js
+          if grep -Fq 'predictBeforeFeedback63' static/app.js; then echo 'retired inference feedback wrapper capture was reintroduced' >&2; exit 1; fi
           grep -Fq 'refreshPageExtrasInBackground(page)' static/main.mjs
           if grep -Fq 'loadPageExtras413(requestedPage)' static/main.mjs; then echo 'online feedback page guard must not restore blocking navigation extras' >&2; exit 1; fi
           grep -Fq 'feedbackExternalEndpoint63' static/app.js
