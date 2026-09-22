@@ -136,9 +136,10 @@ test('deployment pages are canonical owners', () => {
   ]) assert.ok(main.includes(`['${page}', '${renderer}']`));
 });
 
-test('test and detection pages are canonical owners', () => {
-  assert.match(main, /\['测试发布', 'renderTest'\]/);
-  assert.match(main, /\['检测台', 'renderDetectBench'\]/);
+test('retired standalone test and detection pages are not canonical navigation owners', () => {
+  assert.doesNotMatch(main, /\['测试发布', 'renderTest'\]/);
+  assert.doesNotMatch(main, /\['检测台', 'renderDetectBench'\]/);
+  assert.match(main, /\['质量中心', 'renderQualityCenter424'\]/);
 });
 
 test('shadowed test and detection page renderers are physically retired', () => {
@@ -147,6 +148,8 @@ test('shadowed test and detection page renderers are physically retired', () => 
   assert.equal((app.match(/^\s*window\.renderDetectBench = function\(\)\{/gm) || []).length, 0);
   assert.equal((app.match(/^\s*renderTest = window\.renderTest = function\(\)\{/gm) || []).length, 0);
   assert.match(app, /renderDetectBench = window\.renderDetectBench = function\(\)/);
+  assert.match(app, /window\.renderQualityDetectionBench64=function renderQualityDetectionBench64\(\)/);
+  assert.equal((app.match(/window\.renderDetectBench\s*=/g) || []).length, 1);
   assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
 });
 
@@ -245,5 +248,9 @@ test('navigation chrome resolves to direct final owners without wrapper chaining
   assert.ok(navStart >= 0 && navEnd > navStart);
   const finalNavOwner = app.slice(navStart, navEnd);
   assert.match(finalNavOwner, /存储配置:'▣'/);
-  assert.match(finalNavOwner, /\{title:'资源配置',items:\['模型配置','训练资源','部署资源','存储配置'\]\}/);
+  assert.match(finalNavOwner, /\{title:'总览',items:\['工作台','质量中心'\]\}/);
+  assert.match(finalNavOwner, /\{title:'算法生成',items:\['算法列表','训练任务','训练资源'\]\}/);
+  assert.match(finalNavOwner, /\{title:'数据中心',items:\['数据集','视频切帧','自动标注及清洗','标签管理'\]\}/);
+  assert.match(finalNavOwner, /\{title:'高级功能',items:\['模型配置','部署资源','存储配置','组件检测'\]\}/);
+  assert.doesNotMatch(finalNavOwner, /title:'测试评测'|title:'部署中心'/);
 });
