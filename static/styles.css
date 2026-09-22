@@ -587,3 +587,37 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .rknn-verify-live-progress>i{display:block;width:100%;height:100%;border-radius:999px;background:#4e79d6;transform-origin:left center;transition:transform var(--motion-progress) var(--motion-ease);will-change:transform}
 .rknn-verify-live>small{color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(prefers-reduced-motion:reduce){.rknn-verify-live-progress>i{transition:none!important}}
+
+
+/* v64 quality-center detection */
+.quality411-tabs{display:flex;gap:8px;margin:0 0 14px;padding:6px;background:rgba(148,163,184,.09);border:1px solid rgba(148,163,184,.18);border-radius:14px;width:max-content;max-width:100%}
+.bench64-shell{display:grid;gap:14px}
+.bench64-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;border:1px solid var(--line,#e2e8f0);border-radius:18px;background:linear-gradient(135deg,rgba(15,23,42,.035),rgba(37,99,235,.04))}
+.bench64-head span{display:block;color:#64748b;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.bench64-head h2{margin:5px 0 7px;font-size:23px;line-height:1.25}
+.bench64-head p{margin:0;color:#64748b;max-width:760px}
+.bench64-model-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.bench64-model-card{padding:16px;border:1px solid var(--line,#e2e8f0);border-radius:16px;background:var(--panel,#fff);box-shadow:0 8px 24px rgba(15,23,42,.035)}
+.bench64-model-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.bench64-model-head>span{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:#0f172a;color:#fff;font-weight:800}
+.bench64-model-head div{min-width:0}.bench64-model-head b{display:block}.bench64-model-head small{display:block;margin-top:2px;color:#64748b}
+.bench64-model-list{height:188px;margin-top:8px;padding:6px}.bench64-model-list optgroup{font-weight:700;color:#475569}.bench64-model-list option{padding:7px 8px;color:#0f172a}
+.bench64-controls .panel-body{display:grid;gap:16px}
+.bench64-files{display:grid;gap:9px;padding:12px 14px;border:1px dashed #cbd5e1;border-radius:14px;background:#f8fafc}
+.bench64-files>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}.bench64-files span{color:#64748b;font-size:12px}
+.bench64-file-list{display:flex;gap:7px;overflow-x:auto;padding-bottom:3px}
+.bench64-file-chip{display:grid;grid-template-columns:minmax(90px,1fr) auto auto;align-items:center;gap:7px;min-width:220px;max-width:360px;padding:8px 9px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;text-align:left;cursor:pointer}
+.bench64-file-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#334155}.bench64-file-chip em{font-style:normal;color:#94a3b8;font-size:11px}.bench64-file-chip i{font-style:normal;font-size:18px;color:#94a3b8}
+.bench64-preview-run{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(260px,.55fr);gap:14px}
+.bench64-preview{min-height:250px;display:grid;place-items:center;position:relative;overflow:hidden;border:1px solid #e2e8f0;border-radius:14px;background:#0f172a;color:#94a3b8}
+.bench64-preview img{max-width:100%;max-height:390px;object-fit:contain}.bench64-preview>span:last-child:not(:first-child){position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);padding:5px 8px;border-radius:7px;background:rgba(15,23,42,.72);color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bench64-run{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:9px;padding:18px;border:1px solid #e2e8f0;border-radius:14px;background:#f8fafc}.bench64-run>span{color:#64748b;font-size:12px}
+.bench64-live:empty{display:none}.bench64-live{margin-top:5px}
+.bench64-summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px}.bench64-summary-grid>div{padding:11px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc}.bench64-summary-grid span{display:block;color:#64748b;font-size:11px}.bench64-summary-grid b{display:block;margin-top:3px;font-size:19px}
+.bench64-runbar{height:7px;margin:10px 0;border-radius:999px;overflow:hidden;background:#e2e8f0}.bench64-runbar i{display:block;width:100%;height:100%;transform-origin:left center;background:currentColor;transition:transform .2s ease}
+.bench64-result-list{display:grid;gap:7px;margin-top:12px}.bench64-result-row{display:grid;grid-template-columns:minmax(230px,2fr) minmax(80px,.65fr) minmax(80px,.65fr) minmax(95px,.8fr) auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;background:#fff}.bench64-result-row.running{border-color:#93c5fd;background:#eff6ff}.bench64-result-row.failed{border-color:#fecaca;background:#fff7f7}.bench64-result-main{min-width:0}.bench64-result-main b,.bench64-result-main span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bench64-result-main span,.bench64-result-row>div:not(:first-child)>span{color:#64748b;font-size:11px}.bench64-result-row>div:not(:first-child)>b{display:block;margin-top:2px}
+.bench64-empty,.bench64-result-empty{padding:20px;text-align:center;color:#64748b}.bench64-empty b,.bench64-empty span{display:block}.bench64-empty span{margin-top:3px;font-size:12px}
+.bench64-detail{display:grid;gap:14px}.bench64-original{display:grid;justify-items:center;gap:7px;padding:12px;border:1px solid #e2e8f0;border-radius:14px}.bench64-original img{max-width:100%;max-height:360px;object-fit:contain;border-radius:10px}
+.bench64-compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.bench64-compare .enhanced-result{min-width:0}
+.bench64-review{display:grid;gap:10px;padding:13px 14px;border:1px solid #e2e8f0;border-radius:14px;background:#f8fafc}.bench64-review>div:first-child{display:flex;justify-content:space-between;gap:10px}.bench64-review p{margin:0;color:#64748b;font-size:12px}
+@media(max-width:980px){.bench64-model-grid,.bench64-preview-run,.bench64-compare{grid-template-columns:1fr}.bench64-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bench64-result-row{grid-template-columns:minmax(0,1fr) auto}.bench64-result-row>div:not(:first-child){display:none}}
