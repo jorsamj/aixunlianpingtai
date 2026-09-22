@@ -52,16 +52,18 @@ test('dataset label controls are a direct decoration hook instead of a renderer 
   assert.match(owner, /id="materialSource61"/);
 });
 
-test('dataset storage and feedback filters live in the active dataset owner without a final wrapper', () => {
+test('dataset storage and feedback filters live in the canonical v412 data query and owner', () => {
   assert.equal(app.includes('const finalDataset=window.renderDatasets424;'), false);
-  const start = app.indexOf('const baseData414=window.renderDatasets424;');
-  const end = app.indexOf('window.openBatch414=', start);
+  const start = app.indexOf('function datasetScope412()');
+  const end = app.indexOf('window.setData412Tab=', start);
   assert.ok(start >= 0 && end > start);
   const owner = app.slice(start, end);
   assert.match(owner, /state\.materialSourceFilter61/);
   assert.match(owner, /state\.iterationFeedbackOnly63&&feedbackIds\.size/);
+  assert.match(owner, /window\.dataRows412=dataRows412/);
   assert.match(owner, /id="materialSource61"/);
   assert.match(owner, /storage61-badge/);
+  assert.match(owner, /window\.decorateDatasetControls414\?\.\(\)/);
   assert.match(owner, /window\.renderSupplementDataBanner63\?\.\(\)/);
 });
 
