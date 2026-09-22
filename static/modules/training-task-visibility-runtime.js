@@ -81,12 +81,10 @@ export function installTrainingTaskVisibilityRuntime({
   const runtime = trainingTaskRuntime || window.TrainingTaskRuntime;
   if (!runtime || typeof runtime.refresh !== 'function' || typeof runtime.setViewAdapter !== 'function') return null;
 
-  const legacyLoadRelated = typeof window.loadRelated === 'function' ? window.loadRelated : null;
   const legacyRender = window.renderTraining425
     || window.renderTraining424
     || window.renderTraining423;
   const previous = {
-    loadRelated: window.loadRelated,
     renderTraining423: window.renderTraining423,
     renderTraining424: window.renderTraining424,
     renderTraining425: window.renderTraining425,
@@ -94,15 +92,10 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   let destroyed = false;
-  let jobsProjectId = String(state().project?.id || '');
   let batchMode = false;
   let batchBusy = false;
   const selectedIds = new Set();
   const renderedRows = new Map();
-
-  function sameProject(projectId) {
-    return String(state().project?.id || '') === String(projectId || '');
-  }
 
   function trainingShellHtml() {
     return `<section class="train428-page train428-page-v2" data-training-task-shell="canonical">
@@ -363,7 +356,6 @@ export function installTrainingTaskVisibilityRuntime({
     render: renderOwned,
     afterRefresh(result, options = {}) {
       if (destroyed || result?.stale) return;
-      jobsProjectId = String(state().project?.id || jobsProjectId || '');
       if (String(options.source || '') !== 'poll') {
         pollRegistry?.replaceTrainingJobTimer?.();
       }
@@ -373,29 +365,6 @@ export function installTrainingTaskVisibilityRuntime({
 
   async function refreshOwned(options = {}) {
     return runtime.refresh(options);
-  }
-
-  if (legacyLoadRelated) {
-    const guardedLoadRelated = async (...args) => {
-      const current = state();
-      const projectId = String(current.project?.id || '');
-      if (String(current.page || '') === TRAINING_PAGE) {
-        return refreshOwned({render: true, force: true, source: 'related'});
-      }
-
-      const preserveJobs = jobsProjectId === projectId;
-      const snapshot = preserveJobs && Array.isArray(current.jobs) ? current.jobs : null;
-      try {
-        return await legacyLoadRelated(...args);
-      } finally {
-        if (!destroyed && sameProject(projectId)) {
-          if (snapshot) state().jobs = snapshot;
-          else state().jobs = [];
-        }
-      }
-    };
-    guardedLoadRelated.__trainingJobsPreserved = true;
-    window.loadRelated = guardedLoadRelated;
   }
 
   const renderTraining = () => {
@@ -429,7 +398,6 @@ export function installTrainingTaskVisibilityRuntime({
     refresh: refreshOwned,
     state() {
       return {
-        jobsProjectId,
         batchMode,
         batchBusy,
         selectedIds: [...selectedIds],

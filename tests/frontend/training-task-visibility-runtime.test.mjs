@@ -86,38 +86,34 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
   return {state, dom, runtime, calls, pollRearms: () => pollRearms};
 }
 
-test('generic loadRelated cannot overwrite canonical training jobs after runtime ownership', async () => {
+test('visibility leaves broad loadRelated ownership untouched', async () => {
   const fixture = installFixture({page: '数据集'});
-  fixture.state.jobs = [{id: 'run-1', status: 'running'}];
-  window.loadRelated = async () => {
-    fixture.state.jobs = [];
+  let legacyCalls = 0;
+  const broadLoader = async () => {
+    legacyCalls += 1;
     fixture.state.labels = [{id: 'label-1'}];
-    return 'legacy-loaded';
+    return 'related-loaded';
   };
+  window.loadRelated = broadLoader;
 
   const visibility = installTrainingTaskVisibilityRuntime({
     getState: () => fixture.state,
     trainingTaskRuntime: fixture.runtime,
     pollRegistry: window.PollRegistryRuntime,
   });
-  const result = await window.loadRelated();
 
-  assert.equal(result, 'legacy-loaded');
-  assert.deepEqual(fixture.state.jobs, [{id: 'run-1', status: 'running'}]);
+  assert.equal(window.loadRelated, broadLoader);
+  const result = await window.loadRelated();
+  assert.equal(result, 'related-loaded');
+  assert.equal(legacyCalls, 1);
   assert.deepEqual(fixture.state.labels, [{id: 'label-1'}]);
-  assert.equal(window.loadRelated.__trainingJobsPreserved, true);
 
   visibility.destroy();
   cleanup();
 });
 
-test('loadRelated on training page routes to canonical jobs refresh instead of project aggregate', async () => {
+test('training-page related refresh routes explicitly through the canonical task runtime', async () => {
   const fixture = installFixture();
-  let legacyCalls = 0;
-  window.loadRelated = async () => {
-    legacyCalls += 1;
-    fixture.state.jobs = [];
-  };
 
   const visibility = installTrainingTaskVisibilityRuntime({
     getState: () => fixture.state,
@@ -125,9 +121,8 @@ test('loadRelated on training page routes to canonical jobs refresh instead of p
     pollRegistry: window.PollRegistryRuntime,
   });
   fixture.calls.length = 0;
-  await window.loadRelated();
+  await visibility.refresh({render: true, force: true, source: 'related'});
 
-  assert.equal(legacyCalls, 0);
   assert.equal(fixture.calls.length, 1);
   assert.equal(fixture.calls[0].force, true);
   assert.equal(fixture.calls[0].source, 'related');
@@ -337,4 +332,12 @@ test('visibility composes through the explicit task view adapter without monkey-
 
   visibility.destroy();
   cleanup();
+});
+
+
+test('visibility does not capture or replace broad loadRelated', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /legacyLoadRelated/);
+  assert.doesNotMatch(source, /window\.loadRelated\s*=/);
+  assert.doesNotMatch(source, /__trainingJobsPreserved/);
 });

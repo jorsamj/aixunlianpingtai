@@ -25,6 +25,8 @@ test('v42.6 owns the final related-data loader directly and in parallel', () => 
   assert.match(block, /\/api\/v12\/projects\/\$\{id\}\/algorithms/);
   assert.match(block, /\/api\/v35\/model-configs/);
   assert.match(block, /\/api\/v35\/prompt-templates/);
+  assert.doesNotMatch(block, /state\.jobs\s*=/);
+  assert.doesNotMatch(block, /info\.jobs/);
 });
 
 test('v42.6 owns the final aggregate loader directly and keeps independent requests parallel', () => {
@@ -37,4 +39,10 @@ test('v42.6 owns the final aggregate loader directly and keeps independent reque
   assert.match(block, /inference_envs/);
   assert.match(block, /system\/recommendation/);
   assert.match(block, /local_models/);
+});
+
+
+test('no loadRelated generation owns training jobs', () => {
+  const broadAssignments = [...app.matchAll(/state\.jobs\s*=\s*info\.jobs/g)];
+  assert.equal(broadAssignments.length, 0);
 });
