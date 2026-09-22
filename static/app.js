@@ -3504,23 +3504,46 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!state.__extrasPromise) state.__extrasPromise=extras411().finally(()=>state.__extrasPromise=null);
   };
 
-  // ---------- lightweight quality center: cached result first, explicit refresh recalculates ----------
+  // ---------- quality center: cached overview + integrated real-model detection bench ----------
   function qualityHtml411(r){
     const d=r?.dataset||{},a=r?.algorithm||{},scores=d.scores||{},as=a.scores||{};
     const fact=(k,v)=>`<div><span>${k}</span><b>${v??0}</b></div>`;
     return `<div class="quality424-shell"><div class="quality424-kpis"><div><span>数据质量</span><b>${d.overall_score||0}</b></div><div><span>素材数量</span><b>${d.images||0}</b></div><div><span>有效标注框</span><b>${d.box_count||0}</b></div><div><span>算法平均质量</span><b>${a.avg_score||0}</b></div><div><span>训练成功率</span><b>${a.train_success_rate==null?'—':Number(a.train_success_rate).toFixed(1)+'%'}</b><small>${a.train_success_rate==null?'暂无已结束训练可统计':`${a.train_success_count||0} 成功 / ${a.train_completed_count||0} 已结束`}</small></div></div><div class="quality411-actions"><span>质量指标采用缓存；数据变化后可手动刷新重新计算。</span><button class="btn primary" onclick="refreshQuality411()">刷新质量指标</button></div><div class="quality424-grid"><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">数据质量</div></div><div class="panel-body quality424-radarbox">${typeof radar424==='function'?radar424(scores):''}<div class="quality424-facts">${fact('已标注',d.annotated_images)}${fact('标签数',d.label_count)}${fact('重复图片',d.duplicate_images)}${fact('低分辨率',d.low_resolution)}${fact('无效框',d.invalid_boxes)}${fact('数据体量',typeof fmtSize424==='function'?fmtSize424(d.total_size_bytes):d.total_size_bytes||0)}</div></div></section><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">算法质量</div></div><div class="panel-body quality424-radarbox">${typeof radar424==='function'?radar424(as,'algorithm'):''}</div></section></div></div>`;
   }
+  function qualityTabs411(){
+    const tab=state.qualityCenterTab411==='detect'?'detect':'overview';
+    return `<div class="quality411-tabs" data-quality-tabs="1"><button class="btn ${tab==='overview'?'primary':'soft'}" onclick="setQualityCenterTab411('overview')">质量概览</button><button class="btn ${tab==='detect'?'primary':'soft'}" onclick="setQualityCenterTab411('detect')">模型检测</button></div>`;
+  }
+  function prependQualityTabs411(){
+    const view=document.getElementById('view');if(!view||view.querySelector('[data-quality-tabs="1"]'))return;
+    view.insertAdjacentHTML('afterbegin',qualityTabs411());
+  }
+  window.setQualityCenterTab411=async function(tab){
+    state.qualityCenterTab411=tab==='detect'?'detect':'overview';
+    window.renderQualityCenter424?.();
+    if(state.qualityCenterTab411!=='detect')return;
+    try{
+      await window.loadPageExtras413?.('质量中心');
+      if(state.page==='质量中心'&&state.qualityCenterTab411==='detect')window.renderQualityCenter424?.();
+    }catch(error){toast(error.message||error)}
+  };
   window.renderQualityCenter424=async function(){
     const view=document.getElementById('view');if(!view)return;
+    if(state.qualityCenterTab411==='detect'){
+      window.renderDetectBench?.();
+      prependQualityTabs411();
+      const title=view.querySelector('.bench-panel .panel-title');if(title)title.textContent='模型检测';
+      const sub=view.querySelector('.bench-panel .subline');if(sub)sub.textContent='质量中心内进行原始模型与算法版本的真实同图检测。检测能力保留，但不再属于“测试评测”模块。';
+      return;
+    }
     let cached=null;try{cached=JSON.parse(localStorage.getItem(qualityKey411())||'null')}catch(e){}
-    if(cached?.data){view.innerHTML=qualityHtml411(cached.data);return}
-    view.innerHTML=`<section class="panel"><div class="panel-body quality411-empty"><b>质量指标尚未计算</b><span>不再阻塞平台首次启动。需要查看时再计算一次，之后直接读取缓存。</span><button class="btn primary" onclick="refreshQuality411()">开始计算质量指标</button></div></section>`;
+    if(cached?.data){view.innerHTML=qualityTabs411()+qualityHtml411(cached.data);return}
+    view.innerHTML=qualityTabs411()+`<section class="panel"><div class="panel-body quality411-empty"><b>质量指标尚未计算</b><span>不再阻塞平台首次启动。需要查看时再计算一次，之后直接读取缓存。</span><button class="btn primary" onclick="refreshQuality411()">开始计算质量指标</button></div></section>`;
   };
   window.refreshQuality411=async function(){
-    const view=document.getElementById('view');if(view)view.innerHTML='<div class="quality411-loading"><b>正在计算质量指标</b><span>此计算只在您主动刷新时执行，其他页面不会被阻塞。</span></div>';
-    try{const r=await api(`/api/v44/projects/${pid()}/quality-center`);try{localStorage.setItem(qualityKey411(),JSON.stringify({ts:Date.now(),data:r}))}catch(e){};if(state.page==='质量中心'&&view)view.innerHTML=qualityHtml411(r)}catch(e){if(view)view.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`}
+    const view=document.getElementById('view');if(view)view.innerHTML=qualityTabs411()+'<div class="quality411-loading"><b>正在计算质量指标</b><span>此计算只在您主动刷新时执行，其他页面不会被阻塞。</span></div>';
+    try{const r=await api(`/api/v44/projects/${pid()}/quality-center`);try{localStorage.setItem(qualityKey411(),JSON.stringify({ts:Date.now(),data:r}))}catch(e){};if(state.page==='质量中心'&&view&&state.qualityCenterTab411!=='detect')view.innerHTML=qualityTabs411()+qualityHtml411(r)}catch(e){if(view)view.innerHTML=qualityTabs411()+`<div class="alert err">${esc(e.message||e)}</div>`}
   };
-
   // ---------- annotation overlays for cards / preview ----------
   function overlay411(x,limit=24){
     const w=Number(x.width||0),h=Number(x.height||0),boxes=(x.annotation_preview||[]).slice(0,limit);if(!w||!h||!boxes.length)return '';
@@ -3630,7 +3653,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const load=(key,url,field)=>tasks.push(api(url).then(value=>{state[key]=field?(value?.[field]||[]):value}));
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
     if(['测试发布','部署测试'].includes(page))load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
-    if(['测试发布','部署测试','检测台'].includes(page)){
+    if(['测试发布','部署测试','检测台','质量中心'].includes(page)){
       load('testModels',`/api/v12/projects/${id}/test_models`,'items');
       load('inferenceEnvs','/api/v16/inference_envs','items');
     }
@@ -3646,8 +3669,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
   window.refreshDetectionBenchDataV3=async function(){
     const page=state.page;
-    await extras412('检测台');
-    if(state.page===page&&page==='检测台')window.renderDetectBench?.();
+    await extras412('质量中心');
+    if(state.page===page&&page==='质量中心'&&state.qualityCenterTab411==='detect')window.renderQualityCenter424?.();
   };
   window.refreshCurrentPage413=async function({authoritative=false}={}){if(authoritative)await window.loadCore412({authoritative:true});await extras412();if(['部署转换','部署产物','部署资源'].includes(state.page)&&typeof loadDeployData==='function')await loadDeployData(true)};
   loadAll=window.refreshCurrentPage413;
@@ -3842,7 +3865,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 /* v42.13 startup prepared snapshot */
 (()=>{
  const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
- const RESTORABLE_PAGES413=new Set(['工作台','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','测试发布','检测台','标签管理','部署转换','部署产物','模型配置','训练资源','部署资源','部署插件','组件检测','存储配置','平台对接','服务节点']);
+ const RESTORABLE_PAGES413=new Set(['工作台','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','训练资源','部署资源','部署插件','组件检测','存储配置','平台对接','服务节点']);
  window.PlatformCore=window.PlatformCore||{};
  window.PlatformCore.navigation=window.PlatformCore.navigation||{};
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
@@ -3850,15 +3873,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  function paintBoot(view,st){if(!view)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),restoredPage=x.page==='自动标注'?'自动标注及清洗':String(x.page||'');delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});await waitReady();const s=await api('/api/v53/bootstrap/snapshot');apply(s);return s};
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true;const page=state.page;if(!state.__extras412)state.__extras412=window.loadPageExtras413?.(page).then(()=>{if(state.page===page)render()}).finally(()=>state.__extras412=null)}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
-  '工作台':'总览','算法列表':'算法生产','训练任务':'算法生产','质量中心':'算法生产',
-  '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心',
-  '检测台':'测试评测','测试发布':'测试评测','部署转换':'部署中心','部署产物':'部署中心',
-  '模型配置':'资源配置','训练资源':'资源配置','部署资源':'资源配置','部署插件':'资源配置','组件检测':'资源配置',
- });
+  '工作台':'总览','质量中心':'总览',
+  '算法列表':'算法生成','训练任务':'算法生成','训练资源':'算法生成',
+  '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
+  '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
+  '平台对接':'系统与对接','服务节点':'系统与对接',
+ });;
  renderTop=function renderTopCanonical413(){
    const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
    if(crumb)crumb.textContent=TOP_CRUMB413[state.page]||'畅联云算法训练';
@@ -3938,16 +3962,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.refreshLabels414=refreshLabels414;
 
   // ---------- visible configuration center: label schema ----------
-  const icon414={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',测试发布:'✓',检测台:'◎',标签管理:'Aa',部署转换:'⇄',部署产物:'▥',模型配置:'◉',训练资源:'▧',部署资源:'⬡',存储配置:'▣'};
+  const icon414={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',部署资源:'⬡',存储配置:'▣',组件检测:'⌁',平台对接:'↔',服务节点:'◫'};
   renderNav=function(){
     const groups=[
       {title:'总览',items:['工作台','质量中心']},
-      {title:'算法生产',items:['算法列表','训练任务']},
-      {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗']},
-      {title:'测试评测',items:['测试发布','检测台']},
-      {title:'配置中心',items:['标签管理']},
+      {title:'算法生成',items:['算法列表','训练任务','训练资源']},
+      {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗','标签管理']},
     ];
-    if(state.v427Advanced)groups.push({title:'部署中心',items:['部署转换','部署产物']},{title:'资源配置',items:['模型配置','训练资源','部署资源','存储配置']});
+    if(state.v427Advanced)groups.push(
+      {title:'高级功能',items:['模型配置','部署资源','存储配置','组件检测']},
+      {title:'系统与对接',items:['服务节点','平台对接']}
+    );
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };
 
