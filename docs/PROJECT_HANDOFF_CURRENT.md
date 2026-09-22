@@ -1,3 +1,14 @@
+<!-- LIVE_HANDOFF_2026_09_23 -->
+> ## 2026-09-23 最新覆盖：请先读 `docs/CODEX_HANDOFF_2026-09-23.md`
+>
+> 当前产品主线已经从 9 月 22 日的“前端 owner 收口 + cache-first”继续推进到：**导航信息架构正式收敛、质量中心模型检测重构、手动标注稳定化、ZIP/批量导入可恢复确认、AI 审核标签批量统一，以及进一步的全站 lazy hydration / stable shell / focused refresh。**
+>
+> 文档写入前代码/测试基线为 `203948a5ef7b68e4a23fc609a6c4233f09d48e95`，`VERSION.txt` 仍为 `42.24.0`。本次新增 handoff 文档提交为 `13ccdec5d765ed98c0819a4c59f2f339112a150d`。
+>
+> **不要把上述 SHA 当作当前 HEAD。** 接手第一步必须重新读取 GitHub 真实远端 HEAD、VERSION、最近 commits、最新 Actions，并对任何失败 job 读取真实日志。
+>
+> 9 月 23 日 handoff 优先于本文后面的 9 月 22 日覆盖、历史 NEXT、旧部署建议和旧产品导航说明。
+
 <!-- LIVE_HANDOFF_2026_09_22 -->
 > ## 2026-09-22 最新覆盖：请先读 `docs/CODEX_HANDOFF_2026-09-22.md`
 >
