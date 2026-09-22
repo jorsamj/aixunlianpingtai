@@ -129,6 +129,48 @@ test('concurrent training refreshes share one jobs request', async () => {
   cleanup();
 });
 
+test('forced refresh waits for an older inflight request then fetches fresh job truth', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  let requests = 0;
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  globalThis.window = {
+    async fetch() {
+      requests += 1;
+      if (requests === 1) {
+        await firstGate;
+        return response([]);
+      }
+      return response([{id: 'fresh-job', status: 'running'}]);
+    },
+    updateTrainingJobTable() {},
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const initial = runtime.refresh({source: 'poll'});
+  await Promise.resolve();
+  assert.equal(requests, 1);
+
+  const forced = runtime.refresh({force: true, source: 'manual'});
+  await Promise.resolve();
+  assert.equal(requests, 1, 'forced refresh must wait for the older request before starting a second one');
+
+  releaseFirst();
+  await initial;
+  const result = await forced;
+
+  assert.equal(requests, 2);
+  assert.equal(result.reused, undefined);
+  assert.deepEqual(state.jobs, [{id: 'fresh-job', status: 'running'}]);
+  assert.equal(runtime.state().inflight, false);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('manual refresh reuses a poll result that completed in the same interaction window', async () => {
   const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
   let requests = 0;

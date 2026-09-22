@@ -457,7 +457,12 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
 
   async function refresh({render = true, force = false, source = 'direct'} = {}) {
     if (destroyed) throw new Error('训练任务模块已销毁');
-    if (inflight) return inflight;
+    if (inflight) {
+      const pending = inflight;
+      if (!force) return pending;
+      try { await pending; } catch (_) {}
+      if (inflight === pending) inflight = null;
+    }
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
@@ -477,7 +482,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     }
     const encoded = encodeURIComponent(pid);
 
-    inflight = (async () => {
+    const request = (async () => {
       const response = await nativeFetch(`/api/projects/${encoded}/jobs`, {
         headers: {'Accept': 'application/json'},
       });
@@ -493,11 +498,12 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       if (render) patchFinalTrainingTable();
       return {stale: false, jobs};
     })();
+    inflight = request;
 
     try {
-      return await inflight;
+      return await request;
     } finally {
-      inflight = null;
+      if (inflight === request) inflight = null;
     }
   }
 
