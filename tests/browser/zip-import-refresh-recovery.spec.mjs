@@ -102,6 +102,13 @@ test('server-persisted ZIP job is restored in upload task center after browser r
   await taskCenter.locator('[data-utc-toggle]').click();
   await expect(taskCenter).toContainText('refresh-recovery.zip');
   await expect(taskCenter).toContainText(/等待启动后台导入|等待中|后台/);
+  const zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
+  await expect(zipRow).toBeVisible();
+  await zipRow.click();
+  const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
+  await expect(importDialog).toBeVisible();
+  await expect(importDialog).toContainText(/等待|标注入库确认|ZIP/);
+  await importDialog.getByRole('button', {name: '关闭窗口'}).click();
 
   await page.reload();
   await expect(taskCenter).toBeVisible({timeout: 10_000});
