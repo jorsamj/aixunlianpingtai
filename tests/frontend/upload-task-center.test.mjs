@@ -143,3 +143,16 @@ test('task center durable polling is PollRegistry-owned and hidden tabs do not k
   assert.doesNotMatch(runtime, /clearTimeout\(/);
   assert.match(main, /pollRegistry,[\s\S]*ownerPages: window\.PlatformCore\?\.navigation\?\.knownPages/);
 });
+
+
+test('ZIP task center rows reopen their durable runtime instead of becoming dead history',()=>{
+  const html=renderUploadTaskCenterRow({
+    id:'zip:job-1',kind:'zip',title:'fire.zip',status:'SELECTING',progress:38,stage:'等待确认标注',
+  });
+  assert.match(html,/data-utc-kind="zip"/);
+  assert.match(html,/utc-reopenable/);
+  assert.match(html,/tabindex="0"/);
+  const runtime=readFileSync(new URL('../../static/modules/upload-task-center.js',import.meta.url),'utf8');
+  assert.match(runtime,/ZipImportRuntime\?\.openTask\?\./);
+  assert.match(runtime,/\.utc-row\[data-utc-kind="zip"\]/);
+});
