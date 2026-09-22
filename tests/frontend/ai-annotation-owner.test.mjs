@@ -25,6 +25,12 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
   assert.ok(finalRender > finalPage, 'v60 task list must remain the final auto-label page owner');
   assert.match(source.slice(finalPage, finalRender), /AI自动标注/);
   assert.match(source.slice(finalRender), /候选结果不会自动写入正式标注/);
+  assert.equal((source.match(/window\.showTaskProgress427=/g) || []).length, 1);
+  assert.equal(source.includes('const showTaskBase429=window.showTaskProgress427;'), false);
+  assert.equal(source.includes('const previousShowTask=window.showTaskProgress427;'), false);
+  assert.match(source, /window\.showTaskProgressCore427=async function\(type,id\)/);
+  assert.match(source, /window\.showCleanTaskProgress429=async function\(id\)/);
+  assert.match(source, /window\.showTaskProgress427=function showTaskProgressCanonical60\(type,id\)/);
 });
 
 test('final label management page owner is the alias-aware schema manager', () => {
