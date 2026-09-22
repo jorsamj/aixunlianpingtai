@@ -1195,14 +1195,14 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!(externalMode() && config?.baseUrl && config?.credentials?.configured === true)) return false;
     configEditing = true;
     connectionTest = null;
-    await render({reload: false});
+    await render({reload: false, refreshConfigPanel: true});
     return true;
   }
 
   async function cancelConfigEdit() {
     configEditing = false;
     connectionTest = null;
-    await render({reload: false});
+    await render({reload: false, refreshConfigPanel: true});
     return true;
   }
 
@@ -1321,12 +1321,66 @@ export function installExternalAlgorithmPlatformRuntime({
     for (const input of document.querySelectorAll(
       'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
     )) {
+      if (input.dataset.externalDirtyBound === '1') continue;
+      input.dataset.externalDirtyBound = '1';
       input.addEventListener('input', markConfigDirty);
       input.addEventListener('change', markConfigDirty);
     }
   }
 
-  async function render({reload = true, force = false} = {}) {
+  function externalPagePatchKey(node, index) {
+    if (!node) return `missing:${index}`;
+    if (node.matches?.('.external-platform-hero')) return 'hero';
+    if (node.matches?.('.external-platform-steps')) return 'steps';
+    if (node.matches?.('.external-platform-config')) return 'config';
+    const title = node.querySelector?.('.panel-title')?.textContent?.trim();
+    if (title) return `panel:${title}`;
+    const marker = [...(node.classList || [])].sort().join('.');
+    return `${node.tagName || 'node'}:${marker}:${index}`;
+  }
+
+  function patchExternalPlatformPage(view, html, {preserveConfigDraft = false} = {}) {
+    if (!view || !html) return false;
+    const template = document.createElement('template');
+    template.innerHTML = html.trim();
+    const nextRoot = template.content.firstElementChild;
+    if (!nextRoot) return false;
+    const currentRoot = view.querySelector(':scope > [data-external-platform-page="1"]');
+    if (!currentRoot) {
+      view.replaceChildren(nextRoot);
+      bindPage();
+      return true;
+    }
+
+    const currentByKey = new Map(
+      [...currentRoot.children].map((node, index) => [externalPagePatchKey(node, index), node])
+    );
+    const keep = new Set();
+    [...nextRoot.children].forEach((nextNode, index) => {
+      const key = externalPagePatchKey(nextNode, index);
+      keep.add(key);
+      let currentNode = currentByKey.get(key);
+      const preserveDraft = preserveConfigDraft && key === 'config';
+      if (!currentNode) {
+        currentRoot.appendChild(nextNode);
+        currentNode = nextNode;
+      } else if (!preserveDraft && currentNode.outerHTML !== nextNode.outerHTML) {
+        currentNode.replaceWith(nextNode);
+        currentNode = nextNode;
+      }
+      const at = currentRoot.children[index];
+      if (at !== currentNode) currentRoot.insertBefore(currentNode, at || null);
+    });
+    for (const [key, node] of currentByKey) {
+      if (!keep.has(key)) node.remove();
+    }
+    currentRoot.className = nextRoot.className;
+    currentRoot.dataset.externalPlatformPage = '1';
+    bindPage();
+    return true;
+  }
+
+  async function render({reload = true, force = false, refreshConfigPanel = false} = {}) {
     if (destroyed || String(state().page || '') !== PAGE) return false;
     const view = document.getElementById('view');
     if (!view) return false;
@@ -1334,9 +1388,9 @@ export function installExternalAlgorithmPlatformRuntime({
 
     const paintCachedPage = () => {
       if (!config || String(state().page || '') !== PAGE) return false;
-      view.innerHTML = configFormHtml(config);
-      bindPage();
-      return true;
+      return patchExternalPlatformPage(view, configFormHtml(config), {
+        preserveConfigDraft: configEditing && !refreshConfigPanel,
+      });
     };
     const hasSnapshot = paintCachedPage();
     if (loading) return hasSnapshot;
@@ -1385,7 +1439,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63017',
+    build: 'external-algorithm-platform-63018',
     page: PAGE,
     loadConfig,
     loadHistory,
