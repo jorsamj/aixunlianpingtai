@@ -81,9 +81,6 @@ export function installTrainingTaskVisibilityRuntime({
   const runtime = trainingTaskRuntime || window.TrainingTaskRuntime;
   if (!runtime || typeof runtime.refresh !== 'function' || typeof runtime.setViewAdapter !== 'function') return null;
 
-  const legacyRender = window.renderTraining425
-    || window.renderTraining424
-    || window.renderTraining423;
   const previous = {
     renderTraining423: window.renderTraining423,
     renderTraining424: window.renderTraining424,
@@ -369,10 +366,6 @@ export function installTrainingTaskVisibilityRuntime({
 
   const renderTraining = () => {
     const rendered = renderOwned();
-    if (!rendered && typeof legacyRender === 'function') {
-      legacyRender();
-      renderOwned();
-    }
     pollRegistry?.replaceTrainingJobTimer?.();
     return rendered;
   };

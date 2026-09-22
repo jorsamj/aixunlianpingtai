@@ -328,6 +328,7 @@ test('visibility composes through the explicit task view adapter without monkey-
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
   assert.match(source, /runtime\.setViewAdapter\(viewAdapter\)/);
   assert.doesNotMatch(source, /runtime\.refresh\s*=\s*refreshOwned/);
+  assert.doesNotMatch(source, /legacyRender/);
   assert.doesNotMatch(source, /for \(const name of \['promoteTrain428'/);
 
   visibility.destroy();
