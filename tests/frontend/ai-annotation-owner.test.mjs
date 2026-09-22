@@ -33,6 +33,22 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
   assert.match(source, /window\.showTaskProgress427=function showTaskProgressCanonical60\(type,id\)/);
 });
 
+test('AI create dialog uses one canonical owner with explicit decorators', () => {
+  assert.equal((source.match(/window\.createAiLabel429=/g) || []).length, 1);
+  assert.equal((source.match(/window\.createAiLabel427=/g) || []).length, 1);
+  assert.equal((source.match(/window\.aiRefSelect412=/g) || []).length, 1);
+  for (const token of [
+    'const baseCreateAi417=window.createAiLabel429;',
+    'const baseCreateAi412=window.createAiLabel429;',
+    'const baseSelectReference417=window.aiRefSelect412;',
+  ]) assert.equal(source.includes(token), false, token);
+  assert.match(source, /window\.createAiLabelCore429=function\(opts=\{\}\)/);
+  assert.match(source, /window\.decorateAiReferenceLabels417=function\(\)/);
+  assert.match(source, /window\.decorateAiReferenceBulk412=function\(\)/);
+  assert.match(source, /window\.createAiLabel429=function createAiLabelCanonical429\(opts=\{\}\)/);
+  assert.match(source, /window\.aiRefSelect412=function aiRefSelectCanonical412\(mode\)/);
+});
+
 test('final label management page owner is the alias-aware schema manager', () => {
   assert.match(source, /window\.manageLabels=\(\)=>\{closeModal\(\);setPage\('标签管理'\)\};/);
   assert.doesNotMatch(source, /state\.page==='标签管理'.*renderLabelManagement414/);
