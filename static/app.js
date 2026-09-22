@@ -1209,16 +1209,6 @@ window.installUsability417=function(){
   state.prelabelTasks=[];
   state.prelabelServices=[];
 
-  const _oldLoadRelatedV33 = loadRelated;
-  loadRelated = async function(){
-    await _oldLoadRelatedV33();
-    if(state.project){
-      state.videoTasks=(await safe(api(`/api/v33/projects/${state.project.id}/video-tasks`)))?.items||[];
-      state.prelabelTasks=(await safe(api(`/api/v33/projects/${state.project.id}/prelabel-tasks`)))?.items||[];
-      state.prelabelServices=await safe(api('/api/prelabel_services'))||[];
-    }
-  };
-
   function statusCls(s){return s==='done'||s==='finished'?'ok':s==='failed'?'err':s==='stopped'?'warn':'blue'}
   function taskProgress(t){
     const p=Math.max(0,Math.min(100,parseInt(t.progress||0)));
@@ -1382,18 +1372,6 @@ window.installUsability417=function(){
     saveUiState();
   };
 
-  const oldLoadAll = loadAll;
-  loadAll = async function(){
-    await oldLoadAll();
-    if(!state.versionInfo) state.versionInfo = await safe(api('/api/system/version'));
-    if(!state.datasetId && state.datasets[0]) state.datasetId=state.datasets[0].id;
-    saveUiState();
-  };
-
-
-  
-  
-  
   function stepCard(n,title,desc,page,btn='进入'){
     return `<div class="flow-card" onclick="setPage('${page}')"><div class="flow-no">${n}</div><div><div class="flow-title">${title}</div><div class="flow-desc">${desc}</div><button class="btn small soft">${btn}</button></div></div>`;
   }
@@ -1421,13 +1399,6 @@ window.installUsability417=function(){
   state.promptTemplates=[];
   state.autoLabelTab='task';
   state.resourceBusy=false;
-
-  const _v35OldLoadAll = loadAll;
-  loadAll = async function(){
-    await _v35OldLoadAll();
-    state.modelConfigs = (await safe(api('/api/v35/model-configs')))?.items || [];
-    state.promptTemplates = (await safe(api('/api/v35/prompt-templates')))?.items || [];
-  };
 
   function v35Icon(name){return ({'工作台':'⌘','算法列表':'◇','数据集':'▣','视频切帧':'▦','自动标注':'✦','训练任务':'▶','测试发布':'⇧','检测台':'◎','训练资源':'⚙','模型配置':'◉'}[name]||'·')}
   const V35_GROUPS=[
@@ -2581,11 +2552,6 @@ window.installUsability417=function(){
   window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))oldClose424()};
 
   // ---------- all images are one logical data pool ----------
-  const baseLoadRelated424=loadRelated;
-  loadRelated=async function(){
-    await baseLoadRelated424();
-    if(state.project){state.images=await safe(api(`/api/projects/${pid()}/images`))||[];state.datasetId='default';}
-  };
 
   function icon424(name){
     const map={'工作台':'▦','质量中心':'◇','算法列表':'◆','训练任务':'▶','数据集':'▤','视频切帧':'▣','自动标注':'✦','测试发布':'✓','检测台':'◎','部署转换':'⇄','部署产物':'▥','模型配置':'◉','训练资源':'▧','部署资源':'⬡'};
@@ -2734,12 +2700,6 @@ window.installUsability417=function(){
    ============================================================ */
 (()=>{
   const V425='42.24.0';
-  const prevLoad425=loadRelated;
-  loadRelated=async function(){
-    await prevLoad425();
-    if(state.project){state.modelConfigs=(await safe(api('/api/v35/model-configs')))?.items||[];}
-  };
-
   function cfg425(){return {
     model:'',epochs:100,imgsz:640,batch:8,device:'cpu',optimizer:'auto',patience:100,workers:0,
     lr0:.01,lrf:.01,momentum:.937,weight_decay:.0005,warmup_epochs:3,
@@ -2872,7 +2832,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   state.data426DeleteMode=false; state.data426MoveMode=false;
 
   // Faster loading: independent resources are requested concurrently.
-  loadRelated=async function(){
+  loadRelated=async function loadRelatedCanonical426(){
     if(!state.project)return; const id=state.project.id; const quiet=p=>p.catch(()=>null);
     let [info,dsets,images,labels,algs,pending,testModels,modelCfg,prompts]=await Promise.all([
       quiet(api(`/api/projects/${id}`)),quiet(api(`/api/projects/${id}/datasets`)),quiet(api(`/api/projects/${id}/images`)),
@@ -2883,7 +2843,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!state.datasets.length){await quiet(api(`/api/projects/${id}/datasets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认数据集',description:'',kind:'mixed'})}));state.datasets=(await quiet(api(`/api/projects/${id}/datasets`)))?.items||[]}
     state.datasetId='default'; state.images=images||[]; state.labels=labels?.items||[]; state.algorithms=algs?.items||[]; state.pending=pending?.items||[]; state.testModels=testModels?.items||[]; state.modelConfigs=modelCfg?.items||[]; state.promptTemplates=prompts?.items||[];
   };
-  loadAll=async function(){
+  loadAll=async function loadAllCanonical426(){
     await ensureWorkspace(); if(!state.project)return; const id=state.project.id,quiet=p=>p.catch(()=>null);
     const [_,opts,infer,rec,local]=await Promise.all([loadRelated(),quiet(api(`/api/training_options?project_id=${id}`)),quiet(api('/api/v16/inference_envs')),quiet(api('/api/system/recommendation')),quiet(api('/api/local_models'))]);
     state.targets=opts?.targets||[];state.inferenceEnvs=infer?.items||[];state.rec=rec;state.localModels=local?.items||[];
