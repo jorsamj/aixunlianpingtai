@@ -45,6 +45,9 @@ test('frequently revisited operational pages paint before focused revalidation',
   const video = block('window.renderVideo424=function()', '\n  window.createVideoTask424=function()');
   assert.ok(video.indexOf("document.getElementById('view').innerHTML") < video.indexOf('refreshVideo424Delta()'));
   assert.match(video, /data-video-loading/);
+  assert.match(source, /const VIDEO424_PAGE_ENTRY_REUSE_MS=5000/);
+  assert.match(video, /reuseRecent=hasSnapshot&&age>=0&&age<VIDEO424_PAGE_ENTRY_REUSE_MS/);
+  assert.match(video, /if\(!reuseRecent\)void window\.refreshVideo424Delta\(\)/);
 
   const finalAutoStart = source.lastIndexOf('window.renderOps427=function()');
   const finalAutoEnd = source.indexOf('\n\n  function candidateOverlay', finalAutoStart);
@@ -52,11 +55,25 @@ test('frequently revisited operational pages paint before focused revalidation',
   const finalAuto = source.slice(finalAutoStart, finalAutoEnd);
   assert.match(finalAuto, /renderAiTaskPage60\(\{loading:!hasSnapshot\}\)/);
   assert.ok(finalAuto.indexOf('renderAiTaskPage60') < finalAuto.indexOf('refreshAnnotationTasks60()'));
+  assert.match(source, /const AI_TASK_PAGE_ENTRY_REUSE_MS=5000/);
+  assert.match(finalAuto, /if\(hasSnapshot&&age>=0&&age<AI_TASK_PAGE_ENTRY_REUSE_MS\)return/);
 
   const clean = block('function renderCleanOps427()', '\n\n  // ----- model config: prompt lives with model -----');
   assert.match(clean, /document\.getElementById\('view'\)\.innerHTML/);
   assert.match(clean, /refreshCleanOps427Delta/);
+  assert.match(source, /const CLEAN427_PAGE_ENTRY_REUSE_MS=5000/);
+  assert.match(clean, /reuseRecent=state\.clean427LoadedAt>0&&age>=0&&age<CLEAN427_PAGE_ENTRY_REUSE_MS/);
+  assert.match(clean, /if\(!reuseRecent\)void window\.refreshCleanOps427Delta\?\.\(\)/);
   assert.doesNotMatch(clean, /await loadOps427\(\)/);
+});
+
+
+test('clean task focused refresh dedupes inflight reads and records a reusable snapshot', () => {
+  const refresh = block('window.refreshCleanOps427Delta=function()', '\n  function renderCleanOps427()');
+  assert.match(refresh, /if\(state\.clean427RefreshPromise\)return state\.clean427RefreshPromise/);
+  assert.match(refresh, /state\.clean427LoadedAt=Date\.now\(\)/);
+  assert.match(refresh, /state\.clean427RefreshPromise=task/);
+  assert.match(refresh, /state\.clean427RefreshPromise===task/);
 });
 
 

@@ -2611,6 +2611,7 @@ window.installUsability417=function(){
 
   // ---------- video frame tasks ----------
   const videoCore424=()=>window.PlatformCore?.video;
+  const VIDEO424_PAGE_ENTRY_REUSE_MS=5000;
   async function loadVideo424(){
     const response=await safe(api(`/api/v33/projects/${pid()}/video-tasks`));
     if(!response)return null;
@@ -2636,7 +2637,7 @@ window.installUsability417=function(){
     })().finally(()=>{state.video424RefreshPromise=null});
     return state.video424RefreshPromise;
   };
-  window.renderVideo424=function(){const hasSnapshot=Number(state.video424LoadedAt||0)>0||(state.video424||[]).length>0;document.getElementById('view').innerHTML=`<section class="taskpage424"><div class="taskpage424-head"><div></div><button class="btn primary" onclick="createVideoTask424()">＋ 创建切帧任务</button></div><section class="panel"><div class="table-wrap"><table class="table task424-table"><thead><tr><th>视频</th><th>切帧方式</th><th>素材归属</th><th>状态</th><th>进度</th><th>当前帧</th><th>创建/完成</th><th>操作</th></tr></thead><tbody id="video424Rows">${hasSnapshot?(state.video424.map(videoTaskRow424).join('')||'<tr data-video-empty><td colspan="8">暂无切帧任务</td></tr>'):'<tr data-video-loading><td colspan="8">首次读取视频切帧任务…</td></tr>'}</tbody></table></div></section></section>`;window.PollRegistryRuntime?.replaceVideo424Timer?.();void window.refreshVideo424Delta()};
+  window.renderVideo424=function(){const hasSnapshot=Number(state.video424LoadedAt||0)>0||(state.video424||[]).length>0,age=Date.now()-Number(state.video424LoadedAt||0),reuseRecent=hasSnapshot&&age>=0&&age<VIDEO424_PAGE_ENTRY_REUSE_MS;document.getElementById('view').innerHTML=`<section class="taskpage424"><div class="taskpage424-head"><div></div><button class="btn primary" onclick="createVideoTask424()">＋ 创建切帧任务</button></div><section class="panel"><div class="table-wrap"><table class="table task424-table"><thead><tr><th>视频</th><th>切帧方式</th><th>素材归属</th><th>状态</th><th>进度</th><th>当前帧</th><th>创建/完成</th><th>操作</th></tr></thead><tbody id="video424Rows">${hasSnapshot?(state.video424.map(videoTaskRow424).join('')||'<tr data-video-empty><td colspan="8">暂无切帧任务</td></tr>'):'<tr data-video-loading><td colspan="8">首次读取视频切帧任务…</td></tr>'}</tbody></table></div></section></section>`;window.PollRegistryRuntime?.replaceVideo424Timer?.();if(!reuseRecent)void window.refreshVideo424Delta()};
   window.createVideoTask424=function(){modal('创建切帧任务',`<div class="form two"><div class="field full"><label>上传视频文件</label><input id="vf424File" type="file" class="file" accept="video/*" onchange="videoEstimate424()"></div><div class="field"><label>切帧方式</label><select id="vf424Mode" class="select" onchange="videoMode424();videoEstimate424()"><option value="interval_seconds">按时间间隔</option><option value="fps">按每秒帧数</option><option value="fixed_count">按固定帧数</option></select></div><div class="field"><label>素材归属</label><select id="vf424Split" class="select"><option value="unassigned">未处理</option><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option></select></div><div class="field" id="vf424IntervalBox"><label>切帧间隔（秒）</label><input id="vf424Interval" class="input" type="number" min="0.05" step="0.05" value="1" oninput="videoEstimate424()"></div><div class="field hidden" id="vf424FpsBox"><label>每秒抽取帧数</label><input id="vf424Fps" class="input" type="number" min="0.1" step="0.1" value="1" oninput="videoEstimate424()"></div><div class="field hidden" id="vf424FixedBox"><label>固定抽取帧数</label><input id="vf424Fixed" class="input" type="number" min="1" step="1" value="50" oninput="videoEstimate424()"></div><div class="field"><label>最大切帧数量（可选）</label><input id="vf424Max" class="input" type="number" min="0" value="0" oninput="videoEstimate424()"></div><div class="field full"><div id="vf424Estimate" class="estimate424">选择视频后计算预计帧数</div></div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitVideo424()">创建任务</button></div>`,true)};
   window.videoMode424=function(){const mode=document.getElementById('vf424Mode')?.value;document.getElementById('vf424IntervalBox')?.classList.toggle('hidden',mode!=='interval_seconds');document.getElementById('vf424FpsBox')?.classList.toggle('hidden',mode!=='fps');document.getElementById('vf424FixedBox')?.classList.toggle('hidden',mode!=='fixed_count')};
   window.videoEstimate424=function(){const f=document.getElementById('vf424File')?.files?.[0],out=document.getElementById('vf424Estimate');if(!f||!out)return;const v=document.createElement('video');v.preload='metadata';v.onloadedmetadata=()=>{const dur=v.duration||0,mode=document.getElementById('vf424Mode')?.value,max=+(document.getElementById('vf424Max')?.value||0);let n=mode==='fps'?dur*(+(document.getElementById('vf424Fps')?.value||1)):mode==='fixed_count'?+(document.getElementById('vf424Fixed')?.value||1):dur/Math.max(.05,+(document.getElementById('vf424Interval')?.value||1));if(max>0)n=Math.min(n,max);out.textContent=`视频约 ${dur.toFixed(1)} 秒 · 预计生成 ${Math.ceil(n)} 张`;URL.revokeObjectURL(v.src)};v.src=URL.createObjectURL(f)};
@@ -3028,20 +3029,28 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     return true
   }
   window.patchCleanTaskRows427=patchCleanTaskRows427;
-  window.refreshCleanOps427Delta=async function(){
-    if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='clean'){window.PollRegistryRuntime?.replaceCleanTaskTimer?.();return}
-    const cl=await safe(api(`/api/v47/projects/${pid()}/clean-tasks`));
-    if(cl)state.clean427=cl.items||[];
-    if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='clean'){
-      const body=document.getElementById('clean427TaskRows');if(body)patchCleanTaskRows427(body,state.clean427||[])
-    }
-    window.PollRegistryRuntime?.replaceCleanTaskTimer?.()
+  const CLEAN427_PAGE_ENTRY_REUSE_MS=5000;
+  window.refreshCleanOps427Delta=function(){
+    if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='clean'){window.PollRegistryRuntime?.replaceCleanTaskTimer?.();return Promise.resolve(null)}
+    if(state.clean427RefreshPromise)return state.clean427RefreshPromise;
+    const task=(async()=>{
+      const cl=await safe(api(`/api/v47/projects/${pid()}/clean-tasks`));
+      if(cl){state.clean427=cl.items||[];state.clean427LoadedAt=Date.now()}
+      if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='clean'){
+        const body=document.getElementById('clean427TaskRows');if(body)patchCleanTaskRows427(body,state.clean427||[])
+      }
+      window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
+      return state.clean427||[];
+    })();
+    state.clean427RefreshPromise=task;
+    return task.finally(()=>{if(state.clean427RefreshPromise===task)state.clean427RefreshPromise=null});
   };
   function renderCleanOps427(){
     const rows=cleanTaskRows427(state.clean427);
     document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button class="on" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createClean427()">＋ 创建清洗任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>问题图片</th><th>时间</th><th>操作</th></tr></thead><tbody id="clean427TaskRows">${rows}</tbody></table></div></section></section>`;
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
-    void window.refreshCleanOps427Delta?.();
+    const age=Date.now()-Number(state.clean427LoadedAt||0),reuseRecent=state.clean427LoadedAt>0&&age>=0&&age<CLEAN427_PAGE_ENTRY_REUSE_MS;
+    if(!reuseRecent)void window.refreshCleanOps427Delta?.();
   }
   window.renderCleanOps427=renderCleanOps427;
 
@@ -4755,6 +4764,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows">${loading?'<tr><td colspan="6">首次读取AI标注任务…</td></tr>':''}</tbody></table></div></section></section>`;
     if(!loading)renderAiTaskRows60(state.annotationTasks60||[]);
   }
+  const AI_TASK_PAGE_ENTRY_REUSE_MS=5000;
   function refreshAnnotationTasks60(){
     if(state.annotationTasks60RefreshPromise)return state.annotationTasks60RefreshPromise;
     state.annotationTasks60RefreshPromise=api(`${taskApi()}?limit=50`).then(response=>{
@@ -4770,6 +4780,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const hasSnapshot=Number(state.annotationTasks60LoadedAt||0)>0||(state.annotationTasks60||[]).length>0;
     renderAiTaskPage60({loading:!hasSnapshot});
     if(hasSnapshot)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
+    const age=Date.now()-Number(state.annotationTasks60LoadedAt||0);
+    if(hasSnapshot&&age>=0&&age<AI_TASK_PAGE_ENTRY_REUSE_MS)return;
     void refreshAnnotationTasks60().then(tasks=>{
       if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
       renderAiTaskRows60(tasks||[]);
