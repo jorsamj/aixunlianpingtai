@@ -61,7 +61,7 @@ if (typeof window.toast !== 'function') window.toast = fallbackToast;
 
 // Training owns its own paged material picker/summary and must never request the whole image pool.
 FULL_MATERIAL_PAGES.delete('训练任务');
-for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
+for (const page of ['自动迭代']) FULL_MATERIAL_PAGES.add(page);
 
 registerAction('algorithm.create', () => {
   if (typeof window.openNewAlgorithm423 !== 'function') {
@@ -318,7 +318,7 @@ function renderUnknownPage(page) {
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
-const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '测试发布', '检测台', '部署转换', '部署产物']);
+const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '部署转换', '部署产物']);
 
 function adoptPageExtrasInflight(page, promise) {
   if (!PAGE_EXTRAS_OWNERS.has(page) || !promise || typeof promise.then !== 'function') return null;
@@ -417,8 +417,6 @@ const canonicalWindowPageRenderers = new Map([
   ['工作台', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
   ['素材接入', 'renderSources422'],
-  ['测试发布', 'renderTest'],
-  ['检测台', 'renderDetectBench'],
   ['标签管理', 'renderLabelManagement414'],
   ['模型配置', 'renderModelConfigPageV35'],
   ['训练资源', 'renderResources'],
