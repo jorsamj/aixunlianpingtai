@@ -2576,13 +2576,64 @@ window.installUsability417=function(){
     const labels=entries.map(([k,v],i)=>{const a=-Math.PI/2+i*2*Math.PI/n,x=cx+Math.cos(a)*(R+25),y=cy+Math.sin(a)*(R+25);return`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle">${esc(k)} ${Number(v||0).toFixed(0)}</text>`}).join('');
     return `<svg class="radar424 ${cls}" viewBox="0 0 300 285">${[.25,.5,.75,1].map(x=>`<polygon points="${points(R*x)}" class="radar-grid424"/>`).join('')}${entries.map((_,i)=>{const p=points(R).split(' ')[i];return`<line x1="${cx}" y1="${cy}" x2="${p.split(',')[0]}" y2="${p.split(',')[1]}" class="radar-axis424"/>`}).join('')}<polygon points="${valpts}" class="radar-value424"/>${labels}</svg>`;
   }
-  window.renderQualityCenter424=async function(){
-    document.getElementById('view').innerHTML='<div class="loading">正在计算质量指标...</div>';
-    const r=await safe(api(`/api/v44/projects/${pid()}/quality-center`));state.quality424=r||{};const d=r?.dataset||{},a=r?.algorithm||{};
+  const QUALITY424_CACHE_TTL_MS=60*1000;
+  state.quality424=state.quality424||{};
+  state.quality424LoadedAt=Number(state.quality424LoadedAt||0);
+  state.quality424ProjectId=String(state.quality424ProjectId||'');
+  state.quality424RefreshPromise=null;
+  const qualityCacheKey424=projectId=>`cl_quality_center_424_${projectId}`;
+  function restoreQualityCenter424(projectId){
+    if(state.quality424ProjectId===projectId&&state.quality424LoadedAt>0)return true;
+    try{
+      const cached=JSON.parse(localStorage.getItem(qualityCacheKey424(projectId))||'null');
+      if(!cached?.data||!Number(cached.ts))return false;
+      state.quality424=cached.data;
+      state.quality424LoadedAt=Number(cached.ts);
+      state.quality424ProjectId=projectId;
+      return true;
+    }catch(_){return false}
+  }
+  function persistQualityCenter424(projectId,data){
+    try{localStorage.setItem(qualityCacheKey424(projectId),JSON.stringify({ts:state.quality424LoadedAt,data}))}catch(_){}
+  }
+  function paintQualityCenter424(r=state.quality424||{}){
+    const d=r?.dataset||{},a=r?.algorithm||{};
     const ascores={'Precision':a.avg_precision||0,'Recall':a.avg_recall||0,'mAP50':a.avg_map50||0,...(a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}),'版本覆盖率':a.version_coverage||0};
     const labels=Object.entries(d.label_boxes||{}).filter(([,v])=>v>0).sort((x,y)=>y[1]-x[1]);const max=Math.max(1,...labels.map(x=>x[1]));
     const algRows=(a.algorithms||[]).map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.version||'-')}</td><td>${pct424(x.precision)}</td><td>${pct424(x.recall)}</td><td>${pct424(x.map50)}</td><td><b>${x.score==null?'-':Number(x.score).toFixed(1)}</b></td></tr>`).join('')||'<tr><td colspan="6">暂无已评测算法版本</td></tr>';
-    document.getElementById('view').innerHTML=`<div class="quality424-shell"><div class="quality424-kpis"><div><span>数据质量</span><b>${d.overall_score||0}</b></div><div><span>素材数量</span><b>${d.images||0}</b></div><div><span>有效标注框</span><b>${d.box_count||0}</b></div><div><span>算法平均质量</span><b>${a.avg_score||0}</b></div><div><span>训练成功率</span><b>${a.train_success_rate==null?'—':Number(a.train_success_rate).toFixed(1)+'%'}</b><small>${a.train_success_rate==null?'暂无已结束训练可统计':`${a.train_success_count||0} 成功 / ${a.train_completed_count||0} 已结束`}</small></div></div><div class="quality424-grid"><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">数据集质量维度</div></div><div class="panel-body quality424-radarbox">${radar424(d.scores||{})}<div class="quality424-facts"><div><span>已标注</span><b>${d.annotated_images||0}</b></div><div><span>标签数</span><b>${d.label_count||0}</b></div><div><span>重复图片</span><b>${d.duplicate_images||0}</b></div><div><span>低分辨率</span><b>${d.low_resolution||0}</b></div><div><span>无效框</span><b>${d.invalid_boxes||0}</b></div><div><span>数据体量</span><b>${fmtSize424(d.total_size_bytes)}</b></div></div></div></section><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">算法质量维度</div></div><div class="panel-body quality424-radarbox">${radar424(ascores,'algorithm')}</div></section></div><div class="quality424-grid"><section class="panel"><div class="panel-head"><div class="panel-title">数据用途分布</div></div><div class="panel-body"><div class="splitbars424">${[['未处理','unassigned'],['训练集','train'],['试验集','val'],['评测集','test']].map(([n,k])=>{const v=d.split_counts?.[k]||0,all=Math.max(1,d.images||1);return`<div><span>${n}</span><div><i style="width:${v/all*100}%"></i></div><b>${v}</b></div>`}).join('')}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">标签分布</div></div><div class="panel-body"><div class="labelbars424">${labels.map(([l,v])=>`<div><span>${esc(l)}</span><div><i style="width:${v/max*100}%"></i></div><b>${v}</b></div>`).join('')||'<div class="empty">暂无标签数据</div>'}</div></div></section></div><section class="panel"><div class="panel-head"><div class="panel-title">算法质量列表</div></div><div class="panel-body"><div class="table-wrap"><table class="table"><thead><tr><th>算法</th><th>版本</th><th>Precision</th><th>Recall</th><th>mAP50</th><th>质量分</th></tr></thead><tbody>${algRows}</tbody></table></div></div></section></div>`;
+    document.getElementById('view').innerHTML=`<div class="quality424-shell"><div class="row end"><button class="btn small" onclick="refreshQualityCenter424({force:true})">刷新</button></div><div class="quality424-kpis"><div><span>数据质量</span><b>${d.overall_score||0}</b></div><div><span>素材数量</span><b>${d.images||0}</b></div><div><span>有效标注框</span><b>${d.box_count||0}</b></div><div><span>算法平均质量</span><b>${a.avg_score||0}</b></div><div><span>训练成功率</span><b>${a.train_success_rate==null?'—':Number(a.train_success_rate).toFixed(1)+'%'}</b><small>${a.train_success_rate==null?'暂无已结束训练可统计':`${a.train_success_count||0} 成功 / ${a.train_completed_count||0} 已结束`}</small></div></div><div class="quality424-grid"><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">数据集质量维度</div></div><div class="panel-body quality424-radarbox">${radar424(d.scores||{})}<div class="quality424-facts"><div><span>已标注</span><b>${d.annotated_images||0}</b></div><div><span>标签数</span><b>${d.label_count||0}</b></div><div><span>重复图片</span><b>${d.duplicate_images||0}</b></div><div><span>低分辨率</span><b>${d.low_resolution||0}</b></div><div><span>无效框</span><b>${d.invalid_boxes||0}</b></div><div><span>数据体量</span><b>${fmtSize424(d.total_size_bytes)}</b></div></div></div></section><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">算法质量维度</div></div><div class="panel-body quality424-radarbox">${radar424(ascores,'algorithm')}</div></section></div><div class="quality424-grid"><section class="panel"><div class="panel-head"><div class="panel-title">数据用途分布</div></div><div class="panel-body"><div class="splitbars424">${[['未处理','unassigned'],['训练集','train'],['试验集','val'],['评测集','test']].map(([n,k])=>{const v=d.split_counts?.[k]||0,all=Math.max(1,d.images||1);return`<div><span>${n}</span><div><i style="width:${v/all*100}%"></i></div><b>${v}</b></div>`}).join('')}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">标签分布</div></div><div class="panel-body"><div class="labelbars424">${labels.map(([l,v])=>`<div><span>${esc(l)}</span><div><i style="width:${v/max*100}%"></i></div><b>${v}</b></div>`).join('')||'<div class="empty">暂无标签数据</div>'}</div></div></section></div><section class="panel"><div class="panel-head"><div class="panel-title">算法质量列表</div></div><div class="panel-body"><div class="table-wrap"><table class="table"><thead><tr><th>算法</th><th>版本</th><th>Precision</th><th>Recall</th><th>mAP50</th><th>质量分</th></tr></thead><tbody>${algRows}</tbody></table></div></div></section></div>`;
+  }
+  window.refreshQualityCenter424=function({force=false}={}){
+    const projectId=String(pid()||'');if(!projectId)return Promise.resolve(null);
+    const sameProject=state.quality424ProjectId===projectId;
+    const age=Date.now()-Number(state.quality424LoadedAt||0);
+    if(!force&&sameProject&&state.quality424LoadedAt>0&&age>=0&&age<QUALITY424_CACHE_TTL_MS)return Promise.resolve(state.quality424);
+    if(state.quality424RefreshPromise)return state.quality424RefreshPromise;
+    const task=api(`/api/v44/projects/${projectId}/quality-center`).then(r=>{
+      if(String(pid()||'')!==projectId)return r;
+      state.quality424=r||{};
+      state.quality424LoadedAt=Date.now();
+      state.quality424ProjectId=projectId;
+      persistQualityCenter424(projectId,state.quality424);
+      if(state.page==='质量中心')paintQualityCenter424(state.quality424);
+      return state.quality424;
+    }).catch(error=>{
+      if(state.page==='质量中心'&&!(state.quality424ProjectId===projectId&&state.quality424LoadedAt>0)){
+        const view=document.getElementById('view');if(view)view.innerHTML=`<div class="alert err">质量指标读取失败：${esc(error.message||error)} <button class="btn mini" onclick="refreshQualityCenter424({force:true})">重试</button></div>`;
+      }else if(force)toast(error.message||error);
+      return null;
+    }).finally(()=>{if(state.quality424RefreshPromise===task)state.quality424RefreshPromise=null});
+    state.quality424RefreshPromise=task;
+    return task;
+  };
+  window.renderQualityCenter424=function({force=false}={}){
+    const projectId=String(pid()||'');if(!projectId)return;
+    restoreQualityCenter424(projectId);
+    const hasSnapshot=state.quality424ProjectId===projectId&&state.quality424LoadedAt>0;
+    if(hasSnapshot)paintQualityCenter424(state.quality424);
+    else{const view=document.getElementById('view');if(view)view.innerHTML='<div class="loading">首次读取质量指标…</div>'}
+    const age=Date.now()-Number(state.quality424LoadedAt||0);
+    if(force||!hasSnapshot||age<0||age>=QUALITY424_CACHE_TTL_MS)void window.refreshQualityCenter424({force});
   };
 
   // ---------- single data pool ----------
