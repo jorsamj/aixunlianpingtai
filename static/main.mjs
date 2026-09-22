@@ -39,7 +39,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422210';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
-import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66007';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537';
@@ -254,7 +254,13 @@ installMaterialBatchRuntime({
   },
 });
 window.installServerMaterialImport61?.();
-const uploadTaskCenterRuntime = installUploadTaskCenter({getState: () => state, projectId: () => state.project?.id, notify});
+const uploadTaskCenterRuntime = installUploadTaskCenter({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+  pollRegistry,
+  ownerPages: window.PlatformCore?.navigation?.knownPages || [],
+});
 window.PlatformCore.runtime.uploadTaskCenterRuntime = uploadTaskCenterRuntime;
 const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
 window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;

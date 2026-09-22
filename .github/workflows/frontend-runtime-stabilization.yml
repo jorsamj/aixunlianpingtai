@@ -168,6 +168,9 @@ jobs:
           grep -Fq 'export function waitForTaskTerminal' static/modules/task-poller.js
           grep -Fq 'waitForTaskTerminal({initialTask:task,registry:window.PollRegistryRuntime' static/app.js
           if grep -Fq 'await new Promise(resolve=>setTimeout(resolve,900))' static/app.js; then echo 'active deployment task waits must use shared task poller' >&2; exit 1; fi
+          grep -Fq "build:'upload-task-center-3'" static/modules/upload-task-center.js
+          grep -Fq 'registry?.startTimeout(POLL_KEY, pollOwners' static/modules/upload-task-center.js
+          if grep -Fq 'setTimeout(' static/modules/upload-task-center.js; then echo 'upload task center durable polling must stay PollRegistry-owned' >&2; exit 1; fi
           if grep -Fq 'setTimeout(' static/modules/resource-discovery.js; then echo 'resource discovery polling must stay PollRegistry-owned' >&2; exit 1; fi
           if grep -Fq 'live.outerHTML =' static/modules/resource-discovery.js; then echo 'resource discovery progress must patch in place' >&2; exit 1; fi
       - name: Video PollRegistry direct owner guard

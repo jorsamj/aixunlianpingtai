@@ -203,14 +203,21 @@ async function responseJson(response) {
   throw new Error(String(body?.message || body?.detail || `HTTP ${response.status}`));
 }
 
-export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch} = {}) {
+export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch, pollRegistry, ownerPages} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-2') return window.UploadTaskCenterRuntime;
+  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-3') return window.UploadTaskCenterRuntime;
 
   let rows = [];
   let expanded = false;
-  let timer = null;
   let lastProjectId = '';
+  const registry = pollRegistry || window.PollRegistryRuntime;
+  const POLL_KEY = 'upload-task-center';
+  const fallbackOwners = [
+    '工作台','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗',
+    '测试发布','检测台','标签管理','部署转换','部署产物','模型配置','训练资源','部署资源',
+    '部署插件','组件检测','存储配置','平台对接','服务节点',
+  ];
+  const pollOwners = Array.isArray(ownerPages) && ownerPages.length ? [...ownerPages] : fallbackOwners;
 
   const pid = () => String(projectId?.() || getState?.()?.project?.id || '');
   const storageKey = project => `${STORAGE_PREFIX}${project}`;
@@ -384,7 +391,6 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   async function poll() {
-    timer = null;
     const project = pid();
     if (project !== lastProjectId) {
       lastProjectId = project;
@@ -405,14 +411,18 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   function arm() {
-    if (timer) clearTimeout(timer);
+    registry?.clear?.(POLL_KEY);
     const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
-    if (needsPoll) timer = setTimeout(() => poll().catch(() => arm()), POLL_MS);
+    if (!needsPoll || document.visibilityState === 'hidden' || !registry?.startTimeout) return null;
+    return registry.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), POLL_MS);
   }
 
   function switchProject() {
     const project = pid();
-    if (project === lastProjectId) return;
+    if (project === lastProjectId) {
+      arm();
+      return;
+    }
     lastProjectId = project;
     load(project);
     persist();
@@ -420,14 +430,25 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     arm();
   }
 
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') registry?.clear?.(POLL_KEY);
+    else arm();
+  };
+  document.addEventListener?.('visibilitychange', onVisibilityChange);
+
   const runtime = Object.freeze({
-    build:'upload-task-center-2',
+    build:'upload-task-center-3',
     upsert,
     remove,
     clearCompleted,
     list:() => rows.map(row => ({...row})),
     refresh:() => poll(),
     switchProject,
+    destroy() {
+      registry?.clear?.(POLL_KEY);
+      document.removeEventListener?.('visibilitychange', onVisibilityChange);
+      if (window.UploadTaskCenterRuntime === runtime) window.UploadTaskCenterRuntime = null;
+    },
   });
   window.UploadTaskCenterRuntime = runtime;
   lastProjectId = pid();

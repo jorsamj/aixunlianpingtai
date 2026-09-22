@@ -129,5 +129,17 @@ test('task center source keeps a stable shell and keyed row patch owner', () => 
   assert.match(runtime, /function ensureShell\(root\)/);
   assert.match(runtime, /patchUploadTaskCenterRows\(body, visible\)/);
   assert.match(runtime, /data-progress=/);
-  assert.match(runtime, /build:'upload-task-center-2'/);
+  assert.match(runtime, /build:'upload-task-center-3'/);
+});
+
+
+test('task center durable polling is PollRegistry-owned and hidden tabs do not keep requesting', () => {
+  const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.match(runtime, /registry\?\.startTimeout\(POLL_KEY, pollOwners/);
+  assert.match(runtime, /document\.visibilityState === 'hidden'/);
+  assert.match(runtime, /visibilitychange/);
+  assert.doesNotMatch(runtime, /setTimeout\(/);
+  assert.doesNotMatch(runtime, /clearTimeout\(/);
+  assert.match(main, /pollRegistry,[\s\S]*ownerPages: window\.PlatformCore\?\.navigation\?\.knownPages/);
 });

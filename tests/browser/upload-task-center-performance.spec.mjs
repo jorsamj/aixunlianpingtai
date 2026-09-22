@@ -7,7 +7,7 @@ test('upload task center patches progress without rebuilding shell row or progre
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(() => page.evaluate(() => window.UploadTaskCenterRuntime?.build || null))
-    .toBe('upload-task-center-2');
+    .toBe('upload-task-center-3');
 
   await page.evaluate(() => {
     window.UploadTaskCenterRuntime.upsert({
