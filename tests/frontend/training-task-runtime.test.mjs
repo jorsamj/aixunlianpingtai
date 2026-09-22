@@ -603,3 +603,37 @@ test('batch pause uses only eligible real endpoints and performs one final jobs 
   runtime.destroy();
   cleanup();
 });
+
+
+test('training task runtime renders through an explicit view adapter while keeping refresh ownership stable', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  globalThis.window = {
+    fetch: async () => response([{id: 'adapter-1', status: 'running', progress_percent: 25}]),
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const originalRefresh = runtime.refresh;
+  let renders = 0;
+  let afterRefreshes = 0;
+  const detach = runtime.setViewAdapter({
+    render() { renders += 1; return true; },
+    afterRefresh(result, options) {
+      if (!result?.stale && options?.source === 'poll') afterRefreshes += 1;
+    },
+  });
+
+  const result = await runtime.refresh({render: true, source: 'poll'});
+  assert.equal(result.stale, false);
+  assert.equal(runtime.refresh, originalRefresh);
+  assert.equal(renders, 1);
+  assert.equal(afterRefreshes, 1);
+  assert.equal(runtime.state().viewAdapter, true);
+
+  detach();
+  assert.equal(runtime.state().viewAdapter, false);
+  runtime.destroy();
+  cleanup();
+});

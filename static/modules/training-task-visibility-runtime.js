@@ -79,7 +79,7 @@ export function installTrainingTaskVisibilityRuntime({
   const doc = typeof document !== 'undefined' ? document : null;
   const state = () => getState?.() || {};
   const runtime = trainingTaskRuntime || window.TrainingTaskRuntime;
-  if (!runtime || typeof runtime.refresh !== 'function') return null;
+  if (!runtime || typeof runtime.refresh !== 'function' || typeof runtime.setViewAdapter !== 'function') return null;
 
   const legacyLoadRelated = typeof window.loadRelated === 'function' ? window.loadRelated : null;
   const legacyRender = window.renderTraining425
@@ -91,21 +91,10 @@ export function installTrainingTaskVisibilityRuntime({
     renderTraining424: window.renderTraining424,
     renderTraining425: window.renderTraining425,
     setTrainTab428: window.setTrainTab428,
-    refreshJobsOnly: window.refreshJobsOnly,
-    refreshTrainPage428: window.refreshTrainPage428,
-    refreshTrain423: window.refreshTrain423,
-    promoteTrain428: window.promoteTrain428,
-    pauseTrain428: window.pauseTrain428,
-    resumeTrain428: window.resumeTrain428,
-    stopTrain428: window.stopTrain428,
-    deleteTrain428: window.deleteTrain428,
-    runtimeRefresh: runtime.refresh,
   };
 
   let destroyed = false;
   let jobsProjectId = String(state().project?.id || '');
-  let refreshSequence = 0;
-  let appliedSequence = 0;
   let batchMode = false;
   let batchBusy = false;
   const selectedIds = new Set();
@@ -370,29 +359,21 @@ export function installTrainingTaskVisibilityRuntime({
     return tickTrainingClockRows(root, stepSeconds);
   }
 
+  const viewAdapter = {
+    render: renderOwned,
+    afterRefresh(result, options = {}) {
+      if (destroyed || result?.stale) return;
+      jobsProjectId = String(state().project?.id || jobsProjectId || '');
+      if (String(options.source || '') !== 'poll') {
+        pollRegistry?.replaceTrainingJobTimer?.();
+      }
+    },
+  };
+  const detachViewAdapter = runtime.setViewAdapter(viewAdapter);
+
   async function refreshOwned(options = {}) {
-    const sequence = ++refreshSequence;
-    const requestedRender = options.render !== false;
-    const result = await previous.runtimeRefresh({...options, render: false});
-    if (destroyed || result?.stale) return result;
-    if (sequence < appliedSequence) return {...result, stale: true};
-    appliedSequence = sequence;
-    jobsProjectId = String(state().project?.id || jobsProjectId || '');
-    if (requestedRender) renderOwned();
-    if (String(options.source || '') !== 'poll') {
-      pollRegistry?.replaceTrainingJobTimer?.();
-    }
-    return result;
+    return runtime.refresh(options);
   }
-
-  runtime.refresh = refreshOwned;
-
-  const focusedRefresh = () => refreshOwned({render: true, source: 'poll'});
-  focusedRefresh.__trainingTaskRuntime = true;
-  focusedRefresh.__trainingTaskVisibilityRuntime = true;
-  window.refreshJobsOnly = focusedRefresh;
-  window.refreshTrainPage428 = () => refreshOwned({render: true, force: true, source: 'manual'});
-  window.refreshTrain423 = window.refreshTrainPage428;
 
   if (legacyLoadRelated) {
     const guardedLoadRelated = async (...args) => {
@@ -424,9 +405,7 @@ export function installTrainingTaskVisibilityRuntime({
       renderOwned();
     }
     pollRegistry?.replaceTrainingJobTimer?.();
-    void refreshOwned({render: true, force: true, source: 'render'}).catch(error => {
-      notify?.(error?.message || error);
-    });
+    return rendered;
   };
   renderTraining.__trainingTaskVisibilityRuntime = true;
   window.renderTraining423 = renderTraining;
@@ -441,19 +420,6 @@ export function installTrainingTaskVisibilityRuntime({
     pollRegistry?.replaceTrainingJobTimer?.();
   };
 
-  for (const name of ['promoteTrain428', 'pauseTrain428', 'resumeTrain428', 'stopTrain428', 'deleteTrain428']) {
-    const mutation = window[name];
-    if (typeof mutation !== 'function') continue;
-    const wrapped = async (...args) => {
-      const result = await mutation(...args);
-      if (String(state().page || '') === TRAINING_PAGE) renderOwned();
-      return result;
-    };
-    wrapped.__trainingTaskRuntime = true;
-    wrapped.__trainingTaskVisibilityRuntime = true;
-    window[name] = wrapped;
-  }
-
   const visibilityRuntime = {
     build: 'training-task-visibility-422526',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
@@ -464,8 +430,6 @@ export function installTrainingTaskVisibilityRuntime({
     state() {
       return {
         jobsProjectId,
-        refreshSequence,
-        appliedSequence,
         batchMode,
         batchBusy,
         selectedIds: [...selectedIds],
@@ -478,9 +442,8 @@ export function installTrainingTaskVisibilityRuntime({
       selectedIds.clear();
       batchMode = false;
       batchBusy = false;
-      runtime.refresh = previous.runtimeRefresh;
+      detachViewAdapter?.();
       for (const [name, fn] of Object.entries(previous)) {
-        if (name === 'runtimeRefresh') continue;
         if (fn === undefined) delete window[name];
         else window[name] = fn;
       }

@@ -396,6 +396,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   let destroyed = false;
   let lastRefreshAt = 0;
   let lastRefreshSource = '';
+  let viewAdapter = null;
 
   function isCurrent(startPage, startEpoch) {
     const s = state();
@@ -431,6 +432,26 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     return true;
   }
 
+  function renderTrainingView() {
+    if (typeof viewAdapter?.render === 'function') return viewAdapter.render();
+    return patchFinalTrainingTable();
+  }
+
+  function finalizeViewRefresh(result, options = {}) {
+    if (result?.stale) return result;
+    if (options.render !== false) renderTrainingView();
+    viewAdapter?.afterRefresh?.(result, options);
+    return result;
+  }
+
+  function setViewAdapter(adapter) {
+    const next = adapter && typeof adapter === 'object' ? adapter : null;
+    viewAdapter = next;
+    return () => {
+      if (viewAdapter === next) viewAdapter = null;
+    };
+  }
+
   function acceptCreatedTask(task, {algorithmId = '', framework = '', queuePriority = 50} = {}) {
     const taskId = String(task?.task_id || '').trim();
     if (!taskId) throw new Error('训练任务响应缺少 task_id');
@@ -451,7 +472,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     };
     const current = Array.isArray(state().jobs) ? state().jobs : [];
     state().jobs = [row, ...current.filter(item => String(item?.id || item?.task_id || '') !== taskId)];
-    if (String(state().page || '') === TRAINING_PAGE) patchFinalTrainingTable();
+    if (String(state().page || '') === TRAINING_PAGE) renderTrainingView();
     return row;
   }
 
@@ -468,6 +489,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
 
     const startPage = String(state().page || '');
     const startEpoch = Number(state().__navigationEpoch || 0);
+    const refreshOptions = {render, force, source};
     const age = Date.now() - lastRefreshAt;
     const crossSourceDuplicate = (source === 'manual' && lastRefreshSource === 'poll')
       || (source === 'poll' && lastRefreshSource === 'manual');
@@ -477,8 +499,10 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         && age >= 0
         && age <= REFRESH_DEDUP_WINDOW_MS
         && crossSourceDuplicate) {
-      if (render) patchFinalTrainingTable();
-      return {stale: false, jobs: state().jobs || [], reused: true};
+      return finalizeViewRefresh(
+        {stale: false, jobs: state().jobs || [], reused: true},
+        refreshOptions,
+      );
     }
     const encoded = encodeURIComponent(pid);
 
@@ -495,8 +519,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       state().jobs = jobs;
       lastRefreshAt = Date.now();
       lastRefreshSource = String(source || 'direct');
-      if (render) patchFinalTrainingTable();
-      return {stale: false, jobs};
+      return finalizeViewRefresh({stale: false, jobs}, refreshOptions);
     })();
     inflight = request;
 
@@ -599,10 +622,12 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   }
 
   const focusedRefresh = () => runtime.refresh({render: true, source: 'poll'});
+  const manualRefresh = () => runtime.refresh({render: true, force: true, source: 'manual'});
   focusedRefresh.__trainingTaskRuntime = true;
+  manualRefresh.__trainingTaskRuntime = true;
   window.refreshJobsOnly = focusedRefresh;
-  window.refreshTrainPage428 = focusedRefresh;
-  window.refreshTrain423 = focusedRefresh;
+  window.refreshTrainPage428 = manualRefresh;
+  window.refreshTrain423 = manualRefresh;
 
   window.promoteTrain428 = id => mutate(
     `promote:${id}`,
@@ -691,11 +716,19 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     acceptCreatedTask,
     batchAction,
     patch: patchFinalTrainingTable,
+    setViewAdapter,
     state() {
-      return {inflight: Boolean(inflight), lastRefreshAt, lastRefreshSource, mutations: mutationLocks.size};
+      return {
+        inflight: Boolean(inflight),
+        lastRefreshAt,
+        lastRefreshSource,
+        mutations: mutationLocks.size,
+        viewAdapter: Boolean(viewAdapter),
+      };
     },
     destroy() {
       destroyed = true;
+      viewAdapter = null;
       doc?.removeEventListener?.('click', onClickCapture, true);
       for (const [name, fn] of Object.entries(previous)) {
         if (fn === undefined) delete window[name];

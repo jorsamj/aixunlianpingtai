@@ -53,10 +53,27 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
   };
   const calls = [];
   let pollRearms = 0;
+  let viewAdapter = null;
+  let refreshImpl = async options => {
+    calls.push(options);
+    return {stale: false, jobs: state.jobs};
+  };
+  const refreshDriver = async (options = {}) => {
+    const result = await refreshImpl(options);
+    if (!result?.stale) {
+      if (options.render !== false) viewAdapter?.render?.();
+      viewAdapter?.afterRefresh?.(result, options);
+    }
+    return result;
+  };
   const runtime = {
-    async refresh(options = {}) {
-      calls.push(options);
-      return {stale: false, jobs: state.jobs};
+    get refresh() { return refreshDriver; },
+    set refresh(fn) { refreshImpl = fn; },
+    setViewAdapter(adapter) {
+      viewAdapter = adapter || null;
+      return () => {
+        if (viewAdapter === adapter) viewAdapter = null;
+      };
     },
   };
   globalThis.window = {
@@ -295,4 +312,29 @@ test('batch mode is transient and remains inside the canonical ten-column task t
   assert.match(source, /selectedIds\.clear\(\)/);
   assert.match(source, /batchMode = false/);
   assert.doesNotMatch(source, /<th><input[^>]+data-training-batch/);
+});
+
+
+test('visibility composes through the explicit task view adapter without monkey-patching refresh or task actions', () => {
+  const fixture = installFixture();
+  const originalRefresh = fixture.runtime.refresh;
+  const pauseOwner = async () => true;
+  window.pauseTrain428 = pauseOwner;
+
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+
+  assert.equal(fixture.runtime.refresh, originalRefresh);
+  assert.equal(window.pauseTrain428, pauseOwner);
+
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /runtime\.setViewAdapter\(viewAdapter\)/);
+  assert.doesNotMatch(source, /runtime\.refresh\s*=\s*refreshOwned/);
+  assert.doesNotMatch(source, /for \(const name of \['promoteTrain428'/);
+
+  visibility.destroy();
+  cleanup();
 });
