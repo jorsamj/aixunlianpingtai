@@ -389,7 +389,7 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(categoryBar.getByRole('button', {name: /品目筛选/})).toBeVisible();
   await categoryBar.getByRole('button', {name: /品目筛选/}).click();
   await expect(categoryBar.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
-  await expect(categoryBar.getByRole('button', {name: '行为分析'})).toBeVisible();
+  await expect(categoryBar.getByRole('button', {name: '行为分析', exact: true})).toBeVisible();
   await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
   await expect(page.getByRole('button', {name: '↻ 同步畅联云'})).toBeVisible();
 
@@ -399,7 +399,7 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(card).toBeHidden();
   await sourceFilter.selectOption('external');
   await expect(card).toBeVisible();
-  await categoryBar.getByRole('button', {name: '行为分析'}).click();
+  await categoryBar.getByRole('button', {name: '行为分析', exact: true}).click();
   await expect(card).toBeVisible();
   await trainingStatusFilter.selectOption('blocked');
   await expect(card).toBeVisible();
