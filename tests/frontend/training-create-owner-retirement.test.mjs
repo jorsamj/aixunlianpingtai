@@ -55,3 +55,31 @@ test('external training preflight is owned by hydration instead of duplicated in
   assert.doesNotMatch(owner, /preflightTraining/);
   assert.doesNotMatch(owner, /training_options/);
 });
+
+
+test('training create canonical owner uses deterministic repaint points instead of delayed repaint cascades', () => {
+  const openStart = app.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
+  const openEnd = app.indexOf('\n  };', openStart);
+  assert.ok(openStart >= 0 && openEnd > openStart);
+  const openOwner = app.slice(openStart, openEnd);
+  assert.doesNotMatch(openOwner, /\[40,140,340,650\]/);
+  assert.doesNotMatch(openOwner, /setTimeout\(renderSplit/);
+
+  const dialogStart = app.indexOf('window.openTrainingCreateDialog429=function(aid)');
+  const dialogEnd = app.indexOf('\n  window.openTrainingCreateDialog423=', dialogStart);
+  assert.ok(dialogStart >= 0 && dialogEnd > dialogStart);
+  const dialogOwner = app.slice(dialogStart, dialogEnd);
+  assert.match(dialogOwner, /trainTarget429\(\)\};/);
+  assert.doesNotMatch(dialogOwner, /setTimeout\(trainTarget429/);
+
+  const iterationStart = app.indexOf('window.loadTrainingIterationBase414=async function(aid)');
+  const iterationEnd = app.indexOf('\n  window.showIterationBaseCore414=', iterationStart);
+  const iterationOwner = app.slice(iterationStart, iterationEnd);
+  assert.match(iterationOwner, /showIterationBase414\(aid\);/);
+  assert.doesNotMatch(iterationOwner, /setTimeout\(\(\)=>showIterationBase414/);
+
+  const syncStart = app.indexOf('window.syncTrainingIteration417=function(aid)');
+  const syncEnd = app.indexOf('\n  window.decorateTrainSettingsIteration417=', syncStart);
+  const syncOwner = app.slice(syncStart, syncEnd);
+  assert.doesNotMatch(syncOwner, /\[30,180\]/);
+});
