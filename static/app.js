@@ -4722,7 +4722,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function ensureShell(){
     if(document.querySelector('.ann420-stable'))return;
-    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button data-ann420-edit="1" class="btn small" onclick="undoAnn()">撤销</button><button data-ann420-edit="1" class="btn small" onclick="redoAnn()">重做</button><button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“配置中心 → 标签管理”。拖拽新建框；切换图片前自动保存；画布和弹窗不会重复创建。</div></aside></div>`,true);
+    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button data-ann420-edit="1" class="btn small" onclick="undoAnn()">撤销</button><button data-ann420-edit="1" class="btn small" onclick="redoAnn()">重做</button><button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" title="缩小" onclick="zoomAnn(-0.1)">−</button><span id="zoomText">100%</span><button class="btn mini" title="放大" onclick="zoomAnn(0.1)">＋</button><button class="btn mini" onclick="resetAnnotationZoom420()">100%</button><button class="btn mini" onclick="fitAnnotation420()">适应窗口</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“数据中心 → 标签管理”。拖拽新建框；滚轮缩放；拖动框可移动；四角可调整大小；切换图片前自动保存。</div></aside></div>`,true);
     const canvas=document.querySelector('.ann420-stable .ann-canvas-wrap');
     if(canvas&&!canvas.dataset.wheelZoomBound){
       canvas.dataset.wheelZoomBound='1';
@@ -4819,6 +4819,23 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     window.NegativeSampleRuntime?.decorate?.();
     if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
     return ok;
+  };
+  window.resetAnnotationZoom420=function(){
+    state.annZoom=1;
+    const stage=document.getElementById('annStage'),text=document.getElementById('zoomText');
+    if(stage)stage.style.transform='scale(1)';
+    if(text)text.textContent='100%';
+    const wrap=document.querySelector('.ann420-stable .ann-canvas-wrap');if(wrap){wrap.scrollLeft=0;wrap.scrollTop=0}
+  };
+  window.fitAnnotation420=function(){
+    const wrap=document.querySelector('.ann420-stable .ann-canvas-wrap'),image=document.getElementById('annImg'),stage=document.getElementById('annStage');
+    if(!wrap||!image||!stage)return;
+    const width=Math.max(1,image.offsetWidth||image.naturalWidth||1),height=Math.max(1,image.offsetHeight||image.naturalHeight||1);
+    const availableWidth=Math.max(1,wrap.clientWidth-36),availableHeight=Math.max(1,wrap.clientHeight-36);
+    state.annZoom=Math.max(.5,Math.min(2.2,Math.min(availableWidth/width,availableHeight/height)));
+    stage.style.transform=`scale(${state.annZoom})`;
+    const text=document.getElementById('zoomText');if(text)text.textContent=Math.round(state.annZoom*100)+'%';
+    wrap.scrollLeft=0;wrap.scrollTop=0;
   };
   window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420(){
     const button=document.getElementById('ann420ConfirmEmpty');
