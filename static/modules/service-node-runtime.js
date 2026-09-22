@@ -2,6 +2,7 @@ const PAGE = '服务节点';
 const API_ROOT = '/api/v63/service-nodes';
 const POLL_KEY = 'service-node-runtime';
 const POLL_MS = 5000;
+const SERVICE_NODE_CACHE_KEY = 'cl_service_nodes_snapshot_v1';
 
 export const CAPABILITY_LABELS = Object.freeze({
   training: '训练',
@@ -209,6 +210,31 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let navObserver = null;
   let unregisterPageOwner = null;
 
+  function restoreNodeSnapshot() {
+    try {
+      const cached = JSON.parse(window.localStorage?.getItem(SERVICE_NODE_CACHE_KEY) || 'null');
+      if (!cached || !Array.isArray(cached.items)) return false;
+      nodes = cached.items;
+      if (Array.isArray(cached.supported_capabilities) && cached.supported_capabilities.length) capabilities = cached.supported_capabilities;
+      loadedOnce = true;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function persistNodeSnapshot() {
+    try {
+      window.localStorage?.setItem(SERVICE_NODE_CACHE_KEY, JSON.stringify({
+        ts: Date.now(),
+        items: nodes,
+        supported_capabilities: capabilities,
+      }));
+    } catch (_) {}
+  }
+
+  restoreNodeSnapshot();
+
   const currentPage = () => String(window.NavigationStability?.currentPage?.() || '').trim();
   const findNode = nodeId => nodes.find(node => String(node.node_id) === String(nodeId));
   const invalidateTrainingDevices = () => window.invalidateTrainingDeviceCacheV3?.();
@@ -230,6 +256,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       nodes = Array.isArray(body?.items) ? body.items : [];
       if (Array.isArray(body?.supported_capabilities) && body.supported_capabilities.length) capabilities = body.supported_capabilities;
       loadedOnce = true;
+      persistNodeSnapshot();
       return nodes;
     } catch (error) {
       if (!silent) notify?.(error?.message || error);

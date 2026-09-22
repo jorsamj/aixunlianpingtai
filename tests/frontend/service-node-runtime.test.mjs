@@ -164,3 +164,17 @@ test('service node cached refresh keeps page shell ownership stable', () => {
   assert.match(source, /const hasSnapshot = loadedOnce \|\| hadCache/);
   assert.doesNotMatch(source, /view\.querySelectorAll\('\[data-node-action\]'\)\.forEach/);
 });
+
+
+test('service node page restores a persisted snapshot before live revalidation', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /SERVICE_NODE_CACHE_KEY = 'cl_service_nodes_snapshot_v1'/);
+  assert.match(source, /function restoreNodeSnapshot\(\)/);
+  assert.match(source, /window\.localStorage\?\.getItem\(SERVICE_NODE_CACHE_KEY\)/);
+  assert.match(source, /loadedOnce = true/);
+  assert.match(source, /restoreNodeSnapshot\(\);/);
+  assert.match(source, /function persistNodeSnapshot\(\)/);
+  assert.match(source, /window\.localStorage\?\.setItem\(SERVICE_NODE_CACHE_KEY/);
+  assert.match(source, /persistNodeSnapshot\(\);/);
+  assert.match(source, /if \(hasSnapshot\) \{\s*paintSummary\(\);\s*paintPage\(\);/);
+});
