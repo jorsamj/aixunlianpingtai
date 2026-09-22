@@ -150,6 +150,8 @@ jobs:
           grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/app.js
           grep -Fq "PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)" static/app.js
           grep -Fq 'function patchCompProgress()' static/app.js
+          grep -Fq "registerPageOwner('组件检测'" static/main.mjs
+          grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
       - name: Video PollRegistry direct owner guard
         run: |
           if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then

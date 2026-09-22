@@ -320,6 +320,15 @@ const navigationStabilityRuntime = installNavigationStability({
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
 
+// Component detection is a canonical business page. Own it directly instead of
+// depending on the historical app.js render override chain racing with navigation.
+const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner('组件检测', () => (
+  window.renderComponentCheckV40?.()
+));
+window.PlatformCore.runtime.componentPageOwner = {
+  destroy() { unregisterComponentPageOwner?.(); },
+};
+
 const serviceNodeRuntime = installServiceNodeRuntime({notify});
 window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;
 
