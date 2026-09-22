@@ -1362,15 +1362,6 @@ window.installUsability417=function(){
     toast('已请求停止');
   };
 
-  const _baseRenderDatasetsV33=renderDatasets;
-  renderDatasets=function(){
-    _baseRenderDatasetsV33();
-    const actions=document.querySelector('.dataset-main .panel-actions');
-    if(actions && !document.getElementById('autoLabelBtnV33')){
-      actions.insertAdjacentHTML('beforeend',`<button id="autoLabelBtnV33" class="btn green small" onclick="openAutoLabelModal()">自动标注</button><button class="btn soft small" onclick="setPage('视频切帧')">视频切帧</button>`);
-    }
-  };
-
 })();
 
 // ============================================================
@@ -1418,7 +1409,6 @@ window.installUsability417=function(){
     '检测台': (typeof renderDetectBench==='function'?renderDetectBench:renderTest)
   });
 
-  const oldEnsureWorkspace = ensureWorkspace;
   ensureWorkspace = async function(){
     const projects = await api('/api/projects');
     if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');
@@ -2346,7 +2336,6 @@ window.installUsability417=function(){
   window.renderQualityV42=async function(){await load42(true);const q=state.v42.quality||{datasets:[],algorithms:[]};document.getElementById('view').innerHTML=`<section class="v42-quality-head"><div><h2>质量中心</h2><p>“准确率”拆成 Precision、Recall、mAP；数据同时检查数量、标签覆盖和有效标注。</p></div><button class="btn" onclick="renderQualityV42()">重新检查</button></section><section class="panel"><div class="panel-head"><div class="panel-title">数据质量</div></div><div class="panel-body"><div class="v42-quality-grid">${q.datasets.map(d=>{const x=d.quality||{},use=x.label_usage||{};return `<div class="v42-quality-card"><div class="row between"><b>${esc(d.name)}</b><span class="pill ${x.can_train?'ok':'err'}">${x.can_train?'可训练':'需处理'}</span></div><div class="v42-bigmetric"><b>${x.image_count||0}</b><span>图片</span><b>${x.box_count||0}</b><span>标注框</span></div><div class="v42-hygiene"><span>重复 ${d.hygiene?.duplicate_count||0}</span><span>疑似模糊 ${d.hygiene?.blurry_count||0}</span><span>低分辨率 ${d.hygiene?.low_resolution_count||0}</span><span>损坏 ${d.hygiene?.broken_count||0}</span></div><div class="label-bars">${Object.entries(use).map(([k,v])=>`<div><span>${esc(k)}</span><b>${v}</b></div>`).join('')}</div>${(x.warnings||[]).length?`<div class="warn-list">${x.warnings.map(w=>`<span>${esc(w)}</span>`).join('')}</div>`:''}</div>`}).join('')||'<div class="empty">暂无数据集</div>'}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">算法质量</div></div><div class="panel-body"><table class="table"><thead><tr><th>算法</th><th>Precision</th><th>Recall</th><th>mAP50</th><th>线上抽查</th><th>训练来源</th></tr></thead><tbody>${q.algorithms.map(a=>`<tr><td><b>${esc(a.name)}</b><div class="item-sub">${a.versions||0} 个版本</div></td><td>${fmtPct(a.metrics?.precision)}</td><td>${fmtPct(a.metrics?.recall)}</td><td>${fmtPct(a.metrics?.map50)}</td><td>${a.online_audit?.total?`${fmtPct(a.online_audit.accuracy)} <span class="item-sub">${a.online_audit.total}条</span>`:'未接入'}</td><td>${a.job_id?esc(a.job_id):'尚无可读取训练指标'}</td></tr>`).join('')||'<tr><td colspan="6">暂无算法</td></tr>'}</tbody></table></div></section>`};
 
   // v42.1：统计驾驶舱。只使用真实项目、数据集、训练任务和评测数据。
-  const oldDashboard42=window.renderHomeDashboard;
   const fmtNum42=n=>Number(n||0).toLocaleString('zh-CN');
   const fmtHours42=sec=>{sec=Math.max(0,Number(sec||0));const h=sec/3600;if(h>=1000)return (h/1000).toFixed(1)+'k h';if(h>=10)return h.toFixed(1)+' h';if(h>=1)return h.toFixed(2)+' h';return Math.round(sec/60)+' min'};
   const jobDuration42=j=>{const parse=v=>{const d=v?new Date(String(v).replace(' ','T')):null;return d&&!Number.isNaN(d.getTime())?d:null};const a=parse(j.started_at||j.created_at);if(!a)return 0;const terminal=['done','finished','completed','succeeded','success','failed','stopped'].includes(String(j.status||'').toLowerCase());const b=terminal?(parse(j.finished_at||j.updated_at)||new Date()):new Date();return Math.max(0,(b-a)/1000)};

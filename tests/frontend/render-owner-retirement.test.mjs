@@ -13,6 +13,7 @@ test('historical render-chain aliases are physically retired', () => {
   for (const token of [
     'oldRenderV39', 'oldRender42', 'render422Base', 'renderBase424',
     'renderBase427', 'renderBase428', 'oldRender412', 'render414Base', 'finalRender',
+    'oldEnsureWorkspace', 'oldDashboard42',
   ]) assert.equal(app.includes(token), false, token);
 });
 
@@ -42,6 +43,8 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 
 test('shadowed storage dataset renderer is physically retired', () => {
   assert.equal(app.includes('const previousDatasetRender61=window.renderDatasets424;'), false);
+  assert.equal(app.includes('const _baseRenderDatasetsV33=renderDatasets;'), false);
+  assert.equal(app.includes('autoLabelBtnV33'), false);
 });
 
 test('dataset keeps one physical page renderer owner', () => {
