@@ -1933,21 +1933,28 @@ window.installUsability417=function(){
   function createDeployJobNode(box,j){const holder=document.createElement('div');holder.innerHTML=jobRow(j).trim();return holder.firstElementChild}
   function patchDeployJobNode(current,next){if(!current||!next)return next;for(const selector of ['[data-deploy-main]','[data-deploy-error]','[data-deploy-hardware]','[data-deploy-actions]']){const a=current.querySelector(selector),b=next.querySelector(selector);if(a&&b&&a.innerHTML!==b.innerHTML)a.innerHTML=b.innerHTML}const currentProgress=current.querySelector('[data-deploy-progress]'),nextProgress=next.querySelector('[data-deploy-progress]'),currentBar=currentProgress?.querySelector('.progress-bar i'),nextBar=nextProgress?.querySelector('.progress-bar i'),currentText=currentProgress?.querySelector('span'),nextText=nextProgress?.querySelector('span');if(currentBar&&nextBar){currentBar.dataset.progress=nextBar.dataset.progress||'';currentBar.style.transform=nextBar.style.transform}if(currentText&&nextText)currentText.textContent=nextText.textContent;return current}
   function renderDeployJobsOnly(){const box=document.getElementById('deployJobList');if(!box)return;const jobs=state.deployJobs||[];if(!jobs.length){if(!box.querySelector('.empty'))box.innerHTML='<div class="empty">暂无转换任务</div>';return}box.querySelector('.empty')?.remove();const existing=new Map([...box.querySelectorAll('[data-deploy-job-id]')].map(node=>[String(node.dataset.deployJobId||''),node])),wanted=new Set();jobs.forEach((job,index)=>{const id=String(job.id||'');if(!id)return;wanted.add(id);const next=createDeployJobNode(box,job);let current=existing.get(id)||null;if(!current)current=next;else current=patchDeployJobNode(current,next);const reference=box.children[index]||null;if(reference!==current)box.insertBefore(current,reference)});for(const [id,node] of existing){if(!wanted.has(id))node.remove()}}
+  let deployJobsRefreshPromise=null;
   async function pollDeployJobs(){
-    if(state.page!=='部署转换'){clearDeployPollV39();return}
-    const previous=new Map((state.deployJobs||[]).map(j=>[String(j.id),String(j.status||'')]));
-    const r=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs`));
-    if(r){
-      const next=r.items||[];
-      const artifactChanged=next.some(j=>{
-        const current=String(j.status||''),before=previous.get(String(j.id))||'';
-        return ['done','blocked_by_hardware'].includes(current)&&!['done','blocked_by_hardware'].includes(before);
-      });
-      state.deployJobs=next;
-      if(artifactChanged)await refreshDeployArtifactsV39();
-      renderDeployJobsOnly();
-    }
-    armDeployPollV39();
+    if(state.page!=='部署转换'){clearDeployPollV39();return false}
+    if(deployJobsRefreshPromise)return deployJobsRefreshPromise;
+    const task=(async()=>{
+      const previous=new Map((state.deployJobs||[]).map(j=>[String(j.id),String(j.status||'')]));
+      const r=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs`));
+      if(r){
+        const next=r.items||[];
+        const artifactChanged=next.some(j=>{
+          const current=String(j.status||''),before=previous.get(String(j.id))||'';
+          return ['done','blocked_by_hardware'].includes(current)&&!['done','blocked_by_hardware'].includes(before);
+        });
+        state.deployJobs=next;
+        if(artifactChanged)await refreshDeployArtifactsV39();
+        renderDeployJobsOnly();
+      }
+      armDeployPollV39();
+      return !!r;
+    })().finally(()=>{if(deployJobsRefreshPromise===task)deployJobsRefreshPromise=null});
+    deployJobsRefreshPromise=task;
+    return task;
   }
   function clearDeployPollV39(){
     if(window.PollRegistryRuntime?.clear)window.PollRegistryRuntime.clear('deploy-jobs-v39');
@@ -1966,10 +1973,21 @@ window.installUsability417=function(){
     return window.__deployPollV39;
   }
   window.refreshDeployJobsV39=pollDeployJobs;
+  window.refreshDeployJobsForVisitV39=function(){
+    if(state.page!=='部署转换')return Promise.resolve(false);
+    const projectId=String(pid()||'');
+    if(deployRenderRefreshPromise&&deployRenderRefreshProjectId===projectId){
+      return Promise.resolve(deployRenderRefreshPromise).then(()=>{
+        if(state.page==='部署转换'&&String(pid()||'')===projectId)armDeployPollV39();
+        return true;
+      });
+    }
+    return pollDeployJobs();
+  };
   window.renderDeployCenter=function(){
     if(!primeDeployRenderV39('部署转换',window.renderDeployCenter,'首次读取模型与部署资源...'))return;
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">创建部署转换</div><div class="subline">训练模型和部署模型分离；任务会调用真实厂商工具链</div></div><button class="btn small" onclick="setPage('部署资源')">配置部署资源</button></div><div class="panel-body" id="deployCreateBox"></div></section><section class="panel"><div class="panel-head"><div class="panel-title">转换任务</div><button class="btn small" onclick="refreshDeployJobsV39()">刷新</button></div><div class="panel-body"><div id="deployJobList" class="deploy-job-list"></div></div></section>`;
-    renderDeployFormOnly();renderDeployJobsOnly();window.refreshDeployJobsV39();
+    renderDeployFormOnly();renderDeployJobsOnly();armDeployPollV39();
   };
   window.syncAtlasSocFromResource=()=>{if(state.deployTarget!=='ascend')return;const rid=document.getElementById('dpResource')?.value;const r=(state.deployResources||[]).find(x=>x.id===rid);const soc=document.getElementById('dpSoc');if(!soc||!r)return;const vals=r.detected_soc_versions||r.remote_health?.tools?.soc_versions||[];if(vals.length)soc.value=vals[0];};
   window.createDeployJob=async()=>{const source=document.getElementById('dpSource')?.value||'',resource=document.getElementById('dpResource')?.value||'';if(!source)return toast('请选择源模型');if(!resource)return toast('当前目标没有可用部署资源');const t=state.deployTarget;const size=parseInt(document.getElementById('dpInput')?.value||'640');const params={input_size:size,input_width:size,input_height:size,batch:parseInt(document.getElementById('dpBatch')?.value||'1'),opset:parseInt(document.getElementById('dpOpset')?.value||'12'),dynamic:!!document.getElementById('dpDynamic')?.checked,simplify:!!document.getElementById('dpSimplify')?.checked,precision:document.getElementById('dpPrecision')?.value||'fp16',workspace_mb:parseInt(document.getElementById('dpWorkspace')?.value||'2048'),chip:document.getElementById('dpChip')?.value||'',pixel_format:document.getElementById('dpPixel')?.value||'rgb',scale:document.getElementById('dpScale')?.value||'0.0039216,0.0039216,0.0039216',mean:document.getElementById('dpMean')?.value||'0,0,0',num_core:parseInt(document.getElementById('dpCore')?.value||'1'),calibration_method:document.getElementById('dpCaliMethod')?.value||'',soc_version:document.getElementById('dpSoc')?.value||'',atlas_product:document.getElementById('dpAtlasProduct')?.value||'',input_name:document.getElementById('dpInputName')?.value||'images',precision_mode:document.getElementById('dpPrecisionMode')?.value||'',aipp_enabled:!!document.getElementById('dpAipp')?.checked,aipp_config:document.getElementById('dpAippConfig')?.value||''};const body={source_id:source,target:t,resource_id:resource,params,dataset_id:document.getElementById('dpDataset')?.value||state.datasetId||'default',calibration_split:document.getElementById('dpCaliSplit')?.value||'train',calibration_count:parseInt(document.getElementById('dpCaliCount')?.value||'100')};const btn=document.querySelector('.deploy-submit');if(btn){btn.disabled=true;btn.innerHTML='<span class="tiny-spinner"></span>创建中'}try{await api(`/api/v39/projects/${pid()}/deploy/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});state.deployPresetSourceId='';renderDeployCenter();toast('转换任务已创建')}catch(e){toast(e.message||e)}finally{if(btn){btn.disabled=false;btn.textContent='创建转换任务'}}};

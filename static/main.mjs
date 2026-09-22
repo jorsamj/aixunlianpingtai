@@ -323,6 +323,9 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
 function refreshCurrentPageOwner(page) {
   trainingProgressStreamRuntime?.syncPage?.(page);
   void refreshPageExtrasInBackground(page);
+  if (page === '部署转换' && typeof window.refreshDeployJobsForVisitV39 === 'function') {
+    void window.refreshDeployJobsForVisitV39().catch(error => notify(error?.message || error));
+  }
   if (page === '数据集' || page === '自动标注及清洗') {
     window.MaterialBatchRuntime62?.resume?.();
   }
