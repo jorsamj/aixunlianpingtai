@@ -206,6 +206,8 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   let hardwarePost = null;
   let taskReads = 0;
   let jobVerified = false;
+  let releaseHardwareSuccess;
+  const hardwareSuccessGate = new Promise(resolve => { releaseHardwareSuccess = resolve; });
 
   await page.route('**/api/v39/deploy/resources', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
@@ -314,7 +316,10 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await page.route(`**/api/v62/projects/${project.id}/tasks/rk-board-task-1`, async route => {
     taskReads += 1;
     const done = taskReads >= 2;
-    if (done) jobVerified = true;
+    if (done) {
+      await hardwareSuccessGate;
+      jobVerified = true;
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -371,6 +376,7 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
     shell: window.__rknnVerifyStableShell === document.querySelector('[data-rknn-verify-live]'),
     bar: window.__rknnVerifyStableBar === document.querySelector('[data-rknn-verify-bar]'),
   }))).toEqual({shell:true, bar:true});
+  releaseHardwareSuccess();
   await expect.poll(() => taskReads, {timeout: 5_000}).toBeGreaterThanOrEqual(2);
   expect(hardwarePost).not.toBeNull();
   await expect(page.getByRole('dialog', {name: 'RKNN 板端验证'})).toHaveCount(0);
