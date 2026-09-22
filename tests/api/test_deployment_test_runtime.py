@@ -283,6 +283,17 @@ def test_detection_batch_metadata_history_and_review_are_durable(
     monkeypatch.setattr(
         app_module,
         "_online_feedback_version_model_sha256",
+        lambda _version: "f" * 64,
+    )
+    stale_model = client.post(
+        f"/api/v64/projects/{project_id}/deployment-tests/{task['id']}/feedback-evidence"
+    )
+    assert stale_model.status_code == 409
+    assert "模型身份不一致" in stale_model.text
+
+    monkeypatch.setattr(
+        app_module,
+        "_online_feedback_version_model_sha256",
         lambda _version: tested_model_sha,
     )
     monkeypatch.setattr(
