@@ -5,8 +5,11 @@ test('deployment conversion polling keeps job and progress nodes stable', async 
   page.on('pageerror', error => pageErrors.push(error));
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
-  const projectId = await page.evaluate(() => state.project?.id);
-  expect(projectId).toBeTruthy();
+  await expect.poll(
+    () => page.evaluate(() => state.project?.id || null),
+    {timeout: 15_000},
+  ).not.toBeNull();
+  const projectId = await page.evaluate(() => state.project.id);
   const encoded = encodeURIComponent(projectId);
 
   let progress = 12;
