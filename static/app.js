@@ -5820,12 +5820,50 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }catch(error){toast(error.message||error)}
   };
 
+  function benchNotices64(models,ready){
+    return `${models.length?'':'<div class="alert warn">正在读取可用原始模型和算法版本；如果长时间为空，请检查训练资源。</div>'}${ready?'':'<div class="alert warn">当前未发现可用推理 Runtime。原始模型和算法版本仍可选择，但开始检测前需要先准备训练资源。</div>'}`;
+  }
+  function patchBenchModelBrowser64(side){
+    const select=document.getElementById(`benchModel${side}`),search=document.getElementById(`benchModelSearch${side}`);
+    if(!select)return false;
+    const current=String(select.value||''),query=String(search?.value||'');
+    const signature=(state.testModels||[]).map((model,index)=>[
+      index,modelGroup64(model),model?.label||model?.model_name||model?.path||'',
+      model?.model_source||'',model?.algorithm_id||'',model?.version_id||'',model?.runtime_format||'',model?.is_current_version?1:0,
+    ].join(':')).join('|')+'::'+query.toLowerCase();
+    if(select.dataset.modelsSignature!==signature){
+      select.dataset.modelsSignature=signature;
+      const preferred=Number.isFinite(Number(current))&&current!==''?Number(current):defaultModelIndex64(side);
+      select.innerHTML=modelOptions64(query,preferred);
+    }
+    if(current&&[...select.options].some(option=>option.value===current))select.value=current;
+    else{
+      const fallback=String(defaultModelIndex64(side));
+      if([...select.options].some(option=>option.value===fallback))select.value=fallback;
+    }
+    return true;
+  }
+  function qualityDetectionShell64(models,ready){
+    return `<div class="bench64-shell" data-quality-detection-shell="1"><div id="benchNotices64">${benchNotices64(models,ready)}</div><section class="bench64-head"><div><span>质量中心 · 模型检测</span><h2>同一批图片，直接比较两个真实模型</h2><p>A、B 两侧都可以选择原始模型或任意算法版本。支持单图、多选图片和整个文件夹。</p></div><div class="row"><button class="btn" onclick="refreshDetectionBenchDataV3()">刷新模型</button><button class="btn soft" onclick="clearBenchFiles64()">清空本次</button></div></section><div class="bench64-model-grid">${modelBrowser64('A','A 模型 / 原始对照','可选官方原始模型，也可以选择任意算法版本')}${modelBrowser64('B','B 模型 / 新模型','同样可以选择原始模型或任意算法版本')}</div><section class="panel bench64-controls"><div class="panel-body"><div class="form three"><div class="field"><label>检测模式</label><select id="benchMode64" class="select"><option value="compare">同图 A / B 对比</option><option value="a">只测 A 模型</option><option value="b">只测 B 模型</option></select></div><div class="field"><label>置信度</label><input id="benchConf" class="input" type="number" min="0.001" max="1" step="0.01" value="0.25"></div><div class="field"><label>图片来源</label><div class="row wrap"><button class="btn" onclick="document.getElementById('benchFiles64').click()">选择图片</button><button class="btn" onclick="document.getElementById('benchFolder64').click()">选择文件夹</button></div><input id="benchFiles64" type="file" accept="image/*" multiple hidden onchange="addBenchFiles64(this)"><input id="benchFolder64" type="file" accept="image/*" multiple webkitdirectory directory hidden onchange="addBenchFiles64(this)"></div></div><div class="bench64-files"><div><b id="benchFileCount64">尚未选择图片</b><span>可单选、多选；文件夹会递归带入其中的图片并自动忽略非图片文件。</span></div><div id="benchFileList64" class="bench64-file-list"></div></div><div class="bench64-preview-run"><div id="benchPreview64" class="bench64-preview"><span>选择图片后在这里预览</span></div><div class="bench64-run"><b>开始检测前确认</b><span>批量任务按图片顺序执行，避免同时抢占同一个 GPU / Runtime。</span><button id="benchRun64" class="btn primary" onclick="runBenchBatch64()">开始本次检测</button><div id="benchResult" class="bench64-live"></div></div></div></div></section><section class="panel bench64-results"><div class="panel-head"><div><div class="panel-title">本次检测结果</div><div class="subline">点击任意已完成图片查看原图、A/B 检测图、目标明细和人工核验。</div></div></div><div class="panel-body"><div id="benchBatchSummary64"></div><div id="benchBatchList64" class="bench64-result-list"></div></div></section><section class="panel bench64-history"><div class="panel-head"><div><div class="panel-title">最近检测批次</div><div class="subline">检测任务和人工核验保存在服务端，刷新页面后仍可继续查看。</div></div><button class="btn small" onclick="loadDetectionBatches64({force:true})">刷新</button></div><div class="panel-body" id="benchRecentBatches64"></div></section></div>`;
+  }
   window.renderQualityDetectionBench64=function renderQualityDetectionBench64(){
     const view=document.getElementById('view');if(!view)return;
     const models=detectionModels64(),ready=(state.inferenceEnvs||[]).some(env=>env?.status==='ready');
-    const modelNotice=models.length?'': '<div class="alert warn">正在读取可用原始模型和算法版本；如果长时间为空，请检查训练资源。</div>';
-    const envNotice=ready?'':'<div class="alert warn">当前未发现可用推理 Runtime。原始模型和算法版本仍可选择，但开始检测前需要先准备训练资源。</div>';
-    view.innerHTML=`<div class="bench64-shell">${modelNotice}${envNotice}<section class="bench64-head"><div><span>质量中心 · 模型检测</span><h2>同一批图片，直接比较两个真实模型</h2><p>A、B 两侧都可以选择原始模型或任意算法版本。支持单图、多选图片和整个文件夹。</p></div><div class="row"><button class="btn" onclick="refreshDetectionBenchDataV3()">刷新模型</button><button class="btn soft" onclick="clearBenchFiles64()">清空本次</button></div></section><div class="bench64-model-grid">${modelBrowser64('A','A 模型 / 原始对照','可选官方原始模型，也可以选择任意算法版本')}${modelBrowser64('B','B 模型 / 新模型','同样可以选择原始模型或任意算法版本')}</div><section class="panel bench64-controls"><div class="panel-body"><div class="form three"><div class="field"><label>检测模式</label><select id="benchMode64" class="select"><option value="compare">同图 A / B 对比</option><option value="a">只测 A 模型</option><option value="b">只测 B 模型</option></select></div><div class="field"><label>置信度</label><input id="benchConf" class="input" type="number" min="0.001" max="1" step="0.01" value="0.25"></div><div class="field"><label>图片来源</label><div class="row wrap"><button class="btn" onclick="document.getElementById('benchFiles64').click()">选择图片</button><button class="btn" onclick="document.getElementById('benchFolder64').click()">选择文件夹</button></div><input id="benchFiles64" type="file" accept="image/*" multiple hidden onchange="addBenchFiles64(this)"><input id="benchFolder64" type="file" accept="image/*" multiple webkitdirectory directory hidden onchange="addBenchFiles64(this)"></div></div><div class="bench64-files"><div><b id="benchFileCount64">尚未选择图片</b><span>可单选、多选；文件夹会递归带入其中的图片并自动忽略非图片文件。</span></div><div id="benchFileList64" class="bench64-file-list"></div></div><div class="bench64-preview-run"><div id="benchPreview64" class="bench64-preview"><span>选择图片后在这里预览</span></div><div class="bench64-run"><b>开始检测前确认</b><span>批量任务按图片顺序执行，避免同时抢占同一个 GPU / Runtime。</span><button id="benchRun64" class="btn primary" onclick="runBenchBatch64()">开始本次检测</button><div id="benchResult" class="bench64-live"></div></div></div></div></section><section class="panel bench64-results"><div class="panel-head"><div><div class="panel-title">本次检测结果</div><div class="subline">点击任意已完成图片查看原图、A/B 检测图、目标明细和人工核验。</div></div></div><div class="panel-body"><div id="benchBatchSummary64"></div><div id="benchBatchList64" class="bench64-result-list"></div></div></section><section class="panel bench64-history"><div class="panel-head"><div><div class="panel-title">最近检测批次</div><div class="subline">检测任务和人工核验保存在服务端，刷新页面后仍可继续查看。</div></div><button class="btn small" onclick="loadDetectionBatches64({force:true})">刷新</button></div><div class="panel-body" id="benchRecentBatches64"></div></section></div>`;
-    window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
+    let shell=view.querySelector('[data-quality-detection-shell="1"]'),mounted=false;
+    if(!shell){
+      view.innerHTML=qualityDetectionShell64(models,ready);
+      shell=view.querySelector('[data-quality-detection-shell="1"]');
+      mounted=true;
+    }else{
+      const notices=document.getElementById('benchNotices64'),nextNotices=benchNotices64(models,ready);
+      if(notices&&notices.innerHTML!==nextNotices)notices.innerHTML=nextNotices;
+      patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');
+    }
+    if(mounted){
+      window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();
+    }else{
+      summary64();window.renderDetectionBatchHistory64();
+    }
+    void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
   };
 })();
