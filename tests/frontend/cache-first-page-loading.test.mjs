@@ -64,7 +64,10 @@ test('frequently revisited operational pages paint before focused revalidation',
   assert.doesNotMatch(autoShell, /document\.getElementById\('view'\)\.innerHTML/);
 
   const clean = block('function renderCleanOps427()', '\n\n  // ----- model config: prompt lives with model -----');
-  assert.match(clean, /document\.getElementById\('view'\)\.innerHTML/);
+  assert.match(clean, /data-clean-task-shell/);
+  assert.match(clean, /view\.replaceChildren\(mount\)/);
+  assert.match(clean, /patchCleanTaskRows427\(body,state\.clean427\|\|\[\]\)/);
+  assert.doesNotMatch(clean, /document\.getElementById\('view'\)\.innerHTML/);
   assert.match(clean, /refreshCleanOps427Delta/);
   assert.match(source, /const CLEAN427_PAGE_ENTRY_REUSE_MS=5000/);
   assert.match(clean, /reuseRecent=state\.clean427LoadedAt>0&&age>=0&&age<CLEAN427_PAGE_ENTRY_REUSE_MS/);
