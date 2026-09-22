@@ -2626,7 +2626,8 @@ window.installUsability417=function(){
     state.quality424RefreshPromise=task;
     return task;
   };
-  window.renderQualityCenter424=function({force=false}={}){
+  window.renderQualityCenter424=async function(){
+    const force=!!arguments[0]?.force;
     const projectId=String(pid()||'');if(!projectId)return;
     restoreQualityCenter424(projectId);
     const hasSnapshot=state.quality424ProjectId===projectId&&state.quality424LoadedAt>0;
