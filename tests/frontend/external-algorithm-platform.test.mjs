@@ -9,6 +9,8 @@ import {
   externalAlgorithmTrainingReadiness,
   externalAnalysisOptions,
   externalCategoryMatches,
+  externalCategoryTreeRows,
+  externalCategoryVisibleRows,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
 } from '../../static/modules/external-algorithm-platform.js';
@@ -325,4 +327,32 @@ test('sync settings enforce 60-second automatic pull without claiming webhook su
   assert.match(source, /auto_sync_enabled: mode === 'external'/);
   assert.match(source, /auto_sync_interval_seconds: 60/);
   assert.doesNotMatch(source, /id="externalAutoSyncInterval"/);
+});
+
+
+test('category picker derives arbitrary parent depth and search paths from real parentId data', () => {
+  const categories = [
+    {categoryId: 'root', categoryName: '安全治理', parentId: ''},
+    {categoryId: 'vehicle', categoryName: '车辆', parentId: 'root'},
+    {categoryId: 'parking', categoryName: '违停', parentId: 'vehicle'},
+    {categoryId: 'fire', categoryName: '烟火', parentId: 'root'},
+  ];
+  const tree = externalCategoryTreeRows(categories);
+  const parking = tree.find(row => row.id === 'parking');
+  assert.equal(parking.depth, 2);
+  assert.deepEqual(parking.ancestorIds, ['root', 'vehicle']);
+  assert.equal(parking.path, '安全治理 / 车辆 / 违停');
+
+  assert.deepEqual(
+    externalCategoryVisibleRows(categories, {expandedIds: []}).map(row => row.id),
+    ['root'],
+  );
+  assert.deepEqual(
+    externalCategoryVisibleRows(categories, {expandedIds: ['root', 'vehicle']}).map(row => row.id),
+    ['root', 'fire', 'vehicle', 'parking'],
+  );
+  assert.deepEqual(
+    externalCategoryVisibleRows(categories, {query: '违停'}).map(row => row.id),
+    ['root', 'vehicle', 'parking'],
+  );
 });

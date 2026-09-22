@@ -386,6 +386,9 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   const categoryBar = page.locator('[data-external-category-filter]');
   await expect(sourceFilter).toBeVisible();
   await expect(trainingStatusFilter).toBeVisible();
+  await expect(categoryBar.getByRole('button', {name: /品目筛选/})).toBeVisible();
+  await categoryBar.getByRole('button', {name: /品目筛选/}).click();
+  await expect(categoryBar.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
   await expect(categoryBar.getByRole('button', {name: '行为分析'})).toBeVisible();
   await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
   await expect(page.getByRole('button', {name: '↻ 同步畅联云'})).toBeVisible();

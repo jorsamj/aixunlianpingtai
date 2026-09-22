@@ -96,6 +96,73 @@ export function externalAlgorithmMapping(algorithm = {}) {
   };
 }
 
+export function externalCategoryTreeRows(categories = []) {
+  const byId = new Map();
+  for (const raw of categories || []) {
+    const id = String(raw?.categoryId || raw?.id || '').trim();
+    if (!id || byId.has(id)) continue;
+    byId.set(id, {
+      id,
+      name: String(raw?.categoryName || raw?.name || id).trim() || id,
+      parentId: String(raw?.parentId || '').trim(),
+    });
+  }
+
+  const children = new Map();
+  for (const row of byId.values()) {
+    const parentId = row.parentId && byId.has(row.parentId) ? row.parentId : '';
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(row);
+  }
+  for (const rows of children.values()) rows.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+
+  const flattened = [];
+  const visited = new Set();
+  const walk = (row, depth, ancestors, names) => {
+    if (!row || visited.has(row.id)) return;
+    visited.add(row.id);
+    const descendants = children.get(row.id) || [];
+    const pathNames = [...names, row.name];
+    flattened.push({
+      ...row,
+      depth,
+      ancestorIds: [...ancestors],
+      path: pathNames.join(' / '),
+      hasChildren: descendants.length > 0,
+    });
+    for (const child of descendants) {
+      walk(child, depth + 1, [...ancestors, row.id], pathNames);
+    }
+  };
+
+  for (const root of children.get('') || []) walk(root, 0, [], []);
+  for (const row of byId.values()) {
+    if (!visited.has(row.id)) walk(row, 0, [], []);
+  }
+  return flattened;
+}
+
+export function externalCategoryVisibleRows(
+  categories = [],
+  {expandedIds = [], query = ''} = {},
+) {
+  const rows = externalCategoryTreeRows(categories);
+  const needle = String(query || '').trim().toLowerCase();
+  if (needle) {
+    const include = new Set();
+    for (const row of rows) {
+      if (`${row.name} ${row.path}`.toLowerCase().includes(needle)) {
+        include.add(row.id);
+        for (const ancestorId of row.ancestorIds) include.add(ancestorId);
+      }
+    }
+    return rows.filter(row => include.has(row.id));
+  }
+
+  const expanded = new Set([...expandedIds].map(String));
+  return rows.filter(row => row.ancestorIds.every(id => expanded.has(id)));
+}
+
 export function externalCategoryMatches(categoryId, selectedCategoryIds = [], categories = []) {
   const selected = new Set([...selectedCategoryIds].map(value => String(value || '')).filter(Boolean));
   if (!selected.size) return true;
@@ -208,6 +275,9 @@ export function installExternalAlgorithmPlatformRuntime({
   let readiness = null;
   let connectionTest = null;
   let configEditing = false;
+  let categoryPickerOpen = false;
+  let categorySearchQuery = '';
+  const categoryExpandedIds = new Set();
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
   const trainingPreflightCache = new Map();
@@ -377,6 +447,110 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
+  function renderAlgorithmCategoryPicker(categoryBar, categories) {
+    if (!categoryBar) return;
+    const filters = algorithmFilters();
+    const selectedCategoryIds = new Set(filters.selectedCategoryIds || []);
+    const rows = externalCategoryTreeRows(categories);
+    const byId = new Map(rows.map(row => [row.id, row]));
+
+    for (const id of selectedCategoryIds) {
+      for (const ancestorId of byId.get(id)?.ancestorIds || []) categoryExpandedIds.add(ancestorId);
+    }
+
+    const visibleRows = externalCategoryVisibleRows(categories, {
+      expandedIds: categoryExpandedIds,
+      query: categorySearchQuery,
+    });
+    const selectedRows = [...selectedCategoryIds]
+      .map(id => byId.get(id))
+      .filter(Boolean);
+    const selectionText = selectedRows.length ? `已选 ${selectedRows.length}` : '全部品目';
+
+    categoryBar.innerHTML = `<div class="alg-category-filter-head">
+      <button type="button" class="alg-category-trigger ${selectedRows.length ? 'has-selection' : ''}" data-category-picker-toggle aria-expanded="${categoryPickerOpen ? 'true' : 'false'}">
+        <span>品目筛选</span><b>${escapeHtml(selectionText)}</b><i>⌄</i>
+      </button>
+      <div class="alg-category-selected" data-category-selected>
+        ${selectedRows.slice(0, 4).map(row => `<button type="button" data-category-remove="${escapeHtml(row.id)}" title="移除 ${escapeHtml(row.name)}">${escapeHtml(row.name)}<i>×</i></button>`).join('')}
+        ${selectedRows.length > 4 ? `<span>+${selectedRows.length - 4}</span>` : ''}
+      </div>
+    </div>
+    <div class="alg-category-popover ${categoryPickerOpen ? 'is-open' : ''}" data-category-popover ${categoryPickerOpen ? '' : 'hidden'}>
+      <div class="alg-category-search"><input class="input" type="search" placeholder="搜索品目名称或路径" value="${escapeHtml(categorySearchQuery)}" data-category-search></div>
+      <div class="alg-category-tree" data-category-tree>
+        ${visibleRows.length ? visibleRows.map(row => {
+          const selected = selectedCategoryIds.has(row.id);
+          const expanded = categoryExpandedIds.has(row.id);
+          return `<div class="alg-category-row ${selected ? 'is-selected' : ''}" style="--category-depth:${Math.min(8, row.depth)}" data-category-row="${escapeHtml(row.id)}">
+            <button type="button" class="alg-category-expand ${row.hasChildren ? '' : 'is-leaf'}" data-category-expand="${escapeHtml(row.id)}" aria-label="${expanded ? '收起' : '展开'} ${escapeHtml(row.name)}" ${row.hasChildren ? '' : 'disabled'}>${row.hasChildren ? (expanded || categorySearchQuery ? '⌄' : '›') : '·'}</button>
+            <button type="button" class="alg-category-option" data-category-select="${escapeHtml(row.id)}" aria-pressed="${selected ? 'true' : 'false'}" aria-label="${escapeHtml(row.name)}">
+              <i class="alg-category-check">${selected ? '✓' : ''}</i>
+              <span><b>${escapeHtml(row.name)}</b><small>${escapeHtml(row.path)}</small></span>
+            </button>
+          </div>`;
+        }).join('') : '<div class="alg-category-empty">没有匹配的品目</div>'}
+      </div>
+      <div class="alg-category-footer"><span>支持多选 · 父级品目会匹配其下级算法</span><div><button type="button" class="btn mini" data-category-clear>清空</button><button type="button" class="btn mini primary" data-category-close>完成</button></div></div>
+    </div>`;
+
+    if (categoryBar.dataset.categoryPickerBound === '1') return;
+    categoryBar.dataset.categoryPickerBound = '1';
+
+    categoryBar.addEventListener('click', event => {
+      const toggle = event.target.closest?.('[data-category-picker-toggle]');
+      if (toggle) {
+        categoryPickerOpen = !categoryPickerOpen;
+        renderAlgorithmCategoryPicker(categoryBar, categories);
+        return;
+      }
+      const expand = event.target.closest?.('[data-category-expand]');
+      if (expand && !expand.disabled) {
+        const id = String(expand.dataset.categoryExpand || '');
+        if (categoryExpandedIds.has(id)) categoryExpandedIds.delete(id);
+        else categoryExpandedIds.add(id);
+        renderAlgorithmCategoryPicker(categoryBar, categories);
+        return;
+      }
+      const select = event.target.closest?.('[data-category-select]');
+      if (select) {
+        const id = String(select.dataset.categorySelect || '');
+        const selected = new Set(algorithmFilters().selectedCategoryIds || []);
+        if (selected.has(id)) selected.delete(id);
+        else selected.add(id);
+        categoryPickerOpen = true;
+        updateAlgorithmFilters({selectedCategoryIds: [...selected]});
+        return;
+      }
+      const remove = event.target.closest?.('[data-category-remove]');
+      if (remove) {
+        const id = String(remove.dataset.categoryRemove || '');
+        const selected = new Set(algorithmFilters().selectedCategoryIds || []);
+        selected.delete(id);
+        updateAlgorithmFilters({selectedCategoryIds: [...selected]});
+        return;
+      }
+      if (event.target.closest?.('[data-category-clear]')) {
+        updateAlgorithmFilters({selectedCategoryIds: []});
+        return;
+      }
+      if (event.target.closest?.('[data-category-close]')) {
+        categoryPickerOpen = false;
+        renderAlgorithmCategoryPicker(categoryBar, categories);
+      }
+    });
+
+    categoryBar.addEventListener('input', event => {
+      if (!event.target.matches?.('[data-category-search]')) return;
+      categorySearchQuery = String(event.target.value || '');
+      const caret = categorySearchQuery.length;
+      renderAlgorithmCategoryPicker(categoryBar, categories);
+      const input = categoryBar.querySelector?.('[data-category-search]');
+      input?.focus?.();
+      input?.setSelectionRange?.(caret, caret);
+    });
+  }
+
   function decorateAlgorithmCards() {
     const s = state();
     if (String(s.page || '') !== '算法列表') return;
@@ -493,12 +667,8 @@ export function installExternalAlgorithmPlatformRuntime({
     }
 
     const shell = document.querySelector('.alg428-shell');
-    const categoryRows = (cacheData?.categories || [])
-      .map(row => ({
-        id: String(row.categoryId || row.id || ''),
-        name: String(row.categoryName || row.name || row.categoryId || row.id || ''),
-      }))
-      .filter(row => row.id);
+    const rawCategories = Array.isArray(cacheData?.categories) ? cacheData.categories : [];
+    const categoryRows = externalCategoryTreeRows(rawCategories);
     if (shell && categoryRows.length) {
       const validIds = new Set(categoryRows.map(row => row.id));
       for (const id of [...selectedCategoryIds]) {
@@ -512,34 +682,12 @@ export function installExternalAlgorithmPlatformRuntime({
       if (!categoryBar) {
         categoryBar = document.createElement('div');
         categoryBar.dataset.externalCategoryFilter = '1';
-        categoryBar.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0 14px;';
+        categoryBar.className = 'alg-category-filter';
         const list = document.getElementById('alg412List');
         shell.insertBefore(categoryBar, list || null);
       }
-      const optionSignature = JSON.stringify(categoryRows);
-      const selectedSignature = JSON.stringify([...selectedCategoryIds].sort());
-      if (categoryBar.dataset.externalCategorySignature !== optionSignature
-          || categoryBar.dataset.externalCategorySelected !== selectedSignature) {
-        categoryBar.innerHTML = [
-          '<span class="muted">品目</span>',
-          `<button type="button" class="btn mini ${selectedCategoryIds.size ? '' : 'primary'}" data-category-id="">全部</button>`,
-          ...categoryRows.map(row => {
-            const selected = selectedCategoryIds.has(row.id);
-            return `<button type="button" class="btn mini ${selected ? 'primary' : ''}" aria-pressed="${selected ? 'true' : 'false'}" data-category-id="${escapeHtml(row.id)}">${escapeHtml(row.name || row.id)}</button>`;
-          }),
-        ].join('');
-        categoryBar.dataset.externalCategorySignature = optionSignature;
-        categoryBar.dataset.externalCategorySelected = selectedSignature;
-        for (const button of categoryBar.querySelectorAll('[data-category-id]')) {
-          button.addEventListener('click', () => {
-            const id = String(button.dataset.categoryId || '');
-            if (!id) selectedCategoryIds.clear();
-            else if (selectedCategoryIds.has(id)) selectedCategoryIds.delete(id);
-            else selectedCategoryIds.add(id);
-            updateAlgorithmFilters({selectedCategoryIds: [...selectedCategoryIds]});
-          });
-        }
-      }
+      categoryBar.style.cssText = '';
+      renderAlgorithmCategoryPicker(categoryBar, rawCategories);
     } else {
       shell?.querySelector('[data-external-category-filter]')?.remove();
       if (selectedCategoryIds.size) {
@@ -1091,7 +1239,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63012',
+    build: 'external-algorithm-platform-63013',
     page: PAGE,
     loadConfig,
     loadHistory,

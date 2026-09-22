@@ -139,6 +139,10 @@ jobs:
           grep -Fq '外部算法' static/modules/external-algorithm-platform.js
           grep -Fq 'dataset.algorithmTrainingStatusFilter' static/modules/external-algorithm-platform.js
           grep -Fq 'selectedCategoryIds.has(row.id)' static/modules/external-algorithm-platform.js
+          grep -Fq 'externalCategoryTreeRows' static/modules/external-algorithm-platform.js
+          grep -Fq 'data-category-picker-toggle' static/modules/external-algorithm-platform.js
+          grep -Fq 'data-category-search' static/modules/external-algorithm-platform.js
+          grep -Fq 'categoryExpandedIds' static/modules/external-algorithm-platform.js
           grep -Fq 'dataset.externalListSync' static/modules/external-algorithm-platform.js
           grep -Fq '自动同步已启用' static/modules/external-algorithm-platform.js
           grep -Fq '每 60 秒主动拉取一次主数据' static/modules/external-algorithm-platform.js
