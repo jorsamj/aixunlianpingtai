@@ -27,9 +27,10 @@ test('training progress v2 renders real epoch metrics throughput and rolling ETA
   assert.match(view.metricLine, /LR 0\.00100/);
 
   const html = trainingTaskRow(job);
-  assert.match(html, /5\/10 · 45%/);
+  assert.match(html, /Epoch 5\/10/);
+  assert.match(html, />45%<\/b>/);
   assert.doesNotMatch(html, /45% · 5/);
-  assert.match(html, /mAP50 0\.661/);
+  assert.doesNotMatch(html, /mAP50 0\.661/, 'dense metrics belong in detail/report, not the primary task row');
   assert.match(html, />1m 1s</);
   assert.doesNotMatch(html, />16m 39s</);
 });

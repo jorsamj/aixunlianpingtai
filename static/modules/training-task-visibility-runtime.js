@@ -239,6 +239,8 @@ export function installTrainingTaskVisibilityRuntime({
     const nextBar = nextTrack?.querySelector?.('i');
     const currentText = currentCell?.querySelector?.('.train428-progress-txt');
     const nextText = nextCell?.querySelector?.('.train428-progress-txt');
+    const currentPercent = currentCell?.querySelector?.('.train428-progress-main > b');
+    const nextPercent = nextCell?.querySelector?.('.train428-progress-main > b');
     if (!currentTrack || !nextTrack || !currentBar || !nextBar || !currentText || !nextText) {
       currentCell.innerHTML = nextCell.innerHTML;
       return;
@@ -246,6 +248,7 @@ export function installTrainingTaskVisibilityRuntime({
 
     currentBar.dataset.progress = nextBar.dataset.progress || '';
     currentBar.style.transform = nextBar.style.transform;
+    if (currentPercent && nextPercent) currentPercent.textContent = nextPercent.textContent;
     currentText.textContent = nextText.textContent;
 
     const currentMetrics = currentCell.querySelector?.('.train428-metrics');

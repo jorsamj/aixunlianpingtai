@@ -26,6 +26,9 @@ function fakeRoot() {
   });
   const buttons = [button(activeCount, activeClasses), button(historyCount, historyClasses)];
   const root = {
+    dataset: {},
+    classList: {toggle() {}},
+    addEventListener() {},
     querySelector: selector => selector === '.train428-table tbody' ? body : null,
     querySelectorAll: selector => selector === '.train428-tabs button' ? buttons : [],
   };
@@ -41,7 +44,12 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
   };
   const dom = fakeRoot();
   globalThis.document = {
-    querySelector: selector => selector === '.train428-page' ? dom.root : null,
+    querySelector(selector) {
+      return ['.train428-page', '.train428-page[data-training-task-shell="canonical"]'].includes(selector)
+        ? dom.root
+        : null;
+    },
+    getElementById() { return null; },
   };
   const calls = [];
   let pollRearms = 0;
@@ -167,7 +175,7 @@ test('visibility renderer keeps transitional non-terminal training states in act
 });
 
 
-test('empty state spans all eleven columns and success alias is terminal metadata', () => {
+test('empty state spans all ten product columns and success alias is terminal metadata', () => {
   const fixture = installFixture({jobs: []});
   const visibility = installTrainingTaskVisibilityRuntime({
     getState: () => fixture.state,
@@ -177,7 +185,7 @@ test('empty state spans all eleven columns and success alias is terminal metadat
 
   visibility.render();
 
-  assert.match(fixture.dom.body.innerHTML, /colspan="11"/);
+  assert.match(fixture.dom.body.innerHTML, /colspan="10"/);
   assert.equal(visibility.terminalStatuses.includes('success'), true);
 
   visibility.destroy();

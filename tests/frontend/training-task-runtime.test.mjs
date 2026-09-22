@@ -320,12 +320,13 @@ test('training row prioritizes waiting-resource truth and suppresses an unproved
       framework: 'ultralytics', total_epochs: 30,
     });
     assert.match(html, /等待资源/);
-    assert.match(html, /优先级 1/);
+    assert.match(html, /train428-priority-number">1<\/span>/);
     assert.match(html, /GPU 自动/);
     assert.match(html, /GPU_MEMORY_BUSY/);
     assert.doesNotMatch(html, /队列第 2 位/);
     assert.match(html, /执行节点 a800-worker-01/);
-    assert.match(html, /18% · 准备训练环境/);
+    assert.match(html, />18%<\/b>/);
+    assert.match(html, /准备训练环境/);
     if (previousWindow !== undefined) globalThis.window = previousWindow;
     if (previousDocument !== undefined) globalThis.document = previousDocument;
   });
@@ -432,6 +433,7 @@ test('active training row exposes the 10 product-facing task fields without inte
     asset_algorithm_name: '安全帽检测',
     task_name: '第 3 次迭代',
     queue_priority: 3,
+    priority_scheme: 'lower_number_first',
     framework: 'ultralytics',
     resource_pool_label: 'GPU 0',
     progress_percent: 42,
