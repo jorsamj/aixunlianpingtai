@@ -70,3 +70,32 @@ test('batch detection exposes result details and human correctness review states
   assert.match(source, /框不准/);
   assert.match(source, /类别错误/);
 });
+
+
+test('quality detection persists batch identity and restores recent server-side results', () => {
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(app, /form\.append\('detection_batch_id'/);
+  assert.match(app, /form\.append\('detection_item_index'/);
+  assert.match(app, /form\.append\('detection_side'/);
+  assert.match(source, /window\.loadDetectionBatches64=async function/);
+  assert.match(source, /\/api\/v64\/projects\/\$\{pid\(\)\}\/detection-batches\?limit=12/);
+  assert.match(source, /window\.openDetectionBatch64=async function/);
+  assert.match(source, /batchFromDurable64/);
+  assert.match(source, /最近检测批次/);
+});
+
+test('human detection review is saved through the durable review endpoint', () => {
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(source, /window\.markBenchReview64=async function/);
+  assert.match(source, /detection-batches\/\$\{encodeURIComponent\(row\.batchId\)\}\/items\/\$\{Number\(row\.itemIndex\?\?index\)\}\/review/);
+  assert.match(source, /已保存：/);
+});
+
+test('algorithm-version selector groups versions by their owning algorithm', () => {
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(source, /return `算法 · \$\{algorithm\?\.name/);
+  assert.match(source, /state\.algorithms/);
+});
