@@ -40,6 +40,19 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 });
 
 
+test('dataset storage and feedback filters live in the active dataset owner without a final wrapper', () => {
+  assert.equal(app.includes('const finalDataset=window.renderDatasets424;'), false);
+  const start = app.indexOf('const baseData414=window.renderDatasets424;');
+  const end = app.indexOf('window.openBatch414=', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /state\.materialSourceFilter61/);
+  assert.match(owner, /state\.iterationFeedbackOnly63&&feedbackIds\.size/);
+  assert.match(owner, /id="materialSource61"/);
+  assert.match(owner, /storage61-badge/);
+  assert.match(owner, /window\.renderSupplementDataBanner63\?\.\(\)/);
+});
+
 test('dataset feedback banner is a post-render hook instead of another renderer wrapper', () => {
   assert.match(app, /window\.renderSupplementDataBanner63=renderSupplementDataBanner63/);
   assert.match(app, /window\.renderSupplementDataBanner63\?\.\(\)/);

@@ -4284,17 +4284,30 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function filterLabelItems414(){return (state.labels||[]).filter(l=>l&&l.code&&l.status!=='disabled'&&l.status!=='inactive')}
   const baseData414=window.renderDatasets424;
   window.renderDatasets424=function(){
-    baseData414();
-    if(state.data412Tab==='processed'){
-      const chips=document.querySelector('.data426-filtertop .data426-chips');
-      if(chips){const labs=filterLabelItems414();chips.innerHTML=`<button class="data426-chip clear ${state.data412Labels.size?'':'on'}" onclick="clearLabels412()">全部</button>${labs.map(l=>`<button class="data426-chip ${state.data412Labels.has(l.code)?'on':''}" onclick="toggleLabel412('${esc(l.code)}')"><b>${esc(l.code)}</b>${l.display_name&&l.display_name!==l.code?`<small>${esc(l.display_name)}</small>`:''}</button>`).join('')}`}
-    }
-    if(state.data412Tab==='unprocessed'){
-      const head=document.querySelector('.data426-head .row');
-      if(head&&!head.querySelector('.batch414-clean'))head.insertAdjacentHTML('afterbegin',`<button class="btn batch414-clean" onclick="openBatch414('clean')">批量清洗</button><button class="btn batch414-ready" onclick="openBatch414('ready')">批量无需清洗</button>`);
-      // Hide older broad actions to avoid duplicate semantics.
-      [...document.querySelectorAll('.data426-head .row > button')].forEach(b=>{if(['清洗当前素材','当前素材无需清洗'].includes(b.textContent.trim()))b.style.display='none'});
-    }
+    const storageApi414=()=>window.PlatformCore?.storage;
+    const all=state.images||[],selected=state.materialSourceFilter61||'all';
+    const feedbackIds=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
+    let visible=selected==='all'?all:all.filter(row=>storageApi414()?.sourceMatches(row,selected));
+    if(state.iterationFeedbackOnly63&&feedbackIds.size)visible=visible.filter(row=>feedbackIds.has(String(row.id)));
+    state.images=visible;
+    try{
+      baseData414();
+      if(state.data412Tab==='processed'){
+        const chips=document.querySelector('.data426-filtertop .data426-chips');
+        if(chips){const labs=filterLabelItems414();chips.innerHTML=`<button class="data426-chip clear ${state.data412Labels.size?'':'on'}" onclick="clearLabels412()">全部</button>${labs.map(l=>`<button class="data426-chip ${state.data412Labels.has(l.code)?'on':''}" onclick="toggleLabel412('${esc(l.code)}')"><b>${esc(l.code)}</b>${l.display_name&&l.display_name!==l.code?`<small>${esc(l.display_name)}</small>`:''}</button>`).join('')}`}
+      }
+      if(state.data412Tab==='unprocessed'){
+        const head=document.querySelector('.data426-head .row');
+        if(head&&!head.querySelector('.batch414-clean'))head.insertAdjacentHTML('afterbegin',`<button class="btn batch414-clean" onclick="openBatch414('clean')">批量清洗</button><button class="btn batch414-ready" onclick="openBatch414('ready')">批量无需清洗</button>`);
+        // Hide older broad actions to avoid duplicate semantics.
+        [...document.querySelectorAll('.data426-head .row > button')].forEach(b=>{if(['清洗当前素材','当前素材无需清洗'].includes(b.textContent.trim()))b.style.display='none'});
+      }
+    }finally{state.images=all}
+    const toolbar=document.querySelector('.data426-toolbar');
+    if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi414()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
+    [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi414()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
+    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)loadStorageSources61().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
+    window.renderSupplementDataBanner63?.();
   };
   window.openBatch414=function(mode,ids=null){
     const candidates=ids?[...(state.recentUploadedMaterials61||[]),...(state.images||[])]:state.images||[],all=[...new Map(candidates.map(x=>[String(x.id),x])).values()].filter(x=>!x.annotation_index_pending&&!isProcessed414(x)&&!x.annotated),allowed=new Set((ids||all.map(x=>x.id)).map(String));const rows=all.filter(x=>allowed.has(String(x.id)));if(!rows.length)return toast('没有可操作的未处理素材');state.batch414Selected=new Set(rows.map(x=>String(x.id)));
@@ -5180,21 +5193,6 @@ window.installUsability417?.();
       state.page='存储配置';
     }
   }catch(_){}
-  const storageApi=()=>window.PlatformCore?.storage;
-  const finalDataset=window.renderDatasets424;
-  window.renderDatasets424=function(){
-    const all=state.images||[],selected=state.materialSourceFilter61||'all';
-    const feedbackIds=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
-    let visible=selected==='all'?all:all.filter(row=>storageApi()?.sourceMatches(row,selected));
-    if(state.iterationFeedbackOnly63&&feedbackIds.size)visible=visible.filter(row=>feedbackIds.has(String(row.id)));
-    state.images=visible;
-    try{finalDataset()}finally{state.images=all}
-    const toolbar=document.querySelector('.data426-toolbar');
-    if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi()?.enabledStorageSources(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}
-    [...document.querySelectorAll('.data426-card')].forEach((card,index)=>{const row=visible[index],meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi()?.storageSourceLabel(source)||row.storage_type||'本地')}</span>`) });
-    if(!(state.storageSources61||[]).length&&!state.storageSourcesLoading61)loadStorageSources61().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});
-    window.renderSupplementDataBanner63?.();
-  };
   if(window.__storageOpenUpload61)window.openDataUpload426=window.__storageOpenUpload61;
   if(window.__storageDoUploadImages61)window.doUploadImages426=window.__storageDoUploadImages61;
 })();
