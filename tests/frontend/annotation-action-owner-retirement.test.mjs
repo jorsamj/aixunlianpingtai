@@ -50,4 +50,7 @@ test('manual annotation uses incremental box patching and explicit empty confirm
   assert.match(stable, /button\.textContent='确认中…'/);
   assert.match(stable, /restoreLabelSchema414/);
   assert.match(stable, /wheelZoomBound/);
+  assert.match(stable, /resetAnnotationZoom420/);
+  assert.match(stable, /fitAnnotation420/);
+  assert.match(stable, /适应窗口/);
 });
