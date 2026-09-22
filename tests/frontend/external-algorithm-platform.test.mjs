@@ -410,3 +410,12 @@ test('category picker derives arbitrary parent depth and search paths from real 
     ['root', 'vehicle', 'parking'],
   );
 });
+
+
+test('external training preflight exposes freshness without weakening the authoritative refresh window', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(source, /function trainingPreflightFresh\(algorithmId, \{maxAgeMs = 30000\} = \{\}\)/);
+  assert.match(source, /Boolean\(cached\?\.algorithm\) && age >= 0 && age < Math\.max\(0, Number\(maxAgeMs\) \|\| 0\)/);
+  assert.match(source, /trainingPreflightFresh,/);
+  assert.match(source, /async function preflightTraining\(algorithmId, \{request, force = false, maxAgeMs = 30000\} = \{\}\)/);
+});

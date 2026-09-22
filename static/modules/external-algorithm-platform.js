@@ -485,6 +485,15 @@ export function installExternalAlgorithmPlatformRuntime({
     return externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
   }
 
+  function trainingPreflightFresh(algorithmId, {maxAgeMs = 30000} = {}) {
+    const pid = currentProjectId();
+    const id = String(algorithmId || '').trim();
+    if (!pid || !id) return false;
+    const cached = trainingPreflightCache.get(`${pid}:${id}`);
+    const age = Date.now() - Number(cached?.loadedAt || 0);
+    return Boolean(cached?.algorithm) && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0);
+  }
+
   async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000} = {}) {
     const pid = currentProjectId();
     const id = String(algorithmId || '').trim();
@@ -1392,6 +1401,7 @@ export function installExternalAlgorithmPlatformRuntime({
     syncNow,
     selectedAnalysisId,
     trainingReadiness,
+    trainingPreflightFresh,
     preflightTraining,
     decorateTrainingAnalysisSelector,
     decorateNavigation,

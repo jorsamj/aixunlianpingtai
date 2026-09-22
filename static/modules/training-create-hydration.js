@@ -20,6 +20,7 @@ export function installTrainingCreateHydrationRuntime({
     return response.json();
   },
   preflight,
+  preflightFresh,
   openTrainingForm,
   openShell,
   isShellCurrent,
@@ -102,17 +103,21 @@ export function installTrainingCreateHydrationRuntime({
     const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
       && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
     const needsHydration = !trainingCreationInputsReady(state);
-    const needsPreparation = needsHydration || externalChangLian;
+    const externalPreflightFresh = externalChangLian
+      && typeof preflightFresh === 'function'
+      && preflightFresh(aid) === true;
+    const needsExternalPreflight = externalChangLian && !externalPreflightFresh;
+    const needsPreparation = needsHydration || needsExternalPreflight;
 
-    // Cached internal training inputs are already usable. Open the real form immediately
-    // instead of flashing a temporary preparation modal on every click.
+    // Cached training inputs and a recent authoritative external preflight are already usable.
+    // Open the real form immediately instead of flashing a temporary preparation modal.
     if (!needsPreparation) return openForm(aid);
 
     showShell(aid, token);
     try {
       await Promise.all([
         hydrate(),
-        externalChangLian && typeof preflight === 'function' ? preflight(aid) : Promise.resolve(null),
+        needsExternalPreflight && typeof preflight === 'function' ? preflight(aid) : Promise.resolve(null),
       ]);
     } catch (error) {
       if (!destroyed && token === openEpoch && shellIsCurrent(token, aid)) {

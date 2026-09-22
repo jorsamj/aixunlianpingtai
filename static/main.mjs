@@ -9,7 +9,7 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63017';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63018';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65004';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
@@ -21,7 +21,7 @@ import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgo
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
-import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422535';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422550';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
@@ -227,6 +227,7 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
   projectId: () => state.project?.id,
   request: api,
   preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api}),
+  preflightFresh: algorithmId => externalAlgorithmPlatformRuntime.trainingPreflightFresh(algorithmId),
   openTrainingForm: window.openTrainingCreateCanonical429,
   notify,
 });

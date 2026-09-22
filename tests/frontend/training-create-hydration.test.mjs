@@ -173,3 +173,36 @@ test('closed or superseded shell cannot open a stale training dialog', async () 
     globalThis.window = originalWindow;
   }
 });
+
+
+test('recent external preflight opens the canonical training form without a preparation flash', async () => {
+  const originalWindow = globalThis.window;
+  let preflights = 0;
+  let shells = 0;
+  let opens = 0;
+  const state = {
+    algorithms: [{id: 'external-1', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN'}],
+    targets: [{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}],
+    rec: {device: 'cuda:0'},
+  };
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => { opens += 1; return 'opened'; },
+      preflight: async () => { preflights += 1; },
+      preflightFresh: () => true,
+      openShell: () => { shells += 1; },
+      isShellCurrent: () => true,
+      closeShell: () => {},
+    });
+    const result = await runtime.start('external-1');
+    assert.equal(result, 'opened');
+    assert.equal(opens, 1);
+    assert.equal(shells, 0);
+    assert.equal(preflights, 0);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
