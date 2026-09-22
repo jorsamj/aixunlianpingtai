@@ -621,3 +621,21 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .bench64-compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.bench64-compare .enhanced-result{min-width:0}
 .bench64-review{display:grid;gap:10px;padding:13px 14px;border:1px solid #e2e8f0;border-radius:14px;background:#f8fafc}.bench64-review>div:first-child{display:flex;justify-content:space-between;gap:10px}.bench64-review p{margin:0;color:#64748b;font-size:12px}
 @media(max-width:980px){.bench64-model-grid,.bench64-preview-run,.bench64-compare{grid-template-columns:1fr}.bench64-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bench64-result-row{grid-template-columns:minmax(0,1fr) auto}.bench64-result-row>div:not(:first-child){display:none}}
+
+
+/* v64 stable annotation workbench polish */
+.ann420-stable{grid-template-columns:220px minmax(0,1fr) 300px;gap:0;height:calc(94vh - 86px);margin:-16px;background:#f8fafc}
+.ann420-stable .ann417-queue{max-height:none;height:100%;border-right:1px solid #e2e8f0;background:#f8fafc}
+.ann420-stable .ann-work{display:flex;min-width:0;min-height:0;flex-direction:column;padding:12px;background:#f1f5f9}
+.ann420-stable .ann-toolbar{height:auto;min-height:44px;flex-wrap:wrap;margin:0 0 10px;padding:6px 8px;border-radius:12px;box-shadow:0 6px 18px rgba(15,23,42,.04)}
+.ann420-stable .ann-canvas-wrap{flex:1;height:auto;min-height:0;margin:0;border:1px solid rgba(148,163,184,.22);border-radius:14px;background:
+radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/18px 18px,#0b1220}
+.ann420-stable .ann-stage{flex:none;will-change:transform}
+.ann420-stable .ann-side{height:100%;border:0;border-left:1px solid #e2e8f0;border-radius:0;padding:14px;background:#fff}
+.ann420-stable .ann-zoom{margin-left:auto;padding-left:8px;border-left:1px solid #e5e7eb}
+.ann420-stable .ann-zoom #zoomText{min-width:44px;text-align:center;font-variant-numeric:tabular-nums}
+.ann420-stable #ann420Label{min-width:170px;max-width:260px}
+.ann420-stable .ann414-state{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ann420-stable .box424{transition:border-color .08s ease,box-shadow .08s ease}
+.ann420-stable .box424 .boxTag{pointer-events:none}
+@media(max-width:1180px){.ann420-stable{grid-template-columns:170px minmax(0,1fr)}.ann420-stable .ann-side{grid-column:1/-1;height:auto;max-height:240px;border-left:0;border-top:1px solid #e2e8f0}.ann420-stable .ann417-queue{min-height:0}}
