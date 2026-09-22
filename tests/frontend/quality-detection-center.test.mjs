@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 const navigation = readFileSync(new URL('../../static/modules/navigation-stability.js', import.meta.url), 'utf8');
+const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
 
 test('collapsed product navigation has only overview, algorithm generation and data center groups', () => {
   const start = app.lastIndexOf('const icon414=');
@@ -98,4 +99,35 @@ test('algorithm-version selector groups versions by their owning algorithm', () 
   const source = app.slice(start);
   assert.match(source, /return `算法 · \$\{algorithm\?\.name/);
   assert.match(source, /state\.algorithms/);
+});
+
+
+test('formal algorithm-version detection can explicitly enter the existing reviewed feedback chain', () => {
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(source, /function canSubmitBenchFeedback64\(value\)/);
+  assert.match(source, /model_source\|\|''\)\.toLowerCase\(\)==='algorithm_version'/);
+  assert.match(source, /window\.openBenchFeedback64=async function/);
+  assert.match(source, /deployment-tests\/\$\{encodeURIComponent\(value\.task_id\)\}\/feedback-evidence/);
+  assert.match(source, /state\.lastOnlinePrediction63=prediction/);
+  assert.match(source, /window\.openPredictionFeedback63\?\.\(\)/);
+  assert.match(source, /提交后先进入待复核，不会自动修改数据集或启动训练/);
+});
+
+test('quality center renders the reviewed feedback and external-intake panel', () => {
+  assert.match(app, /window\.renderOnlineFeedbackPanel63=function/);
+  const start = app.lastIndexOf('v64: quality-center model detection workbench');
+  const source = app.slice(start);
+  assert.match(source, /window\.renderOnlineFeedbackPanel63\?\.\(view\)/);
+  assert.match(app, /openExternalFeedbackIntake63/);
+  assert.match(app, /线上抽检 \/ 反馈/);
+});
+
+test('backend feedback-evidence promotion is explicit, formal-version-only and success-only', () => {
+  assert.match(backend, /@app\.post\("\/api\/v64\/projects\/\{project_id\}\/deployment-tests\/\{task_id\}\/feedback-evidence"\)/);
+  assert.match(backend, /只有真实检测成功后才能提交抽检反馈/);
+  assert.match(backend, /只有正式算法版本检测可以进入抽检反馈/);
+  assert.match(backend, /_online_feedback_version_model_sha256\(version\)/);
+  assert.match(backend, /source_channel": "quality_center_detection"/);
+  assert.match(backend, /"feedback_eligible": True/);
 });
