@@ -466,6 +466,15 @@ export function installExternalAlgorithmPlatformRuntime({
       .map(id => byId.get(id))
       .filter(Boolean);
     const selectionText = selectedRows.length ? `已选 ${selectedRows.length}` : '全部品目';
+    const pickerSignature = JSON.stringify({
+      rows: rows.map(row => [row.id, row.name, row.parentId, row.depth]),
+      selected: [...selectedCategoryIds].sort(),
+      expanded: [...categoryExpandedIds].sort(),
+      query: categorySearchQuery,
+      open: categoryPickerOpen,
+    });
+    if (categoryBar.dataset.categoryPickerSignature === pickerSignature) return;
+    categoryBar.dataset.categoryPickerSignature = pickerSignature;
 
     categoryBar.innerHTML = `<div class="alg-category-filter-head">
       <button type="button" class="alg-category-trigger ${selectedRows.length ? 'has-selection' : ''}" data-category-picker-toggle aria-expanded="${categoryPickerOpen ? 'true' : 'false'}">
@@ -1239,7 +1248,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63013',
+    build: 'external-algorithm-platform-63014',
     page: PAGE,
     loadConfig,
     loadHistory,

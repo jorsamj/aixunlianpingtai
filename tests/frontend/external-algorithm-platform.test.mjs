@@ -268,6 +268,8 @@ test('external algorithm decorator is DOM-idempotent under mutation observers', 
   assert.match(block, /data-category-picker-toggle/);
   assert.match(block, /data-category-select/);
   assert.match(block, /data-category-search/);
+  assert.match(block, /categoryPickerSignature/);
+  assert.match(block, /categoryBar\.dataset\.categoryPickerSignature === pickerSignature/);
   assert.match(block, /data-external-list-sync/);
   assert.match(block, /同步畅联云/);
   assert.doesNotMatch(block, /removeAttribute\('data-action'\)/);
