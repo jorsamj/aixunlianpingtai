@@ -300,7 +300,7 @@ function renderUnknownPage(page) {
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
-const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '测试发布', '部署转换', '部署产物']);
+const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '测试发布', '检测台', '部署转换', '部署产物']);
 
 function refreshPageExtrasInBackground(page, {force = false} = {}) {
   if (!PAGE_EXTRAS_OWNERS.has(page) || typeof window.loadPageExtras413 !== 'function') return null;

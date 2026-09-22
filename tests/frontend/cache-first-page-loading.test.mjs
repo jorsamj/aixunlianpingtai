@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
 function block(start, end) {
   const from = source.indexOf(start);
@@ -84,6 +85,33 @@ test('test publish manual refresh is page-scoped instead of using broad loadAll'
   const refresh = source.slice(refreshStart, refreshEnd);
   assert.match(refresh, /await extras412\('测试发布'\)/);
   assert.match(refresh, /state\.page===page&&page==='测试发布'/);
+  assert.doesNotMatch(refresh, /loadAll\(/);
+  assert.doesNotMatch(refresh, /loadCore412\(/);
+  assert.doesNotMatch(refresh, /loadRelated\(/);
+});
+
+
+test('detection bench receives focused model and inference extras on navigation and manual refresh', () => {
+  assert.match(main, /PAGE_EXTRAS_OWNERS = new Set\([^\n]+检测台/);
+
+  const extras = block('async function extras412', 'window.loadPageExtras413=extras412');
+  assert.match(extras, /\['测试发布','部署测试','检测台'\]\.includes\(page\)/);
+  assert.match(extras, /\/api\/v12\/projects\/\$\{id\}\/test_models/);
+  assert.match(extras, /\/api\/v16\/inference_envs/);
+
+  const benchStart = source.indexOf('renderDetectBench = window.renderDetectBench = function()');
+  const benchEnd = source.indexOf('\n  window.predict = async function()', benchStart);
+  assert.ok(benchStart >= 0 && benchEnd > benchStart);
+  const bench = source.slice(benchStart, benchEnd);
+  assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型\/环境<\/button>/);
+  assert.doesNotMatch(bench, /loadAll\(\)\.then\(render\)/);
+
+  const refreshStart = source.indexOf('window.refreshDetectionBenchDataV3=async function()');
+  const refreshEnd = source.indexOf('\n  window.refreshCurrentPage413=', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  const refresh = source.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /await extras412\('检测台'\)/);
+  assert.match(refresh, /window\.renderDetectBench\?\.\(\)/);
   assert.doesNotMatch(refresh, /loadAll\(/);
   assert.doesNotMatch(refresh, /loadCore412\(/);
   assert.doesNotMatch(refresh, /loadRelated\(/);
