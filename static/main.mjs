@@ -41,7 +41,7 @@ import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntim
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66007';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
-import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422537';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
 
@@ -256,7 +256,8 @@ const uploadTaskCenterRuntime = installUploadTaskCenter({getState: () => state, 
 window.PlatformCore.runtime.uploadTaskCenterRuntime = uploadTaskCenterRuntime;
 const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
 window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;
-installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
+const resourceDiscoveryRuntime = installResourceDiscoveryRuntime({...window.__resourceDiscoveryDependencies, pollRegistry});
+window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 
 function renderNavigationChrome() {
   window.renderNav?.();

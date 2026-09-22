@@ -37,3 +37,14 @@ test('resource discovery durable task polling uses shared canonical runtime trut
   assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES/);
   assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES\.has\(status\(task\.status\)\)/);
 });
+
+
+test('resource discovery polling is PollRegistry-owned and patches the live progress shell', () => {
+  assert.match(source, /dependencies\.pollRegistry \|\| window\.PollRegistryRuntime/);
+  assert.match(source, /registry\.startTimeout\(pollKey, '训练资源', tick, 1100\)/);
+  assert.match(source, /export function patchResourceDiscoveryProgress/);
+  assert.match(source, /data-rd-field="current_item"/);
+  assert.doesNotMatch(source, /setTimeout\(/);
+  assert.doesNotMatch(source, /live\.outerHTML\s*=/);
+  assert.doesNotMatch(source, /while \(!controller\.signal\.aborted/);
+});

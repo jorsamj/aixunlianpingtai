@@ -23,6 +23,7 @@ jobs:
           node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
           node --check static/modules/service-node-runtime.js &&
+          node --check static/modules/resource-discovery.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
@@ -152,6 +153,10 @@ jobs:
           grep -Fq 'function patchCompProgress()' static/app.js
           grep -Fq "registerPageOwner('组件检测'" static/main.mjs
           grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
+          grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
+          grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
+          if grep -Fq 'setTimeout(' static/modules/resource-discovery.js; then echo 'resource discovery polling must stay PollRegistry-owned' >&2; exit 1; fi
+          if grep -Fq 'live.outerHTML =' static/modules/resource-discovery.js; then echo 'resource discovery progress must patch in place' >&2; exit 1; fi
       - name: Video PollRegistry direct owner guard
         run: |
           if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then
