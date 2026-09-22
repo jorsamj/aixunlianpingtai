@@ -358,7 +358,9 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   const jobListReadsAfterSubmit = jobListReads;
 
   await page.evaluate(() => window.setPage('训练任务'));
-  await expect(page.locator('.train428-table tbody')).toContainText(createdTaskId);
+  const createdRow = page.locator(`.train428-table tbody tr[data-job-id="${createdTaskId}"]`);
+  await expect(createdRow).toBeVisible();
+  await expect(createdRow).not.toContainText(createdTaskId);
   await expect.poll(() => jobListReads).toBeGreaterThan(jobListReadsAfterSubmit);
 
   await page.reload();
@@ -367,7 +369,9 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     state.jobs || []
   ).some(job => String(job.task_id || job.id || '') === taskId), createdTaskId)).toBe(true);
   await page.evaluate(() => window.setPage('训练任务'));
-  await expect(page.locator('.train428-table tbody')).toContainText(createdTaskId);
+  const restoredRow = page.locator(`.train428-table tbody tr[data-job-id="${createdTaskId}"]`);
+  await expect(restoredRow).toBeVisible();
+  await expect(restoredRow).not.toContainText(createdTaskId);
 });
 
 

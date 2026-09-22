@@ -64,7 +64,8 @@ jobs:
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           grep -Fq 'feedback_eligible' app.py
           grep -Fq 'predictBeforeFeedback63' static/app.js
-          grep -Fq 'loadPageExtras413(requestedPage)' static/main.mjs
+          grep -Fq 'refreshPageExtrasInBackground(page)' static/main.mjs
+          if grep -Fq 'loadPageExtras413(requestedPage)' static/main.mjs; then echo 'online feedback page guard must not restore blocking navigation extras' >&2; exit 1; fi
           grep -Fq 'feedbackExternalEndpoint63' static/app.js
           grep -Fq '/api/v63/projects/{project_id}/online-feedback' app.py
           grep -Fq 'confirm_all_labels_absent' app.py

@@ -308,7 +308,7 @@ test('training queue displays numeric priorities and orders each resource by pri
     await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'browser-test'});
   });
 
-  const rows = page.locator('.train428-table tbody tr');
+  const rows = page.locator('.train428-table tbody tr[data-job-id]');
   await expect(rows).toHaveCount(3);
   expect(await rows.locator('td:first-child .train428-taskname b').allTextContents()).toEqual(['最高优先', '同级先到', '同级后到']);
   await expect(rows.nth(0).locator('.train428-priority > b')).toHaveText('1');
