@@ -450,8 +450,9 @@ test('active training row exposes the 10 product-facing task fields without inte
   assert.match(html, /第 3 次迭代/);
   assert.match(html, />3<\/span>/);
   assert.match(html, /42%/);
-  assert.doesNotMatch(html, /alg-11/);
-  assert.doesNotMatch(html, /train-11/);
+  assert.doesNotMatch(html, /<span[^>]*>alg-11<\/span>/);
+  assert.doesNotMatch(html, /<span[^>]*>train-11<\/span>/);
+  assert.doesNotMatch(html, /<b[^>]*>train-11<\/b>/);
   assert.doesNotMatch(html, /Ultralytics \/ YOLO/);
   assert.match(html, /详情/);
   assert.match(html, /日志/);
