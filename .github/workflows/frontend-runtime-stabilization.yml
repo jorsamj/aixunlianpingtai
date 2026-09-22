@@ -363,6 +363,7 @@ jobs:
           grep -Fq 'function afterNavigate61(page, navigation)' static/modules/material-pagination-runtime.js
           grep -Fq "assert.equal(requiresFullMaterialPool('训练任务'), false)" tests/frontend/material-pagination-runtime.test.mjs
           grep -Fq "assert.equal(requiresFullMaterialPool('质量中心'), false)" tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq "assert.equal(requiresFullMaterialPool('自动标注及清洗'), false)" tests/frontend/material-pagination-runtime.test.mjs
           grep -Fq 'const action = window.NavigationStability?.action?.(target)' static/modules/material-pagination-runtime.js
           if grep -Fq 'await window.refreshCurrentPage413?.()' static/modules/material-pagination-runtime.js; then echo "material navigation must not launch broad stale project refreshes" >&2; exit 1; fi
           if grep -Fq 'materialAwareSetPage' static/modules/material-pagination-runtime.js; then echo "material pagination must not own a second setPage wrapper" >&2; exit 1; fi
