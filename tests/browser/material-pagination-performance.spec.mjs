@@ -146,6 +146,13 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
   await page.evaluate(() => {
     document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
+    window.__datasetStableCard = document.querySelector('.data412-card[data-material-id="m-1"]');
+    window.renderData412Cards();
+  });
+  expect(await page.evaluate(() => window.__datasetStableCard === document.querySelector('.data412-card[data-material-id="m-1"]'))).toBe(true);
+
+  await page.evaluate(() => {
+    document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
   });
 
   // Once the first server page has committed, the install-time bootstrap timer must not
