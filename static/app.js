@@ -3069,8 +3069,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     return task.finally(()=>{if(state.clean427RefreshPromise===task)state.clean427RefreshPromise=null});
   };
   function renderCleanOps427(){
-    const rows=cleanTaskRows427(state.clean427);
-    document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button class="on" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createClean427()">＋ 创建清洗任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>问题图片</th><th>时间</th><th>操作</th></tr></thead><tbody id="clean427TaskRows">${rows}</tbody></table></div></section></section>`;
+    const view=document.getElementById('view');if(!view)return;
+    let shell=view.querySelector(':scope > .ops427[data-clean-task-shell="1"]');
+    if(!shell){
+      const mount=document.createElement('section');mount.className='ops427';mount.dataset.cleanTaskShell='1';
+      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-clean-tab="label" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-clean-tab="clean" class="on" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createClean427()">＋ 创建清洗任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>问题图片</th><th>时间</th><th>操作</th></tr></thead><tbody id="clean427TaskRows"></tbody></table></div></section>`;
+      view.replaceChildren(mount);shell=mount;
+    }
+    shell.querySelector('[data-clean-tab="label"]')?.classList.remove('on');
+    shell.querySelector('[data-clean-tab="clean"]')?.classList.add('on');
+    const body=shell.querySelector('#clean427TaskRows');if(body)patchCleanTaskRows427(body,state.clean427||[]);
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
     const age=Date.now()-Number(state.clean427LoadedAt||0),reuseRecent=state.clean427LoadedAt>0&&age>=0&&age<CLEAN427_PAGE_ENTRY_REUSE_MS;
     if(!reuseRecent)void window.refreshCleanOps427Delta?.();
