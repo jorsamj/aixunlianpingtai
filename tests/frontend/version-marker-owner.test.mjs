@@ -41,3 +41,12 @@ test('canonical chrome owners keep the formal badge and footer values', () => {
   assert.ok(navStart >= 0 && navEnd > navStart);
   assert.match(app.slice(navStart, navEnd), /<b>v\$\{V414\}<\/b>/);
 });
+
+
+test('entry bundles advance cache-bust markers without changing the formal release badge', () => {
+  assert.equal(index.includes('/static/app.js?v=42.25.171'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.171'), true);
+  assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
+  assert.equal(main.includes("./modules/model-artifact-runtime.js?v=65004"), true);
+  assert.equal(index.includes('<span id="versionBadge" class="version-badge">v42.24.0</span>'), true);
+});
