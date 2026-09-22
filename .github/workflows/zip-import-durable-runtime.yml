@@ -81,7 +81,8 @@ jobs:
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
           grep -Fq "zip-import-runtime.js?v=422536" static/zip-import-bootstrap.mjs
-          grep -Fq "if(classicImportData)return classicImportData()" static/modules/zip-import-runtime.js
+          if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
+          grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq "pollOwner" static/modules/upload-task-center.js
           grep -Fq 'INDEX_BATCH_SIZE = 50' platform_core/storage/import_tasks.py
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js

@@ -378,7 +378,8 @@ jobs:
           grep -Fq 'identical material page loads are single-flight instead of issuing duplicate GETs' tests/frontend/material-pagination-runtime.test.mjs
           grep -Fq "pollOwner = 'storage-import-progress'" static/modules/storage-import-progress.js
           grep -Fq "stop({handoff: false})" static/modules/storage-import-progress.js
-          grep -Fq "if(classicImportData)return classicImportData()" static/modules/zip-import-runtime.js
+          if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
+          grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs

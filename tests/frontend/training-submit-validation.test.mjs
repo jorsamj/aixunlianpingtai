@@ -139,13 +139,17 @@ test('dashboard training task success rate distinguishes no-data and successful 
   assert.match(legacyDashboard, /successRate=endedJobs\.length\?doneJobs\.length\/endedJobs\.length:null/);
   assert.match(legacyDashboard, /ended:endedJobs\.length/);
 
-  const qualityStart = source.indexOf('window.renderQualityCenter424=async function()');
-  const qualityEnd = source.indexOf('// ---------- single data pool ----------', qualityStart);
+  const qualityStart = source.indexOf('function qualityHtml411(r){');
+  const qualityEnd = source.indexOf('window.renderQualityCenter424=async function()', qualityStart);
   const quality = source.slice(qualityStart, qualityEnd);
+  assert.ok(qualityStart >= 0 && qualityEnd > qualityStart);
   assert.match(quality, /a\.train_success_rate==null\?'—'/);
   assert.match(quality, /暂无已结束训练可统计/);
-  assert.match(quality, /\.\.\.\(a\.train_success_rate==null\?\{\}:\{'训练成功率':a\.train_success_rate\}\)/);
-  assert.doesNotMatch(quality, /'训练成功率':a\.train_success_rate\?\?0/);
+  assert.doesNotMatch(quality, /train_success_rate\?\?0/);
+  const qualityOwnerStart = qualityEnd;
+  const qualityOwnerEnd = source.indexOf('window.refreshQuality411=async function()', qualityOwnerStart);
+  const qualityOwner = source.slice(qualityOwnerStart, qualityOwnerEnd);
+  assert.match(qualityOwner, /qualityHtml411\(cached\.data\)/);
 });
 
 test('algorithm detail modal exposes summary facts without stale failure reason', () => {
