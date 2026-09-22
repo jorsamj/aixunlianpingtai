@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422527';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422528';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([
@@ -106,6 +106,9 @@ export function installTrainingTaskVisibilityRuntime({
   let jobsProjectId = String(state().project?.id || '');
   let refreshSequence = 0;
   let appliedSequence = 0;
+  let batchMode = false;
+  let batchBusy = false;
+  const selectedIds = new Set();
   const renderedRows = new Map();
 
   function sameProject(projectId) {
@@ -120,6 +123,13 @@ export function installTrainingTaskVisibilityRuntime({
           <button type="button" onclick="setTrainTab428('history')">历史记录 <span>0</span></button>
         </div>
         <div class="train428-toolbar-actions">
+          <div class="train428-batchbar" data-training-batchbar hidden>
+            <span data-training-batch-count>已选 0 项</span>
+            <button type="button" class="btn mini" data-training-batch-action="pause">暂停</button>
+            <button type="button" class="btn mini" data-training-batch-action="resume">继续</button>
+            <button type="button" class="btn mini danger" data-training-batch-action="stop">停止</button>
+          </div>
+          <button type="button" class="btn mini" data-training-batch-toggle>批量操作</button>
           <button type="button" class="btn mini train428-refresh" onclick="refreshTrainPage428()">刷新</button>
         </div>
       </div>
@@ -137,7 +147,82 @@ export function installTrainingTaskVisibilityRuntime({
     const view = doc.getElementById?.('view');
     if (!view) return null;
     view.innerHTML = trainingShellHtml();
-    return view.querySelector?.('.train428-page[data-training-task-shell="canonical"]') || null;
+    const created = view.querySelector?.('.train428-page[data-training-task-shell="canonical"]') || null;
+    bindBatchControls(created);
+    return created;
+  }
+
+  function rowHtml(job) {
+    const id = String(job?.id || job?.task_id || '');
+    return trainingTaskRow(job, {batchMode, selected: selectedIds.has(id)});
+  }
+
+  function eligibleSelectedCount(action) {
+    const jobs = Array.isArray(state().jobs) ? state().jobs : [];
+    return jobs.filter(job => selectedIds.has(String(job?.id || job?.task_id || ''))
+      && trainingBatchActionEligible(job, action)).length;
+  }
+
+  function syncBatchToolbar(root) {
+    if (!root) return;
+    root.classList.toggle('is-batch-mode', batchMode);
+    const bar = root.querySelector?.('[data-training-batchbar]');
+    const toggle = root.querySelector?.('[data-training-batch-toggle]');
+    const count = root.querySelector?.('[data-training-batch-count]');
+    if (bar) bar.hidden = !batchMode;
+    if (toggle) {
+      toggle.textContent = batchMode ? '退出批量' : '批量操作';
+      toggle.classList.toggle('primary', batchMode);
+      toggle.disabled = batchBusy;
+    }
+    if (count) count.textContent = `已选 ${selectedIds.size} 项`;
+    for (const action of ['pause', 'resume', 'stop']) {
+      const button = root.querySelector?.(`[data-training-batch-action="${action}"]`);
+      if (button) button.disabled = batchBusy || eligibleSelectedCount(action) <= 0;
+    }
+  }
+
+  async function runBatchAction(action, root) {
+    if (batchBusy || !selectedIds.size || typeof runtime.batchAction !== 'function') return;
+    batchBusy = true;
+    syncBatchToolbar(root);
+    try {
+      const result = await runtime.batchAction(action, [...selectedIds]);
+      if (!result?.cancelled && (result?.succeeded || 0) > 0) {
+        selectedIds.clear();
+        batchMode = false;
+      }
+    } finally {
+      batchBusy = false;
+      renderOwned();
+    }
+  }
+
+  function bindBatchControls(root) {
+    if (!root || root.dataset.trainingBatchBound === '1') return;
+    root.dataset.trainingBatchBound = '1';
+    root.addEventListener('click', event => {
+      const toggle = event.target.closest?.('[data-training-batch-toggle]');
+      if (toggle) {
+        batchMode = !batchMode;
+        if (!batchMode) selectedIds.clear();
+        renderOwned();
+        return;
+      }
+      const actionButton = event.target.closest?.('[data-training-batch-action]');
+      if (actionButton) {
+        void runBatchAction(String(actionButton.dataset.trainingBatchAction || ''), root);
+      }
+    });
+    root.addEventListener('change', event => {
+      const checkbox = event.target.closest?.('[data-training-batch-select]');
+      if (!checkbox) return;
+      const id = String(checkbox.dataset.trainingBatchSelect || '');
+      if (!id) return;
+      if (checkbox.checked) selectedIds.add(id);
+      else selectedIds.delete(id);
+      renderOwned();
+    });
   }
 
   function createTrainingRow(html) {
@@ -197,10 +282,10 @@ export function installTrainingTaskVisibilityRuntime({
       && body?.children,
     );
     if (!canPatch) {
-      body.innerHTML = visible.map(trainingTaskRow).join('')
+      body.innerHTML = visible.map(rowHtml).join('')
         || '<tr><td colspan="10" class="empty-row">暂无记录</td></tr>';
       renderedRows.clear();
-      for (const job of visible) renderedRows.set(String(job?.id || ''), trainingTaskRow(job));
+      for (const job of visible) renderedRows.set(String(job?.id || ''), rowHtml(job));
       return;
     }
 
@@ -221,7 +306,7 @@ export function installTrainingTaskVisibilityRuntime({
 
     visible.forEach((job, index) => {
       const id = String(job?.id || '');
-      const html = trainingTaskRow(job);
+      const html = rowHtml(job);
       wanted.add(id);
       let row = existingRows.get(id) || null;
       if (!row) {
@@ -248,6 +333,7 @@ export function installTrainingTaskVisibilityRuntime({
   function renderOwned() {
     if (destroyed || !doc || String(state().page || '') !== TRAINING_PAGE) return false;
     const root = ensureShell();
+    bindBatchControls(root);
     const body = root?.querySelector?.('.train428-table tbody');
     if (!root || !body) return false;
 
@@ -265,7 +351,12 @@ export function installTrainingTaskVisibilityRuntime({
     historyButton?.classList?.toggle?.('on', tab === 'history');
 
     const visible = visibleTrainingJobs(jobs, tab);
+    const visibleIds = new Set(visible.map(job => String(job?.id || job?.task_id || '')));
+    for (const id of [...selectedIds]) {
+      if (!visibleIds.has(id)) selectedIds.delete(id);
+    }
     patchRows(body, visible);
+    syncBatchToolbar(root);
     pollRegistry?.syncTrainingClockTimer?.();
     return true;
   }
@@ -341,6 +432,8 @@ export function installTrainingTaskVisibilityRuntime({
 
   window.setTrainTab428 = tab => {
     state().train428Tab = tab === 'history' ? 'history' : 'active';
+    batchMode = false;
+    selectedIds.clear();
     renderOwned();
     pollRegistry?.replaceTrainingJobTimer?.();
   };
@@ -359,7 +452,7 @@ export function installTrainingTaskVisibilityRuntime({
   }
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422525',
+    build: 'training-task-visibility-422526',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
@@ -370,12 +463,18 @@ export function installTrainingTaskVisibilityRuntime({
         jobsProjectId,
         refreshSequence,
         appliedSequence,
+        batchMode,
+        batchBusy,
+        selectedIds: [...selectedIds],
         page: String(state().page || ''),
       };
     },
     destroy() {
       destroyed = true;
       renderedRows.clear();
+      selectedIds.clear();
+      batchMode = false;
+      batchBusy = false;
       runtime.refresh = previous.runtimeRefresh;
       for (const [name, fn] of Object.entries(previous)) {
         if (name === 'runtimeRefresh') continue;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {installTrainingTaskVisibilityRuntime, tickTrainingClockRows} from '../../static/modules/training-task-visibility-runtime.js';
 
@@ -274,4 +275,16 @@ test('local training clock advances elapsed and ETA without a network refresh', 
   assert.equal(elapsed.textContent, '1m 21s');
   assert.equal(eta.dataset.seconds, '139');
   assert.equal(eta.textContent, '2m 19s');
+});
+
+
+test('batch mode is transient and remains inside the canonical ten-column task table', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /data-training-batch-toggle/);
+  assert.match(source, /data-training-batch-action="pause"/);
+  assert.match(source, /data-training-batch-action="resume"/);
+  assert.match(source, /data-training-batch-action="stop"/);
+  assert.match(source, /selectedIds\.clear\(\)/);
+  assert.match(source, /batchMode = false/);
+  assert.doesNotMatch(source, /<th><input[^>]+data-training-batch/);
 });

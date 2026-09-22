@@ -150,6 +150,16 @@ function priorityValue(job) {
   return legacy[raw] ?? Math.max(1, Math.min(999, 101 - (Number.isFinite(raw) ? raw : 50)));
 }
 
+export function trainingBatchActionEligible(job, action) {
+  const status = trainingDisplayStatus(job);
+  if (action === 'pause') return status === 'running';
+  if (action === 'resume') return status === 'paused';
+  if (action === 'stop') {
+    return ['queued', 'waiting', 'pending', 'starting', 'running', 'pausing', 'paused', 'resuming'].includes(status);
+  }
+  return false;
+}
+
 function queueRuntimeMeta(job) {
   const status = trainingDisplayStatus(job);
   if (!['queued', 'waiting'].includes(status)) return '';
@@ -260,7 +270,7 @@ function actions(job) {
   return `${detail}${log}${job.auto_version_id ? `<button class="btn mini primary" onclick="trainingReport425('${id}')">训练报告</button>` : ''}<button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
 }
 
-export function trainingTaskRow(job) {
+export function trainingTaskRow(job, {batchMode = false, selected = false} = {}) {
   const status = trainingDisplayStatus(job);
   const percent = canonicalTaskProgressPercent(job);
   const progress = trainingProgressView(job);
@@ -300,7 +310,10 @@ export function trainingTaskRow(job) {
     .filter((value, index, values) => values.indexOf(value) === index)
     .join(' · ');
 
-  return `<tr data-job-id="${esc(job.id)}" data-clock-active="${clockActive ? '1' : '0'}"><td><div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${progressScale.toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsedClock}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaClock}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td><span class="train428-started">${esc(dateText(job.started_at || job.created_at))}</span></td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
+  const batchCheckbox = batchMode
+    ? `<label class="train428-select"><input type="checkbox" data-training-batch-select="${esc(job.id)}" ${selected ? 'checked' : ''} aria-label="选择训练任务 ${esc(taskName)}"><span></span></label>`
+    : '';
+  return `<tr data-job-id="${esc(job.id)}" data-clock-active="${clockActive ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${batchCheckbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${progressScale.toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsedClock}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaClock}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td><span class="train428-started">${esc(dateText(job.started_at || job.created_at))}</span></td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {
@@ -515,6 +528,70 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     }
   }
 
+  async function batchAction(action, ids = []) {
+    const actionName = ({pause: '暂停', resume: '继续', stop: '停止'})[action];
+    if (!actionName) throw new Error('不支持的批量训练操作');
+    const uniqueIds = [...new Set((ids || []).map(String).filter(Boolean))];
+    const jobs = Array.isArray(state().jobs) ? state().jobs : [];
+    const eligible = uniqueIds
+      .map(id => jobs.find(job => String(job?.id || job?.task_id || '') === id))
+      .filter(job => job && trainingBatchActionEligible(job, action));
+    if (!eligible.length) {
+      notify?.(`所选任务当前没有可${actionName}的项目`);
+      return {ok: false, action, attempted: 0, succeeded: 0, failed: 0, skipped: uniqueIds.length};
+    }
+
+    if (action === 'stop' && typeof window.confirm === 'function') {
+      const confirmed = window.confirm(`确认停止选中的 ${eligible.length} 个训练任务？`);
+      if (!confirmed) return {ok: false, cancelled: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
+    }
+
+    const pid = encodeURIComponent(projectId?.() || '');
+    const lockKey = `batch:${action}`;
+    if (mutationLocks.has(lockKey)) return {ok: false, busy: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
+    mutationLocks.add(lockKey);
+    const failures = [];
+    let succeeded = 0;
+    try {
+      for (const job of eligible) {
+        const id = String(job?.id || job?.task_id || '');
+        try {
+          const response = await nativeFetch(
+            `/api/v48/projects/${pid}/jobs/${encodeURIComponent(id)}/${action}`,
+            {method: 'POST'},
+          );
+          const error = await responseError(response, `${actionName}训练失败`);
+          if (error) throw error;
+          succeeded += 1;
+        } catch (error) {
+          failures.push({id, message: String(error?.message || error)});
+        }
+      }
+
+      let refreshError = null;
+      try { await refreshAfterMutation(); } catch (errorAfterMutation) { refreshError = errorAfterMutation; }
+      const skipped = uniqueIds.length - eligible.length;
+      const summary = [
+        `批量${actionName}完成：成功 ${succeeded}`,
+        failures.length ? `失败 ${failures.length}` : '',
+        skipped ? `跳过 ${skipped}` : '',
+      ].filter(Boolean).join(' · ');
+      notify?.(refreshError ? `${summary}，但列表刷新失败：${refreshError.message || refreshError}` : summary);
+      return {
+        ok: failures.length === 0 && !refreshError,
+        action,
+        attempted: eligible.length,
+        succeeded,
+        failed: failures.length,
+        skipped,
+        failures,
+        refreshError: refreshError ? String(refreshError?.message || refreshError) : '',
+      };
+    } finally {
+      mutationLocks.delete(lockKey);
+    }
+  }
+
   const focusedRefresh = () => runtime.refresh({render: true, source: 'poll'});
   focusedRefresh.__trainingTaskRuntime = true;
   window.refreshJobsOnly = focusedRefresh;
@@ -603,9 +680,10 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   doc?.addEventListener?.('click', onClickCapture, true);
 
   const runtime = {
-    build: 'training-task-runtime-422506',
+    build: 'training-task-runtime-422507',
     refresh,
     acceptCreatedTask,
+    batchAction,
     patch: patchFinalTrainingTable,
     state() {
       return {inflight: Boolean(inflight), lastRefreshAt, lastRefreshSource, mutations: mutationLocks.size};

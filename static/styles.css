@@ -499,3 +499,17 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .train428-page-v2 .train428-actions-cell .btn{white-space:nowrap}
 @media(max-width:900px){.train428-page-v2 .train428-table{min-width:1220px}}
 @media(prefers-reduced-motion:reduce){.train428-page-v2 .train428-table tbody tr{transition:none!important}}
+
+/* training batch mode */
+.train428-batchbar{display:flex;align-items:center;gap:6px;padding:3px 5px;border-radius:9px;background:#f5f8fd;animation:train428BatchIn .16s ease-out}
+.train428-batchbar[hidden]{display:none}
+.train428-batchbar>span{padding:0 5px;color:#64748b;font-size:10px;font-weight:700;white-space:nowrap}
+.train428-algorithm-cell{display:flex;align-items:center;gap:8px;min-width:0}
+.train428-algorithm-cell>.train428-taskname{min-width:0;flex:1}
+.train428-select{display:none;align-items:center;justify-content:center;width:22px;height:26px;flex:0 0 22px;cursor:pointer}
+.train428-page.is-batch-mode .train428-select{display:flex}
+.train428-select input{width:14px;height:14px;margin:0;accent-color:#315fd4;cursor:pointer}
+.train428-page.is-batch-mode tr.is-selected td{background:#f5f9ff}
+.train428-page.is-batch-mode tr:hover td{background:#f8fbff}
+@keyframes train428BatchIn{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.train428-batchbar{animation:none!important}}

@@ -507,3 +507,54 @@ test('durable create response is merged immediately without a confirmation reque
   runtime.destroy();
   cleanup();
 });
+
+
+test('batch mode adds selection inside the algorithm cell without adding a permanent checkbox column', () => {
+  const job = {
+    id:'batch-row-1', status:'running', asset_algorithm_name:'烟火检测',
+    task_name:'训练任务 A', queue_priority:2, progress_percent:25,
+  };
+  const normal = trainingTaskRow(job);
+  const batch = trainingTaskRow(job, {batchMode:true, selected:true});
+  assert.equal((normal.match(/<td/g) || []).length, 10);
+  assert.equal((batch.match(/<td/g) || []).length, 10);
+  assert.doesNotMatch(normal, /data-training-batch-select/);
+  assert.match(batch, /data-training-batch-select="batch-row-1"/);
+  assert.match(batch, /checked/);
+  assert.match(batch, /is-selected/);
+});
+
+test('batch pause uses only eligible real endpoints and performs one final jobs refresh', async () => {
+  const state = {
+    page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[
+      {id:'run-1', status:'running'},
+      {id:'pause-1', status:'paused'},
+    ],
+  };
+  const calls=[];
+  globalThis.window={
+    async fetch(url, init={}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (String(url).endsWith('/pause')) return response({ok:true});
+      if (String(url).endsWith('/jobs')) return response([
+        {id:'run-1', status:'paused'},
+        {id:'pause-1', status:'paused'},
+      ]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+  const runtime=installTrainingTaskRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+  });
+  const result=await runtime.batchAction('pause',['run-1','pause-1']);
+  assert.equal(result.succeeded,1);
+  assert.equal(result.skipped,1);
+  assert.deepEqual(calls,[
+    'POST /api/v48/projects/p1/jobs/run-1/pause',
+    'GET /api/projects/p1/jobs',
+  ]);
+  runtime.destroy();
+  cleanup();
+});

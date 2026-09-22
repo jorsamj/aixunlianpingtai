@@ -10,7 +10,7 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('#title')).toContainText('训练任务');
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
-    .toBe('training-task-runtime-422506');
+    .toBe('training-task-runtime-422507');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -197,5 +197,60 @@ test('hard refresh restores a live training task even when the bootstrap snapsho
 
   expect(bootstrapRequests).toBeGreaterThan(0);
   expect(jobRequests).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
+});
+
+
+test('batch mode appears on demand and pauses eligible tasks with one canonical refresh', async ({page}) => {
+  const pageErrors=[];
+  page.on('pageerror',error=>pageErrors.push(error));
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout:15_000});
+  await page.evaluate(()=>window.setPage('训练任务'));
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible({timeout:10_000});
+  const projectId=await page.evaluate(()=>state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded=encodeURIComponent(projectId);
+
+  let paused=false;
+  let jobsGets=0;
+  let pausePosts=0;
+  await page.route(`**/api/projects/${encoded}/jobs`,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    jobsGets+=1;
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify([{
+        id:'batch-browser-1',task_id:'batch-browser-1',
+        status:paused?'paused':'running',task_status:paused?'PAUSED':'RUNNING',
+        asset_algorithm_name:'批量烟火检测',task_name:'批量训练 1',
+        queue_priority:2,priority_scheme:'lower_number_first',
+        progress_percent:33,current_epoch:10,total_epochs:30,
+        elapsed_seconds:60,eta_seconds:120,phase:paused?'paused':'training',
+        started_at:'2026-09-22T00:00:00Z',
+      }]),
+    });
+  });
+  await page.route(`**/api/v48/projects/${encoded}/jobs/batch-browser-1/pause`,async route=>{
+    pausePosts+=1;paused=true;
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true})});
+  });
+
+  await page.evaluate(()=>window.TrainingTaskRuntime.refresh({render:true,force:true,source:'test'}));
+  const row=page.locator('[data-job-id="batch-browser-1"]');
+  await expect(row).toContainText('批量烟火检测');
+  await expect(row.locator('[data-training-batch-select]')).toHaveCount(0);
+
+  await page.locator('[data-training-batch-toggle]').click();
+  await expect(row.locator('[data-training-batch-select]')).toBeVisible();
+  await row.locator('[data-training-batch-select]').check();
+  await expect(page.locator('[data-training-batch-count]')).toHaveText('已选 1 项');
+
+  const beforeGets=jobsGets;
+  await page.locator('[data-training-batch-action="pause"]').click();
+  await expect(row).toContainText('已暂停');
+  await expect(row.locator('[data-training-batch-select]')).toHaveCount(0);
+  expect(pausePosts).toBe(1);
+  expect(jobsGets-beforeGets).toBe(1);
   expect(pageErrors).toEqual([]);
 });

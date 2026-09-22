@@ -82,7 +82,7 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422528' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422529' static/index.html
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
@@ -102,6 +102,9 @@ jobs:
           grep -Fq '<label>算法名称</label>' static/app.js
           grep -Fq '<th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th>' static/modules/training-task-visibility-runtime.js
           grep -Fq 'data-training-task-shell="canonical"' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'data-training-batch-toggle' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'batchAction,' static/modules/training-task-runtime.js
+          grep -Fq "trainingBatchActionEligible(job, action)" static/modules/training-task-runtime.js
           if grep -Fq '<th>执行框架</th>' static/modules/training-task-visibility-runtime.js; then
             echo 'canonical training task table must not expose execution framework as a primary column' >&2
             exit 1
