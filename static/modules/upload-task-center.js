@@ -414,7 +414,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     registry?.clear?.(POLL_KEY);
     const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
     if (!needsPoll || document.visibilityState === 'hidden' || !registry?.startTimeout) return null;
-    return registry.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), POLL_MS);
+    return registry?.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), POLL_MS);
   }
 
   function switchProject() {

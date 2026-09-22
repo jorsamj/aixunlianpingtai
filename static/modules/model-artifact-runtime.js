@@ -209,7 +209,13 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   function patchAuditRows(body) {
     if (!body) return false;
     if (!logs.length) {
-      if (!body.querySelector?.('.ma-audit-empty')) body.innerHTML = auditRowsHtml();
+      for (const row of [...(body.querySelectorAll?.('tr[data-audit-id]') || [])]) row.remove?.();
+      if (!body.querySelector?.('.ma-audit-empty')) {
+        const holder = document.createElement('tbody');
+        holder.innerHTML = auditRowsHtml();
+        const emptyRow = holder.firstElementChild;
+        if (emptyRow) body.appendChild(emptyRow);
+      }
       return true;
     }
 

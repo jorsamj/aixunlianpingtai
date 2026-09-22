@@ -209,7 +209,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     </div>`;
   }
 
-  export function patchResourceDiscoveryProgress(current, task, kind) {
+  function patchResourceDiscoveryProgress(current, task, kind) {
     if (!current) return false;
     const holder = document.createElement('div');
     holder.innerHTML = progressBody(task, kind).trim();
