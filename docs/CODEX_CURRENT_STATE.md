@@ -1,3 +1,16 @@
+<!-- CURRENT_STATE_2026_09_23 -->
+> ## 2026-09-23 当前接手入口
+>
+> **最高优先级：`docs/CODEX_HANDOFF_2026-09-23.md`**
+>
+> 文档写入前代码/测试 HEAD：`203948a5ef7b68e4a23fc609a6c4233f09d48e95`；正式版本继续保持 `42.24.0`。
+>
+> 当前已经完成的关键产品变化：退役 standalone 测试发布/检测台和部署中心 owner；收起高级功能时只保留总览/算法生成/数据中心；模型检测迁入质量中心并支持 A/B 原始模型/算法版本、多图/文件夹、持久批次、人工核验和线上抽检证据桥；手动标注改为增量 box patch + 标签缓存重验 + 确认无目标 + 滚轮/适应窗口；ZIP 标签确认可自动复用/显式新增并可从任务中心恢复；AI 审核支持可搜索映射和批量统一标签；数据集卡片、平台对接页、质量中心、AI 素材、工作台启动继续做 stable shell / lazy hydration / focused refresh。
+>
+> 当前最新 HEAD Actions 在文档写入前尚未形成 completed 结论，不能宣称全绿。新接手者必须先重读实时 check-runs。
+>
+> 本节与 2026-09-23 handoff 优先于下面所有旧 CURRENT / NEXT。
+
 <!-- LIVE_CURRENT_STATE_2026_09_22 -->
 > ## 2026-09-22 LIVE CURRENT STATE — 先读 `docs/CODEX_HANDOFF_2026-09-22.md`
 >
