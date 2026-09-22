@@ -95,3 +95,19 @@ test('deployment first-render revalidation is single-flight across canonical rer
   assert.ok((prime.match(/refreshDeployForRenderV39\(page,renderer\)/g)||[]).length>=2);
   assert.doesNotMatch(prime,/void loadDeployData\(true\)\.then/);
 });
+
+
+test('deployment conversion manual refresh is job-scoped instead of reloading all deployment data',()=> {
+  const start=source.indexOf('window.renderDeployCenter=function()');
+  const end=source.indexOf('window.syncAtlasSocFromResource',start);
+  assert.ok(start>=0&&end>start);
+  const owner=source.slice(start,end);
+  assert.match(owner,/onclick="refreshDeployJobsV39\(\)">刷新<\/button>/);
+  assert.doesNotMatch(owner,/onclick="loadDeployData\(true\)/);
+  const pollStart=source.indexOf('async function pollDeployJobs()');
+  const pollEnd=source.indexOf('function clearDeployPollV39()',pollStart);
+  assert.ok(pollStart>=0&&pollEnd>pollStart);
+  const poll=source.slice(pollStart,pollEnd);
+  assert.match(poll,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
+  assert.doesNotMatch(poll,/deploy\/resources|source-models/);
+});
