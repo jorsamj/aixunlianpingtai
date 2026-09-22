@@ -230,6 +230,8 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /businessAuthMode: config\.business_auth_mode \|\| 'authorization_bearer'/);
   assert.match(source, /product_list: endpoints\.product_list \|\| '\/internal\/algorithm\/product-ai\/listAll'/);
   assert.match(source, /data-changlian-api-contract="1"/);
+  assert.match(source, /external-contract-summary muted-line/);
+  assert.doesNotMatch(source, /panel-title">新畅联接口契约<\/div><div class="subline"/);
   assert.match(source, /连接测试只调用鉴权和只读查询，不会自动执行新增、修改或删除/);
   assert.match(source, /完整 OpenAPI 已锁定正式 Method \/ Path \/ Bearer 鉴权/);
   assert.doesNotMatch(source, /data-external-endpoint=/);

@@ -990,7 +990,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const summary = config?.apiDocumentSummary || {};
     return `<section class="panel" data-changlian-api-contract="1">
       <div class="panel-head">
-        <div><div class="panel-title">新畅联接口契约</div><div class="subline">已核对 ${Number(summary.total || documents.length)} 个官方 OpenAPI 接口；除人员登录参考外，内部算法接口均已进入 Provider contract。连接测试只调用鉴权和只读查询，不会自动执行新增、修改或删除。</div></div>
+        <div><div class="panel-title">新畅联接口契约</div><div class="external-contract-summary muted-line">已核对 ${Number(summary.total || documents.length)} 个官方 OpenAPI 接口；除人员登录参考外，内部算法接口均已进入 Provider contract。连接测试只调用鉴权和只读查询，不会自动执行新增、修改或删除。</div></div>
       </div>
       <div class="panel-body">
         <div class="alert warn" style="margin-bottom:12px">完整 OpenAPI 已锁定正式 Method / Path / Bearer 鉴权；算法版本与算法权重的修改、删除只允许显式管理操作，测试连接不会触发。</div>
@@ -1262,7 +1262,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63016',
+    build: 'external-algorithm-platform-63017',
     page: PAGE,
     loadConfig,
     loadHistory,
