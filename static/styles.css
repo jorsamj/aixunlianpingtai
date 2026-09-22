@@ -647,3 +647,17 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .bench64-history-row>span:first-child{min-width:0}.bench64-history-row b,.bench64-history-row em{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bench64-history-row b{font-size:12px}.bench64-history-row em{margin-top:3px;color:#94a3b8;font-size:10px;font-style:normal}
 .bench64-history-row>span:not(:first-child){color:#64748b;font-size:12px}.bench64-history-row strong{color:#2563eb;font-size:12px;white-space:nowrap}
 @media(max-width:760px){.bench64-history-row{grid-template-columns:minmax(0,1fr) auto}.bench64-history-row>span:nth-child(2),.bench64-history-row>span:nth-child(3){display:none}}
+
+
+/* v64 AI review label usability */
+.ai60-review{display:grid;gap:12px}
+.ai60-bulk-review{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,.85fr);align-items:center;gap:16px;padding:12px 14px;border:1px solid #bfdbfe;border-radius:14px;background:#eff6ff}
+.ai60-bulk-review>div:first-child{min-width:0}.ai60-bulk-review b,.ai60-bulk-review span{display:block}.ai60-bulk-review span{margin-top:3px;color:#64748b;font-size:12px;line-height:1.5}
+.ai60-bulk-review .row{justify-content:flex-end}.ai60-bulk-review .input{min-width:220px}
+.ai60-label-mapping{display:grid;gap:8px}.ai60-mapping-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(430px,1fr);align-items:center;gap:14px;margin-bottom:4px}
+.ai60-mapping-head>div:first-child b,.ai60-mapping-head>div:first-child span{display:block}.ai60-mapping-head .row{justify-content:flex-end}.ai60-mapping-head .input{min-width:150px}
+.ai60-mapping-row[hidden]{display:none!important}.ai60-mapping-row .row{min-width:min(520px,48vw)}.ai60-label-combobox{min-width:210px}
+.ai60-label-combobox.invalid{border-color:#ef4444;background:#fff7f7;box-shadow:0 0 0 3px rgba(239,68,68,.08)}
+.ai60-review-footer{position:sticky;bottom:-16px;z-index:3;margin:0 -2px -2px;padding:10px 2px 2px;background:linear-gradient(180deg,rgba(255,255,255,.72),#fff 32%)}
+.ai60-review .review427-card{position:relative}.ai60-review .review427-card>input[type=checkbox]{position:absolute;z-index:2;left:9px;top:9px;width:18px;height:18px}
+@media(max-width:980px){.ai60-bulk-review,.ai60-mapping-head{grid-template-columns:1fr}.ai60-bulk-review .row,.ai60-mapping-head .row{justify-content:flex-start;flex-wrap:wrap}.ai60-mapping-row .row{min-width:0}.ai60-label-combobox{min-width:160px}}
