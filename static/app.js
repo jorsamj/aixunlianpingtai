@@ -1857,6 +1857,23 @@ window.installUsability417=function(){
   }
   window.loadDeployData=loadDeployData;
 
+  async function refreshDeployResourcesV39(){
+    if(!pid())return false;
+    const rr=await safe(api('/api/v39/deploy/resources'));
+    if(!rr)return false;
+    state.deployResources=rr.items||[];
+    const cacheKey=`cl_algo_deploy_cache_${pid()}`;
+    try{
+      const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
+      if(cached&&typeof cached==='object'){
+        cached.resources=state.deployResources;
+        localStorage.setItem(cacheKey,JSON.stringify(cached));
+      }
+    }catch(e){}
+    return true;
+  }
+  window.refreshDeployResourcesV39=refreshDeployResourcesV39;
+
   async function refreshDeployArtifactsV39(){
     if(!pid())return false;
     const aa=await safe(api(`/api/v39/projects/${pid()}/deploy/artifacts`));
@@ -1885,8 +1902,8 @@ window.installUsability417=function(){
   window.openDeployResourceModal=()=>{modal('新增部署资源',deployResourceForm(),true);toggleDeployResourceFields()};
   window.editDeployResource=id=>{const r=state.deployResources.find(x=>x.id===id);modal('编辑部署资源',deployResourceForm(r||{}),true);toggleDeployResourceFields()};
   window.toggleDeployResourceFields=()=>{const mode=document.getElementById('drMode')?.value||'local',kind=document.getElementById('drKind')?.value||'';document.getElementById('drRemote')?.classList.toggle('hidden',mode!=='remote');document.getElementById('drLocal')?.classList.toggle('hidden',mode!=='local');document.getElementById('drPaddle')?.classList.toggle('hidden',kind!=='paddle');document.getElementById('drTrt')?.classList.toggle('hidden',kind!=='tensorrt');document.getElementById('drAscend')?.classList.toggle('hidden',kind!=='ascend')};
-  window.saveDeployResource=async id=>{const body={name:document.getElementById('drName')?.value||'',kind:document.getElementById('drKind')?.value||'sophon',mode:document.getElementById('drMode')?.value||'local',base_url:document.getElementById('drUrl')?.value||'',api_key:document.getElementById('drKey')?.value||'',python_path:document.getElementById('drPython')?.value||'',tool_root:document.getElementById('drRoot')?.value||'',paddledet_dir:document.getElementById('drPaddleDir')?.value||'',paddle2onnx_path:document.getElementById('drP2O')?.value||'',trtexec_path:document.getElementById('drTrtPath')?.value||'',atc_path:document.getElementById('drAtcPath')?.value||'',env_script:document.getElementById('drEnv')?.value||'',remark:document.getElementById('drRemark')?.value||''};if(!body.name.trim())return toast('请输入资源名称');try{await api(id?`/api/v39/deploy/resources/${id}`:'/api/v39/deploy/resources',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});window.invalidateDeployPluginCacheV41?.();closeModal();await loadDeployData(true);renderDeployResources();toast('已保存，请执行检测')}catch(e){toast(e.message||e)}};
-  window.deleteDeployResource=async id=>{if(!confirm('确认删除这个部署资源？'))return;await safe(api(`/api/v39/deploy/resources/${id}`,{method:'DELETE'}));window.invalidateDeployPluginCacheV41?.();await loadDeployData(true);renderDeployResources()};
+  window.saveDeployResource=async id=>{const body={name:document.getElementById('drName')?.value||'',kind:document.getElementById('drKind')?.value||'sophon',mode:document.getElementById('drMode')?.value||'local',base_url:document.getElementById('drUrl')?.value||'',api_key:document.getElementById('drKey')?.value||'',python_path:document.getElementById('drPython')?.value||'',tool_root:document.getElementById('drRoot')?.value||'',paddledet_dir:document.getElementById('drPaddleDir')?.value||'',paddle2onnx_path:document.getElementById('drP2O')?.value||'',trtexec_path:document.getElementById('drTrtPath')?.value||'',atc_path:document.getElementById('drAtcPath')?.value||'',env_script:document.getElementById('drEnv')?.value||'',remark:document.getElementById('drRemark')?.value||''};if(!body.name.trim())return toast('请输入资源名称');try{await api(id?`/api/v39/deploy/resources/${id}`:'/api/v39/deploy/resources',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});window.invalidateDeployPluginCacheV41?.();closeModal();await refreshDeployResourcesV39();renderDeployResources();toast('已保存，请执行检测')}catch(e){toast(e.message||e)}};
+  window.deleteDeployResource=async id=>{if(!confirm('确认删除这个部署资源？'))return;await safe(api(`/api/v39/deploy/resources/${id}`,{method:'DELETE'}));window.invalidateDeployPluginCacheV41?.();await refreshDeployResourcesV39();renderDeployResources()};
 
   function sourceOptions(){return (state.deploySources||[]).map(s=>`<option value="${esc(s.id)}" ${state.deployPresetSourceId===s.id?'selected':''}>${esc(s.label||s.name)} · .${esc(s.type||'')}</option>`).join('')}
   function compatibleResources(target){return (state.deployResources||[]).filter(r=>r.status==='ready'&&(r.targets||[]).includes(target))}

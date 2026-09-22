@@ -122,3 +122,27 @@ test('creating a deployment job reuses current resource truth and refreshes only
   assert.match(create,/state\.deployPresetSourceId='';renderDeployCenter\(\)/);
   assert.doesNotMatch(create,/loadDeployData\(true\)/);
 });
+
+
+test('deployment resource mutations refresh only deployment resources and preserve cache age',()=> {
+  const refreshStart=source.indexOf('async function refreshDeployResourcesV39()');
+  const refreshEnd=source.indexOf('async function refreshDeployArtifactsV39()',refreshStart);
+  assert.ok(refreshStart>=0&&refreshEnd>refreshStart);
+  const refresh=source.slice(refreshStart,refreshEnd);
+  assert.match(refresh,/api\('\/api\/v39\/deploy\/resources'\)/);
+  assert.match(refresh,/cached\.resources=state\.deployResources/);
+  assert.doesNotMatch(refresh,/cached\.ts\s*=/);
+  assert.doesNotMatch(refresh,/source-models|deploy\/jobs|deploy\/artifacts/);
+
+  const saveStart=source.indexOf('window.saveDeployResource=async');
+  const saveEnd=source.indexOf('window.deleteDeployResource=async',saveStart);
+  const save=source.slice(saveStart,saveEnd);
+  assert.match(save,/await refreshDeployResourcesV39\(\)/);
+  assert.doesNotMatch(save,/loadDeployData\(true\)/);
+
+  const deleteStart=saveEnd;
+  const deleteEnd=source.indexOf('function sourceOptions()',deleteStart);
+  const remove=source.slice(deleteStart,deleteEnd);
+  assert.match(remove,/await refreshDeployResourcesV39\(\)/);
+  assert.doesNotMatch(remove,/loadDeployData\(true\)/);
+});
