@@ -1723,9 +1723,6 @@ window.installUsability417=function(){
     }
   };
 
-  const oldRenderTopV36 = renderTop;
-  renderTop = function(){ oldRenderTopV36(); if($('#versionBadge')) $('#versionBadge').textContent='v42.24.0'; };
-
   window.importData=function(){
     modal('导入素材 / 标注',`<div class="form">
       <div class="seg small-seg"><button class="on" id="impZipTab" onclick="showImportTabV36('zip')">上传压缩包</button><button id="impSourceTab" onclick="showImportTabV36('source')">地址读取</button></div>
@@ -2268,7 +2265,6 @@ window.installUsability417=function(){
 (function(){
   const V42='42.24.0';
   state.v42={templates:[],sources:[],policies:[],runs:[],quality:null,blueprints:[],loaded:false};
-  const oldTop42=renderTop;
   const CORE_MENUS=[
     {title:'算法生产',items:['工作台','新建算法','算法列表','自动迭代']},
     {title:'数据中心',items:['素材接入','数据集','自动标注']},
@@ -2293,8 +2289,6 @@ window.installUsability417=function(){
     '素材接入':['数据中心','接入目录、视频流或业务系统接口'],
     '质量中心':['训练与质检','数据质量与模型指标统一检查'],
   };
-  renderTop=function(){oldTop42();const m=META42[state.page];if(m){document.getElementById('crumb').textContent=m[0];document.getElementById('title').textContent=state.page;document.getElementById('pageDesc').textContent=m[1]}const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V42};
-
   async function load42(force=false){
     if(state.v42.loaded&&!force)return state.v42;
     const [t,s,p,r,q,b]=await Promise.all([
@@ -2416,14 +2410,6 @@ window.installUsability417=function(){
 // ============================================================
 (function(){
   const V='42.24.0';
-  const baseTop=renderTop;
-  renderTop=function(){
-    baseTop();
-    const desc=document.getElementById('pageDesc'); if(desc) desc.textContent='';
-    const v=document.getElementById('versionBadge'); if(v) v.textContent='v'+V;
-    const brand=document.querySelector('.brand-name'); if(brand) brand.textContent='畅联云算法训练';
-    const logo=document.querySelector('.brand-logo'); if(logo) logo.textContent='CL';
-  };
   renderSummary=function(){const box=document.getElementById('summary');if(box){box.classList.add('is-hidden');box.innerHTML=''}};
   function simplifyEmpty(el){
     const t=(el.textContent||'').trim();
@@ -2500,13 +2486,6 @@ window.installUsability417=function(){
     const pn=esc(state.project?.name||'默认空间');
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v" title="${pn}">${pn}</div></div>${MENU422.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon422(n)}</i><b>${n}</b></span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>版本</span><b>v${V422}</b></div>`;
   };
-  const top422=renderTop;
-  renderTop=function(){
-    top422(); const m=META422[state.page]||['畅联云算法训练',''];
-    document.getElementById('crumb').textContent=m[0]; document.getElementById('title').textContent=state.page;
-    const d=document.getElementById('pageDesc'); if(d)d.textContent=''; const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V422;
-  };
-
   function fmt422(v){return Number(v||0).toLocaleString('zh-CN')}
   function pct423(v){if(v==null||Number.isNaN(Number(v)))return '-';const n=Number(v);return (n>1?n:n*100).toFixed(1)+'%'}
   function dt423(v){return v?String(v).replace('T',' ').slice(0,19):'-'}
@@ -2783,9 +2762,6 @@ window.installUsability417=function(){
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${projectName}</div></div>${GROUPS424.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon424(n)}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-footer"><span>Version</span><b>v${V424}</b></div>`;
   };
   renderSummary=function(){const el=document.getElementById('summary');if(el){el.innerHTML='';el.style.display='none'}};
-  const baseTop424=renderTop;
-  renderTop=function(){baseTop424();const d=document.getElementById('pageDesc');if(d)d.textContent='';const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V424};
-
   // ---------- quality center ----------
   function pct424(v){if(v==null||isNaN(Number(v)))return '-';const n=Number(v);return (n<=1?n*100:n).toFixed(1)+'%'}
   function fmtSize424(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1024**2)return(n/1024).toFixed(1)+' KB';if(n<1024**3)return(n/1024**2).toFixed(1)+' MB';return(n/1024**3).toFixed(2)+' GB'}
@@ -3154,9 +3130,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.showVersionDeployments423=async function(aid,vid,force=false){const key=`cl_deploy_version_${pid()}_${aid}_${vid}`;let r=null;if(!force){try{r=JSON.parse(localStorage.getItem(key)||'null')?.data||null}catch(e){}}if(!r){try{r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);localStorage.setItem(key,JSON.stringify({ts:Date.now(),data:r}))}catch(e){return toast(e.message||e)}}const v=r.version||{},items=r.items||[];modal(`${r.algorithm?.name||'算法'} · ${v.version_name||'版本'} · 部署产物`,`<div class="row between"><div class="deploy423-source"><span>源模型</span><b>${esc(v.model_name||'')}</b><em>${Number(v.size_mb||0).toFixed(2)} MB</em></div><button class="btn" onclick="refreshVersionDeploy426('${aid}','${vid}')">刷新</button></div><div class="deploy423-list">${items.map(j=>`<div class="deploy423-job"><div class="deploy423-job-head"><div><b>${esc(j.target_name||j.target)}</b>${taskStatus424(j)}</div><time>${esc(String(j.finished_at||j.created_at||'').slice(0,19))}</time></div><div class="deploy423-job-meta"><span>转换资源：${esc(j.resource_name||'-')}</span><span>任务：${esc(j.id)}</span></div><div class="deploy423-files">${(j.outputs||[]).map(o=>`<div><span>${esc(o.name)}</span><b>${o.size_mb!=null?Number(o.size_mb).toFixed(2)+' MB':''}</b>${o.download_url?`<a class="btn mini" href="${o.download_url}">下载</a>`:''}</div>`).join('')||'<div>暂无输出文件</div>'}</div></div>`).join('')||'<div class="empty">暂无部署产物</div>'}</div>`,true)};
   window.refreshVersionDeploy426=function(aid,vid){localStorage.removeItem(`cl_deploy_version_${pid()}_${aid}_${vid}`);closeModal();showVersionDeployments423(aid,vid,true)};
 
-  // Final version marker.
-  const nav426=renderNav;renderNav=function(){nav426();const e=document.querySelector('.nav-footer b');if(e)e.textContent='v'+V426};
-  const top426=renderTop;renderTop=function(){top426();const e=document.getElementById('versionBadge');if(e)e.textContent='v'+V426};
+  // Final version marker is owned by the later canonical navigation chrome.
 })();
 
 /* ============================================================
@@ -4061,7 +4035,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // Data quality button: stable, visible user-oriented report; works inside stacked training modal.
   window.trainQuality429=async function(){const ids=window.TrainingDraftRuntime?.materialIds?.()||[];if(!ids.length)return toast('尚未选择素材');const btn=window.event?.currentTarget;if(btn){btn.disabled=true;btn.textContent='正在分析'}try{const r=await api(`/api/v44/projects/${pid()}/data-quality`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})}),q=r.quality||{},scores=q.scores||{},labs=Object.entries(q.label_boxes||{}).sort((a,b)=>b[1]-a[1]);modal('本次训练素材质量',`<div class="quality412"><div class="report429-kpis"><div><span>图片</span><b>${q.images??ids.length}</b></div><div><span>已标注</span><b>${q.annotated_images??0}</b></div><div><span>有效标注框</span><b>${q.box_count??0}</b></div><div><span>综合质量</span><b>${q.overall_score??'-'}</b></div></div><section><b>质量维度</b><div class="quality412-grid">${Object.entries(scores).map(([k,v])=>`<div><span>${esc(k)}</span><b>${Number(v||0).toFixed(1)}</b><i><em style="width:${Math.max(0,Math.min(100,Number(v||0)))}%"></em></i></div>`).join('')}</div></section><section><b>标签数量</b><div class="data426-chips">${labs.map(([k,v])=>`<span class="data426-chip on">${esc(k)} · ${v}</span>`).join('')||'<span class="muted">暂无标签</span>'}</div></section><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true)}catch(e){toast(e.message||e)}finally{if(btn){btn.disabled=false;btn.textContent='查看数据质量'}}};
 
-  const top412=renderTop;renderTop=function(){top412();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V412;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;try{await window.loadCore412({authoritative:true});if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null);render();toast('已刷新')}finally{r.disabled=false}}};
 })();
 
 

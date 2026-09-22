@@ -177,6 +177,9 @@ test('canonical page map is the single normal navigation registry', () => {
 
 test('navigation chrome resolves to direct final owners without wrapper chaining', () => {
   assert.match(app, /renderTop=function renderTopCanonical413\(\)/);
+  for (const token of ['oldRenderTopV36', 'oldTop42', 'baseTop=renderTop', 'top422=renderTop', 'baseTop424=renderTop', 'nav426=renderNav', 'top426=renderTop', 'top412=renderTop']) {
+    assert.equal(app.includes(token), false, token);
+  }
   assert.equal(app.includes("const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge')"), false);
   assert.equal(app.includes('const finalNav=renderNav;'), false);
 

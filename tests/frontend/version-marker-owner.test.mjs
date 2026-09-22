@@ -27,9 +27,17 @@ test('legacy delayed visible version writers cannot return', () => {
   assert.equal(app.includes('[120,600,1600].forEach'), false);
 });
 
-test('final classic owners keep formal badge and footer values', () => {
-  assert.equal(app.includes("const V426='42.24.0';"), true);
-  assert.equal(app.includes("const nav426=renderNav;renderNav=function(){nav426();const e=document.querySelector('.nav-footer b');if(e)e.textContent='v'+V426};"), true);
-  assert.equal(app.includes("const V412='42.24.0';"), true);
-  assert.equal(app.includes("const top412=renderTop;renderTop=function(){top412();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V412;"), true);
+test('canonical chrome owners keep the formal badge and footer values', () => {
+  assert.match(app, /const V413='42\.24\.0'/);
+  assert.match(app, /renderTop=function renderTopCanonical413\(\)/);
+  const topStart = app.indexOf('renderTop=function renderTopCanonical413()');
+  const topEnd = app.indexOf('\n})();', topStart);
+  assert.ok(topStart >= 0 && topEnd > topStart);
+  assert.match(app.slice(topStart, topEnd), /v\.textContent='v'\+V413/);
+
+  assert.match(app, /const V414='42\.24\.0'/);
+  const navStart = app.indexOf('const icon414=');
+  const navEnd = app.indexOf('window.renderLabelManagement414=', navStart);
+  assert.ok(navStart >= 0 && navEnd > navStart);
+  assert.match(app.slice(navStart, navEnd), /<b>v\$\{V414\}<\/b>/);
 });
