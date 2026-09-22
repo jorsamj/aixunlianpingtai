@@ -3169,15 +3169,48 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function opProgress427(t){return`<div class="opprog427"><i style="width:${t.progress||0}%"></i></div><span>${t.processed_images||0}/${t.total_images||0}</span>`}
   function cleanTaskView427(t){return window.PlatformCore?.cleaning?.cleanTaskView?.(t)||{...t,status:String(t.status||'').toLowerCase(),statusText:t.status_text||status427(t.status),percent:Number(t.progress||0),processed:Number(t.processed_images||0),total:Number(t.total_images||0),flagged:Number(t.flagged_images||0),progressText:`${Number(t.processed_images||0)}/${Number(t.total_images||0)}`,runtimeText:'',active:['queued','running'].includes(String(t.status||'').toLowerCase())}}
   function cleanStatus427(view){const s=view.status,c=s==='done'?'ok':s==='failed'?'err':s==='awaiting_confirmation'?'blue':'warn';return`<span class="pill ${c}">${esc(view.statusText)}</span>${view.runtimeText?`<div class="muted-line">${esc(view.runtimeText)}</div>`:''}`}
-  function cleanProgress427(view){return`<div class="opprog427"><i style="width:${view.percent}%"></i></div><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span>`}
+  function cleanProgress427(view){const percent=Math.max(0,Math.min(100,Number(view.percent||0))),scale=(percent/100).toFixed(4);return`<div class="opprog427"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${scale})"></i></div><span>${esc(view.progressText)} · ${percent.toFixed(1)}%</span>`}
   function cleanTaskRow427(t){const view=cleanTaskView427(t),executionLabel=String(t.execution_mode||'local')==='agent'?'远程节点':'中央 Worker';return`<tr data-task-id="${esc(t.id)}"><td><b>${esc(t.name||t.id)}</b><div class="muted-line">${executionLabel} · OpenCV / 感知哈希</div></td><td>${cleanStatus427(view)}</td><td>${cleanProgress427(view)}</td><td>${view.flagged}</td><td>${fileTime427(t.created_at)}<div class="muted-line">${fileTime427(t.finished_at||t.finished_scan_at)}</div></td><td><div class="row"><button class="btn mini" onclick="showTaskProgress427('clean','${t.id}')">详情</button>${t.status==='awaiting_confirmation'?`<button class="btn mini primary" onclick="reviewClean427('${t.id}')">确认结果</button>`:''}</div></td></tr>`}
   function cleanTaskRows427(tasks){return(tasks||[]).map(cleanTaskRow427).join('')||'<tr><td colspan="6">暂无任务</td></tr>'}
+  function createCleanTaskRow427(body,html){const holder=document.createElement('tbody');holder.innerHTML=String(html||'').trim();return holder.firstElementChild||null}
+  function patchCleanProgress427(currentCell,nextCell){
+    const currentBar=currentCell?.querySelector?.('.opprog427 i'),nextBar=nextCell?.querySelector?.('.opprog427 i');
+    const currentText=currentCell?.querySelector?.('.opprog427+span'),nextText=nextCell?.querySelector?.('.opprog427+span');
+    if(!currentBar||!nextBar||!currentText||!nextText){currentCell.innerHTML=nextCell.innerHTML;return}
+    currentBar.dataset.progress=nextBar.dataset.progress||'';
+    currentBar.style.transform=nextBar.style.transform;
+    currentText.textContent=nextText.textContent;
+  }
+  function patchCleanTaskRows427(body,tasks){
+    const rows=Array.isArray(tasks)?tasks:[];
+    const canPatch=!!(body&&document.createElement&&body.querySelectorAll&&body.insertBefore&&body.children);
+    if(!canPatch){if(body)body.innerHTML=cleanTaskRows427(rows);return false}
+    if(!rows.length){if(!body.querySelector('.clean427-empty'))body.innerHTML='<tr class="clean427-empty"><td colspan="6">暂无任务</td></tr>';return true}
+    body.querySelector('.clean427-empty')?.remove();
+    const existing=new Map([...body.querySelectorAll('tr[data-task-id]')].map(row=>[String(row.dataset.taskId||''),row])),wanted=new Set();
+    rows.forEach((task,index)=>{
+      const id=String(task?.id||''),nextRow=createCleanTaskRow427(body,cleanTaskRow427(task));if(!id||!nextRow)return;
+      wanted.add(id);let currentRow=existing.get(id)||null;
+      if(!currentRow){currentRow=nextRow}
+      else if(currentRow.cells?.length===nextRow.cells?.length){
+        for(let cellIndex=0;cellIndex<nextRow.cells.length;cellIndex+=1){
+          const currentCell=currentRow.cells[cellIndex],nextCell=nextRow.cells[cellIndex];
+          if(cellIndex===2)patchCleanProgress427(currentCell,nextCell);
+          else if(currentCell.innerHTML!==nextCell.innerHTML)currentCell.innerHTML=nextCell.innerHTML;
+        }
+      }else{currentRow.replaceWith(nextRow);currentRow=nextRow}
+      const reference=body.children[index]||null;if(reference!==currentRow)body.insertBefore(currentRow,reference)
+    });
+    for(const [id,row] of existing){if(!wanted.has(id))row.remove()}
+    return true
+  }
+  window.patchCleanTaskRows427=patchCleanTaskRows427;
   window.refreshCleanOps427Delta=async function(){
     if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='clean'){window.PollRegistryRuntime?.replaceCleanTaskTimer?.();return}
     const cl=await safe(api(`/api/v47/projects/${pid()}/clean-tasks`));
     if(cl)state.clean427=cl.items||[];
     if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='clean'){
-      const body=document.getElementById('clean427TaskRows');if(body)body.innerHTML=cleanTaskRows427(state.clean427||[])
+      const body=document.getElementById('clean427TaskRows');if(body)patchCleanTaskRows427(body,state.clean427||[])
     }
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.()
   };

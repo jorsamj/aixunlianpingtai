@@ -69,6 +69,11 @@ test('final clean tab consumes the clean task view and PollRegistry lifecycle', 
   assert.match(source, /PlatformCore\?\.cleaning\?\.cleanTaskView\?\.\(t\)/);
   assert.match(source, /window\.PollRegistryRuntime\?\.replaceCleanTaskTimer\?\.\(\)/);
   assert.match(source, /id="clean427TaskRows"/);
+  assert.match(source, /function patchCleanTaskRows427\(body,tasks\)/);
+  assert.match(source, /patchCleanTaskRows427\(body,state\.clean427\|\|\[\]\)/);
+  assert.match(source, /data-progress=/);
+  assert.match(source, /style="transform:scaleX/);
+  assert.doesNotMatch(source, /body\.innerHTML=cleanTaskRows427\(state\.clean427\|\|\[\]\)/);
   assert.doesNotMatch(source, /setTimeout\(\(\)=>\{if\(state\.page==='自动标注及清洗'\)renderOps427\(\)\},2200\)/);
 });
 

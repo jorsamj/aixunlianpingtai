@@ -138,6 +138,9 @@ jobs:
           grep -Fq 'clean-runtime/preflight' static/app.js
           grep -Fq 'execution_mode:executionMode' static/app.js
           grep -Fq 'cleanExecutionChoices' static/modules/cleaning.js
+          grep -Fq 'function patchCleanTaskRows427(body,tasks)' static/app.js
+          grep -Fq 'patchCleanTaskRows427(body,state.clean427||[])' static/app.js
+          grep -Fq 'data-progress=' static/app.js
           grep -Fq 'REMOTE_CLEANING_ANALYZING' static/modules/cleaning.js
           grep -Fq 'commit_remote_cleaning_review' platform_core/remote_cleaning.py
           grep -Fq 'metric_issues(metrics, options, image_id, index)' platform_core/remote_cleaning.py

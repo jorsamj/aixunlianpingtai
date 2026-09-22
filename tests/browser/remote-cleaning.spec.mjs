@@ -108,3 +108,67 @@ test('cleaning execution picker disables Agent for local material and submits ex
   expect(submitted.execution_mode).toBe('agent');
   expect(submitted.image_ids).toEqual([image.id]);
 });
+
+
+test('cleaning progress refresh preserves task row and progress bar nodes', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  let current = {
+    id:'clean-perf-1',
+    name:'清洗性能任务',
+    status:'running',
+    status_text:'清洗中',
+    progress:12,
+    processed_images:12,
+    total_images:100,
+    flagged_images:2,
+    execution_mode:'local',
+    phase:'analyzing',
+    current_item:'image-12',
+    created_at:'2026-09-22T00:00:00Z',
+  };
+
+  await page.route('**/api/v47/projects/*/clean-tasks', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({items:[current]}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout:15_000}).toBe(true);
+  await page.evaluate(async () => {
+    state.v427OpsTab = 'clean';
+    window.setPage('自动标注及清洗');
+    await window.renderOps427();
+  });
+
+  const row = page.locator('#clean427TaskRows [data-task-id="clean-perf-1"]');
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('12.0%');
+  await page.evaluate(() => {
+    window.__stableCleanRow = document.querySelector('#clean427TaskRows [data-task-id="clean-perf-1"]');
+    window.__stableCleanProgress = window.__stableCleanRow?.querySelector('.opprog427 i') || null;
+  });
+
+  current = {
+    ...current,
+    progress:57,
+    processed_images:57,
+    flagged_images:9,
+    current_item:'image-57',
+  };
+  await page.evaluate(() => window.refreshCleanOps427Delta());
+
+  await expect(row).toContainText('57.0%');
+  await expect(row).toContainText('9');
+  await expect(row.locator('.opprog427 i')).toHaveAttribute('data-progress', '57.00');
+  expect(await page.evaluate(() => ({
+    row: window.__stableCleanRow === document.querySelector('#clean427TaskRows [data-task-id="clean-perf-1"]'),
+    progress: window.__stableCleanProgress === document.querySelector('#clean427TaskRows [data-task-id="clean-perf-1"] .opprog427 i'),
+  }))).toEqual({row:true, progress:true});
+  expect(pageErrors).toEqual([]);
+});
