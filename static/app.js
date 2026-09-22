@@ -4958,6 +4958,22 @@ window.installUsability417?.();
 /* Persistent deployment tests: upload returns immediately and a Worker performs real Runtime inference. */
 (()=>{
   const previousResult=window.renderDetectionResult;
+  function patchDeploymentTestProgress(task,taskId,model){
+    const output=document.getElementById('benchResult');if(!output)return false;
+    let list=output.querySelector('[data-deployment-live-list]');
+    if(!list){output.innerHTML='<div class="deployment-test-live" data-deployment-live-list></div>';list=output.querySelector('[data-deployment-live-list]')}
+    const safeId=String(taskId||'task').replace(/[^A-Za-z0-9_-]/g,'')||'task';
+    let row=list.querySelector('[data-deployment-live-id="'+safeId+'"]');
+    if(!row){row=document.createElement('div');row.className='deployment-test-live-row';row.dataset.deploymentLiveId=safeId;row.innerHTML='<div class="deployment-test-live-head"><b data-deployment-live-title></b><span data-deployment-live-percent>0%</span></div><div class="deployment-test-live-progress"><i data-deployment-live-bar data-progress="0.00" style="transform:scaleX(0)"></i></div><small data-deployment-live-detail></small>';list.appendChild(row)}
+    const view=window.PlatformCore?.deployment?.deploymentTaskView?.(task)||{statusText:task?.status,phase:task?.phase||task?.stage||'',percent:Number(task?.progress_percent??task?.progress??0),runtimeText:''};
+    const percent=Math.max(0,Math.min(100,Number(view.percent||0)));
+    const title=row.querySelector('[data-deployment-live-title]'),label=row.querySelector('[data-deployment-live-percent]'),bar=row.querySelector('[data-deployment-live-bar]'),detail=row.querySelector('[data-deployment-live-detail]');
+    if(title)title.textContent=(model?.label||model?.model_name||model?.path||'模型测试')+' · '+String(view.statusText||task?.status||'运行中');
+    if(label)label.textContent=percent.toFixed(percent%1?1:0)+'%';
+    if(bar){bar.dataset.progress=percent.toFixed(2);bar.style.transform='scaleX('+(percent/100).toFixed(4)+')'}
+    if(detail)detail.textContent=[view.runtimeText,view.phase].filter(Boolean).join(' · ');
+    return true;
+  }
   window.renderDetectionResult=function(result,title){
     const html=previousResult?.(result,title)||'',metrics=`<div class="report429-kpis"><div><span>预处理</span><b>${Number(result?.preprocess_ms||0).toFixed(2)} ms</b></div><div><span>模型推理</span><b>${Number(result?.inference_ms||0).toFixed(2)} ms</b></div><div><span>后处理</span><b>${Number(result?.postprocess_ms||0).toFixed(2)} ms</b></div><div><span>任务总耗时</span><b>${Number(result?.total_elapsed_ms||result?.elapsed_ms||0).toFixed(2)} ms</b></div></div>`;
     return html+metrics;
@@ -4970,9 +4986,7 @@ window.installUsability417?.();
     let task=await api(`/api/v61/projects/${pid()}/deployment-tests`,{method:'POST',body:form}),attempt=0;const taskId=task.id||task.task_id;
     const active=()=>window.PlatformCore?.taskPoller?.isTaskActive?.(task.status)??['QUEUED','WAITING_RESOURCE','PREPARING','RUNNING','PAUSING','PAUSED','RESUMING','CANCEL_REQUESTED','RETRYING'].includes(String(task.status||'').toUpperCase());
     while(active()&&attempt++<700){
-      const view=window.PlatformCore?.deployment?.deploymentTaskView?.(task)||{statusText:task.status,phase:task.phase||task.stage||'',percent:Number(task.progress_percent??task.progress??0),runtimeText:''};
-      const output=document.getElementById('benchResult'),details=[view.statusText,view.runtimeText,view.phase,`${Number(view.percent||0).toFixed(1)}%`].filter(Boolean);
-      if(output)output.innerHTML=`<div class="loading">真实 Runtime 测试中 · ${details.map(esc).join(' · ')}</div>`;
+      patchDeploymentTestProgress(task,taskId,model);
       await new Promise(resolve=>setTimeout(resolve,900));
       task=await api(`/api/v62/projects/${pid()}/tasks/${taskId}`);
     }

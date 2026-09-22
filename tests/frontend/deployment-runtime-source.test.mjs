@@ -33,3 +33,15 @@ test('rockchip conversion UI only permits RK3568 and RK3576',()=>{
   assert.match(source,/rk3568/);
   assert.match(source,/rk3576/);
 });
+
+
+test('persistent deployment progress patches a stable compositor-friendly node',()=>{
+  const marker=source.lastIndexOf('Persistent deployment tests');
+  assert.ok(marker>0);
+  const finalLayer=source.slice(marker);
+  assert.match(finalLayer,/data-deployment-live-list/);
+  assert.match(finalLayer,/data-deployment-live-id/);
+  assert.match(finalLayer,/data-deployment-live-bar/);
+  assert.match(finalLayer,/bar\.style\.transform='scaleX\('/);
+  assert.doesNotMatch(finalLayer,/output\.innerHTML=\`<div class="loading">真实 Runtime 测试中/);
+});

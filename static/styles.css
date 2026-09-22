@@ -565,3 +565,14 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 @media(max-width:1280px){.alg428-list-head{display:none}.alg428-asset-main{grid-template-columns:minmax(280px,1fr) 110px 110px minmax(300px,auto)!important}.alg428-asset-scene,.alg428-train-count,.alg428-current-metric{display:none}}
 @media(max-width:900px){.alg428-asset-main{grid-template-columns:minmax(240px,1fr) auto!important}.alg428-current-version,.alg428-state{display:none}.alg428-asset-row .alg428-actions{grid-column:1/-1;justify-content:flex-start;padding-left:44px}}
 @media(prefers-reduced-motion:reduce){.alg428-asset-row .alg428-versions{animation:none}}
+
+/* persistent deployment test progress */
+.deployment-test-live{display:grid;gap:10px;width:100%}
+.deployment-test-live-row{display:grid;gap:7px;padding:12px 14px;border:1px solid #e5eaf2;border-radius:12px;background:#fff}
+.deployment-test-live-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}
+.deployment-test-live-head>b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.deployment-test-live-head>span{color:#526176;font-weight:700}
+.deployment-test-live-progress{height:7px;border-radius:999px;overflow:hidden;background:#edf1f5}
+.deployment-test-live-progress>i{display:block;width:100%;height:100%;border-radius:999px;background:#4e79d6;transform-origin:left center;transition:transform var(--motion-progress) var(--motion-ease);will-change:transform}
+.deployment-test-live-row>small{color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(prefers-reduced-motion:reduce){.deployment-test-live-progress>i{transition:none!important}}
