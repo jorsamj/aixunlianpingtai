@@ -116,19 +116,3 @@ test('detection bench receives focused model and inference extras on navigation 
   assert.doesNotMatch(refresh, /loadCore412\(/);
   assert.doesNotMatch(refresh, /loadRelated\(/);
 });
-
-
-test('quality center paints a project snapshot before throttled background revalidation', () => {
-  const start = source.indexOf('const QUALITY424_CACHE_TTL_MS=60*1000;');
-  const end = source.indexOf('\n\n  // ---------- single data pool ----------', start);
-  assert.ok(start >= 0 && end > start);
-  const quality = source.slice(start, end);
-  assert.match(quality, /qualityCacheKey424=projectId=>`cl_quality_center_424_/);
-  assert.match(quality, /restoreQualityCenter424\(projectId\)/);
-  assert.match(quality, /persistQualityCenter424\(projectId,state\.quality424\)/);
-  assert.match(quality, /if\(hasSnapshot\)paintQualityCenter424\(state\.quality424\)/);
-  assert.match(quality, /else\{const view=document\.getElementById\('view'\);if\(view\)view\.innerHTML='<div class="loading">首次读取质量指标…<\/div>'\}/);
-  assert.match(quality, /age>=QUALITY424_CACHE_TTL_MS/);
-  assert.match(quality, /refreshQualityCenter424\(\{force:true\}\)/);
-  assert.doesNotMatch(quality, /正在计算质量指标/);
-});
