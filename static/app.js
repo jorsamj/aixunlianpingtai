@@ -1987,19 +1987,45 @@ window.installUsability417=function(){
     const r=document.getElementById('refreshBtn');if(r){r.textContent='刷新';r.onclick=async()=>{r.disabled=true;try{if(['部署转换','部署产物','部署资源'].includes(state.page)){await loadDeployData(true);render()}else{const page=state.page;await loadAll();state.page=page;render()}toast('已刷新')}finally{r.disabled=false}}}
   };
 
+  const DEPLOY_CACHE_TTL_MS=10*60*1000;
+  function restoreDeployCacheV39(){
+    if(!pid())return null;
+    const cacheKey=`cl_algo_deploy_cache_${pid()}`;
+    try{
+      const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
+      if(!cached)return null;
+      state.deployResources=cached.resources||[];
+      state.deploySources=cached.sources||[];
+      state.deployJobs=cached.jobs||[];
+      state.deployArtifacts=cached.artifacts||[];
+      state.deployLoaded=true;
+      const age=Date.now()-Number(cached.ts||0);
+      return {fresh:age>=0&&age<DEPLOY_CACHE_TTL_MS,age};
+    }catch(e){return null}
+  }
+  function primeDeployRenderV39(page,renderer,firstLoadText){
+    if(state.deployLoaded)return true;
+    const cached=restoreDeployCacheV39();
+    if(!cached){
+      const view=document.getElementById('view');
+      if(view)view.innerHTML=`<div class="loading">${esc(firstLoadText||'首次读取部署数据...')}</div>`;
+      void loadDeployData(true).then(()=>{if(state.page===page)renderer?.()});
+      return false;
+    }
+    if(!cached.fresh||state.deployCacheInvalidated){
+      void loadDeployData(true).then(()=>{if(state.page===page)renderer?.()});
+    }
+    return true;
+  }
   async function loadDeployData(force=false){
     if(!pid())return;
     const cacheKey=`cl_algo_deploy_cache_${pid()}`;
-    const ttl=10*60*1000;
     if(!force){
-      try{
-        const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
-        if(cached&&Date.now()-Number(cached.ts||0)<ttl){
-          state.deployResources=cached.resources||[];state.deploySources=cached.sources||[];state.deployJobs=cached.jobs||[];state.deployArtifacts=cached.artifacts||[];state.deployLoaded=true;
-          await refreshDeployArtifactsV39();
-          return;
-        }
-      }catch(e){}
+      const cached=restoreDeployCacheV39();
+      if(cached?.fresh){
+        void refreshDeployArtifactsV39();
+        return;
+      }
     }
     const [rr,ss,jj,aa]=await Promise.all([
       safe(api('/api/v39/deploy/resources')),
@@ -2007,7 +2033,7 @@ window.installUsability417=function(){
       safe(api(`/api/v39/projects/${pid()}/deploy/jobs`)),
       safe(api(`/api/v39/projects/${pid()}/deploy/artifacts`)),
     ]);
-    state.deployResources=rr?.items||[];state.deploySources=ss?.items||[];state.deployJobs=jj?.items||[];state.deployArtifacts=aa?.items||[];state.deployLoaded=true;state.deployArtifactsRefreshedAt=Date.now();
+    state.deployResources=rr?.items||[];state.deploySources=ss?.items||[];state.deployJobs=jj?.items||[];state.deployArtifacts=aa?.items||[];state.deployLoaded=true;state.deployCacheInvalidated=false;state.deployArtifactsRefreshedAt=Date.now();
     try{localStorage.setItem(cacheKey,JSON.stringify({ts:Date.now(),resources:state.deployResources,sources:state.deploySources,jobs:state.deployJobs,artifacts:state.deployArtifacts}))}catch(e){}
   }
   window.loadDeployData=loadDeployData;
@@ -2029,7 +2055,7 @@ window.installUsability417=function(){
     return `<div class="deploy-resource-card ${r.status==='ready'?'is-ready':''}"><div class="deploy-res-head"><div class="deploy-res-logo">${r.kind==='sophon'?'BM':r.kind==='ascend'?'A':r.kind==='rockchip'?'RK':r.kind==='tensorrt'?'N':r.kind==='paddle'?'P':'U'}</div><div class="grow"><div class="item-title">${esc(r.name)}</div><div class="item-sub">${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(r.version||'')}</div></div>${statusPill(r.status)}</div><div class="deploy-capabilities">${targetHtml}</div><div class="item-sub deploy-message">${esc(r.message||'')}</div><div class="row end">${!built?`<button class="btn mini" onclick="editDeployResource('${r.id}')">编辑</button>`:''}<button class="btn mini primary" onclick="detectDeployResource('${r.id}')">检测</button>${!built?`<button class="btn mini danger" onclick="deleteDeployResource('${r.id}')">删除</button>`:''}</div></div>`;
   }
   window.renderDeployResources=function(){
-    if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取部署资源...</div>';loadDeployData().then(renderDeployResources);return}
+    if(!primeDeployRenderV39('部署资源',window.renderDeployResources,'首次读取部署资源...'))return;
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署资源</div><div class="subline">只把真实检测通过的编译器标记为可用</div></div><div class="panel-actions"><button class="btn" onclick="autoDetectDeployResources()">检测本机工具</button><button class="btn primary" onclick="openDeployResourceModal()">新增部署资源</button></div></div><div class="panel-body"><div class="deploy-resource-grid">${(state.deployResources||[]).map(deployResourceCard).join('')||'<div class="empty">暂无部署资源</div>'}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">远程转换服务器</div></div><div class="panel-body"><div class="compact-note">瑞芯微 RKNN-Toolkit2、算能 TPU-MLIR、华为 CANN/ATC 都按厂商真实工具链执行。Windows 主机可直接完成 ONNX；RKNN 可使用 Linux/WSL2、远程转换服务器或已安装 RKNN-Toolkit2 的服务节点 Agent。Agent 模式由中央调度，不向节点下发中央 SQLite/NFS 路径。</div></div></section>`;
   };
   window.autoDetectDeployResources=async()=>{const b=document.querySelector('[onclick="autoDetectDeployResources()"]');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v39/deploy/local/auto-detect',{method:'POST'});state.deployResources=r.items||[];renderDeployResources();toast(r.found?.length?`检测到 ${r.found.length} 个本机部署工具`:'未检测到额外的芯片编译器')}catch(e){toast(e.message||e)}finally{if(b){b.disabled=false;b.textContent='检测本机工具'}}};
@@ -2105,7 +2131,7 @@ window.installUsability417=function(){
   }
   window.refreshDeployJobsV39=pollDeployJobs;
   window.renderDeployCenter=function(){
-    if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取模型与部署资源...</div>';loadDeployData().then(renderDeployCenter);return}
+    if(!primeDeployRenderV39('部署转换',window.renderDeployCenter,'首次读取模型与部署资源...'))return;
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">创建部署转换</div><div class="subline">训练模型和部署模型分离；任务会调用真实厂商工具链</div></div><button class="btn small" onclick="setPage('部署资源')">配置部署资源</button></div><div class="panel-body" id="deployCreateBox"></div></section><section class="panel"><div class="panel-head"><div class="panel-title">转换任务</div><button class="btn small" onclick="loadDeployData(true).then(()=>{renderDeployJobsOnly()})">刷新</button></div><div class="panel-body"><div id="deployJobList" class="deploy-job-list"></div></div></section>`;
     renderDeployFormOnly();renderDeployJobsOnly();window.refreshDeployJobsV39();
   };
@@ -2121,7 +2147,7 @@ window.installUsability417=function(){
   window.refreshDeployLog=async id=>{const txt=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/log`))||'';const p=document.getElementById('deployLogText');if(p){p.textContent=txt;p.scrollTop=p.scrollHeight}};
 
   window.renderDeployArtifacts=function(){
-    if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取部署产物...</div>';loadDeployData(true).then(renderDeployArtifacts);return}
+    if(!primeDeployRenderV39('部署产物',window.renderDeployArtifacts,'首次读取部署产物...'))return;
     if(!state.deployArtifactsRefreshing&&Date.now()-Number(state.deployArtifactsRefreshedAt||0)>1000){
       state.deployArtifactsRefreshing=true;
       refreshDeployArtifactsV39().finally(()=>{state.deployArtifactsRefreshing=false;if(state.page==='部署产物')window.renderDeployArtifacts()});
@@ -2131,7 +2157,7 @@ window.installUsability417=function(){
   };
 
   // Add deployment action to algorithm version management.
-  window.startDeployVersion=(aid,vid)=>{state.deployPresetSourceId=`version::${aid}::${vid}`;closeModal();state.deployLoaded=false;return window.setPage?.('部署转换')};
+  window.startDeployVersion=(aid,vid)=>{state.deployPresetSourceId=`version::${aid}::${vid}`;state.deployCacheInvalidated=true;state.deployLoaded=false;closeModal();return window.setPage?.('部署转换')};
   // Add deployment to dashboard without adding explanatory clutter.
   window.renderHomeDashboard=function(){
     const recent=(state.jobs||[]).slice(0,5),running=(state.jobs||[]).filter(j=>['running','queued'].includes(j.status)).length,done=(state.jobs||[]).filter(j=>['done','finished','completed'].includes(j.status)).length;

@@ -167,6 +167,8 @@ jobs:
           if grep -Fq 'window.setInterval(' static/modules/model-artifact-runtime.js; then echo 'model artifact audit polling must stay PollRegistry-owned' >&2; exit 1; fi
           grep -Fq 'export function waitForTaskTerminal' static/modules/task-poller.js
           grep -Fq 'waitForTaskTerminal({initialTask:task,registry:window.PollRegistryRuntime' static/app.js
+          grep -Fq 'function primeDeployRenderV39(page,renderer,firstLoadText)' static/app.js
+          if grep -Fq "正在读取部署资源..." static/app.js; then echo 'cached deployment pages must not flash a repeated loading state' >&2; exit 1; fi
           if grep -Fq 'await new Promise(resolve=>setTimeout(resolve,900))' static/app.js; then echo 'active deployment task waits must use shared task poller' >&2; exit 1; fi
           grep -Fq "build:'upload-task-center-3'" static/modules/upload-task-center.js
           grep -Fq 'registry?.startTimeout(POLL_KEY, pollOwners' static/modules/upload-task-center.js

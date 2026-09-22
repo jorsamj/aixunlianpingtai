@@ -46,3 +46,15 @@ test('persistent deployment progress patches a stable compositor-friendly node',
   assert.match(finalLayer,/bar\.style\.transform='scaleX\('/);
   assert.doesNotMatch(finalLayer,/output\.innerHTML=\`<div class="loading">真实 Runtime 测试中/);
 });
+
+test('deployment pages paint cached low-frequency data before background refresh',()=>{
+  assert.match(source,/const DEPLOY_CACHE_TTL_MS=10\*60\*1000/);
+  assert.match(source,/function restoreDeployCacheV39\(\)/);
+  assert.match(source,/function primeDeployRenderV39\(page,renderer,firstLoadText\)/);
+  assert.match(source,/if\(!primeDeployRenderV39\('部署资源'/);
+  assert.match(source,/if\(!primeDeployRenderV39\('部署转换'/);
+  assert.match(source,/if\(!primeDeployRenderV39\('部署产物'/);
+  assert.doesNotMatch(source,/正在读取部署资源\.\.\./);
+  assert.doesNotMatch(source,/正在读取模型与部署资源\.\.\./);
+  assert.doesNotMatch(source,/正在读取部署产物\.\.\./);
+});
