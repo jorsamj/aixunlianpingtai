@@ -3901,6 +3901,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.__v414UploadDecision=true;
   state.label414Usage=state.label414Usage||[];
   state.label414UsageLoadedAt=Number(state.label414UsageLoadedAt||0);
+  state.label414LoadedAt=Number(state.label414LoadedAt||0);
   const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   state.batch414Selected=state.batch414Selected||new Set();
   state.iteration414=state.iteration414||{};
@@ -3921,14 +3922,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if((state.labels||[]).length)return state.labels;
     try{
       const cached=JSON.parse(localStorage.getItem(labelSchemaCacheKey414())||'null');
-      if(Array.isArray(cached?.items)&&cached.items.length){state.labels=cached.items;return state.labels}
+      if(Array.isArray(cached?.items)&&cached.items.length){state.labels=cached.items;state.label414LoadedAt=Number(cached.ts||0);return state.labels}
     }catch(_){}
     return state.labels||[];
   }
   async function refreshLabels414(withUsage=false){
     restoreLabelSchema414();
     const r=await api(withUsage?`/api/v54/projects/${pid()}/label-schema`:`/api/v12/projects/${pid()}/labels`);
-    state.labels=(r.items||[]);
+    state.labels=(r.items||[]);state.label414LoadedAt=Date.now();
     persistLabelSchema414(state.labels);
     if(withUsage){state.label414Usage=r.items||[];state.label414UsageLoadedAt=Date.now()}
     return state.labels;
@@ -4709,7 +4710,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       cacheTtlMs:60*1000,
       load:async id=>{
         const image=imageById(id);if(!image)throw new Error('图片不存在或尚未加载');
-        const labelsPromise=!(state.labels||[]).length&&typeof refreshLabels414==='function'?refreshLabels414(false):Promise.resolve();
+        const labelsStale=!(state.labels||[]).length||Date.now()-Number(state.label414LoadedAt||0)>LABEL_SCHEMA_CACHE_TTL_MS;
+        const labelsPromise=labelsStale&&typeof refreshLabels414==='function'?refreshLabels414(false):Promise.resolve();
         const [response]=await Promise.all([apiRequestAnnotation420(id),labelsPromise]);
         return {image:response?.image||image,annotation:response?.annotation||{boxes:[]}};
       },
