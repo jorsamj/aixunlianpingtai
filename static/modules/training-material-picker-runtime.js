@@ -27,6 +27,20 @@ async function readJson(response, fallback) {
   return body || {};
 }
 
+export function trainingMaterialSelectionPatch({role = 'train', selectedIds = [], materialIds = [], testMaterialIds = []} = {}) {
+  const selected = uniqueIds(selectedIds);
+  const selectedSet = new Set(selected);
+  return role === 'test'
+    ? {
+      materialIds: uniqueIds(materialIds).filter(id => !selectedSet.has(id)),
+      testMaterialIds: selected,
+    }
+    : {
+      materialIds: selected,
+      testMaterialIds: uniqueIds(testMaterialIds).filter(id => !selectedSet.has(id)),
+    };
+}
+
 export function buildTrainingMaterialQuery({cursor = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = []} = {}) {
   const params = new URLSearchParams();
   params.set('limit', String(pageSize));
@@ -89,7 +103,6 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   const state = () => getState() || {};
-  const legacyConfirm = window.confirmTrainMaterialPickerV3;
   let picker = null;
   let requestSequence = 0;
   let searchTimer = null;
@@ -468,10 +481,19 @@ export function installTrainingMaterialPickerRuntime({
   window.toggleTrainMaterialV3 = toggle;
   window.trainMaterialSelectV3 = bulkAction;
   window.trainMaterialPageV3 = page;
-  if (typeof legacyConfirm === 'function') window.confirmTrainMaterialPickerV3 = function confirmPicker() {
-    const result = legacyConfirm.apply(this, arguments);
-    queueMicrotask(() => window.refreshTrainingCreateUi?.());
-    return result;
+  window.confirmTrainMaterialPickerV3 = function confirmPicker() {
+    if (!picker) return false;
+    const current = draft();
+    const patch = trainingMaterialSelectionPatch({
+      role: picker.role,
+      selectedIds: [...picker.selected],
+      materialIds: current.materialIds || [],
+      testMaterialIds: current.testMaterialIds || [],
+    });
+    trainingDraftRuntime.update(patch);
+    window.closeModal?.();
+    window.refreshTrainingCreateUi?.();
+    return true;
   };
 
   const runtime = {

@@ -45,7 +45,7 @@ test('canonical chrome owners keep the formal badge and footer values', () => {
 
 test('entry bundles advance cache-bust markers without changing the formal release badge', () => {
   assert.equal(index.includes('/static/app.js?v=42.25.176'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.176'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.177'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
   assert.equal(main.includes("./modules/model-artifact-runtime.js?v=65004"), true);
   assert.equal(main.includes("./modules/training-task-runtime.js?v=422542"), true);
@@ -59,4 +59,9 @@ test('entry bundles advance cache-bust markers without changing the formal relea
 
 test('negative sample runtime is cache-busted with canonical owner retirement', () => {
   assert.equal(main.includes("./modules/negative-samples.js?v=422544"), true);
+});
+
+
+test('training material picker canonical confirm asset is current', () => {
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422545"), true);
 });

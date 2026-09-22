@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery, renderTrainingMaterialPreview} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -28,13 +28,36 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /fetchpriority="\$\{priority\}"/);
 });
 
-test('training picker keeps TrainingDraftRuntime as the selection truth owner', () => {
-  assert.match(source, /const legacyConfirm = window\.confirmTrainMaterialPickerV3/);
-  assert.match(source, /legacyConfirm\.apply/);
+test('training picker keeps TrainingDraftRuntime as the selection truth owner without a legacy confirm wrapper', () => {
+  assert.doesNotMatch(source, /legacyConfirm/);
+  assert.doesNotMatch(source, /\.apply\(this, arguments\)/);
   assert.doesNotMatch(source, /state\(\)\.trainingDraft\s*=/);
+  assert.match(source, /trainingDraftRuntime\.update\(patch\)/);
+  assert.match(source, /window\.confirmTrainMaterialPickerV3 = function confirmPicker/);
   assert.match(main, /installTrainingMaterialPickerRuntime/);
   assert.match(main, /trainingDraftRuntime,/);
   assert.match(main, /PlatformCore\.runtime\.trainingMaterialPickerRuntime/);
+});
+
+test('canonical picker confirmation preserves train and independent-test mutual exclusion', () => {
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'train',
+    selectedIds: ['m1', 'm2'],
+    materialIds: ['old'],
+    testMaterialIds: ['m2', 'm3'],
+  }), {
+    materialIds: ['m1', 'm2'],
+    testMaterialIds: ['m3'],
+  });
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'test',
+    selectedIds: ['m2', 'm4'],
+    materialIds: ['m1', 'm2', 'm3'],
+    testMaterialIds: ['old-test'],
+  }), {
+    materialIds: ['m1', 'm3'],
+    testMaterialIds: ['m2', 'm4'],
+  });
 });
 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {

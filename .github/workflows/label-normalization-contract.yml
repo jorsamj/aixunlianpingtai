@@ -267,7 +267,7 @@ jobs:
               ),
               'static/index.html': (
                   '/static/app.js?v=42.25.176',
-                  '/static/main.mjs?v=42.25.176',
+                  '/static/main.mjs?v=42.25.177',
                   '/static/zip-import-bootstrap.mjs?v=422542',
               ),
               'static/main.mjs': (
