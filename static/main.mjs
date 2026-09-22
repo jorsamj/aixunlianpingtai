@@ -477,8 +477,9 @@ const canonicalStartupPromise = window.__clInit?.();
 Promise.resolve(canonicalStartupPromise).then(() => {
   const startupPage = String(state.page || '');
   adoptPageExtrasInflight(startupPage, state.__extras412);
-  if (navigationStabilityRuntime.hasPageOwner(startupPage)) {
+  if (!state.__startupCanonicalPainted && navigationStabilityRuntime.hasPageOwner(startupPage)) {
     void renderCanonicalOwner(startupPage, {source: 'startup-owner'});
+    state.__startupCanonicalPainted = true;
   }
   refreshCurrentPageOwner(startupPage);
 });

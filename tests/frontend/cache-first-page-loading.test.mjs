@@ -26,7 +26,7 @@ test('ordinary core loading uses cached snapshot and explicit refresh owns refre
 test('startup paints cached snapshot without awaiting a second broad refresh', () => {
   const startup = block('window.__clInit=function()', 'const TOP_CRUMB413=Object.freeze');
   assert.doesNotMatch(startup, /await window\.refreshCurrentPage413/);
-  assert.match(startup, /state\.uiReady=true;render\(\)/);
+  assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
