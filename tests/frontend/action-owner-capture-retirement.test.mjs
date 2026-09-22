@@ -7,9 +7,9 @@ const app = await readFile(new URL('../../static/app.js', import.meta.url), 'utf
 test('detection feedback owner calls an explicit predict core', () => {
   assert.equal(app.includes('const predictBeforeFeedback63=window.predict;'), false);
   assert.equal((app.match(/window\.predict=/g) || []).length, 1);
-  assert.match(app, /window\.predictCore12=async\(\)=>/);
+  assert.match(app, /window\.predictCore30 = async function\(\)/);
   assert.match(app, /window\.predict=async function predictCanonicalFeedback63\(\)/);
-  assert.match(app, /window\.predictCore12\?\.apply\(this,arguments\)/);
+  assert.match(app, /window\.predictCore30\?\.apply\(this,arguments\)/);
 });
 
 test('iteration resume uses explicit core instead of captured previous owner', () => {

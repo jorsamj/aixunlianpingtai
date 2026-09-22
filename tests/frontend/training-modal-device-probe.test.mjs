@@ -28,3 +28,16 @@ test('training device inventory persists across browser reloads and revalidates 
   assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
   assert.match(source, /applyDevices\(cachedDevices,\{persist:false\}\)/);
 });
+
+
+test('device revalidation updates the visible selector before canonical draft normalization', () => {
+  const marker='const applyDevices=(devices,{persist=true}={})=>{';
+  const start=source.indexOf(marker);
+  const end=source.indexOf('renderSplit()}',start);
+  assert.ok(start>=0&&end>start);
+  const block=source.slice(start,end);
+  const domWrite=block.indexOf('deviceSelect.value=recommendedDevice');
+  const draftWrite=block.indexOf('TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}})');
+  assert.ok(domWrite>=0&&draftWrite>domWrite);
+  assert.match(block,/find\(row=>row\?\.available!==false\)/);
+});

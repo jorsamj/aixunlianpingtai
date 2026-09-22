@@ -87,12 +87,12 @@ test('hard refresh first training open shows a shell before hydrating configurat
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422533');
+    .toBe('training-create-hydration-422535');
 
   // Reproduce the user's actual sequence: refresh, then open the training dialog once.
   await page.reload();
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422533');
+    .toBe('training-create-hydration-422535');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   expect(await page.evaluate(() => ({
     targetId: state.targets?.[0]?.id,

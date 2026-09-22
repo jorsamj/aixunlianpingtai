@@ -73,7 +73,7 @@ test('test publish feedback panel paints cached rows before TTL revalidation', (
 
 test('test publish manual refresh is page-scoped instead of using broad loadAll', () => {
   const testStart = source.indexOf('window.renderTestCore30=function renderTestCore30()');
-  const testEnd = source.indexOf('window.renderTest=window.renderTestCore30;', testStart);
+  const testEnd = source.indexOf('window.renderTestLegacy30=window.renderTestCore30;', testStart);
   assert.ok(testStart >= 0 && testEnd > testStart);
   const testPage = source.slice(testStart, testEnd);
   assert.match(testPage, /onclick="refreshTestPageDataV3\(\)">刷新环境\/模型<\/button>/);
@@ -100,7 +100,7 @@ test('detection bench receives focused model and inference extras on navigation 
   assert.match(extras, /\/api\/v16\/inference_envs/);
 
   const benchStart = source.indexOf('renderDetectBench = window.renderDetectBench = function()');
-  const benchEnd = source.indexOf('\n  window.predict = async function()', benchStart);
+  const benchEnd = source.indexOf('\n  window.predictCore30 = async function()', benchStart);
   assert.ok(benchStart >= 0 && benchEnd > benchStart);
   const bench = source.slice(benchStart, benchEnd);
   assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型\/环境<\/button>/);

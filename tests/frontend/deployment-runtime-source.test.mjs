@@ -114,13 +114,14 @@ test('deployment conversion manual refresh is job-scoped instead of reloading al
 
 
 test('creating a deployment job reuses current resource truth and refreshes only jobs',()=> {
-  const start=source.indexOf('window.createDeployJob=async()=>');
-  const end=source.indexOf('window.stopDeployJob=async',start);
+  const start=source.indexOf('window.createDeployJobM4=async function()');
+  const end=source.indexOf('window.__m4OpenModelConfig=',start);
   assert.ok(start>=0&&end>start);
   const create=source.slice(start,end);
   assert.match(create,/deploy\/jobs/);
-  assert.match(create,/state\.deployPresetSourceId='';renderDeployCenter\(\)/);
+  assert.match(create,/state\.deployPresetSourceId='';window\.renderDeployCenter\(\);await window\.refreshDeployJobsV39\?\.\(\)/);
   assert.doesNotMatch(create,/loadDeployData\(true\)/);
+  assert.match(source,/window\.createDeployJob=window\.__m4CreateDeployJob/);
 });
 
 
