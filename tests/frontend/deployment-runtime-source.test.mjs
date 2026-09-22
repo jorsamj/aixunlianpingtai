@@ -111,3 +111,14 @@ test('deployment conversion manual refresh is job-scoped instead of reloading al
   assert.match(poll,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
   assert.doesNotMatch(poll,/deploy\/resources|source-models/);
 });
+
+
+test('creating a deployment job reuses current resource truth and refreshes only jobs',()=> {
+  const start=source.indexOf('window.createDeployJob=async()=>');
+  const end=source.indexOf('window.stopDeployJob=async',start);
+  assert.ok(start>=0&&end>start);
+  const create=source.slice(start,end);
+  assert.match(create,/deploy\/jobs/);
+  assert.match(create,/state\.deployPresetSourceId='';renderDeployCenter\(\)/);
+  assert.doesNotMatch(create,/loadDeployData\(true\)/);
+});
