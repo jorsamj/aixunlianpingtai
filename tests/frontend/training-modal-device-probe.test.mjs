@@ -17,3 +17,15 @@ test('opening training modal does not wait for GPU device probe', () => {
   assert.notEqual(deviceProbe, -1, 'device probe must remain present');
   assert.ok(modalOpen < deviceProbe, 'modal must open before the potentially slow GPU probe starts');
 });
+
+
+test('training device inventory persists across browser reloads and revalidates stale cache in background', () => {
+  assert.match(source, /const TRAINING_DEVICE_CACHE_TTL_MS=24\*60\*60\*1000/);
+  assert.match(source, /const trainingDeviceCacheKeyV3=\(\)=>`cl_training_devices_v3_\$\{pid\(\)\}`/);
+  assert.match(source, /localStorage\.getItem\(trainingDeviceCacheKeyV3\(\)\)/);
+  assert.match(source, /localStorage\.setItem\(trainingDeviceCacheKeyV3\(\)/);
+  assert.match(source, /localStorage\.removeItem\(trainingDeviceCacheKeyV3\(\)\)/);
+  assert.match(source, /state\.trainingDevicesV3\?\.options\?\.length\?state\.trainingDevicesV3:restoreTrainingDeviceCacheV3\(\)/);
+  assert.match(source, /if\(!cacheFresh\)api\('\/api\/v62\/training-devices'\)/);
+  assert.match(source, /applyDevices\(cachedDevices,\{persist:false\}\)/);
+});

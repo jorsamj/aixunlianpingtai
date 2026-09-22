@@ -4673,8 +4673,25 @@ window.installUsability417?.();
     }
     renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
   }
-  const TRAINING_DEVICE_CACHE_TTL_MS=10*60*1000;
-  window.invalidateTrainingDeviceCacheV3=()=>{state.trainingDevicesV3LoadedAt=0};
+  const TRAINING_DEVICE_CACHE_TTL_MS=24*60*60*1000;
+  const trainingDeviceCacheKeyV3=()=>`cl_training_devices_v3_${pid()}`;
+  function restoreTrainingDeviceCacheV3(){
+    if(state.trainingDevicesV3?.options?.length)return state.trainingDevicesV3;
+    try{
+      const cached=JSON.parse(localStorage.getItem(trainingDeviceCacheKeyV3())||'null');
+      if(!cached?.devices?.options?.length)return null;
+      state.trainingDevicesV3={...cached.devices,loading:false};
+      state.trainingDevicesV3LoadedAt=Number(cached.ts||0);
+      return state.trainingDevicesV3;
+    }catch(_){return null}
+  }
+  function persistTrainingDeviceCacheV3(devices){
+    try{localStorage.setItem(trainingDeviceCacheKeyV3(),JSON.stringify({ts:Date.now(),devices:{...devices,loading:false,error:''}}))}catch(_){}
+  }
+  window.invalidateTrainingDeviceCacheV3=()=>{
+    state.trainingDevicesV3LoadedAt=0;
+    try{localStorage.removeItem(trainingDeviceCacheKeyV3())}catch(_){}
+  };
   window.startAlgorithmTraining429=async function(aid){
     if(!state.uiReady&&window.__v53InitPromise)await window.__v53InitPromise;
     const algorithmId=String(aid||'');
@@ -4696,17 +4713,17 @@ window.installUsability417?.();
       const options=await api(`/api/training_options?project_id=${pid()}`);
       state.targets=options?.targets||[];
     }
-    const cachedDevices=state.trainingDevicesV3;
+    const cachedDevices=state.trainingDevicesV3?.options?.length?state.trainingDevicesV3:restoreTrainingDeviceCacheV3();
     const hasCachedDevices=Boolean(cachedDevices?.options?.length);
     const cacheFresh=hasCachedDevices&&Date.now()-Number(state.trainingDevicesV3LoadedAt||0)<TRAINING_DEVICE_CACHE_TTL_MS;
     if(!hasCachedDevices){state.trainingDevicesV3={options:[{id:'auto',label:'自动（优先 GPU）',type:'auto',available:true}],recommended:'auto',loading:true}}
     state.trainingBenchmarkReuse={algorithm_id:String(aid||''),available:false,loading:true,load_error:false,reason:''};
     const resultPromise=previousStart?.(aid);
-    const applyDevices=devices=>{state.trainingDevicesV3={...devices,loading:false};state.trainingDevicesV3LoadedAt=Date.now();const recommendedDevice=devices?.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;renderSplit()};
-    // Stale-while-revalidate: cached hardware opens instantly; only stale/missing
-    // inventory is refreshed in the background.
-    if(hasCachedDevices)applyDevices(cachedDevices);
-    if(!cacheFresh)api('/api/v62/training-devices').then(applyDevices).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})
+    const applyDevices=(devices,{persist=true}={})=>{state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const recommendedDevice=devices?.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;renderSplit()};
+    // Persisted stale-while-revalidate: cached hardware survives browser reloads.
+    // The training worker still performs authoritative device validation before execution.
+    if(hasCachedDevices)applyDevices(cachedDevices,{persist:false});
+    if(!cacheFresh)api('/api/v62/training-devices').then(devices=>applyDevices(devices,{persist:true})).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})
     const result=await resultPromise;window.TrainingDraftRuntime?.update?.({algorithmId:String(aid||'')});loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
   const successfulTrainStatus429=status=>['done','finished','completed','succeeded','success'].includes(String(status||'').toLowerCase());

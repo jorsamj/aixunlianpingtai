@@ -332,6 +332,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     if (!candidate || status(candidate.status) !== 'AVAILABLE') return notify('该环境不可用，无法启用');
     try {
       await request('/api/ultralytics_env/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({python_path: candidate.python_path || candidate.python_executable, root: candidate.root || '', yolo_path: candidate.yolo_path || ''})});
+      window.invalidateTrainingDeviceCacheV3?.();
       notify('已启用所选 Ultralytics 环境');
       await refreshApplication();
       await refreshCache(true);

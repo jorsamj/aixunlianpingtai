@@ -48,3 +48,13 @@ test('resource discovery polling is PollRegistry-owned and patches the live prog
   assert.doesNotMatch(source, /live\.outerHTML\s*=/);
   assert.doesNotMatch(source, /while \(!controller\.signal\.aborted/);
 });
+
+
+test('selecting a different Ultralytics environment invalidates persisted training device inventory', () => {
+  const selectStart = source.indexOf('window.selectResourceEnvironment = async index =>');
+  const selectEnd = source.indexOf('window.resourceModelsPage = async direction =>', selectStart);
+  assert.ok(selectStart >= 0 && selectEnd > selectStart);
+  const block = source.slice(selectStart, selectEnd);
+  assert.match(block, /\/api\/ultralytics_env\/select/);
+  assert.match(block, /window\.invalidateTrainingDeviceCacheV3\?\.\(\)/);
+});
