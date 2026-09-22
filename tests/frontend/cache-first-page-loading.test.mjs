@@ -23,7 +23,7 @@ test('ordinary core loading uses cached snapshot and explicit refresh owns refre
 });
 
 test('startup paints cached snapshot without awaiting a second broad refresh', () => {
-  const startup = block('window.__clInit=function()', 'const oldTop=renderTop');
+  const startup = block('window.__clInit=function()', 'const TOP_CRUMB413=Object.freeze');
   assert.doesNotMatch(startup, /await window\.refreshCurrentPage413/);
   assert.match(startup, /state\.uiReady=true;render\(\)/);
 });
