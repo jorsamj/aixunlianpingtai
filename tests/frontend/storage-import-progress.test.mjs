@@ -241,3 +241,12 @@ test('active storage import progress stays lightweight and full detail renderer 
     if (previousFetch === undefined) delete globalThis.fetch; else globalThis.fetch = previousFetch;
   }
 });
+
+
+test('active storage import uses one stable progress shell instead of replacing status content each poll', () => {
+  const progressSource = fs.readFileSync('static/modules/storage-import-progress.js', 'utf8');
+  assert.match(progressSource, /data-storage-import-live-shell/);
+  assert.match(progressSource, /data-storage-import-live-bar/);
+  assert.match(progressSource, /bar\.style\.transform = 'scaleX\('/);
+  assert.match(progressSource, /if \(active\) patchLiveStatus\(status, currentTask\)/);
+});

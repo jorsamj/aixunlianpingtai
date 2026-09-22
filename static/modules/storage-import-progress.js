@@ -60,7 +60,7 @@ async function responseJson(response) {
 
 export function installStorageImportProgressRuntime({pollRegistry, getState} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422524') {
+  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422525') {
     return window.StorageImportProgressRuntime;
   }
 
@@ -96,6 +96,32 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     return document.getElementById('si61Status');
   }
 
+  function patchLiveStatus(status, task) {
+    const text = storageImportProgressText(task);
+    const percent = Math.max(0, Math.min(100, Number(taskProgress(task).percent || 0)));
+    if (!status?.querySelector || !document?.createElement) {
+      status.textContent = text;
+      return false;
+    }
+    let shell = status.querySelector('[data-storage-import-live-shell]');
+    if (!shell) {
+      status.innerHTML = '<div class="storage61-live-task" data-storage-import-live-shell><div class="storage61-task-head"><b data-storage-import-live-title></b><small data-storage-import-live-meta></small></div><div class="storage61-live-progress"><i><em data-storage-import-live-bar data-progress="0.00" style="transform:scaleX(0)"></em></i><span data-storage-import-live-percent>0%</span></div></div>';
+      shell = status.querySelector('[data-storage-import-live-shell]');
+    }
+    const title = shell?.querySelector?.('[data-storage-import-live-title]');
+    const meta = shell?.querySelector?.('[data-storage-import-live-meta]');
+    const bar = shell?.querySelector?.('[data-storage-import-live-bar]');
+    const label = shell?.querySelector?.('[data-storage-import-live-percent]');
+    if (title) title.textContent = text;
+    if (meta) meta.textContent = [String(task?.status || ''), String(task?.phase || task?.stage || '')].filter(Boolean).join(' · ');
+    if (bar) {
+      bar.dataset.progress = percent.toFixed(2);
+      bar.style.transform = 'scaleX(' + (percent / 100).toFixed(4) + ')';
+    }
+    if (label) label.textContent = percent.toFixed(percent % 1 ? 1 : 0) + '%';
+    return true;
+  }
+
   function render(task) {
     if (task) {
       currentTask = {
@@ -107,13 +133,16 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     }
     if (!currentTask) return;
     const status = statusElement();
+    const active = isTaskActive(currentTask);
     if (status) {
-      status.textContent = storageImportProgressText(currentTask);
-      if (status.dataset) status.dataset.storageImportLive = isTaskActive(currentTask) ? '1' : '0';
+      if (status.dataset) status.dataset.storageImportLive = active ? '1' : '0';
+      if (active) patchLiveStatus(status, currentTask);
     }
     publishTaskCenter(currentTask);
-    if (!isTaskActive(currentTask) && typeof window.renderStorageImportTask61 === 'function') {
+    if (!active && typeof window.renderStorageImportTask61 === 'function') {
       window.renderStorageImportTask61(currentTask);
+    } else if (!active && status) {
+      status.textContent = storageImportProgressText(currentTask);
     }
   }
 
