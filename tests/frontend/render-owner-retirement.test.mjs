@@ -69,6 +69,16 @@ test('test and detection pages are canonical owners', () => {
   assert.match(main, /\['检测台', 'renderDetectBench'\]/);
 });
 
+
+test('test publish page resolves through a named core helper and one canonical final owner', () => {
+  assert.match(app, /window\.renderTestCore30=function renderTestCore30\(\)/);
+  assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
+  assert.match(app, /window\.renderTestCore30\?\.\(\)/);
+  assert.equal(app.includes('const oldRenderTest = window.renderTest;'), false);
+  assert.equal(app.includes('const previousRenderTest63=renderTest;'), false);
+  assert.equal(app.includes('previousRenderTest63();'), false);
+});
+
 test('configuration pages are canonical owners', () => {
   assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
   assert.match(main, /\['模型配置', 'renderModelConfigPageV35'\]/);
