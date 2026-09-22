@@ -2301,6 +2301,44 @@ window.installUsability417=function(){
   state.source422LoadedAt=Number(state.source422LoadedAt||0);
   state.source422RenderRefresh=null;
   const SOURCE422_CACHE_TTL_MS=60*1000;
+  const DASHBOARD422_EXTRAS_TTL_MS=60*1000;
+  state.dashboard422ExtrasLoadedAt=Number(state.dashboard422ExtrasLoadedAt||0);
+  state.dashboard422ExtrasProjectId=String(state.dashboard422ExtrasProjectId||'');
+  state.dashboard422ExtrasRefreshPromise=null;
+  async function refreshDashboardExtras422({force=false}={}){
+    const projectId=String(pid()||'');if(!projectId)return false;
+    const sameProject=state.dashboard422ExtrasProjectId===projectId;
+    const age=Date.now()-Number(state.dashboard422ExtrasLoadedAt||0);
+    if(!force&&sameProject&&state.dashboard422ExtrasLoadedAt>0&&age>=0&&age<DASHBOARD422_EXTRAS_TTL_MS)return true;
+    if(state.dashboard422ExtrasRefreshPromise)return state.dashboard422ExtrasRefreshPromise;
+    const task=(async()=>{
+      const [sources,quality]=await Promise.all([
+        safe(api(`/api/v42/projects/${projectId}/sources`)),
+        safe(api(`/api/v42/projects/${projectId}/quality-overview`)),
+      ]);
+      if(String(pid()||'')!==projectId)return false;
+      let changed=false;
+      if(sources){state.v42.sources=sources.items||[];state.source422LoadedAt=Date.now();changed=true}
+      if(quality){state.v42.quality=quality;changed=true}
+      if(changed){state.dashboard422ExtrasLoadedAt=Date.now();state.dashboard422ExtrasProjectId=projectId}
+      return changed;
+    })().finally(()=>{if(state.dashboard422ExtrasRefreshPromise===task)state.dashboard422ExtrasRefreshPromise=null});
+    state.dashboard422ExtrasRefreshPromise=task;
+    return task;
+  }
+  function patchDashboardExtras422(){
+    if(state.page!=='工作台')return false;
+    const d=dashboardData422(),sources=state.v42?.sources||[],sourceCount=sources.length,autoSource=sources.filter(x=>x.collect_mode==='auto').length;
+    const set=(selector,value)=>{const node=document.querySelector(selector);if(node)node.textContent=String(value??'')};
+    set('[data-dashboard-source-summary]',`${sourceCount} 个素材源 · ${autoSource} 个自动`);
+    set('[data-dashboard-source-count]',sourceCount);
+    set('[data-dashboard-quality-count]',`${d.measured} 个算法有指标`);
+    set('[data-dashboard-quality-p]',pct423(d.meanP));
+    set('[data-dashboard-quality-r]',pct423(d.meanR));
+    set('[data-dashboard-quality-map]',pct423(d.meanM));
+    set('[data-dashboard-quality-best]',pct423(d.bestMap));
+    return true;
+  }
   async function loadSourcesOnly422(){
     const r=await safe(api(`/api/v42/projects/${pid()}/sources`));
     if(!r)return null;
@@ -2339,13 +2377,13 @@ window.installUsability417=function(){
         <div class="ops422-kpi"><span>数据集</span><b>${fmt422(d.dss.length)}</b><small>${fmt422(d.totalImages)} 张素材</small></div>
         <div class="ops422-kpi"><span>训练总时长</span><b>${fmtHours422(d.totalSeconds)}</b><small>平均 ${fmtHours422(d.avgSeconds)}</small></div>
         <div class="ops422-kpi"><span>训练任务成功率</span><b>${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${d.ended?d.done+' 成功 · '+(d.ended-d.done)+' 其他已结束':'暂无已结束训练可统计'}</small></div>
-        <div class="ops422-kpi"><span>自动标注中</span><b>${preRun}</b><small>${sourceCount} 个素材源 · ${autoSource} 个自动</small></div>
+        <div class="ops422-kpi"><span>自动标注中</span><b>${preRun}</b><small data-dashboard-source-summary>${sourceCount} 个素材源 · ${autoSource} 个自动</small></div>
       </section>
       <section class="ops422-main-grid">
         <div class="ops422-card ops422-trend"><div class="ops422-card-head"><b>近 7 天训练任务</b><span>${d.jobs.length} 条训练记录</span></div><div class="ops422-bars">${d.days.map(x=>`<div><b>${x.count}</b><i><span style="height:${Math.max(5,x.count/max*100)}%"></span></i><em>${x.label}</em></div>`).join('')}</div></div>
-        <div class="ops422-card"><div class="ops422-card-head"><b>算法质量</b><span>${d.measured} 个算法有指标</span></div><div class="ops422-quality"><div><span>Precision</span><b>${pct423(d.meanP)}</b></div><div><span>Recall</span><b>${pct423(d.meanR)}</b></div><div><span>mAP50</span><b>${pct423(d.meanM)}</b></div><div><span>最高 mAP50</span><b>${pct423(d.bestMap)}</b></div></div></div>
+        <div class="ops422-card"><div class="ops422-card-head"><b>算法质量</b><span data-dashboard-quality-count>${d.measured} 个算法有指标</span></div><div class="ops422-quality"><div><span>Precision</span><b data-dashboard-quality-p>${pct423(d.meanP)}</b></div><div><span>Recall</span><b data-dashboard-quality-r>${pct423(d.meanR)}</b></div><div><span>mAP50</span><b data-dashboard-quality-map>${pct423(d.meanM)}</b></div><div><span>最高 mAP50</span><b data-dashboard-quality-best>${pct423(d.bestMap)}</b></div></div></div>
         <div class="ops422-card"><div class="ops422-card-head"><b>数据集构成</b><span>标注率 ${d.totalImages?((d.annotated/d.totalImages)*100).toFixed(1):'0.0'}%</span></div><div class="ops422-segments">${dsBars}</div><div class="ops422-mini"><span>图片 <b>${fmt422(d.totalImages)}</b></span><span>已标注 <b>${fmt422(d.annotated)}</b></span><span>标注框 <b>${fmt422(d.boxes)}</b></span></div></div>
-        <div class="ops422-card"><div class="ops422-card-head"><b>运行资源</b><span>${d.ready} 个可用训练资源</span></div><div class="ops422-resource"><div><span>可用训练资源</span><b>${d.ready}</b></div><div><span>训练中任务</span><b>${d.running}</b></div><div><span>素材源</span><b>${sourceCount}</b></div><div><span>自动标注中</span><b>${preRun}</b></div></div></div>
+        <div class="ops422-card"><div class="ops422-card-head"><b>运行资源</b><span>${d.ready} 个可用训练资源</span></div><div class="ops422-resource"><div><span>可用训练资源</span><b>${d.ready}</b></div><div><span>训练中任务</span><b>${d.running}</b></div><div><span>素材源</span><b data-dashboard-source-count>${sourceCount}</b></div><div><span>自动标注中</span><b>${preRun}</b></div></div></div>
       </section>
       <section class="ops422-card ops422-recent"><div class="ops422-card-head"><b>最近训练</b><button class="btn mini" onclick="setPage('训练任务')">全部</button></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>耗时</th><th>进度</th></tr></thead><tbody>${latest}</tbody></table></div></section>
     </div>`;
@@ -2406,7 +2444,7 @@ window.installUsability417=function(){
   window.renderDashboard422=renderDashboard422;
   window.renderDashboardCanonical422=function(){
     renderDashboard422();
-    if(!state.v42?.loaded)void load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});
+    void refreshDashboardExtras422().then(changed=>{if(changed)patchDashboardExtras422()});
   };
 })();
 
