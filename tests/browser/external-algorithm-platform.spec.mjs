@@ -191,6 +191,7 @@ test('changlian platform page tests draft credentials before manual sync', async
 
   await page.evaluate(() => window.setPage('平台对接'));
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => { window.__externalPlatformStableRoot = document.querySelector('[data-external-platform-page="1"]'); });
 
   await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
   const apiContract = page.locator('[data-changlian-api-contract="1"]');
@@ -289,6 +290,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   const analysisRow = connectionResult.getByRole('row', {name: /产品分析方式/});
   await expect(analysisRow.getByText('跳过', {exact: true})).toBeVisible();
   await expect(analysisRow).toContainText('当前没有可用于连接测试的算法产品');
+  expect(await page.evaluate(() => window.__externalPlatformStableRoot === document.querySelector('[data-external-platform-page="1"]'))).toBe(true);
 });
 
 
