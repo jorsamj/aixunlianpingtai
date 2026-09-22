@@ -28,15 +28,18 @@ test('material paging query keeps filters on the server', () => {
 });
 
 
-test('server-paged training and quality center avoid full hydration while legacy AI remains explicit', () => {
+test('canonical pages do not hydrate the complete material pool during navigation', () => {
   assert.equal(requiresFullMaterialPool('数据集'), false);
   assert.equal(requiresFullMaterialPool('算法列表'), false);
   assert.equal(requiresFullMaterialPool('训练任务'), false);
   assert.equal(requiresFullMaterialPool('质量中心'), false);
-  assert.equal(requiresFullMaterialPool('自动标注及清洗'), true);
+  assert.equal(requiresFullMaterialPool('自动标注'), false);
+  assert.equal(requiresFullMaterialPool('自动标注及清洗'), false);
 
   const picker = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(picker, /fullPoolHydration: false/);
+  assert.match(app, /await window\.MaterialPaginationRuntime61\?\.ensureFullPool\?\.\(\)/);
 });
 
 
@@ -88,15 +91,15 @@ test('identical material page loads are single-flight instead of issuing duplica
   assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedCursor, requestedPage\]\)/);
 });
 
-test('legacy full material hydration reuses a recent snapshot and single-flights revalidation', () => {
+test('explicit full material hydration is lazy, cached and single-flight', () => {
   const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
   assert.match(runtime, /const FULL_MATERIAL_REVISIT_REUSE_MS = 10 \* 1000/);
   assert.match(runtime, /let fullPoolFlight = null/);
   assert.match(runtime, /if \(fullPoolFlight && fullPoolFlightProjectId === pid\) return fullPoolFlight/);
-  assert.match(runtime, /fullPool = restoreFullPool61\(\)/);
-  assert.match(runtime, /fullPoolFresh: Boolean\(fullPool\?\.fresh\) && !leavingDataset/);
-  assert.match(runtime, /if \(navigation\?\.fullPoolFresh\) return true/);
-  assert.match(runtime, /const images = await loadFullPool61\(\)/);
+  assert.match(runtime, /async function ensureFullPool61\(\{force = false\} = \{\}\)/);
+  assert.match(runtime, /if \(!force && snapshot\?\.fresh\) return snapshot\.items\.slice\(\)/);
+  assert.match(runtime, /const rows = await loadFullPool61\(\)/);
+  assert.match(runtime, /ensureFullPool: ensureFullPool61/);
   assert.match(runtime, /invalidateFullPool61\(\);\n    const result = await loadMaterialPage61/);
 });
 
