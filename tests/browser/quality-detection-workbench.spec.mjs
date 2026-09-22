@@ -110,7 +110,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   const a=page.locator('#benchModelA'),b=page.locator('#benchModelB');
   await expect(a).toBeVisible();
   await expect(b).toBeVisible();
-  await expect(a.locator('optgroup')).toHaveAttribute('label', /原始 \/ 基础模型/, {timeout:10_000});
+  await expect(a.locator('optgroup').first()).toHaveAttribute('label', /原始 \/ 基础模型/, {timeout:10_000});
   await expect(a.locator(`optgroup[label="算法 · 烟雾识别"]`)).toHaveCount(1);
   await expect(b.locator(`optgroup[label="算法 · 安全帽识别"]`)).toHaveCount(1);
 
@@ -148,7 +148,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await detail.getByRole('button',{name:'正确',exact:true}).click();
   await expect.poll(()=>reviews.length).toBe(1);
   expect(reviews[0].review).toBe('correct');
-  await detail.getByRole('button',{name:'关闭'}).click().catch(()=>page.evaluate(()=>window.closeModal()));
+  await page.evaluate(()=>window.closeModal());
 
   await page.evaluate(()=>window.clearBenchFiles64());
   await page.locator('#benchFiles64').setInputFiles({name:'a-only.bmp',mimeType:'image/bmp',buffer:bmp(96,72,[120,80,180])});
