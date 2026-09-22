@@ -93,3 +93,17 @@ test('canonical page map is the single normal navigation registry', () => {
   assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
   assert.doesNotMatch(app, /Final route override|Final routing: do not fall back|route \+ page alias/);
 });
+
+
+test('navigation chrome resolves to direct final owners without wrapper chaining', () => {
+  assert.match(app, /renderTop=function renderTopCanonical413\(\)/);
+  assert.equal(app.includes("const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge')"), false);
+  assert.equal(app.includes('const finalNav=renderNav;'), false);
+
+  const navStart = app.indexOf('const icon414=');
+  const navEnd = app.indexOf('window.renderLabelManagement414=', navStart);
+  assert.ok(navStart >= 0 && navEnd > navStart);
+  const finalNavOwner = app.slice(navStart, navEnd);
+  assert.match(finalNavOwner, /存储配置:'▣'/);
+  assert.match(finalNavOwner, /\{title:'资源配置',items:\['模型配置','训练资源','部署资源','存储配置'\]\}/);
+});

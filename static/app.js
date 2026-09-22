@@ -4004,7 +4004,38 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),restoredPage=x.page==='自动标注'?'自动标注及清洗':String(x.page||'');delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});await waitReady();const s=await api('/api/v53/bootstrap/snapshot');apply(s);return s};
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();const page=state.page;if(!state.__extras412)state.__extras412=window.loadPageExtras413?.(page).then(()=>{if(state.page===page)render()}).finally(()=>state.__extras412=null)}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
- const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='刷新中';try{await window.refreshCurrentPage413({authoritative:true});render();toast('当前页面已刷新')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
+ const TOP_CRUMB413=Object.freeze({
+  '工作台':'总览','算法列表':'算法生产','训练任务':'算法生产','质量中心':'算法生产',
+  '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心',
+  '检测台':'测试评测','测试发布':'测试评测','部署转换':'部署中心','部署产物':'部署中心',
+  '模型配置':'资源配置','训练资源':'资源配置','部署资源':'资源配置','部署插件':'资源配置','组件检测':'资源配置',
+ });
+ renderTop=function renderTopCanonical413(){
+   const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
+   if(crumb)crumb.textContent=TOP_CRUMB413[state.page]||'畅联云算法训练';
+   if(title)title.textContent=state.page;
+   if(desc)desc.textContent='';
+   const project=document.querySelector('#projectBadge span:last-child');
+   if(project)project.textContent=state.project?.name||'默认空间';
+   const v=document.getElementById('versionBadge');
+   if(v)v.textContent='v'+V413;
+   const brand=document.querySelector('.brand-name');
+   if(brand)brand.textContent='畅联云算法训练';
+   const logo=document.querySelector('.brand-logo');
+   if(logo)logo.textContent='CL';
+   const r=document.getElementById('refreshBtn');
+   if(r){
+     r.textContent='刷新';
+     r.onclick=async()=>{
+       r.disabled=true;
+       const t=r.textContent;
+       r.textContent='刷新中';
+       try{await window.refreshCurrentPage413({authoritative:true});render();toast('当前页面已刷新')}
+       catch(e){toast(e.message||e)}
+       finally{r.disabled=false;r.textContent=t||'刷新'}
+     };
+   }
+ };
 })();
 
 /* ============================================================
@@ -4047,7 +4078,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.refreshLabels414=refreshLabels414;
 
   // ---------- visible configuration center: label schema ----------
-  const icon414={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',测试发布:'✓',检测台:'◎',标签管理:'Aa',部署转换:'⇄',部署产物:'▥',模型配置:'◉',训练资源:'▧',部署资源:'⬡'};
+  const icon414={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',测试发布:'✓',检测台:'◎',标签管理:'Aa',部署转换:'⇄',部署产物:'▥',模型配置:'◉',训练资源:'▧',部署资源:'⬡',存储配置:'▣'};
   renderNav=function(){
     const groups=[
       {title:'总览',items:['工作台','质量中心']},
@@ -4056,7 +4087,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       {title:'测试评测',items:['测试发布','检测台']},
       {title:'配置中心',items:['标签管理']},
     ];
-    if(state.v427Advanced)groups.push({title:'部署中心',items:['部署转换','部署产物']},{title:'资源配置',items:['模型配置','训练资源','部署资源']});
+    if(state.v427Advanced)groups.push({title:'部署中心',items:['部署转换','部署产物']},{title:'资源配置',items:['模型配置','训练资源','部署资源','存储配置']});
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };
 
@@ -5008,13 +5039,6 @@ window.installUsability417?.();
     }
   }catch(_){}
   const storageApi=()=>window.PlatformCore?.storage;
-  const finalNav=renderNav;
-  renderNav=function(){
-    finalNav();
-    if(!state.v427Advanced)return;
-    const resource=[...document.querySelectorAll('#nav .nav-group')].find(group=>group.querySelector('.nav-group-title')?.textContent.trim()==='资源配置');
-    if(resource&&!resource.querySelector('[data-storage-nav="1"]'))resource.insertAdjacentHTML('beforeend',`<button data-storage-nav="1" class="nav-btn ${state.page==='存储配置'?'active':''}" onclick="setPage('存储配置')"><span class="nav-left"><i>▣</i><b>存储配置</b></span><span class="nav-arrow">›</span></button>`);
-  };
   const finalDataset=window.renderDatasets424;
   window.renderDatasets424=function(){
     const all=state.images||[],selected=state.materialSourceFilter61||'all';
