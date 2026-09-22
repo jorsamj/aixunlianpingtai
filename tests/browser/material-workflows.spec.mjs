@@ -198,6 +198,56 @@ test('batch annotation requires explicit empty confirmation and advances across 
   }
 });
 
+test('late annotation response cannot replace the newer image in the stable workbench', async ({page, request}) => {
+  const project = await createMaterialProject(request, `标注竞态-${Date.now()}`);
+  const first = await uploadImage(request, project.id, 'stale-one.bmp', [75, 130, 190]);
+  const second = await uploadImage(request, project.id, 'stale-two.bmp', [190, 130, 75]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [first.id, second.id]}
+  });
+  await selectProject(page, project.id);
+
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let firstSeenResolve;
+  const firstSeen = new Promise(resolve => { firstSeenResolve = resolve; });
+  let delayed = false;
+  await page.route(`**/api/projects/${project.id}/annotations/*`, async route => {
+    const req = route.request();
+    if (req.method() === 'GET' && new URL(req.url()).pathname.endsWith(`/annotations/${first.id}`) && !delayed) {
+      delayed = true;
+      firstSeenResolve();
+      await firstGate;
+    }
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  await page.getByRole('button', {name: '批量操作'}).click();
+  const cards = page.locator('.data412-card');
+  await cards.filter({hasText: 'stale-one.bmp'}).getByRole('checkbox').check();
+  await cards.filter({hasText: 'stale-two.bmp'}).getByRole('checkbox').check();
+  await page.getByRole('button', {name: '批量标注'}).click();
+
+  await firstSeen;
+  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  await expect(dialog.locator('#ann420Filename')).toHaveText('stale-one.bmp');
+  await dialog.locator('#ann420Next').click();
+  await expect(dialog.locator('#ann420Filename')).toHaveText('stale-two.bmp');
+  await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
+
+  const lateResponse = page.waitForResponse(res =>
+    res.request().method() === 'GET' &&
+    new URL(res.url()).pathname.endsWith(`/annotations/${first.id}`)
+  );
+  releaseFirst();
+  await lateResponse;
+  await expect(dialog.locator('#ann420Filename')).toHaveText('stale-two.bmp');
+  await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
+});
+
 test('material filters come from the label library and unprocessed data exposes batch decisions', async ({page, request}) => {
   const project = await createMaterialProject(request, `素材筛选-${Date.now()}`);
   const person = await uploadImage(request, project.id, 'person.bmp', [180, 70, 70]);
