@@ -290,14 +290,17 @@ export function installMaterialUploadRuntime({
       const chunkPercent = Math.round((event.ratio || 0) * 100);
       setProgress('up411Bar', overallPercent);
       setText('up411Pct', `${Math.round(overallPercent)}%`);
-      setText('up411TransferText', `当前批次传输 ${chunkPercent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
-      if (timestamp - lastTaskCenterProgressAt >= 150 || Number(event.ratio || 0) >= 1) {
+      const transferComplete = Number(event.ratio || 0) >= 1;
+      setText('up411TransferText', transferComplete
+        ? `当前批次已上传，等待服务器入库 · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`
+        : `当前批次传输 ${chunkPercent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
+      if (timestamp - lastTaskCenterProgressAt >= 150 || transferComplete) {
         lastTaskCenterProgressAt = timestamp;
         window.UploadTaskCenterRuntime?.upsert?.({
           id:uploadTaskId,
           status:'UPLOADING',
           progress:overallPercent,
-          stage:`上传第 ${event.chunkNumber}/${event.chunkCount} 批`,
+          stage:transferComplete ? `第 ${event.chunkNumber}/${event.chunkCount} 批已上传，等待服务器入库` : `上传第 ${event.chunkNumber}/${event.chunkCount} 批`,
           detail:`${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`,
         });
       }
@@ -339,7 +342,7 @@ export function installMaterialUploadRuntime({
             scheduleTransferPaint({
               event,
               overallBytes,
-              overallPercent: overallBytes / totalBytes * 100,
+              overallPercent: Math.min(99, overallBytes / totalBytes * 100),
             });
           } else if (event.type === 'chunk-committed') {
             cancelTransferFrame();
