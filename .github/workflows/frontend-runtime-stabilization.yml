@@ -436,6 +436,7 @@ jobs:
           tests/browser/algorithm-list-performance.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/material-workflows.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs
           tests/browser/upload-task-center-performance.spec.mjs
           tests/browser/video-task-performance.spec.mjs

@@ -104,8 +104,8 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await expect(reloadedCard.getByText(/已标注 · 1框/)).toBeVisible();
 });
 
-test('batch annotation opens a thumbnail queue and manual save advances to the next image', async ({page, request}) => {
-  const project = await createMaterialProject(request, `连续标注-${Date.now()}`);
+test('batch annotation requires explicit empty confirmation and advances across consecutive images', async ({page, request}) => {
+  const project = await createMaterialProject(request, `连续空标注-${Date.now()}`);
   const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
   const second = await uploadImage(request, project.id, 'queue-two.bmp', [180, 120, 90]);
   await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
@@ -125,10 +125,27 @@ test('batch annotation opens a thumbnail queue and manual save advances to the n
   const dialog = page.getByRole('dialog', {name: '图片标注'});
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-one.bmp');
-  await expect(dialog.getByRole('button', {name: /queue-two\.bmp/})).toBeVisible();
-  await dialog.getByRole('button', {name: '保存并继续'}).click();
+
+  const firstConfirm = dialog.getByRole('button', {name: '确认无目标'});
+  await expect(firstConfirm).toBeVisible();
+  await expect(firstConfirm).toBeEnabled();
+  await firstConfirm.click();
+
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
-  await expect(dialog.locator('.ann414-state')).toContainText('queue-two.bmp');
+  await expect(dialog.locator('#ann420Filename')).toHaveText('queue-two.bmp');
+  const secondConfirm = dialog.getByRole('button', {name: '确认无目标'});
+  await expect(secondConfirm).toBeVisible();
+  await expect(secondConfirm).toBeEnabled();
+  await secondConfirm.click();
+  await expect(dialog.getByRole('button', {name: '✓ 已确认负样本'})).toBeVisible();
+
+  for (const image of [first, second]) {
+    const response = await request.get(`/api/projects/${project.id}/annotations/${image.id}`);
+    expect(response.ok()).toBeTruthy();
+    const annotation = await response.json();
+    expect(annotation.boxes).toEqual([]);
+    expect(annotation.annotation_state).toBe('confirmed_empty');
+  }
 });
 
 test('material filters come from the label library and unprocessed data exposes batch decisions', async ({page, request}) => {
