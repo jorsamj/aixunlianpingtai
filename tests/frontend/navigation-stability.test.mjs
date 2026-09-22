@@ -36,6 +36,10 @@ test('legacy navigation aliases normalize to canonical pages', () => {
   assert.equal(normalizeNavigationPage('自动标注及清洗'), '自动标注及清洗');
   assert.equal(normalizeNavigationPage('测试发布'), '质量中心');
   assert.equal(normalizeNavigationPage('检测台'), '质量中心');
+  assert.equal(normalizeNavigationPage('部署转换'), '算法列表');
+  assert.equal(normalizeNavigationPage('部署产物'), '算法列表');
+  assert.equal(normalizeNavigationPage('部署资源'), '模型配置');
+  assert.equal(normalizeNavigationPage('部署插件'), '模型配置');
   assert.equal(normalizeNavigationPage('新建算法'), '算法列表');
   assert.equal(normalizeNavigationPage('自动迭代'), '算法列表');
   assert.equal(normalizeNavigationPage('数据集'), '数据集');
