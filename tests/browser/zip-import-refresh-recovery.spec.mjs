@@ -1,5 +1,13 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (const byte of buffer) {
@@ -80,9 +88,10 @@ test('server-persisted ZIP job is restored in upload task center after browser r
   const job = await createSelectingZipJob(request, project.id);
   expect(job.id).toBeTruthy();
 
-  await page.addInitScript(id => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId: id, page: '数据集'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
+  });
 
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();

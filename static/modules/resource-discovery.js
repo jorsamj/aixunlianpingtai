@@ -40,6 +40,73 @@ function dateText(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN');
 }
 
+function discoveryScopeLabel(task) {
+  const scope = String(task.discovery_scope || '').trim().toLowerCase();
+  if (scope === 'full') return '全机（仅本地文件系统）';
+  if (scope === 'directory') return '指定目录';
+  if (scope === 'fast') return '指定环境快速检测';
+  if (scope === 'auto') return '自动检测';
+  return scope || '未返回';
+}
+
+function discoveryFailureMessage(task) {
+  const taskStatus = canonicalTaskStatus(task);
+  if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
+  const raw = String(task.error?.message || task.error || '').trim();
+  const normalized = raw.toLocaleLowerCase();
+  if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
+    return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
+  }
+  if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
+    return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
+  }
+  return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
+}
+
+function progressBody(task, kind) {
+  const metrics = task.metrics || task;
+  const environment = kind === 'environment';
+  const taskStatus = canonicalTaskStatus(task);
+  const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
+  const permissionErrors = Number(metrics.permission_errors) || 0;
+  const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
+  const active = isCanonicalTaskActive(task);
+  const shape = [active ? 1 : 0, environment ? 'env' : 'model', roots.length, permissionErrors ? 1 : 0, terminalMessage ? 1 : 0].join(':');
+  return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}" data-rd-shape="${shape}">
+    <div class="rd-task-state"><span data-rd-field="status" class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b data-rd-field="phase">${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
+    ${active ? '<div class="rd-indeterminate"><i></i></div>' : ''}
+    <div class="rd-current"><span>扫描范围</span><b data-rd-field="scope">${escapeHtml(discoveryScopeLabel(task))}</b></div>
+    ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
+    <div class="rd-task-counts"><div><span>已扫描目录</span><b data-rd-field="scanned_dirs">${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b data-rd-field="python_candidates">${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b data-rd-field="validated_environments">${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b data-rd-field="models_found">${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b data-rd-field="permission_errors">${permissionErrors}</b></div></div>
+    <div class="rd-current"><span>当前路径</span><code data-rd-field="current_item">${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
+    ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
+    ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
+    <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
+  </div>`;
+}
+
+export function patchResourceDiscoveryProgress(current, task, kind) {
+  if (!current) return false;
+  const holder = document.createElement('div');
+  holder.innerHTML = progressBody(task, kind).trim();
+  const next = holder.firstElementChild;
+  if (!next) return false;
+  if (current.dataset.rdShape !== next.dataset.rdShape) {
+    current.dataset.rdShape = next.dataset.rdShape || '';
+    current.innerHTML = next.innerHTML;
+    return true;
+  }
+  for (const nextField of next.querySelectorAll('[data-rd-field]')) {
+    const key = nextField.dataset.rdField;
+    const currentField = current.querySelector(`[data-rd-field="${key}"]`);
+    if (!currentField) continue;
+    currentField.textContent = nextField.textContent;
+    if (key === 'status') currentField.className = nextField.className;
+  }
+  return true;
+}
+
+
 export function installResourceDiscoveryRuntime(dependencies = {}) {
   if (window.ResourceDiscoveryRuntime?.installed) return window.ResourceDiscoveryRuntime;
 
@@ -162,72 +229,6 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     const layout = document.querySelector('.resource-layout');
     if (layout && !document.getElementById('resourceDiscoveryCache')) layout.insertAdjacentHTML('beforeend', '<section class="panel"><div class="panel-body" id="resourceDiscoveryCache"><div class="loading">正在读取本机资源缓存…</div></div></section>');
     renderCachePanel();
-  }
-
-  function discoveryScopeLabel(task) {
-    const scope = String(task.discovery_scope || '').trim().toLowerCase();
-    if (scope === 'full') return '全机（仅本地文件系统）';
-    if (scope === 'directory') return '指定目录';
-    if (scope === 'fast') return '指定环境快速检测';
-    if (scope === 'auto') return '自动检测';
-    return scope || '未返回';
-  }
-
-  function discoveryFailureMessage(task) {
-    const taskStatus = canonicalTaskStatus(task);
-    if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
-    const raw = String(task.error?.message || task.error || '').trim();
-    const normalized = raw.toLocaleLowerCase();
-    if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
-      return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
-    }
-    if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
-      return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
-    }
-    return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
-  }
-
-  function progressBody(task, kind) {
-    const metrics = task.metrics || task;
-    const environment = kind === 'environment';
-    const taskStatus = canonicalTaskStatus(task);
-    const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
-    const permissionErrors = Number(metrics.permission_errors) || 0;
-    const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
-    const active = isCanonicalTaskActive(task);
-    const shape = [active ? 1 : 0, environment ? 'env' : 'model', roots.length, permissionErrors ? 1 : 0, terminalMessage ? 1 : 0].join(':');
-    return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}" data-rd-shape="${shape}">
-      <div class="rd-task-state"><span data-rd-field="status" class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b data-rd-field="phase">${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
-      ${active ? '<div class="rd-indeterminate"><i></i></div>' : ''}
-      <div class="rd-current"><span>扫描范围</span><b data-rd-field="scope">${escapeHtml(discoveryScopeLabel(task))}</b></div>
-      ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
-      <div class="rd-task-counts"><div><span>已扫描目录</span><b data-rd-field="scanned_dirs">${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b data-rd-field="python_candidates">${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b data-rd-field="validated_environments">${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b data-rd-field="models_found">${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b data-rd-field="permission_errors">${permissionErrors}</b></div></div>
-      <div class="rd-current"><span>当前路径</span><code data-rd-field="current_item">${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
-      ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
-      ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
-      <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
-    </div>`;
-  }
-
-  function patchResourceDiscoveryProgress(current, task, kind) {
-    if (!current) return false;
-    const holder = document.createElement('div');
-    holder.innerHTML = progressBody(task, kind).trim();
-    const next = holder.firstElementChild;
-    if (!next) return false;
-    if (current.dataset.rdShape !== next.dataset.rdShape) {
-      current.dataset.rdShape = next.dataset.rdShape || '';
-      current.innerHTML = next.innerHTML;
-      return true;
-    }
-    for (const nextField of next.querySelectorAll('[data-rd-field]')) {
-      const key = nextField.dataset.rdField;
-      const currentField = current.querySelector(`[data-rd-field="${key}"]`);
-      if (!currentField) continue;
-      currentField.textContent = nextField.textContent;
-      if (key === 'status') currentField.className = nextField.className;
-    }
-    return true;
   }
 
   function watchModalClose(taskId, controller) {

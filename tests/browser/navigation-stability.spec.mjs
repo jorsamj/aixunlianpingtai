@@ -252,7 +252,7 @@ test('service node owner commits its own shell without flashing another business
   });
 
   await page.goto('/');
-  await expect.poll(async () => page.evaluate(() => window.ServiceNodeRuntime?.build || null)).toBe('service-node-runtime-422536');
+  await expect.poll(async () => page.evaluate(() => window.ServiceNodeRuntime?.build || null)).toBe('service-node-runtime-422537');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   const openService = async () => page.evaluate(async () => {
