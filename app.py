@@ -18221,6 +18221,9 @@ async def create_deployment_test(
     else:
         side = ""
     safe_original_name = Path(str(original_filename or file.filename or "test.jpg")).name[:255]
+    task_model_sha256 = ""
+    if algorithm_id and version_id and model_path and Path(model_path).is_file():
+        task_model_sha256 = sha256_file(Path(model_path)).lower()
     request = {
         "model_path": model_path,
         "model_reference": model_reference,
@@ -18240,6 +18243,7 @@ async def create_deployment_test(
             "model_source": str(model_source or "project").strip()[:80],
             "algorithm_id": str(algorithm_id or "").strip()[:128],
             "version_id": str(version_id or "").strip()[:128],
+            "model_sha256": task_model_sha256,
             "framework": framework,
             "runtime_format": suffix.lstrip("."),
         },
@@ -18332,6 +18336,12 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
 
     _algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
     model_sha256 = _online_feedback_version_model_sha256(version)
+    task_model_sha256 = str(identity.get("model_sha256") or "").strip().lower()
+    if not task_model_sha256 or task_model_sha256 != model_sha256.lower():
+        raise HTTPException(
+            status_code=409,
+            detail="检测任务使用的模型与当前正式版本模型身份不一致，请重新检测",
+        )
 
     source_input = Path(str(request.get("input_path") or ""))
     source_output = Path(str(result.get("output_path") or request.get("output_path") or ""))
