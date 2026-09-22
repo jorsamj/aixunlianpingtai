@@ -4593,6 +4593,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const img=document.getElementById('annImg');if(img&&img.src!==new URL(image.url,location.href).href)img.src=image.url;
     const stage=document.getElementById('annStage');if(stage){stage.style.transform=`scale(${state.annZoom||1})`;stage.classList.toggle('disabled',locked||!(state.labels||[]).length)}
     requestAnimationFrame(()=>{drawBoxes();if(!locked&&(state.labels||[]).length)bindAnnotationEvents();renderAnnSide()});
+    window.NegativeSampleRuntime?.decorate?.();
   }
 
   function prepareAnnotationShell420(id){
@@ -4655,6 +4656,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         annotation:{...(state.ann||{}),boxes:(state.ann?.boxes||[]).map(box=>({...box}))},
       });
     }
+    window.NegativeSampleRuntime?.decorate?.();
     if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
     return ok;
   };

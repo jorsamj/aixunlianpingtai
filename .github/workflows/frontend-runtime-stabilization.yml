@@ -22,6 +22,7 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
+          node --check static/modules/negative-samples.js &&
           node --check static/modules/service-node-runtime.js &&
           node --check static/modules/resource-discovery.js &&
           node --check static/modules/model-artifact-runtime.js &&
@@ -102,6 +103,22 @@ jobs:
               exit 1
             fi
           done
+      - name: Negative sample canonical owner guard
+        run: |
+          file=static/modules/negative-samples.js
+          for token in '__negativeWrapped' 'const original = window.' 'window.renderAnnotator =' 'window.saveAnn =' 'wrapNavigation' 'setTimeout('; do
+            if grep -F -n "$token" "$file"; then
+              echo "NegativeSampleRuntime must stay decorator-only; found $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq "document.getElementById?.('ann420ConfirmEmpty')" "$file"
+          grep -Fq 'window.NegativeSampleRuntime = runtime' "$file"
+          if [ "$(grep -F -o 'window.NegativeSampleRuntime?.decorate?.();' static/app.js | wc -l)" -lt 2 ]; then
+            echo 'canonical annotation shell/save must explicitly decorate negative sample UI' >&2
+            exit 1
+          fi
+          grep -Fq "window.confirmEmptyAnnotation420=()=>window.saveAnn(false,{confirmEmpty:true});" static/app.js
       - name: AutoLabel PollRegistry owner guard
         run: |
           if grep -n -E 'auto422Timer|ai60ListTimer' static/app.js; then
