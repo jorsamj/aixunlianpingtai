@@ -147,6 +147,12 @@ test('test publish page resolves through a named core helper and one canonical f
   assert.equal(app.includes('previousRenderTest63();'), false);
 });
 
+test('shadowed model-config page owner and v35 render map are physically retired', () => {
+  assert.equal(app.includes('const v35RenderMap=()=>({'), false);
+  assert.equal((app.match(/window\.renderModelConfigPageV35\s*=\s*function/g) || []).length, 1);
+  assert.doesNotMatch(app, /request_mode\|\|'json_base64'.*renderModelConfigPageV35/s);
+});
+
 test('configuration pages are canonical owners', () => {
   assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
   assert.match(main, /\['模型配置', 'renderModelConfigPageV35'\]/);

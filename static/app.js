@@ -1535,19 +1535,6 @@ window.installUsability417=function(){
     {title:'训练验证',items:['训练任务','测试发布','检测台']},
     {title:'系统配置',items:['模型配置','训练资源']},
   ];
-  const v35RenderMap=()=>({
-    '工作台': typeof renderHomeDashboard==='function'?renderHomeDashboard:renderAlgorithms,
-    '算法列表': renderAlgorithms,
-    '数据集': renderDatasets,
-    '视频切帧': typeof renderVideoFrameTasks==='function'?renderVideoFrameTasks:renderDatasets,
-    '自动标注': renderAutoLabelPageV35,
-    '训练任务': renderTraining,
-    '测试发布': renderTest,
-    '检测台': typeof renderDetectBench==='function'?renderDetectBench:renderTest,
-    '训练资源': renderResources,
-    '模型配置': renderModelConfigPageV35,
-  });
-
   renderNav=function(){
     const projectName=esc(state.project?.name||'默认空间');
     const ver=esc(state.versionInfo?.version||APP_VERSION_V35);
@@ -1618,11 +1605,6 @@ window.installUsability417=function(){
   };
 
   // ---------- Model configuration ----------
-  window.renderModelConfigPageV35=function(){
-    const configs=state.modelConfigs||[];
-    const rows=configs.map(c=>`<tr><td><b>${esc(c.name)}</b><div class="muted-line">${esc(c.model_name||c.model_kind||'')}</div></td><td>${c.provider_type==='cloud'?'云端':'本地'}</td><td>${esc(c.detect_url||c.base_url||'')}</td><td>${esc(c.request_mode||'json_base64')}</td><td><button class="btn mini" onclick="testModelConfigV35('${c.id}')">测试</button><button class="btn mini" onclick="editModelConfigV35('${c.id}')">编辑</button><button class="btn mini danger" onclick="deleteModelConfigV35('${c.id}')">删除</button></td></tr>`).join('');
-    $('#view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">模型配置</div></div><button class="btn primary small" onclick="openModelConfigModalV35()">新增模型</button></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>类型</th><th>接口</th><th>请求</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="5">暂无模型配置</td></tr>'}</tbody></table></div></section><section class="panel"><div class="panel-head"><div class="panel-title">模型标注库</div><button class="btn primary small" onclick="openPromptTemplateModalV35()">新增提示词</button></div><div class="panel-body">${promptTemplateListHtmlV35()}</div></section>`;
-  };
   function configOptionsV35(selected=''){return (state.modelConfigs||[]).map(c=>`<option value="${esc(c.id)}" ${c.id===selected?'selected':''}>${esc(c.name)} · ${c.provider_type==='cloud'?'云端':'本地'}</option>`).join('')}
   window.deleteModelConfigV35=async function(id){if(!confirm('确认删除这个模型配置？'))return;const r=await safe(api(`/api/v35/model-configs/${id}`,{method:'DELETE'}));if(!r?.ok)return;state.modelConfigs=(state.modelConfigs||[]).filter(x=>String(x.id)!==String(id));render();toast('已删除')};
   window.testModelConfigV35=async function(id){const action=window.NavigationStability?.action?.(state.page);try{const r=await api(`/api/v35/model-configs/${id}/test-annotation`,{method:'POST'});if(action&&!action.isCurrent())return;modal('模型连接与标注解析测试',`<div class="model-m4-test"><div class="report429-kpis"><div><span>连接</span><b>${r.reachable?'成功':'失败'}</b></div><div><span>提供商</span><b>${esc(providerNames[r.provider]||r.provider||'-')}</b></div><div><span>模型</span><b>${esc(r.model||'-')}</b></div><div><span>耗时</span><b>${Number(r.latency_ms||0)} ms</b></div></div><div class="alert ok">成功解析 ${r.parsed_boxes?.length||0} 个候选框；本次测试不会写入任何图片标注。</div><details><summary>脱敏响应预览</summary><pre class="log small-log">${esc(r.raw_preview||'')}</pre></details><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true)}catch(e){if(action&&!action.isCurrent())return;toast(e.message||e)}};
