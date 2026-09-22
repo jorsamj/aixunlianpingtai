@@ -118,7 +118,7 @@ jobs:
             echo 'canonical annotation shell/save must explicitly decorate negative sample UI' >&2
             exit 1
           fi
-          grep -Fq "window.confirmEmptyAnnotation420=()=>window.saveAnn(false,{confirmEmpty:true});" static/app.js
+          grep -Fq "window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420()" static/app.js
       - name: AutoLabel PollRegistry owner guard
         run: |
           if grep -n -E 'auto422Timer|ai60ListTimer' static/app.js; then
