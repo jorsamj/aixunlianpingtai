@@ -91,3 +91,12 @@ test('ZIP progress bars use transform updates instead of layout-driving width up
   assert.doesNotMatch(source,/zipDurableBar" style="width:/);
   assert.match(styles,/\.up411-bar>i,\.zip411-progress>i>em\{width:100%;transform-origin:left center/);
 });
+
+
+test('ZIP bootstrap recovery follows canonical startup readiness instead of a fixed delay',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/const initialProject=pid\(\)/);
+  assert.match(source,/if\(!initialProject&&window\.__v53InitPromise\)/);
+  assert.match(source,/Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\)=>reconcile\('bootstrap-ready'\)\)/);
+  assert.doesNotMatch(source,/setTimeout\(\(\)=>reconcile\('bootstrap-retry'/);
+});

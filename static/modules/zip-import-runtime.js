@@ -318,5 +318,10 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     return window.modal?.('导入素材 / 标注',`<div class="form"><div class="import-box"><div class="item-title">上传并检查标注</div><div class="item-sub">支持 YOLO、COCO、Pascal VOC。检测到外部标签后，必须先统一到平台标签再正式入库。</div></div><div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div><div class="row end"><button class="btn soft" onclick="closeModal()">取消</button><button class="btn primary" onclick="doImportData()">上传并检查标注</button></div></div>`,true);
   };
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};
-  reconcile('bootstrap').then(value=>{if(!value&&!pid())setTimeout(()=>reconcile('bootstrap-retry').catch(()=>{}),500)}).catch(()=>{});return runtime;
+  const initialProject=pid();
+  reconcile('bootstrap').catch(()=>{});
+  if(!initialProject&&window.__v53InitPromise){
+    Promise.resolve(window.__v53InitPromise).then(()=>reconcile('bootstrap-ready')).catch(()=>{});
+  }
+  return runtime;
 }
