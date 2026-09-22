@@ -37,3 +37,11 @@ test('storage import close hook stops progress polling without replacing closeMo
   assert.match(block, /abortPolling\(\)/);
   assert.doesNotMatch(block, /window\.closeModal=async function/);
 });
+
+
+test('modal and closeModal each expose one public owner', () => {
+  assert.equal((app.match(/window\.modal\s*=/g) || []).length, 1);
+  assert.equal((app.match(/window\.closeModal\s*=/g) || []).length, 1);
+  assert.match(app, /window\.modal=modal/);
+  assert.match(app, /window\.closeModal=async function closeModalCanonical420\(\)/);
+});

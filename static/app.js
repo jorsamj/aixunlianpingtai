@@ -5,9 +5,9 @@ const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidde
 async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
 const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 const navs=['算法列表','训练资源','数据集','训练任务','测试发布'];
-function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase; window.closeModal=closeModal;
+function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
-function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase; window.modal=modal;
+function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase;
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}
 function splitPill(s){return `<span class="pill ${s==='val'?'warn':s==='test'?'blue':'ok'}">${splitName(s)}</span>`}
 async function ensureWorkspace(){const projects=await api('/api/projects');if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');state.projects=projects;state.project=projects[0]}
@@ -2536,7 +2536,6 @@ window.installUsability417=function(){
     if(dynamicModalStack.length){const top=dynamicModalStack.pop();top.remove();return}
     closeModalBase();
   };
-  window.closeModal=closeModal;
   window.closeModalCore424=closeModal;
   window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
