@@ -18449,6 +18449,11 @@ def review_detection_batch_item(project_id: str, batch_id: str, item_index: int,
     ]
     if not rows:
         raise HTTPException(status_code=404, detail="检测结果不存在")
+    terminal = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+    if any(task.status not in terminal for task, _, _, _ in rows):
+        raise HTTPException(status_code=409, detail="检测任务尚未结束，暂不能人工核验")
+    if not any(task.status is TaskStatus.SUCCEEDED for task, _, _, _ in rows):
+        raise HTTPException(status_code=409, detail="该图片没有成功的真实检测结果，暂不能人工核验")
     review = {
         "schema_version": 1,
         "batch_id": str(batch_id),
