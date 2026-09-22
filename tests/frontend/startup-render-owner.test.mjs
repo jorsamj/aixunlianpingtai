@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const styles = fs.readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 
 const legacyStartupTimers = [
   "setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.24.0'}; render(); }},80);",
@@ -37,4 +38,21 @@ test('v42 dashboard renderer only calls helpers from its own scope', () => {
   assert.match(block, /fmtHours42\(d\.totalSeconds\)/);
   assert.match(block, /fmtHours42\(d\.avgSeconds\)/);
   assert.doesNotMatch(block, /fmtHours422|jobDuration422/);
+});
+
+
+test('startup progress patches one stable boot card instead of rebuilding the whole view', () => {
+  const start = app.indexOf('function boot(st)');
+  const end = app.indexOf('function apply(s)', start);
+  assert.ok(start >= 0 && end > start);
+  const block = app.slice(start, end);
+
+  assert.match(block, /function paintBoot\(view,st\)/);
+  assert.match(block, /data-boot-card="1"/);
+  assert.match(block, /data-boot-progress-bar/);
+  assert.match(block, /bar\.style\.transform=/);
+  assert.match(block, /paintBoot\(view,st\)/);
+  assert.doesNotMatch(block, /if\(view\)view\.innerHTML=boot\(st\)/);
+  assert.match(styles, /\.boot413-progress>i>em\{[^}]*width:100%[^}]*transform-origin:left center[^}]*transition:transform/);
+  assert.doesNotMatch(styles, /\.boot413-progress>i>em\{[^}]*transition:width/);
 });
