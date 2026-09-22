@@ -22,6 +22,12 @@ test('algorithm and dataset navigation are canonical owners', () => {
   assert.match(main, /registerPageOwner\('数据集'/);
 });
 
+test('shadowed v424 and v425 training-task renderers are physically retired', () => {
+  assert.equal(app.includes('window.renderTraining424=function(){'), false);
+  assert.equal(app.includes('window.renderTraining424=window.renderTraining425=function(){'), false);
+  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
