@@ -284,6 +284,15 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /restoreConfigSnapshot\(\);/);
   assert.match(source, /persistConfigSnapshot\(\);/);
   assert.match(source, /const hasSnapshot = paintCachedPage\(\)/);
+  assert.match(source, /function patchExternalPlatformPage\(view, html, \{preserveConfigDraft = false\} = \{\}\)/);
+  assert.match(source, /view\.replaceChildren\(nextRoot\)/);
+  assert.match(source, /currentNode\.replaceWith\(nextNode\)/);
+  assert.match(source, /preserveConfigDraft: configEditing && !refreshConfigPanel/);
+  assert.match(source, /input\.dataset\.externalDirtyBound === '1'/);
+  const renderStart = source.indexOf('async function render({reload = true, force = false, refreshConfigPanel = false} = {})');
+  const renderEnd = source.indexOf('\n\n  const nav =', renderStart);
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.doesNotMatch(source.slice(renderStart, renderEnd), /view\.innerHTML = configFormHtml\(config\)/);
   assert.match(source, /if \(config && \(!reload \|\| \(!force && fresh\)\)\) return true/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
   assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
