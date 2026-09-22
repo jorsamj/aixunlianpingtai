@@ -488,14 +488,6 @@ window.__resourceDiscoveryDependencies={
   }
   window.loadStorageSources61=loadStorageSources61;
 
-  const previousNav61=renderNav;
-  renderNav=function(){
-    previousNav61();
-    if(!state.v427Advanced)return;
-    const groups=[...document.querySelectorAll('#nav .nav-group')],resource=groups.find(group=>group.querySelector('.nav-group-title')?.textContent.trim()==='资源配置');
-    if(resource&&!resource.querySelector('[data-storage-nav="1"]'))resource.insertAdjacentHTML('beforeend',`<button data-storage-nav="1" class="nav-btn ${state.page==='存储配置'?'active':''}" onclick="setPage('存储配置')"><span class="nav-left"><i>▣</i><b>存储配置</b></span><span class="nav-arrow">›</span></button>`);
-  };
-
   const typeName61=type=>({local:'本地存储',oss:'阿里云 OSS',s3:'S3 兼容',remote:'其他服务器'}[type]||type||'-');
   const health61=source=>source.health_status==='OK'||source.health_status==='AVAILABLE';
   function storageRows61(){

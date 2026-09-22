@@ -107,6 +107,8 @@ test('material-source navigation no longer depends on a legacy wrapper', () => {
 
 test('storage navigation is a canonical owner', () => {
   assert.match(main, /\['存储配置', 'renderStorageSources61'\]/);
+  assert.equal(app.includes('const previousNav61=renderNav;'), false);
+  assert.equal(app.includes('data-storage-nav="1"'), false);
 });
 
 test('deployment pages are canonical owners', () => {
