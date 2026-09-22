@@ -2175,7 +2175,29 @@ window.installUsability417=function(){
 // v40: 组件检测中心
 // ============================================================
 (function(){
-  state.componentScan=null;state.componentScanTimer=null;
+  state.componentScan=state.componentScan||null;state.componentScanTimer=null;
+  state.componentScanLoadedAt=Number(state.componentScanLoadedAt||0);
+  const COMPONENT_SCAN_CACHE_KEY='cl_component_scan_v40_snapshot';
+  const COMPONENT_SCAN_CACHE_TTL_MS=5*60*1000;
+  const componentCacheShapeV40=s=>({
+    id:s?.id||'',status:s?.status||'',stage:s?.stage||'',progress:Number(s?.progress||0),
+    summary:s?.summary||{},components:Array.isArray(s?.components)?s.components:[],
+    capabilities:Array.isArray(s?.capabilities)?s.capabilities:[],atlas:s?.atlas||null,
+    created_at:s?.created_at||'',updated_at:s?.updated_at||'',
+  });
+  function restoreComponentScanCacheV40(){
+    try{
+      const cached=JSON.parse(localStorage.getItem(COMPONENT_SCAN_CACHE_KEY)||'null');
+      if(!cached?.scan)return false;
+      state.componentScan=componentCacheShapeV40(cached.scan);
+      state.componentScanLoadedAt=Number(cached.ts||0);
+      return true;
+    }catch(_){return false}
+  }
+  function persistComponentScanCacheV40(){
+    try{localStorage.setItem(COMPONENT_SCAN_CACHE_KEY,JSON.stringify({ts:Date.now(),scan:componentCacheShapeV40(state.componentScan)}))}catch(_){}
+  }
+  restoreComponentScanCacheV40();
   const compStatus=s=>`<span class="pill ${s==='ready'?'ok':s==='missing'?'err':'warn'}">${s==='ready'?'满足':s==='missing'?'缺失':'需确认'}</span>`;
   function compRow(c){return `<div class="component-row"><div class="component-state">${compStatus(c.status)}</div><div class="grow"><div class="item-title">${esc(c.name)}</div><div class="item-sub">${esc(c.version||'')}${c.path?` · ${esc(c.path)}`:''}</div>${c.detail?`<div class="component-detail">${esc(c.detail)}</div>`:''}${c.status!=='ready'&&c.fix?`<div class="component-fix">${esc(c.fix)}</div>`:''}</div></div>`}
   function capCard(c){return `<div class="capability-card ${c.status}"><div class="capability-head"><b>${esc(c.name)}</b>${compStatus(c.status)}</div><div class="item-sub">${c.remote?'远程部署资源可用':'本机/已配置资源'} · ${c.ready||0}/${c.total||0}</div></div>`}
@@ -2188,9 +2210,18 @@ window.installUsability417=function(){
   function patchCompProgress(){const box=document.getElementById('componentBody');if(!box)return false;if(!box.querySelector('[data-component-summary="total"]'))return renderCompBody();const s=state.componentScan||{},sum=s.summary||{ready:0,warning:0,missing:0,total:0},progress=componentProgressValue(s),running=componentScanActive(s);for(const key of ['ready','warning','missing','total']){const node=box.querySelector(`[data-component-summary="${key}"]`);if(node)node.textContent=String(sum[key]||0)}const progressBox=box.querySelector('[data-component-progress]'),bar=box.querySelector('[data-component-progress-bar]'),stage=box.querySelector('[data-component-stage]'),percent=box.querySelector('[data-component-percent]');if(progressBox)progressBox.hidden=!running;if(bar){bar.dataset.progress=progress.toFixed(2);bar.style.transform=`scaleX(${(progress/100).toFixed(4)})`}if(stage)stage.textContent=s.stage||'检测中';if(percent)percent.textContent=`${Math.round(progress)}%`;return true}
   function clearComponentScanPollV40(){window.PollRegistryRuntime?.clear?.(COMPONENT_SCAN_POLL_KEY);if(state.componentScanTimer!=null&&!window.PollRegistryRuntime?.clear){clearTimeout(state.componentScanTimer)}state.componentScanTimer=null}
   function armComponentScanPollV40(id){clearComponentScanPollV40();if(state.page!=='组件检测'||!id||!componentScanActive())return null;const callback=()=>window.pollComponentScanV40?.(id);state.componentScanTimer=window.PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)??setTimeout(callback,650);return state.componentScanTimer}
-  window.renderComponentCheckV40=async()=>{const view=document.getElementById('view');if(!view)return false;view.innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">组件检测</div><div class="subline">训练、导出、量化与芯片编译环境</div></div><button id="componentScanBtn" class="btn primary" onclick="startComponentScanV40()">开始检测</button></div><div class="panel-body" id="componentBody">${state.componentScan?componentBodyHtml():'<div class="loading">正在读取检测记录...</div>'}</div></section>`;const latest=await safe(api('/api/v40/system/components/latest'));if(state.page!=='组件检测')return false;state.componentScan=latest||{};renderCompBody();if(componentScanActive())armComponentScanPollV40(state.componentScan.id);else clearComponentScanPollV40();return true};
-  window.startComponentScanV40=async()=>{const b=document.getElementById('componentScanBtn');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v40/system/components/scan',{method:'POST'});state.componentScan=r;renderCompBody();armComponentScanPollV40(r.id)}catch(e){toast(e.message||e);if(b){b.disabled=false;b.textContent='开始检测'}}};
-  window.pollComponentScanV40=async id=>{clearComponentScanPollV40();if(state.page!=='组件检测')return null;const r=await safe(api(`/api/v40/system/components/scan/${id}`));if(state.page!=='组件检测')return r;if(r){state.componentScan=r;if(componentScanActive(r))patchCompProgress();else renderCompBody()}if(r&&componentScanActive(r)){armComponentScanPollV40(id)}else{clearComponentScanPollV40();const b=document.getElementById('componentScanBtn');if(b){b.disabled=false;b.textContent='重新检测'}if(r?.status==='done')toast('组件检测完成')}return r};
+  window.renderComponentCheckV40=async()=>{
+    const view=document.getElementById('view');if(!view)return false;
+    view.innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">组件检测</div><div class="subline">训练、导出、量化与芯片编译环境</div></div><button id="componentScanBtn" class="btn primary" onclick="startComponentScanV40()">${state.componentScan?'重新检测':'开始检测'}</button></div><div class="panel-body" id="componentBody">${componentBodyHtml()}</div></section>`;
+    const age=Date.now()-Number(state.componentScanLoadedAt||0);
+    const cacheFresh=!!state.componentScan&&!componentScanActive()&&state.componentScanLoadedAt>0&&age>=0&&age<COMPONENT_SCAN_CACHE_TTL_MS;
+    if(cacheFresh){clearComponentScanPollV40();return true}
+    const latest=await safe(api('/api/v40/system/components/latest'));if(state.page!=='组件检测')return false;
+    if(latest){state.componentScan=latest;state.componentScanLoadedAt=Date.now();persistComponentScanCacheV40()}
+    renderCompBody();if(componentScanActive())armComponentScanPollV40(state.componentScan?.id);else clearComponentScanPollV40();return true
+  };
+  window.startComponentScanV40=async()=>{const b=document.getElementById('componentScanBtn');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v40/system/components/scan',{method:'POST'});state.componentScan=r;state.componentScanLoadedAt=Date.now();persistComponentScanCacheV40();renderCompBody();armComponentScanPollV40(r.id)}catch(e){toast(e.message||e);if(b){b.disabled=false;b.textContent='开始检测'}}};
+  window.pollComponentScanV40=async id=>{clearComponentScanPollV40();if(state.page!=='组件检测')return null;const r=await safe(api(`/api/v40/system/components/scan/${id}`));if(state.page!=='组件检测')return r;if(r){state.componentScan=r;state.componentScanLoadedAt=Date.now();persistComponentScanCacheV40();if(componentScanActive(r))patchCompProgress();else renderCompBody()}if(r&&componentScanActive(r)){armComponentScanPollV40(id)}else{clearComponentScanPollV40();const b=document.getElementById('componentScanBtn');if(b){b.disabled=false;b.textContent='重新检测'}if(r?.status==='done')toast('组件检测完成')}return r};
 })();
 
 // ============================================================
