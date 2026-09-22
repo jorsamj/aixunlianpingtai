@@ -389,8 +389,8 @@ function modelOptionsHtml(selectedIndex=0){return (state.testModels||[]).map((m,
 function pickEnvForFramework(fw){return (state.inferenceEnvs||[]).find(e=>e.framework===fw&&e.status==='ready') || (state.inferenceEnvs||[]).find(e=>e.status==='ready') || {};}
 function renderDetectionResult(r,title){return `<div class="compare-card"><div class="compare-head"><b>${esc(title)}</b><span>${esc(r.engine||'')} · ${esc(r.elapsed_ms||0)}ms · ${esc((r.detections||[]).length)}个结果</span></div>${r.image_url?`<img class="result-img" src="${r.image_url}">`:''}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${(r.detections||[]).map(d=>`<tr><td>${esc(d.label)}</td><td>${esc(d.confidence)}</td><td>${esc(d.x1)},${esc(d.y1)},${esc(d.x2)},${esc(d.y2)}</td></tr>`).join('')||'<tr><td colspan="3">无结果</td></tr>'}</tbody></table></div>`}
 async function benchPredictOne(selectId,file,conf){const m=state.testModels[+$(selectId).value];if(!m)throw new Error('请选择模型');const fw=m.framework||($(selectId).selectedOptions[0]?.dataset.fw)||'ultralytics';const env=pickEnvForFramework(fw);const fd=new FormData();fd.append('file',file);fd.append('model_name',m.model_name||'');fd.append('model_source',m.model_source||'project');fd.append('local_path',m.path||'');fd.append('algorithm_id',m.algorithm_id||'');fd.append('version_id',m.version_id||'');fd.append('conf',conf);fd.append('inference_framework',fw);fd.append('inference_env_id',env.id||'');const r=await api(`/api/v12/projects/${pid()}/predict`,{method:'POST',body:fd});return {r,m,env};}
-window.benchSingle=async(selectId)=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">检测中...</div>';try{const {r,m}=await benchPredictOne(selectId,file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(r,m.label||m.model_name||'模型检测')}catch(e){toast(e.message||e);out.innerHTML=''}};
-window.benchCompare=async()=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">两个模型检测中...</div>';try{const a=await benchPredictOne('benchModelA',file,$('#benchConf').value||0.25);const b=await benchPredictOne('benchModelB',file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(a.r,a.m.label||'原始模型')+renderDetectionResult(b.r,b.m.label||'新模型')}catch(e){toast(e.message||e);out.innerHTML=''}};
+window.benchSingleLegacy=async(selectId)=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">检测中...</div>';try{const {r,m}=await benchPredictOne(selectId,file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(r,m.label||m.model_name||'模型检测')}catch(e){toast(e.message||e);out.innerHTML=''}};
+window.benchCompareLegacy1=async()=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">两个模型检测中...</div>';try{const a=await benchPredictOne('benchModelA',file,$('#benchConf').value||0.25);const b=await benchPredictOne('benchModelB',file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(a.r,a.m.label||'原始模型')+renderDetectionResult(b.r,b.m.label||'新模型')}catch(e){toast(e.message||e);out.innerHTML=''}};
 
 // 初次加载后若脚本后续追加了检测台，再重绘一次导航。
 setTimeout(()=>{try{renderNav()}catch(e){}},0);
@@ -418,7 +418,7 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
     const f=$('#benchFile'); if(f) f.value='';
   };
 
-  window.benchCompare=async()=>{
+  window.benchCompareLegacy2=async()=>{
     const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');
     const out=$('#benchResult');out.innerHTML='<div class="loading">两个模型检测中，飞桨模型首次检测可能需要加载配置...</div>';
     try{
@@ -972,7 +972,7 @@ window.installUsability417=function(){
     return `<div class="compare-card enhanced-result"><div class="compare-head"><div><b>${esc(title||'检测结果')}</b><div class="item-sub">${esc(r?.model||'')} · ${esc(r?.engine||'')} · ${esc(r?.elapsed_ms||0)}ms</div></div><span class="pill ${dets.length?'ok':'warn'}">${dets.length} 个结果</span></div>${r?.note?`<div class="alert warn mini-alert">${esc(r.note)}</div>`:''}${r?.image_url?`<div class="result-img-wrap"><img class="result-img" src="${r.image_url}"></div>`:''}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   };
 
-  window.benchPredictOne = async function(selectId,file,conf){
+  window.benchPredictOneLegacy30 = async function(selectId,file,conf){
     if(!file) throw new Error('请选择测试图片');
     const {sel,m} = selectedModel(selectId);
     const fw = m.framework || sel.selectedOptions?.[0]?.dataset?.fw || 'ultralytics';
@@ -987,9 +987,6 @@ window.installUsability417=function(){
     const r = await api(`/api/v12/projects/${pid()}/predict`, {method:'POST', body:fd});
     return {r,m,env};
   };
-  // 覆盖同名全局绑定，避免旧函数继续读 null.value。
-  try { benchPredictOne = window.benchPredictOne; } catch(e) {}
-
   window.benchSingle = async function(selectId){
     const out=q('benchResult');
     const file=fileOf('benchFile');
@@ -1029,7 +1026,7 @@ window.installUsability417=function(){
 
 
 
-  window.predict = async function(){
+  window.predictCore30 = async function(){
     const out=q('predResult');
     try{
       const file=fileOf('predFile');
@@ -1100,7 +1097,7 @@ window.installUsability417=function(){
     $('#view').innerHTML=`<div class="grid2"><section class="panel"><div class="panel-head"><div><div class="panel-title">模型测试</div><div class="subline">单模型测试入口；需要对比时请用检测台。</div></div><button class="btn small" onclick="refreshTestPageDataV3()">刷新环境/模型</button></div><div class="panel-body"><div class="form"><div class="field"><label>测试环境</label><select class="select" id="inferEnv" onchange="syncTestModelByEnv()">${envOptions||'<option value="">暂无可用测试环境</option>'}</select></div><div class="field"><label>测试模型</label><select class="select" id="testModel">${modelOptions||'<option value="">暂无可测试模型</option>'}</select></div><div class="field"><label>置信度</label><div class="row"><input id="conf" class="input" value="0.25"><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.01'">0.01</button><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.05'">0.05</button><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.25'">0.25</button></div></div><div class="field"><label>测试图片</label><input id="predFile" type="file" accept="image/*" class="file"></div><button class="btn primary" onclick="predict()">开始测试</button><div id="predResult"></div></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">待发布/可导出模型</div><div class="subline">先检测效果，再归属算法或导出部署包。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>大小</th><th>操作</th></tr></thead><tbody>${(state.pending||[]).map(pendingRow).join('')||'<tr><td colspan="3">暂无待发布模型</td></tr>'}</tbody></table></div></section></div><section class="panel"><div class="panel-head"><div class="panel-title">测试环境状态</div></div><div class="panel-body"><div class="card-list">${(state.inferenceEnvs||[]).map(e=>`<div class="item"><div><div class="item-title">${esc(e.name)}</div><div class="item-sub">${esc(e.python_path||e.base_url||'')} · ${esc(e.note||'')}</div></div><span class="pill ${e.status==='ready'?'ok':e.status==='warning'?'warn':'err'}">${e.status==='ready'?'可用':e.status==='warning'?'需确认':'不可用'}</span></div>`).join('')||'<div class="empty">暂无测试环境，请先到训练资源里检测 Ultralytics 或配置飞桨。</div>'}</div></div></section>`;
     if(typeof syncTestModelByEnv==='function') syncTestModelByEnv();
   };
-  window.renderTest=window.renderTestCore30;
+  window.renderTestLegacy30=window.renderTestCore30;
   
 })();
 
@@ -4956,7 +4953,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.lastOnlinePrediction63=state.lastOnlinePrediction63||null;
   const ONLINE_FEEDBACK_CACHE_TTL_MS=60*1000;
   window.predict=async function predictCanonicalFeedback63(){
-    const result=await window.predictCore12?.apply(this,arguments);
+    const result=await window.predictCore30?.apply(this,arguments);
     const prediction=state.lastOnlinePrediction63;
     const out=document.getElementById('predResult');
     if(prediction?.feedback_eligible&&out&&!out.querySelector('.online-feedback-prompt63')){
