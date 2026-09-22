@@ -344,7 +344,7 @@ jobs:
           grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
           grep -Fq "'部署转换': ['loadDeployData', 'refreshDeployTasks', 'refreshDeployJobsV39']" static/modules/navigation-stability.js
           grep -Fq "'deploy-jobs-v39','部署转换'" static/app.js
-          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422538';" static/main.mjs
+          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422539';" static/main.mjs
           grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
           grep -Fq "registerPageOwner('平台对接'" static/main.mjs
           grep -Fq 'navigation: window.PlatformCore?.navigation || {}' static/main.mjs

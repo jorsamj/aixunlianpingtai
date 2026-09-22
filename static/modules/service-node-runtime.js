@@ -479,6 +479,10 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     try {
       const result = await requestJson(`${API_ROOT}/${encodeURIComponent(nodeId)}/connectivity-test`, {method: 'POST'});
       connectivityResults.set(String(nodeId), {...result, tested_at: Date.now()});
+      // Connectivity is local UI state, independent from the node-list payload.
+      // Paint it immediately instead of waiting for a list refresh that may
+      // legitimately return byte-for-byte identical node data.
+      if (currentPage() === PAGE) paintPage();
       const ageText = Number.isFinite(Number(result?.heartbeat_age_seconds))
         ? ` · 最近心跳 ${timeAgo(result.heartbeat_age_seconds)}`
         : '';
@@ -567,7 +571,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   decorateNavigation();
 
   const runtime = {
-    build: 'service-node-runtime-422538',
+    build: 'service-node-runtime-422539',
     page: PAGE,
     load,
     render,
