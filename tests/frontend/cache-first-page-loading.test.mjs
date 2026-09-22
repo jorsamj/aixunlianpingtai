@@ -57,6 +57,11 @@ test('frequently revisited operational pages paint before focused revalidation',
   assert.ok(finalAuto.indexOf('renderAiTaskPage60') < finalAuto.indexOf('refreshAnnotationTasks60()'));
   assert.match(source, /const AI_TASK_PAGE_ENTRY_REUSE_MS=5000/);
   assert.match(finalAuto, /if\(hasSnapshot&&age>=0&&age<AI_TASK_PAGE_ENTRY_REUSE_MS\)return/);
+  const autoShell = block('function renderAiTaskPage60({loading=false}={})', '\n  const AI_TASK_PAGE_ENTRY_REUSE_MS=5000');
+  assert.match(autoShell, /data-ai-task-shell/);
+  assert.match(autoShell, /view\.replaceChildren\(mount\)/);
+  assert.match(autoShell, /if\(!shell\)/);
+  assert.doesNotMatch(autoShell, /document\.getElementById\('view'\)\.innerHTML/);
 
   const clean = block('function renderCleanOps427()', '\n\n  // ----- model config: prompt lives with model -----');
   assert.match(clean, /document\.getElementById\('view'\)\.innerHTML/);
