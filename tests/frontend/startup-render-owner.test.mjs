@@ -56,6 +56,12 @@ test('canonical dashboard refreshes only focused source and quality extras witho
   assert.match(canonical, /refreshDashboardExtras422\(\)/);
   assert.match(canonical, /patchDashboardExtras422\(\)/);
   assert.doesNotMatch(canonical, /load42\(/);
+  assert.match(app, /window\.renderHomeDashboard=renderHomeDashboard=window\.renderDashboardCanonical422/);
+
+  const renderMapStart = app.indexOf('const RENDER_MAP=()=>({');
+  const renderMapEnd = app.indexOf('\n  });', renderMapStart);
+  assert.ok(renderMapStart >= 0 && renderMapEnd > renderMapStart);
+  assert.match(app.slice(renderMapStart, renderMapEnd), /'工作台': renderHomeDashboard/);
 
   const refreshStart = app.indexOf('async function refreshDashboardExtras422');
   const refreshEnd = app.indexOf('\n  function patchDashboardExtras422', refreshStart);
