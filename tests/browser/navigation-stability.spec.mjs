@@ -366,19 +366,44 @@ test('formal version marker stays stable across final render owners and delayed 
   expect(pageErrors).toEqual([]);
 });
 
-test('file input beautification survives page render lifecycle ownership', async ({page}) => {
+test('quality-center detection file input survives page render lifecycle ownership', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
-  await page.evaluate(() => window.setPage('测试发布'));
-  await expect(page.locator('#title')).toContainText('测试发布');
-  await expect(page.locator('#predFile')).toHaveClass(/native-file426/);
-  await expect(page.locator('#predFile + .filepicker426')).toBeVisible();
-  await expect(page.locator('#predFile + .filepicker426 .filepicker426-btn')).toContainText('选择图片');
+  await page.evaluate(async () => {
+    window.setPage('质量中心');
+    await window.setQualityCenterTab411?.('detect');
+  });
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.locator('#benchFile')).toHaveClass(/native-file426/);
+  await expect(page.locator('#benchFile + .filepicker426')).toBeVisible();
+  await expect(page.locator('#benchFile + .filepicker426 .filepicker426-btn')).toContainText('选择图片');
 
+  expect(pageErrors).toEqual([]);
+});
+
+test('retired testing routes resolve to quality center and normal navigation exposes only three product groups', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => {
+    state.v427Advanced = false;
+    window.renderNav?.();
+    window.setPage('检测台');
+  });
+  await expect(page.locator('#title')).toHaveText('质量中心');
+  await expect(page.locator('.nav-group-title')).toHaveText(['总览','算法生成','数据中心']);
+  await expect(page.locator('#nav')).not.toContainText('测试评测');
+  await expect(page.locator('#nav')).not.toContainText('部署中心');
+  await expect(page.locator('#nav')).not.toContainText('测试发布');
+
+  await page.evaluate(() => window.setPage('测试发布'));
+  await expect(page.locator('#title')).toHaveText('质量中心');
   expect(pageErrors).toEqual([]);
 });
 
