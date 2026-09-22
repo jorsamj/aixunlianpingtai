@@ -7,6 +7,11 @@ const app = await readFile(new URL('../../static/app.js', import.meta.url), 'utf
 test('modal closing uses explicit core and before-close hooks', () => {
   assert.equal(app.includes('const previousCloseImport=window.closeModal;'), false);
   assert.equal(app.includes('const previousClose=window.closeModal;'), false);
+  assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), false);
+  assert.match(app, /function modalBase\(title,body,wide=false\)/);
+  assert.match(app, /function closeModalBase\(\)/);
+  assert.match(app, /modal=function modalStackCanonical424\(title,body,wide=false\)/);
+  assert.match(app, /closeModal=function closeModalStackCore424\(\)/);
   assert.match(app, /window\.closeModalCore424=closeModal/);
   assert.match(app, /window\.beforeCloseStorageImport61=function\(\)/);
   assert.match(app, /window\.closeModal=async function closeModalCanonical420\(\)/);

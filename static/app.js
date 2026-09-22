@@ -5,9 +5,9 @@ const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidde
 async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
 const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 const navs=['算法列表','训练资源','数据集','训练任务','测试发布'];
-function closeModal(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} window.closeModal=closeModal;
+function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase; window.closeModal=closeModal;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
-function modal(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})}
+function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase; window.modal=modal;
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}
 function splitPill(s){return `<span class="pill ${s==='val'?'warn':s==='test'?'blue':'ok'}">${splitName(s)}</span>`}
 async function ensureWorkspace(){const projects=await api('/api/projects');if(!Array.isArray(projects)||projects.length!==1)throw new Error('默认空间加载失败');state.projects=projects;state.project=projects[0]}
@@ -2535,21 +2535,20 @@ window.installUsability417=function(){
     layer.addEventListener('mousedown',e=>{if(e.target===layer)closeModal()});
     document.body.appendChild(layer); dynamicModalStack.push(layer); return layer;
   }
-  const oldModal424=modal, oldClose424=closeModal;
-  modal=function(title,body,wide=false){
+  modal=function modalStackCanonical424(title,body,wide=false){
     if(baseModal && baseModal.classList.contains('hidden') && dynamicModalStack.length===0){
-      oldModal424(title,body,wide); return baseModal;
+      modalBase(title,body,wide); return baseModal;
     }
     return makeLayer424(title,body,wide);
   };
   window.modal=modal;
-  closeModal=function(){
+  closeModal=function closeModalStackCore424(){
     if(dynamicModalStack.length){const top=dynamicModalStack.pop();top.remove();return}
-    oldClose424();
+    closeModalBase();
   };
   window.closeModal=closeModal;
   window.closeModalCore424=closeModal;
-  window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))oldClose424()};
+  window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
   // ---------- all images are one logical data pool ----------
 
