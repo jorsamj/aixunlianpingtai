@@ -4926,11 +4926,11 @@ window.installUsability417?.();
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
     const hasSnapshot=Number(state.annotationTasks60LoadedAt||0)>0||(state.annotationTasks60||[]).length>0;
     renderAiTaskPage60({loading:!hasSnapshot});
-    if(hasSnapshot)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[]);
+    if(hasSnapshot)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
     void refreshAnnotationTasks60().then(tasks=>{
       if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
       renderAiTaskRows60(tasks||[]);
-      window.AutoLabelPollRuntime?.activate?.(tasks||[]);
+      window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
     }).catch(error=>{
       if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
       if(!hasSnapshot){const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML=`<tr><td colspan="6">AI标注任务读取失败：${esc(error.message||error)}</td></tr>`}

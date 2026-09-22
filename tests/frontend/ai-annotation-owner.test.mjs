@@ -18,10 +18,12 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
   assert.match(finalSubmitBody, /const task=await api\(taskApi\(\),/);
   assert.doesNotMatch(finalSubmitBody, /\/api\/v3[35]\/projects/);
 
+  const finalPage = source.lastIndexOf('function renderAiTaskPage60');
   const finalRender = source.lastIndexOf('window.renderOps427=function()');
   const legacyRender = source.lastIndexOf('window.renderAutoLabel422=async function()');
-  assert.ok(finalRender > legacyRender, 'v60 task list must remain the final auto-label page owner');
-  assert.match(source.slice(finalRender), /AI自动标注/);
+  assert.ok(finalPage > legacyRender, 'v60 task shell must load after legacy auto-label pages');
+  assert.ok(finalRender > finalPage, 'v60 task list must remain the final auto-label page owner');
+  assert.match(source.slice(finalPage, finalRender), /AI自动标注/);
   assert.match(source.slice(finalRender), /候选结果不会自动写入正式标注/);
 });
 
