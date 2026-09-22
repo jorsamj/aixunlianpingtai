@@ -333,8 +333,10 @@ function adoptPageExtrasInflight(page, promise) {
 
 function refreshPageExtrasInBackground(page, {force = false} = {}) {
   if (!PAGE_EXTRAS_OWNERS.has(page) || typeof window.loadPageExtras413 !== 'function') return null;
-  const age = Date.now() - Number(pageExtrasLoadedAt.get(page) || 0);
-  if (!force && pageExtrasLoadedAt.has(page) && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
+  const snapshotLoadedAt = Number(state.__coreSnapshotGeneratedAt || 0);
+  const loadedAt = Number(pageExtrasLoadedAt.get(page) || snapshotLoadedAt || 0);
+  const age = Date.now() - loadedAt;
+  if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
   if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
   const task = Promise.resolve(window.loadPageExtras413(page)).then(() => {
     pageExtrasLoadedAt.set(page, Date.now());

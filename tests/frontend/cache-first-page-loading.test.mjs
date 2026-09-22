@@ -176,3 +176,15 @@ test('deploy artifact page reuses the current snapshot before background revalid
   assert.ok(artifacts.indexOf("const rows=(state.deployArtifacts||[])") > artifacts.indexOf('primeDeployRenderV39'));
   assert.doesNotMatch(artifacts, /deployArtifactsRefreshedAt\|\|0\)>1000/);
 });
+
+
+test('fresh startup snapshot suppresses redundant page extras and second navigation paint', () => {
+  const start = main.indexOf('function refreshPageExtrasInBackground(page');
+  const end = main.indexOf('\n\nfunction refreshCurrentPageOwner(page)', start);
+  assert.ok(start >= 0 && end > start);
+  const refresh = main.slice(start, end);
+  assert.match(refresh, /const snapshotLoadedAt = Number\(state\.__coreSnapshotGeneratedAt \|\| 0\)/);
+  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(page\) \|\| snapshotLoadedAt \|\| 0\)/);
+  assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
+  assert.ok(refresh.indexOf('return null') < refresh.indexOf('window.loadPageExtras413(page)'));
+});
