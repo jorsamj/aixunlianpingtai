@@ -88,6 +88,56 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await page.mouse.move(imageBox.x + imageBox.width * 0.75, imageBox.y + imageBox.height * 0.75, {steps: 5});
   await page.mouse.up();
   await expect(dialog.locator('.box424')).toHaveCount(1);
+
+  const box = dialog.locator('.box424').first();
+  const beforeMove = await box.boundingBox();
+  expect(beforeMove).not.toBeNull();
+  const moveDx = Math.max(6, imageBox.width * 0.08);
+  const moveDy = Math.max(5, imageBox.height * 0.08);
+  await page.mouse.move(beforeMove.x + beforeMove.width / 2, beforeMove.y + beforeMove.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    beforeMove.x + beforeMove.width / 2 + moveDx,
+    beforeMove.y + beforeMove.height / 2 + moveDy,
+    {steps: 4}
+  );
+  await page.mouse.up();
+  const afterMove = await box.boundingBox();
+  expect(afterMove.x).toBeGreaterThan(beforeMove.x + 2);
+  expect(afterMove.y).toBeGreaterThan(beforeMove.y + 2);
+
+  const resizeHandle = box.locator('.handle424.se');
+  await expect(resizeHandle).toBeVisible();
+  const beforeResize = await box.boundingBox();
+  const handleBox = await resizeHandle.boundingBox();
+  expect(handleBox).not.toBeNull();
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    handleBox.x + handleBox.width / 2 + moveDx,
+    handleBox.y + handleBox.height / 2 + moveDy,
+    {steps: 4}
+  );
+  await page.mouse.up();
+  const afterResize = await box.boundingBox();
+  expect(afterResize.width).toBeGreaterThan(beforeResize.width + 2);
+  expect(afterResize.height).toBeGreaterThan(beforeResize.height + 2);
+
+  await dialog.locator('#annImg').hover();
+  await page.mouse.wheel(0, -120);
+  await expect(dialog.locator('#zoomText')).toHaveText('110%');
+  await dialog.getByRole('button', {name: '100%', exact: true}).click();
+  await expect(dialog.locator('#zoomText')).toHaveText('100%');
+  await dialog.getByRole('button', {name: '适应窗口', exact: true}).click();
+  await expect(dialog.locator('#zoomText')).toHaveText(/^\d+%$/);
+  await expect(dialog.locator('#annStage')).toHaveAttribute('style', /transform:\s*scale\(/);
+
+  await dialog.getByRole('button', {name: '删除框', exact: true}).click();
+  await expect(dialog.locator('.box424')).toHaveCount(0);
+  await expect(dialog.getByRole('button', {name: '确认无目标'})).toBeVisible();
+  await dialog.getByRole('button', {name: '撤销', exact: true}).click();
+  await expect(dialog.locator('.box424')).toHaveCount(1);
+
   await dialog.getByRole('button', {name: '保存并继续'}).click();
   await expect(dialog.getByText('已保存 · 1框')).toBeVisible();
 
