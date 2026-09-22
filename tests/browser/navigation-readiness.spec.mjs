@@ -98,6 +98,9 @@ test('startup progress keeps the same boot card while status advances', async ({
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  await page.evaluate(() => window.setPage('标签管理'));
+  await expect(page.locator('#title')).toHaveText('标签管理');
+  await page.evaluate(() => window.PollRegistryRuntime?.registry?.clearAll?.());
 
   let statusCalls = 0;
   let releaseSecond;
