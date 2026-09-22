@@ -28,7 +28,7 @@ test('historical render maps are retired while the bounded dataset delegate rema
   assert.equal((app.match(/function renderDatasets\(\)\{/g) || []).length, 1);
   assert.match(app, /function renderDatasets\(\)\{return window\.renderDatasets424\?\.\(\)\}/);
   assert.match(main, /registerPageOwner\('数据集'/);
-  assert.doesNotMatch(app, /state\.page==='数据集'.*renderDatasets424/);
+  assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
 });
 
 test('R20i keeps the formal visible version independent from internal cache bumps', () => {

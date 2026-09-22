@@ -24,7 +24,7 @@ test('zero-reference legacy dataset action owners stay physically retired', () =
 test('R20j preserves the canonical dataset owner and bounded renderer delegate', () => {
   assert.match(main, /registerPageOwner\('数据集'/);
   assert.match(app, /function renderDatasets\(\)\{return window\.renderDatasets424\?\.\(\)\}/);
-  assert.doesNotMatch(app, /state\.page==='数据集'.*renderDatasets424/);
+  assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
 });
 
 test('R20j keeps the formal visible version independent from internal cache bumps', () => {
