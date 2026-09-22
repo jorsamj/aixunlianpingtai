@@ -12,6 +12,12 @@ test('training creation uses one canonical app owner instead of start-owner wrap
     'const baseStartTraining415=window.startAlgorithmTraining429;',
     'const baseStartTraining417=window.startAlgorithmTraining429;',
     'const previousStart=window.startAlgorithmTraining429;',
+    'const baseRefreshTraining415=window.refreshTrain429;',
+    'const baseRefreshTraining417=window.refreshTrain429;',
+    'const baseToggleTrain417=window.toggleTrainImage429;',
+    'const baseShowIteration417=window.showIterationBase414;',
+    'const baseOpenSettings415=window.openTrainSettings429||window.openTrainSettings428;',
+    'const baseOpenSettings417=window.openTrainSettings429;',
   ]) assert.equal(app.includes(token), false, token);
   assert.equal((app.match(/window\.startAlgorithmTraining429=/g) || []).length, 1);
   assert.match(app, /window\.openTrainingCreateDialog429=function\(aid\)/);
@@ -20,6 +26,13 @@ test('training creation uses one canonical app owner instead of start-owner wrap
   assert.match(app, /window\.syncTrainingIteration417=function\(aid\)/);
   assert.match(app, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
   assert.match(app, /window\.startAlgorithmTraining429=window\.openTrainingCreateCanonical429/);
+  assert.match(app, /window\.refreshTrain429=function refreshTrainingCreateCanonical429\(\)/);
+  assert.match(app, /window\.toggleTrainImage429=function toggleTrainingImageCanonical429\(id\)/);
+  assert.match(app, /window\.showIterationBase414=function showTrainingIterationCanonical414\(aid\)/);
+  assert.match(app, /window\.openTrainSettings429=function openTrainingSettingsCanonical429\(\)/);
+  assert.match(app, /window\.refreshTrainCore429=function\(\)/);
+  assert.match(app, /window\.toggleTrainImageCore429=function\(id\)/);
+  assert.match(app, /window\.showIterationBaseCore414=function\(aid\)/);
 });
 
 test('hydration runtime depends on the canonical form owner explicitly', () => {
