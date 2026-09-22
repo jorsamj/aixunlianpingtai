@@ -8,16 +8,61 @@ async function selectIsolatedTestProject(page, projectId) {
   });
 }
 
-async function runPredictionWithTestImage(page, name, buffer) {
-  await page.evaluate(async ({fileName, bytes}) => {
-    const input = document.getElementById('predFile');
-    if (!input) throw new Error('prediction file input is unavailable');
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([Uint8Array.from(bytes)], fileName, {type: 'image/bmp'}));
-    input.files = transfer.files;
-    input.dispatchEvent(new Event('change', {bubbles: true}));
-    await window.predict();
-  }, {fileName: name, bytes: [...buffer]});
+async function openQualityFeedbackFromResult(page, {
+  taskId, fileName, predictionId, detections = [],
+  algorithmId = 'algo-feedback', versionId = 'version-feedback',
+}) {
+  await page.evaluate(async payload => {
+    window.setPage('质量中心');
+    await window.setQualityCenterTab411?.('detect');
+    state.benchBatch64 = {
+      id: 'browser-feedback-batch',
+      mode: 'a',
+      total: 1,
+      completed: 1,
+      success: 1,
+      failed: 0,
+      running: false,
+      cancelled: false,
+      results: [{
+        id: 'browser-feedback-batch-0',
+        batchId: 'browser-feedback-batch',
+        itemIndex: 0,
+        file: {name: payload.fileName},
+        originalFilename: payload.fileName,
+        inputImageUrl: '/placeholder.jpg',
+        status: 'done',
+        error: '',
+        review: '',
+        reviewNote: '',
+        a: {
+          task_id: payload.taskId,
+          m: {
+            label: '算法版本：烟雾识别 / 当前',
+            model_source: 'algorithm_version',
+            algorithm_id: payload.algorithmId,
+            version_id: payload.versionId,
+            framework: 'ultralytics',
+          },
+          r: {
+            detections: payload.detections,
+            image_url: '/placeholder.jpg',
+            input_image_url: '/placeholder.jpg',
+            elapsed_ms: 5,
+          },
+        },
+        b: null,
+      }],
+    };
+    window.renderBenchBatch64?.();
+    window.openBenchResult64?.(0);
+  }, {taskId, fileName, predictionId, detections, algorithmId, versionId});
+
+  const detail = page.getByRole('dialog', {name: '检测详情'});
+  await expect(detail).toBeVisible();
+  await detail.getByRole('button', {name: /A 模型 · 提交抽检反馈/}).click();
+  await expect.poll(async () => page.evaluate(() => state.lastOnlinePrediction63?.prediction_id || ''))
+    .toBe(predictionId);
 }
 
 function bmp(width=96,height=72){
@@ -53,16 +98,15 @@ test('formal version prediction enters reviewed online feedback without automati
       path:'/models/best.pt',
     }]}),
   }));
-  await page.route(`**/api/v12/projects/${encoded}/predict`,async route=>{
+  await page.route(`**/api/v64/projects/${encoded}/deployment-tests/task-feedback-1/feedback-evidence`,async route=>{
     await route.fulfill({
       status:200,contentType:'application/json',
       body:JSON.stringify({
-        ok:true,prediction_id:'prediction-feedback-1',feedback_eligible:true,
+        ok:true,idempotent:false,prediction_id:'prediction-feedback-1',feedback_eligible:true,
         algorithm_id:'algo-feedback',version_id:'version-feedback',
         model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),
         detections:[{class_id:0,label:'smoke',confidence:.91,x1:10,y1:8,x2:60,y2:50}],
         image_url:`/data/projects/${project.id}/predictions/prediction-feedback-1_result.jpg`,
-        elapsed_ms:12.3,engine:'ultralytics',python_path:'/opt/yolo/bin/python',
       }),
     });
   });
@@ -122,17 +166,17 @@ test('formal version prediction enters reviewed online feedback without automati
 
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(()=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'质量中心'}));
   });
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
-  await page.evaluate(()=>window.setPage('测试发布'));
+  await page.evaluate(async()=>{window.setPage('质量中心');await window.setQualityCenterTab411?.('detect')});
 
-  await expect(page.getByRole('button',{name:'开始测试'})).toBeEnabled();
   await expect(page.getByText('线上抽检 / 反馈',{exact:true})).toBeVisible();
-  await runPredictionWithTestImage(page, 'camera.bmp', bmp());
-  await expect(page.getByText('正式算法版本可提交抽检反馈')).toBeVisible();
-  await page.getByRole('button',{name:'提交抽检反馈'}).click();
+  await openQualityFeedbackFromResult(page,{
+    taskId:'task-feedback-1',fileName:'camera.bmp',predictionId:'prediction-feedback-1',
+    detections:[{class_id:0,label:'smoke',confidence:.91,x1:10,y1:8,x2:60,y2:50}],
+  });
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
   await create.locator('#feedbackType63').selectOption('needs_correction');
   await create.locator('#feedbackNote63').fill('画面里有烟，但模型漏检');
@@ -177,14 +221,14 @@ test('false-positive feedback requires explicit all-label negative confirmation'
       algorithm_id:'algo-feedback',version_id:'version-feedback',path:'/models/best.pt',
     }]}),
   }));
-  await page.route(`**/api/v12/projects/${encoded}/predict`,route=>route.fulfill({
+  await page.route(`**/api/v64/projects/${encoded}/deployment-tests/task-negative-1/feedback-evidence`,route=>route.fulfill({
     status:200,contentType:'application/json',
     body:JSON.stringify({
-      ok:true,prediction_id:'prediction-negative-1',feedback_eligible:true,
+      ok:true,idempotent:false,prediction_id:'prediction-negative-1',feedback_eligible:true,
       algorithm_id:'algo-feedback',version_id:'version-feedback',
       model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),
       detections:[{class_id:0,label:'smoke',confidence:.8,x1:10,y1:10,x2:40,y2:40}],
-      image_url:'/placeholder.jpg',elapsed_ms:5,engine:'ultralytics',
+      image_url:'/placeholder.jpg',
     }),
   }));
   await page.route(`**/api/v63/projects/${encoded}/online-feedback?*`,route=>route.fulfill({
@@ -216,13 +260,14 @@ test('false-positive feedback requires explicit all-label negative confirmation'
 
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(()=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'质量中心'}));
   });
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
-  await page.evaluate(()=>window.setPage('测试发布'));
-  await runPredictionWithTestImage(page, 'negative.bmp', bmp());
-  await page.getByRole('button',{name:'提交抽检反馈'}).click();
+  await openQualityFeedbackFromResult(page,{
+    taskId:'task-negative-1',fileName:'negative.bmp',predictionId:'prediction-negative-1',
+    detections:[{class_id:0,label:'smoke',confidence:.8,x1:10,y1:10,x2:40,y2:40}],
+  });
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
   await create.locator('#feedbackType63').selectOption('false_positive');
   await create.getByRole('button',{name:'提交到待复核'}).click();
@@ -257,13 +302,13 @@ test('pending reviewed feedback can be dismissed without promotion or training',
       algorithm_id:'algo-feedback',version_id:'version-feedback',path:'/models/best.pt',
     }]}),
   }));
-  await page.route('**/api/v12/projects/'+encoded+'/predict',route=>route.fulfill({
+  await page.route('**/api/v64/projects/'+encoded+'/deployment-tests/task-dismiss-1/feedback-evidence',route=>route.fulfill({
     status:200,contentType:'application/json',
     body:JSON.stringify({
-      ok:true,prediction_id:'prediction-dismiss-1',feedback_eligible:true,
+      ok:true,idempotent:false,prediction_id:'prediction-dismiss-1',feedback_eligible:true,
       algorithm_id:'algo-feedback',version_id:'version-feedback',
       model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),
-      detections:[],image_url:'/placeholder.jpg',elapsed_ms:5,engine:'ultralytics',
+      detections:[],image_url:'/placeholder.jpg',
     }),
   }));
   await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({
@@ -295,19 +340,13 @@ test('pending reviewed feedback can be dismissed without promotion or training',
 
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(()=>{
-    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'质量中心'}));
   });
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(()=>state.uiReady===true&&!state.__extras412)).toBe(true);
-  await page.evaluate(()=>window.setPage('测试发布'));
-  const runButton=page.getByRole('button',{name:'开始测试'});
-  await expect(runButton).toBeEnabled();
-  await runPredictionWithTestImage(page, 'dismiss.bmp', bmp());
-  await expect.poll(async()=>page.evaluate(()=>state.lastOnlinePrediction63?.prediction_id||''))
-    .toBe('prediction-dismiss-1');
-  const feedbackButton=page.getByRole('button',{name:'提交抽检反馈'});
-  await expect(feedbackButton).toBeVisible();
-  await feedbackButton.click();
+  await openQualityFeedbackFromResult(page,{
+    taskId:'task-dismiss-1',fileName:'dismiss.bmp',predictionId:'prediction-dismiss-1',detections:[],
+  });
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
   await create.locator('#feedbackType63').selectOption('needs_correction');
   await create.getByRole('button',{name:'提交到待复核'}).click();
@@ -329,19 +368,20 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
   await page.route('**/api/v12/projects/'+encoded+'/test_models*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
   await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
   await selectIsolatedTestProject(page, project.id);
-  await page.addInitScript(()=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'测试发布'}));});
+  await page.addInitScript(()=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'质量中心'}));});
   await page.goto('/');
   await expect.poll(async()=>page.evaluate(projectId=>(state.projects||[]).some(row=>String(row.id)===String(projectId)),project.id)).toBe(true);
-  await page.evaluate(projectId=>{
+  await page.evaluate(async projectId=>{
     const selected=(state.projects||[]).find(row=>String(row.id)===String(projectId));
     if(!selected)throw new Error('test project is missing from loaded project truth');
     state.project=selected;
     try{
       const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
-      delete saved.projectId;saved.page='测试发布';
+      delete saved.projectId;saved.page='质量中心';
       localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
     }catch(_){}
-    window.setPage('测试发布');
+    window.setPage('质量中心');
+    await window.setQualityCenterTab411?.('detect');
   },project.id);
   await page.getByRole('button',{name:'外部接入'}).click();
   const dialog=page.getByRole('dialog',{name:'外部抽检接入'});
