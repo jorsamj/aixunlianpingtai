@@ -43,6 +43,8 @@ test('auto-label and cleaning tabs dispatch to direct owners without previous re
 test('dataset feedback banner is a post-render hook instead of another renderer wrapper', () => {
   assert.match(app, /window\.renderSupplementDataBanner63=renderSupplementDataBanner63/);
   assert.match(app, /window\.renderSupplementDataBanner63\?\.\(\)/);
+  assert.match(app, /state\.iterationFeedbackOnly63&&feedbackIds\.size/);
+  assert.match(app, /feedbackIds\.has\(String\(row\.id\)\)/);
   assert.equal(app.includes('const datasetRenderFeedback63=window.renderDatasets424;'), false);
 });
 
