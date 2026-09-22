@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422528';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422542';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([
