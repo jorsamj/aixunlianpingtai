@@ -311,8 +311,8 @@ test('training queue displays numeric priorities and orders each resource by pri
   const rows = page.locator('.train428-table tbody tr[data-job-id]');
   await expect(rows).toHaveCount(3);
   expect(await rows.locator('td:first-child .train428-taskname b').allTextContents()).toEqual(['最高优先', '同级先到', '同级后到']);
-  await expect(rows.nth(0).locator('.train428-priority > b')).toHaveText('1');
-  await expect(rows.nth(1).locator('.train428-priority > b')).toHaveText('7');
+  await expect(rows.nth(0).locator('.train428-priority-number')).toHaveText('1');
+  await expect(rows.nth(1).locator('.train428-priority-number')).toHaveText('7');
   await expect(rows.nth(0)).toContainText('CPU · 队列第 1 位');
   await expect(rows.nth(2)).toContainText('CPU · 队列第 3 位');
 });
