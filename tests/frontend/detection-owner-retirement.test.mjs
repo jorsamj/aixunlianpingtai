@@ -25,7 +25,9 @@ test('feedback predictor delegates to latest pre-feedback detection core', () =>
 });
 
 test('v61 owns deployment-aware benchmark execution', () => {
-  assert.match(app, /window\.benchPredictOne=async function\(selectId,file,conf\)/);
+  assert.match(app, /window\.benchPredictOne=async function\(selectId,file,conf,batchMeta=null\)/);
+  assert.match(app, /form\.append\('detection_batch_id',String\(batchMeta\.batch_id\)\)/);
+  assert.match(app, /form\.append\('detection_side',String\(batchMeta\.side\|\|''\)\)/);
   assert.equal(app.includes('try { benchPredictOne = window.benchPredictOne; }'), false);
   assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
 });
