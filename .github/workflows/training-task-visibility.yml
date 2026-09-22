@@ -82,12 +82,12 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422531' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422543' static/index.html
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
           grep -Fq 'setTrainingRealtimeActive' static/modules/poll-registry.js
-          grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'const detachViewAdapter = runtime.setViewAdapter(viewAdapter);' static/modules/training-task-visibility-runtime.js
           grep -Fq '__trainingTaskVisibilityRuntime' static/modules/training-task-visibility-runtime.js
           grep -Fq 'visibleTrainingJobs' static/modules/training-task-visibility-runtime.js
           grep -Fq 'colspan="10" class="empty-row"' static/modules/training-task-visibility-runtime.js
@@ -96,7 +96,14 @@ jobs:
             echo 'visibility runtime must reuse canonical training queue ordering' >&2
             exit 1
           fi
-          grep -Fq "source: 'render'" static/modules/training-task-visibility-runtime.js
+          if grep -Fq 'runtime.refresh = refreshOwned' static/modules/training-task-visibility-runtime.js; then
+            echo 'visibility runtime must not monkey-patch TrainingTaskRuntime.refresh' >&2
+            exit 1
+          fi
+          if grep -Fq 'window.loadRelated =' static/modules/training-task-visibility-runtime.js; then
+            echo 'visibility runtime must not recapture broad loadRelated ownership' >&2
+            exit 1
+          fi
           grep -Fq "'cancel_requested'" static/modules/poll-registry.js
           grep -Fq 'id="tr429TaskId"' static/app.js
           grep -Fq '<label>算法名称</label>' static/app.js
