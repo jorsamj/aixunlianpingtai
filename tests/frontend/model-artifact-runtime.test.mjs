@@ -95,3 +95,18 @@ test('audit polling is PollRegistry-owned and audit rows patch by log id', () =>
   assert.doesNotMatch(source, /window\.setInterval\(/);
   assert.doesNotMatch(source, /body\.innerHTML = auditRowsHtml\(\)/);
 });
+
+
+test('empty audit results are cached and concurrent audit reads are deduped', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/model-artifact-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /const AUDIT_LOG_CACHE_TTL_MS = 10 \* 1000/);
+  assert.match(source, /let logsLoadedAt = 0/);
+  assert.match(source, /let logsInflight = null/);
+  assert.match(source, /let logsCacheKey = ''/);
+  assert.match(source, /if \(!force && logsLoadedAt > 0 && logsCacheKey === cacheKey/);
+  assert.match(source, /if \(logsInflight && logsInflightKey === cacheKey\) return logsInflight/);
+  assert.match(source, /logsLoadedAt = Date\.now\(\)/);
+  assert.match(source, /refreshLogsOnly\(\{force: true\}\)/);
+  assert.doesNotMatch(source, /if \(!logs\.length && !loading\)/);
+  assert.match(source, /build: 'model-artifacts-65005'/);
+});

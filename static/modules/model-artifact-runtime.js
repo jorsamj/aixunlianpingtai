@@ -137,6 +137,11 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   let summary = {total: 0, uploaded: 0, failed: 0, pending: 0};
   let auditSummary = {total: 0, success: 0, failed: 0, unknown: 0, avg_duration_ms: 0};
   let logs = [];
+  let logsLoadedAt = 0;
+  let logsInflight = null;
+  let logsInflightKey = '';
+  let logsCacheKey = '';
+  const AUDIT_LOG_CACHE_TTL_MS = 10 * 1000;
   let loading = false;
   let mutationQueued = false;
 
@@ -274,19 +279,39 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     }
   }
 
-  async function loadLogs() {
+  async function loadLogs({force = false} = {}) {
     const status = document.getElementById('changlianAuditStatus')?.value || '';
     const operation = document.getElementById('changlianAuditOperation')?.value || '';
+    const cacheKey = `${status}\u0000${operation}`;
+    const age = Date.now() - Number(logsLoadedAt || 0);
+    if (!force && logsLoadedAt > 0 && logsCacheKey === cacheKey && age >= 0 && age < AUDIT_LOG_CACHE_TTL_MS) return logs;
+    if (logsInflight && logsInflightKey === cacheKey) return logsInflight;
+    if (logsInflight) {
+      try { await logsInflight; } catch (_) {}
+    }
     const params = new URLSearchParams({limit: '50'});
     if (status) params.set('status', status);
     if (operation) params.set('operation', operation);
-    const [listBody, summaryBody] = await Promise.all([
+    const request = Promise.all([
       requestJson(`${PLATFORM_API}/interaction-logs?${params}`),
       requestJson(`${PLATFORM_API}/interaction-logs/summary?hours=24`),
-    ]);
-    logs = Array.isArray(listBody.items) ? listBody.items : [];
-    auditSummary = summaryBody.summary || auditSummary;
-    return logs;
+    ]).then(([listBody, summaryBody]) => {
+      logs = Array.isArray(listBody.items) ? listBody.items : [];
+      auditSummary = summaryBody.summary || auditSummary;
+      logsLoadedAt = Date.now();
+      logsCacheKey = cacheKey;
+      return logs;
+    });
+    logsInflight = request;
+    logsInflightKey = cacheKey;
+    try {
+      return await request;
+    } finally {
+      if (logsInflight === request) {
+        logsInflight = null;
+        logsInflightKey = '';
+      }
+    }
   }
 
   async function saveModelConfig() {
@@ -351,9 +376,9 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     document.getElementById('modelArtifactSave')?.addEventListener('click', () => void saveModelConfig().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactTestStorage')?.addEventListener('click', () => void testStorage().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactRunNow')?.addEventListener('click', () => void runNow().catch(error => notify?.(error?.message || error)));
-    document.getElementById('changlianAuditRefresh')?.addEventListener('click', () => void refreshLogsOnly().catch(error => notify?.(error?.message || error)));
-    document.getElementById('changlianAuditStatus')?.addEventListener('change', () => void refreshLogsOnly());
-    document.getElementById('changlianAuditOperation')?.addEventListener('change', () => void refreshLogsOnly());
+    document.getElementById('changlianAuditRefresh')?.addEventListener('click', () => void refreshLogsOnly({force: true}).catch(error => notify?.(error?.message || error)));
+    document.getElementById('changlianAuditStatus')?.addEventListener('change', () => void refreshLogsOnly({force: true}));
+    document.getElementById('changlianAuditOperation')?.addEventListener('change', () => void refreshLogsOnly({force: true}));
     document.querySelector('[data-changlian-audit-panel]')?.addEventListener('click', event => {
       const button = event.target.closest('[data-audit-detail]');
       if (button) void openAuditDetail(button.dataset.auditDetail).catch(error => notify?.(error?.message || error));
@@ -369,15 +394,15 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     if (active) return true;
     return registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE, async () => {
       try {
-        if (String(state().page || '') === PLATFORM_PAGE) await refreshLogsOnly();
+        if (String(state().page || '') === PLATFORM_PAGE) await refreshLogsOnly({force: true});
       } catch (_) {
         scheduleAuditPoll();
       }
     }, 10000);
   }
 
-  async function refreshLogsOnly() {
-    await loadLogs();
+  async function refreshLogsOnly({force = false} = {}) {
+    await loadLogs({force});
     const body = document.getElementById('changlianAuditRows');
     if (body) patchAuditRows(body);
     const panel = document.querySelector('[data-changlian-audit-panel]');
@@ -409,7 +434,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     if (page !== PLATFORM_PAGE) return;
     const shell = document.querySelector('[data-external-platform-page="1"]');
     if (!shell) return;
-    if (!logs.length && !loading) {
+    if (!loading) {
       loading = true;
       try { await loadLogs(); } finally { loading = false; }
     }
@@ -431,7 +456,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
       return;
     }
     if (page === PLATFORM_PAGE) {
-      await loadLogs();
+      await loadLogs({force});
       if (rerender) document.querySelector('[data-changlian-audit-panel="1"]')?.remove();
       await renderPanels();
     }
@@ -450,7 +475,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65003',
+    build: 'model-artifacts-65005',
     refresh,
     renderPanels,
     openAuditDetail,
