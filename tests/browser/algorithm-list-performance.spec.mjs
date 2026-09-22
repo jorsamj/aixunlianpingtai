@@ -109,6 +109,8 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await expect(page.locator('.alg428-list-head')).toContainText('算法名称');
+  await expect(page.locator('.alg428-list-head')).toContainText('当前指标');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();

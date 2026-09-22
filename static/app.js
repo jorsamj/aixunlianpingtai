@@ -3778,8 +3778,73 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // -------- stable algorithm renderer --------
   function verRow412(a,v){const can=!!String(v.stored_path||'').trim(),isCurrent=String(a.current_version_id||'')===String(v.id||'');return `<div class="alg428-version-row ${isCurrent?'is-current':''}"><div class="alg428-version-id"><i></i><div><b>${esc(v.version_name||'-')} ${isCurrent?'<em class="alg428-current-badge">当前版本</em>':''}</b><span>${dt412(v.finished_at||v.created_at)}</span></div></div><div class="alg428-version-status"><span>训练状态</span><b>${esc((typeof status429==='function'?status429(v.training_status||v.status||'done'):(v.training_status||v.status||'已完成')))}</b></div><div class="alg428-version-accuracy"><span>正确率 · mAP50</span><b>${pct412(versionMetric412(v))}</b></div><div class="alg428-version-model"><span>训练成果</span><b>${can?esc(v.model_name||'模型文件'):'无模型文件'}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="event.stopPropagation();openVersionReport429('${a.id}','${v.id}')">训练报告</button>${v.training_lineage?`<button class="btn mini" onclick="event.stopPropagation();openVersionLineage429('${a.id}','${v.id}')">训练溯源</button>`:''}${v.evaluation?`<button class="btn mini" onclick="event.stopPropagation();openVersionEvaluation429('${a.id}','${v.id}')">独立评测</button>`:''}<button class="btn mini primary" onclick="event.stopPropagation();openVersionConvert428('${a.id}','${v.id}')">转换</button>${can?`<a class="btn mini" onclick="event.stopPropagation()" href="/api/v12/projects/${pid()}/algorithms/${a.id}/versions/${v.id}/download">下载模型</a>`:''}${isCurrent?'':`<button class="btn mini" onclick="event.stopPropagation();openVersionRollback('${a.id}','${v.id}')">回退到此版本</button>`}</div></div>`}
-  window.renderAlg412=function(){const box=document.getElementById('alg412List');if(!box)return;const q=(window.AlgorithmListRuntime?.filterState?.().query??document.getElementById('alg412Q')?.value??'').trim().toLowerCase(),ind=document.getElementById('alg412Industry')?.value||'all',typ=document.getElementById('alg412Type')?.value||'all';const rows=(state.algorithms||[]).filter(a=>(window.AlgorithmListRuntime?.matchesSearch?.(a,q)??(!q||`${a.name} ${a.code||''} ${a.algorithm_code||''} ${a.product_code||''} ${a.external_product_code||''} ${a.external_product_id||''} ${a.remark||''} ${a.industry||''} ${a.algorithm_type||''}`.toLowerCase().includes(q)))&&(ind==='all'||a.industry===ind)&&(typ==='all'||a.algorithm_type===typ));box.innerHTML=rows.map(a=>{const vs=a.versions||[],current=vs.find(v=>String(v.id||'')===String(a.current_version_id||''))||vs[0],open=!!state.alg428Expanded?.[a.id],run=activeJob412(a);return `<article class="alg428-card ${open?'open':''}"><div class="alg428-main" onclick="toggleAlgorithm412('${a.id}')"><div class="alg428-logo">${esc((a.name||'算').slice(0,1))}</div><div class="alg428-info"><div class="alg428-title"><b>${esc(a.name)}</b><span>${esc(algType412(a.algorithm_type))}</span>${a.industry?`<em>${esc(a.industry)}</em>`:''}</div><p>${esc(a.remark||'')}</p><div class="alg428-meta"><span>训练次数 <b>${(state.jobs||[]).filter(j=>j.asset_algorithm_id===a.id||j.algorithm_asset_id===a.id).length}</b></span><span>版本 <b>${vs.length}</b></span><span>当前正确率 <b>${pct412(versionMetric412(current))}</b></span></div></div><div class="alg428-state">${run?`<span class="alg428-running">${esc(run.status_text||run.status)}</span><small>${esc(run.execution_resource?.name||run.server_name||'训练资源')}</small>`:`<span class="alg429-last">${current?'当前 '+esc(current.version_name):'尚未训练'}</span>`}</div><div class="alg428-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="viewAlgorithm429('${a.id}')">详情</button><button class="btn mini" onclick="algorithmReport429('${a.id}')">综合报告</button><button class="btn mini" onclick="editAlgorithm423('${a.id}')">编辑</button><button class="btn mini primary" onclick="startAlgorithmTraining429('${a.id}')">训练</button><button class="btn mini danger" onclick="delAlgorithm('${a.id}')">删除</button><i class="alg428-chevron">⌄</i></div></div>${open?`<div class="alg428-versions"><div class="alg428-version-head"><b>迭代版本</b><span>当前版本决定后续训练、转换与检测的默认起点</span></div>${vs.length?vs.map(v=>verRow412(a,v)).join(''):'<div class="empty alg428-empty">暂无版本，点击“训练”开始第一次迭代</div>'}</div>`:''}</article>`}).join('')||'<div class="empty">暂无算法</div>'};
-  window.renderAlgorithms423=function(){const inds=[...new Set((state.algorithms||[]).map(a=>a.industry).filter(Boolean))].sort();document.getElementById('view').innerHTML=`<section class="alg428-shell"><div class="alg428-toolbar"><div class="filter423"><input id="alg412Q" class="input" placeholder="搜索算法" value="${esc(window.AlgorithmListRuntime?.filterState?.().query||'')}" oninput="window.AlgorithmListRuntime?.setFilters?.({query:this.value},{render:false});renderAlg412()"><select id="alg412Industry" class="select" onchange="renderAlg412()"><option value="all">全部行业场景</option>${inds.map(x=>`<option>${esc(x)}</option>`).join('')}</select><select id="alg412Type" class="select" onchange="renderAlg412()"><option value="all">全部算法类型</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV 传统视觉</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python / 其他</option></select></div><button class="btn primary" type="button" data-action="algorithm.create">＋ 新建算法</button></div><div id="alg412List" class="alg428-list"></div></section>`;renderAlg412()};
+  window.renderAlg412=function(){
+    const box=document.getElementById('alg412List');
+    if(!box)return;
+    const q=(window.AlgorithmListRuntime?.filterState?.().query??document.getElementById('alg412Q')?.value??'').trim().toLowerCase();
+    const ind=document.getElementById('alg412Industry')?.value||'all';
+    const typ=document.getElementById('alg412Type')?.value||'all';
+    const rows=(state.algorithms||[]).filter(a=>
+      (window.AlgorithmListRuntime?.matchesSearch?.(a,q)??(!q||`${a.name} ${a.code||''} ${a.algorithm_code||''} ${a.product_code||''} ${a.external_product_code||''} ${a.external_product_id||''} ${a.remark||''} ${a.industry||''} ${a.algorithm_type||''}`.toLowerCase().includes(q)))
+      &&(ind==='all'||a.industry===ind)
+      &&(typ==='all'||a.algorithm_type===typ)
+    );
+    box.innerHTML=rows.map(a=>{
+      const vs=a.versions||[];
+      const current=vs.find(v=>String(v.id||'')===String(a.current_version_id||''))||vs[0];
+      const open=!!state.alg428Expanded?.[a.id];
+      const run=activeJob412(a);
+      const trainingCount=(state.jobs||[]).filter(j=>j.asset_algorithm_id===a.id||j.algorithm_asset_id===a.id).length;
+      const remark=String(a.remark||'').trim();
+      const statusHtml=run
+        ? `<span class="alg428-running">${esc(run.status_text||run.status)}</span>`
+        : current
+          ? '<span class="alg429-last is-trained">已训练</span>'
+          : '<span class="alg429-last">未训练</span>';
+      return `<article class="alg428-card alg428-asset-row ${open?'open':''}" data-algorithm-id="${esc(a.id)}">
+        <div class="alg428-main alg428-asset-main" onclick="toggleAlgorithm412('${a.id}')">
+          <div class="alg428-asset-name">
+            <div class="alg428-logo">${esc((a.name||'算').slice(0,1))}</div>
+            <div class="alg428-info">
+              <div class="alg428-title"><b>${esc(a.name)}</b><span>${esc(algType412(a.algorithm_type))}</span></div>
+              <p title="${esc(remark)}">${esc(remark||'暂无说明')}</p>
+            </div>
+          </div>
+          <div class="alg428-asset-scene"><b>${esc(a.industry||'—')}</b><span>${esc(algType412(a.algorithm_type))}</span></div>
+          <div class="alg428-state">${statusHtml}</div>
+          <div class="alg428-current-version"><b>${esc(current?.version_name||'—')}</b><span>${vs.length} 个版本</span></div>
+          <div class="alg428-current-metric"><b>${pct412(versionMetric412(current))}</b><span>mAP50</span></div>
+          <div class="alg428-train-count"><b>${trainingCount}</b><span>次</span></div>
+          <div class="alg428-actions" onclick="event.stopPropagation()">
+            <button class="btn mini" onclick="viewAlgorithm429('${a.id}')">详情</button>
+            <button class="btn mini" onclick="algorithmReport429('${a.id}')">综合报告</button>
+            <button class="btn mini" onclick="editAlgorithm423('${a.id}')">编辑</button>
+            <button class="btn mini primary" onclick="startAlgorithmTraining429('${a.id}')">训练</button>
+            <button class="btn mini danger" onclick="delAlgorithm('${a.id}')">删除</button>
+            <i class="alg428-chevron" aria-hidden="true">⌄</i>
+          </div>
+        </div>
+        ${open?`<div class="alg428-versions"><div class="alg428-version-head"><b>迭代版本</b><span>当前版本决定后续训练、转换与检测的默认起点</span></div>${vs.length?vs.map(v=>verRow412(a,v)).join(''):'<div class="empty alg428-empty">暂无版本，点击“训练”开始第一次迭代</div>'}</div>`:''}
+      </article>`;
+    }).join('')||'<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
+    queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
+  };
+  window.renderAlgorithms423=function(){
+    const inds=[...new Set((state.algorithms||[]).map(a=>a.industry).filter(Boolean))].sort();
+    document.getElementById('view').innerHTML=`<section class="alg428-shell">
+      <div class="alg428-toolbar">
+        <div class="filter423">
+          <input id="alg412Q" class="input" placeholder="搜索算法名称、编码或说明" value="${esc(window.AlgorithmListRuntime?.filterState?.().query||'')}" oninput="window.AlgorithmListRuntime?.setFilters?.({query:this.value},{render:false});renderAlg412()">
+          <select id="alg412Industry" class="select" onchange="renderAlg412()"><option value="all">全部行业场景</option>${inds.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
+          <select id="alg412Type" class="select" onchange="renderAlg412()"><option value="all">全部算法类型</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV 传统视觉</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python / 其他</option></select>
+        </div>
+        <button class="btn primary" type="button" data-action="algorithm.create">＋ 新建算法</button>
+      </div>
+      <div class="alg428-list-head" aria-hidden="true"><span>算法名称</span><span>行业场景</span><span>状态</span><span>当前版本</span><span>当前指标</span><span>训练次数</span><span>操作</span></div>
+      <div id="alg412List" class="alg428-list"></div>
+    </section>`;
+    renderAlg412();
+  };
   window.toggleAlgorithm412=async function(id){state.alg428Expanded=state.alg428Expanded||{};state.alg428Expanded[id]=!state.alg428Expanded[id];if(state.alg428Expanded[id]){const r=await safe(api(`/api/v12/projects/${pid()}/algorithms`));if(r?.items)state.algorithms=r.items}renderAlg412()};
   window.toggleAlgorithm428=window.toggleAlgorithm412;
 

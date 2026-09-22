@@ -539,3 +539,27 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 @keyframes algCategoryIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:760px){.alg-category-popover{position:fixed;left:12px;right:12px;top:96px;width:auto;min-width:0}.alg-category-selected{display:none}}
 @media(prefers-reduced-motion:reduce){.alg-category-popover{animation:none}.alg-category-trigger i{transition:none}}
+
+/* Compact algorithm asset list */
+.alg428-list-head{display:grid;grid-template-columns:minmax(280px,1.45fr) minmax(110px,.65fr) 90px minmax(130px,.72fr) 90px 70px minmax(305px,auto);align-items:center;gap:12px;padding:0 14px 7px;color:#7a8699;font-size:10px;font-weight:600}
+.alg428-list{gap:7px!important}
+.alg428-card.alg428-asset-row{border-radius:11px!important;box-shadow:none!important;transform:none!important}
+.alg428-card.alg428-asset-row:hover{border-color:#c9d6e8!important;box-shadow:0 5px 16px rgba(15,23,42,.05)!important;transform:none!important}
+.alg428-asset-main{grid-template-columns:minmax(280px,1.45fr) minmax(110px,.65fr) 90px minmax(130px,.72fr) 90px 70px minmax(305px,auto)!important;gap:12px!important;min-height:62px;padding:9px 14px!important}
+.alg428-asset-name{min-width:0;display:grid;grid-template-columns:36px minmax(0,1fr);align-items:center;gap:10px}
+.alg428-asset-row .alg428-logo{width:34px;height:34px;border-radius:9px;font-size:14px}
+.alg428-asset-row .alg428-info{min-width:0}.alg428-asset-row .alg428-title{gap:5px;flex-wrap:nowrap}.alg428-asset-row .alg428-title>b{min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.alg428-asset-row .alg428-title span,.alg428-asset-row .alg428-title em{flex:none;padding:3px 6px;font-size:9px}
+.alg428-asset-row .alg428-info p{margin:3px 0 0!important;min-height:0;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a96a8;font-size:10px}
+.alg428-asset-scene,.alg428-current-version,.alg428-current-metric,.alg428-train-count{min-width:0}.alg428-asset-scene b,.alg428-asset-scene span,.alg428-current-version b,.alg428-current-version span,.alg428-current-metric b,.alg428-current-metric span,.alg428-train-count b,.alg428-train-count span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alg428-asset-scene b,.alg428-current-version b{font-size:11px;color:#344054}.alg428-asset-scene span,.alg428-current-version span,.alg428-current-metric span,.alg428-train-count span{margin-top:3px;color:#98a2b3;font-size:9px}
+.alg428-asset-row .alg428-state{text-align:left;min-width:0}.alg428-asset-row .alg428-state>span{display:inline-flex;padding:4px 7px;border-radius:7px;font-size:10px}
+.alg428-current-metric b{font-size:14px;color:#315fc2}.alg428-train-count b{font-size:13px;color:#475467}
+.alg428-asset-row .alg428-actions{justify-content:flex-end;gap:4px}.alg428-asset-row .alg428-actions .btn{height:28px;padding:0 8px}.alg428-asset-row .alg428-actions .danger{background:#fff;color:#b42318;border-color:#f0d2d0}
+.alg428-asset-row .alg428-chevron{display:grid;place-items:center;width:24px;height:24px;margin-left:1px;border-radius:6px;background:#f4f6f9}
+.alg428-card.open .alg428-chevron{background:#eaf0ff;color:#315fc2}
+.alg428-asset-row .alg428-versions{padding:8px 14px 14px!important;animation:algVersionReveal .18s ease-out}.alg428-asset-row .alg428-version-head{margin:2px 0 6px}
+.alg428-list-empty{padding:46px 20px;border:1px dashed #dfe5ee;border-radius:12px;background:#fafbfc}
+@keyframes algVersionReveal{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:1280px){.alg428-list-head{display:none}.alg428-asset-main{grid-template-columns:minmax(280px,1fr) 110px 110px minmax(300px,auto)!important}.alg428-asset-scene,.alg428-train-count,.alg428-current-metric{display:none}}
+@media(max-width:900px){.alg428-asset-main{grid-template-columns:minmax(240px,1fr) auto!important}.alg428-current-version,.alg428-state{display:none}.alg428-asset-row .alg428-actions{grid-column:1/-1;justify-content:flex-start;padding-left:44px}}
+@media(prefers-reduced-motion:reduce){.alg428-asset-row .alg428-versions{animation:none}}
