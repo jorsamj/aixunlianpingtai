@@ -90,23 +90,31 @@ test('legacy training shell uses same-scope status helper before final visibilit
   assert.doesNotMatch(block, /status429\(/);
 });
 
-test('annotation workbench saves locally without full reload and preserves explicit empty confirmation through final owners', () => {
+test('annotation workbench has one save owner, explicit empty confirmation, and one manual advance', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
   assert.match(source, /confirmEmptyAnnotation420=\(\)=>window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
-  const focusedSave = source.match(/\/\/ Annotation save: update the exact current image immediately; no full reload\.[\s\S]*?\/\/ ---------------- Dataset gallery/)?.[0] || '';
-  assert.match(focusedSave, /silent=false,options=\{\}/);
-  assert.match(focusedSave, /confirmEmpty=options\?\.confirmEmpty===true/);
-  assert.match(focusedSave, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
-  assert.match(focusedSave, /return true/);
-  assert.match(focusedSave, /return false/);
-  assert.doesNotMatch(focusedSave, /await loadRelated\(\)/);
-  const save417 = source.match(/const baseSaveAnnotation417=window\.saveAnn;[\s\S]*?function syncReferenceLabels417/)?.[0] || '';
-  assert.match(save417, /baseSaveAnnotation417\?\.\(silent,options\)/);
-  const save411 = source.match(/const saveAnn411=window\.saveAnn;[\s\S]*?\/\/ ---------- image upload/)?.[0] || '';
-  assert.match(save411, /saveAnn411\(silent,options\)/);
-  assert.match(save411, /if\(!ok\)return false/);
-  assert.match(save411, /return true/);
+  assert.equal((source.match(/window\.saveAnn=/g) || []).length, 1);
+  assert.equal(source.includes('const baseSaveAnnotation417=window.saveAnn;'), false);
+  assert.equal(source.includes('const saveAnn411=window.saveAnn;'), false);
+  assert.equal(source.includes('const previousSave=window.saveAnn;'), false);
+  const coreStart = source.indexOf('window.saveAnnotationCore420=async function(silent=false,options={})');
+  const coreEnd = source.indexOf('// ---------- dataset: labels strictly from label library ----------', coreStart);
+  const core = source.slice(coreStart, coreEnd);
+  assert.ok(coreStart >= 0 && coreEnd > coreStart);
+  assert.match(core, /confirmEmpty=options\?\.confirmEmpty===true/);
+  assert.match(core, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
+  assert.match(core, /patchMaterialCard412\(state\.activeImage\)/);
+  assert.doesNotMatch(core, /await loadRelated\(\)/);
+  const stableStart = source.lastIndexOf('Stable single-instance manual\/batch annotation workbench');
+  const stableEnd = source.indexOf('Persistent v60 AI annotation UI', stableStart);
+  const stable = source.slice(stableStart, stableEnd);
+  assert.match(stable, /window\.saveAnn=async function saveAnnotationCanonical420\(silent=false,options=\{\}\)/);
+  assert.match(stable, /window\.saveAnnotationCore420\?\.\(silent,options\)/);
+  assert.equal((stable.match(/annotationWorkbench\?\.open\(ids\[at\+1\]\)/g) || []).length, 1);
+  assert.doesNotMatch(stable, /setTimeout\(\(\)=>goAnnotation417/);
+  assert.equal(source.includes('const previousMarkDirty=window.markDirty;'), false);
+  assert.match(source, /window\.markDirty=function markAnnotationDirtyCanonical420\(\)/);
   assert.doesNotMatch(source, /await Promise\.all\(\[apiRequestAnnotation420\(id\),preload\(image\.url\)\]\)/);
 });
 

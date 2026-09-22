@@ -60,13 +60,13 @@ async function openAnnotation(id){
   renderAnnotator();
 } window.openAnnotation=openAnnotation;
 function pushHistory(){state.annHistory.push(JSON.stringify(state.ann.boxes||[])); if(state.annHistory.length>50)state.annHistory.shift(); state.annRedo=[];}
-function markDirty(){state.annDirty=true;const s=$('#annSaveState');if(s)s.textContent='未保存';clearTimeout(state.annAutoSaveTimer);state.annAutoSaveTimer=setTimeout(()=>saveAnn(true),900)}
+function markAnnotationDirtyCore(){state.annDirty=true;const s=$('#annSaveState');if(s)s.textContent='未保存';clearTimeout(state.annAutoSaveTimer);state.annAutoSaveTimer=setTimeout(()=>saveAnn(true),900)}
 function imageSize(){return {w:state.activeImage?.width||1,h:state.activeImage?.height||1}}
 function renderAnnotator(){const img=state.activeImage;const idx=imgIndex();modal('图片标注',`<div class="ann-layout pro"><div class="ann-work"><div class="ann-toolbar"><button class="btn primary small" onclick="saveAnn(false)">保存</button><button class="btn small" onclick="prevImage()" ${idx<=0?'disabled':''}>上一张</button><button class="btn small" onclick="nextImage()" ${idx>=state.images.length-1?'disabled':''}>下一张</button><button class="btn small" onclick="undoAnn()">撤销</button><button class="btn small" onclick="redoAnn()">重做</button><button class="btn small danger" onclick="deleteActiveBox()">删框</button><span class="muted">${esc(img.filename)} · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(${state.annZoom});transform-origin:top center"><img id="annImg" src="${img.url}"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标签</div><div id="annLabels"></div><button class="btn small soft full" onclick="manageLabels()">管理标签</button></div><div class="side-section"><div class="side-title">框列表</div><div id="annBoxes"></div></div><div class="hint-card">快捷键：数字键切换标签，Delete 删除框，Ctrl+S 保存。</div></aside></div>`,true);const im=$('#annImg');const ready=()=>{drawBoxes();bindAnnotationEvents();};if(im.complete)ready();else im.onload=ready;renderAnnSide();}
 function renderAnnSide(){const labels=state.labels;$('#annLabels').innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="state.activeLabel=${l.class_id};renderAnnSide()"><span><span class="dot" style="background:${l.color}"></span>${esc(l.display_name)} <span class="muted">${esc(l.code)}</span></span><b>${esc(l.hotkey||'')}</b></div>`).join('');const boxes=state.ann.boxes||[];$('#annBoxes').innerHTML=boxes.map((b,i)=>{const l=labels.find(x=>x.class_id===b.class_id)||{};return`<div class="label-row ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}. ${esc(l.display_name||b.label)}</span><span>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</span></div>`}).join('')||'<div class="muted">暂无框。选择标签后，在图片上拖拽即可。</div>'}
 function drawBoxes(){const st=$('#annStage');if(!st)return;st.querySelectorAll('.box,.drawBox').forEach(x=>x.remove());const size=imageSize(),labels=state.labels;function paint(b,i){const l=labels.find(x=>x.class_id===b.class_id)||{};const el=document.createElement('div');el.className='box '+(state.activeBox===i?'active':'');el.dataset.i=i;Object.assign(el.style,{left:(b.x1/size.w*100)+'%',top:(b.y1/size.h*100)+'%',width:((b.x2-b.x1)/size.w*100)+'%',height:((b.y2-b.y1)/size.h*100)+'%',borderColor:l.color||'#7c3aed'});el.innerHTML=`<div class="boxTag" style="background:${l.color||'#7c3aed'}">${esc(l.display_name||b.label)}</div>`;el.onclick=e=>{e.stopPropagation();state.activeBox=i;drawBoxes();renderAnnSide()};st.appendChild(el)};(state.ann.boxes||[]).forEach(paint)}
 function bindAnnotationEvents(){const st=$('#annStage'),im=$('#annImg');if(!st||!im||st.dataset.bound==='1')return;state.annPointerAbort?.abort?.();const controller=new AbortController();state.annPointerAbort=controller;const listenerOptions={signal:controller.signal};st.dataset.bound='1';let start=null,temp=null;function pos(e){const r=im.getBoundingClientRect(),size=imageSize();return{x:Math.max(0,Math.min(size.w,(e.clientX-r.left)/Math.max(1,r.width)*size.w)),y:Math.max(0,Math.min(size.h,(e.clientY-r.top)/Math.max(1,r.height)*size.h))}}function tempBox(p){if(!start||!temp)return;const size=imageSize(),x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);Object.assign(temp.style,{left:x1/size.w*100+'%',top:y1/size.h*100+'%',width:(x2-x1)/size.w*100+'%',height:(y2-y1)/size.h*100+'%'})}st.addEventListener('mousedown',e=>{if(e.button!==0||e.target.closest('.box'))return;e.preventDefault();const p=pos(e);start=p;temp=document.createElement('div');temp.className='drawBox';st.appendChild(temp);tempBox(p)},listenerOptions);window.addEventListener('mousemove',e=>{if(!start||!temp)return;e.preventDefault();tempBox(pos(e))},listenerOptions);window.addEventListener('mouseup',e=>{if(!start)return;e.preventDefault();const p=pos(e),x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);if(temp)temp.remove();temp=null;if(x2-x1>5&&y2-y1>5){const l=state.labels.find(x=>x.class_id===state.activeLabel)||state.labels[0];if(l){pushHistory();state.ann.boxes.push({id:(crypto.randomUUID?crypto.randomUUID():String(Date.now())).slice(0,10),class_id:l.class_id,label:l.code,x1:Math.round(x1),y1:Math.round(y1),x2:Math.round(x2),y2:Math.round(y2)});state.activeBox=state.ann.boxes.length-1;markDirty()}}start=null;drawBoxes();renderAnnSide()},listenerOptions)}
-window.saveAnn=async(silent=false,options={})=>{if(!state.activeImage)return false;const boxes=Array.isArray(state.ann?.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;if(!boxes.length&&!confirmEmpty){const s=$('#annSaveState');if(s)s.textContent='待确认无目标';const btn=$('#ann420ConfirmEmpty');if(btn)btn.hidden=false;if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');return false}try{const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty'})});if(r?.annotation){state.ann=r.annotation;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[]}if(r?.image){state.activeImage=r.image;const index=(state.images||[]).findIndex(image=>String(image.id)===String(r.image.id));if(index>=0)state.images[index]=r.image}state.annDirty=false;const saveState=$('#annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';const confirmBtn=$('#ann420ConfirmEmpty');if(confirmBtn)confirmBtn.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');return true}catch(error){if(!silent)toast(error.message||error);return false}};
+window.saveAnnLegacyBase=async(silent=false,options={})=>{if(!state.activeImage)return false;const boxes=Array.isArray(state.ann?.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;if(!boxes.length&&!confirmEmpty){const s=$('#annSaveState');if(s)s.textContent='待确认无目标';const btn=$('#ann420ConfirmEmpty');if(btn)btn.hidden=false;if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');return false}try{const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty'})});if(r?.annotation){state.ann=r.annotation;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[]}if(r?.image){state.activeImage=r.image;const index=(state.images||[]).findIndex(image=>String(image.id)===String(r.image.id));if(index>=0)state.images[index]=r.image}state.annDirty=false;const saveState=$('#annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';const confirmBtn=$('#ann420ConfirmEmpty');if(confirmBtn)confirmBtn.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');return true}catch(error){if(!silent)toast(error.message||error);return false}};
 window.deleteActiveBox=()=>{if(state.activeBox==null)return toast('请选择一个框');pushHistory();state.ann.boxes.splice(state.activeBox,1);state.activeBox=null;markDirty();drawBoxes();renderAnnSide();const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=(state.ann.boxes?.length||0)>0};
 window.undoAnn=()=>{if(!state.annHistory.length)return;state.annRedo.push(JSON.stringify(state.ann.boxes||[]));state.ann.boxes=JSON.parse(state.annHistory.pop());state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
 window.redoAnn=()=>{if(!state.annRedo.length)return;pushHistory();state.ann.boxes=JSON.parse(state.annRedo.pop());state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
@@ -834,9 +834,6 @@ window.installUsability417=function(){
     const labels=state.labels||[],box=document.getElementById('annBoxes'),boxes=state.ann?.boxes||[];
     if(box)box.innerHTML=boxes.map((b,i)=>{const item=labels.find(x=>Number(x.class_id)===Number(b.class_id));return `<div class="ann414-boxrow ${Number(state.activeBox)===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span><i style="background:${esc(item?.color||'#64748b')}"></i><b>${i+1}. ${esc(label417(item?.code||b.label||'unknown'))}</b></span><select class="select" onclick="event.stopPropagation()" onchange="relabelBox414(${i},this.value)">${labels.map(x=>`<option value="${Number(x.class_id)}" ${Number(x.class_id)===Number(b.class_id)?'selected':''}>${esc(label417(x.code))}</option>`).join('')}</select></div>`}).join('')||'<div class="muted">暂无框。请在顶部选择标签，然后在图片上拖拽。</div>';
   };
-  const baseSaveAnnotation417=window.saveAnn;
-  window.saveAnn=async function(silent=false,options={}){const savedId=String(state.activeImage?.id||''),ok=await baseSaveAnnotation417?.(silent,options);if(ok&&!silent){const queue=state.annotationQueue414||[],at=queue.findIndex(id=>String(id)===savedId);if(queue.length>1&&at>=0&&at<queue.length-1)setTimeout(()=>goAnnotation417(queue[at+1]),80)}return ok};
-
   function syncReferenceLabels417(){
     const input=document.getElementById('ai429Labels');if(!input)return;
     const previous=new Set(state.ai429ReferenceLabels417||[]),manual=String(input.value||'').split(/[,，、\n]/).map(x=>x.trim()).filter(x=>x&&!previous.has(x));
@@ -2912,7 +2909,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
 
   // Annotation save: update the exact current image immediately; no full reload.
-  window.saveAnn=async function(silent=false,options={}){
+  window.saveAnnLegacy426=async function(silent=false,options={}){
     if(!state.activeImage||!state.ann)return false;
     const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;
     if(!boxes.length&&!confirmEmpty){
@@ -3570,9 +3567,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const finish=e=>{if(!mode||pointerId!==e.pointerId||!start)return;const p=pos(e);if(mode==='draw'){const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);temp?.remove();if(x2-x1>5&&y2-y1>5){const l=(state.labels||[]).find(x=>x.class_id===state.activeLabel)||state.labels[0];if(l){pushHistory();state.ann.boxes.push({id:String(Date.now()).slice(-10),class_id:l.class_id,label:l.code,x1:Math.round(x1),y1:Math.round(y1),x2:Math.round(x2),y2:Math.round(y2)});state.activeBox=state.ann.boxes.length-1;markDirty()}}}else markDirty();try{st.releasePointerCapture(pointerId)}catch(_){};mode='';start=null;temp=null;boxIndex=-1;orig=null;pointerId=null;drawBoxes();renderAnnSide();e.preventDefault()};
     st.addEventListener('pointerup',finish);st.addEventListener('pointercancel',finish);
   };
-  const saveAnn411=window.saveAnn;
-  window.saveAnn=async function(silent=false,options={}){const ok=await saveAnn411(silent,options);if(!ok)return false;const img=(state.images||[]).find(x=>String(x.id)===String(state.activeImage?.id));if(img&&state.ann?.boxes){img.annotation_preview=state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}));img.processing_status='processed';invalidateQuality411()}return true};
-
   // ---------- image upload with actual browser upload progress / ETA ----------
   function uploadModal411(title,fileCount,totalBytes){return `<div class="up411"><section><b>${esc(title)}</b><span>${fileCount} 个文件 · ${bytes411(totalBytes)}</span></section><div class="up411-bar"><i id="up411Bar" style="width:0%"></i></div><div class="up411-line"><span id="up411Text">准备上传</span><b id="up411Pct">0%</b></div><div class="up411-line muted"><span>已用时间 <b id="up411Elapsed">0秒</b></span><span>预计剩余 <b id="up411Eta">计算中</b></span></div><div id="up411Result"></div></div>`}
   window.doUploadImages426=function(inp){
@@ -4033,26 +4027,33 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
   window.relabelBox414=function(i,classId){const b=state.ann?.boxes?.[i],l=(state.labels||[]).find(x=>Number(x.class_id)===Number(classId));if(!b||!l)return;try{pushHistory()}catch(_){};b.class_id=l.class_id;b.label=l.code;state.activeBox=i;markDirty();drawBoxes();renderAnnSide()};
 
-  window.saveAnn=async function(silent=false){
-    if(!state.activeImage||!state.ann)return false;const btn=document.getElementById('ann414Save'),ss=document.getElementById('annSaveState');
-    if(btn){btn.disabled=true;btn.textContent='保存中…'}if(ss)ss.textContent='保存中';
+  window.saveAnnotationCore420=async function(silent=false,options={}){
+    if(!state.activeImage||!state.ann)return false;
+    const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true,btn=document.getElementById('ann414Save'),ss=document.getElementById('annSaveState');
+    if(!boxes.length&&!confirmEmpty){
+      if(ss)ss.textContent='待确认无目标';
+      const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=false;
+      if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');
+      return false;
+    }
+    if(!silent&&btn){btn.disabled=true;btn.textContent='保存中…'}if(ss)ss.textContent='保存中';
     try{
-      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes:state.ann.boxes||[]})});
+      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty'})});
       state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
       const applyResult=window.PlatformCore?.annotation?.applyAnnotationResult;
       if(applyResult&&r?.image?.id)state.images=applyResult(state.images||[],r,state.ann.boxes||[]);
       const idx=(state.images||[]).findIndex(x=>String(x.id)===String(state.activeImage.id));
       if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=state.ann.boxes.slice(0,64).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
-      state.annDirty=false;if(ss)ss.textContent=`已保存 · ${state.ann.boxes.length}框`;drawBoxes();renderAnnSide();
+      state.annDirty=false;if(ss)ss.textContent=state.ann.boxes.length?`已保存 · ${state.ann.boxes.length}框`:'已确认无目标';const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
       // Patch only the affected material card. Re-rendering the full gallery here
       // blocks the main thread for seconds on large libraries and remounts the modal.
       try{if(state.page==='数据集'&&typeof patchMaterialCard412==='function')patchMaterialCard412(state.activeImage)}catch(_){}
       // If annotation was opened from an image-preview modal, refresh that preview in place as well.
       try{const layers=[...document.querySelectorAll('.v424-modal-layer')],under=layers.length>1?layers[layers.length-2]:null,stage=under?.querySelector('.data412-previewstage');if(stage&&state.activeImage){stage.innerHTML=`<img src="${state.activeImage.url}">${(state.activeImage.annotation_preview||[]).map(b=>{const l=labelByCode414(b.label),w=Math.max(0,(b.x2-b.x1)/(state.activeImage.width||1)*100),h=Math.max(0,(b.y2-b.y1)/(state.activeImage.height||1)*100),x=(b.x1/(state.activeImage.width||1)*100),y=(b.y1/(state.activeImage.height||1)*100);return `<i class="ov412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;border-color:${esc(l?.color||'#ef4444')}"><b style="background:${esc(l?.color||'#ef4444')}">${esc(b.label||'')}</b></i>`}).join('')}`}}catch(_){}
-      if(!silent)toast(`标注已保存：${state.ann.boxes.length} 个框`);return true;
+      if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length} 个框`:'已确认当前图片无目标');return true;
     }catch(e){state.annDirty=true;if(ss)ss.textContent='保存失败';toast(`保存失败：${e.message||e}`);return false}
-    finally{if(btn){btn.disabled=false;btn.textContent='保存标注'}}
+    finally{if(!silent&&btn){btn.disabled=false;btn.textContent=document.querySelector('.ann420-stable')?'保存并继续':'保存标注'}}
   };
 
   // ---------- dataset: labels strictly from label library ----------
@@ -4699,18 +4700,15 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.goAnnotation417=id=>window.openAnnotation(id);
   window.renderAnnotator=updateShell;
 
-  const previousMarkDirty=window.markDirty;
-  window.markDirty=function(){state.annotationWorkbench?.markDirty();return previousMarkDirty?.()};
-  const previousSave=window.saveAnn;
-  window.saveAnn=async function(silent=false,options={}){
-    const savedId=String(state.activeImage?.id||''),ok=await previousSave?.(silent,options);
+  window.markDirty=function markAnnotationDirtyCanonical420(){state.annotationWorkbench?.markDirty();return markAnnotationDirtyCore()};
+  window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={}){
+    const savedId=String(state.activeImage?.id||''),ok=await window.saveAnnotationCore420?.(silent,options);
     if(ok){
       state.annotationWorkbench?.markSaved();
       state.annotationWorkbench?.remember?.(savedId,{
         image:{...(state.activeImage||{})},
         annotation:{...(state.ann||{}),boxes:(state.ann?.boxes||[]).map(box=>({...box}))},
       });
-      patchMaterialCard412(state.activeImage);
     }
     if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
     return ok;

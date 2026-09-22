@@ -36,6 +36,9 @@ test('manual annotation shell paints before authoritative hydration and prefetch
   assert.match(stable, /annotationWorkbench\?\.prefetch/);
   assert.match(stable, /preload\(image\.url\)/);
   assert.match(stable, /annotationWorkbench\?\.remember/);
+  assert.match(stable, /saveAnnotationCanonical420/);
+  assert.match(stable, /saveAnnotationCore420/);
+  assert.equal((stable.match(/annotationWorkbench\?\.open\(ids\[at\+1\]\)/g) || []).length, 1);
   assert.match(source, /const locked=!!state\.annotationHydrating420\|\|!!state\.annotationLoadError420/);
   assert.match(source, /if\(!locked&&e\.key==='Delete'\)deleteActiveBox\(\)/);
   assert.match(source, /if\(!locked\)saveAnn\(false\)/);
