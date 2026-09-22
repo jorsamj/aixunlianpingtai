@@ -366,7 +366,7 @@ test('formal version marker stays stable across final render owners and delayed 
   expect(pageErrors).toEqual([]);
 });
 
-test('quality-center detection file input survives page render lifecycle ownership', async ({page}) => {
+test('quality-center detection keeps multi-image and folder pickers after page render ownership', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -378,9 +378,10 @@ test('quality-center detection file input survives page render lifecycle ownersh
     await window.setQualityCenterTab411?.('detect');
   });
   await expect(page.locator('#title')).toContainText('质量中心');
-  await expect(page.locator('#benchFile')).toHaveClass(/native-file426/);
-  await expect(page.locator('#benchFile + .filepicker426')).toBeVisible();
-  await expect(page.locator('#benchFile + .filepicker426 .filepicker426-btn')).toContainText('选择图片');
+  await expect(page.locator('#benchFiles64')).toHaveAttribute('multiple', '');
+  await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
+  await expect(page.getByRole('button', {name: '选择图片'})).toBeVisible();
+  await expect(page.getByRole('button', {name: '选择文件夹'})).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
