@@ -108,13 +108,19 @@ test('test publish manual refresh is page-scoped instead of using broad loadAll'
 });
 
 
-test('detection bench receives focused model and inference extras on navigation and manual refresh', () => {
-  assert.match(main, /PAGE_EXTRAS_OWNERS = new Set\([^\n]+检测台/);
+test('quality-center detection loads focused model and inference extras without restoring a standalone page', () => {
+  assert.doesNotMatch(main, /PAGE_EXTRAS_OWNERS = new Set\([^\n]+检测台/);
 
   const extras = block('async function extras412', 'window.loadPageExtras413=extras412');
-  assert.match(extras, /\['测试发布','部署测试','检测台'\]\.includes\(page\)/);
+  assert.match(extras, /\['测试发布','部署测试','检测台','质量中心'\]\.includes\(page\)/);
   assert.match(extras, /\/api\/v12\/projects\/\$\{id\}\/test_models/);
   assert.match(extras, /\/api\/v16\/inference_envs/);
+
+  const qualityStart = source.indexOf('window.setQualityCenterTab411=async function(tab)');
+  const qualityEnd = source.indexOf('\n  window.renderQualityCenter424=async function()', qualityStart);
+  assert.ok(qualityStart >= 0 && qualityEnd > qualityStart);
+  const qualityTab = source.slice(qualityStart, qualityEnd);
+  assert.match(qualityTab, /window\.loadPageExtras413\?\.\('质量中心'\)/);
 
   const benchStart = source.indexOf('renderDetectBench = window.renderDetectBench = function()');
   const benchEnd = source.indexOf('\n  window.predictCore30 = async function()', benchStart);
@@ -127,13 +133,13 @@ test('detection bench receives focused model and inference extras on navigation 
   const refreshEnd = source.indexOf('\n  window.refreshCurrentPage413=', refreshStart);
   assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
   const refresh = source.slice(refreshStart, refreshEnd);
-  assert.match(refresh, /await extras412\('检测台'\)/);
-  assert.match(refresh, /window\.renderDetectBench\?\.\(\)/);
+  assert.match(refresh, /await extras412\('质量中心'\)/);
+  assert.match(refresh, /state\.qualityCenterTab411==='detect'/);
+  assert.match(refresh, /window\.renderQualityCenter424\?\.\(\)/);
   assert.doesNotMatch(refresh, /loadAll\(/);
   assert.doesNotMatch(refresh, /loadCore412\(/);
   assert.doesNotMatch(refresh, /loadRelated\(/);
 });
-
 
 test('training page revisit paints cached jobs before a non-forced focused revalidation', () => {
   const start = main.indexOf('function refreshCurrentPageOwner(page)');
