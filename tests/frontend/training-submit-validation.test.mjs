@@ -58,15 +58,23 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 });
 
 
-test('external ChangLian training re-reads algorithm truth before opening and training log refresh stays modal-local', () => {
+test('external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const hydration = readFileSync(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const externalRuntime = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(source, /ExternalAlgorithmPlatformRuntime\?\.preflightTraining/);
+  assert.match(main, /preflight: algorithmId => externalAlgorithmPlatformRuntime\.preflightTraining/);
+  assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
+  assert.match(hydration, /externalChangLian/);
+  assert.match(hydration, /externalChangLian && typeof preflight === 'function' \? preflight\(aid\)/);
   assert.match(externalRuntime, /training-preflight\?project_id=/);
   assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
-  assert.match(source, /externalChangLian=String\(currentAlgorithm\.source_type/);
-  assert.match(source, /if\(externalChangLian\)\{/);
-  assert.match(source, /训练算法不存在或已被删除/);
+  const ownerStart = source.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
+  const ownerEnd = source.indexOf('\n  };', ownerStart);
+  const owner = source.slice(ownerStart, ownerEnd);
+  assert.ok(ownerStart >= 0 && ownerEnd > ownerStart);
+  assert.doesNotMatch(owner, /preflightTraining|training-preflight/);
+  assert.match(owner, /训练算法不存在或已被删除/);
   assert.match(source, /refreshTrainRunCenter429/);
   assert.match(source, /data-train-run-center/);
   assert.match(source, /训练已完成/);
