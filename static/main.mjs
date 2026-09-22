@@ -420,10 +420,6 @@ const canonicalWindowPageRenderers = new Map([
   ['标签管理', 'renderLabelManagement414'],
   ['模型配置', 'renderModelConfigPageV35'],
   ['训练资源', 'renderResources'],
-  ['部署转换', 'renderDeployCenter'],
-  ['部署产物', 'renderDeployArtifacts'],
-  ['部署资源', 'renderDeployResources'],
-  ['部署插件', 'renderDeployPluginsV41'],
   ['存储配置', 'renderStorageSources61'],
 ]);
 const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, rendererName]) => (
