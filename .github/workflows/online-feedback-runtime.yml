@@ -13,6 +13,7 @@ on:
       - tests/unit/test_online_feedback.py
       - tests/api/test_online_feedback.py
       - tests/browser/online-feedback.spec.mjs
+      - tests/browser/quality-detection-workbench.spec.mjs
       - .github/workflows/online-feedback-runtime.yml
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - tests/unit/test_online_feedback.py
       - tests/api/test_online_feedback.py
       - tests/browser/online-feedback.spec.mjs
+      - tests/browser/quality-detection-workbench.spec.mjs
       - .github/workflows/online-feedback-runtime.yml
   workflow_dispatch:
 
@@ -108,12 +110,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome reviewed feedback flow
-        run: npx playwright test tests/browser/online-feedback.spec.mjs
+        run: npx playwright test tests/browser/online-feedback.spec.mjs tests/browser/quality-detection-workbench.spec.mjs
       - name: Browser permanent guards
         run: |
           grep -Fq 'openPredictionFeedback63' static/app.js
           grep -Fq 'openOnlineFeedbackReview63' static/app.js
           grep -Fq 'confirmOnlineFeedback63' static/app.js
+          grep -Fq 'quality detection Real Chrome UI contract drives durable tasks for compare A-only and B-only without claiming production inference E2E' tests/browser/quality-detection-workbench.spec.mjs
           grep -Fq 'formal version prediction enters reviewed online feedback without automatic retraining' tests/browser/online-feedback.spec.mjs
           grep -Fq 'false-positive feedback requires explicit all-label negative confirmation' tests/browser/online-feedback.spec.mjs
           grep -Fq 'pending reviewed feedback can be dismissed without promotion or training' tests/browser/online-feedback.spec.mjs
