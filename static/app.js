@@ -5199,6 +5199,19 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     window.renderDatasets424?.();
   };
 
+  window.openSupplementFeedbackAnnotation63=async function(materialId){
+    const id=String(materialId||'').trim();
+    if(!id)return false;
+    try{
+      await Promise.resolve(window.closeModal?.());
+      if(typeof window.setPage!=='function')throw new Error('页面导航模块尚未就绪');
+      await Promise.resolve(window.setPage('数据集'));
+      if(state.page!=='数据集')return false;
+      if(typeof window.openAnnotation!=='function')throw new Error('标注模块尚未就绪');
+      return await window.openAnnotation(id);
+    }catch(error){toast(error?.message||error||'打开标注失败');return false}
+  };
+
   window.openSupplementFeedbackCandidates63=async function(aid,vid,confirmed){
     try{
       const result=await api(`/api/v63/projects/${pid()}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}/supplement-data-candidates`);
@@ -5218,7 +5231,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         const reasons=(item.reason_codes||[]).map(supplementReasonName63);
         const labels=item.labels||[];
         const source=item.external_source?('外部 · '+item.external_source):'平台测试';
-        return `<tr data-feedback-candidate-row="${esc(item.feedback_id)}"><td><input type="checkbox" data-feedback-candidate="${esc(item.feedback_id)}" data-digest="${esc(item.candidate_digest)}" ${item.eligible?'checked':'disabled'}></td><td><b>${esc(typeName(item.feedback_type))}</b><small>${esc(source)}</small></td><td>${esc(labels.join('、')||'-')}</td><td>${esc(item.annotation_state||'-')}</td><td>${item.eligible?'<span class="pill ok">可直接加入</span>':`<span class="pill warn">${esc(reasons.join('、')||'暂不可用')}</span>`}</td><td>${!item.eligible&&item.material_id?`<button class="btn mini" onclick="closeModal();setPage('数据集');setTimeout(()=>openAnnotation('${esc(item.material_id)}'),40)">去标注</button>`:''}</td></tr>`;
+        return `<tr data-feedback-candidate-row="${esc(item.feedback_id)}"><td><input type="checkbox" data-feedback-candidate="${esc(item.feedback_id)}" data-digest="${esc(item.candidate_digest)}" ${item.eligible?'checked':'disabled'}></td><td><b>${esc(typeName(item.feedback_type))}</b><small>${esc(source)}</small></td><td>${esc(labels.join('、')||'-')}</td><td>${esc(item.annotation_state||'-')}</td><td>${item.eligible?'<span class="pill ok">可直接加入</span>':`<span class="pill warn">${esc(reasons.join('、')||'暂不可用')}</span>`}</td><td>${!item.eligible&&item.material_id?`<button class="btn mini" onclick="openSupplementFeedbackAnnotation63('${esc(item.material_id)}')">去标注</button>`:''}</td></tr>`;
       }).join('');
       modal('补数据反馈候选',`<div class="supplement-feedback63"><div class="alert soft"><b>已确认线上反馈候选</b><span>共 ${Number(result.total||0)} 条，当前可直接加入 ${Number(result.eligible||0)} 条${result.annotation_required?`，待人工标注 ${Number(result.annotation_required)} 条`:''}。</span><span>冻结候选不会自动创建 Dataset Revision、Snapshot 或训练任务。</span></div>${result.truncated?'<div class="alert warn">候选超过 500 条，请先处理当前批次。</div>':''}<div class="table-wrap"><table class="table"><thead><tr><th>选择</th><th>反馈</th><th>正式标签</th><th>标注状态</th><th>可用性</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="freezeSupplementFeedbackCandidates63()">冻结并进入数据集</button></div></div>`,true);
     }catch(error){toast(error.message||error)}

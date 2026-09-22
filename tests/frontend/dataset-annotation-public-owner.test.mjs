@@ -39,3 +39,18 @@ test('closing manual annotation preserves the short-lived workbench cache while 
   assert.match(closeOwner, /workbench\.cancel\(\)/);
   assert.doesNotMatch(closeOwner, /state\.annotationWorkbench=null/);
 });
+
+
+test('feedback candidate navigation waits for the canonical dataset route before opening annotation', () => {
+  assert.match(app, /window\.openSupplementFeedbackAnnotation63=async function\(materialId\)/);
+  const start = app.indexOf('window.openSupplementFeedbackAnnotation63=async function(materialId)');
+  const end = app.indexOf('\n  window.openSupplementFeedbackCandidates63=', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /await Promise\.resolve\(window\.closeModal\?\.\(\)\)/);
+  assert.match(owner, /await Promise\.resolve\(window\.setPage\('数据集'\)\)/);
+  assert.match(owner, /if\(state\.page!=='数据集'\)return false/);
+  assert.match(owner, /return await window\.openAnnotation\(id\)/);
+  assert.doesNotMatch(owner, /setTimeout/);
+  assert.doesNotMatch(app, /setPage\('数据集'\);setTimeout\(\(\)=>openAnnotation/);
+});
