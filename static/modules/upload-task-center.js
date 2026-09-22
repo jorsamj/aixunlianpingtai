@@ -89,7 +89,8 @@ export function renderUploadTaskCenterRow(row = {}) {
   const detail = row.detail
     ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>`
     : '';
-  return `<div class="utc-row" data-utc-id="${esc(row.id)}"><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${progress.toFixed(progress % 1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}</div>`;
+  const reopenable=String(row.kind||'')==='zip';
+  return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${progress.toFixed(progress % 1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}</div>`;
 }
 
 function createUploadTaskCenterRow(body, html) {
@@ -235,7 +236,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       .utc-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.utc-name{min-width:0}.utc-name b{display:block;color:#192231;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-name small{display:block;color:#748197;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800}.utc-pill.ok{background:#ecfdf3;color:#15803d}.utc-pill.bad{background:#fff1f2;color:#be123c}.utc-pill.warn{background:#fff7ed;color:#c2410c}.utc-pill.run{background:#eff6ff;color:#2563eb}.utc-pill.muted{background:#f1f5f9;color:#64748b}
       .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;width:100%;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transform-origin:left center;transition:transform .22s cubic-bezier(.22,1,.36,1);will-change:transform}
-      .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}
+      .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}.utc-reopenable{cursor:pointer}.utc-reopenable:hover{transform:translateY(-1px)}
       @media (prefers-reduced-motion: reduce){.utc-progress i{transition:none!important}}
       @media(max-width:720px){.utc-root{right:10px;bottom:10px;width:calc(100vw - 20px)}}
     `;
@@ -302,6 +303,13 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       event.stopPropagation();
       void clearCompleted();
     });
+    const openZipTask=event=>{
+      const row=event.target?.closest?.('.utc-row[data-utc-kind="zip"]');if(!row)return;
+      event.preventDefault();event.stopPropagation();
+      void window.ZipImportRuntime?.openTask?.(row.dataset.utcId);
+    };
+    root.querySelector?.('[data-utc-body]')?.addEventListener('click',openZipTask);
+    root.querySelector?.('[data-utc-body]')?.addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key))return;openZipTask(event)});
     return shell;
   }
 
