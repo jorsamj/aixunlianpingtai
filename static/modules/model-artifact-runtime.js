@@ -131,6 +131,8 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   const registry = pollRegistry || window.PollRegistryRuntime;
   const AUDIT_POLL_KEY = 'model-artifact-audit';
   let config = null;
+  let configLoadedAt = 0;
+  const MODEL_CONFIG_CACHE_TTL_MS = 2 * 60 * 1000;
   let summary = {total: 0, uploaded: 0, failed: 0, pending: 0};
   let auditSummary = {total: 0, success: 0, failed: 0, unknown: 0, avg_duration_ms: 0};
   let logs = [];
@@ -253,10 +255,13 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     return true;
   }
 
-  async function loadModelConfig() {
+  async function loadModelConfig({force = false} = {}) {
+    const age = Date.now() - Number(configLoadedAt || 0);
+    if (!force && config && configLoadedAt > 0 && age >= 0 && age < MODEL_CONFIG_CACHE_TTL_MS) return config;
     const body = await requestJson(`${MODEL_API}/config`);
     config = normalizeModelArtifactConfig(body);
     summary = config.summary;
+    configLoadedAt = Date.now();
     return config;
   }
 
@@ -283,7 +288,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     };
     await requestJson(`${MODEL_API}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
     notify?.('算法与转换结果存储配置已保存');
-    await refresh({rerender: true});
+    await refresh({rerender: true, force: true});
   }
 
   async function testStorage() {
@@ -304,7 +309,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     try {
       const body = await requestJson(`${MODEL_API}/run-auto`, {method: 'POST'});
       notify?.(`资产扫描完成：发现 ${body.discovered || 0}，已上传 ${body.uploaded || 0}，失败 ${body.failed || 0}`);
-      await refresh({rerender: true});
+      await refresh({rerender: true, force: true});
     } finally {
       if (button) { button.disabled = false; button.textContent = '立即扫描上传'; }
     }
@@ -408,10 +413,10 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     }
     scheduleAuditPoll();
   }
-  async function refresh({rerender = false} = {}) {
+  async function refresh({rerender = false, force = false} = {}) {
     const page = String(state().page || '');
     if (page === STORAGE_PAGE) {
-      await loadModelConfig();
+      await loadModelConfig({force});
       if (rerender) document.querySelector('[data-model-artifact-panel="1"]')?.remove();
       await renderPanels();
       return;
@@ -436,7 +441,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65002',
+    build: 'model-artifacts-65003',
     refresh,
     renderPanels,
     openAuditDetail,

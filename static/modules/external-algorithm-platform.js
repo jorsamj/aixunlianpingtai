@@ -267,6 +267,8 @@ export function installExternalAlgorithmPlatformRuntime({
   const state = () => getState?.() || {};
   let config = null;
   let history = [];
+  let pageLoadedAt = 0;
+  const PLATFORM_PAGE_CACHE_TTL_MS = 60 * 1000;
   let cacheData = {categories: [], products: [], analyses_by_product: {}, compute_platforms: []};
   let loading = false;
   let destroyed = false;
@@ -1201,35 +1203,47 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
-  async function render({reload = true} = {}) {
-    if (destroyed || loading || String(state().page || '') !== PAGE) return false;
+  async function render({reload = true, force = false} = {}) {
+    if (destroyed || String(state().page || '') !== PAGE) return false;
     const view = document.getElementById('view');
     if (!view) return false;
-    loading = true;
-    if (!config) view.innerHTML = '<div class="empty">正在读取平台对接配置…</div>';
-    try {
-      if (reload || !config) {
-        const [nextConfig, nextHistory, nextCache, nextReadiness] = await Promise.all([
-          loadConfig({silent: true}),
-          loadHistory({silent: true}),
-          loadCache({silent: true}),
-          loadReadiness({silent: true}),
-        ]);
-        config = nextConfig;
-        history = nextHistory;
-        cacheData = nextCache;
-        readiness = nextReadiness;
-      }
-      if (String(state().page || '') !== PAGE) return false;
-      if (reload) configEditing = false;
+    if (reload) configEditing = false;
+
+    const paintCachedPage = () => {
+      if (!config || String(state().page || '') !== PAGE) return false;
       view.innerHTML = configFormHtml(config);
       bindPage();
       return true;
+    };
+    const hasSnapshot = paintCachedPage();
+    if (loading) return hasSnapshot;
+
+    const age = Date.now() - Number(pageLoadedAt || 0);
+    const fresh = pageLoadedAt > 0 && age >= 0 && age < PLATFORM_PAGE_CACHE_TTL_MS;
+    if (config && (!reload || (!force && fresh))) return true;
+
+    loading = true;
+    if (!config) view.innerHTML = '<div class="empty">首次读取平台对接配置…</div>';
+    try {
+      const [nextConfig, nextHistory, nextCache, nextReadiness] = await Promise.all([
+        loadConfig({silent: true}),
+        loadHistory({silent: true}),
+        loadCache({silent: true}),
+        loadReadiness({silent: true}),
+      ]);
+      config = nextConfig;
+      history = nextHistory;
+      cacheData = nextCache;
+      readiness = nextReadiness;
+      pageLoadedAt = Date.now();
+      return paintCachedPage();
     } catch (error) {
-      if (String(state().page || '') === PAGE) {
+      if (!hasSnapshot && String(state().page || '') === PAGE) {
         view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
+      } else if (force) {
+        notify?.(error?.message || error);
       }
-      return false;
+      return hasSnapshot;
     } finally {
       loading = false;
     }
@@ -1248,7 +1262,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63014',
+    build: 'external-algorithm-platform-63016',
     page: PAGE,
     loadConfig,
     loadHistory,

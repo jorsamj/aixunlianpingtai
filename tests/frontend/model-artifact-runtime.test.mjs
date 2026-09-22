@@ -77,6 +77,8 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /run-auto/);
   assert.match(source, /interaction-logs/);
   assert.match(source, /复制诊断信息/);
+  assert.match(source, /MODEL_CONFIG_CACHE_TTL_MS = 2 \* 60 \* 1000/);
+  assert.match(source, /loadModelConfig\(\{force = false\} = \{\}\)/);
 });
 
 
@@ -86,7 +88,7 @@ test('audit polling is PollRegistry-owned and audit rows patch by log id', () =>
   assert.match(source, /registry\.startTimeout\(AUDIT_POLL_KEY, PLATFORM_PAGE/);
   assert.match(source, /function patchAuditRows\(body\)/);
   assert.match(source, /data-audit-id=/);
-  assert.match(source, /build: 'model-artifacts-65002'/);
+  assert.match(source, /build: 'model-artifacts-65003'/);
   assert.doesNotMatch(source, /window\.setInterval\(/);
   assert.doesNotMatch(source, /body\.innerHTML = auditRowsHtml\(\)/);
 });

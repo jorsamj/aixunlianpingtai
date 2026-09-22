@@ -161,7 +161,7 @@ jobs:
           grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
           grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
           if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
-          grep -Fq "build: 'model-artifacts-65002'" static/modules/model-artifact-runtime.js
+          grep -Fq "build: 'model-artifacts-65003'" static/modules/model-artifact-runtime.js
           grep -Fq 'registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE' static/modules/model-artifact-runtime.js
           grep -Fq 'function patchAuditRows(body)' static/modules/model-artifact-runtime.js
           if grep -Fq 'window.setInterval(' static/modules/model-artifact-runtime.js; then echo 'model artifact audit polling must stay PollRegistry-owned' >&2; exit 1; fi
@@ -347,6 +347,9 @@ jobs:
           grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422539';" static/main.mjs
           grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
           grep -Fq "registerPageOwner('平台对接'" static/main.mjs
+          grep -Fq "['标签管理', 'renderLabelManagement414']" static/main.mjs
+          grep -Fq "['存储配置', 'renderStorageSources61']" static/main.mjs
+          grep -Fq "['训练资源', 'renderResources']" static/main.mjs
           grep -Fq 'navigation: window.PlatformCore?.navigation || {}' static/main.mjs
           grep -Fq 'externalAlgorithmPlatformRuntime?.render?.({reload: true})' static/main.mjs
           grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs

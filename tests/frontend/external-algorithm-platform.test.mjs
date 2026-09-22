@@ -241,6 +241,9 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /const configLocked = savedConnectionReady && !configEditing/);
   assert.match(source, /配置已锁定，请先点击“编辑配置”再修改/);
   assert.match(source, /if \(reload\) configEditing = false/);
+  assert.match(source, /PLATFORM_PAGE_CACHE_TTL_MS = 60 \* 1000/);
+  assert.match(source, /const hasSnapshot = paintCachedPage\(\)/);
+  assert.match(source, /if \(config && \(!reload \|\| \(!force && fresh\)\)\) return true/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
   assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
   assert.match(source, /除人员登录参考外，内部算法接口均已进入 Provider contract/);

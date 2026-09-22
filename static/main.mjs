@@ -9,9 +9,9 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63015';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63016';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
-import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65002';
+import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65003';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422505';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
@@ -336,7 +336,29 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 // Core product pages now have one navigation owner each. Historical app.js
 // renderers remain compatibility entry points, but navigation no longer walks
 // through the chained render() override stack.
+const canonicalWindowPageRenderers = new Map([
+  ['工作台', 'renderDashboard422'],
+  ['质量中心', 'renderQualityCenter424'],
+  ['测试发布', 'renderTest'],
+  ['检测台', 'renderDetectBench'],
+  ['标签管理', 'renderLabelManagement414'],
+  ['模型配置', 'renderModelConfigPageV35'],
+  ['训练资源', 'renderResources'],
+  ['部署转换', 'renderDeployCenter'],
+  ['部署产物', 'renderDeployArtifacts'],
+  ['部署资源', 'renderDeployResources'],
+  ['部署插件', 'renderDeployPluginsV41'],
+  ['存储配置', 'renderStorageSources61'],
+]);
+const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, rendererName]) => (
+  navigationStabilityRuntime.registerPageOwner(page, () => {
+    const renderer = window[rendererName];
+    if (typeof renderer !== 'function') throw new Error(`${page} 页面模块尚未就绪`);
+    return renderer();
+  })
+));
 const canonicalPageOwnerDisposers = [
+  ...canonicalWindowPageOwners,
   navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),
   navigationStabilityRuntime.registerPageOwner('训练任务', () => {
     if (window.TrainingTaskVisibilityRuntime?.render) return window.TrainingTaskVisibilityRuntime.render();

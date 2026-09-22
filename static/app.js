@@ -469,12 +469,20 @@ window.__resourceDiscoveryDependencies={
   state.storageSources61=state.storageSources61||[];
   state.materialSourceFilter61=state.materialSourceFilter61||'all';
   state.storageSourcesLoading61=false;
+  state.storageSourcesLoadedAt61=Number(state.storageSourcesLoadedAt61||0);
+  const STORAGE_SOURCE_CACHE_TTL_MS=2*60*1000;
 
-  async function loadStorageSources61(){
+  async function loadStorageSources61({force=false}={}){
     if(state.storageSourcesLoading61)return state.storageSources61;
+    const age=Date.now()-Number(state.storageSourcesLoadedAt61||0);
+    if(!force&&state.storageSourcesLoadedAt61>0&&age>=0&&age<STORAGE_SOURCE_CACHE_TTL_MS)return state.storageSources61;
     state.storageSourcesLoading61=true;
-    try{const response=await api('/api/v61/storage-sources');state.storageSources61=response.items||[];return state.storageSources61}
-    finally{state.storageSourcesLoading61=false}
+    try{
+      const response=await api('/api/v61/storage-sources');
+      state.storageSources61=response.items||[];
+      state.storageSourcesLoadedAt61=Date.now();
+      return state.storageSources61;
+    }finally{state.storageSourcesLoading61=false}
   }
   window.loadStorageSources61=loadStorageSources61;
 
@@ -492,11 +500,23 @@ window.__resourceDiscoveryDependencies={
     const rows=state.storageSources61||[];
     return rows.map(source=>`<div class="storage61-row"><div><b>${esc(source.name)}</b><span>${esc(typeName61(source.type))}${source.is_default?' · 默认存储':''}</span></div><div><b>${esc(source.config?.endpoint||source.config?.base_url||source.config?.root||'-')}</b><span>${esc(source.config?.bucket||source.config?.namespace||source.config?.prefix||'')}</span></div><div><span class="pill ${health61(source)?'ok':source.health_status==='UNKNOWN'?'':'err'}">${esc(source.health_status==='UNKNOWN'?'未检测':source.health_status||'未检测')}</span><small>${esc(source.health_message||source.secret_masked||'')}</small></div><div><span class="pill ${source.enabled?'ok':''}">${source.enabled?'已启用':'已停用'}</span><small>${esc(source.last_checked_at?String(source.last_checked_at).replace('T',' ').slice(0,19):'')}</small></div><div class="row"><button class="btn mini" onclick="testStorageSource61('${source.id}')">测试连接</button><button class="btn mini" onclick="openStorageSource61('${source.id}')">编辑</button>${!source.is_default&&source.enabled?`<button class="btn mini" onclick="defaultStorageSource61('${source.id}')">设为默认</button>`:''}${source.id!=='default_local'?`<button class="btn mini" onclick="toggleStorageSource61('${source.id}',${source.enabled?'false':'true'})">${source.enabled?'停用':'启用'}</button><button class="btn mini danger" onclick="deleteStorageSource61('${source.id}')">删除</button>`:''}</div></div>`).join('')||'<div class="empty">暂无存储源</div>';
   }
-  window.renderStorageSources61=async function(){
+  function paintStorageRows61(){
+    const rows=document.getElementById('storage61Rows');if(!rows)return;
+    rows.innerHTML=storageRows61();
+    [...rows.children].forEach((row,index)=>{const source=state.storageSources61[index];if(!source?.enabled)return;const button=document.createElement('button');button.className='btn mini';button.textContent='重新扫描 / 恢复';button.onclick=()=>openStorageRescan61(source.id);row.querySelector('.row')?.appendChild(button)});
+  }
+  window.renderStorageSources61=async function({force=false}={}){
     const view=document.getElementById('view');if(!view)return;
-    view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>存储配置</h2><p>统一管理素材存储，以及训练模型和转换结果的归档位置。</p></div></div><section class="panel"><div class="panel-head"><div><div class="panel-title">素材存储</div><div class="subline">素材库、数据集导入和扫描使用这里的存储源；可配置本地、阿里云 OSS、S3 或其他服务器。</div></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><div class="panel-body"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows"><div class="empty">正在读取存储配置…</div></div></div></div></section><div id="modelArtifactStorageMount"><section class="panel"><div class="panel-body"><div class="empty">正在读取算法产物存储配置…</div></div></section></div><div class="storage61-note"><b>安全与兼容</b><span>AccessKey / Secret 只保存到系统安全凭据库，浏览器不会读取真实密钥。素材与算法产物可以选择不同的 OSS 存储源和目录。</span></div></section>`;
-    try{await loadStorageSources61();const rows=document.getElementById('storage61Rows');if(rows){rows.innerHTML=storageRows61();[...rows.children].forEach((row,index)=>{const source=state.storageSources61[index];if(!source?.enabled)return;const button=document.createElement('button');button.className='btn mini';button.textContent='重新扫描 / 恢复';button.onclick=()=>openStorageRescan61(source.id);row.querySelector('.row')?.appendChild(button)})}await window.ModelArtifactRuntime?.refresh?.({rerender:true})}
-    catch(error){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+    view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>存储配置</h2><p>统一管理素材存储，以及训练模型和转换结果的归档位置。</p></div><div class="row"><button class="btn" onclick="renderStorageSources61({force:true})">刷新</button></div></div><section class="panel"><div class="panel-head"><div><div class="panel-title">素材存储</div><div class="subline">素材库、数据集导入和扫描使用这里的存储源；可配置本地、阿里云 OSS、S3 或其他服务器。</div></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><div class="panel-body"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows">${storageRows61()}</div></div></div></section><div id="modelArtifactStorageMount"><section class="panel"><div class="panel-body"><div class="empty">算法产物存储配置正在后台同步…</div></div></section></div><div class="storage61-note"><b>安全与兼容</b><span>AccessKey / Secret 只保存到系统安全凭据库，浏览器不会读取真实密钥。素材与算法产物可以选择不同的 OSS 存储源和目录。</span></div></section>`;
+    paintStorageRows61();
+    try{
+      await loadStorageSources61({force});
+      if(state.page==='存储配置')paintStorageRows61();
+      await window.ModelArtifactRuntime?.refresh?.({rerender:true,force});
+    }catch(error){
+      if(!state.storageSourcesLoadedAt61){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+      else if(force)toast(error.message||error);
+    }
   };
 
   window.openStorageRescan61=async function(sourceId){
@@ -613,11 +633,11 @@ window.__resourceDiscoveryDependencies={
     modal(source?'编辑存储源':'新增存储源',`<div class="storage61-form"><div class="form two"><div class="field"><label>名称 *</label><input id="ss61Name" class="input" value="${esc(source?.name||'')}"></div><div class="field"><label>类型 *</label><select id="ss61Type" class="select" onchange="storageTypeChanged61()" ${source?'disabled':''}>${Object.entries({local:'本地存储',oss:'阿里云 OSS',s3:'S3 兼容（AWS / MinIO）',remote:'其他服务器素材源'}).map(([value,label])=>`<option value="${value}" ${value===type?'selected':''}>${label}</option>`).join('')}</select></div></div><div id="ss61Fields" class="form two">${sourceFields61(type,source||{})}</div><label class="field check"><input id="ss61Enabled" type="checkbox" ${source?.enabled===false?'':'checked'}> 启用该存储源</label><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveStorageSource61()">保存</button></div></div>`,true);
   };
   function sourceValues61(){return {name:document.getElementById('ss61Name')?.value,type:document.getElementById('ss61Type')?.value,root:document.getElementById('ss61Root')?.value,endpoint:document.getElementById('ss61Endpoint')?.value,region:document.getElementById('ss61Region')?.value,bucket:document.getElementById('ss61Bucket')?.value,public_base_url:document.getElementById('ss61PublicBaseUrl')?.value,prefix:document.getElementById('ss61Prefix')?.value,access_key_id:document.getElementById('ss61Access')?.value,access_key_secret:document.getElementById('ss61Secret')?.value,secret_access_key:document.getElementById('ss61Secret')?.value,use_ssl:document.getElementById('ss61Ssl')?.checked,base_url:document.getElementById('ss61Base')?.value,namespace:document.getElementById('ss61Namespace')?.value,token:document.getElementById('ss61Token')?.value,enabled:document.getElementById('ss61Enabled')?.checked!==false}}
-  window.saveStorageSource61=async function(){try{const payload=storageApi().buildStorageSourcePayload(sourceValues61()),id=state.storageEditing61;await api(id?`/api/v61/storage-sources/${id}`:'/api/v61/storage-sources',{method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadStorageSources61();renderStorageSources61();toast('存储配置已保存')}catch(error){toast(error.message||error)}};
-  window.testStorageSource61=async id=>{try{const response=await api(`/api/v61/storage-sources/${id}/test`,{method:'POST'});await loadStorageSources61();renderStorageSources61();toast(response.health?.message||'连接检测通过')}catch(error){await loadStorageSources61();renderStorageSources61();toast(error.message||error)}};
-  window.defaultStorageSource61=async id=>{try{await api(`/api/v61/storage-sources/${id}/default`,{method:'POST'});await loadStorageSources61();renderStorageSources61();toast('默认保存位置已更新')}catch(error){toast(error.message||error)}};
+  window.saveStorageSource61=async function(){try{const payload=storageApi().buildStorageSourcePayload(sourceValues61()),id=state.storageEditing61;await api(id?`/api/v61/storage-sources/${id}`:'/api/v61/storage-sources',{method:id?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadStorageSources61({force:true});renderStorageSources61();toast('存储配置已保存')}catch(error){toast(error.message||error)}};
+  window.testStorageSource61=async id=>{try{const response=await api(`/api/v61/storage-sources/${id}/test`,{method:'POST'});await loadStorageSources61({force:true});renderStorageSources61();toast(response.health?.message||'连接检测通过')}catch(error){await loadStorageSources61({force:true});renderStorageSources61();toast(error.message||error)}};
+  window.defaultStorageSource61=async id=>{try{await api(`/api/v61/storage-sources/${id}/default`,{method:'POST'});await loadStorageSources61({force:true});renderStorageSources61();toast('默认保存位置已更新')}catch(error){toast(error.message||error)}};
   window.toggleStorageSource61=async(id,enabled)=>{try{await api(`/api/v61/storage-sources/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});await loadStorageSources61();renderStorageSources61()}catch(error){toast(error.message||error)}};
-  window.deleteStorageSource61=async id=>{if(!confirm('只允许删除未被素材引用的存储源。确认删除该配置？'))return;try{await api(`/api/v61/storage-sources/${id}`,{method:'DELETE'});await loadStorageSources61();renderStorageSources61();toast('存储源配置已删除')}catch(error){toast(error.message||error)}};
+  window.deleteStorageSource61=async id=>{if(!confirm('只允许删除未被素材引用的存储源。确认删除该配置？'))return;try{await api(`/api/v61/storage-sources/${id}`,{method:'DELETE'});await loadStorageSources61({force:true});renderStorageSources61();toast('存储源配置已删除')}catch(error){toast(error.message||error)}};
 
   window.installServerMaterialImport61=function(){
     if(window.__serverMaterialImport61Installed)return true;
@@ -2551,6 +2571,7 @@ window.installUsability417=function(){
   window.stopAutoTask422=async id=>{await safe(api(`/api/v33/projects/${pid()}/prelabel-tasks/${id}/stop`,{method:'POST'}));await refreshAuto422();toast('已请求停止')};
   window.retryAutoTask422=async id=>{try{await api(`/api/v42/projects/${pid()}/prelabel-tasks/${id}/retry`,{method:'POST'});await refreshAuto422();toast('任务已重新创建')}catch(e){toast(e.message||e)}};
 
+  window.renderDashboard422=renderDashboard422;
   const render422Base=render;
   render=function(){
     if(state.page==='新建算法'||state.page==='自动迭代'){window.setPage?.('算法列表');return}
@@ -4033,6 +4054,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const V414='42.24.0';
   window.__v414UploadDecision=true;
   state.label414Usage=state.label414Usage||[];
+  state.label414UsageLoadedAt=Number(state.label414UsageLoadedAt||0);
+  const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   state.batch414Selected=state.batch414Selected||new Set();
   state.iteration414=state.iteration414||{};
 
@@ -4047,7 +4070,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   async function refreshLabels414(withUsage=false){
     const r=await api(withUsage?`/api/v54/projects/${pid()}/label-schema`:`/api/v12/projects/${pid()}/labels`);
     state.labels=(r.items||[]);
-    if(withUsage)state.label414Usage=r.items||[];
+    if(withUsage){state.label414Usage=r.items||[];state.label414UsageLoadedAt=Date.now()}
     return state.labels;
   }
   async function refreshImages414(){
@@ -4071,14 +4094,21 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };
 
-  window.renderLabelManagement414=async function(){
-    const view=document.getElementById('view');
-    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div><section class="panel"><div class="label414-table" id="label414Table"><div class="empty">正在读取标签库…</div></div></section></section>`;
-    try{await refreshLabels414(true);drawLabel414()}catch(e){document.getElementById('label414Table').innerHTML=`<div class="empty">读取失败：${esc(e.message||e)}</div>`}
+  window.renderLabelManagement414=async function({force=false}={}){
+    const view=document.getElementById('view');if(!view)return;
+    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
+    drawLabel414();
+    const age=Date.now()-Number(state.label414UsageLoadedAt||0);
+    if(!force&&state.label414UsageLoadedAt>0&&age>=0&&age<LABEL_SCHEMA_CACHE_TTL_MS)return;
+    try{await refreshLabels414(true);if(state.page==='标签管理')drawLabel414()}
+    catch(e){
+      if(!state.label414UsageLoadedAt&&!state.labels?.length){const box=document.getElementById('label414Table');if(box)box.innerHTML=`<div class="empty">读取失败：${esc(e.message||e)}</div>`}
+      else if(force)toast(e.message||e);
+    }
   };
   function drawLabel414(){
     const box=document.getElementById('label414Table');if(!box)return;
-    const rows=state.label414Usage||state.labels||[];
+    const rows=(state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[];
     box.innerHTML=`<div class="label414-row head"><span>英文标签</span><span>中文名称</span><span>颜色</span><span>快捷键</span><span>使用图片</span><span>标注框</span><span>操作</span></div>${rows.map(l=>`<div class="label414-row"><span><b class="label414-code">${esc(l.code)}</b></span><span>${esc(l.display_name||'-')}${(l.aliases||[]).length?`<small class="muted-line">别名：${(l.aliases||[]).map(esc).join('、')}</small>`:''}</span><span><i class="label414-color" style="background:${esc(l.color||'#64748b')}"></i>${esc(l.color||'')}</span><span>${esc(l.hotkey||'-')}</span><span>${Number(l.usage_images||0)}</span><span>${Number(l.usage_boxes||0)}</span><span class="row"><button class="btn mini" onclick="openLabel414(${Number(l.class_id)})">编辑</button><button class="btn mini danger" onclick="deleteLabel414(${Number(l.class_id)},'${esc(l.code)}')">删除</button></span></div>`).join('')||'<div class="empty">暂无标签。请先创建英文标签，例如 fire / smoke / person。</div>'}`;
   }
   window.openLabel414=function(classId=null){
