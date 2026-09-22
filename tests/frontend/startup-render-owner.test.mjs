@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 
 const legacyStartupTimers = [
@@ -15,9 +16,13 @@ test('legacy v35/v36/v37 startup render timers cannot return', () => {
   for (const timer of legacyStartupTimers) assert.equal(app.includes(timer), false);
 });
 
-test('startup dispatch remains owned by the final __clInit path', () => {
-  assert.equal(app.includes('queueMicrotask(()=>{if(window.__clInit)window.__clInit()});'), true);
+test('startup dispatch is deferred until canonical page owners and render bridge are installed', () => {
+  assert.equal(app.includes('queueMicrotask(()=>{if(window.__clInit)window.__clInit()});'), false);
+  assert.equal(app.includes('window.__clStartupDeferredToCanonicalRouter=true;'), true);
   assert.equal(app.includes('window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;'), true);
+  const bridge = main.indexOf('window.render = function canonicalRenderBridge()');
+  const startup = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
+  assert.ok(bridge >= 0 && startup > bridge, 'canonical render bridge must exist before startup begins');
 });
 
 test('bounded startup cleanup timer cannot return after final render ownership', () => {

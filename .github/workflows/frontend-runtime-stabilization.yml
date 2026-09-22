@@ -355,6 +355,9 @@ jobs:
           grep -Fq "source: 'background-data'" static/main.mjs
           grep -Fq 'function renderCanonicalOwner(page' static/main.mjs
           grep -Fq 'window.render = function canonicalRenderBridge()' static/main.mjs
+          grep -Fq 'window.__clStartupDeferredToCanonicalRouter=true;' static/app.js
+          grep -Fq 'const canonicalStartupPromise = window.__clInit?.();' static/main.mjs
+          if grep -Fq 'queueMicrotask(()=>{if(window.__clInit)window.__clInit()});' static/app.js; then echo 'classic app must not start before canonical owners are installed' >&2; exit 1; fi
           grep -Fq "source: 'startup-owner'" static/main.mjs
           grep -Fq 'PostRenderNormalizationRuntime?.apply?.' static/main.mjs
           if grep -Fq "requestedPage === '测试发布'" static/main.mjs; then echo 'page navigation must not block on low-frequency extras' >&2; exit 1; fi

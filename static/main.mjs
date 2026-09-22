@@ -454,7 +454,8 @@ window.PlatformCore.runtime.renderRouter = {
   },
 };
 
-Promise.resolve(window.__v53InitPromise).then(() => {
+const canonicalStartupPromise = window.__clInit?.();
+Promise.resolve(canonicalStartupPromise).then(() => {
   if (navigationStabilityRuntime.hasPageOwner(state.page)) {
     void renderCanonicalOwner(state.page, {source: 'startup-owner'});
   }
