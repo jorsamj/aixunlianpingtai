@@ -146,3 +146,13 @@ test('report presentation keeps algorithm and version reports distinct', () => {
     title: '单版本训练报告', scope: 'version'
   });
 });
+
+
+test('training algorithm selection has one canonical owner instead of legacy wrapper chaining', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /window\.applyAlg=function applyAlgorithmSelectionCanonical26\(\)/);
+  assert.match(source, /if\(t\.framework==='paddle'\)/);
+  assert.match(source, /const evalBox=\$\('#paddle_eval'\)/);
+  assert.equal(source.includes('const oldApplyAlg = window.applyAlg;'), false);
+  assert.equal(source.includes('const oldApplyAlgV26 = window.applyAlg;'), false);
+});

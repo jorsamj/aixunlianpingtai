@@ -353,7 +353,36 @@ function renderTraining(){
   fillTrain();
 }
 window.fillTrain=()=>{const t=curTarget(),a=$('#alg'),m=$('#model');if(!t||!a||!m)return;const algs=t.algorithms||[];const groups=groupAlgos(algs);a.innerHTML=Object.entries(groups).map(([fam,items])=>`<optgroup label="${esc(fam)}">${items.map(x=>`<option value="${esc(x.key)}">${esc(x.name)}${x.recommended?'（推荐）':''}</option>`).join('')}</optgroup>`).join('')||'<option value="">无可用算法</option>';m.innerHTML=(t.base_models||[]).map(x=>`<option value="${esc(x.value||'')}" data-note="${esc(x.source||'')}">${esc(x.label||x.value||'默认权重')}</option>`).join('')||'<option value="">默认权重</option>';applyAlg()};
-window.applyAlg=()=>{const t=curTarget();const alg=(t?.algorithms||[]).find(x=>x.key===$('#alg')?.value);if(!alg)return;$('#epochs').value=alg.default_epochs||$('#epochs').value;$('#imgsz').value=alg.default_imgsz||$('#imgsz').value;$('#batch').value=alg.default_batch||$('#batch').value;const meta=$('#algMeta');if(meta)meta.textContent=alg.config_relpath?`配置：${alg.config_relpath}；${algoBadge(alg)}`:(alg.description||'');const mm=$('#modelMeta');if(mm)mm.textContent=(t.framework==='paddle')?'留空表示使用配置默认预训练权重/自动下载；选择 .pdparams 可作为 pretrain_weights。':'请选择 .pt 训练权重。';const m=$('#model');const hit=[...m.options].find(o=>(o.value||o.textContent).toLowerCase().includes(String(alg.base_model||'').toLowerCase()));if(hit)m.value=hit.value};
+window.applyAlg=function applyAlgorithmSelectionCanonical26(){
+  const t=curTarget&&curTarget();
+  const alg=(t?.algorithms||[]).find(x=>x.key===$('#alg')?.value);
+  if(alg){
+    $('#epochs').value=alg.default_epochs||$('#epochs').value;
+    $('#imgsz').value=alg.default_imgsz||$('#imgsz').value;
+    $('#batch').value=alg.default_batch||$('#batch').value;
+    const meta=$('#algMeta');
+    if(meta)meta.textContent=alg.config_relpath?`配置：${alg.config_relpath}；${algoBadge(alg)}`:(alg.description||'');
+    const mm=$('#modelMeta');
+    if(mm)mm.textContent=(t.framework==='paddle')?'留空表示使用配置默认预训练权重/自动下载；选择 .pdparams 可作为 pretrain_weights。':'请选择 .pt 训练权重。';
+    const m=$('#model');
+    const hit=m?[...m.options].find(o=>(o.value||o.textContent).toLowerCase().includes(String(alg.base_model||'').toLowerCase())):null;
+    if(hit)m.value=hit.value;
+    if(t.framework==='paddle'){
+      if($('#device')) $('#device').value='cpu';
+      if($('#lr0')) $('#lr0').value='0.001';
+      if($('#workers')) $('#workers').value='0';
+      if($('#optimizer')) $('#optimizer').value='auto';
+      if(m) m.value='';
+      if(mm) mm.textContent='飞桨默认使用配置内置预训练权重并自动下载；只有本地 .pdparams 才需要手动选择。';
+      if(meta) meta.textContent=(alg.config_relpath?`配置：${alg.config_relpath}；`: '') + '平台会自动覆盖类别数、数据集路径和安全学习率，避免 COCO 原配置导致 KeyError/NaN。';
+    }
+  }
+  const evalBox=$('#paddle_eval');
+  if(evalBox){
+    evalBox.disabled=!(t&&t.framework==='paddle');
+    if(!(t&&t.framework==='paddle')) evalBox.checked=false;
+  }
+};
 
 
 // -----------------------------
@@ -399,26 +428,6 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
 
 // ===== v24 overrides: Paddle安全训练参数 + 更完整检测台 =====
 (function(){
-  const oldApplyAlg = window.applyAlg;
-  window.applyAlg = function(){
-    if (typeof oldApplyAlg === 'function') oldApplyAlg();
-    const t = curTarget && curTarget();
-    const alg = (t?.algorithms||[]).find(x=>x.key===$('#alg')?.value);
-    if(!t || !alg) return;
-    if(t.framework==='paddle'){
-      if($('#device')) $('#device').value='cpu';
-      if($('#lr0')) $('#lr0').value='0.001';
-      if($('#workers')) $('#workers').value='0';
-      if($('#optimizer')) $('#optimizer').value='auto';
-      const m=$('#model');
-      if(m) m.value=''; // 飞桨默认使用 yml 内置预训练权重自动下载，不能把 yml 当权重。
-      const mm=$('#modelMeta');
-      if(mm) mm.textContent='飞桨默认使用配置内置预训练权重并自动下载；只有本地 .pdparams 才需要手动选择。';
-      const meta=$('#algMeta');
-      if(meta) meta.textContent=(alg.config_relpath?`配置：${alg.config_relpath}；`: '') + '平台会自动覆盖类别数、数据集路径和安全学习率，避免 COCO 原配置导致 KeyError/NaN。';
-    }
-  };
-
   window.renderDetectionResult = function(r,title){
     const dets=r.detections||[];
     const rows=dets.map(d=>`<tr><td>${esc(d.label)}</td><td>${esc(d.confidence)}</td><td>${esc(d.x1)}, ${esc(d.y1)}, ${esc(d.x2)}, ${esc(d.y2)}</td></tr>`).join('') || '<tr><td colspan="3">无结构化明细；请看检测图。飞桨PaddleDetection模型目前优先展示绘制结果。</td></tr>';
@@ -929,17 +938,6 @@ window.installUsability417=function(){
     fillTrain();
     updateTrainingJobTable();
     if(state.activeLogJob) pollActiveLog();
-  };
-
-  const oldApplyAlgV26 = window.applyAlg;
-  window.applyAlg=function(){
-    if(typeof oldApplyAlgV26==='function') oldApplyAlgV26();
-    const t=curTarget&&curTarget();
-    const evalBox=$('#paddle_eval');
-    if(evalBox){
-      evalBox.disabled = !(t && t.framework==='paddle');
-      if(!(t && t.framework==='paddle')) evalBox.checked=false;
-    }
   };
 
   
