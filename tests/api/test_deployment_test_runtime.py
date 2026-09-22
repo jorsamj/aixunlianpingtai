@@ -207,6 +207,9 @@ def test_detection_batch_metadata_history_and_review_are_durable(
             "detection_item_total": "1",
             "detection_side": "A",
             "model_label": "算法版本：烟火 / v1",
+            "model_source": "algorithm_version",
+            "algorithm_id": "algo-feedback",
+            "version_id": "ver-feedback",
             "original_filename": "folder/fire-001.jpg",
         },
     )
@@ -262,6 +265,45 @@ def test_detection_batch_metadata_history_and_review_are_durable(
         app_module.TaskStatus.SUCCEEDED,
         result_ref=result_ref,
     )
+
+    # A completed formal algorithm-version detection can be explicitly promoted
+    # to the existing v63 human-review evidence chain. The promotion is a
+    # separate action from running detection and is idempotent.
+    Path(request["output_path"]).write_bytes(b"result-image")
+    monkeypatch.setattr(
+        app_module,
+        "_algorithm_version_for_action",
+        lambda project_id, algorithm_id, version_id: (
+            {"id": algorithm_id},
+            {"id": version_id, "stored_path": request["model_path"]},
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_online_feedback_version_model_sha256",
+        lambda _version: "a" * 64,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "image_info",
+        lambda _path: {"width": 96, "height": 72},
+    )
+    evidence = client.post(
+        f"/api/v64/projects/{project_id}/deployment-tests/{task['id']}/feedback-evidence"
+    )
+    assert evidence.status_code == 200, evidence.text
+    promoted = evidence.json()
+    assert promoted["feedback_eligible"] is True
+    assert promoted["prediction_id"] == task["id"]
+    assert promoted["algorithm_id"] == "algo-feedback"
+    assert promoted["version_id"] == "ver-feedback"
+    assert promoted["detections"][0]["label"] == "smoke"
+
+    repeated_evidence = client.post(
+        f"/api/v64/projects/{project_id}/deployment-tests/{task['id']}/feedback-evidence"
+    )
+    assert repeated_evidence.status_code == 200, repeated_evidence.text
+    assert repeated_evidence.json()["idempotent"] is True
 
     detail = client.get(
         f"/api/v64/projects/{project_id}/detection-batches/{batch_id}"
