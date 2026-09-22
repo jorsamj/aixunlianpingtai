@@ -278,10 +278,12 @@ def test_detection_batch_metadata_history_and_review_are_durable(
             {"id": version_id, "stored_path": request["model_path"]},
         ),
     )
+    tested_model_sha = app_module.sha256_file(Path(request["model_path"]))
+    assert request["model_identity"]["model_sha256"] == tested_model_sha
     monkeypatch.setattr(
         app_module,
         "_online_feedback_version_model_sha256",
-        lambda _version: "a" * 64,
+        lambda _version: tested_model_sha,
     )
     monkeypatch.setattr(
         app_module,
