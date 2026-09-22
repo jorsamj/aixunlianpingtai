@@ -372,7 +372,7 @@ function renderJobProgress(j){
 }
 function hasLiveJob(){return (state.jobs||[]).some(j=>['queued','running','waiting','pending'].includes(j.status));}
 async function pollActiveLog(){if(!state.activeLogJob)return;const el=$('#log');if(!el)return;const txt=await safe(api(`/api/projects/${pid()}/jobs/${state.activeLogJob}/log`));if(txt!=null)el.textContent=txt||'暂无日志';el.scrollTop=el.scrollHeight;}
-render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();}
+
 
 function renderTraining(){
   const rec=state.rec?.recommendation||{};
@@ -962,7 +962,7 @@ window.installUsability417=function(){
 
   
 
-  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
+  
 })();
 
 // ===== v28 overrides: 检测台/测试发布空DOM防崩溃 + 友好错误提示 =====
@@ -1113,12 +1113,6 @@ window.installUsability417=function(){
     }
   };
 
-  // 最终渲染入口也统一走 v28 的测试页/检测台，避免旧闭包引用旧函数。
-  render = function(){
-    renderNav();renderTop();renderSummary();
-    ({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();
-    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-  };
 })();
 
 // ===== v30: 导出算法包 + 检测台零结果诊断 =====
@@ -1165,7 +1159,7 @@ window.installUsability417=function(){
     $('#view').innerHTML=`<div class="grid2"><section class="panel"><div class="panel-head"><div><div class="panel-title">模型测试</div><div class="subline">单模型测试入口；需要对比时请用检测台。</div></div><button class="btn small" onclick="loadAll().then(render)">刷新环境/模型</button></div><div class="panel-body"><div class="form"><div class="field"><label>测试环境</label><select class="select" id="inferEnv" onchange="syncTestModelByEnv()">${envOptions||'<option value="">暂无可用测试环境</option>'}</select></div><div class="field"><label>测试模型</label><select class="select" id="testModel">${modelOptions||'<option value="">暂无可测试模型</option>'}</select></div><div class="field"><label>置信度</label><div class="row"><input id="conf" class="input" value="0.25"><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.01'">0.01</button><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.05'">0.05</button><button class="btn mini" onclick="var x=document.getElementById('conf'); if(x)x.value='0.25'">0.25</button></div></div><div class="field"><label>测试图片</label><input id="predFile" type="file" accept="image/*" class="file"></div><button class="btn primary" onclick="predict()">开始测试</button><div id="predResult"></div></div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">待发布/可导出模型</div><div class="subline">先检测效果，再归属算法或导出部署包。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>大小</th><th>操作</th></tr></thead><tbody>${(state.pending||[]).map(pendingRow).join('')||'<tr><td colspan="3">暂无待发布模型</td></tr>'}</tbody></table></div></section></div><section class="panel"><div class="panel-head"><div class="panel-title">测试环境状态</div></div><div class="panel-body"><div class="card-list">${(state.inferenceEnvs||[]).map(e=>`<div class="item"><div><div class="item-title">${esc(e.name)}</div><div class="item-sub">${esc(e.python_path||e.base_url||'')} · ${esc(e.note||'')}</div></div><span class="pill ${e.status==='ready'?'ok':e.status==='warning'?'warn':'err'}">${e.status==='ready'?'可用':e.status==='warning'?'需确认':'不可用'}</span></div>`).join('')||'<div class="empty">暂无测试环境，请先到训练资源里检测 Ultralytics 或配置飞桨。</div>'}</div></div></section>`;
     if(typeof syncTestModelByEnv==='function') syncTestModelByEnv();
   };
-  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
+  
 })();
 
 // ===== v31: PaddleDetection 结构化结果解析与低置信度调试提示 =====
@@ -1395,11 +1389,6 @@ window.installUsability417=function(){
     }
   };
 
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    ({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,视频切帧:renderVideoFrameTasks,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();
-    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-  };
 })();
 
 // ============================================================
@@ -1551,13 +1540,6 @@ window.installUsability417=function(){
     $('#view').innerHTML='<section class="panel"><div class="panel-head"><div class="panel-title">视频切帧</div></div><div class="panel-body"><div class="empty">当前版本未加载视频切帧模块。</div></div></section>';
   }
 
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    const map=RENDER_MAP();
-    (map[state.page]||renderHomeDashboard)();
-    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-    saveUiState();
-  };
 
   // 重新加载一次，确保 v34 的持久化状态、版本标识和新菜单生效。
   Promise.resolve().then(async()=>{if(window.__v53BootstrapOwned)return;state.page=lastState.page&&RENDER_MAP()[lastState.page]?lastState.page:'工作台';await loadAll();render();state.uiReady=true;});
@@ -1623,13 +1605,6 @@ window.installUsability417=function(){
     if($('#versionBadge')) $('#versionBadge').textContent='v'+(state.versionInfo?.version||APP_VERSION_V35);
   };
 
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    const map=v35RenderMap();
-    (map[state.page]||map['工作台'])();
-    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-    try{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:state.page,datasetId:state.datasetId||'',imageFilter:state.imageFilter||'all',ts:Date.now()}))}catch(e){}
-  };
 
   function setBtnBusy(btn, busy, text){
     if(!btn)return;
@@ -2164,16 +2139,6 @@ window.installUsability417=function(){
     document.getElementById('view').innerHTML=`<section class="hero-panel"><div class="hero-left"><div class="hero-k">畅联云算法训练 · v${V39}</div><h2>从素材到目标芯片部署</h2><p>数据准备、训练、检测、芯片转换和部署产物统一管理。</p><div class="hero-actions"><button class="btn primary" onclick="setPage('数据集')">准备数据</button><button class="btn" onclick="setPage('训练任务')">训练模型</button><button class="btn" onclick="setPage('部署转换')">部署转换</button></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">快速入口</div></div><div class="panel-body"><div class="quick-grid-v39"><div class="quick-card-v37" onclick="setPage('数据集')"><div class="quick-icon-v37">${menuIcon('数据集')}</div><b>数据准备</b><span>导入、标注、划分</span></div><div class="quick-card-v37" onclick="setPage('自动标注')"><div class="quick-icon-v37">${menuIcon('自动标注')}</div><b>模型标注</b><span>提示词模板与自动标注</span></div><div class="quick-card-v37" onclick="setPage('训练任务')"><div class="quick-icon-v37">${menuIcon('训练任务')}</div><b>训练任务</b><span>Ultralytics / PaddleDetection</span></div><div class="quick-card-v37" onclick="setPage('检测台')"><div class="quick-icon-v37">${menuIcon('检测台')}</div><b>模型检测</b><span>同图对比效果</span></div><div class="quick-card-v37" onclick="setPage('部署转换')"><div class="quick-icon-v37">${menuIcon('部署转换')}</div><b>部署转换</b><span>ONNX / RKNN / BMODEL / OM / Engine</span></div></div></div></section><div class="dashboard-grid-v37"><section class="panel"><div class="panel-head"><div class="panel-title">最近训练</div><button class="btn small" onclick="setPage('训练任务')">全部</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th></th></tr></thead><tbody>${taskRows}</tbody></table></div></section><section class="panel"><div class="panel-head"><div class="panel-title">当前进度</div></div><div class="panel-body"><div class="mini-metrics"><div><span>训练中</span><b>${running}</b></div><div><span>已完成</span><b>${done}</b></div><div><span>算法版本</span><b>${(state.algorithms||[]).reduce((n,a)=>n+(a.versions||[]).length,0)}</b></div></div></div></section></div>`;
   };
 
-  const oldRenderV39=render;
-  render=function(){
-    state.versionInfo={...(state.versionInfo||{}),version:V39};
-    if(state.page==='部署转换'){renderNav();renderTop();renderSummary();renderDeployCenter();return}
-    if(state.page==='部署产物'){renderNav();renderTop();renderSummary();renderDeployArtifacts();return}
-    if(state.page==='部署资源'){renderNav();renderTop();renderSummary();renderDeployResources();return}
-    if(state.page==='部署插件'){renderNav();renderTop();renderSummary();renderDeployPluginsV41();return}
-    if(state.page==='组件检测'){renderNav();renderTop();renderSummary();renderComponentCheckV40();return}
-    oldRenderV39();
-  };
   // existing setPage calls render dynamically; reset deployment cache on relevant pages only.
 })();
 
@@ -2238,7 +2203,7 @@ window.installUsability417=function(){
 (function(){
   const V42='42.24.0';
   state.v42={templates:[],sources:[],policies:[],runs:[],quality:null,blueprints:[],loaded:false};
-  const oldRender42=render, oldNav42=renderNav, oldTop42=renderTop;
+  const oldTop42=renderTop;
   const CORE_MENUS=[
     {title:'算法生产',items:['工作台','新建算法','算法列表','自动迭代']},
     {title:'数据中心',items:['素材接入','数据集','自动标注']},
@@ -2379,14 +2344,6 @@ window.installUsability417=function(){
   }
   window.renderHomeDashboard=renderHomeDashboard=function(){renderDashboardBody42();if(!state.v42?.loaded){load42().then(()=>{if(state.page==='工作台')renderDashboardBody42()})}};
 
-  render=function(){
-    state.versionInfo={...(state.versionInfo||{}),version:V42};
-    if(state.page==='新建算法'){renderNav();renderTop();renderSummary();renderNewAlgorithmV42();return}
-    if(state.page==='素材接入'){renderNav();renderTop();renderSummary();renderSourcesV42();return}
-    if(state.page==='自动迭代'){renderNav();renderTop();renderSummary();renderIterationV42();return}
-    if(state.page==='质量中心'){renderNav();renderTop();renderSummary();renderQualityV42();return}
-    oldRender42();
-  };
 })();
 
 // ============================================================
@@ -2579,13 +2536,6 @@ window.installUsability417=function(){
   window.renderDashboardCanonical422=function(){
     renderDashboard422();
     if(!state.v42?.loaded)void load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});
-  };
-  const render422Base=render;
-  render=function(){
-    if(state.page==='新建算法'||state.page==='自动迭代'){window.setPage?.('算法列表');return}
-    if(state.page==='工作台'){renderNav();renderTop();renderSummary();renderDashboard422();if(!state.v42?.loaded)load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});return}
-    if(state.page==='素材接入'){renderNav();renderTop();renderSummary();renderSources422();return}
-    render422Base();
   };
 })();
 
@@ -2863,15 +2813,6 @@ window.installUsability417=function(){
   // ---------- deployment cache ----------
   window.showVersionDeployments423=async function(aid,vid){const key=`cl_deploy_version_${pid()}_${aid}_${vid}`,ttl=10*60*1000;let r=null;try{const c=JSON.parse(localStorage.getItem(key)||'null');if(c)r=c.data}catch(e){}if(!r){try{r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);localStorage.setItem(key,JSON.stringify({ts:Date.now(),data:r}))}catch(e){return toast(e.message||e)}}const v=r.version||{},items=r.items||[];modal(`${r.algorithm?.name||'算法'} · ${v.version_name||'版本'} · 部署产物`,`<div class="deploy423-source"><span>源模型</span><b>${esc(v.model_name||'')}</b><em>${Number(v.size_mb||0).toFixed(2)} MB</em></div><div class="deploy423-list">${items.map(j=>`<div class="deploy423-job"><div class="deploy423-job-head"><div><b>${esc(j.target_name||j.target)}</b>${taskStatus424(j)}</div><time>${esc(String(j.finished_at||j.created_at||'').slice(0,19))}</time></div><div class="deploy423-job-meta"><span>转换资源：${esc(j.resource_name||'-')}</span><span>任务：${esc(j.id)}</span></div><div class="deploy423-files">${(j.outputs||[]).map(o=>`<div><span>${esc(o.name)}</span><b>${o.size_mb!=null?Number(o.size_mb).toFixed(2)+' MB':''}</b>${o.download_url?`<a class="btn mini" href="${o.download_url}">下载</a>`:''}</div>`).join('')||'<div>暂无输出文件</div>'}</div></div>`).join('')||'<div class="empty">暂无部署产物</div>'}</div>`,true)};
 
-  // Final route override
-  const renderBase424=render;
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    if(state.page==='质量中心'){renderQualityCenter424();return}
-    if(state.page==='视频切帧'){renderVideo424();return}
-    // algorithm/data/training routes are owned by later stable wrappers.
-    renderBase424();
-  };
 })();
 
 /* ============================================================
@@ -3259,9 +3200,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // ----- high-end training timeline including AI interventions -----
   window.showTrainLog423=async function(id){const j=(state.jobs||[]).find(x=>x.id===id)||{},txt=await safe(api(`/api/projects/${pid()}/jobs/${id}/log`))||'',p=Number(j.progress_percent||0),ep=j.current_epoch||0,total=j.total_epochs||j.epochs||0,events=j.ai_intervention_events||[],gate=j.gate_events||[];let headline='训练任务正在准备';if(j.status==='running')headline=p<25?'模型正在建立基础识别能力':p<75?'模型进入主要学习阶段':'训练进入收敛阶段';if(['done','finished','completed'].includes(j.status))headline='训练已经完成，可结合报告决定是否进入评测';if(j.status==='failed')headline='训练中断，需要处理失败原因';const timeline=[{title:'任务创建',text:`训练 ${j.dataset_counts?.train||0} 张 · 试验 ${j.dataset_counts?.val||0} 张`,done:true},...gate.map(g=>({title:`阶段检查 · Epoch ${g.epoch}`,text:`${g.metric} ${g.value==null?'-':pct424(g.value)} · ${g.decision||'继续'}`,done:true})),...events.map(e=>({title:`AI介入 · Epoch ${e.epoch}`,text:`${({continue:'继续训练',supplement_and_retrain:'补充数据并续训',extend_epochs:'追加训练轮数',error:'AI调用失败'})[e.action]||e.action} · ${e.reason||''}`,ai:true,done:true}))];if(j.ai_continuation)timeline.push({title:'AI策略执行',text:`${j.ai_continuation.action==='supplement_and_retrain'?`补充 ${j.ai_continuation.supplemented_image_ids?.length||0} 张新训练数据`:'使用原训练数据'} · 追加 ${j.ai_continuation.extra_epochs||0} 轮`,ai:true,done:true});timeline.push({title:['done','finished','completed'].includes(j.status)?'训练完成':'当前训练',text:`Epoch ${ep}/${total||'-'} · ${p.toFixed(0)}%`,current:j.status==='running',done:['done','finished','completed'].includes(j.status)});modal('训练运行中心',`<div class="trainlog427"><section class="trainlog427-hero"><div><span>当前判断</span><h2>${esc(headline)}</h2><p>${j.message?esc(j.message):'平台持续记录训练进度、质量检查和AI介入决策。'}</p></div><div class="trainlog427-kpis"><div><span>整体进度</span><b>${p.toFixed(0)}%</b></div><div><span>轮次</span><b>${ep}/${total||'-'}</b></div><div><span>已用时间</span><b>${fmtTime424(j.elapsed_seconds)}</b></div><div><span>预计剩余</span><b>${fmtTime424(j.eta_seconds)}</b></div></div></section><section class="trainlog427-flow">${timeline.map(x=>`<div class="${x.ai?'ai':''} ${x.current?'current':''}"><i></i><section><b>${esc(x.title)}</b><span>${esc(x.text)}</span></section></div>`).join('')}</section><details class="trainlog427-tech"><summary>工程师技术日志</summary><pre class="log train423-log">${esc(txt||'暂无技术日志')}</pre></details><div class="row end"><button class="btn" onclick="refreshTrainLog426('${id}')">刷新</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true)};
 
-  // route + page alias
-  const renderBase427=render;
-  render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()};
 })();
 
 /* ============================================================
@@ -3400,9 +3338,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const report425Base428=window.trainingReport425;
   window.trainingReport425=window.trainingReport424=async function(id){await report425Base428(id);setTimeout(()=>{document.querySelectorAll('.report425-gate-summary span').forEach(el=>{el.innerHTML=el.innerHTML.replace('固定试验样本','每次随机试验样本')})},20)};
 
-  // Final route override: task center never exposes a create button; algorithm list is the only training entry.
-  const renderBase428=render;
-  render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};
   window.startAlgorithmTraining428=window.startAlgorithmTraining423;
 })();
 
@@ -4025,9 +3960,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // Data quality button: stable, visible user-oriented report; works inside stacked training modal.
   window.trainQuality429=async function(){const ids=window.TrainingDraftRuntime?.materialIds?.()||[];if(!ids.length)return toast('尚未选择素材');const btn=window.event?.currentTarget;if(btn){btn.disabled=true;btn.textContent='正在分析'}try{const r=await api(`/api/v44/projects/${pid()}/data-quality`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})}),q=r.quality||{},scores=q.scores||{},labs=Object.entries(q.label_boxes||{}).sort((a,b)=>b[1]-a[1]);modal('本次训练素材质量',`<div class="quality412"><div class="report429-kpis"><div><span>图片</span><b>${q.images??ids.length}</b></div><div><span>已标注</span><b>${q.annotated_images??0}</b></div><div><span>有效标注框</span><b>${q.box_count??0}</b></div><div><span>综合质量</span><b>${q.overall_score??'-'}</b></div></div><section><b>质量维度</b><div class="quality412-grid">${Object.entries(scores).map(([k,v])=>`<div><span>${esc(k)}</span><b>${Number(v||0).toFixed(1)}</b><i><em style="width:${Math.max(0,Math.min(100,Number(v||0)))}%"></em></i></div>`).join('')}</div></section><section><b>标签数量</b><div class="data426-chips">${labs.map(([k,v])=>`<span class="data426-chip on">${esc(k)} · ${v}</span>`).join('')||'<span class="muted">暂无标签</span>'}</div></section><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true)}catch(e){toast(e.message||e)}finally{if(btn){btn.disabled=false;btn.textContent='查看数据质量'}}};
 
-  // Final routing: do not fall back through older dataset/algorithm render layers.
-  const oldRender412=render;
-  render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};
   const top412=renderTop;renderTop=function(){top412();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V412;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;try{await window.loadCore412({authoritative:true});if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null);render();toast('已刷新')}finally{r.disabled=false}}};
 })();
 
@@ -4239,13 +4171,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function radar414(scores){const entries=Object.entries(scores||{}).slice(0,8);if(!entries.length)return '<div class="empty">暂无质量维度</div>';const n=entries.length,c=150,r=104,pts=entries.map(([k,v],i)=>{const a=-Math.PI/2+i*Math.PI*2/n,rr=r*safeNum414(v)/100;return [c+Math.cos(a)*rr,c+Math.sin(a)*rr]}),ring=[25,50,75,100].map(p=>{const q=entries.map((_,i)=>{const a=-Math.PI/2+i*Math.PI*2/n,rr=r*p/100;return `${c+Math.cos(a)*rr},${c+Math.sin(a)*rr}`}).join(' ');return `<polygon points="${q}" fill="none" stroke="currentColor" opacity="${p===100?.2:.09}"/>`}).join(''),axes=entries.map((_,i)=>{const a=-Math.PI/2+i*Math.PI*2/n;return `<line x1="${c}" y1="${c}" x2="${c+Math.cos(a)*r}" y2="${c+Math.sin(a)*r}" stroke="currentColor" opacity=".12"/>`}).join(''),poly=pts.map(p=>p.join(',')).join(' '),labels=entries.map(([k,v],i)=>{const a=-Math.PI/2+i*Math.PI*2/n,x=c+Math.cos(a)*(r+27),y=c+Math.sin(a)*(r+27),anchor=Math.abs(Math.cos(a))<.2?'middle':Math.cos(a)>0?'start':'end';return `<text x="${x}" y="${y}" text-anchor="${anchor}" dominant-baseline="middle"><tspan>${esc(k)}</tspan><tspan x="${x}" dy="15" class="score">${safeNum414(v).toFixed(0)}</tspan></text>`}).join('');return `<svg class="quality414-radar" viewBox="0 0 300 300">${ring}${axes}<polygon points="${poly}" class="quality414-poly"/>${pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="4" class="quality414-dot"/>`).join('')}${labels}</svg>`}
   window.trainQuality429=async function(){const ids=window.TrainingDraftRuntime?.materialIds?.()||[];if(!ids.length)return toast('尚未选择训练素材');const btn=window.event?.currentTarget;if(btn){btn.disabled=true;btn.textContent='正在分析…'}try{const r=await api(`/api/v44/projects/${pid()}/data-quality`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})}),q=r.quality||{},scores=q.scores||{},labs=Object.entries(q.label_boxes||{}).sort((a,b)=>b[1]-a[1]),max=Math.max(1,...labs.map(x=>Number(x[1])||0));modal('训练素材 · 数据质量',`<div class="quality414"><div class="quality414-hero"><div><span>综合质量</span><b>${Number(q.overall_score||0).toFixed(1)}</b><em>/ 100</em></div><p>${Number(q.overall_score||0)>=90?'数据状态很好，可直接进入训练。':Number(q.overall_score||0)>=75?'整体可训练，建议关注较弱维度。':'建议先处理弱项后再训练，避免低质量数据影响模型。'}</p></div><div class="quality414-main"><section>${radar414(scores)}</section><section class="quality414-kpis"><div><span>图片</span><b>${q.images??ids.length}</b></div><div><span>已标注</span><b>${q.annotated_images??0}</b></div><div><span>标注框</span><b>${q.box_count??0}</b></div><div><span>标签数</span><b>${q.label_count??labs.length}</b></div><div><span>无效框</span><b>${q.invalid_boxes??0}</b></div><div><span>低分辨率</span><b>${q.low_resolution??0}</b></div></section></div><section class="quality414-section"><h3>质量维度</h3><div class="quality414-bars">${Object.entries(scores).map(([k,v])=>`<div><span>${esc(k)}</span><i><em style="width:${safeNum414(v)}%"></em></i><b>${safeNum414(v).toFixed(1)}</b></div>`).join('')}</div></section><section class="quality414-section"><h3>标签分布</h3><div class="quality414-labelbars">${labs.map(([k,v])=>`<div><span><b>${esc(labelText414(k))}</b><em>${v} 框</em></span><i><em style="width:${Math.max(4,Number(v)/max*100)}%"></em></i></div>`).join('')||'<div class="empty">暂无标签统计</div>'}</div></section><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true)}catch(e){toast(e.message||e)}finally{if(btn){btn.disabled=false;btn.textContent='查看数据质量'}}};
 
-  // ---------- final routing ----------
-  const render414Base=render;
-  render=function(){
-    if(state.page==='标签管理'){renderNav();renderTop();renderSummary();renderLabelManagement414();return}
-    render414Base();
-    const vb=document.getElementById('versionBadge');if(vb)vb.textContent='v'+V414;
-  };
 })();
 /* v42.14 compatibility: legacy model-config row may still call this name. */
 window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModelConfigModalV35(id));
@@ -5077,8 +5002,6 @@ window.installUsability417?.();
   };
   if(window.__storageOpenUpload61)window.openDataUpload426=window.__storageOpenUpload61;
   if(window.__storageDoUploadImages61)window.doUploadImages426=window.__storageDoUploadImages61;
-  const finalRender=render;
-  render=function(){if(state.page==='存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};
 })();
 
 

@@ -376,6 +376,7 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 const canonicalWindowPageRenderers = new Map([
   ['工作台', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
+  ['素材接入', 'renderSources422'],
   ['测试发布', 'renderTest'],
   ['检测台', 'renderDetectBench'],
   ['标签管理', 'renderLabelManagement414'],

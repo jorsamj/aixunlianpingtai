@@ -362,6 +362,11 @@ jobs:
           if grep -Fq 'queueMicrotask(()=>{if(window.__clInit)window.__clInit()});' static/app.js; then echo 'classic app must not start before canonical owners are installed' >&2; exit 1; fi
           grep -Fq "source: 'startup-owner'" static/main.mjs
           grep -Fq 'PostRenderNormalizationRuntime?.apply?.' static/main.mjs
+          if grep -E -n '(^|[^[:alnum:]_])render[[:space:]]*=[[:space:]]*function' static/app.js; then echo 'legacy render assignment wrapper was reintroduced' >&2; exit 1; fi
+          for token in oldRenderV39 oldRender42 render422Base renderBase424 renderBase427 renderBase428 oldRender412 render414Base finalRender; do
+            if grep -F -n "$token" static/app.js; then echo "legacy render-chain alias was reintroduced: $token" >&2; exit 1; fi
+          done
+          grep -Fq "['素材接入', 'renderSources422']" static/main.mjs
           if grep -Fq "requestedPage === '测试发布'" static/main.mjs; then echo 'page navigation must not block on low-frequency extras' >&2; exit 1; fi
           grep -Fq 'navigation: window.PlatformCore?.navigation || {}' static/main.mjs
           grep -Fq 'externalAlgorithmPlatformRuntime?.render?.({reload: true})' static/main.mjs

@@ -28,7 +28,8 @@ test('startup dispatch is deferred until canonical page owners and render bridge
 test('bounded startup cleanup timer cannot return after final render ownership', () => {
   assert.equal(app.includes("setTimeout(()=>{renderTop();cleanup(document);},100);"), false);
   assert.equal(app.includes('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});'), true);
-  assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
+  assert.equal(app.includes("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))"), false);
+  assert.match(main, /PostRenderNormalizationRuntime\?\.apply\?\./);
   assert.equal(app.includes('new MutationObserver'), false);
   assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
 });

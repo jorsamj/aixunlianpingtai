@@ -5,148 +5,91 @@ import fs from 'node:fs';
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
-test('fully shadowed v42.9 render wrapper cannot return', () => {
-  assert.equal(app.includes('oldRender429'), false);
-  assert.equal(
-    app.includes("render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='数据集'){renderNav();renderTop();renderSummary();renderDatasets424();return}oldRender429()};"),
-    false,
-  );
+test('historical render assignment chain is physically retired', () => {
+  assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
 });
 
-test('later stable renderer remains the algorithm/data routing owner', () => {
-  assert.equal(app.includes('const oldRender412=render;'), true);
-  assert.equal(
-    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};"),
-    true,
-  );
+test('historical render-chain aliases are physically retired', () => {
+  for (const token of [
+    'oldRenderV39', 'oldRender42', 'render422Base', 'renderBase424',
+    'renderBase427', 'renderBase428', 'oldRender412', 'render414Base', 'finalRender',
+  ]) assert.equal(app.includes(token), false, token);
 });
 
-test('shadowed early storage render wrapper cannot return', () => {
-  assert.equal(app.includes('previousRender61'), false);
-  assert.equal(
-    app.includes("render=function(){if(state.page==='存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}previousRender61()};"),
-    false,
-  );
+test('algorithm and dataset navigation are canonical owners', () => {
+  assert.match(main, /registerPageOwner\('算法列表'/);
+  assert.match(main, /registerPageOwner\('数据集'/);
 });
 
-test('storage navigation is owned directly by the canonical page-owner registry', () => {
-  assert.equal(main.includes("['存储配置', 'renderStorageSources61']"), true);
-  assert.equal(main.includes('canonicalWindowPageRenderers'), true);
-  assert.equal(main.includes('navigationStabilityRuntime.registerPageOwner(page'), true);
-  assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
+test('training navigation is a canonical owner', () => {
+  assert.match(main, /registerPageOwner\('训练任务'/);
+  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
 });
 
-test('fully shadowed render423 route wrapper cannot return', () => {
-  assert.equal(app.includes('render423Base'), false);
-  assert.equal(
-    app.includes("if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();return}"),
-    false,
-  );
+test('auto-label cleanup navigation is a canonical owner', () => {
+  assert.match(main, /registerPageOwner\('自动标注及清洗'/);
+  assert.doesNotMatch(app, /state\.page==='自动标注'\).*renderAutoLabel/);
 });
 
-test('later algorithm/training owners and direct training polling remain', () => {
-  assert.equal(app.includes('const renderBase428=render;'), true);
-  assert.equal(app.includes('const oldRender412=render;'), true);
-  assert.equal(app.includes('window.renderTraining425=window.renderTraining424=window.renderTraining423=function()'), true);
-  assert.equal(app.includes('window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};'), true);
+test('video navigation is a canonical owner', () => {
+  assert.match(main, /registerPageOwner\('视频切帧'/);
 });
 
-test('renderBase428 keeps only its live training route branch', () => {
-  assert.equal(
-    app.includes("render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
-    false,
-  );
-  assert.equal(
-    app.includes("render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
-    true,
-  );
+test('quality-center navigation is a canonical window owner', () => {
+  assert.match(main, /\['质量中心', 'renderQualityCenter424'\]/);
 });
 
-test('oldRender412 remains the sole outer algorithm-list route owner', () => {
-  assert.equal(
-    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};"),
-    true,
-  );
+test('material-source navigation no longer depends on a legacy wrapper', () => {
+  assert.match(main, /\['素材接入', 'renderSources422'\]/);
 });
 
-test('legacy auto-label render route owners cannot return', () => {
-  assert.equal(
-    app.includes("if(state.page==='自动标注'){renderNav();renderTop();renderSummary();renderAutoLabel422();return}"),
-    false,
-  );
-  assert.equal(
-    app.includes("if(state.page==='自动标注'){renderAutoLabel424();return}"),
-    false,
-  );
+test('storage navigation is a canonical owner', () => {
+  assert.match(main, /\['存储配置', 'renderStorageSources61'\]/);
 });
 
-test('canonical auto-label cleanup render route remains live', () => {
-  assert.equal(
-    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()}"),
-    true,
-  );
+test('deployment pages are canonical owners', () => {
+  for (const [page, renderer] of [
+    ['部署转换', 'renderDeployCenter'],
+    ['部署产物', 'renderDeployArtifacts'],
+    ['部署资源', 'renderDeployResources'],
+    ['部署插件', 'renderDeployPluginsV41'],
+  ]) assert.ok(main.includes(`['${page}', '${renderer}']`));
 });
 
-test('shadowed renderBase424 algorithm/data/training branches cannot return', () => {
-  const retired = `  const renderBase424=render;
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    if(state.page==='质量中心'){renderQualityCenter424();return}
-    if(state.page==='数据集'){renderDatasets424();return}
-    if(state.page==='视频切帧'){renderVideo424();return}
-    if(state.page==='训练任务'){renderTraining424();return}
-    // v42.3 pages retain their own final implementations
-    if(state.page==='算法列表'){renderAlgorithms423();return}
-    // call previous render for deploy/test/config pages, but it will redraw nav/top; acceptable
-    renderBase424();
-  };`;
-  assert.equal(app.includes(retired), false);
+test('test and detection pages are canonical owners', () => {
+  assert.match(main, /\['测试发布', 'renderTest'\]/);
+  assert.match(main, /\['检测台', 'renderDetectBench'\]/);
 });
 
-test('renderBase424 keeps only its live quality and video route branches', () => {
-  const live = `  const renderBase424=render;
-  render=function(){
-    renderNav();renderTop();renderSummary();
-    if(state.page==='质量中心'){renderQualityCenter424();return}
-    if(state.page==='视频切帧'){renderVideo424();return}
-    // algorithm/data/training routes are owned by later stable wrappers.
-    renderBase424();
-  };`;
-  assert.equal(app.includes(live), true);
-  assert.equal(app.includes("if(state.page==='质量中心'){renderQualityCenter424();return}"), true);
-  assert.equal(app.includes("if(state.page==='视频切帧'){renderVideo424();return}"), true);
+test('configuration pages are canonical owners', () => {
+  assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
+  assert.match(main, /\['模型配置', 'renderModelConfigPageV35'\]/);
+  assert.match(main, /\['训练资源', 'renderResources'\]/);
 });
 
-test('later owners remain authoritative for renderBase424 retired routes', () => {
-  assert.equal(
-    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};"),
-    true,
-  );
-  assert.equal(
-    app.includes("render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
-    true,
-  );
+test('platform and component pages keep dedicated owners', () => {
+  assert.match(main, /registerPageOwner\('平台对接'/);
+  assert.match(main, /registerPageOwner\('组件检测'/);
 });
 
-test('legacy AutoLabel424 self-refresh timer cannot return', () => {
-  assert.equal(
-    app.includes("if(state.prelabel424.some(t=>['queued','running'].includes(t.status)))setTimeout(()=>{if(state.page==='自动标注')renderAutoLabel424()},1800)"),
-    false,
-  );
-  assert.equal(app.includes("state.page==='自动标注'"), false);
+test('service-node runtime owns its page directly', () => {
+  assert.match(main, /installServiceNodeRuntime\(\{notify\}\)/);
 });
 
-test('canonical AutoLabel render route remains the only page-state route', () => {
-  assert.equal(
-    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()}"),
-    true,
-  );
+test('post-render normalization moved out of the legacy wrapper chain', () => {
+  assert.equal(app.includes("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))"), false);
+  assert.match(main, /PostRenderNormalizationRuntime\?\.apply\?\./);
 });
 
-test('active runtime routes global render calls through the canonical owner bridge', () => {
+test('active global render calls route through the canonical bridge', () => {
   assert.match(main, /function renderCanonicalOwner\(page/);
   assert.match(main, /window\.render = function canonicalRenderBridge\(\)/);
   assert.match(main, /source: 'compat-render'/);
   assert.match(main, /source: 'startup-owner'/);
-  assert.match(main, /PostRenderNormalizationRuntime\?\.apply\?\./);
+});
+
+test('canonical page map is the single normal navigation registry', () => {
+  assert.match(main, /const canonicalWindowPageRenderers = new Map/);
+  assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
+  assert.doesNotMatch(app, /Final route override|Final routing: do not fall back|route \+ page alias/);
 });
