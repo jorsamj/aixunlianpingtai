@@ -1,9 +1,7 @@
 export const FULL_MATERIAL_PAGES = new Set([
-  // Training selection and the canonical Quality Center are server/API-driven
-  // and must not hydrate the complete image pool merely by visiting the page.
-  // Only the remaining legacy AI selectors still require state.images.
-  '自动标注',
-  '自动标注及清洗',
+  // Canonical product pages are server/API-driven. Features that still need
+  // the complete material catalog must call ensureFullPool explicitly at the
+  // user action boundary instead of blocking page navigation.
 ]);
 
 export function requiresFullMaterialPool(page) {
@@ -136,6 +134,16 @@ export function installMaterialPaginationRuntime() {
         fullPoolFlightProjectId = '';
       }
     }
+  }
+
+  async function ensureFullPool61({force = false} = {}) {
+    const pid = projectId();
+    if (!pid) return [];
+    const snapshot = restoreFullPool61();
+    if (!force && snapshot?.fresh) return snapshot.items.slice();
+    const rows = await loadFullPool61();
+    if (projectId() === pid) state.images = Array.isArray(rows) ? rows.slice() : [];
+    return Array.isArray(rows) ? rows.slice() : [];
   }
 
   function filters61() {
@@ -659,8 +667,9 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422211',
+    build: 'material-pagination-runtime-422212',
     load: loadMaterialPage61,
+    ensureFullPool: ensureFullPool61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
     render: renderPagedDataset61,
