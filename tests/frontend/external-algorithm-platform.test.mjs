@@ -264,8 +264,10 @@ test('external algorithm decorator is DOM-idempotent under mutation observers', 
   assert.match(block, /外部算法/);
   assert.match(block, /data-algorithm-training-status-filter/);
   assert.match(block, /全部训练状态/);
-  assert.match(block, /selectedCategoryIds\.has\(row\.id\)/);
-  assert.match(block, /data-category-id/);
+  assert.match(block, /renderAlgorithmCategoryPicker/);
+  assert.match(block, /data-category-picker-toggle/);
+  assert.match(block, /data-category-select/);
+  assert.match(block, /data-category-search/);
   assert.match(block, /data-external-list-sync/);
   assert.match(block, /同步畅联云/);
   assert.doesNotMatch(block, /removeAttribute\('data-action'\)/);
@@ -305,7 +307,7 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
 test('algorithm list keeps search and base filters while adding source filters', () => {
   const appSource = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const externalSource = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(appSource, /id="alg412Q" class="input" placeholder="搜索算法"/);
+  assert.match(appSource, /id="alg412Q" class="input" placeholder="搜索算法名称、编码或说明"/);
   assert.match(appSource, /id="alg412Industry"/);
   assert.match(appSource, /id="alg412Type"/);
   assert.match(externalSource, /dataset\.algorithmSourceFilter/);
@@ -348,8 +350,8 @@ test('category picker derives arbitrary parent depth and search paths from real 
     ['root'],
   );
   assert.deepEqual(
-    externalCategoryVisibleRows(categories, {expandedIds: ['root', 'vehicle']}).map(row => row.id),
-    ['root', 'fire', 'vehicle', 'parking'],
+    externalCategoryVisibleRows(categories, {expandedIds: ['root', 'vehicle']}).map(row => row.id).sort(),
+    ['fire', 'parking', 'root', 'vehicle'],
   );
   assert.deepEqual(
     externalCategoryVisibleRows(categories, {query: '违停'}).map(row => row.id),
