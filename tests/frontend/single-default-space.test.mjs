@@ -14,7 +14,7 @@ function block(start, end) {
 
 test('workspace loading is GET-only and never falls back to project creation', () => {
   const base = block('async function ensureWorkspace()', 'async function loadAll()');
-  const owner = block('ensureWorkspace = async function()', 'const oldLoadAll');
+  const owner = block('ensureWorkspace = async function()', 'function stepCard');
 
   for (const implementation of [base, owner]) {
     assert.match(implementation, /await api\('\/api\/projects'\)/);
@@ -24,7 +24,7 @@ test('workspace loading is GET-only and never falls back to project creation', (
 });
 
 test('saved projectId and preferred_project_id cannot switch the server-owned space', () => {
-  const owner = block('ensureWorkspace = async function()', 'const oldLoadAll');
+  const owner = block('ensureWorkspace = async function()', 'function stepCard');
   const startup = block('/* v42.13 startup prepared snapshot */', '/* ============================================================');
 
   assert.doesNotMatch(owner, /lastState\.projectId|projects\.find/);

@@ -152,7 +152,8 @@ test('shadowed test and detection page renderers are physically retired', () => 
 
 test('detection result rendering uses an explicit core helper and one final owner', () => {
   assert.match(app, /window\.renderDetectionResultCore31 = function renderDetectionResultCore31\(r,title\)/);
-  assert.match(app, /window\.renderDetectionResult=window\.renderDetectionResultCore31/);
+  assert.match(app, /window\.renderDetectionResultLegacy3=window\.renderDetectionResultCore31/);
+  assert.equal((app.match(/window\.renderDetectionResult\s*=/g) || []).length, 1);
   assert.match(app, /window\.renderDetectionResult=function renderDetectionResultCanonical61\(result,title\)/);
   assert.match(app, /window\.renderDetectionResultCore31\?\.\(result,title\)/);
   assert.equal(app.includes('const oldRenderDetectionResult = window.renderDetectionResult;'), false);

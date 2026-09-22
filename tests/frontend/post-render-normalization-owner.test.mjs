@@ -30,9 +30,10 @@ test('base modal owns autofocus without a V37 compatibility wrapper', () => {
   assert.equal(app.includes('const baseModalV37=modal;'), false);
   assert.equal(app.includes('baseModalV37('), false);
   assert.equal(app.split(autofocus).length - 1, 1);
-  assert.equal(app.includes("function modal(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
-  assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), true);
-  assert.equal(app.includes('oldModal424(title,body,wide); return baseModal;'), true);
+  assert.equal(app.includes("function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
+  assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), false);
+  assert.equal(app.includes('modalBase(title,body,wide); return baseModal;'), true);
+  assert.match(app, /modal=function modalStackCanonical424\(title,body,wide=false\)/);
 });
 
 test('canonical router owns page normalization without legacy view observer or render wrapper', () => {
