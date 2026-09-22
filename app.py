@@ -18302,6 +18302,104 @@ def cancel_deployment_test(project_id: str, task_id: str):
     return public_deployment_test(shared_task_repository().request_cancel(task_id))
 
 
+@app.post("/api/v64/projects/{project_id}/deployment-tests/{task_id}/feedback-evidence")
+def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
+    """Create review evidence from one completed formal algorithm-version detection.
+
+    This is intentionally explicit: running a model test never promotes data or
+    writes annotation truth. The returned prediction_id can only enter the
+    existing v63 human-review flow.
+    """
+    from platform_core.online_feedback import validate_prediction_evidence
+
+    task = _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
+    if task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        raise HTTPException(status_code=409, detail="只有真实检测成功后才能提交抽检反馈")
+
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+    if not isinstance(request, dict) or not isinstance(result, dict):
+        raise HTTPException(status_code=409, detail="检测任务证据不完整，请重新检测")
+
+    identity = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
+    if str(identity.get("model_source") or "").lower() != "algorithm_version":
+        raise HTTPException(status_code=409, detail="只有正式算法版本检测可以进入抽检反馈")
+    algorithm_id = str(identity.get("algorithm_id") or "").strip()
+    version_id = str(identity.get("version_id") or "").strip()
+    if not algorithm_id or not version_id:
+        raise HTTPException(status_code=409, detail="检测任务缺少正式算法版本身份")
+
+    _algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    model_sha256 = _online_feedback_version_model_sha256(version)
+
+    source_input = Path(str(request.get("input_path") or ""))
+    source_output = Path(str(result.get("output_path") or request.get("output_path") or ""))
+    if not source_input.is_file() or source_input.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail="检测原图证据不可用，请重新检测")
+    if not source_output.is_file() or source_output.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail="检测结果图片不可用，请重新检测")
+
+    prediction_id = str(task.task_id)
+    root = project_dir(project_id) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    input_suffix = source_input.suffix.lower() if source_input.suffix.lower() in IMAGE_EXTS else ".jpg"
+    evidence_input = root / f"{prediction_id}_input{input_suffix}"
+    evidence_result = root / f"{prediction_id}_result.jpg"
+    evidence_path = root / f"{prediction_id}.evidence.json"
+
+    if evidence_path.is_file():
+        evidence, _, _, _ = _online_prediction_evidence(project_id, prediction_id)
+        return {
+            "ok": True,
+            "idempotent": True,
+            "prediction_id": prediction_id,
+            "feedback_eligible": True,
+            "algorithm_id": evidence["algorithm_id"],
+            "version_id": evidence["version_id"],
+            "model_sha256": evidence["model_sha256"],
+            "input_sha256": evidence["input_sha256"],
+            "detections": list(evidence.get("detections") or []),
+            "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+        }
+
+    shutil.copy2(source_input, evidence_input)
+    shutil.copy2(source_output, evidence_result)
+    info = image_info(evidence_input)
+    evidence = validate_prediction_evidence({
+        "schema_version": 1,
+        "prediction_id": prediction_id,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "model_sha256": model_sha256,
+        "input_sha256": sha256_file(evidence_input),
+        "original_filename": safe_filename(
+            str((request.get("detection_batch") or {}).get("original_filename") or source_input.name)
+        ),
+        "input_file": evidence_input.name,
+        "width": int(info["width"]),
+        "height": int(info["height"]),
+        "confidence": float(request.get("conf") or 0.25),
+        "engine": str(result.get("engine") or request.get("framework") or "ultralytics"),
+        "detections": list(result.get("detections") or []),
+        "created_at": str(task.finished_at or now_iso()),
+        "source_channel": "quality_center_detection",
+    })
+    write_json(evidence_path, evidence)
+    return {
+        "ok": True,
+        "idempotent": False,
+        "prediction_id": prediction_id,
+        "feedback_eligible": True,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "model_sha256": model_sha256,
+        "input_sha256": evidence["input_sha256"],
+        "detections": list(evidence.get("detections") or []),
+        "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+    }
+
+
 class DetectionBatchReviewReq(BaseModel):
     review: Literal["correct", "missed", "false_positive", "box_inaccurate", "wrong_class"]
     note: str = ""
