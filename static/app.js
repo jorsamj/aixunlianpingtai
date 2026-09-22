@@ -455,8 +455,10 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
 })();
 
 /* Dependencies shared with the final module runtime without exposing mutable app state. */
+window.renderResourceBasePage=renderResources;
 window.__resourceDiscoveryDependencies={
   request:(url,options)=>api(url,options),
+  renderBase:()=>window.renderResourceBasePage?.(),
   notify:message=>toast(message),
   modal:(title,body,wide)=>modal(title,body,wide),
   getPage:()=>state.page,

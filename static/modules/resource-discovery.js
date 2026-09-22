@@ -1,6 +1,7 @@
 import {canonicalTaskPhase, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
 
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
+const RESOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -118,7 +119,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   const registry = dependencies.pollRegistry || window.PollRegistryRuntime;
   if (typeof request !== 'function' || typeof showModal !== 'function' || !registry?.startTimeout || !registry?.clear) return null;
 
-  const previousRenderResources = window.renderResources;
+  const renderBase = dependencies.renderBase || (() => window.renderResourceBasePage?.());
   const runtime = {
     installed: true,
     environments: [],
@@ -131,6 +132,8 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     modelNextCursor: null,
     modelCursorStack: [],
     cacheGeneration: 0,
+    cacheLoadedAt: 0,
+    cacheRefreshPromise: null,
     pollControllers: new Set()
   };
 
@@ -198,18 +201,32 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     runtime.modelNextCursor = response?.next_cursor || null;
   }
 
-  async function refreshCache(resetModels = true) {
+  async function refreshCache(resetModels = true, {force = false} = {}) {
+    const age = Date.now() - Number(runtime.cacheLoadedAt || 0);
+    if (!force && runtime.cacheLoadedAt > 0 && age >= 0 && age < RESOURCE_CACHE_TTL_MS) {
+      if (getPage() === '训练资源') renderCachePanel();
+      return runtime;
+    }
+    if (runtime.cacheRefreshPromise) return runtime.cacheRefreshPromise;
     const generation = ++runtime.cacheGeneration;
     if (resetModels) {
       runtime.modelCursor = null;
       runtime.modelCursorStack = [];
     }
-    try {
-      await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
-      if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
-    } catch (error) {
-      if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
-    }
+    runtime.cacheRefreshPromise = (async () => {
+      try {
+        await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
+        runtime.cacheLoadedAt = Date.now();
+        if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
+        return runtime;
+      } catch (error) {
+        if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
+        return null;
+      } finally {
+        runtime.cacheRefreshPromise = null;
+      }
+    })();
+    return runtime.cacheRefreshPromise;
   }
 
   function enhanceResourcePage() {
@@ -264,7 +281,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       const finish = async () => {
         if (controller.signal.aborted) return cleanup(null);
         if (SUCCESS_TASK_STATUSES.has(canonicalTaskStatus(task))) {
-          await refreshCache(true);
+          await refreshCache(true, {force: true});
           notify(kind === 'environment' ? '环境检测完成，请确认要使用的环境' : '模型扫描完成');
         } else if (canonicalTaskStatus(task) === 'FAILED') {
           notify(discoveryFailureMessage(task), 'error');
@@ -326,7 +343,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     return runtime.scanModels({scope: 'directory', roots: [root]});
   };
   window.scanAllModels = () => runtime.scanModels({scope: 'full'});
-  window.refreshResourceDiscoveryCache = () => refreshCache(true);
+  window.refreshResourceDiscoveryCache = () => refreshCache(true, {force: true});
   window.selectResourceEnvironment = async index => {
     const candidate = runtime.environments[Number(index)];
     if (!candidate || status(candidate.status) !== 'AVAILABLE') return notify('该环境不可用，无法启用');
@@ -335,7 +352,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       window.invalidateTrainingDeviceCacheV3?.();
       notify('已启用所选 Ultralytics 环境');
       await refreshApplication();
-      await refreshCache(true);
+      await refreshCache(true, {force: true});
     } catch (error) {
       notify(error.message || '启用环境失败');
     }
@@ -356,9 +373,9 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   };
 
   window.renderResources = function resourceDiscoveryRenderResources() {
-    previousRenderResources?.();
+    renderBase?.();
     enhanceResourcePage();
-    refreshCache(true);
+    void refreshCache(true);
   };
   runtime.render = window.renderResources;
   window.ResourceDiscoveryRuntime = runtime;

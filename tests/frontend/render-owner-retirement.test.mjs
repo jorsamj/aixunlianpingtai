@@ -85,6 +85,12 @@ test('configuration pages are canonical owners', () => {
   assert.match(main, /\['训练资源', 'renderResources'\]/);
 });
 
+
+test('training resource page composes an explicit base owner instead of wrapping the previous renderer', () => {
+  assert.match(app, /window\.renderResourceBasePage=renderResources/);
+  assert.equal(app.includes('previousRenderResources'), false);
+});
+
 test('platform and component pages keep dedicated owners', () => {
   assert.match(main, /registerPageOwner\('平台对接'/);
   assert.match(main, /registerPageOwner\('组件检测'/);
