@@ -126,3 +126,14 @@ test('training page revisit paints cached jobs before a non-forced focused reval
   assert.match(owner, /trainingTaskRuntime\.refresh\(\{render: true, force: false, source: 'page-owner'\}\)/);
   assert.doesNotMatch(owner, /trainingTaskRuntime\.refresh\(\{render: true, force: true, source: 'page-owner'\}\)/);
 });
+
+
+test('normal navigation is synchronous once startup data is ready', () => {
+  const start = main.indexOf('waitForNavigationReady: () => {');
+  const end = main.indexOf('\n  beforeInvokeNavigation:', start);
+  assert.ok(start >= 0 && end > start);
+  const readiness = main.slice(start, end);
+  assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return window\.__v53InitPromise/);
+  assert.match(readiness, /return null/);
+  assert.doesNotMatch(readiness, /async|await/);
+});

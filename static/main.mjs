@@ -367,8 +367,9 @@ const navigationStabilityRuntime = installNavigationStability({
   requestScope: pageRequestScope,
   pollRegistry,
   persistNavigationState: currentState => persistUiState(currentState),
-  waitForNavigationReady: async () => {
-    if (!state.uiReady && window.__v53InitPromise) await window.__v53InitPromise;
+  waitForNavigationReady: () => {
+    if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
+    return null;
   },
   beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
