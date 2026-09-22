@@ -303,6 +303,17 @@ const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
 const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '测试发布', '检测台', '部署转换', '部署产物']);
 
+function adoptPageExtrasInflight(page, promise) {
+  if (!PAGE_EXTRAS_OWNERS.has(page) || !promise || typeof promise.then !== 'function') return null;
+  if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
+  const task = Promise.resolve(promise)
+    .then(() => { pageExtrasLoadedAt.set(page, Date.now()); })
+    .catch(error => notify(error?.message || error))
+    .finally(() => pageExtrasInflight.delete(page));
+  pageExtrasInflight.set(page, task);
+  return task;
+}
+
 function refreshPageExtrasInBackground(page, {force = false} = {}) {
   if (!PAGE_EXTRAS_OWNERS.has(page) || typeof window.loadPageExtras413 !== 'function') return null;
   const age = Date.now() - Number(pageExtrasLoadedAt.get(page) || 0);
@@ -464,10 +475,12 @@ window.PlatformCore.runtime.renderRouter = {
 
 const canonicalStartupPromise = window.__clInit?.();
 Promise.resolve(canonicalStartupPromise).then(() => {
-  if (navigationStabilityRuntime.hasPageOwner(state.page)) {
-    void renderCanonicalOwner(state.page, {source: 'startup-owner'});
+  const startupPage = String(state.page || '');
+  adoptPageExtrasInflight(startupPage, state.__extras412);
+  if (navigationStabilityRuntime.hasPageOwner(startupPage)) {
+    void renderCanonicalOwner(startupPage, {source: 'startup-owner'});
   }
-  refreshCurrentPageOwner(state.page);
+  refreshCurrentPageOwner(startupPage);
 });
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

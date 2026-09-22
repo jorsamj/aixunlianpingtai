@@ -62,3 +62,17 @@ test('startup progress patches one stable boot card instead of rebuilding the wh
   assert.match(styles, /\.boot413-progress>i>em\{[^}]*width:100%[^}]*transform-origin:left center[^}]*transition:transform/);
   assert.doesNotMatch(styles, /\.boot413-progress>i>em\{[^}]*transition:width/);
 });
+
+
+test('canonical startup adopts the already-running page extras request instead of issuing a duplicate refresh', () => {
+  assert.match(main, /function adoptPageExtrasInflight\(page, promise\)/);
+  assert.match(main, /pageExtrasInflight\.set\(page, task\)/);
+  assert.match(main, /pageExtrasLoadedAt\.set\(page, Date\.now\(\)\)/);
+  const start = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
+  const end = main.indexOf('document.documentElement.dataset.uiBuild', start);
+  assert.ok(start >= 0 && end > start);
+  const block = main.slice(start, end);
+  const adopt = block.indexOf('adoptPageExtrasInflight(startupPage, state.__extras412);');
+  const refresh = block.indexOf('refreshCurrentPageOwner(startupPage);');
+  assert.ok(adopt >= 0 && refresh > adopt);
+});
