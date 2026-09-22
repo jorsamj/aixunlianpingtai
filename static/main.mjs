@@ -7,7 +7,7 @@ import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514
 import {installNavigationStability} from './modules/navigation-stability.js?v=422513';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422520';
+import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63015';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
@@ -24,7 +24,7 @@ import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainin
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422532';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422502';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
-import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
+import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422518';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
@@ -98,7 +98,7 @@ window.PlatformCore = {
   messageFromApiError,
   annotation: {applyAnnotationResult},
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
-  taskPoller: {createTaskPoller, isTaskActive, taskProgress},
+  taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanTaskView, isActiveCleanTask},
   deployment: {deploymentTaskView},

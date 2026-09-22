@@ -25,6 +25,7 @@ jobs:
           node --check static/modules/service-node-runtime.js &&
           node --check static/modules/resource-discovery.js &&
           node --check static/modules/model-artifact-runtime.js &&
+          node --check static/modules/task-poller.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
@@ -164,6 +165,9 @@ jobs:
           grep -Fq 'registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE' static/modules/model-artifact-runtime.js
           grep -Fq 'function patchAuditRows(body)' static/modules/model-artifact-runtime.js
           if grep -Fq 'window.setInterval(' static/modules/model-artifact-runtime.js; then echo 'model artifact audit polling must stay PollRegistry-owned' >&2; exit 1; fi
+          grep -Fq 'export function waitForTaskTerminal' static/modules/task-poller.js
+          grep -Fq 'waitForTaskTerminal({initialTask:task,registry:window.PollRegistryRuntime' static/app.js
+          if grep -Fq 'await new Promise(resolve=>setTimeout(resolve,900))' static/app.js; then echo 'active deployment task waits must use shared task poller' >&2; exit 1; fi
           if grep -Fq 'setTimeout(' static/modules/resource-discovery.js; then echo 'resource discovery polling must stay PollRegistry-owned' >&2; exit 1; fi
           if grep -Fq 'live.outerHTML =' static/modules/resource-discovery.js; then echo 'resource discovery progress must patch in place' >&2; exit 1; fi
       - name: Video PollRegistry direct owner guard

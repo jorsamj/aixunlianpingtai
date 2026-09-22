@@ -607,3 +607,22 @@ test('training elapsed clock is PollRegistry-owned and adds no backend request',
     delete globalThis.window;
   }
 });
+
+
+test('timeout clear callback fires when navigation releases a managed owner', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = () => 901;
+  globalThis.clearTimeout = () => {};
+  let cleared = 0;
+  const registry = new PollRegistry();
+  try {
+    registry.startTimeout('managed-task', '部署转换', () => {}, 900, {onClear: () => { cleared += 1; }});
+    registry.leave('数据集');
+    assert.equal(cleared, 1);
+    assert.equal(registry.snapshot().some(row => row.key === 'managed-task'), false);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
