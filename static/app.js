@@ -4153,7 +4153,6 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   window.prepareTrainingExperiment415=function(){
     state.train429ExperimentPercent=Number(state.train429ExperimentPercent||20);
     installExperimentControl415();
-    [30,160,500].forEach(delay=>setTimeout(installExperimentControl415,delay));
   };
   window.decorateTrainingExperiment415=installExperimentControl415;
 
@@ -4309,8 +4308,8 @@ window.showIterationBase414=function showTrainingIterationCanonical414(aid){
 };
 window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   const result=window.openTrainSettings428?.();
-  setTimeout(()=>window.decorateTrainSettingsAdvanced415?.(),20);
-  setTimeout(()=>window.decorateTrainSettingsIteration417?.(),30);
+  window.decorateTrainSettingsAdvanced415?.();
+  window.decorateTrainSettingsIteration417?.();
   return result;
 };
 
@@ -4456,11 +4455,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:Boolean(enabled),...(enabled?{splitMode:'random_test_from_training_pool',testMaterialIds:[]}:{})});
     renderSplit();
   };
-  async function loadTrainingBenchmarkReuseV1(aid){
+  async function loadTrainingBenchmarkReuseV1(aid,{paint=true}={}){
     const algorithmId=String(aid||'');
     state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:true,load_error:false,reason:''};
     window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
-    renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
+    if(paint)renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
     try{
       const value=await api(`/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`);
       const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
@@ -4509,12 +4508,13 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(result===false)return false;
     window.syncTrainingIteration417?.(algorithmId);
     window.prepareTrainingExperiment415?.();
-    const applyDevices=(devices,{persist=true}={})=>{state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const requestedDevice=String(devices?.recommended||'auto'),available=(devices?.options||[]).find(row=>String(row?.id||'')===requestedDevice&&row?.available!==false)||(devices?.options||[]).find(row=>row?.available!==false),recommendedDevice=String(available?.id||requestedDevice);const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});renderSplit()};
-    if(hasCachedDevices)applyDevices(cachedDevices,{persist:false});
+    const applyDevices=(devices,{persist=true,paint=true}={})=>{state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const requestedDevice=String(devices?.recommended||'auto'),available=(devices?.options||[]).find(row=>String(row?.id||'')===requestedDevice&&row?.available!==false)||(devices?.options||[]).find(row=>row?.available!==false),recommendedDevice=String(available?.id||requestedDevice);const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});if(paint)renderSplit()};
+    if(hasCachedDevices)applyDevices(cachedDevices,{persist:false,paint:false});
     if(!cacheFresh)void api('/api/v62/training-devices').then(devices=>applyDevices(devices,{persist:true})).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}});
     window.TrainingDraftRuntime?.update?.({algorithmId});
     void window.loadTrainingIterationBase414?.(algorithmId);
-    void loadTrainingBenchmarkReuseV1(algorithmId);
+    void loadTrainingBenchmarkReuseV1(algorithmId,{paint:false});
+    renderSplit();
     return await Promise.resolve(result);
   };
   window.startAlgorithmTraining429=window.openTrainingCreateCanonical429;

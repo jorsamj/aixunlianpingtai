@@ -82,4 +82,27 @@ test('training create canonical owner uses deterministic repaint points instead 
   const syncEnd = app.indexOf('\n  window.decorateTrainSettingsIteration417=', syncStart);
   const syncOwner = app.slice(syncStart, syncEnd);
   assert.doesNotMatch(syncOwner, /\[30,180\]/);
+
+
+  const experimentStart = app.indexOf('window.prepareTrainingExperiment415=function()');
+  const experimentEnd = app.indexOf('\n  window.decorateTrainingExperiment415=', experimentStart);
+  assert.ok(experimentStart >= 0 && experimentEnd > experimentStart);
+  assert.doesNotMatch(app.slice(experimentStart, experimentEnd), /setTimeout/);
+
+  const settingsStart = app.indexOf('window.openTrainSettings429=function openTrainingSettingsCanonical429()');
+  const settingsEnd = app.indexOf('\n\n/* Durable v3 exact-material training split UI.', settingsStart);
+  assert.ok(settingsStart >= 0 && settingsEnd > settingsStart);
+  const settingsOwner = app.slice(settingsStart, settingsEnd);
+  assert.doesNotMatch(settingsOwner, /setTimeout/);
+  assert.match(settingsOwner, /decorateTrainSettingsAdvanced415/);
+  assert.match(settingsOwner, /decorateTrainSettingsIteration417/);
+
+  const benchmarkStart = app.indexOf('async function loadTrainingBenchmarkReuseV1(aid,{paint=true}={})');
+  const benchmarkEnd = app.indexOf('\n  const TRAINING_DEVICE_CACHE_TTL_MS=', benchmarkStart);
+  assert.ok(benchmarkStart >= 0 && benchmarkEnd > benchmarkStart);
+  assert.match(app.slice(benchmarkStart, benchmarkEnd), /if\(paint\)renderSplit\(\)/);
+
+  assert.match(openOwner, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
+  assert.match(openOwner, /loadTrainingBenchmarkReuseV1\(algorithmId,\{paint:false\}\)/);
+  assert.equal((openOwner.match(/renderSplit\(\);/g) || []).length, 1);
 });
