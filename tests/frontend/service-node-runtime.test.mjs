@@ -200,3 +200,13 @@ test('service node navigation has one render owner and no duplicate main refresh
   const refreshOwner = mainSource.slice(refreshStart, refreshEnd);
   assert.doesNotMatch(refreshOwner, /ServiceNodeRuntime\?\.render/);
 });
+
+
+test('service node revisit is cache-first and stale snapshots revalidate in background', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /SERVICE_NODE_CACHE_TTL_MS = 30 \* 1000/);
+  assert.match(source, /loadedAt = Number\(cached\.ts \|\| 0\)/);
+  assert.match(source, /function snapshotFresh\(now = Date\.now\(\)\)/);
+  assert.match(source, /if \(loadInflight\) return loadInflight/);
+  assert.match(source, /if \(hasSnapshot\) \{[\s\S]*?paintPage\(\);[\s\S]*?if \(reload && !snapshotFresh\(\)\) \{[\s\S]*?void refresh\(\{paint: true, silent: true\}\)[\s\S]*?return true;/);
+});

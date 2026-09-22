@@ -3,6 +3,7 @@ const API_ROOT = '/api/v63/service-nodes';
 const POLL_KEY = 'service-node-runtime';
 const POLL_MS = 5000;
 const SERVICE_NODE_CACHE_KEY = 'cl_service_nodes_snapshot_v1';
+const SERVICE_NODE_CACHE_TTL_MS = 30 * 1000;
 
 export const CAPABILITY_LABELS = Object.freeze({
   training: '训练',
@@ -205,6 +206,8 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let capabilities = Object.keys(CAPABILITY_LABELS);
   let loading = false;
   let loadedOnce = false;
+  let loadedAt = 0;
+  let loadInflight = null;
   let destroyed = false;
   const connectivityResults = new Map();
   let navObserver = null;
@@ -216,6 +219,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       if (!cached || !Array.isArray(cached.items)) return false;
       nodes = cached.items;
       if (Array.isArray(cached.supported_capabilities) && cached.supported_capabilities.length) capabilities = cached.supported_capabilities;
+      loadedAt = Number(cached.ts || 0);
       loadedOnce = true;
       return true;
     } catch (_) {
@@ -224,13 +228,20 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   }
 
   function persistNodeSnapshot() {
+    const ts = Date.now();
+    loadedAt = ts;
     try {
       window.localStorage?.setItem(SERVICE_NODE_CACHE_KEY, JSON.stringify({
-        ts: Date.now(),
+        ts,
         items: nodes,
         supported_capabilities: capabilities,
       }));
     } catch (_) {}
+  }
+
+  function snapshotFresh(now = Date.now()) {
+    const age = now - Number(loadedAt || 0);
+    return loadedOnce && loadedAt > 0 && age >= 0 && age < SERVICE_NODE_CACHE_TTL_MS;
   }
 
   restoreNodeSnapshot();
@@ -254,16 +265,25 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   }
 
   async function load({silent = false} = {}) {
+    if (loadInflight) return loadInflight;
+    const task = (async () => {
+      try {
+        const body = await requestJson(API_ROOT);
+        nodes = Array.isArray(body?.items) ? body.items : [];
+        if (Array.isArray(body?.supported_capabilities) && body.supported_capabilities.length) capabilities = body.supported_capabilities;
+        loadedOnce = true;
+        persistNodeSnapshot();
+        return nodes;
+      } catch (error) {
+        if (!silent) notify?.(error?.message || error);
+        throw error;
+      }
+    })();
+    loadInflight = task;
     try {
-      const body = await requestJson(API_ROOT);
-      nodes = Array.isArray(body?.items) ? body.items : [];
-      if (Array.isArray(body?.supported_capabilities) && body.supported_capabilities.length) capabilities = body.supported_capabilities;
-      loadedOnce = true;
-      persistNodeSnapshot();
-      return nodes;
-    } catch (error) {
-      if (!silent) notify?.(error?.message || error);
-      throw error;
+      return await task;
+    } finally {
+      if (loadInflight === task) loadInflight = null;
     }
   }
 
@@ -386,40 +406,42 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (destroyed || currentPage() !== PAGE) return false;
     const view = document.getElementById('view');
     if (!view) return false;
-    if (loading) {
-      paintSummary();
-      if (loadedOnce || nodes.length) paintPage();
-      else if (!view.querySelector?.('[data-service-node-skeleton="1"]')) {
-        view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
-      }
-      return false;
-    }
 
-    loading = true;
     const hadCache = nodes.length > 0;
     const hasSnapshot = loadedOnce || hadCache;
-    const before = hasSnapshot ? JSON.stringify(nodes) : '';
     if (hasSnapshot) {
       paintSummary();
       paintPage();
       armPoll();
-    } else if (reload) {
-      paintSummary();
-      view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
+      if (reload && !snapshotFresh()) {
+        void refresh({paint: true, silent: true}).catch(error => {
+          if (!silent) notify?.(error?.message || error);
+        });
+      }
+      return true;
     }
 
-    try {
-      if (reload) await load({silent});
-      if (currentPage() !== PAGE) return false;
-      if (!hasSnapshot || JSON.stringify(nodes) !== before || !view.querySelector('[data-service-node-page="1"]')) {
-        paintSummary();
-        paintPage();
+    if (loading || loadInflight) {
+      if (!view.querySelector?.('[data-service-node-skeleton="1"]')) {
+        view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
       }
+      return false;
+    }
+    if (!reload) return false;
+
+    loading = true;
+    paintSummary();
+    view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
+    try {
+      await load({silent});
+      if (currentPage() !== PAGE) return false;
+      paintSummary();
+      paintPage();
       armPoll();
       return true;
     } catch (error) {
-      if (!hasSnapshot && currentPage() === PAGE) view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
-      return hasSnapshot;
+      if (currentPage() === PAGE) view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
+      return false;
     } finally {
       loading = false;
     }

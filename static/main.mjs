@@ -15,7 +15,7 @@ import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422547';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422542';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422548';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422500';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
@@ -42,7 +42,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422539';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422548';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -349,7 +349,7 @@ function refreshCurrentPageOwner(page) {
     window.MaterialBatchRuntime62?.resume?.();
   }
   if (page === '训练任务') {
-    void trainingTaskRuntime.refresh({render: true, force: true, source: 'page-owner'}).then(result => {
+    void trainingTaskRuntime.refresh({render: true, force: false, source: 'page-owner'}).then(result => {
       if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();
     }).catch(error => notify(error?.message || error));
     return;

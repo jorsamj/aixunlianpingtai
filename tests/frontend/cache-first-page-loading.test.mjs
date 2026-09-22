@@ -116,3 +116,13 @@ test('detection bench receives focused model and inference extras on navigation 
   assert.doesNotMatch(refresh, /loadCore412\(/);
   assert.doesNotMatch(refresh, /loadRelated\(/);
 });
+
+
+test('training page revisit paints cached jobs before a non-forced focused revalidation', () => {
+  const start = main.indexOf('function refreshCurrentPageOwner(page)');
+  const end = main.indexOf('const navigationStabilityRuntime', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = main.slice(start, end);
+  assert.match(owner, /trainingTaskRuntime\.refresh\(\{render: true, force: false, source: 'page-owner'\}\)/);
+  assert.doesNotMatch(owner, /trainingTaskRuntime\.refresh\(\{render: true, force: true, source: 'page-owner'\}\)/);
+});

@@ -7,6 +7,7 @@ const ACTIVE_STATUSES = new Set([
 ]);
 const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'succeeded', 'success', 'failed', 'stopped', 'cancelled', 'canceled']);
 const REFRESH_DEDUP_WINDOW_MS = 120;
+const PAGE_ENTRY_REUSE_MS = 5000;
 
 const STAGE_LABELS = Object.freeze({
   queued: '排队等待',
@@ -493,12 +494,13 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     const age = Date.now() - lastRefreshAt;
     const crossSourceDuplicate = (source === 'manual' && lastRefreshSource === 'poll')
       || (source === 'poll' && lastRefreshSource === 'manual');
+    const pageEntryReuse = source === 'page-owner' && age <= PAGE_ENTRY_REUSE_MS;
+    const interactionReuse = crossSourceDuplicate && age <= REFRESH_DEDUP_WINDOW_MS;
     if (!force
         && startPage === TRAINING_PAGE
         && lastRefreshAt > 0
         && age >= 0
-        && age <= REFRESH_DEDUP_WINDOW_MS
-        && crossSourceDuplicate) {
+        && (pageEntryReuse || interactionReuse)) {
       return finalizeViewRefresh(
         {stale: false, jobs: state().jobs || [], reused: true},
         refreshOptions,

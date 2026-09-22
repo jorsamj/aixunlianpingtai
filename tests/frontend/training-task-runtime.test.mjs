@@ -637,3 +637,35 @@ test('training task runtime renders through an explicit view adapter while keepi
   runtime.destroy();
   cleanup();
 });
+
+
+test('page-owner refresh reuses a recent training snapshot and revalidates after the revisit window', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  let requests = 0;
+  const originalNow = Date.now;
+  let now = 10_000;
+  Date.now = () => now;
+  globalThis.window = {
+    async fetch() { requests += 1; return response([{id: 'j1', status: 'running'}]); },
+    updateTrainingJobTable() {},
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  await runtime.refresh({source: 'poll'});
+  now += 1000;
+  const reused = await runtime.refresh({source: 'page-owner'});
+  assert.equal(requests, 1);
+  assert.equal(reused.reused, true);
+
+  now += 5001;
+  const fresh = await runtime.refresh({source: 'page-owner'});
+  assert.equal(requests, 2);
+  assert.equal(fresh.reused, undefined);
+
+  runtime.destroy();
+  Date.now = originalNow;
+  cleanup();
+});
