@@ -89,7 +89,7 @@ window.syncTestModelByEnv=()=>{
   [...modelSel.options].forEach(o=>{const ok=!fw||!o.dataset.fw||o.dataset.fw===fw||(fw==='ultralytics'&&o.dataset.fw==='');o.hidden=!ok;o.disabled=!ok});
   const first=[...modelSel.options].find(o=>!o.disabled); if(first)modelSel.value=first.value;
 };
-window.predict=async()=>{
+window.predictCore12=async()=>{
   const f=$('#predFile').files[0];if(!f)return toast('请选择图片');
   const m=state.testModels[+$('#testModel').value];if(!m)return toast('暂无可测试模型');
   const env=$('#inferEnv'); const selected=env?.selectedOptions?.[0]; if(!selected||selected.disabled)return toast('请选择可用测试环境');
@@ -3293,7 +3293,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     modal('训练溯源',`<div class="report429 lineage429"><section class="report429-head"><div><span>算法版本来源</span><h2>${esc(a?.name||'')} · ${esc(v?.version_name||'-')}</h2><p>该信息随算法版本持久化，不依赖当前训练任务缓存。</p></div></section><section class="report429-card"><header><b>输入与执行</b></header><dl class="report429-dl">${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd title="${esc(String(value))}">${esc(String(value))}</dd>`).join('')}</dl></section>${paramRows.length?`<section class="report429-card"><header><b>实际训练参数</b><span>${params.actual?'实际执行值':'请求值'}</span></header><dl class="report429-dl">${paramRows.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(String(value))}</dd>`).join('')}</dl></section>`:''}${arts.length?`<section class="report429-card"><header><b>模型产物</b></header><div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>文件</th><th>SHA256</th><th>大小</th></tr></thead><tbody>${arts.map(item=>`<tr><td>${esc(item.role||'-')}</td><td>${esc(item.file_name||item.model_name||'-')}</td><td title="${esc(item.sha256||'')}">${esc(item.sha256?String(item.sha256).slice(0,12):'-')}</td><td>${item.size_bytes!=null?esc(String(item.size_bytes)):'-'}</td></tr>`).join('')}</tbody></table></div></section>`:''}</div>`,true);
   };
 
-  window.resumeConfirmedIterationAction429=async function(aid,vid){
+  window.resumeConfirmedIterationActionCore429=async function(aid,vid){
     const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid));
     const v=(a?.versions||[]).find(x=>String(x.id)===String(vid));
     const confirmed=v?.confirmed_iteration_action;
@@ -5004,9 +5004,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.onlineFeedback63RefreshProjectId='';
   state.lastOnlinePrediction63=state.lastOnlinePrediction63||null;
   const ONLINE_FEEDBACK_CACHE_TTL_MS=60*1000;
-  const predictBeforeFeedback63=window.predict;
-  window.predict=async function(){
-    const result=await predictBeforeFeedback63?.apply(this,arguments);
+  window.predict=async function predictCanonicalFeedback63(){
+    const result=await window.predictCore12?.apply(this,arguments);
     const prediction=state.lastOnlinePrediction63;
     const out=document.getElementById('predResult');
     if(prediction?.feedback_eligible&&out&&!out.querySelector('.online-feedback-prompt63')){
@@ -5289,8 +5288,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }catch(error){toast(error.message||error);if(button){button.disabled=false;button.textContent='冻结并进入数据集'}}
   };
 
-  const resumeConfirmedIterationActionFeedback63=window.resumeConfirmedIterationAction429;
-  window.resumeConfirmedIterationAction429=async function(aid,vid){
+  window.resumeConfirmedIterationAction429=async function resumeConfirmedIterationActionCanonical63(aid,vid){
     const a=(state.algorithms||[]).find(row=>String(row.id)===String(aid));
     const v=(a?.versions||[]).find(row=>String(row.id)===String(vid));
     const confirmed=v?.confirmed_iteration_action;
@@ -5313,7 +5311,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       }
       return window.openSupplementFeedbackCandidates63(aid,vid,confirmed);
     }
-    return resumeConfirmedIterationActionFeedback63?.(aid,vid);
+    return window.resumeConfirmedIterationActionCore429?.(aid,vid);
   };
 
 })();
