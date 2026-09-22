@@ -314,7 +314,7 @@ function renderResources(){
     <div class="res-meta"><span class="pill ${t.status==='ready'?'ok':'warn'}">${t.status==='ready'?'可用':t.status==='offline'?'不可用':'待确认'}</span><span class="pill blue">${(t.algorithms||[]).length} 个算法</span><span class="pill">${(t.base_models||[]).length} 个权重</span>${t.framework==='paddle'?`<button class="btn mini" onclick="viewResourceAlgorithms('${esc(t.id)}')">查看算法</button>`:''}</div>
   </div>`).join('');
   const paddle=(state.targets||[]).find(t=>t.id==='local_paddle')||{};
-  $('#view').innerHTML=`<div class="resource-layout"><section class="panel"><div class="panel-head"><div class="panel-title">接入训练资源</div><button class="btn small" onclick="loadAll().then(render)">刷新</button></div><div class="panel-body"><div class="resource-actions"><div class="quick-card"><div class="quick-title">本机 Ultralytics</div><div class="field"><label>安装目录</label><input id="uroot" class="input"></div><div class="row"><button class="btn primary small" onclick="detectUltra()">检测并启用</button><button class="btn soft small" onclick="quickUltraDetect()">一键检测</button></div></div><div class="quick-card"><div class="quick-title">本机飞桨</div><div class="field"><label>Python路径</label><input id="ppy" class="input" value="${esc(paddle.python_path||'')}"></div><div class="field"><label>PaddleDetection目录</label><input id="pdet" class="input" value="${esc(paddle.paddledet_dir||'')}"></div><div class="field"><label>PaddleX目录</label><input id="pxdir" class="input" value="${esc(paddle.paddlex_dir||'')}"></div><div class="row"><button class="btn primary small" onclick="detectPaddle()">检测并启用</button><button class="btn soft small" onclick="quickPaddleDetect()">一键检测</button><button class="btn small" onclick="testPaddle()">只检测</button></div><div id="paddleTestResult" class="item-sub"></div></div><div class="quick-card"><div class="quick-title">本机模型目录</div><div class="field"><label>模型目录</label><input id="scanRoot" class="input"></div><button class="btn small" onclick="scanModels()">扫描模型</button></div><div class="quick-card"><div class="quick-title">训练服务器</div><div class="field"><label>服务地址</label><input id="quickServerUrl" class="input" placeholder="http://192.168.1.10:8020"></div><button class="btn soft small" onclick="quickAddServer()">接入服务器</button></div></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">已接入资源</div></div><div class="panel-body"><div class="resource-grid">${resourceCards||'<div class="empty">暂无资源。先检测本机 Ultralytics 或飞桨。</div>'}</div></div></section></div>`;
+  $('#view').innerHTML=`<div class="resource-layout"><section class="panel"><div class="panel-head"><div class="panel-title">接入训练资源</div><button class="btn small" onclick="refreshTrainingResourcePageV3()">刷新</button></div><div class="panel-body"><div class="resource-actions"><div class="quick-card"><div class="quick-title">本机 Ultralytics</div><div class="field"><label>安装目录</label><input id="uroot" class="input"></div><div class="row"><button class="btn primary small" onclick="detectUltra()">检测并启用</button><button class="btn soft small" onclick="quickUltraDetect()">一键检测</button></div></div><div class="quick-card"><div class="quick-title">本机飞桨</div><div class="field"><label>Python路径</label><input id="ppy" class="input" value="${esc(paddle.python_path||'')}"></div><div class="field"><label>PaddleDetection目录</label><input id="pdet" class="input" value="${esc(paddle.paddledet_dir||'')}"></div><div class="field"><label>PaddleX目录</label><input id="pxdir" class="input" value="${esc(paddle.paddlex_dir||'')}"></div><div class="row"><button class="btn primary small" onclick="detectPaddle()">检测并启用</button><button class="btn soft small" onclick="quickPaddleDetect()">一键检测</button><button class="btn small" onclick="testPaddle()">只检测</button></div><div id="paddleTestResult" class="item-sub"></div></div><div class="quick-card"><div class="quick-title">本机模型目录</div><div class="field"><label>模型目录</label><input id="scanRoot" class="input"></div><button class="btn small" onclick="scanModels()">扫描模型</button></div><div class="quick-card"><div class="quick-title">训练服务器</div><div class="field"><label>服务地址</label><input id="quickServerUrl" class="input" placeholder="http://192.168.1.10:8020"></div><button class="btn soft small" onclick="quickAddServer()">接入服务器</button></div></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">已接入资源</div></div><div class="panel-body"><div class="resource-grid">${resourceCards||'<div class="empty">暂无资源。先检测本机 Ultralytics 或飞桨。</div>'}</div></div></section></div>`;
 }
 window.testPaddle=async()=>{const body={name:'本机飞桨',python_path:$('#ppy').value,paddledet_dir:$('#pdet').value,paddlex_dir:$('#pxdir').value};const r=await safe(api('/api/paddle_env/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));if(r){const fam=Object.entries(r.algorithm_scan?.families||{}).map(([k,v])=>`${k}${v}`).join('、');$('#paddleTestResult').textContent=`paddle=${r.modules?.paddle||'-'}，ppdet=${r.modules?.ppdet||'-'}，paddlex=${r.modules?.paddlex||'-'}，算法配置=${r.algorithm_scan?.total||0} 个 ${fam?`（${fam}）`:''}`;toast('飞桨检测完成')}};
 window.detectPaddle=async()=>{const body={name:'本机飞桨',python_path:$('#ppy').value,paddledet_dir:$('#pdet').value,paddlex_dir:$('#pxdir').value};await safe(api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));await testPaddle();await loadAll();render();toast('已保存飞桨环境，并扫描可训练算法')};
@@ -430,13 +430,35 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
 
 /* Dependencies shared with the final module runtime without exposing mutable app state. */
 window.renderResourceBasePage=renderResources;
+window.refreshTrainingResourceTruthV3=async function(){
+  const projectId=pid();
+  if(!projectId)return null;
+  const [options,environments,recommendation]=await Promise.all([
+    api(`/api/training_options?project_id=${projectId}`),
+    safe(api('/api/v16/inference_envs')),
+    safe(api('/api/system/recommendation')),
+  ]);
+  state.targets=options?.targets||[];
+  if(environments)state.inferenceEnvs=environments.items||[];
+  if(recommendation)state.rec=recommendation;
+  return {targets:state.targets,inferenceEnvs:state.inferenceEnvs,recommendation:state.rec};
+};
+window.refreshTrainingResourcePageV3=async function(){
+  const page=state.page;
+  try{
+    await window.refreshTrainingResourceTruthV3();
+    if(state.page===page&&page==='训练资源')window.renderResources?.();
+    await window.ResourceDiscoveryRuntime?.refreshCache?.(true,{force:true});
+    if(state.page===page&&page==='训练资源')window.renderResources?.();
+  }catch(error){toast(error?.message||error||'训练资源刷新失败')}
+};
 window.__resourceDiscoveryDependencies={
   request:(url,options)=>api(url,options),
   renderBase:()=>window.renderResourceBasePage?.(),
   notify:message=>toast(message),
   modal:(title,body,wide)=>modal(title,body,wide),
   getPage:()=>state.page,
-  refresh:async()=>{const page=state.page;await loadAll();state.page=page;render()}
+  refresh:async()=>{const page=state.page;await window.refreshTrainingResourceTruthV3();if(state.page===page&&page==='训练资源')window.renderResources?.()}
 };
 
 /* v42.22 multi-source material storage UI. Physical storage never changes the image-id training contract. */

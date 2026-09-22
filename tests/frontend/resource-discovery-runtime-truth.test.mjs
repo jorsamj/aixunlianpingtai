@@ -75,3 +75,30 @@ test('training resource page uses a direct base owner and throttles ordinary cac
   assert.match(owner, /void refreshCache\(true\)/);
   assert.doesNotMatch(owner, /previousRenderResources/);
 });
+
+
+test('training resource refresh stays scoped instead of reloading the whole application', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const resourceStart = app.lastIndexOf('function renderResources()');
+  const resourceEnd = app.indexOf('\nfunction ', resourceStart + 10);
+  assert.ok(resourceStart >= 0 && resourceEnd > resourceStart);
+  const resourcePage = app.slice(resourceStart, resourceEnd);
+  assert.match(resourcePage, /onclick="refreshTrainingResourcePageV3\(\)">刷新<\/button>/);
+  assert.doesNotMatch(resourcePage, /loadAll\(\)\.then\(render\)/);
+
+  const truthStart = app.indexOf('window.refreshTrainingResourceTruthV3=async function()');
+  const truthEnd = app.indexOf('window.__resourceDiscoveryDependencies={', truthStart);
+  assert.ok(truthStart >= 0 && truthEnd > truthStart);
+  const truth = app.slice(truthStart, truthEnd);
+  assert.match(truth, /\/api\/training_options\?project_id=/);
+  assert.match(truth, /\/api\/v16\/inference_envs/);
+  assert.match(truth, /\/api\/system\/recommendation/);
+  assert.doesNotMatch(truth, /loadAll\(/);
+  assert.doesNotMatch(truth, /loadRelated\(/);
+
+  const depsStart = app.indexOf('window.__resourceDiscoveryDependencies={');
+  const depsEnd = app.indexOf('\n};', depsStart) + 3;
+  const deps = app.slice(depsStart, depsEnd);
+  assert.match(deps, /refreshTrainingResourceTruthV3/);
+  assert.doesNotMatch(deps, /loadAll\(/);
+});
