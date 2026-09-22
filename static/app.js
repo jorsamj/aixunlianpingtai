@@ -1460,23 +1460,7 @@ window.installUsability417=function(){
   function stepCard(n,title,desc,page,btn='进入'){
     return `<div class="flow-card" onclick="setPage('${page}')"><div class="flow-no">${n}</div><div><div class="flow-title">${title}</div><div class="flow-desc">${desc}</div><button class="btn small soft">${btn}</button></div></div>`;
   }
-  window.renderHomeDashboard=function(){
-    const dataDir=esc(state.versionInfo?.data_dir||'');
-    const recent=(state.jobs||[]).slice(0,5);
-    $('#view').innerHTML=`
-      <section class="hero-panel">
-        <div class="hero-left"><div class="hero-k">畅联云算法训练</div><h2>数据、训练、测试、导出，一条流程跑通</h2><p>当前版本已启用持久化数据目录，刷新页面、重启服务、升级版本后会优先保留已有项目、素材、标注、训练记录。</p><div class="hero-actions"><button class="btn primary" onclick="setPage('数据集')">开始准备数据</button><button class="btn soft" onclick="setPage('训练任务')">创建训练任务</button><button class="btn" onclick="setPage('检测台')">模型对比检测</button></div></div>
-        <div class="hero-right"><div class="version-big">v${esc(state.versionInfo?.version||APP_VERSION)}</div><div class="data-path" title="${dataDir}">数据目录：${dataDir||'当前程序 data 目录'}</div></div>
-      </section>
-      <section class="panel"><div class="panel-head"><div><div class="panel-title">推荐操作流程</div><div class="subline">按这个顺序做，页面和菜单会更清楚。</div></div></div><div class="panel-body"><div class="flow-grid">
-        ${stepCard('01','准备数据集','上传图片、视频切帧、导入标注、划分训练/评测/试验集','数据集')}
-        ${stepCard('02','自动/人工标注','选择大模型预标注，再人工复核关键样本','自动标注')}
-        ${stepCard('03','接入训练资源','配置 Ultralytics、飞桨 PaddleDetection 或训练服务器','训练资源')}
-        ${stepCard('04','创建训练任务','按数据集和算法创建训练任务，实时查看进度','训练任务')}
-        ${stepCard('05','检测与发布','用检测台对比效果，再发布为算法版本或导出部署包','检测台')}
-      </div></div></section>
-      <section class="panel"><div class="panel-head"><div class="panel-title">最近训练任务</div><button class="btn small" onclick="setPage('训练任务')">查看全部</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>操作</th></tr></thead><tbody>${recent.map(j=>`<tr><td>${esc(j.algorithm_name||j.id)}</td><td><span class="pill ${j.status==='done'||j.status==='finished'?'ok':j.status==='failed'?'err':'warn'}">${statusName(j.status)}</span></td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td><button class="btn small" onclick="setPage('训练任务')">查看</button></td></tr>`).join('')||'<tr><td colspan="4">暂无训练任务</td></tr>'}</tbody></table></div></section>`;
-  };
+
 
   window.renderAutoLabelPage=function(){
     const tasks=state.prelabelTasks||[];
@@ -1838,14 +1822,7 @@ window.installUsability417=function(){
     box.innerHTML=`<div class="stat"><div class="k">素材图片</div><div class="v">${imgs}</div><div class="s">已标注 ${ann}</div></div><div class="stat"><div class="k">标注框</div><div class="v">${boxes}</div><div class="s">当前项目</div></div><div class="stat"><div class="k">训练任务</div><div class="v">${running}</div><div class="s">运行或排队</div></div><div class="stat"><div class="k">已完成训练</div><div class="v">${done}</div><div class="s">可进入测试</div></div><div class="stat"><div class="k">算法版本</div><div class="v">${totalVersions()}</div><div class="s">资源可用 ${ready}</div></div>`;
   };
 
-  window.renderHomeDashboard=renderHomeDashboard=function(){
-    const recent=(state.jobs||[]).slice(0,6),resources=(state.targets||[]).slice(0,5);
-    const taskRows=recent.map(j=>`<tr><td><b>${esc(j.algorithm_name||j.name||j.id)}</b></td><td><span class="pill ${isDone(j.status)?'ok':j.status==='failed'?'err':'warn'}">${esc(statusName(j.status))}</span></td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td><button class="btn mini" onclick="setPage('训练任务')">查看</button></td></tr>`).join('')||'<tr><td colspan="4">暂无训练任务</td></tr>';
-    const resourceRows=resources.map(t=>`<div class="resource-mini-v37"><div><b>${esc(t.name)}</b><div class="item-sub">${esc(t.framework==='paddle'?'飞桨 PaddleDetection':t.framework==='ultralytics'?'Ultralytics':t.type==='server'?'训练服务器':'训练资源')}</div></div><div class="row"><i class="status-dot-v37 ${t.status==='ready'?'ok':''}"></i><span class="item-sub">${t.status==='ready'?'可用':'待配置'}</span></div></div>`).join('')||'<div class="empty">暂无训练资源</div>';
-    document.getElementById('view').innerHTML=`<section class="hero-panel"><div class="hero-left"><div class="hero-k">畅联云算法训练 · v${V37_VERSION}</div><h2>从素材到可部署模型</h2><p>导入素材，完成标注与训练，再通过检测台验证模型效果。</p><div class="hero-actions"><button class="btn primary" onclick="setPage('数据集')">准备数据</button><button class="btn" onclick="setPage('训练任务')">创建训练</button><button class="btn" onclick="setPage('检测台')">检测模型</button></div></div></section>
-      <section class="panel"><div class="panel-head"><div class="panel-title">快速入口</div></div><div class="panel-body"><div class="quick-grid-v37"><div class="quick-card-v37" onclick="setPage('数据集')"><div class="quick-icon-v37">${icon('数据集')}</div><b>导入与标注</b><span>图片、标注包、本机路径或服务器地址</span></div><div class="quick-card-v37" onclick="setPage('自动标注')"><div class="quick-icon-v37">${icon('自动标注')}</div><b>模型自动标注</b><span>选择模型配置与提示词模板</span></div><div class="quick-card-v37" onclick="setPage('训练任务')"><div class="quick-icon-v37">${icon('训练任务')}</div><b>创建训练任务</b><span>Ultralytics 或 PaddleDetection</span></div><div class="quick-card-v37" onclick="setPage('测试发布')"><div class="quick-icon-v37">${icon('测试发布')}</div><b>测试与导出</b><span>验证、发布和部署目标导出</span></div></div></div></section>
-      <div class="dashboard-grid-v37"><section class="panel"><div class="panel-head"><div class="panel-title">最近训练</div><button class="btn small" onclick="setPage('训练任务')">全部任务</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>操作</th></tr></thead><tbody>${taskRows}</tbody></table></div></section><section class="panel"><div class="panel-head"><div class="panel-title">训练资源</div><button class="btn small" onclick="setPage('训练资源')">配置</button></div><div class="panel-body">${resourceRows}</div></section></div>`;
-  };
+
 
 
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
@@ -2084,11 +2061,7 @@ window.installUsability417=function(){
   // Add deployment action to algorithm version management.
   window.startDeployVersion=(aid,vid)=>{state.deployPresetSourceId=`version::${aid}::${vid}`;state.deployCacheInvalidated=true;state.deployLoaded=false;closeModal();return window.setPage?.('部署转换')};
   // Add deployment to dashboard without adding explanatory clutter.
-  window.renderHomeDashboard=function(){
-    const recent=(state.jobs||[]).slice(0,5),running=(state.jobs||[]).filter(j=>['running','queued'].includes(j.status)).length,done=(state.jobs||[]).filter(j=>['done','finished','completed'].includes(j.status)).length;
-    const taskRows=recent.map(j=>`<tr><td><b>${esc(j.algorithm_name||j.name||j.id)}</b></td><td>${statusPill(['done','finished','completed'].includes(j.status)?'done':j.status)}</td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td><button class="btn mini" onclick="setPage('训练任务')">查看</button></td></tr>`).join('')||'<tr><td colspan="4">暂无训练任务</td></tr>';
-    document.getElementById('view').innerHTML=`<section class="hero-panel"><div class="hero-left"><div class="hero-k">畅联云算法训练 · v${V39}</div><h2>从素材到目标芯片部署</h2><p>数据准备、训练、检测、芯片转换和部署产物统一管理。</p><div class="hero-actions"><button class="btn primary" onclick="setPage('数据集')">准备数据</button><button class="btn" onclick="setPage('训练任务')">训练模型</button><button class="btn" onclick="setPage('部署转换')">部署转换</button></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">快速入口</div></div><div class="panel-body"><div class="quick-grid-v39"><div class="quick-card-v37" onclick="setPage('数据集')"><div class="quick-icon-v37">${menuIcon('数据集')}</div><b>数据准备</b><span>导入、标注、划分</span></div><div class="quick-card-v37" onclick="setPage('自动标注')"><div class="quick-icon-v37">${menuIcon('自动标注')}</div><b>模型标注</b><span>提示词模板与自动标注</span></div><div class="quick-card-v37" onclick="setPage('训练任务')"><div class="quick-icon-v37">${menuIcon('训练任务')}</div><b>训练任务</b><span>Ultralytics / PaddleDetection</span></div><div class="quick-card-v37" onclick="setPage('检测台')"><div class="quick-icon-v37">${menuIcon('检测台')}</div><b>模型检测</b><span>同图对比效果</span></div><div class="quick-card-v37" onclick="setPage('部署转换')"><div class="quick-icon-v37">${menuIcon('部署转换')}</div><b>部署转换</b><span>ONNX / RKNN / BMODEL / OM / Engine</span></div></div></div></section><div class="dashboard-grid-v37"><section class="panel"><div class="panel-head"><div class="panel-title">最近训练</div><button class="btn small" onclick="setPage('训练任务')">全部</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th></th></tr></thead><tbody>${taskRows}</tbody></table></div></section><section class="panel"><div class="panel-head"><div class="panel-title">当前进度</div></div><div class="panel-body"><div class="mini-metrics"><div><span>训练中</span><b>${running}</b></div><div><span>已完成</span><b>${done}</b></div><div><span>算法版本</span><b>${(state.algorithms||[]).reduce((n,a)=>n+(a.versions||[]).length,0)}</b></div></div></div></section></div>`;
-  };
+
 
   // existing setPage calls render dynamically; reset deployment cache on relevant pages only.
 })();

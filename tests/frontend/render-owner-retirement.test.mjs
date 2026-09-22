@@ -17,6 +17,13 @@ test('historical render-chain aliases are physically retired', () => {
   ]) assert.equal(app.includes(token), false, token);
 });
 
+test('shadowed dashboard page renderers are physically retired', () => {
+  assert.equal((app.match(/window\.renderHomeDashboard(?:=renderHomeDashboard)?=function\(\)/g) || []).length, 1);
+  assert.match(app, /window\.renderHomeDashboard=renderHomeDashboard=function\(\)\{renderDashboardBody42\(\)/);
+  assert.match(app, /window\.renderDashboardCanonical422=function\(\)/);
+  assert.match(main, /\['工作台', 'renderDashboardCanonical422'\]/);
+});
+
 test('algorithm and dataset navigation are canonical owners', () => {
   assert.match(main, /registerPageOwner\('算法列表'/);
   assert.match(main, /registerPageOwner\('数据集'/);
