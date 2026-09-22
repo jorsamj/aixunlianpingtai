@@ -203,5 +203,7 @@ jobs:
           grep -Fq '验收报告' tests/browser/model-and-conversion.spec.mjs
           grep -Fq '板端验证' tests/browser/model-and-conversion.spec.mjs
           grep -Fq '验收条件已满足' tests/browser/model-and-conversion.spec.mjs
+          grep -Fq 'data-rknn-verify-live' static/app.js
+          grep -Fq 'data-rknn-verify-bar' static/app.js
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

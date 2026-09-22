@@ -313,16 +313,18 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   });
   await page.route(`**/api/v62/projects/${project.id}/tasks/rk-board-task-1`, async route => {
     taskReads += 1;
-    jobVerified = true;
+    const done = taskReads >= 2;
+    if (done) jobVerified = true;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         id: 'rk-board-task-1',
         task_id: 'rk-board-task-1',
-        status: 'SUCCEEDED',
-        phase: 'FINALIZING',
-        progress_percent: 100
+        status: done ? 'SUCCEEDED' : 'RUNNING',
+        phase: done ? 'FINALIZING' : 'RKNN_LITE_INFERENCE',
+        progress_percent: done ? 100 : 45,
+        worker_id: 'agent:rk3568-board-01'
       })
     });
   });
@@ -356,7 +358,20 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   });
   await dialog.getByRole('button', {name: '开始板端验证'}).click();
 
+  const live = dialog.locator('[data-rknn-verify-live]');
+  await expect(live).toBeVisible();
+  await page.evaluate(() => {
+    window.__rknnVerifyStableShell = document.querySelector('[data-rknn-verify-live]');
+    window.__rknnVerifyStableBar = document.querySelector('[data-rknn-verify-bar]');
+  });
   await expect.poll(() => taskReads).toBeGreaterThan(0);
+  await expect(live).toContainText('45%', {timeout: 5_000});
+  await expect(live.locator('[data-rknn-verify-bar]')).toHaveAttribute('data-progress', '45.00');
+  expect(await page.evaluate(() => ({
+    shell: window.__rknnVerifyStableShell === document.querySelector('[data-rknn-verify-live]'),
+    bar: window.__rknnVerifyStableBar === document.querySelector('[data-rknn-verify-bar]'),
+  }))).toEqual({shell:true, bar:true});
+  await expect.poll(() => taskReads, {timeout: 5_000}).toBeGreaterThanOrEqual(2);
   expect(hardwarePost).not.toBeNull();
   await expect(page.getByRole('dialog', {name: 'RKNN 板端验证'})).toHaveCount(0);
   await expect(job.getByText(/实机已验证/)).toBeVisible();
