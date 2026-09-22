@@ -127,13 +127,13 @@ test('storage navigation is a canonical owner', () => {
   assert.equal(app.includes('data-storage-nav="1"'), false);
 });
 
-test('deployment pages are canonical owners', () => {
+test('retired deployment pages are not canonical navigation owners', () => {
   for (const [page, renderer] of [
     ['部署转换', 'renderDeployCenter'],
     ['部署产物', 'renderDeployArtifacts'],
     ['部署资源', 'renderDeployResources'],
     ['部署插件', 'renderDeployPluginsV41'],
-  ]) assert.ok(main.includes(`['${page}', '${renderer}']`));
+  ]) assert.equal(main.includes(`['${page}', '${renderer}']`), false, page);
 });
 
 test('retired standalone test and detection pages are not canonical navigation owners', () => {
@@ -251,6 +251,7 @@ test('navigation chrome resolves to direct final owners without wrapper chaining
   assert.match(finalNavOwner, /\{title:'总览',items:\['工作台','质量中心'\]\}/);
   assert.match(finalNavOwner, /\{title:'算法生成',items:\['算法列表','训练任务','训练资源'\]\}/);
   assert.match(finalNavOwner, /\{title:'数据中心',items:\['数据集','视频切帧','自动标注及清洗','标签管理'\]\}/);
-  assert.match(finalNavOwner, /\{title:'高级功能',items:\['模型配置','部署资源','存储配置','组件检测'\]\}/);
+  assert.match(finalNavOwner, /\{title:'高级功能',items:\['模型配置','存储配置','组件检测'\]\}/);
+  assert.doesNotMatch(finalNavOwner, /部署资源|部署插件|部署转换|部署产物/);
   assert.doesNotMatch(finalNavOwner, /title:'测试评测'|title:'部署中心'/);
 });
