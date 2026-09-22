@@ -5,6 +5,7 @@ import fs from 'node:fs';
 // R20i permanent contract: dataset-group CRUD is historical; the live data page is renderDatasets424.
 const app = fs.readFileSync('static/app.js', 'utf8');
 const index = fs.readFileSync('static/index.html', 'utf8');
+const main = fs.readFileSync('static/main.mjs', 'utf8');
 
 const retired = [
   'window.selectDataset=',
@@ -23,10 +24,11 @@ test('legacy dataset-group CRUD owners stay physically retired', () => {
   }
 });
 
-test('historical render maps retain only a bounded dataset delegate', () => {
+test('historical render maps are retired while the bounded dataset delegate remains', () => {
   assert.equal((app.match(/function renderDatasets\(\)\{/g) || []).length, 1);
   assert.match(app, /function renderDatasets\(\)\{return window\.renderDatasets424\?\.\(\)\}/);
-  assert.match(app, /if\(state\.page==='数据集'\)\{renderDatasets424\(\);return\}/);
+  assert.match(main, /registerPageOwner\('数据集'/);
+  assert.doesNotMatch(app, /state\.page==='数据集'.*renderDatasets424/);
 });
 
 test('R20i keeps the formal visible version independent from internal cache bumps', () => {

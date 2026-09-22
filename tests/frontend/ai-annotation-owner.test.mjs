@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
 test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const legacyV33 = source.lastIndexOf('/api/v33/projects/${pid()}/prelabel-tasks');
@@ -25,11 +26,10 @@ test('final AI annotation owner uses durable v60 candidate review flow', () => {
 });
 
 test('final label management page owner is the alias-aware schema manager', () => {
-  const legacyManager = source.lastIndexOf('window.manageLabels=');
-  const finalRoute = source.lastIndexOf(
-    "if(state.page==='标签管理'){renderNav();renderTop();renderSummary();renderLabelManagement414();return}"
-  );
-  assert.ok(finalRoute > legacyManager, 'final 标签管理 route must bypass the legacy modal manager');
+  assert.match(source, /window\.manageLabels=\(\)=>\{closeModal\(\);setPage\('标签管理'\)\};/);
+  assert.doesNotMatch(source, /state\.page==='标签管理'.*renderLabelManagement414/);
+  assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
+  assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
   assert.match(source, /id="label414Aliases"/);
   assert.match(source, /自动预选后仍需人工确认/);
 });
