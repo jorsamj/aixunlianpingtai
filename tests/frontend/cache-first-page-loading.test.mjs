@@ -206,3 +206,17 @@ test('algorithm list revisit reuses the startup or focused snapshot for thirty s
   assert.doesNotMatch(owner, /snapshotAge <= 5000/);
   assert.doesNotMatch(owner, /minAgeMs: 5000/);
 });
+
+
+test('dataset card renderer patches by material id instead of replacing the full grid', () => {
+  const start = source.indexOf('function dataCardSignature412(x)');
+  const end = source.indexOf('\n  window.renderDatasets424=function()', start);
+  assert.ok(start >= 0 && end > start);
+  const renderer = source.slice(start, end);
+  assert.match(renderer, /querySelectorAll\('\.data412-card\[data-material-id\]'\)/);
+  assert.match(renderer, /dataCardSignature412\(row\)/);
+  assert.match(renderer, /node\.dataset\.renderSignature!==signature/);
+  assert.match(renderer, /node\.replaceWith\(next\)/);
+  assert.match(renderer, /if\(!keep\.has\(key\)\)node\.remove\(\)/);
+  assert.doesNotMatch(renderer, /g\.innerHTML=rows\.map\(card412\)/);
+});
