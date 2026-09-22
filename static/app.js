@@ -1803,17 +1803,36 @@ window.installUsability417=function(){
       return {fresh:age>=0&&age<DEPLOY_CACHE_TTL_MS,age};
     }catch(e){return null}
   }
+  let deployRenderRefreshPromise=null;
+  let deployRenderRefreshProjectId='';
+  function refreshDeployForRenderV39(page,renderer){
+    const projectId=String(pid()||'');if(!projectId)return null;
+    let task=deployRenderRefreshPromise;
+    if(!task||deployRenderRefreshProjectId!==projectId){
+      task=Promise.resolve(loadDeployData(true));
+      deployRenderRefreshPromise=task;
+      deployRenderRefreshProjectId=projectId;
+      void task.finally(()=>{
+        if(deployRenderRefreshPromise===task){
+          deployRenderRefreshPromise=null;
+          deployRenderRefreshProjectId='';
+        }
+      });
+    }
+    void task.then(()=>{if(String(pid()||'')===projectId&&state.page===page)renderer?.()});
+    return task;
+  }
   function primeDeployRenderV39(page,renderer,firstLoadText){
     if(state.deployLoaded)return true;
     const cached=restoreDeployCacheV39();
     if(!cached){
       const view=document.getElementById('view');
       if(view)view.innerHTML=`<div class="loading">${esc(firstLoadText||'首次读取部署数据...')}</div>`;
-      void loadDeployData(true).then(()=>{if(state.page===page)renderer?.()});
+      refreshDeployForRenderV39(page,renderer);
       return false;
     }
     if(!cached.fresh||state.deployCacheInvalidated){
-      void loadDeployData(true).then(()=>{if(state.page===page)renderer?.()});
+      refreshDeployForRenderV39(page,renderer);
     }
     return true;
   }

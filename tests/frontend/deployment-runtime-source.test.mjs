@@ -80,3 +80,18 @@ test('deployment plugin cache is invalidated by deployment resource mutations',(
   assert.match(source,/window\.invalidateDeployPluginCacheV41=\(\)=>/);
   assert.ok((source.match(/window\.invalidateDeployPluginCacheV41\?\.\(\)/g)||[]).length>=5);
 });
+
+
+test('deployment first-render revalidation is single-flight across canonical rerenders',()=> {
+  assert.match(source,/let deployRenderRefreshPromise=null/);
+  assert.match(source,/let deployRenderRefreshProjectId=''/);
+  assert.match(source,/function refreshDeployForRenderV39\(page,renderer\)/);
+  assert.match(source,/if\(!task\|\|deployRenderRefreshProjectId!==projectId\)/);
+  assert.match(source,/task=Promise\.resolve\(loadDeployData\(true\)\)/);
+  const primeStart=source.indexOf('function primeDeployRenderV39(page,renderer,firstLoadText)');
+  const primeEnd=source.indexOf('async function loadDeployData(force=false)',primeStart);
+  assert.ok(primeStart>=0&&primeEnd>primeStart);
+  const prime=source.slice(primeStart,primeEnd);
+  assert.ok((prime.match(/refreshDeployForRenderV39\(page,renderer\)/g)||[]).length>=2);
+  assert.doesNotMatch(prime,/void loadDeployData\(true\)\.then/);
+});

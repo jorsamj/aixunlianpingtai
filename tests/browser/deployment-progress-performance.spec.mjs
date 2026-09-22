@@ -77,3 +77,37 @@ test('deployment conversion polling keeps job and progress nodes stable', async 
   ))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('deployment first visit coalesces reentrant canonical renders into one data load', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.project?.id || null), {timeout: 15_000}).not.toBeNull();
+  const projectId = await page.evaluate(() => state.project.id);
+  const encoded = encodeURIComponent(projectId);
+  const counts = {resources:0, sources:0, jobs:0, artifacts:0};
+
+  const delayed = async (route, key, body) => {
+    counts[key] += 1;
+    await new Promise(resolve => setTimeout(resolve, 180));
+    await route.fulfill({status:200, contentType:'application/json', body:JSON.stringify(body)});
+  };
+  await page.route('**/api/v39/deploy/resources', route => delayed(route, 'resources', {items:[]}));
+  await page.route(`**/api/v39/projects/${encoded}/deploy/source-models`, route => delayed(route, 'sources', {items:[]}));
+  await page.route(`**/api/v39/projects/${encoded}/deploy/jobs`, route => delayed(route, 'jobs', {items:[]}));
+  await page.route(`**/api/v39/projects/${encoded}/deploy/artifacts`, route => delayed(route, 'artifacts', {items:[]}));
+
+  await page.evaluate(projectId => {
+    localStorage.removeItem(`cl_algo_deploy_cache_${projectId}`);
+    state.deployLoaded = false;
+    state.deployCacheInvalidated = false;
+    state.deployResources = [];
+    state.deploySources = [];
+    state.deployJobs = [];
+    state.deployArtifacts = [];
+    window.setPage('部署转换');
+  }, projectId);
+
+  await expect.poll(() => page.evaluate(() => state.deployLoaded), {timeout: 10_000}).toBe(true);
+  await expect(page.locator('#title')).toContainText('部署转换');
+  expect(counts).toEqual({resources:1, sources:1, jobs:1, artifacts:1});
+});
