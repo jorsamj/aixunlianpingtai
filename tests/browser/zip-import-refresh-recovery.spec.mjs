@@ -63,19 +63,19 @@ function storedZip(entries) {
   return Buffer.concat([...locals, centralData, end]);
 }
 
-async function createProject(request) {
-  const response = await request.post('/api/projects', {data: {name: `ZIP恢复-${Date.now()}`, labels: []}});
+async function createProject(request, labels = []) {
+  const response = await request.post('/api/projects', {data: {name: `ZIP恢复-${Date.now()}`, labels}});
   expect(response.ok()).toBeTruthy();
   return response.json();
 }
 
-async function createSelectingZipJob(request, projectId) {
+async function createSelectingZipJob(request, projectId, {className = 'object', fileName = 'refresh-recovery.zip'} = {}) {
   const zip = storedZip([
     ['images/train/sample.jpg', Buffer.from('not-decoded-during-scan')],
-    ['data.yaml', Buffer.from('train: images/train\nnames: [object]\n')],
+    ['data.yaml', Buffer.from(`train: images/train\nnames: [${className}]\n`)],
   ]);
   const response = await request.post(`/api/v19/projects/${projectId}/datasets/default/import/jobs`, {
-    multipart: {file: {name: 'refresh-recovery.zip', mimeType: 'application/zip', buffer: zip}},
+    multipart: {file: {name: fileName, mimeType: 'application/zip', buffer: zip}},
   });
   expect(response.ok()).toBeTruthy();
   const body = await response.json();
@@ -83,10 +83,64 @@ async function createSelectingZipJob(request, projectId) {
   return body;
 }
 
-test('server-persisted ZIP job is restored in upload task center after browser refresh', async ({page, request}) => {
+test('exact platform label code is reused without creating a duplicate label', async ({page, request}) => {
+  const project = await createProject(request, [
+    {code: 'object', display_name: '对象', color: '#3b82f6'}
+  ]);
+  const job = await createSelectingZipJob(request, project.id, {className: 'object', fileName: 'exact-code.zip'});
+  expect(job.label_confirmation_required).toBeTruthy();
+  expect(job.external_classes?.[0]?.name).toBe('object');
+
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
+  });
+
+  const labelPosts = [];
+  page.on('request', req => {
+    const url = new URL(req.url());
+    if (req.method() === 'POST' && url.pathname === `/api/projects/${project.id}/labels`) labelPosts.push(req);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  const taskCenter = page.locator('#uploadTaskCenter');
+  await expect(taskCenter).toBeVisible({timeout: 10_000});
+  await taskCenter.locator('[data-utc-toggle]').click();
+  const zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
+  await expect(zipRow).toBeVisible();
+  await zipRow.click();
+
+  const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
+  await expect(importDialog).toBeVisible();
+  await expect(importDialog.getByText('自动匹配', {exact: true})).toBeVisible();
+  const target = importDialog.locator('[data-zip-target]');
+  await expect(target).toHaveValue('object');
+  await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
+
+  const startRequestPromise = page.waitForRequest(req =>
+    req.method() === 'POST' &&
+    new URL(req.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+  const startResponsePromise = page.waitForResponse(res =>
+    res.request().method() === 'POST' &&
+    new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+  await importDialog.getByRole('button', {name: '确认标签并开始导入'}).click();
+  const startRequest = await startRequestPromise;
+  const startResponse = await startResponsePromise;
+  expect(startResponse.ok()).toBeTruthy();
+  const mapping = startRequest.postDataJSON().label_mapping;
+  expect(mapping[String(job.external_classes[0].class_id)]).toBe('object');
+  expect(labelPosts).toHaveLength(0);
+});
+
+test('server-persisted ZIP job restores explicit file-label creation after refresh and confirms it through the label API', async ({page, request}) => {
   const project = await createProject(request);
-  const job = await createSelectingZipJob(request, project.id);
+  const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'refresh-recovery.zip'});
   expect(job.id).toBeTruthy();
+  expect(job.label_confirmation_required).toBeTruthy();
+  expect(job.external_classes?.[0]?.name).toBe('helmet');
 
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(() => {
@@ -101,20 +155,59 @@ test('server-persisted ZIP job is restored in upload task center after browser r
 
   await taskCenter.locator('[data-utc-toggle]').click();
   await expect(taskCenter).toContainText('refresh-recovery.zip');
-  await expect(taskCenter).toContainText(/等待启动后台导入|等待中|后台/);
-  const zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
+  await expect(taskCenter).toContainText(/等待确认标注|等待中|后台/);
+  let zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
   await expect(zipRow).toBeVisible();
   await zipRow.click();
-  const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
+
+  let importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
-  await expect(importDialog).toContainText(/等待|标注入库确认|ZIP/);
+  await expect(importDialog.getByText('将新增', {exact: true})).toBeVisible();
+  let target = importDialog.locator('[data-zip-target]');
+  await expect(target).toHaveValue('__create__');
+  await expect(target.locator('option:checked')).toHaveText('＋ 使用文件标签“helmet”并新增');
   await importDialog.getByRole('button', {name: '关闭窗口'}).click();
 
   await page.reload();
   await expect(taskCenter).toBeVisible({timeout: 10_000});
   await taskCenter.locator('[data-utc-toggle]').click();
   await expect(taskCenter).toContainText('refresh-recovery.zip');
-  await expect(taskCenter).toContainText(/等待启动后台导入|等待中|后台/);
+  zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
+  await expect(zipRow).toBeVisible();
+  await zipRow.click();
+
+  importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
+  await expect(importDialog).toBeVisible();
+  target = importDialog.locator('[data-zip-target]');
+  await expect(target).toHaveValue('__create__');
+  await expect(target.locator('option:checked')).toHaveText('＋ 使用文件标签“helmet”并新增');
+
+  const labelRequestPromise = page.waitForRequest(req =>
+    req.method() === 'POST' &&
+    new URL(req.url()).pathname === `/api/projects/${project.id}/labels`
+  );
+  const startRequestPromise = page.waitForRequest(req =>
+    req.method() === 'POST' &&
+    new URL(req.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+  const startResponsePromise = page.waitForResponse(res =>
+    res.request().method() === 'POST' &&
+    new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+
+  await importDialog.getByRole('button', {name: '确认标签并开始导入'}).click();
+  const labelRequest = await labelRequestPromise;
+  expect(labelRequest.postDataJSON().label).toBe('helmet');
+  const startRequest = await startRequestPromise;
+  const startResponse = await startResponsePromise;
+  expect(startResponse.ok()).toBeTruthy();
+  const mapping = startRequest.postDataJSON().label_mapping;
+  expect(mapping[String(job.external_classes[0].class_id)]).toBe('helmet');
+
+  const labelsResponse = await request.get(`/api/v12/projects/${project.id}/labels`);
+  expect(labelsResponse.ok()).toBeTruthy();
+  const labels = (await labelsResponse.json()).items || [];
+  expect(labels.some(label => label.code === 'helmet')).toBeTruthy();
 
   // The retired single-task ZIP dock must stay hidden when the unified task center owns visibility.
   await expect(page.locator('#zipImportDurableDock')).toBeHidden();
