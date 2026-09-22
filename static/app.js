@@ -1532,13 +1532,6 @@ window.installUsability417=function(){
 // ============================================================
 (function(){
   state.sourceImportTasks = state.sourceImportTasks || [];
-  const _v36LoadAll = loadAll;
-  loadAll = async function(){
-    await _v36LoadAll();
-    if(state.project && state.datasetId){
-      state.sourceImportTasks = (await safe(api(`/api/v36/projects/${pid()}/datasets/${state.datasetId}/source-import/jobs`)))?.items || [];
-    }
-  };
 
   window.importData=function(){
     modal('导入素材 / 标注',`<div class="form">
