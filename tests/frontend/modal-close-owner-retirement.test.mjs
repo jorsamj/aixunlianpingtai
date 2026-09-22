@@ -31,7 +31,7 @@ test('canonical close preserves storage polling cleanup and annotation dirty-sav
 
 test('storage import close hook stops progress polling without replacing closeModal', () => {
   const start = app.indexOf('window.installServerMaterialImport61=function()');
-  const end = app.indexOf('window.openDataUpload426=async function()', start);
+  const end = app.indexOf('window.openDataUploadStorage61=async function()', start);
   const block = app.slice(start, end);
   assert.match(block, /window\.beforeCloseStorageImport61=function\(\)/);
   assert.match(block, /abortPolling\(\)/);
