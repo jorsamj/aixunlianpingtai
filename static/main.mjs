@@ -270,6 +270,23 @@ window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 function renderNavigationChrome() {
   window.renderNav?.();
   window.renderTop?.();
+  window.renderSummary?.();
+}
+
+function applyPostRenderNormalization(page) {
+  if (String(state.page || '') !== String(page || '')) return;
+  window.PostRenderNormalizationRuntime?.apply?.(document.getElementById('view'));
+}
+
+function renderCanonicalOwner(page, {source = 'canonical-router'} = {}) {
+  const normalizedPage = String(page || state.page || '');
+  renderNavigationChrome();
+  const result = navigationStabilityRuntime.renderPage(normalizedPage, {source});
+  if (result && typeof result.then === 'function') {
+    return result.finally(() => applyPostRenderNormalization(normalizedPage));
+  }
+  applyPostRenderNormalization(normalizedPage);
+  return result;
 }
 
 function renderUnknownPage(page) {
@@ -294,7 +311,7 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
     pageExtrasLoadedAt.set(page, Date.now());
     if (state.page !== page) return;
     if (navigationStabilityRuntime.hasPageOwner(page)) {
-      navigationStabilityRuntime.renderPage(page, {source: 'background-data'});
+      renderCanonicalOwner(page, {source: 'background-data'});
     } else {
       render();
     }
@@ -341,8 +358,7 @@ const navigationStabilityRuntime = installNavigationStability({
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();
     if (navigationStabilityRuntime.hasPageOwner(page)) {
-      renderNavigationChrome();
-      navigationStabilityRuntime.renderPage(page, {source: 'navigation'});
+      renderCanonicalOwner(page, {source: 'navigation'});
     } else if (navigationStabilityRuntime.isKnownPage(page)) {
       render();
     } else {
@@ -420,6 +436,29 @@ window.PlatformCore.runtime.componentPageOwner = {
 const serviceNodeRuntime = installServiceNodeRuntime({notify});
 window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;
 
-Promise.resolve(window.__v53InitPromise).then(() => refreshCurrentPageOwner(state.page));
+// Retire the historical app.js render override chain from active runtime.
+// Legacy render remains only as a fallback for pages that have not migrated yet.
+const legacyRenderFallback = window.render;
+window.render = function canonicalRenderBridge() {
+  const page = String(state.page || '');
+  if (navigationStabilityRuntime.hasPageOwner(page)) {
+    return renderCanonicalOwner(page, {source: 'compat-render'});
+  }
+  return legacyRenderFallback?.();
+};
+window.PlatformCore.runtime.renderRouter = {
+  renderCurrent(source = 'runtime') {
+    const page = String(state.page || '');
+    if (navigationStabilityRuntime.hasPageOwner(page)) return renderCanonicalOwner(page, {source});
+    return legacyRenderFallback?.();
+  },
+};
+
+Promise.resolve(window.__v53InitPromise).then(() => {
+  if (navigationStabilityRuntime.hasPageOwner(state.page)) {
+    void renderCanonicalOwner(state.page, {source: 'startup-owner'});
+  }
+  refreshCurrentPageOwner(state.page);
+});
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

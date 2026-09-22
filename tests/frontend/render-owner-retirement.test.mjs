@@ -142,3 +142,11 @@ test('canonical AutoLabel render route remains the only page-state route', () =>
     true,
   );
 });
+
+test('active runtime routes global render calls through the canonical owner bridge', () => {
+  assert.match(main, /function renderCanonicalOwner\(page/);
+  assert.match(main, /window\.render = function canonicalRenderBridge\(\)/);
+  assert.match(main, /source: 'compat-render'/);
+  assert.match(main, /source: 'startup-owner'/);
+  assert.match(main, /PostRenderNormalizationRuntime\?\.apply\?\./);
+});
