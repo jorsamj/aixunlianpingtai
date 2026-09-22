@@ -4976,19 +4976,101 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   function ensureReviewShell(){
     if(document.querySelector('.ai60-review'))return;
-    modal('AI待确认标注',`<div class="review427 ai60-review"><div class="review427-top"><div><b>候选结果不会自动写入正式标注</b><span id="ai60ReviewSummary"></span></div><div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div></div><div id="ai60LabelMapping"></div><div id="ai60ReviewGrid" class="review427-grid"></div><div class="row between"><div id="ai60ReviewPager"></div><div class="row"><button class="btn" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已勾选</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeModal()">暂不处理</button></div></div></div>`,true);
+    modal('AI待确认标注',`<div class="review427 ai60-review">
+      <div class="review427-top">
+        <div><b>候选结果不会自动写入正式标注</b><span id="ai60ReviewSummary"></span></div>
+        <div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
+      </div>
+      <datalist id="ai60PlatformLabelOptions"></datalist>
+      <div id="ai60LabelMapping"></div>
+      <section class="ai60-bulk-review">
+        <div><b>批量人工统一标签</b><span>把当前页已勾选图片中的全部候选框统一成同一个平台标签；只修改候选结果，点击“采用”后才会正式入库。</span></div>
+        <div class="row"><input id="ai60BulkTarget" class="input" list="ai60PlatformLabelOptions" placeholder="搜索英文标签或中文名称"><button class="btn" onclick="applyAiBulkLabel60()">应用到已勾选图片</button></div>
+      </section>
+      <div id="ai60ReviewGrid" class="review427-grid"></div>
+      <div class="row between ai60-review-footer"><div id="ai60ReviewPager"></div><div class="row"><button class="btn" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已勾选</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeModal()">暂不处理</button></div></div>
+    </div>`,true);
+  }
+  function aiReviewLabels60(){
+    return (state.labels||[]).filter(item=>item?.code&&String(item.status||'active').toLowerCase()==='active');
+  }
+  function resolveAiReviewLabel60(value){
+    const raw=String(value||'').trim(),needle=raw.toLowerCase(),labels=aiReviewLabels60();
+    if(!raw)return null;
+    return labels.find(label=>String(label.code).toLowerCase()===needle)
+      ||labels.find(label=>String(label.display_name||label.display_name_zh||'').toLowerCase()===needle)
+      ||null;
   }
   function renderAiLabelMapping60(){
     const review=state.ai60Review,box=document.getElementById('ai60LabelMapping');if(!review||!box)return;
-    const rows=review.labelSummary||[],labels=(state.labels||[]).filter(item=>item?.code);
-    if(!rows.length){box.innerHTML='';return}
-    box.innerHTML=`<div class="storage61-import-mapping"><div class="row between"><b>批量统一标注名</b><span class="item-sub">统一后再写入正式标注</span></div>${rows.map(row=>{const source=String(row.label||''),target=review.labelMapping.get(source)||source;return `<div class="storage61-mapping-row" data-ai-label-source="${esc(source)}"><span><b>${esc(typeof displayLabel412==='function'?displayLabel412(source):source)}</b><small>${Number(row.images||0)} 张 · ${Number(row.boxes||0)} 框</small></span><div class="row"><select class="select" onchange="updateAiLabelMapping60('${esc(source)}',this.value)">${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(target)?'selected':''}>${esc(label.display_name||label.display_name_zh||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('ai','${encodeURIComponent(source)}')">＋ 新建平台标签</button></div></div>`}).join('')}</div>`;
+    const rows=review.labelSummary||[],labels=aiReviewLabels60(),datalist=document.getElementById('ai60PlatformLabelOptions');
+    if(datalist){
+      const signature=labels.map(label=>`${label.code}:${label.display_name||label.display_name_zh||''}`).join('|');
+      if(datalist.dataset.signature!==signature){
+        datalist.dataset.signature=signature;
+        datalist.innerHTML=labels.map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.display_name_zh||label.code)}</option>`).join('');
+      }
+    }
+    if(!rows.length){box.replaceChildren();return}
+    const signature=JSON.stringify({
+      rows:rows.map(row=>[row.label,row.images,row.boxes]),
+      labels:labels.map(label=>[label.code,label.display_name||label.display_name_zh||'']),
+      mapping:[...review.labelMapping],
+    });
+    if(box.dataset.signature===signature)return;
+    box.dataset.signature=signature;
+    box.innerHTML=`<div class="storage61-import-mapping ai60-label-mapping">
+      <div class="ai60-mapping-head">
+        <div><b>批量统一标注名</b><span class="item-sub">支持搜索平台标签；映射确认后才写入正式标注。</span></div>
+        <div class="row"><input class="input" placeholder="筛选来源标签" oninput="filterAiMappingRows60(this.value)"><input id="ai60MapAllTarget" class="input" list="ai60PlatformLabelOptions" placeholder="全部映射到…"><button type="button" class="btn mini" onclick="applyAiMappingAll60()">全部映射</button></div>
+      </div>
+      ${rows.map(row=>{
+        const source=String(row.label||''),target=review.labelMapping.get(source)||source,display=typeof displayLabel412==='function'?displayLabel412(source):source;
+        const searchText=`${source} ${display} ${target}`.toLowerCase();
+        return `<div class="storage61-mapping-row ai60-mapping-row" data-ai-label-source="${esc(source)}" data-ai-label-search="${esc(searchText)}"><span><b>${esc(display)}</b><small>${Number(row.images||0)} 张 · ${Number(row.boxes||0)} 框</small></span><div class="row"><input class="input ai60-label-combobox" list="ai60PlatformLabelOptions" value="${esc(target)}" placeholder="搜索平台标签" onchange="updateAiLabelMappingFromInput60('${encodeURIComponent(source)}',this)"><button type="button" class="btn mini" onclick="openInlineLabelCreate414('ai','${encodeURIComponent(source)}')">＋ 新建标签</button></div></div>`;
+      }).join('')}
+    </div>`;
   }
   window.renderAiLabelMapping60=renderAiLabelMapping60;
+  window.filterAiMappingRows60=query=>{
+    const needle=String(query||'').trim().toLowerCase();
+    document.querySelectorAll('.ai60-mapping-row').forEach(row=>{row.hidden=!!needle&&!String(row.dataset.aiLabelSearch||'').includes(needle)});
+  };
   window.updateAiLabelMapping60=(source,target)=>{const review=state.ai60Review;if(!review)return;review.labelMapping.set(String(source),String(target));};
+  window.updateAiLabelMappingFromInput60=(encodedSource,input)=>{
+    const review=state.ai60Review;if(!review)return false;
+    const source=decodeURIComponent(String(encodedSource||'')),label=resolveAiReviewLabel60(input?.value);
+    if(!label){
+      if(input){input.value=review.labelMapping.get(source)||source;input.classList.add('invalid')}
+      toast('请选择标签库中的正式标签；没有合适标签时可直接点击“新建标签”');
+      return false;
+    }
+    input?.classList.remove('invalid');review.labelMapping.set(source,String(label.code));renderAiLabelMapping60();return true;
+  };
+  window.applyAiMappingAll60=()=>{
+    const review=state.ai60Review,input=document.getElementById('ai60MapAllTarget'),label=resolveAiReviewLabel60(input?.value);if(!review)return;
+    if(!label)return toast('请先搜索并选择一个正式平台标签');
+    for(const row of review.labelSummary||[]){const source=String(row.label||'');if(source)review.labelMapping.set(source,String(label.code))}
+    renderAiLabelMapping60();toast(`已将 ${review.labelSummary?.length||0} 个来源标签统一映射为 ${label.display_name||label.code} · ${label.code}`);
+  };
+  window.applyAiBulkLabel60=()=>{
+    const review=state.ai60Review,input=document.getElementById('ai60BulkTarget'),label=resolveAiReviewLabel60(input?.value);if(!review)return;
+    if(!label)return toast('请先搜索并选择一个正式平台标签');
+    const selected=(review.items||[]).filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true);
+    if(!selected.length)return toast('请先勾选需要统一标签的图片');
+    let changedImages=0,changedBoxes=0;
+    for(const item of selected){
+      const id=String(item.image_id),boxes=(review.edits.get(id)||item.boxes||[]).map(box=>({...box}));
+      if(!boxes.length)continue;
+      const next=boxes.map(box=>({...box,label:String(label.code),class_id:label.class_id??box.class_id,source:box.source||'ai_candidate_reviewed'}));
+      item.boxes=next;review.edits.set(id,next);review.decisions.set(id,true);changedImages+=1;changedBoxes+=next.length;
+    }
+    if(!changedBoxes)return toast('所选图片没有候选框；如需新增目标，请进入“编辑候选框”手工添加');
+    renderReviewPage();toast(`已将 ${changedImages} 张图片的 ${changedBoxes} 个候选框统一为 ${label.display_name||label.code} · ${label.code}`);
+  };
   function renderReviewPage(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
-    const summary=document.getElementById('ai60ReviewSummary');if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张；失败素材不可采用`;
+    const summary=document.getElementById('ai60ReviewSummary');if(summary){const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选 ${selected}/${selectable} · 已人工修改 ${review.edits.size} 张`}
     renderAiLabelMapping60();
     const grid=document.getElementById('ai60ReviewGrid');if(grid)grid.innerHTML=review.items.map(item=>{const image=imageById(item.image_id)||item,reviewable=item.status!=='failed',checked=review.decisions.get(String(item.image_id))===true;return `<label class="review427-card ${reviewable?'':'failed'}"><input type="checkbox" ${checked?'checked':''} ${reviewable?'':'disabled'} onchange="toggleAiDecision60('${item.image_id}',this.checked)"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':`${(item.boxes||[]).length} 个候选框`}</strong></div><b>${esc(item.filename||image.filename||item.image_id)}</b><div>${item.error?`<span class="err">${esc(item.error)}</span>`:[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<span>未检测到目标</span>'}</div>${reviewable?`<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();editAiCandidate60('${item.image_id}')">编辑候选框</button>`:''}</label>`}).join('');
     const pager=document.getElementById('ai60ReviewPager');if(pager)pager.innerHTML=`<button class="btn mini" ${review.offset<=0?'disabled':''} onclick="aiReviewPage60(-1)">上一页</button><span>${Math.floor(review.offset/review.limit)+1} / ${Math.max(1,Math.ceil(review.total/review.limit))}</span><button class="btn mini" ${review.offset+review.items.length>=review.total?'disabled':''} onclick="aiReviewPage60(1)">下一页</button>`;
@@ -5012,7 +5094,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.completeAiReview60=async mode=>{
     const review=state.ai60Review;if(!review)return;
     const action=window.NavigationStability?.action?.(state.page);
-    const decisions=mode==='partial'?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})})):[];
+    const decisions=mode==='partial'
+      ?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})}))
+      :mode==='accept'
+        ?[...review.edits].map(([image_id,boxes])=>({image_id,accepted:true,boxes}))
+        :[];
     const label_mapping=Object.fromEntries([...review.labelMapping].filter(([source,target])=>source&&target&&source!==target));
     const body={decisions,reject_unmentioned:mode!=='accept',accept_unmentioned:mode==='accept',commit:true,label_mapping};
     try{const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(action&&!action.isCurrent())return;applyTaskResult(result);closeModal();toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':result.queued_for_commit?'已确认，正在批量统一标签并写入正式标注':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);if(state.page==='自动标注及清洗')renderOps427()}catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
