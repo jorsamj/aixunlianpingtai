@@ -98,6 +98,10 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   assert.match(runtime, /window\.doUploadImages426 = input =>/);
   assert.match(runtime, /window\.uploadData424 = \(\) =>/);
   assert.match(runtime, /openBatch414\(\"ready\"/);
+  const app = fs.readFileSync('static/app.js', 'utf8');
+  assert.equal(app.includes('const oldImageUpload412=window.doUploadImages426;'), false);
+  assert.equal(app.includes('const upload414=window.doUploadImages426;'), false);
+  assert.equal(app.includes('review412-image'), false);
 });
 
 
