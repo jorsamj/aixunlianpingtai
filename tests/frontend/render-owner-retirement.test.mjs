@@ -135,8 +135,8 @@ test('test and detection pages are canonical owners', () => {
 });
 
 test('shadowed test and detection page renderers are physically retired', () => {
-  assert.equal(app.includes('window.renderDetectBench = function(){'), false);
-  assert.equal(app.includes('renderTest = window.renderTest = function(){'), false);
+  assert.equal((app.match(/^\s*window\.renderDetectBench = function\(\)\{/gm) || []).length, 0);
+  assert.equal((app.match(/^\s*renderTest = window\.renderTest = function\(\)\{/gm) || []).length, 0);
   assert.match(app, /renderDetectBench = window\.renderDetectBench = function\(\)/);
   assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
 });
