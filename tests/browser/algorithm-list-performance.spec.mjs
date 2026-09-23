@@ -11,7 +11,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422504');
+    .toBe('algorithm-list-runtime-422561');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
@@ -121,8 +121,8 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
-  await expect(page.locator('.alg428-list-head')).toContainText('算法名称');
-  await expect(page.locator('.alg428-list-head')).toContainText('当前指标');
+  await expect(page.locator('.algorithm-card-grid')).toBeVisible();
+  await expect(page.getByRole('button', {name: /仅看可训练/})).toBeVisible();
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -423,7 +423,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422504');
+    .toBe('algorithm-list-runtime-422561');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
