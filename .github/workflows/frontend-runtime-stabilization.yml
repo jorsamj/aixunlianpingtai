@@ -31,11 +31,13 @@ jobs:
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
           node --check static/modules/training-task-runtime.js &&
+          node --check static/modules/training-task-visibility-runtime.js &&
           node --check static/modules/training-progress-stream.js &&
           node --check tests/browser/navigation-stability.spec.mjs &&
           node --check tests/browser/material-pagination-performance.spec.mjs &&
           node --check tests/browser/page-loading-performance.spec.mjs &&
           node --check tests/browser/algorithm-list-performance.spec.mjs &&
+          node --check tests/browser/enterprise-list-navigation-focused.spec.mjs &&
           node --check tests/browser/source-import-completion-scope.spec.mjs &&
           node --check tests/browser/upload-task-center-performance.spec.mjs &&
           node --check tests/browser/video-task-performance.spec.mjs &&
@@ -435,6 +437,7 @@ jobs:
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/algorithm-list-performance.spec.mjs
+          tests/browser/enterprise-list-navigation-focused.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
           tests/browser/page-loading-performance.spec.mjs
