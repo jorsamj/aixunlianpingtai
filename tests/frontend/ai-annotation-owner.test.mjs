@@ -45,7 +45,8 @@ test('AI create dialog uses one canonical owner with explicit decorators', () =>
   assert.match(source, /window\.createAiLabelCore429=function\(opts=\{\}\)/);
   assert.match(source, /window\.decorateAiReferenceLabels417=function\(\)/);
   assert.match(source, /window\.decorateAiReferenceBulk412=function\(\)/);
-  assert.match(source, /window\.createAiLabel429=function createAiLabelCanonical429\(opts=\{\}\)/);
+  assert.match(source, /window\.createAiLabel429=async function createAiLabelCanonical429\(opts=\{\}\)/);
+  assert.match(source, /MaterialPaginationRuntime61\?\.ensureFullPool\?\.\(\)/);
   assert.match(source, /window\.aiRefSelect412=function aiRefSelectCanonical412\(mode\)/);
 });
 
