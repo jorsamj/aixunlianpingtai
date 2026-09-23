@@ -104,7 +104,7 @@ test('training task refresh and actions patch the final table without rebuilding
   await page.locator('.trainlog428').getByRole('button', {name: '关闭', exact: true}).click();
 
   apiRequests.length = 0;
-  await page.locator('.train428-refresh').click();
+  await page.locator('#refreshBtn').click();
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.state?.().inflight ?? null))
     .toBe(false);
   await expect(page.locator('.train428-page')).toHaveAttribute('data-performance-marker', 'preserve-me');
