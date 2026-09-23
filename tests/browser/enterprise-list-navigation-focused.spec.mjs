@@ -148,6 +148,17 @@ test('training list view state does not replace durable truth and create still r
   await expect(page.locator('[data-training-create]')).toBeEnabled();
   await expect(page.locator('[data-training-count="all"]')).toHaveText('5');
   await expect(page.locator('.train428-table tbody tr')).toHaveCount(5);
+  const trainingLayout = await page.evaluate(() => {
+    const wrap = document.querySelector('.training-table-surface .table-wrap');
+    const create = document.querySelector('[data-training-create]');
+    const rect = create?.getBoundingClientRect();
+    return {
+      tableFits: Boolean(wrap) && wrap.scrollWidth <= wrap.clientWidth + 1,
+      createFits: Boolean(rect) && rect.left >= 0 && rect.right <= window.innerWidth,
+    };
+  });
+  expect(trainingLayout.tableFits).toBe(true);
+  expect(trainingLayout.createFits).toBe(true);
   await page.screenshot({path: join(screenshotDir, '03-training-task-list.png'), fullPage: true});
 
   await page.locator('[data-training-tab="running"]').click();
