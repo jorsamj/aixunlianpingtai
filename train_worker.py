@@ -732,6 +732,9 @@ def main():
     parser.add_argument("--mosaic", type=float, default=1.0)
     parser.add_argument("--cache", default="False")
     parser.add_argument("--resource-strategy", choices=("auto", "manual"), default="auto")
+    parser.add_argument("--resource-profile", choices=("balanced", "performance", "stability"), default="balanced")
+    parser.add_argument("--precision", choices=("auto", "fp16", "bf16", "fp32"), default="auto")
+    parser.add_argument("--time", type=float, default=None)
     parser.add_argument("--resource-context", default="")
     parser.add_argument("--resource-resolution", default="")
     parser.add_argument("--metrics-db", default="")
@@ -787,6 +790,13 @@ def main():
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
+    precision = str(args.precision or "auto").strip().lower()
+    amp_value = (
+        as_bool(args.amp) if precision == "auto"
+        else "fp16" if precision == "fp16"
+        else "bf16" if precision == "bf16"
+        else False
+    )
     actual_model = resolve_training_model(args.model, pretrained)
     train_args = {
         "data": args.data,
@@ -809,7 +819,7 @@ def main():
         "single_cls": as_bool(args.single_cls),
         "pretrained": pretrained,
         "rect": as_bool(args.rect),
-        "amp": as_bool(args.amp),
+        "amp": amp_value,
         "cos_lr": as_bool(args.cos_lr),
         "momentum": args.momentum, "warmup_epochs": args.warmup_epochs, "save_period": args.save_period,
         "seed": args.seed, "deterministic": as_bool(args.deterministic), "multi_scale": args.multi_scale,
@@ -817,6 +827,8 @@ def main():
         "degrees": args.degrees, "translate": args.translate, "scale": args.scale, "shear": args.shear,
         "perspective": args.perspective, "flipud": args.flipud, "fliplr": args.fliplr, "mixup": args.mixup,
     }
+    if args.time is not None:
+        train_args["time"] = float(args.time)
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
@@ -885,7 +897,12 @@ def main():
         publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
         model = YOLO(actual_model)
         publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)
-        resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
+        resolved = resolve_resources({
+            **train_args,
+            "device": runtime_device,
+            "resource_strategy": args.resource_strategy,
+            "resource_profile": args.resource_profile,
+        }, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
         persist_resolution(resolution_path, resolved)
