@@ -153,6 +153,14 @@ test('device validation fails closed for missing or unavailable device', () => {
   assert.throws(() => validateTrainingDevice(draft(), [{id: '0', available: false}]), /设备不可用/);
 });
 
+test('scheduler-owned cluster does not depend on controller GPU inventory', () => {
+  const value = draft({resource: {strategy: 'auto', profile: 'balanced', device: 'auto', gpuPolicy: 'auto'}});
+  const resolved = validateTrainingDevice(value, [], {id: 'cluster_scheduler', scheduler_owned: true});
+  assert.equal(resolved.id, 'auto');
+  assert.equal(resolved.type, 'scheduler');
+  assert.equal(resolved.available, true);
+});
+
 test('submit runtime owns button readiness instead of legacy train428/train429 mirrors', () => {
   const state = baseState();
   state.trainingDraft = draft();
