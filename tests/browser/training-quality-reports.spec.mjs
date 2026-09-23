@@ -173,7 +173,18 @@ test('training submit sends the selected candidate pool and configured experimen
   let submitted;
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, job: {id: 'browser-job', status: 'queued'}})});
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+      ok: true,
+      task: {
+        task_id: submitted.task_id,
+        kind: 'TRAINING',
+        task_type: 'TRAINING',
+        status: 'QUEUED',
+        persisted_status: 'QUEUED',
+        phase: 'queued',
+        progress_percent: 0,
+      },
+    })});
   });
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
@@ -195,8 +206,24 @@ test('training submit sends the selected candidate pool and configured experimen
   await settings.locator('#ts428SingleCls').check();
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
+  const postSubmitRequests = [];
+  const capturePostSubmit = request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  };
+  page.on('request', capturePostSubmit);
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect.poll(() => submitted).toBeTruthy();
+  await expect.poll(async () => page.evaluate(() =>
+    window.PlatformCore?.runtime?.trainingSubmitRuntime?.state?.().submitting ?? true
+  )).toBe(false);
+  page.off('request', capturePostSubmit);
+  expect(postSubmitRequests.some(value =>
+    value.startsWith(`GET /api/projects/${project.id}/images`)
+  )).toBe(false);
+  expect(postSubmitRequests.some(value =>
+    value.includes('/api/v53/bootstrap/snapshot?refresh=true')
+  )).toBe(false);
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.split_mode).toBe('random_test_from_training_pool');
   expect(submitted.single_cls).toBe(true);

@@ -159,6 +159,23 @@ test('training page revisit paints cached jobs before a non-forced focused reval
 });
 
 
+test('training submit post-create refresh stays scoped and never falls back to broad loadRelated', () => {
+  const start = main.indexOf('const trainingSubmitRuntime = installTrainingSubmitRuntime({');
+  const end = main.indexOf('\nwindow.PlatformCore.runtime.trainingSubmitRuntime', start);
+  assert.ok(start >= 0 && end > start);
+  const wiring = main.slice(start, end);
+  assert.match(wiring, /state\.page === '算法列表'/);
+  assert.match(wiring, /algorithmListRuntime\.refresh\(\{render: false\}\)/);
+  assert.match(wiring, /state\.page === '训练任务'/);
+  assert.match(wiring, /trainingTaskRuntime\.refresh\(\{render: true, force: true, source: 'created-task'\}\)/);
+  assert.match(wiring, /if \(state\.page !== '算法列表'\) return false/);
+  assert.doesNotMatch(wiring, /loadRelated/);
+
+  const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.204/);
+});
+
+
 test('normal navigation is synchronous once startup data is ready', () => {
   const start = main.indexOf('waitForNavigationReady: () => {');
   const end = main.indexOf('\n  beforeInvokeNavigation:', start);

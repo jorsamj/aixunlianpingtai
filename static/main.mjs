@@ -206,12 +206,17 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   trainingDraftToRequest,
   trainingTaskRuntime,
   reloadRelated: async () => {
-    if (state.page === '算法列表' && algorithmListRuntime) return algorithmListRuntime.refresh({render: false});
-    if (typeof loadRelated === 'function') return loadRelated();
-    return window.loadRelated?.();
+    if (state.page === '算法列表' && algorithmListRuntime) {
+      return algorithmListRuntime.refresh({render: false});
+    }
+    if (state.page === '训练任务' && trainingTaskRuntime) {
+      return trainingTaskRuntime.refresh({render: true, force: true, source: 'created-task'});
+    }
+    return null;
   },
   renderAlgorithms: () => {
-    if (state.page === '算法列表' && algorithmListRuntime?.renderCards?.()) return true;
+    if (state.page !== '算法列表') return false;
+    if (algorithmListRuntime?.renderCards?.()) return true;
     if (typeof window.renderAlgorithms423 === 'function') return window.renderAlgorithms423();
     if (typeof renderAlgorithms423 === 'function') return renderAlgorithms423();
     return undefined;
