@@ -278,7 +278,7 @@ jobs:
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
           grep -q "run-auto" platform_core/external_algorithm_publish.py
-          grep -q "registerDecorator('external-algorithm-publish'" static/modules/external-algorithm-publish.js
+          grep -Fq "export function installExternalAlgorithmPublishRuntime" static/modules/external-algorithm-publish.js
           grep -q "算法与转换结果存储" static/modules/model-artifact-runtime.js
           grep -Fq "root_prefix:" static/modules/model-artifact-runtime.js
           grep -Fq "source?.config?.public_base_url" static/modules/model-artifact-runtime.js
