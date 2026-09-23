@@ -262,7 +262,21 @@ jobs:
           grep -Fq 'normalize_training_precision(payload.precision)' app.py
           grep -Fq 'verify_effective_training_precision(' train_worker.py
           grep -Fq 'ultralytics==8.4.127' requirements.txt
-          if grep -Fq '<option value="bf16"' static/app.js; then echo 'BF16 must stay hidden until the pinned Ultralytics runtime truly supports it' >&2; exit 1; fi
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          source = Path("static/app.js").read_text(encoding="utf-8")
+          match = re.search(r'<select id="ts428Precision"[^>]*>(.*?)</select>', source, re.S)
+          if not match:
+              raise SystemExit("training precision selector ts428Precision is missing")
+          training_precision = match.group(1)
+          for value in ("auto", "fp16", "fp32"):
+              if f'value="{value}"' not in training_precision:
+                  raise SystemExit(f"training precision {value} is missing")
+          if 'value="bf16"' in training_precision:
+              raise SystemExit("BF16 must stay hidden until the pinned Ultralytics runtime truly supports it")
+          PY
           grep -Fq '"training-prep": "platform_core.remote_training_tasks"' platform_core/worker_registry.py
           grep -Fq '"training-prep",' platform_core/worker_supervisor.py
           grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
