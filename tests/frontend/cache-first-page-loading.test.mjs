@@ -29,7 +29,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.205/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.206/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
@@ -131,6 +131,8 @@ test('quality-center detection loads focused model and inference extras without 
   const qualityEnd = source.indexOf('\n  window.renderQualityCenter424=async function()', qualityStart);
   assert.ok(qualityStart >= 0 && qualityEnd > qualityStart);
   const qualityTab = source.slice(qualityStart, qualityEnd);
+  assert.match(qualityTab, /window\.PlatformCore\?\.runtime\?\.refreshPageExtras/);
+  assert.match(qualityTab, /await focused\('质量中心'\)/);
   assert.match(qualityTab, /window\.loadPageExtras413\?\.\('质量中心'\)/);
 
   const benchStart = source.indexOf('renderDetectBench = window.renderDetectBench = function()');
@@ -144,6 +146,8 @@ test('quality-center detection loads focused model and inference extras without 
   const refreshEnd = source.indexOf('\n  window.refreshCurrentPage413=', refreshStart);
   assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
   const refresh = source.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /window\.PlatformCore\?\.runtime\?\.refreshPageExtras/);
+  assert.match(refresh, /focused\('质量中心',\{force:true\}\)/);
   assert.match(refresh, /await extras412\('质量中心'\)/);
   assert.match(refresh, /state\.qualityCenterTab411==='detect'/);
   assert.match(refresh, /window\.renderQualityCenter424\?\.\(\)/);
@@ -175,7 +179,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.204/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.205/);
 });
 
 
@@ -212,15 +216,17 @@ test('deploy artifact page reuses the current snapshot before background revalid
 });
 
 
-test('fresh startup snapshot suppresses redundant page extras and second navigation paint', () => {
-  const start = main.indexOf('function refreshPageExtrasInBackground(page');
+test('page extras have their own freshness and quality extras only run on the detection tab', () => {
+  const start = main.indexOf('const PAGE_EXTRAS_CACHE_TTL_MS');
   const end = main.indexOf('\n\nfunction refreshCurrentPageOwner(page)', start);
   assert.ok(start >= 0 && end > start);
   const refresh = main.slice(start, end);
-  assert.match(refresh, /const snapshotLoadedAt = Number\(state\.__coreSnapshotGeneratedAt \|\| 0\)/);
-  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(page\) \|\| snapshotLoadedAt \|\| 0\)/);
+  assert.match(refresh, /PAGE_EXTRAS_OWNERS = new Set\(\['训练任务', '训练资源', '质量中心'/);
+  assert.match(refresh, /page !== '质量中心' \|\| state\.qualityCenterTab411 === 'detect'/);
+  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(page\) \|\| 0\)/);
+  assert.doesNotMatch(refresh, /__coreSnapshotGeneratedAt|snapshotLoadedAt/);
   assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
-  assert.ok(refresh.indexOf('return null') < refresh.indexOf('window.loadPageExtras413(page)'));
+  assert.match(refresh, /window\.PlatformCore\.runtime\.refreshPageExtras = refreshPageExtrasInBackground/);
 });
 
 

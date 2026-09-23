@@ -3568,6 +3568,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     window.renderQualityCenter424?.();
     if(state.qualityCenterTab411!=='detect')return;
     try{
+      const focused=window.PlatformCore?.runtime?.refreshPageExtras;
+      if(typeof focused==='function'){await focused('质量中心');return}
       await window.loadPageExtras413?.('质量中心');
       if(state.page==='质量中心'&&state.qualityCenterTab411==='detect')window.renderQualityCenter424?.();
     }catch(error){toast(error.message||error)}
@@ -3713,7 +3715,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(state.page===page&&page==='测试发布')renderTest();
   };
   window.refreshDetectionBenchDataV3=async function(){
-    const page=state.page;
+    const page=state.page,focused=window.PlatformCore?.runtime?.refreshPageExtras;
+    if(typeof focused==='function'){await focused('质量中心',{force:true});return}
     await extras412('质量中心');
     if(state.page===page&&page==='质量中心'&&state.qualityCenterTab411==='detect')window.renderQualityCenter424?.();
   };

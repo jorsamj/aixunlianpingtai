@@ -322,10 +322,15 @@ function renderUnknownPage(page) {
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
-const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '部署转换', '部署产物']);
+const PAGE_EXTRAS_OWNERS = new Set(['训练任务', '训练资源', '质量中心', '部署转换', '部署产物']);
+
+function pageExtrasEnabled(page) {
+  return PAGE_EXTRAS_OWNERS.has(page)
+    && (page !== '质量中心' || state.qualityCenterTab411 === 'detect');
+}
 
 function adoptPageExtrasInflight(page, promise) {
-  if (!PAGE_EXTRAS_OWNERS.has(page) || !promise || typeof promise.then !== 'function') return null;
+  if (!pageExtrasEnabled(page) || !promise || typeof promise.then !== 'function') return null;
   if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
   const task = Promise.resolve(promise)
     .then(() => { pageExtrasLoadedAt.set(page, Date.now()); })
@@ -336,9 +341,8 @@ function adoptPageExtrasInflight(page, promise) {
 }
 
 function refreshPageExtrasInBackground(page, {force = false} = {}) {
-  if (!PAGE_EXTRAS_OWNERS.has(page) || typeof window.loadPageExtras413 !== 'function') return null;
-  const snapshotLoadedAt = Number(state.__coreSnapshotGeneratedAt || 0);
-  const loadedAt = Number(pageExtrasLoadedAt.get(page) || snapshotLoadedAt || 0);
+  if (!pageExtrasEnabled(page) || typeof window.loadPageExtras413 !== 'function') return null;
+  const loadedAt = Number(pageExtrasLoadedAt.get(page) || 0);
   const age = Date.now() - loadedAt;
   if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
   if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
@@ -354,6 +358,7 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
   pageExtrasInflight.set(page, task);
   return task;
 }
+window.PlatformCore.runtime.refreshPageExtras = refreshPageExtrasInBackground;
 
 const ALGORITHM_PAGE_ENTRY_REUSE_MS = 30 * 1000;
 
