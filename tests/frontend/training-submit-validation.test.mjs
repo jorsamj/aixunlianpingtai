@@ -196,6 +196,15 @@ test('algorithm card keeps training transition states active and empty confirmat
 });
 
 
+test('scheduler-owned cluster hides controller-local cuda choices and keeps safe isolation', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /schedulerOwned=target\?\.scheduler_owned===true/);
+  assert.match(source, /中央自动分配/);
+  assert.match(source, /单卡单任务安全隔离/);
+  assert.match(source, /不会把控制机本地 cuda:N 当作远端集群设备/);
+  assert.match(source, /existing\?\.dataset\?\.targetId===targetId/);
+});
+
 test('training form exposes bounded professional augmentation without fake GPU sharing', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /GPU 使用策略[\s\S]*自动隔离（推荐）[\s\S]*独占指定 GPU/);
