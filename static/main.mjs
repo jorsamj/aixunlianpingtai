@@ -346,7 +346,10 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
   const age = Date.now() - loadedAt;
   if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
   if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
-  const task = Promise.resolve(window.loadPageExtras413(page)).then(() => {
+  const loadTask = page === '训练资源' && trainingCreateHydrationRuntime?.hydrate
+    ? trainingCreateHydrationRuntime.hydrate({force})
+    : window.loadPageExtras413(page);
+  const task = Promise.resolve(loadTask).then(() => {
     pageExtrasLoadedAt.set(page, Date.now());
     if (state.page !== page) return;
     if (page === '训练资源' && window.patchTrainingResourceCardsV3?.()) return;
