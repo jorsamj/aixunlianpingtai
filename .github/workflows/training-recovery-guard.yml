@@ -18,6 +18,7 @@ on:
       - static/training-checkpoint-resume-bootstrap.mjs
       - static/modules/training-checkpoint-resume-ui.js
       - static/modules/training-recovery-runtime.js
+      - static/styles.css
       - static/modules/training-progress-stream.js
       - static/modules/training-task-runtime.js
       - static/main.mjs
@@ -81,6 +82,8 @@ jobs:
           grep -Fq 'recoveryRuntime?.hydrateJobs' static/modules/training-task-runtime.js
           grep -Fq 'installTrainingRecoveryRuntime' static/main.mjs
           grep -Fq "build: 'training-recovery-runtime-422506'" static/modules/training-recovery-runtime.js
+          grep -Fq 'Training task detail: single visual owner' static/styles.css
+          if grep -Fq 'function ensureStyles' static/modules/training-recovery-runtime.js; then echo 'Training detail CSS must stay in the global stylesheet, not a runtime style owner' >&2; exit 1; fi
           grep -Fq "window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});" static/modules/training-recovery-runtime.js
           grep -Fq 'window.PollRegistryRuntime?.startTimeout?.(' static/modules/training-recovery-runtime.js
           grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js

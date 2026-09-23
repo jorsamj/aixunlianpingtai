@@ -6987,7 +6987,7 @@ def list_jobs(project_id: str):
             worker_runtime=worker_runtime,
             queued_candidates=queued_candidates,
         )
-        if jf.exists(): write_json(jf,full)
+        # Read-side projection only; runtime truth is worker/task-runtime owned.
         out.append(full)
     return out
 
@@ -7115,7 +7115,7 @@ def job_status(project_id: str, job_id: str):
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
     job = enrich_job_runtime(project_id, job)
-    write_json(job_file, job)
+    # Detail refresh is read-only with respect to job.json.
     try: _v48_dispatch_training_queues(project_id)
     except Exception: pass
     sync_jobs_index(project_id)
@@ -7286,11 +7286,9 @@ def sync_jobs_index(project_id: str):
         if jf.exists():
             job = read_json(jf, {})
             job = enrich_job_runtime(project_id, job)
-            # 让列表状态和倒计时及时落盘，页面刷新/轮询都能看到最新状态。
-            try:
-                write_json(jf, job)
-            except Exception:
-                pass
+            # GET/list projection must never write back into worker-owned
+            # job.json. The worker publishes Batch/Epoch progress frequently;
+            # persisting an older read snapshot can clobber newer runtime truth.
             jobs.append(job)
     write_json(jobs_dir / "index.json", _training_job_index_rows(jobs))
 

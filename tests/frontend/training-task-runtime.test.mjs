@@ -1,3 +1,4 @@
+import {trainingApiErrorMessage} from '../../static/modules/training-task-runtime.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -763,3 +764,23 @@ test('page-owner refresh reuses a recent training snapshot and revalidates after
   Date.now = originalNow;
   cleanup();
 });
+
+test('training API error formatter keeps structured backend diagnostics', () => {
+  const message = trainingApiErrorMessage({
+    message: '训练启动失败',
+    detail: {
+      message: 'CUDA 资源不可用',
+      detail: 'cuda:1 显存不足',
+      solution: '等待空闲 GPU 后重试',
+      errors: [{message: '需要至少 4 GB 可用显存'}],
+    },
+  }, '操作失败', 409);
+
+  assert.match(message, /训练启动失败/);
+  assert.match(message, /CUDA 资源不可用/);
+  assert.match(message, /cuda:1 显存不足/);
+  assert.match(message, /至少 4 GB/);
+  assert.match(message, /建议：等待空闲 GPU 后重试/);
+  assert.doesNotMatch(message, /\[object Object\]/);
+});
+

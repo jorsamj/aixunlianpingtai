@@ -216,3 +216,76 @@ test('recover rechecks backend truth then posts checkpoint-only action and refre
   runtime.destroy();
   cleanup();
 });
+
+test('successful canonical task truth suppresses stale recoverable failure metadata', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-recovered-success',
+    status: 'failed',
+    task_status: 'SUCCEEDED',
+    persisted_status: 'SUCCEEDED',
+    message: '训练完成，模型产物校验通过',
+    progress_percent: 100,
+  }, {
+    available: true,
+    recoverable: true,
+    checkpoint_available: true,
+    recovery_action: 'revalidate_checkpoint',
+    failure_reason: '历史验证失败，不应覆盖成功终态',
+  });
+
+  assert.equal(model.statusKind, 'success');
+  assert.equal(model.recoverable, false);
+  assert.equal(model.failureReason, '');
+  assert.deepEqual(model.errors, []);
+  assert.equal(model.progressPercent, 100);
+});
+
+test('detail model exposes live metrics resources and dataset evidence', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-live-detail',
+    status: 'running',
+    task_status: 'RUNNING',
+    progress_percent: 46.5,
+    current_epoch: 4,
+    total_epochs: 10,
+    current_batch: 20,
+    total_batches: 100,
+    elapsed_seconds: 120,
+    eta_seconds: 180,
+    training_progress: {
+      epoch: 4,
+      total_epochs: 10,
+      current_batch: 20,
+      total_batches: 100,
+      elapsed_seconds: 120,
+      eta_seconds: 180,
+      images_per_second: 92.4,
+      metrics: {'metrics/map50(B)': 0.81, 'metrics/precision(B)': 0.78},
+      losses: {box_loss: 0.32},
+      learning_rates: {'lr/pg0': 0.001},
+    },
+    actual_device: 'cuda:1',
+    actual_train_params: {
+      batch: 48,
+      workers: 8,
+      cache: 'ram',
+      resource_profile: 'performance',
+      resource_strategy: 'auto',
+      gpu_policy: 'exclusive',
+      effective_precision: 'fp16',
+      imgsz: 640,
+      optimizer: 'AdamW',
+    },
+    dataset_counts: {train: 800, val: 100, test: 100},
+  }, {});
+
+  assert.equal(model.statusKind, 'active');
+  assert.equal(model.currentBatch, 20);
+  assert.equal(model.totalBatches, 100);
+  assert.equal(model.resourceProfileLabel, '性能优先');
+  assert.equal(model.batch, 48);
+  assert.equal(model.datasetCounts.train, 800);
+  assert.match(model.metricLine, /mAP50 0\.810/);
+  assert.match(model.metricLine, /92\.4 img\/s/);
+});
+

@@ -155,12 +155,38 @@ export function trainingStageView(job = {}) {
   return {stage, label, detail};
 }
 
+export function trainingApiErrorMessage(body = {}, fallback = '操作失败', status = null) {
+  const values = [];
+  const push = value => {
+    const text = String(value ?? '').trim();
+    if (text && text !== '[object Object]' && !values.includes(text)) values.push(text);
+  };
+  const detail = body && typeof body === 'object' ? body.detail : null;
+  push(body?.message);
+  push(body?.error);
+  if (detail && typeof detail === 'object') {
+    push(detail.message);
+    push(detail.detail);
+    push(detail.error);
+    for (const item of detail.errors || []) push(item?.message || item?.detail || item?.error || item);
+    if (detail.solution) push(`建议：${detail.solution}`);
+  } else {
+    push(detail);
+  }
+  for (const item of body?.errors || body?.failures || []) {
+    push(item?.message || item?.detail || item?.error || item);
+  }
+  if (body?.solution) push(`建议：${body.solution}`);
+  if (!values.length) push(status ? `${fallback}（HTTP ${status}）` : fallback);
+  return values.join('\n');
+}
+
 async function responseError(response, fallback = '操作失败') {
   if (response?.ok) return null;
   const raw = await response?.text?.() || '';
   let body = {};
   try { body = JSON.parse(raw); } catch (_) { body = {detail: raw}; }
-  return new Error(String(body.message || body.detail || `${fallback}（HTTP ${response?.status || '-'}）`));
+  return new Error(trainingApiErrorMessage(body, fallback, response?.status));
 }
 
 async function jsonResponse(response) {
