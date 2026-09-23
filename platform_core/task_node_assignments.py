@@ -274,7 +274,13 @@ def _gpu_rank_value(item: Mapping[str, Any]) -> float:
     return free - utilization_penalty
 
 
-def _score_node(row, capability: str, active: int) -> tuple[float, str]:
+def _score_node(
+    row,
+    capability: str,
+    active: int,
+    *,
+    selected_gpu: Mapping[str, Any] | None = None,
+) -> tuple[float, str]:
     resources = _loads(row["resource_json"], {})
     memory = resources.get("memory", {}) if isinstance(resources, Mapping) else {}
     disk = resources.get("disk", {}) if isinstance(resources, Mapping) else {}
@@ -285,7 +291,11 @@ def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     cores = float((cpu or {}).get("logical_cores") or 0)
     gpus = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
     gpus = [item for item in (gpus if isinstance(gpus, list) else []) if isinstance(item, Mapping)]
-    best_gpu_score = max((_gpu_rank_value(item) for item in gpus), default=0.0)
+    best_gpu_score = (
+        _gpu_rank_value(selected_gpu)
+        if isinstance(selected_gpu, Mapping)
+        else max((_gpu_rank_value(item) for item in gpus), default=0.0)
+    )
     # One active assignment is treated roughly like 10 GiB of GPU headroom.
     # This strongly favors idle nodes, but real free VRAM/utilization can still
     # win when an "idle" node is nearly full or otherwise unsuitable.
@@ -298,11 +308,42 @@ def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     return score, str(row["node_id"])
 
 
-def _selected_gpu(row) -> dict[str, Any] | None:
+_MIN_TRAINING_GPU_FREE_BYTES = 1024**3
+
+
+def _assigned_gpu_ids(database, node_id: str) -> set[str]:
+    rows = database.execute(
+        """
+        SELECT resolved_execution_config
+          FROM task_node_assignments
+         WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')
+        """,
+        (str(node_id),),
+    ).fetchall()
+    assigned: set[str] = set()
+    for assignment in rows:
+        resolved = _loads(assignment["resolved_execution_config"], {})
+        if not isinstance(resolved, Mapping):
+            continue
+        selected = resolved.get("selected_gpu")
+        selected = selected if isinstance(selected, Mapping) else {}
+        device = str(selected.get("id") or resolved.get("selected_device") or "").strip()
+        if device.startswith("cuda:"):
+            assigned.add(device)
+    return assigned
+
+
+def _selected_gpu(row, *, assigned_gpu_ids: set[str] | None = None) -> dict[str, Any] | None:
     resources = _loads(row["resource_json"], {})
     gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
     items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
-    items = [item for item in items or [] if isinstance(item, Mapping)]
+    assigned = set(assigned_gpu_ids or ())
+    items = [
+        item for item in items or []
+        if isinstance(item, Mapping)
+        and str(item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
+        and int(item.get("memory_free_bytes") or 0) >= _MIN_TRAINING_GPU_FREE_BYTES
+    ]
     if not items:
         return None
     best = max(items, key=_gpu_rank_value)
@@ -411,20 +452,36 @@ class CentralTaskAllocator:
                         "SELECT COUNT(*) FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
                         (str(node["node_id"]),),
                     ).fetchone()[0])
-                    score, node_id = _score_node(node, capability, active)
-                    ranked.append((score, node_id, node))
+                    selected_gpu = None
+                    if capability == "training":
+                        assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
+                        selected_gpu = _selected_gpu(node, assigned_gpu_ids=assigned_gpu_ids)
+                        # A central assignment is the reservation truth between
+                        # heartbeats. Do not hand the same physical GPU to a
+                        # second task while its prior assignment is active.
+                        if selected_gpu is None:
+                            continue
+                    score, node_id = _score_node(
+                        node,
+                        capability,
+                        active,
+                        selected_gpu=selected_gpu,
+                    )
+                    ranked.append((score, node_id, node, selected_gpu))
+                if not ranked:
+                    continue
                 ranked.sort(key=lambda item: (-item[0], item[1]))
-                selected = (task, capability, ranked[0][2], remote_contract)
+                selected = (task, capability, ranked[0][2], remote_contract, ranked[0][3])
                 break
             if selected is None:
                 database.commit()
                 return None
-            task, capability, node, remote_contract = selected
+            task, capability, node, remote_contract, preselected_gpu = selected
             generation = int(database.execute(
                 "SELECT COALESCE(MAX(generation),0)+1 FROM task_node_assignments WHERE task_id=?",
                 (task.task_id,),
             ).fetchone()[0])
-            gpu = _selected_gpu(node) if capability == "training" else None
+            gpu = preselected_gpu if capability == "training" else None
             resolved = {
                 "protocol": "agent-http-v1",
                 "node_id": str(node["node_id"]),
