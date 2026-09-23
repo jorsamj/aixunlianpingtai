@@ -24,12 +24,12 @@ def test_training_lineage_is_public_safe_and_derives_agent_node():
         requested_params={
             "epochs": 30, "batch": 4, "resource_strategy": "auto",
             "resource_profile": "performance", "gpu_policy": "exclusive",
-            "precision": "bf16", "time": 2.5, "unknown": "drop",
+            "precision": "fp16", "time": 2.5, "unknown": "drop",
         },
         actual_params={
             "epochs": 28, "batch": 4, "imgsz": 640,
             "resource_strategy": "auto", "resource_profile": "performance",
-            "gpu_policy": "exclusive", "precision": "bf16", "time": 2.5,
+            "gpu_policy": "exclusive", "precision": "fp16", "time": 2.5,
         },
         artifacts=[{
             "role": "best",
@@ -52,14 +52,14 @@ def test_training_lineage_is_public_safe_and_derives_agent_node():
         "batch": 4,
         "epochs": 30,
         "gpu_policy": "exclusive",
-        "precision": "bf16",
+        "precision": "fp16",
         "resource_profile": "performance",
         "resource_strategy": "auto",
         "time": 2.5,
     }
     assert lineage["parameters"]["actual"]["epochs"] == 28
     assert lineage["parameters"]["actual"]["resource_profile"] == "performance"
-    assert lineage["parameters"]["actual"]["precision"] == "bf16"
+    assert lineage["parameters"]["actual"]["precision"] == "fp16"
     assert lineage["parameters"]["actual"]["time"] == 2.5
 
 

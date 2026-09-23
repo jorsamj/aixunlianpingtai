@@ -9,6 +9,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from platform_core.training_precision import (
+    normalize_training_precision,
+    ultralytics_amp_value,
+    verify_effective_training_precision,
+)
+
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -814,13 +820,8 @@ def main():
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
-    precision = str(args.precision or "auto").strip().lower()
-    amp_value = (
-        as_bool(args.amp) if precision == "auto"
-        else "fp16" if precision == "fp16"
-        else "bf16" if precision == "bf16"
-        else False
-    )
+    precision = normalize_training_precision(args.precision)
+    amp_value = ultralytics_amp_value(precision, as_bool(args.amp))
 
     def recorded_train_params(values):
         return {
@@ -1006,7 +1007,16 @@ def main():
                 telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
-                evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))
+                effective_precision = verify_effective_training_precision(
+                    precision, getattr(trainer, "amp", False)
+                )
+                runtime_args["amp"] = bool(getattr(trainer, "amp", False))
+                runtime_args["effective_precision"] = effective_precision
+                evidence.update(
+                    runtime_device=str(trainer.device),
+                    effective_precision=effective_precision,
+                    effective_args=dict(runtime_args),
+                )
                 publish_startup_stage(
                     job_file,
                     "trainer_ready",

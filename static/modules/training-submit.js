@@ -3,6 +3,11 @@ function required(value, message) {
   return value;
 }
 
+export function normalizeTrainingPrecision(value) {
+  const precision = String(value || 'auto').trim().toLowerCase();
+  return ['auto', 'fp16', 'fp32'].includes(precision) ? precision : 'auto';
+}
+
 function integerParameter(value, fallback, label) {
   const raw = value === null || value === undefined || value === '' ? fallback : value;
   const parsed = Number(raw);
@@ -42,7 +47,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     include_empty: false,
     patience: config.patience ?? 100,
     time: config.time ?? null,
-    precision: config.precision || 'auto',
+    precision: normalizeTrainingPrecision(config.precision),
     workers: integerParameter(draft.resource?.workers ?? config.workers, 0, 'Workers'),
     optimizer: config.optimizer || 'auto',
     lr0: config.lr0 ?? .01,

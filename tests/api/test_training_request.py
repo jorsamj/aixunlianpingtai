@@ -29,6 +29,17 @@ def test_training_target_contract_rejects_invalid_metric_threshold_and_interval(
     assert valid.eval_interval == 10
 
 
+def test_training_precision_rejects_bf16_until_runtime_support_is_real():
+    import app as app_module
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException, match="暂不支持 BF16"):
+        app_module.validate_train_request(app_module.TrainReq(precision="bf16"))
+
+    for precision in ("auto", "fp16", "fp32"):
+        app_module.validate_train_request(app_module.TrainReq(precision=precision))
+
+
 def test_training_request_normalizes_legacy_boolean_cache_before_string_validation():
     import app as app_module
 

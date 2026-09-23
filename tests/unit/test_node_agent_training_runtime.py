@@ -419,7 +419,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "resource_strategy": "auto",
             "resource_profile": "performance",
             "gpu_policy": "exclusive",
-            "precision": "bf16",
+            "precision": "fp16",
             "time": 2.5,
             "runtime_stop_policy": "target_only",
         },
@@ -629,7 +629,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["runtime_stop_policy"] == "target_only"
     assert args["resource_profile"] == "performance"
     assert args["gpu_policy"] == "exclusive"
-    assert args["precision"] == "bf16"
+    assert args["precision"] == "fp16"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321
     assert args["concurrent_reservations"] == 2
@@ -664,6 +664,20 @@ def test_real_subprocess_remote_training_success(tmp_path):
         (heartbeat.get("stage") or "") == "first_batch"
         for heartbeat in client.heartbeats
     )
+
+
+def test_remote_training_rejects_bf16_before_starting_worker(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    current.payload["params"]["precision"] = "bf16"
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _workdirs = build_runner(tmp_path, client, transfer)
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "FAILED"
+    assert "TRAINING_PRECISION_UNSUPPORTED" in outcome.error
+    assert not (runtime_root / "started.marker").exists()
 
 
 def test_training_object_model_is_downloaded_before_worker(tmp_path):

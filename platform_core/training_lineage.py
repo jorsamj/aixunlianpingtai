@@ -9,7 +9,7 @@ TRAINING_LINEAGE_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PARAM_KEYS = {
     "epochs", "imgsz", "batch", "device", "patience", "workers", "optimizer",
-    "resource_strategy", "resource_profile", "gpu_policy", "precision", "time",
+    "resource_strategy", "resource_profile", "gpu_policy", "precision", "effective_precision", "time",
     "lr0", "lrf", "weight_decay", "close_mosaic", "mosaic", "cache",
     "single_cls", "pretrained", "rect", "amp", "cos_lr", "freeze",
     "momentum", "warmup_epochs", "save_period", "seed", "deterministic",

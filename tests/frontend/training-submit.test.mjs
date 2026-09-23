@@ -7,6 +7,7 @@ import {
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
   installTrainingSubmitRuntime,
+  normalizeTrainingPrecision,
   supplementCandidateContext,
   trainingSubmitReadiness,
   validateTrainingDevice,
@@ -21,7 +22,7 @@ function draft(overrides = {}) {
     validationPercent: 18,
     resource: {strategy: 'manual', profile: 'balanced', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
     config: {
-      model: 'custom.pt', epochs: 30, time: 2.5, imgsz: 640, precision: 'bf16', optimizer: 'auto',
+      model: 'custom.pt', epochs: 30, time: 2.5, imgsz: 640, precision: 'fp16', optimizer: 'auto',
       lr0: .01, lrf: .01, momentum: .937, weight_decay: .0005,
       warmup_epochs: 3, close_mosaic: 10, mosaic: 1, mixup: 0,
       hsv_h: .015, hsv_s: .7, hsv_v: .4, degrees: 0, translate: .1,
@@ -120,12 +121,20 @@ test('start payload is derived from canonical TrainingDraft instead of legacy id
   assert.equal(payload.resource_strategy, 'manual');
   assert.equal(payload.resource_profile, 'balanced');
   assert.equal(payload.gpu_policy, 'exclusive');
-  assert.equal(payload.precision, 'bf16');
+  assert.equal(payload.precision, 'fp16');
   assert.equal(payload.time, 2.5);
   assert.equal(payload.batch, 16);
   assert.equal(payload.workers, 4);
   assert.equal(payload.cache, 'False');
   assert.equal(payload.model, 'custom.pt');
+});
+
+test('retired BF16 draft precision migrates to auto instead of claiming unsupported runtime support', () => {
+  assert.equal(normalizeTrainingPrecision('bf16'), 'auto');
+  assert.equal(normalizeTrainingPrecision('FP16'), 'fp16');
+  const value = draft({config: {precision: 'bf16'}});
+  const parameters = buildTrainingEngineParameters({draft: value, target, algorithm});
+  assert.equal(parameters.precision, 'auto');
 });
 
 test('recommended mode preserves scheduler-owned auto device and adaptive profile', () => {

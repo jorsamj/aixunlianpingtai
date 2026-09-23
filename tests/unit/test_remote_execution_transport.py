@@ -1152,7 +1152,7 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         "resource_strategy": "auto",
         "resource_profile": "performance",
         "gpu_policy": "exclusive",
-        "precision": "bf16",
+        "precision": "fp16",
         "time": 2.5,
     })
     artifacts.atomic_write_json(task.task_id, "snapshot.json", {
@@ -1212,7 +1212,7 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
                 "resource_strategy": "auto",
                 "resource_profile": "performance",
                 "gpu_policy": "exclusive",
-                "precision": "bf16",
+                "precision": "fp16",
                 "time": 2.5,
             },
             "best_path": str(best),
@@ -1351,7 +1351,7 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
     assert version["training_lineage"]["parameters"]["requested"]["resource_profile"] == "performance"
-    assert version["training_lineage"]["parameters"]["requested"]["precision"] == "bf16"
+    assert version["training_lineage"]["parameters"]["requested"]["precision"] == "fp16"
     assert version["training_lineage"]["parameters"]["actual"]["batch"] == 12
     assert version["training_lineage"]["parameters"]["actual"]["gpu_policy"] == "exclusive"
     assert version["training_lineage"]["parameters"]["actual"]["time"] == 2.5

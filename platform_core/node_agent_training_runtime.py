@@ -42,6 +42,7 @@ from .task_runtime.process_control import (
     launch_process,
 )
 from .training_devices import normalize_training_device
+from .training_precision import TrainingPrecisionError, normalize_training_precision
 
 
 _TRANSFER_CHUNK_BYTES = 1024 * 1024
@@ -547,6 +548,12 @@ class AgentTrainingRunner:
             raise AgentTrainingRuntimeError(
                 "remote training GPU policy is unsupported; shared GPU remains disabled"
             )
+        try:
+            precision = normalize_training_precision(
+                self._parameter(payload, "precision", "auto")
+            )
+        except TrainingPrecisionError as error:
+            raise AgentTrainingRuntimeError(str(error)) from error
 
         project = (workdir / "project").resolve()
         job_dir = project / "jobs" / lease.task_id
@@ -657,6 +664,7 @@ class AgentTrainingRunner:
                 "assigned_device": selected_device,
                 "selected_gpu": gpu,
                 "gpu_policy": gpu_policy,
+                "precision": precision,
                 "concurrent_reservations": concurrent_reservations,
                 "runtime_stop_policy": runtime_stop_policy,
                 "quality_gate": {
@@ -723,7 +731,7 @@ class AgentTrainingRunner:
             "--gpu-policy",
             gpu_policy,
             "--precision",
-            str(self._parameter(payload, "precision", "auto") or "auto"),
+            precision,
             "--resource-context",
             str(resource_context_path),
             "--resource-resolution",

@@ -162,7 +162,7 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "resource_strategy": "auto",
         "resource_profile": "performance",
         "gpu_policy": "exclusive",
-        "precision": "bf16",
+        "precision": "fp16",
         "time": 2.5,
         "requested_device": "auto",
         "device": "auto",
@@ -261,7 +261,7 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["params"]["resource_strategy"] == "auto"
     assert training["params"]["resource_profile"] == "performance"
     assert training["params"]["gpu_policy"] == "exclusive"
-    assert training["params"]["precision"] == "bf16"
+    assert training["params"]["precision"] == "fp16"
     assert training["params"]["time"] == 2.5
     bundle = training["bundle"]
     assert bundle["storage_source_id"] == source.id

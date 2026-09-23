@@ -114,6 +114,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
+from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
 from platform_core.task_runtime import (
@@ -6094,6 +6095,13 @@ def validate_train_request(payload: TrainReq):
             status_code=400,
             detail="当前训练调度采用单卡单任务安全隔离，尚未启用 GPU 共享；请选择自动隔离或独占。",
         )
+    try:
+        normalize_training_precision(payload.precision)
+    except TrainingPrecisionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="当前训练运行时暂不支持 BF16；请选择自动（推荐）、FP16 或 FP32。",
+        ) from error
     if not (0 < float(payload.lr0) <= 1):
         raise HTTPException(status_code=400, detail="lr0 必须在 0~1 之间")
     if not (0 <= float(payload.lrf) <= 1):
