@@ -50,7 +50,7 @@ test('entry bundles advance cache-bust markers without changing the formal relea
   assert.equal(main.includes("./modules/model-artifact-runtime.js?v=65005"), true);
   assert.equal(main.includes("./modules/training-task-runtime.js?v=422560"), true);
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
-  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js?v=422560'), true);
+  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js?v=422561'), true);
   assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422214"), true);
   assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=422542'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
