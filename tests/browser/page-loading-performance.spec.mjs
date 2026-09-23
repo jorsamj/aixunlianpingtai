@@ -236,6 +236,7 @@ test('dashboard revisit reuses focused source and quality extras', async ({page}
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(() => window.setPage('工作台'));
+  await expect.poll(() => page.evaluate(() => state.page)).toBe('总览');
   await expect(page.locator('#title')).toContainText('总览');
   await expect.poll(() => [sourceGets, qualityGets]).toEqual([1, 1]);
   await expect(page.locator('[data-dashboard-source-count]')).toHaveText('1');

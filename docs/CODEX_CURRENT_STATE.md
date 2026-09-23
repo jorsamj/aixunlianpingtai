@@ -7,13 +7,16 @@
 >
 > 同轮 AI Candidate Review 失败经 isolated reproduce 确认不是 edits 丢失，而是后置 IIFE 无法访问私有 `displayLabel412`，只显示 raw label code。AI v60 标签展示点已路由到现有 `PlatformCore.materials.labelDisplay`。`static/app.js` 合计仅 7 行替换。
 >
-> **验证：** JS 语法检查通过；focused Playwright `2 passed`（remote cleaning progress、AI Candidate Review accept-all）。未跑 67 项 Frontend Runtime、全仓库测试、真实 GPU / OSS / ChangLian E2E，不得宣称全绿、正式可上线或生产验收完成。
+> “工作台 / 总览”已 isolated reproduce 并分类为 **compatibility alias 未归一**，不是 stale test：`NavigationStability` 原先保留旧请求值，`main.mjs` 也把“工作台”注册成 canonical dashboard owner，`renderTopCanonical413` 因直接显示 `state.page` 而泄漏旧 IA。当前唯一链路为 `normalizeNavigationPage('工作台') -> 总览`，`main.mjs` 安装最终 `window.setPage` 并只注册 `总览 -> renderDashboardCanonical422`；标题 owner 继续由 `renderTopCanonical413` 显示 canonical `state.page`。启动持久化迁移、最终导航菜单和 dashboard extras 守卫均统一为“总览”，没有第二 owner。
+> 现有浏览器 cache key 同步推进到 `app.js?v=42.25.215`、`main.mjs?v=42.25.211`、`navigation-stability.js?v=422517`；`VERSION.txt` 不变。
 >
-> **CLOSED：** `cleanTaskView427` ReferenceError；AI Candidate Review accept-all focused case。
+> **验证：** 前轮 JS 语法检查通过、focused Playwright `2 passed`（remote cleaning progress、AI Candidate Review accept-all）；本轮 `node --check` 对三个导航改动文件均通过，focused `dashboard revisit reuses focused source and quality extras` 为 `1 passed`，并确认旧 `setPage('工作台')` 后 `state.page === '总览'`。未跑 67 项 Frontend Runtime、全仓库测试、真实 GPU / OSS / ChangLian E2E，不得宣称全绿、正式可上线或生产验收完成。
+>
+> **CLOSED：** `cleanTaskView427` ReferenceError；AI Candidate Review accept-all focused case；“工作台”兼容 route 已归一到唯一 canonical “总览” owner。
 >
 > **STALE TEST / TEST DEBT：** 仍进入退役“测试发布”页面的算法版本发布浏览器测试；依赖退役“部署转换 / 部署中心”页面的 RKNN 旧 route 测试。测试应迁往受支持入口，底层版本发布与 RKNN 能力保留，不恢复旧产品 IA。
 >
-> **OPEN：** “工作台 / 总览”需按 alias / stale test / final navigation owner 单独判断；其余 broad 浏览器失败尚未逐条 focused 分类；Linux 真实 GPU / 正式模型推理 E2E；真实 OSS / 新畅联生产 E2E；Rockchip 真实板卡验收。当前没有其他已经 focused 确认且尚未修复的生产 bug。
+> **OPEN：** 其余 broad 浏览器失败尚未逐条 focused 分类；Linux 真实 GPU / 正式模型推理 E2E；真实 OSS / 新畅联生产 E2E；Rockchip 真实板卡验收。当前没有其他已经 focused 确认且尚未修复的生产 bug。
 >
 > **下一步：** 一次只复现一个失败；先判断 production bug、stale test、测试隔离或时序问题，再做最小修改。不得为了旧测试恢复“测试发布”“部署中心”或其他退役入口。
 >

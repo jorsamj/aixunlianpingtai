@@ -21,6 +21,7 @@ export class NavigationEpochGuard {
 
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
+  if (requested === '工作台') return '总览';
   if (requested === '自动标注') return '自动标注及清洗';
   if (requested === '测试发布' || requested === '检测台') return '质量中心';
   if (requested === '部署转换' || requested === '部署产物') return '算法列表';

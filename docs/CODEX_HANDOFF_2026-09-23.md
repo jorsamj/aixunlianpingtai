@@ -24,10 +24,21 @@
 >   2. AI Candidate Review accept-all。
 > - 本轮没有运行 67 项 Frontend Runtime、全仓库测试或真实 GPU / OSS / ChangLian E2E，因此不得写“全绿”“正式可上线”或“生产验收完成”。
 >
+> ### “工作台 / 总览”focused 判定与 owner 链路
+>
+> - 在 `7140da6b72cf1e585130d153a0a462feb1fd22e1` 上 isolated reproduce `page-loading-performance.spec.mjs` 的 `dashboard revisit reuses focused source and quality extras`，实际得到 `state.page = 工作台`、标题“工作台”，而正式产品 IA 要求“总览”。分类为 **compatibility alias 未归一**，不是 stale test。
+> - route normalization final owner 是 `static/modules/navigation-stability.js` 的 `normalizeNavigationPage`；旧 `工作台` 现在只归一为 canonical `总览`。
+> - page title final owner 是 `static/app.js` 的 `renderTopCanonical413`，它直接显示 canonical `state.page`；最终导航菜单也只展示“总览”。
+> - `static/main.mjs` 调用 `installNavigationStability` 安装最终 `window.setPage` wrapper；wrapper 先归一 route，再由 `performNavigation` 写入 `state.page` 并调用唯一 page owner。`main.mjs` 现在只注册 `总览 -> renderDashboardCanonical422`，没有建立第二 dashboard owner。
+> - 启动状态恢复把历史持久化值“工作台”迁移为“总览”；仪表盘异步 extras 的当前页守卫同步使用“总览”。
+> - 仅同步推进现有浏览器 cache key：`app.js?v=42.25.215`、`main.mjs?v=42.25.211`、`navigation-stability.js?v=422517`；没有修改 `VERSION.txt`。
+> - focused Playwright 同一失败单例已变为 `1 passed`；新增断言确认 `setPage('工作台')` 后 `state.page === '总览'`。`node --check` 对 `static/app.js`、`static/main.mjs`、`static/modules/navigation-stability.js` 均通过。
+>
 > ### CLOSED
 >
 > - `cleanTaskView427` ReferenceError 已按 final owner 修复。
 > - AI Candidate Review accept-all focused case 已通过，跨页 edits、坐标修改、label mapping 与 accept-all decisions 在该单例中保持有效。
+> - “工作台”兼容 route 已归一到唯一 canonical “总览” owner；正式标题和一级页面保持“总览”。
 >
 > ### STALE TEST / TEST DEBT
 >
@@ -37,7 +48,6 @@
 > ### OPEN
 >
 > - 暂无除上述已修项目之外、已经 focused 独立确认且尚未修复的生产 bug；其余浏览器红灯必须逐条单独复现后再分类。
-> - “工作台 / 总览”标题与 route 仍需按 alias、stale test 和 final navigation owner 单独判断；不允许为测试恢复旧产品入口。
 > - broad Frontend Runtime 中出现过的其他浏览器回归尚未逐条 focused 确认，当前只能列为待分类，不能直接当生产 bug，也不能包装成 CLOSED。
 > - Linux 真实 GPU / 正式模型推理 E2E 仍未完成。
 > - 真实 OSS 长期 URL 与新畅联 Version / Weight 创建、反查、删除、回退及超时幂等生产 E2E 仍未完成。
@@ -46,8 +56,7 @@
 > ### 下一步最小动作
 >
 > 1. 每次只 isolated reproduce 一个浏览器失败，先判断 production bug / stale test / 测试隔离 / 时序问题。
-> 2. 优先完成“工作台 / 总览”final navigation owner 判定，再处理其他尚未确认的浏览器回归。
-> 3. Linux 预部署阶段只做真实 GPU、正式模型、OSS 与新畅联生产合同验证；不恢复退役产品 IA。
+> 2. Linux 预部署阶段只做真实 GPU、正式模型、OSS 与新畅联生产合同验证；不恢复退役产品 IA。
 >
 > ## 2026-09-23 10:xx Codex 接手最终刷新（最高优先级覆盖）
 >

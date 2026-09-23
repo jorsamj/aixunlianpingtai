@@ -4,7 +4,7 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422516';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422517';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
@@ -422,7 +422,7 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 // renderers remain compatibility entry points, but navigation no longer walks
 // through the chained render() override stack.
 const canonicalWindowPageRenderers = new Map([
-  ['工作台', 'renderDashboardCanonical422'],
+  ['总览', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
   ['素材接入', 'renderSources422'],
   ['标签管理', 'renderLabelManagement414'],

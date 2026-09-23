@@ -2336,7 +2336,7 @@ window.installUsability417=function(){
     return task;
   }
   function patchDashboardExtras422(){
-    if(state.page!=='工作台')return false;
+    if(state.page!=='总览')return false;
     const d=dashboardData422(),sources=state.v42?.sources||[],sourceCount=sources.length,autoSource=sources.filter(x=>x.collect_mode==='auto').length;
     const set=(selector,value)=>{const node=document.querySelector(selector);if(node)node.textContent=String(value??'')};
     set('[data-dashboard-source-summary]',`${sourceCount} 个素材源 · ${autoSource} 个自动`);
@@ -4016,7 +4016,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 /* v42.13 startup prepared snapshot */
 (()=>{
  const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
- const RESTORABLE_PAGES413=new Set(['工作台','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','训练资源','组件检测','存储配置','平台对接','服务节点']);
+ const RESTORABLE_PAGES413=new Set(['总览','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','训练资源','组件检测','存储配置','平台对接','服务节点']);
  window.PlatformCore=window.PlatformCore||{};
  window.PlatformCore.navigation=window.PlatformCore.navigation||{};
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
@@ -4024,11 +4024,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  function paintBoot(view,st){if(!view)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(['部署资源','部署插件'].includes(rawPage))restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(['部署资源','部署插件'].includes(rawPage))restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});await waitReady();const s=await api('/api/v53/bootstrap/snapshot');apply(s);return s};
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
-  '工作台':'总览','质量中心':'总览',
+  '总览':'总览','质量中心':'总览',
   '算法列表':'算法生成','训练任务':'算法生成','训练资源':'算法生成',
   '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
   '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
@@ -4113,10 +4113,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.refreshLabels414=refreshLabels414;
 
   // ---------- visible configuration center: label schema ----------
-  const icon414={工作台:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',存储配置:'▣',组件检测:'⌁',平台对接:'↔',服务节点:'◫'};
+  const icon414={总览:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',存储配置:'▣',组件检测:'⌁',平台对接:'↔',服务节点:'◫'};
   renderNav=function(){
     const groups=[
-      {title:'总览',items:['工作台','质量中心']},
+      {title:'总览',items:['总览','质量中心']},
       {title:'算法生成',items:['算法列表','训练任务','训练资源']},
       {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗','标签管理']},
     ];

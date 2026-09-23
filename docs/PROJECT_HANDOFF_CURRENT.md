@@ -9,11 +9,14 @@
 >
 > **Focused evidence：** JS 语法检查通过；Playwright `2 passed`：remote cleaning progress、AI Candidate Review accept-all。没有运行 67 项 Frontend Runtime 或更大测试范围，不能宣称全绿、正式可上线或生产验收完成。
 >
-> **CLOSED：** `cleanTaskView427` ReferenceError；AI Candidate Review accept-all focused case。
+> “工作台 / 总览”后续已 isolated reproduce 为 **compatibility alias 未归一**，不是 stale test。final owner 链路为：`static/modules/navigation-stability.js::normalizeNavigationPage` 将旧“工作台”归一到“总览” → `static/main.mjs` 安装最终 `window.setPage` 并只注册 `总览 -> renderDashboardCanonical422` → `static/app.js::renderTopCanonical413` 显示 canonical `state.page`。最终菜单、持久化恢复和 dashboard extras 守卫均统一到“总览”，没有恢复“工作台”正式入口，也没有第二 dashboard owner。对应 `page-loading-performance.spec.mjs` focused case `1 passed`，三个导航改动文件的 JS 语法检查通过。
+> 现有浏览器 cache key 同步推进到 `app.js?v=42.25.215`、`main.mjs?v=42.25.211`、`navigation-stability.js?v=422517`；`VERSION.txt` 不变。
+>
+> **CLOSED：** `cleanTaskView427` ReferenceError；AI Candidate Review accept-all focused case；“工作台”兼容 route 已归一到唯一 canonical “总览” owner。
 >
 > **STALE TEST / TEST DEBT：** 算法版本发布测试仍依赖退役“测试发布”页面；旧 RKNN 页面测试仍依赖退役“部署转换 / 部署中心”route。迁移测试，不恢复旧 IA；底层版本发布和 RKNN 转换 / 板端验证能力继续保留。
 >
-> **OPEN：** “工作台 / 总览”按 alias / stale test / final navigation owner 继续判定；其他 broad 浏览器红灯尚未 focused 分类；Linux 真实 GPU / 正式模型推理 E2E；真实 OSS / 新畅联生产 E2E；Rockchip 实板验收。当前没有其他已 focused 确认且仍未修复的生产 bug。
+> **OPEN：** 其他 broad 浏览器红灯尚未 focused 分类；Linux 真实 GPU / 正式模型推理 E2E；真实 OSS / 新畅联生产 E2E；Rockchip 实板验收。当前没有其他已 focused 确认且仍未修复的生产 bug。
 >
 > **下一步最小动作：** 每次 isolated reproduce 一个失败并分类；不为测试恢复退役入口。随后进入 Linux 真实 GPU、正式模型、OSS 与新畅联合同验证。
 >
