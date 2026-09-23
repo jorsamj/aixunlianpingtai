@@ -410,15 +410,17 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
     window.AlgorithmListRuntime?.runDecorators?.();
   }, {algorithmId});
 
-  const sourceFilter = page.locator('[data-algorithm-source-filter]');
-  const trainingStatusFilter = page.locator('[data-algorithm-training-status-filter]');
-  const categoryBar = page.locator('[data-external-category-filter]');
+  const listOwner = page.locator('[data-algorithm-list-owner="AlgorithmListRuntime"]');
+  const sourceFilter = listOwner.locator('[data-algorithm-source-filter]');
+  const trainingStatusFilter = listOwner.locator('[data-algorithm-training-status-filter]');
+  const categoryToggle = listOwner.locator('[data-category-picker-toggle]');
+  const categoryPopover = listOwner.locator('[data-category-popover]');
   await expect(sourceFilter).toBeVisible();
   await expect(trainingStatusFilter).toBeVisible();
-  await expect(categoryBar.getByRole('button', {name: /品目筛选/})).toBeVisible();
-  await categoryBar.getByRole('button', {name: /品目筛选/}).click();
-  await expect(categoryBar.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
-  await expect(categoryBar.getByRole('button', {name: '行为分析', exact: true})).toBeVisible();
+  await expect(categoryToggle).toBeVisible();
+  await categoryToggle.click();
+  await expect(categoryPopover.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
+  await expect(categoryPopover.getByText('行为分析', {exact: true})).toBeVisible();
   await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
   await expect(page.getByRole('button', {name: '↻ 同步畅联云'})).toBeVisible();
 
@@ -428,7 +430,8 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(card).toBeHidden();
   await sourceFilter.selectOption('external');
   await expect(card).toBeVisible();
-  await categoryBar.getByRole('button', {name: '行为分析', exact: true}).click();
+  await categoryPopover.locator('[data-category-check="c1"]').check();
+  await categoryPopover.locator('[data-category-confirm]').click();
   await expect(card).toBeVisible();
   await trainingStatusFilter.selectOption('blocked');
   await expect(card).toBeVisible();
