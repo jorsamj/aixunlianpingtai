@@ -240,7 +240,7 @@ test('cleaning detail progress stays in-place and hands off to review without ra
     current_item:'image-57',
   };
 
-  await expect(dialog.locator('[data-clean-progress-percent]'),{timeout:5000}).toHaveText('57.0%');
+  await expect(dialog.locator('[data-clean-progress-percent]')).toHaveText('57.0%',{timeout:5000});
   await expect(dialog.locator('[data-clean-progress-counts]')).toHaveText('57/100');
   await expect(dialog.locator('[data-clean-progress-flagged]')).toHaveText('9');
   expect(await page.evaluate(() => ({
@@ -257,7 +257,7 @@ test('cleaning detail progress stays in-place and hands off to review without ra
   };
 
   const review = page.getByRole('dialog',{name:'清洗任务详情'});
-  await expect(review,{timeout:5000}).toBeVisible();
+  await expect(review).toBeVisible({timeout:5000});
   await expect(review.getByRole('button',{name:'确认清洗结果'})).toBeVisible();
   await expect.poll(async () => page.evaluate(() =>
     window.PollRegistryRuntime?.snapshot?.().some(entry => entry.key === 'clean-task-progress:clean-modal-1') || false
