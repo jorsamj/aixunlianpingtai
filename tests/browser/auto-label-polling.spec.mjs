@@ -124,7 +124,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   const pixel='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="80"%3E%3Crect width="100" height="80" fill="%23ddd"/%3E%3C/svg%3E';
   const sourceLabels=['toukui1','toukui2','smoke_old'];
-  const items=Array.from({length:30},(_,index)=>{
+  const items=Array.from({length:54},(_,index)=>{
     const label=sourceLabels[index%sourceLabels.length];
     return {
       image_id:`candidate-${index+1}`,
@@ -151,6 +151,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   }));
 
   let decisionsBody=null;
+  let candidateRace=false;
   await page.route(`**/api/v60/projects/${encoded}/annotation-tasks?limit=50`, async route => {
     await route.fulfill({
       status:200,
@@ -162,10 +163,10 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
         phase:'AWAITING_CONFIRMATION',
         requested_labels:sourceLabels,
         progress:100,
-        completed_count:30,
-        total_count:30,
+        completed_count:54,
+        total_count:54,
         failed_count:0,
-        summary:{total:30,completed:30,failed:0,boxes:30},
+        summary:{total:54,completed:54,failed:0,boxes:54},
         created_at:'2026-09-23T00:00:00Z',
         updated_at:'2026-09-23T00:01:00Z',
       }]}),
@@ -175,6 +176,8 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
     const url=new URL(route.request().url());
     const cursor=Number(url.searchParams.get('cursor')||0);
     const limit=Number(url.searchParams.get('limit')||24);
+    if(candidateRace&&cursor===0)await new Promise(resolve=>setTimeout(resolve,260));
+    if(candidateRace&&cursor===48)await new Promise(resolve=>setTimeout(resolve,20));
     await route.fulfill({
       status:200,
       contentType:'application/json',
@@ -263,12 +266,12 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(review).toBeVisible();
 
   await review.locator('#ai60ReviewPager').getByRole('button',{name:'下一页'}).click();
-  await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(6);
-  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–30 / 30 张');
+  await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–48 / 54 张');
   await expect(review.locator('#ai60ReviewSummary')).toContainText('已人工修改 24 张');
   await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
-  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 30 张');
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 54 张');
   const firstAfterPaging=review.locator('#ai60ReviewGrid .review427-card').first();
   await expect(firstAfterPaging).toContainText('安全帽');
   await firstAfterPaging.getByRole('button',{name:'编辑候选框'}).click();
@@ -279,6 +282,23 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await editorAfterPaging.getByRole('button',{name:'取消'}).click();
   await expect(editorAfterPaging).toBeHidden();
   await expect(review).toBeVisible();
+
+  await review.locator('#ai60ReviewPager').getByRole('button',{name:'下一页'}).click();
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–48 / 54 张');
+  candidateRace=true;
+  await page.evaluate(() => {
+    void window.aiReviewPage60(-1);
+    void window.aiReviewPage60(1);
+  });
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 49–54 / 54 张',{timeout:5000});
+  await page.waitForTimeout(320);
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 49–54 / 54 张');
+  candidateRace=false;
+
+  await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–48 / 54 张');
+  await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
+  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 54 张');
 
   await review.getByRole('button',{name:'全部接受'}).click();
   await expect.poll(()=>decisionsBody,{timeout:5000}).not.toBeNull();
