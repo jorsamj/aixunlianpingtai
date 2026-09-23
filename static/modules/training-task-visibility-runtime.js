@@ -286,6 +286,9 @@ export function installTrainingTaskVisibilityRuntime({
         <button type="button" class="btn primary" data-training-query-apply>查询</button><button type="button" class="btn" data-training-query-reset>重置</button><button type="button" class="btn" data-training-batch-toggle>批量操作</button>
       </div><div class="train428-batchbar" data-training-batchbar hidden>
           <span data-training-batch-count>已选 0 项</span>
+          <button type="button" class="btn mini" data-training-batch-select-action="all-visible">全选当前页</button>
+          <button type="button" class="btn mini" data-training-batch-select-action="deletable-visible">仅选可删除</button>
+          <button type="button" class="btn mini" data-training-batch-select-action="clear">清空选择</button>
           <button type="button" class="btn mini" data-training-batch-action="pause">暂停</button>
           <button type="button" class="btn mini" data-training-batch-action="resume">继续</button>
           <button type="button" class="btn mini danger" data-training-batch-action="stop">停止</button>
@@ -405,6 +408,25 @@ export function installTrainingTaskVisibilityRuntime({
       if (toggle) {
         batchMode = !batchMode;
         if (!batchMode) selectedIds.clear();
+        renderOwned();
+        return;
+      }
+      const selectionButton = event.target.closest?.('[data-training-batch-select-action]');
+      if (selectionButton) {
+        const action = String(selectionButton.dataset.trainingBatchSelectAction || '');
+        const filtered = filterTrainingTaskJobs(Array.isArray(state().jobs) ? state().jobs : [], taskView);
+        const start = (Math.max(1, taskView.page) - 1) * taskView.pageSize;
+        const visible = filtered.slice(start, start + taskView.pageSize);
+        if (action === 'clear') selectedIds.clear();
+        else {
+          for (const job of visible) {
+            const id = String(job?.id || job?.task_id || '');
+            if (!id) continue;
+            if (action === 'all-visible' || (action === 'deletable-visible' && trainingBatchActionEligible(job, 'delete'))) {
+              selectedIds.add(id);
+            }
+          }
+        }
         renderOwned();
         return;
       }
