@@ -286,7 +286,10 @@ def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     gpus = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
     gpus = [item for item in (gpus if isinstance(gpus, list) else []) if isinstance(item, Mapping)]
     best_gpu_score = max((_gpu_rank_value(item) for item in gpus), default=0.0)
-    penalty = float(active) * 1e18
+    # One active assignment is treated roughly like 10 GiB of GPU headroom.
+    # This strongly favors idle nodes, but real free VRAM/utilization can still
+    # win when an "idle" node is nearly full or otherwise unsuitable.
+    penalty = float(active) * 10.0 * 1024**3 * 1000.0
     score = (
         best_gpu_score * 1000.0 + memory_free * 10.0 + cores * 1e9 - penalty
         if capability == "training"
@@ -388,6 +391,20 @@ class CentralTaskAllocator:
                 )
                 if not nodes:
                     continue
+                if capability == "training":
+                    gpu_nodes = []
+                    for candidate in nodes:
+                        resources = _loads(candidate["resource_json"], {})
+                        gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
+                        items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
+                        if any(
+                            isinstance(item, Mapping)
+                            and int(item.get("memory_total_bytes") or 0) > 0
+                            for item in (items if isinstance(items, list) else [])
+                        ):
+                            gpu_nodes.append(candidate)
+                    if gpu_nodes:
+                        nodes = gpu_nodes
                 ranked = []
                 for node in nodes:
                     active = int(database.execute(
