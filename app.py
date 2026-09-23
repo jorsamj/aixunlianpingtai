@@ -5655,7 +5655,78 @@ def training_options(project_id: Optional[str] = None):
             "base_models": weights,
             "scan": {"ok": scan.get("ok"), "total": scan.get("total", 0), "families": scan.get("families", {}), "error": scan.get("error", "")},
         })
-    # 远程训练服务器
+    # 推荐远程训练入口：不绑定具体服务器。只在“在线 training Agent +
+    # 可移植对象存储”同时满足时暴露为 ready，避免用户先选机器再让调度器
+    # 二次改派。中央 allocator 最终拥有节点/GPU 选择权。
+    try:
+        training_agents = [
+            node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+            if str(node.get("connection_mode") or "").strip().lower() == "agent"
+            and bool(node.get("online"))
+            and "training" in set(node.get("effective_capabilities") or [])
+        ]
+    except Exception:
+        training_agents = []
+    portable_training_storage = False
+    try:
+        artifact_service = ModelArtifactService(
+            data_dir=DATA_DIR,
+            project_dir=project_dir,
+            algorithms_file=algorithms_file,
+            storage_sources_factory=storage_source_repository,
+            storage_credentials_factory=storage_credentials,
+        )
+        artifact_config = artifact_service.repository.config()
+        artifact_source_id = str(artifact_config.get("storage_source_id") or "").strip()
+        artifact_source = storage_source_repository().get(artifact_source_id) if artifact_source_id else None
+        portable_training_storage = bool(
+            artifact_source
+            and artifact_source.enabled
+            and StorageType.parse(artifact_source.type) in {StorageType.OSS, StorageType.S3}
+        )
+    except Exception:
+        portable_training_storage = False
+
+    if training_agents and portable_training_storage:
+        scheduler_algs = [
+            dict(item)
+            for item in TRAINING_CATALOG["algorithms"]
+            if str(item.get("framework") or "").lower() == "ultralytics"
+        ]
+        scheduler_models = []
+        seen_scheduler_models = set()
+        for item in scheduler_algs:
+            reference = str(item.get("base_model") or "").strip()
+            if not reference or reference in seen_scheduler_models:
+                continue
+            seen_scheduler_models.add(reference)
+            scheduler_models.append({
+                "label": reference,
+                "value": reference,
+                "framework": "ultralytics",
+                "source": "official",
+                "model_status": "DOWNLOADABLE",
+                "downloadable": True,
+            })
+        options.insert(0, {
+            "id": "cluster_scheduler",
+            "server_id": "",
+            "name": f"GPU 集群自动调度（推荐） · {len(training_agents)} 节点在线",
+            "type": "server",
+            "framework": "ultralytics",
+            "status": "ready",
+            "scheduler_owned": True,
+            "online_training_nodes": len(training_agents),
+            "algorithms": scheduler_algs,
+            "base_models": scheduler_models,
+            "recommendation": {
+                "device": "auto",
+                "resource_strategy": "auto",
+                "resource_profile": "balanced",
+            },
+        })
+
+    # 旧远程训练服务器入口继续保留作兼容；正式执行仍由中央调度器拥有节点分配权。
     for s in read_json(SERVERS_FILE, []):
         caps = _remote_capabilities(s)
         options.append({
