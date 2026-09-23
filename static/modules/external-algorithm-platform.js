@@ -389,6 +389,8 @@ export function installExternalAlgorithmPlatformRuntime({
   let readiness = null;
   let connectionTest = null;
   let configEditing = false;
+  let activeTab = String(state().externalPlatformTab64 || 'overview');
+  if (!['overview', 'connection', 'sync', 'vendor', 'api', 'history'].includes(activeTab)) activeTab = 'overview';
   let trainingAnalysisObserver = null;
   const trainingPreflightCache = new Map();
 
@@ -648,13 +650,19 @@ export function installExternalAlgorithmPlatformRuntime({
       : connectionTest ? '连接异常' : savedConnectionReady ? '待测试' : '待配置';
     const syncStatus = syncSucceeded ? '主数据已同步' : last?.status === 'failed' ? '同步异常' : '尚未同步';
     const savedStatus = configSaved ? `已保存 · ${timeText(c.updatedAt)}` : '尚未保存';
-    return `<section class="label414-shell external-platform-shell" data-external-platform-page="1">
-      <section class="external-platform-hero">
+    const providerText = external ? '新畅联' : '本平台';
+    const tab = key => activeTab === key ? ' active' : '';
+    const tabButton = (key, label, meta = '') => `<button type="button" class="external-platform-tab${tab(key)}" data-external-platform-tab="${key}"><span>${label}</span>${meta ? `<em>${meta}</em>` : ''}</button>`;
+    return `<section class="label414-shell external-platform-shell external-platform-shell-v2" data-external-platform-page="1" data-active-tab="${escapeHtml(activeTab)}">
+      <section class="external-platform-hero external-platform-hero-v2">
         <div class="external-platform-hero-main">
-          <div>
-            <div class="external-platform-eyebrow">算法主数据对接</div>
-            <h2>平台对接</h2>
-            <p>配置保存成功后会自动锁定并持续使用；需要更换地址或凭据时，必须先点击“编辑配置”。</p>
+          <div class="external-platform-provider">
+            <div class="external-platform-provider-mark">CL</div>
+            <div>
+              <div class="external-platform-eyebrow">EXTERNAL PLATFORM INTEGRATION</div>
+              <h2>新畅联平台对接</h2>
+              <p>连接、同步、厂商映射和版本权重发布统一在这里管理。常用操作前置，接口细节与诊断信息收进独立切页。</p>
+            </div>
           </div>
           <div class="external-platform-actions">
             <button class="btn" id="externalPlatformTest">测试连接</button>
@@ -662,50 +670,95 @@ export function installExternalAlgorithmPlatformRuntime({
             <button class="btn green" id="externalPlatformSync" ${savedConnectionReady ? '' : 'disabled'} title="${savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">↻ 立即同步</button>
           </div>
         </div>
-        <div class="external-platform-status">
-          <span><i class="external-status-dot ${configSaved ? 'ok' : 'warn'}"></i><b>配置状态</b><em>${escapeHtml(savedStatus)}</em></span>
-          <span><i class="external-status-dot ${external ? 'ok' : ''}"></i><b>数据来源</b><em>${sourceStatus}</em></span>
-          <span><i class="external-status-dot ${connectionTest?.ok === true ? 'ok' : connectionTest ? 'err' : savedConnectionReady ? 'warn' : ''}"></i><b>应用连接</b><em>${connectionStatus}</em></span>
-          <span><i class="external-status-dot ${syncSucceeded ? 'ok' : last?.status === 'failed' ? 'err' : ''}"></i><b>主数据</b><em>${syncStatus}</em></span>
+        <div class="external-platform-status external-platform-status-v2">
+          <span><i class="external-status-dot ${configSaved ? 'ok' : 'warn'}"></i><b>配置</b><em>${escapeHtml(savedStatus)}</em></span>
+          <span><i class="external-status-dot ${external ? 'ok' : ''}"></i><b>当前来源</b><em>${escapeHtml(providerText)}</em></span>
+          <span><i class="external-status-dot ${connectionTest?.ok === true ? 'ok' : connectionTest ? 'err' : savedConnectionReady ? 'warn' : ''}"></i><b>连接</b><em>${escapeHtml(connectionStatus)}</em></span>
+          <span><i class="external-status-dot ${syncSucceeded ? 'ok' : last?.status === 'failed' ? 'err' : ''}"></i><b>主数据</b><em>${escapeHtml(syncStatus)}</em></span>
         </div>
       </section>
 
-      <div class="external-platform-steps" aria-label="新畅联对接流程">
-        <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存配置</b><span>API 地址、AccessKey、AccessSecret</span></div></div>
-        <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>验证当前连接是否可用</span></div></div>
-        <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>品目、算法产品、分析方式、算力环境</span></div></div>
-      </div>
+      <nav class="external-platform-tabs" aria-label="平台对接页面切换">
+        ${tabButton('overview', '概览')}
+        ${tabButton('connection', '连接配置')}
+        ${tabButton('sync', '数据同步', String(Number(cache.product_count || 0)))}
+        ${tabButton('vendor', '厂商对应表', String(Number(cache.compute_platform_count || 0)))}
+        ${tabButton('api', '接口契约')}
+        ${tabButton('history', '同步记录')}
+      </nav>
 
-      <section class="panel external-platform-config">
-        <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">${configLocked ? '当前配置已锁定；点击“编辑配置”后才能修改。' : '先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。'}</div></div></div>
+      <section class="external-platform-overview" data-platform-tab-panel="overview">
+        <div class="external-overview-grid">
+          <article class="external-overview-card external-overview-card-primary">
+            <div class="external-overview-card-head"><span class="external-overview-icon">↔</span><span class="pill ${savedConnectionReady ? 'ok' : 'warn'}">${savedConnectionReady ? '已连接' : '待配置'}</span></div>
+            <b>平台连接</b>
+            <strong>${escapeHtml(sourceStatus)}</strong>
+            <small>${escapeHtml(c.baseUrl || '尚未配置 API 服务地址')}</small>
+          </article>
+          <article class="external-overview-card">
+            <div class="external-overview-card-head"><span class="external-overview-icon">◎</span><span>${Number(cache.compute_platform_count || 0)}</span></div>
+            <b>畅联云算力环境</b>
+            <strong>${Number(cache.compute_platform_count || 0)} 个</strong>
+            <small>供“厂商对应表”选择与映射</small>
+          </article>
+          <article class="external-overview-card">
+            <div class="external-overview-card-head"><span class="external-overview-icon">◆</span><span>${Number(cache.product_count || 0)}</span></div>
+            <b>算法产品</b>
+            <strong>${Number(cache.product_count || 0)} 个</strong>
+            <small>视觉分析方式 ${Number(cache.analysis_count || 0)} 个</small>
+          </article>
+          <article class="external-overview-card">
+            <div class="external-overview-card-head"><span class="external-overview-icon">↻</span><span class="pill ${syncSucceeded ? 'ok' : last?.status === 'failed' ? 'err' : 'warn'}">${escapeHtml(syncStatusText(last?.status))}</span></div>
+            <b>最近同步</b>
+            <strong>${escapeHtml(timeText(last?.finished_at || last?.started_at))}</strong>
+            <small>${escapeHtml(syncCountsText(last) || '等待首次主数据同步')}</small>
+          </article>
+        </div>
+
+        <div class="external-platform-steps" aria-label="新畅联对接流程">
+          <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存连接配置</b><span>API 地址与应用凭据</span></div></div>
+          <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>验证连接</b><span>确认鉴权与只读接口</span></div></div>
+          <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>产品、分析方式、算力环境</span></div></div>
+          <div class="external-step ${syncSucceeded ? 'current' : ''}"><i>4</i><div><b>配置厂商对应</b><span>通用与转换厂商映射</span></div></div>
+        </div>
+      </section>
+
+      <section class="panel external-platform-config" data-platform-tab-panel="connection">
+        <div class="panel-head"><div><div class="panel-title">连接配置</div><div class="subline">${configLocked ? '当前配置已锁定；点击“编辑配置”后才能修改。' : '先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。'}</div></div></div>
         <div class="panel-body">
-          <div class="form two">
-            <div class="field full">
-              <label>算法数据来源</label>
-              <div class="row">
-                <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'} ${formDisabled}> 本平台管理</label>
-                <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''} ${formDisabled}> 外部平台</label>
-              </div>
-            </div>
-            <div class="field"><label>外部平台</label><select id="externalProvider" class="select" ${formDisabled}><option value="changlian">新畅联</option></select></div>
-            <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com" ${formDisabled}></div>
-            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialDisabled} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
-            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialDisabled} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，编辑时留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialDisabled}>显示</button></div></div>
-            <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
-            <div class="field full">
-              <details data-external-sync-settings="1">
-                <summary>同步设置</summary>
-                <div style="margin-top:12px" class="external-sync-policy">
-                  <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台固定每 60 秒主动拉取一次主数据。</span></div>
-                  <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
+          <div class="external-config-layout">
+            <div class="form two external-config-form">
+              <div class="field full">
+                <label>算法数据来源</label>
+                <div class="external-source-choice">
+                  <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'} ${formDisabled}> 本平台管理</label>
+                  <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''} ${formDisabled}> 外部平台</label>
                 </div>
-              </details>
+              </div>
+              <div class="field"><label>外部平台</label><select id="externalProvider" class="select" ${formDisabled}><option value="changlian">新畅联</option></select></div>
+              <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com" ${formDisabled}></div>
+              <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialDisabled} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
+              <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialDisabled} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，编辑时留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialDisabled}>显示</button></div></div>
+              <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。 ${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
             </div>
+            <aside class="external-config-aside">
+              <div><span>连接方式</span><b>${escapeHtml(sourceStatus)}</b></div>
+              <div><span>凭据状态</span><b>${escapeHtml(credential.configured ? '已安全保存' : '未配置')}</b></div>
+              <div><span>自动同步</span><b>每 60 秒</b></div>
+              <div><span>训练成果发布</span><b>后台自动执行</b></div>
+            </aside>
           </div>
+          <details data-external-sync-settings="1" class="external-sync-details">
+            <summary>同步策略说明</summary>
+            <div class="external-sync-policy">
+              <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台固定每 60 秒主动拉取一次主数据。</span></div>
+              <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
+            </div>
+          </details>
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-platform-tab-panel="connection">
         <div class="panel-head">
           <div><div class="panel-title">连接测试</div><div class="subline">${connectionHelpText}</div></div>
           <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics">运行联调诊断</button></details>
@@ -713,16 +766,16 @@ export function installExternalAlgorithmPlatformRuntime({
         <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head"><div><div class="panel-title">同步状态</div><div class="subline">“立即同步”只执行 新畅联 → 本平台 的算法品目、算法产品、分析方式和算力环境同步。</div></div></div>
+      <section class="panel" data-platform-tab-panel="sync">
+        <div class="panel-head"><div><div class="panel-title">数据同步</div><div class="subline">“立即同步”只执行 新畅联 → 本平台 的算法品目、算法产品、分析方式和算力环境同步。</div></div></div>
         <div class="panel-body">
-          <div class="summary">
-            <div class="stat"><div class="k">最近同步</div><div class="v" style="font-size:16px">${escapeHtml(timeText(last?.finished_at || last?.started_at))}</div></div>
-            <div class="stat"><div class="k">状态</div><div class="v" style="font-size:16px">${escapeHtml(syncStatusText(last?.status))}</div></div>
-            <div class="stat"><div class="k">算法品目</div><div class="v">${Number(cache.category_count || 0)}</div></div>
-            <div class="stat"><div class="k">算法产品</div><div class="v">${Number(cache.product_count || 0)}</div></div>
-            <div class="stat"><div class="k">分析方式</div><div class="v">${Number(cache.analysis_count || 0)}</div></div>
-            <div class="stat"><div class="k">算力环境</div><div class="v">${Number(cache.compute_platform_count || 0)}</div></div>
+          <div class="external-sync-kpis">
+            <div><span>最近同步</span><b>${escapeHtml(timeText(last?.finished_at || last?.started_at))}</b></div>
+            <div><span>状态</span><b>${escapeHtml(syncStatusText(last?.status))}</b></div>
+            <div><span>算法品目</span><b>${Number(cache.category_count || 0)}</b></div>
+            <div><span>算法产品</span><b>${Number(cache.product_count || 0)}</b></div>
+            <div><span>分析方式</span><b>${Number(cache.analysis_count || 0)}</b></div>
+            <div><span>算力环境</span><b>${Number(cache.compute_platform_count || 0)}</b></div>
           </div>
           ${last?.status === 'failed' ? `<div class="alert warn">${escapeHtml(last.error || '同步失败')}：${escapeHtml(last.detail || '')}</div>` : ''}
           ${c.authMode === 'test_sign_bridge' ? '<div class="alert warn">当前鉴权使用新畅联 /internal/auth/test-sign 联调辅助接口生成签名参数。待新畅联提供正式签名算法规范后，应切换为本地签名实现。</div>' : ''}
@@ -730,18 +783,18 @@ export function installExternalAlgorithmPlatformRuntime({
       </section>
 
       ${diagnosticsHtml()}
-
+      ${masterDataPreviewHtml()}
       ${apiContractHtml()}
 
-      ${masterDataPreviewHtml()}
-
-      <section class="panel">
-        <div class="panel-head"><div class="panel-title">同步记录</div></div>
+      <section class="panel" data-platform-tab-panel="history">
+        <div class="panel-head"><div><div class="panel-title">同步记录</div><div class="subline">保留最近同步结果，便于排查主数据变化和接口异常。</div></div></div>
         <div class="panel-body">
-          <table class="table">
-            <thead><tr><th>时间</th><th>方式</th><th>结果</th><th>同步内容</th></tr></thead>
-            <tbody>${historyRows()}</tbody>
-          </table>
+          <div class="table-wrap">
+            <table class="table external-history-table">
+              <thead><tr><th>时间</th><th>方式</th><th>结果</th><th>同步内容</th></tr></thead>
+              <tbody>${historyRows()}</tbody>
+            </table>
+          </div>
         </div>
       </section>
     </section>`;
@@ -771,7 +824,7 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!diagnostics) return '';
     const rows = Array.isArray(diagnostics.steps) ? diagnostics.steps : [];
     const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : row.status === 'skipped' ? 'warn' : 'err'}">${row.status === 'success' ? '成功' : row.status === 'skipped' ? '跳过' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
-    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式、算力环境、算法版本和算法权重，不创建、修改或删除新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
+    return `<section class="panel" data-platform-tab-panel="sync"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式、算力环境、算法版本和算法权重，不创建、修改或删除新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
   }
 
 
@@ -794,7 +847,7 @@ export function installExternalAlgorithmPlatformRuntime({
       </tr>`;
     }).join('');
     const summary = config?.apiDocumentSummary || {};
-    return `<section class="panel" data-changlian-api-contract="1">
+    return `<section class="panel external-api-contract" data-platform-tab-panel="api" data-changlian-api-contract="1">
       <div class="panel-head">
         <div><div class="panel-title">新畅联接口契约</div><div class="external-contract-summary muted-line">已核对 ${Number(summary.total || documents.length)} 个官方 OpenAPI 接口；除人员登录参考外，内部算法接口均已进入 Provider contract。连接测试只调用鉴权和只读查询，不会自动执行新增、修改或删除。</div></div>
       </div>
@@ -974,6 +1027,20 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   function bindPage() {
+    const root = document.querySelector('[data-external-platform-page="1"]');
+    for (const tabButton of document.querySelectorAll('[data-external-platform-tab]')) {
+      tabButton.onclick = () => {
+        const next = String(tabButton.dataset.externalPlatformTab || 'overview');
+        if (!['overview', 'connection', 'sync', 'vendor', 'api', 'history'].includes(next)) return;
+        activeTab = next;
+        state().externalPlatformTab64 = next;
+        if (root) root.dataset.activeTab = next;
+        for (const button of document.querySelectorAll('[data-external-platform-tab]')) {
+          button.classList.toggle('active', button === tabButton);
+        }
+        if (next === 'vendor') void window.ExternalAlgorithmPublishRuntime?.decoratePlatformPage?.();
+      };
+    }
     const saveButton = document.getElementById('externalPlatformSave');
     const editButton = document.getElementById('externalPlatformEdit');
     const cancelEditButton = document.getElementById('externalPlatformCancelEdit');
@@ -1060,6 +1127,7 @@ export function installExternalAlgorithmPlatformRuntime({
     }
     currentRoot.className = nextRoot.className;
     currentRoot.dataset.externalPlatformPage = '1';
+    currentRoot.dataset.activeTab = activeTab;
     bindPage();
     return true;
   }
