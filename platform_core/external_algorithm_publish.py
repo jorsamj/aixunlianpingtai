@@ -2625,7 +2625,7 @@ def external_algorithm_publish_router(
 
     @router.post("/api/v64/model-artifacts/storage-test")
     def test_model_artifact_storage(payload: StorageTestPayload):
-        return service.model_assets.test_storage(
+        return service.model_assets.test_artifact_storage(
             payload.storage_source_id,
             payload.public_base_url,
         )
