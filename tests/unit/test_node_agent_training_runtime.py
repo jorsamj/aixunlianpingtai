@@ -391,6 +391,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "name": "NVIDIA Test GPU",
             "memory_free_bytes": 20 * 1024**3,
             "memory_total_bytes": 24 * 1024**3,
+            "utilization_percent": 7,
         },
         "bundle": {
             "type": "object",
@@ -414,6 +415,9 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "optimizer": "auto",
             "seed": 9,
             "resource_strategy": "auto",
+            "resource_profile": "performance",
+            "precision": "bf16",
+            "time": 2.5,
             "runtime_stop_policy": "target_only",
         },
         "result": {
@@ -471,6 +475,9 @@ parser.add_argument("--requested-device", required=True)
 parser.add_argument("--job-id", required=True)
 parser.add_argument("--run-name", required=True)
 parser.add_argument("--runtime-stop-policy", required=True)
+parser.add_argument("--resource-profile", required=True)
+parser.add_argument("--precision", required=True)
+parser.add_argument("--time", required=True)
 args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
@@ -487,6 +494,9 @@ runtime_root.joinpath("worker-args.json").write_text(
         "job_id": args.job_id,
         "run_name": args.run_name,
         "runtime_stop_policy": args.runtime_stop_policy,
+        "resource_profile": args.resource_profile,
+        "precision": args.precision,
+        "time": args.time,
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -609,6 +619,9 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["assigned_device"] == "cuda:1"
     assert args["requested_device"] == "auto"
     assert args["runtime_stop_policy"] == "target_only"
+    assert args["resource_profile"] == "performance"
+    assert args["precision"] == "bf16"
+    assert args["time"] == "2.5"
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
