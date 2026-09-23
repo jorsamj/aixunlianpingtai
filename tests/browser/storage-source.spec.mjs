@@ -26,6 +26,15 @@ async function seedPlatformLabels(page, codes) {
 
 test('storage configuration creates, health-checks, and removes a real local source', async ({page}) => {
   const name = `浏览器本地源-${Date.now()}`;
+  const revisitGets = {sources: 0, artifactConfig: 0, workers: 0};
+  page.on('request', request => {
+    if (request.method() !== 'GET') return;
+    const url = new URL(request.url());
+    if (url.pathname === '/api/v61/storage-sources') revisitGets.sources += 1;
+    if (url.pathname === '/api/v64/model-artifacts/config') revisitGets.artifactConfig += 1;
+    if (url.pathname === '/api/v62/workers') revisitGets.workers += 1;
+  });
+
   await openStoragePage(page);
   await expect(page.getByText('素材存储', {exact: true})).toBeVisible();
   await expect(page.getByText('算法与转换结果存储', {exact: true})).toBeVisible({timeout: 10_000});
@@ -34,6 +43,21 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await expect(page.locator('#modelArtifactPrefix')).toHaveValue('changlian-ai/artifacts');
   await expect(page.getByText('该地址由所选 StorageSource 持有', {exact: false})).toBeVisible();
   await expect(page.getByText('平台本地存储', {exact: true})).toBeVisible();
+  await expect.poll(() => [
+    revisitGets.sources > 0,
+    revisitGets.artifactConfig > 0,
+    revisitGets.workers > 0,
+  ], {timeout: 10_000}).toEqual([true, true, true]);
+  await page.waitForTimeout(120);
+  const firstVisitGets = {...revisitGets};
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.getByRole('heading', {name: '存储配置', level: 2})).toBeVisible();
+  await expect(page.getByText('算法与转换结果存储', {exact: true})).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(revisitGets).toEqual(firstVisitGets);
 
   await page.getByRole('button', {name: /新增存储源/}).click();
   await page.locator('#ss61Name').fill(name);
