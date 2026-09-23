@@ -4071,13 +4071,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  * - latest-version iteration visibility
  * - charted training data-quality report
  * ============================================================ */
+const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
 (()=>{
   const V414='42.24.0';
   window.__v414UploadDecision=true;
   state.label414Usage=state.label414Usage||[];
   state.label414UsageLoadedAt=Number(state.label414UsageLoadedAt||0);
   state.label414LoadedAt=Number(state.label414LoadedAt||0);
-  const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   state.batch414Selected=state.batch414Selected||new Set();
   state.iteration414=state.iteration414||{};
 

@@ -81,6 +81,11 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
 
   const dialog = page.getByRole('dialog', {name: '图片标注'});
   await expect(dialog).toBeVisible();
+  const workbenchOutcome = await Promise.race([
+    expect(dialog.locator('#annSaveState')).toHaveText('已保存').then(() => 'ready'),
+    expect(page.getByText('打开标注失败：LABEL_SCHEMA_CACHE_TTL_MS is not defined')).toBeVisible().then(() => 'ttl-error'),
+  ]);
+  expect(workbenchOutcome).toBe('ready');
   await expect(dialog.getByRole('button', {name: '管理标签'})).toHaveCount(0);
   await expect(dialog.getByText('当前标签', {exact: true})).toHaveCount(0);
   await expect(dialog.getByLabel('绘制标签')).toBeVisible();
@@ -128,7 +133,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   expect(afterResize.width).toBeGreaterThan(beforeResize.width + 2);
   expect(afterResize.height).toBeGreaterThan(beforeResize.height + 2);
 
-  await dialog.locator('#annImg').hover();
+  await page.mouse.move(imageBox.x + 2, imageBox.y + 2);
   await page.mouse.wheel(0, -120);
   await expect(dialog.locator('#zoomText')).toHaveText('110%');
   await dialog.getByRole('button', {name: '100%', exact: true}).click();
