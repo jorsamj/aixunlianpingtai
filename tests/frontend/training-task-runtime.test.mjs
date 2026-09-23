@@ -635,6 +635,52 @@ test('batch pause uses only eligible real endpoints and performs one final jobs 
 });
 
 
+test('batch delete posts terminal records once and never stops active selected tasks', async () => {
+  const state = {
+    page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[
+      {id:'stopped-1', status:'stopped'},
+      {id:'failed-1', status:'failed'},
+      {id:'running-1', status:'running'},
+    ],
+  };
+  const calls=[];
+  let deleteBody=null;
+  const originalConfirm=globalThis.confirm;
+  globalThis.window={
+    confirm:()=>true,
+    async fetch(url, init={}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (String(url).endsWith('/jobs/batch-delete')) {
+        deleteBody=JSON.parse(String(init.body || '{}'));
+        return response({
+          ok:true, requested:2, deleted:2, deleted_ids:['stopped-1','failed-1'],
+          skipped_active:0, missing:0, failed:0, failures:[],
+        });
+      }
+      if (String(url).endsWith('/jobs')) return response([{id:'running-1',status:'running'}]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+  const runtime=installTrainingTaskRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+  });
+  const result=await runtime.batchAction('delete',['stopped-1','failed-1','running-1']);
+  assert.equal(result.succeeded,2);
+  assert.equal(result.skipped,1);
+  assert.deepEqual(deleteBody,{job_ids:['stopped-1','failed-1']});
+  assert.deepEqual(calls,[
+    'POST /api/v48/projects/p1/jobs/batch-delete',
+    'GET /api/projects/p1/jobs',
+  ]);
+  assert.equal(calls.some(row=>row.includes('/stop')),false);
+  runtime.destroy();
+  globalThis.confirm=originalConfirm;
+  cleanup();
+});
+
+
 test('training task runtime renders through an explicit view adapter while keeping refresh ownership stable', async () => {
   const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
   globalThis.window = {
