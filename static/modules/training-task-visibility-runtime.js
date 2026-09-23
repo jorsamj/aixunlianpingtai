@@ -419,6 +419,7 @@ export function installTrainingTaskVisibilityRuntime({
         const visible = filtered.slice(start, start + taskView.pageSize);
         if (action === 'clear') selectedIds.clear();
         else {
+          if (action === 'deletable-visible') selectedIds.clear();
           for (const job of visible) {
             const id = String(job?.id || job?.task_id || '');
             if (!id) continue;
