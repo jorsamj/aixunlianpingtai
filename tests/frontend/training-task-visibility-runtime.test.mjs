@@ -306,6 +306,10 @@ test('batch mode is transient and remains inside the canonical ten-column task t
   assert.match(source, /data-training-batch-action="resume"/);
   assert.match(source, /data-training-batch-action="stop"/);
   assert.match(source, /data-training-batch-action="delete">删除记录/);
+  assert.match(source, /data-training-batch-select-action="all-visible">全选当前页/);
+  assert.match(source, /data-training-batch-select-action="deletable-visible">仅选可删除/);
+  assert.match(source, /data-training-batch-select-action="clear">清空选择/);
+  assert.match(source, /trainingBatchActionEligible\(job, 'delete'\)/);
   assert.match(source, /\['pause', 'resume', 'stop', 'delete'\]/);
   assert.match(source, /selectedIds\.clear\(\)/);
   assert.match(source, /batchMode = false/);
