@@ -277,6 +277,37 @@ def test_training_node_busy_penalty_does_not_hide_large_real_gpu_headroom(tmp_pa
     assert assignment["node_id"] == "gpu-large-active"
 
 
+def test_multi_gpu_node_assigns_distinct_gpus_then_queues_next_task(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    for task_id in ("train-gpu-a", "train-gpu-b", "train-gpu-c"):
+        create_task(repository, artifacts, task_id, TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-dual",
+        ["training"],
+        resources=training_resources(
+            free0=20 * 1024**3,
+            free1=18 * 1024**3,
+            util0=5,
+            util1=5,
+        ),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    second = allocator.assign_next()
+    third = allocator.assign_next()
+
+    assert first is not None
+    assert second is not None
+    assert {
+        first["resolved_execution_config"]["selected_device"],
+        second["resolved_execution_config"]["selected_device"],
+    } == {"cuda:0", "cuda:1"}
+    assert third is None
+    assert len(allocator.list(active_only=True, node_id="gpu-dual")) == 2
+
+
 def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     repository, artifacts = runtime(tmp_path)
     clean = create_task(repository, artifacts, "batch-clean", TaskKind.MATERIAL_BATCH, {"operation": "CLEAN"})
