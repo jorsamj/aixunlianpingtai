@@ -82,6 +82,8 @@ jobs:
             exit 1
           fi
           grep -Fq 'test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtrip' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_treats_non_accessdenied_bucket_metadata_failure_as_diagnostic' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_metadata_failure_does_not_hide_put_failure' tests/unit/test_model_artifacts.py
           grep -Fq 'test_artifact_storage_put_403_reports_write_permission' tests/unit/test_model_artifacts.py
           grep -Fq 'test_artifact_storage_stat_403_reports_read_permission' tests/unit/test_model_artifacts.py
           grep -Fq 'test_artifact_storage_get_403_reports_read_permission' tests/unit/test_model_artifacts.py
