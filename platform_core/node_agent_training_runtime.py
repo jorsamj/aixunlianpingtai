@@ -582,6 +582,11 @@ class AgentTrainingRunner:
             "gpu_index": gpu.get("index"),
             "gpu_free_bytes": int(gpu.get("memory_free_bytes") or 0),
             "gpu_total_bytes": int(gpu.get("memory_total_bytes") or 0),
+            "gpu_utilization_percent": (
+                int(gpu.get("utilization_percent"))
+                if gpu.get("utilization_percent") is not None
+                else None
+            ),
         }
         resource_context_path = job_dir / "resource-context.json"
         _atomic_write_json(resource_context_path, resource_context)
