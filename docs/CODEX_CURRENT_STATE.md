@@ -1,3 +1,17 @@
+<!-- CURRENT_STATE_CONTINUATION_2026_09_23 -->
+> ## 2026-09-23 续接最新状态 — Real Chrome / 性能 owner 继续收口
+>
+> **最高优先级仍先读 `docs/CODEX_HANDOFF_2026-09-23.md` 顶部“本轮续接更新”。**
+>
+> 文档刷新前最后确认代码/测试 HEAD 为 `bb3803167e8cd7ac039cf9766b0b8cfc79c06f2f`，`VERSION.txt = 42.24.0`。该 HEAD 当时 **55 个 checks 全部 queued、0 completed failure**，所以不具备“全绿 / 部署候选”结论。
+>
+> 本轮已把 P0 浏览器守护进一步补到：手动标注画/拖/resize/删/撤销/缩放/显式空标注/前后切图 autosave/stale fencing；ZIP exact-code 复用、显式新增标签、关闭重开、refresh recovery；质量中心 builtin/算法版本 A/B、A-only/B-only、confidence、真实文件夹 input、durable history、人工核验、Online Feedback bridge。真实 GPU 模型推理 E2E 仍 OPEN。
+>
+> P1 已继续收口：启动后二次 extras 重绘、训练提交 broad reload、训练任务页多余 training_options/models、标签保存悬空 `refreshImages414`、重复 active nav、退役部署 page-extras owner、质量检测 extras freshness，以及自动清洗详情 raw timer；clean progress 现在由 PollRegistry page owner 原地 patch。page-loading performance spec 已进入正式 Real Chrome CI。
+>
+> 接手不要重复上述 CLOSED 工作；实时 Actions 一旦出现失败必须先读 job log。真实 OSS / ChangLian / GPU E2E 仍单独 OPEN。
+>
+
 <!-- CURRENT_STATE_2026_09_23 -->
 > ## 2026-09-23 当前接手入口
 >

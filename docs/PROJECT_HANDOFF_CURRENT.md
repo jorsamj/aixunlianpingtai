@@ -1,3 +1,13 @@
+<!-- LIVE_HANDOFF_CONTINUATION_2026_09_23 -->
+> ## 2026-09-23 续接覆盖：9/23 handoff 已更新 Real Chrome / 性能收口现场
+>
+> 当前接手仍先读 `docs/CODEX_HANDOFF_2026-09-23.md`，并优先看其顶部 **“本轮续接更新（最高优先级覆盖）”**。
+>
+> 文档刷新前最后确认代码/测试 HEAD：`bb3803167e8cd7ac039cf9766b0b8cfc79c06f2f`；`VERSION.txt=42.24.0`。当时 55 个 checks 全部 queued，不能宣称全绿或可部署。
+>
+> 新增重点：P0 手动标注 / ZIP / 质量中心检测 Real Chrome 守护已大幅补齐；P1 已收口训练提交 broad refresh、训练任务额外配置请求、启动后二次 extras、标签保存悬空刷新、重复 active nav、退役部署 extras owner、clean detail raw timer。真实 GPU、OSS、ChangLian 生产 E2E 仍 OPEN。
+>
+
 <!-- LIVE_HANDOFF_2026_09_23 -->
 > ## 2026-09-23 最新覆盖：请先读 `docs/CODEX_HANDOFF_2026-09-23.md`
 >

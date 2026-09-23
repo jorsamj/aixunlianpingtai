@@ -1,5 +1,87 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 本轮续接更新（最高优先级覆盖）
+>
+> **本节覆盖本文后面较早的 P0 / NEXT 状态。接手仍必须先读取实时 GitHub，不能把下面 SHA 当作当前 HEAD。**
+>
+> 本轮文档刷新前最后确认的代码/测试 HEAD：
+> `bb3803167e8cd7ac039cf9766b0b8cfc79c06f2f`
+>
+> `VERSION.txt = 42.24.0`，未 merge `main`、未 tag、未 release、未 force push。
+>
+> 文档刷新前该 HEAD 的 GitHub check-runs 为 **55 个 queued、0 个 completed failure**。因此当前只能说“代码/测试守护已继续收口”，**不能宣称全绿、部署候选或可以上线**；后续一旦出现 completed failure，必须先读真实 job log。
+>
+> ### P0 Real Chrome 守护已经继续补齐
+>
+> 手动标注浏览器合同现在覆盖：
+> - 标签 first paint / 正式标签选择。
+> - 画框、拖框、四角 resize。
+> - 删除、撤销。
+> - 鼠标滚轮缩放、100%、适应窗口。
+> - 连续两张空图都必须显式“确认无目标”，服务端状态为 `confirmed_empty`。
+> - 上一张 / 下一张自动保存当前未保存标注。
+> - stale annotation response fencing，旧图片晚返回不能覆盖新图片。
+>
+> ZIP / 批量导入浏览器合同现在覆盖：
+> - 文件标签 code 与平台 canonical code 完全一致时自动复用，不重复建标签。
+> - 平台不存在且文件标签为合法英文 code 时，显式选择“使用文件标签并新增”。
+> - 新增必须先调用正式标签 API，再提交 `label_mapping` / durable import start。
+> - modal 关闭、Unified Upload Task Center 重新打开、浏览器 refresh 后恢复待确认任务。
+> - 仍然保持“人工确认后才进入正式 Ground Truth”，不恢复 `create_labels` 静默旁路。
+>
+> 质量中心模型检测浏览器合同现在覆盖：
+> - builtin / algorithm version 分组与搜索。
+> - A/B、A-only、B-only。
+> - confidence。
+> - 单图、多图、非图片过滤。
+> - **真实目录 input**：递归选择文件夹中的图片、自动忽略 txt 等非图片。
+> - durable `DEPLOYMENT_TEST` task、批次历史、人工核验。
+> - 质量概览 ↔ 模型检测切换复用 test_models / inference env，手动“刷新模型”才强制重拉。
+> - v64 detection → v63 Online Feedback evidence bridge 已有 Real Chrome；正式模型 SHA stale fail-closed 已有 API 回归。
+>
+> 注意：质量中心浏览器用例中的模型推理响应仍是受控测试替身，用于验证前端/任务/API 合同，**不等于真实 GPU / 真实模型生产推理 E2E**。
+>
+> ### 本轮 P1 性能 / owner 收口
+>
+> 已完成并加永久守护：
+> - 导航不再声明任何 full-material page owner；完整素材池只能在明确用户动作边界 lazy hydrate。
+> - `page-loading-performance.spec.mjs` 已正式接入 Frontend Runtime Stabilization Real Chrome。
+> - 训练创建成功后不再 broad `loadRelated()`；算法列表只 scoped refresh 算法 owner，训练任务只刷新 TrainingTaskRuntime。
+> - 训练任务页现在是 jobs-only；进入页面不再顺手拉 `training_options` / `models`，训练配置由 TrainingCreateHydrationRuntime 在点击训练时按需并行读取。
+> - 启动 bootstrap snapshot 首屏绘制后不再无条件追加一轮 page extras + 二次 render。
+> - 标签保存修复了不存在的 `refreshImages414()` 调用；保存后只刷新 authoritative label schema，并有 Real Chrome 新建/编辑/落库/无全量 images 请求守护。
+> - 质量中心模型检测 extras 使用独立 TTL/in-flight owner；切 tab 不重复请求。
+> - 重复点击当前已激活菜单不会再次触发导航 epoch / page owner。
+> - 退役的 `部署转换` / `部署产物` 已从 final navigation page-extras owner 清除；底层转换、ModelArtifact、OSS、RKNN、新畅联权重同步能力继续保留。
+> - 自动清洗运行中详情已从裸 `setTimeout` 迁到 PollRegistry；同一个弹窗原地 patch 进度，关闭/切页即停止，进入待确认后切正式结果详情，并有 Real Chrome handoff 守护。
+>
+> ### 已核对但不要机械修改
+>
+> - 训练素材旧 V3 全量 `/images` picker 是 compatibility fallback；final TrainingMaterialPickerRuntime 已覆盖并使用 v62 server-paged training-materials。
+> - 算法列表旧展开函数会请求 algorithms，但 final AlgorithmListRuntime 已覆盖；现有 Chrome 明确守住展开/收起 0 次算法 API。
+> - ZIP 旧 `setInterval` 是 compatibility bridge；ZipImportRuntime 安装后用 sentinel 阻止它成为第二 polling owner。
+> - `pollAnnotationIndex412` 当前无调用点。
+> - AI / 清洗结果只有在明确用户动作且返回项缺 URL 时才按需 `ensureFullPool()`。
+>
+> ### 当前仍 OPEN
+>
+> - 最新目标 HEAD 的 Actions 尚未 completed；任何部署判断必须等目标 HEAD 的真实 completed checks。
+> - 真实 GPU / 正式模型推理 E2E。
+> - 真实 OSS 长期 URL、ChangLian Version/Weight 创建/反查/删除、超时幂等恢复的生产 E2E。
+> - P0 全部 CI/Real Chrome 真正执行结果出来后，再继续全站 performance profile 和 AI 审核大批量交互验收。
+>
+> ### 下一步顺序
+>
+> ```text
+> 1. 重新读取当前真实 HEAD / VERSION / check-runs
+> 2. 任何 completed failure：先读真实 job log，再判断 stale guard / 测试隔离 / 产品行为
+> 3. 优先处理 P0 Real Chrome 的真实失败，不因旧测试恢复退役 owner
+> 4. P0 completed success 后做全站 profile：duplicate fetch / whole-root repaint / stale response / double owner
+> 5. 再做 AI 审核大量标签与大批候选的真实浏览器交互验收
+> 6. OSS / ChangLian / 真实 GPU E2E 单独验收，mock 不能替代
+> ```
+>
+
 > **当前最高优先级交接入口。**
 >
 > 新会话 / 新 Codex / 新开发人员接手 `jorsamj/aixunlianpingtai` 时，必须先读取 GitHub 当前真实远端状态，再读本文件。
