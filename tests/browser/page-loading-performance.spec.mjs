@@ -237,3 +237,49 @@ test('dashboard revisit reuses focused source and quality extras', async ({page}
 
   expect({sourceGets, qualityGets}).toEqual(firstVisit);
 });
+
+
+test('training resource background refresh preserves in-progress form input', async ({page}) => {
+  let releaseOptions;
+  const gate = new Promise(resolve => { releaseOptions = resolve; });
+  let optionGets = 0;
+
+  await page.route('**/api/training_options**', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    optionGets += 1;
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id:'authoritative-training-resource',
+        name:'权威训练资源',
+        type:'server',
+        framework:'ultralytics',
+        status:'ready',
+        algorithms:[],
+        base_models:[],
+      }]}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await page.evaluate(() => window.setPage('训练资源'));
+  await expect(page.locator('#quickServerUrl')).toBeVisible({timeout: 10_000});
+  await expect.poll(() => optionGets).toBe(1);
+
+  await page.locator('#quickServerUrl').fill('http://192.168.10.20:8020');
+  await page.evaluate(() => {
+    window.__stableTrainingResourceLayout = document.querySelector('.resource-layout');
+    window.__stableQuickServerInput = document.getElementById('quickServerUrl');
+  });
+
+  releaseOptions();
+  await expect(page.locator('.resource-grid')).toContainText('权威训练资源', {timeout: 5_000});
+  await expect(page.locator('#quickServerUrl')).toHaveValue('http://192.168.10.20:8020');
+  expect(await page.evaluate(() => ({
+    layout: window.__stableTrainingResourceLayout === document.querySelector('.resource-layout'),
+    input: window.__stableQuickServerInput === document.getElementById('quickServerUrl'),
+  }))).toEqual({layout:true,input:true});
+});

@@ -29,7 +29,21 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.212/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.213/);
+});
+
+test('training resource background extras patch only resource cards', () => {
+  const start = main.indexOf('function refreshPageExtrasInBackground(page');
+  const end = main.indexOf('\nwindow.PlatformCore.runtime.refreshPageExtras', start);
+  assert.ok(start >= 0 && end > start);
+  const refresh = main.slice(start, end);
+  assert.match(refresh, /page === '训练资源' && window\.patchTrainingResourceCardsV3\?\.\(\)/);
+  assert.match(app, /window\.patchTrainingResourceCardsV3=function\(\)/);
+  const patchStart = app.indexOf('window.patchTrainingResourceCardsV3=function()');
+  const patchEnd = app.indexOf('\nfunction renderResources()', patchStart);
+  const patch = app.slice(patchStart, patchEnd);
+  assert.match(patch, /\.resource-layout \.resource-grid/);
+  assert.doesNotMatch(patch, /#view|renderResources\(/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
@@ -180,7 +194,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.208/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.209/);
 });
 
 

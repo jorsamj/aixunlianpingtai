@@ -31,5 +31,5 @@ test('label management has one canonical browser owner', () => {
   assert.match(save, /await refreshLabels414\(true\);closeModal\(\)/);
   assert.doesNotMatch(save, /refreshImages414|\/images/);
   assert.doesNotMatch(app, /refreshImages414/);
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.212/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.213/);
 });

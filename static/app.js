@@ -309,11 +309,20 @@ window.viewResourceAlgorithms=(targetId)=>{
   const t=(state.targets||[]).find(x=>x.id===targetId); if(!t)return;
   modal(`${t.name} · 可训练算法`, `<div class="hint-card"><div class="item-title">识别结果：${(t.algorithms||[]).length} 个算法配置</div><div class="item-sub">${esc(familySummary(t)||'系统会扫描 PaddleDetection/configs 目录下的 .yml/.yaml 配置，并自动生成训练命令模板。')}</div></div>${renderAlgoListForModal(t.algorithms||[])}`, true);
 };
-function renderResources(){
-  const resourceCards = (state.targets||[]).map(t=>`<div class="res-card ${t.status==='ready'?'ready':'warn'}">
+function trainingResourceCardsHtmlV3(){
+  return (state.targets||[]).map(t=>`<div class="res-card ${t.status==='ready'?'ready':'warn'}">
     <div class="res-main"><div class="res-icon">${t.framework==='paddle'?'桨':t.type==='server'?'服':'U'}</div><div><div class="item-title">${esc(t.name)}</div><div class="item-sub">${t.framework==='paddle'?'飞桨 PaddleDetection':t.framework==='ultralytics'?'Ultralytics':'未知'} · ${t.type==='server'?'训练服务器':'本机环境'} ${t.version?'· '+esc(t.version):''}</div>${t.framework==='paddle'?`<div class="item-sub">${esc(familySummary(t)||t.scan?.error||'未扫描到 configs，请确认 PaddleDetection 目录')}</div>`:''}</div></div>
     <div class="res-meta"><span class="pill ${t.status==='ready'?'ok':'warn'}">${t.status==='ready'?'可用':t.status==='offline'?'不可用':'待确认'}</span><span class="pill blue">${(t.algorithms||[]).length} 个算法</span><span class="pill">${(t.base_models||[]).length} 个权重</span>${t.framework==='paddle'?`<button class="btn mini" onclick="viewResourceAlgorithms('${esc(t.id)}')">查看算法</button>`:''}</div>
   </div>`).join('');
+}
+window.patchTrainingResourceCardsV3=function(){
+  const grid=document.querySelector('.resource-layout .resource-grid');
+  if(!grid)return false;
+  grid.innerHTML=trainingResourceCardsHtmlV3()||'<div class="empty">暂无资源。先检测本机 Ultralytics 或飞桨。</div>';
+  return true;
+};
+function renderResources(){
+  const resourceCards = trainingResourceCardsHtmlV3();
   const paddle=(state.targets||[]).find(t=>t.id==='local_paddle')||{};
   $('#view').innerHTML=`<div class="resource-layout"><section class="panel"><div class="panel-head"><div class="panel-title">接入训练资源</div><button class="btn small" onclick="refreshTrainingResourcePageV3()">刷新</button></div><div class="panel-body"><div class="resource-actions"><div class="quick-card"><div class="quick-title">本机 Ultralytics</div><div class="field"><label>安装目录</label><input id="uroot" class="input"></div><div class="row"><button class="btn primary small" onclick="detectUltra()">检测并启用</button><button class="btn soft small" onclick="quickUltraDetect()">一键检测</button></div></div><div class="quick-card"><div class="quick-title">本机飞桨</div><div class="field"><label>Python路径</label><input id="ppy" class="input" value="${esc(paddle.python_path||'')}"></div><div class="field"><label>PaddleDetection目录</label><input id="pdet" class="input" value="${esc(paddle.paddledet_dir||'')}"></div><div class="field"><label>PaddleX目录</label><input id="pxdir" class="input" value="${esc(paddle.paddlex_dir||'')}"></div><div class="row"><button class="btn primary small" onclick="detectPaddle()">检测并启用</button><button class="btn soft small" onclick="quickPaddleDetect()">一键检测</button><button class="btn small" onclick="testPaddle()">只检测</button></div><div id="paddleTestResult" class="item-sub"></div></div><div class="quick-card"><div class="quick-title">本机模型目录</div><div class="field"><label>模型目录</label><input id="scanRoot" class="input"></div><button class="btn small" onclick="scanModels()">扫描模型</button></div><div class="quick-card"><div class="quick-title">训练服务器</div><div class="field"><label>服务地址</label><input id="quickServerUrl" class="input" placeholder="http://192.168.1.10:8020"></div><button class="btn soft small" onclick="quickAddServer()">接入服务器</button></div></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">已接入资源</div></div><div class="panel-body"><div class="resource-grid">${resourceCards||'<div class="empty">暂无资源。先检测本机 Ultralytics 或飞桨。</div>'}</div></div></section></div>`;
 }

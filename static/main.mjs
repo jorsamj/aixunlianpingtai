@@ -349,6 +349,7 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
   const task = Promise.resolve(window.loadPageExtras413(page)).then(() => {
     pageExtrasLoadedAt.set(page, Date.now());
     if (state.page !== page) return;
+    if (page === '训练资源' && window.patchTrainingResourceCardsV3?.()) return;
     if (navigationStabilityRuntime.hasPageOwner(page)) {
       renderCanonicalOwner(page, {source: 'background-data'});
     } else {
