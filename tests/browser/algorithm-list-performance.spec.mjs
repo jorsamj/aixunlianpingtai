@@ -113,6 +113,39 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   expect(pageErrors).toEqual([]);
 });
 
+test('algorithm registry cards expand from non-action areas and can show only trainable algorithms', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+
+  await page.evaluate(() => {
+    state.algorithms = [
+      {id:'trainable-card',name:'可训练烟火算法',remark:'可直接训练',industry:'测试',algorithm_type:'yolo_ultralytics',versions:[]},
+      {id:'blocked-card',name:'不可训练传统算法',remark:'仅用于查看',industry:'测试',algorithm_type:'opencv',versions:[]},
+    ];
+    state.jobs = [];
+    state.alg428Expanded = {};
+    window.AlgorithmListRuntime?.resetFilters?.();
+    window.AlgorithmListRuntime?.render?.();
+  });
+
+  const trainable = page.locator('[data-algorithm-id="trainable-card"]');
+  const blocked = page.locator('[data-algorithm-id="blocked-card"]');
+  await expect(trainable).toBeVisible();
+  await expect(blocked).toBeVisible();
+
+  await trainable.locator('.algorithm-card-description').click();
+  await expect(trainable).toHaveClass(/open/);
+  await trainable.locator('.algorithm-card-description').click();
+  await expect(trainable).not.toHaveClass(/open/);
+
+  await page.getByRole('button', {name: /仅看可训练/}).click();
+  await expect(trainable).toBeVisible();
+  await expect(blocked).toBeHidden();
+  await expect(page.getByRole('button', {name: /仅看可训练/})).toHaveClass(/on/);
+});
+
 test('algorithm version deletion uses focused refresh without full reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
