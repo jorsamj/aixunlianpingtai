@@ -108,8 +108,9 @@ test('changlian manual publish preflight blocks stale version analysis before PO
   await expect(card).toBeVisible();
   const versionRow = card.locator('.alg428-version-row', {hasText: '20260919233000'});
   await expect(versionRow).toBeVisible();
-  const publishButton = versionRow.getByRole('button', {name: '同步到新畅联'});
+  const publishButton = versionRow.locator('[data-external-publish-action]');
   await expect(publishButton).toBeVisible();
+  await expect(publishButton).toHaveText('发布');
 
   await publishButton.click();
 
