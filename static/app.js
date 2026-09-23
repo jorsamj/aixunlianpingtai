@@ -3456,7 +3456,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function cleanProgressPollKey429(id){return CLEAN_PROGRESS_POLL_PREFIX429+String(id||'')}
   function cleanProgressRoot429(id){return document.querySelector(`[data-clean-progress-task="${CSS.escape(String(id||''))}"]`)}
   function renderCleanProgress429(task,id){
-    const view=cleanTaskView427(task),root=cleanProgressRoot429(id);
+    const view=window.PlatformCore.cleaning.cleanTaskView(task),root=cleanProgressRoot429(id);
     if(!root){
       modal('自动清洗',`<div class="wait427" data-clean-progress-task="${esc(id)}"><div class="wait427-anim"><i></i><i></i><i></i><b data-clean-progress-status></b></div><div class="wait427-progress"><i data-clean-progress-bar></i></div><div class="wait427-stats"><span>进度 <b data-clean-progress-percent></b></span><span>已处理 <b data-clean-progress-counts></b></span><span>发现问题 <b data-clean-progress-flagged></b></span></div><div class="muted-line" data-clean-progress-runtime></div><div data-clean-progress-error></div><div class="row end" data-clean-progress-actions></div></div>`,false);
     }
@@ -3485,7 +3485,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         registry.clear?.(key);closeModal();return window.cleanDetail429?.(id);
       }
       renderCleanProgress429(task,id);
-      if(cleanTaskView427(task).active)armCleanProgressPoll429(id,ownerPage);
+      if(window.PlatformCore.cleaning.cleanTaskView(task).active)armCleanProgressPoll429(id,ownerPage);
     },1600);
   }
   window.showCleanTaskProgress429=async function(id){
@@ -3496,7 +3496,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const status=String(task.status||'').toLowerCase();
     if(['awaiting_confirmation','done'].includes(status))return window.cleanDetail429?.(id);
     renderCleanProgress429(task,id);
-    if(cleanTaskView427(task).active)armCleanProgressPoll429(id,ownerPage);
+    if(window.PlatformCore.cleaning.cleanTaskView(task).active)armCleanProgressPoll429(id,ownerPage);
     return task;
   };
   async function fetchTask429(type,id){if(type==='clean'){const r=await api(`/api/v47/projects/${pid()}/clean-tasks`);return(r.items||[]).find(x=>x.id===id)}const r=await api(`/api/v33/projects/${pid()}/prelabel-tasks`);return(r.items||[]).find(x=>x.id===id)}
@@ -5047,7 +5047,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
 
   function taskRow(task){
-    const view=taskView(task),labels=(task.requested_labels||[]).map(code=>typeof displayLabel412==='function'?displayLabel412(code):code).join('、')||'-';
+    const view=taskView(task),labels=(task.requested_labels||[]).map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels)).join('、')||'-';
     return `<tr data-task-id="${esc(task.id)}"><td><b>${esc(task.name||task.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${view.active?'run':view.status==='AWAITING_CONFIRMATION'?'warn':view.status==='SUCCEEDED'?'ok':view.status==='FAILED'?'err':''}">${esc(view.statusText)}</span>${view.runtimeText?`<div class="muted-line">${esc(view.runtimeText)}</div>`:''}</td><td><div class="op427-progress"><i><em style="width:${view.percent}%"></em></i><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span></div></td><td>${view.boxes}</td><td>${time(task.created_at)}<div class="muted-line">${elapsed(task)}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${task.id}')">详情</button>${view.canReview?`<button class="btn mini primary" onclick="reviewAiLabel427('${task.id}')">审核</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryAiTask60('${task.id}')">重试</button>`:''}</div></td></tr>`;
   }
   function renderAiTaskRows60(tasks){const body=document.getElementById('ai60TaskRows');if(!body)return;if(window.AutoLabelPollRuntime?.patchRows?.(body,tasks))return;body.innerHTML=tasks.map(taskRow).join('')||'<tr><td colspan="6">暂无AI标注任务</td></tr>'}
@@ -5097,7 +5097,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function candidateOverlay(box,image){
     const width=Number(image?.width||1),height=Number(image?.height||1),x=100*Number(box.x1||0)/width,y=100*Number(box.y1||0)/height,w=100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width,h=100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height;
-    return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`;
+    return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels))}</em></i>`;
   }
   function ensureReviewShell(){
     if(document.querySelector('.ai60-review'))return;
@@ -5150,7 +5150,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="row"><input class="input" placeholder="筛选来源标签" oninput="filterAiMappingRows60(this.value)"><input id="ai60MapAllTarget" class="input" list="ai60PlatformLabelOptions" placeholder="全部映射到…"><button type="button" class="btn mini" onclick="applyAiMappingAll60()">全部映射</button></div>
       </div>
       ${rows.map(row=>{
-        const source=String(row.label||''),target=review.labelMapping.get(source)||source,display=typeof displayLabel412==='function'?displayLabel412(source):source;
+        const source=String(row.label||''),target=review.labelMapping.get(source)||source,display=window.PlatformCore.materials.labelDisplay(source,state.labels);
         const searchText=`${source} ${display} ${target}`.toLowerCase();
         return `<div class="storage61-mapping-row ai60-mapping-row" data-ai-label-source="${esc(source)}" data-ai-label-search="${esc(searchText)}"><span><b>${esc(display)}</b><small>${Number(row.images||0)} 张 · ${Number(row.boxes||0)} 框</small></span><div class="row"><input class="input ai60-label-combobox" list="ai60PlatformLabelOptions" value="${esc(target)}" placeholder="搜索平台标签" onchange="updateAiLabelMappingFromInput60('${encodeURIComponent(source)}',this)"><button type="button" class="btn mini" onclick="openInlineLabelCreate414('ai','${encodeURIComponent(source)}')">＋ 新建标签</button></div></div>`;
       }).join('')}
@@ -5197,7 +5197,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
     const summary=document.getElementById('ai60ReviewSummary');if(summary){const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选 ${selected}/${selectable} · 已人工修改 ${review.edits.size} 张`}
     renderAiLabelMapping60();
-    const grid=document.getElementById('ai60ReviewGrid');if(grid)grid.innerHTML=review.items.map(item=>{const image=imageById(item.image_id)||item,reviewable=item.status!=='failed',checked=review.decisions.get(String(item.image_id))===true;return `<label class="review427-card ${reviewable?'':'failed'}"><input type="checkbox" ${checked?'checked':''} ${reviewable?'':'disabled'} onchange="toggleAiDecision60('${item.image_id}',this.checked)"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':`${(item.boxes||[]).length} 个候选框`}</strong></div><b>${esc(item.filename||image.filename||item.image_id)}</b><div>${item.error?`<span class="err">${esc(item.error)}</span>`:[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<span>未检测到目标</span>'}</div>${reviewable?`<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();editAiCandidate60('${item.image_id}')">编辑候选框</button>`:''}</label>`}).join('');
+    const grid=document.getElementById('ai60ReviewGrid');if(grid)grid.innerHTML=review.items.map(item=>{const image=imageById(item.image_id)||item,reviewable=item.status!=='failed',checked=review.decisions.get(String(item.image_id))===true;return `<label class="review427-card ${reviewable?'':'failed'}"><input type="checkbox" ${checked?'checked':''} ${reviewable?'':'disabled'} onchange="toggleAiDecision60('${item.image_id}',this.checked)"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':`${(item.boxes||[]).length} 个候选框`}</strong></div><b>${esc(item.filename||image.filename||item.image_id)}</b><div>${item.error?`<span class="err">${esc(item.error)}</span>`:[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>`<span>${esc(window.PlatformCore.materials.labelDisplay(label,state.labels))}</span>`).join('')||'<span>未检测到目标</span>'}</div>${reviewable?`<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();editAiCandidate60('${item.image_id}')">编辑候选框</button>`:''}</label>`}).join('');
     const pager=document.getElementById('ai60ReviewPager');if(pager)pager.innerHTML=`<button class="btn mini" ${review.offset<=0?'disabled':''} onclick="aiReviewPage60(-1)">上一页</button><span>${Math.floor(review.offset/review.limit)+1} / ${Math.max(1,Math.ceil(review.total/review.limit))}</span><button class="btn mini" ${review.offset+review.items.length>=review.total?'disabled':''} onclick="aiReviewPage60(1)">下一页</button>`;
   }
   async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(review.items.some(item=>!item.url)){try{await window.MaterialPaginationRuntime61?.ensureFullPool?.()}catch(_){}}if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
