@@ -30,8 +30,8 @@ test('training device inventory persists across browser reloads and revalidates 
 });
 
 
-test('device revalidation updates the visible selector before canonical draft normalization', () => {
-  const marker='const applyDevices=(devices,{persist=true}={})=>{';
+test('device revalidation keeps scheduler-owned auto ahead of stale concrete GPU recommendations', () => {
+  const marker='const applyDevices=(devices,{persist=true,paint=true}={})=>{';
   const start=source.indexOf(marker);
   const end=source.indexOf('renderSplit()}',start);
   assert.ok(start>=0&&end>start);
@@ -39,5 +39,6 @@ test('device revalidation updates the visible selector before canonical draft no
   const domWrite=block.indexOf('deviceSelect.value=recommendedDevice');
   const draftWrite=block.indexOf('TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}})');
   assert.ok(domWrite>=0&&draftWrite>domWrite);
-  assert.match(block,/find\(row=>row\?\.available!==false\)/);
+  assert.match(block,/autoOption=options\.find\(row=>String\(row\?\.id\|\|''\)==='auto'/);
+  assert.match(block,/requestedDevice=autoOption\?'auto'/);
 });
