@@ -54,9 +54,14 @@ async function uploadImage(request, projectId, filename, color) {
 }
 
 async function selectProject(page, projectId) {
-  await page.addInitScript(id => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId: id, page: '数据集'}));
-  }, projectId);
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.fallback({url: url.toString()});
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
+  });
 }
 
 test('manual annotation saves, survives reload, and updates the thumbnail', async ({page, request}) => {
@@ -310,4 +315,63 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   const cleanDialog = page.getByRole('dialog', {name: '批量清洗'});
   await expect(cleanDialog.getByText('共 2 张未处理素材')).toBeVisible();
   await expect(cleanDialog.getByRole('button', {name: '开始清洗'})).toBeVisible();
+});
+
+
+test('label management create and edit stay page-scoped without loading the full material pool', async ({page, request}) => {
+  const project = await createMaterialProject(request, `标签管理-${Date.now()}`);
+  await selectProject(page, project.id);
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /标签管理/}).click();
+  await expect(page.locator('.label414-shell')).toBeVisible();
+
+  const saveRequests = [];
+  const capture = req => {
+    const url = new URL(req.url());
+    if (url.pathname.startsWith('/api/')) saveRequests.push(`${req.method()} ${url.pathname}${url.search}`);
+  };
+  page.on('request', capture);
+
+  await page.getByRole('button', {name: '＋ 新建标签'}).click();
+  let dialog = page.getByRole('dialog', {name: '新建标签'});
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#label414Code').fill('helmet');
+  await dialog.locator('#label414Cn').fill('安全帽');
+  await dialog.locator('#label414Aliases').fill('toukui1、toukui2');
+  await dialog.locator('#label414Hotkey').fill('3');
+  await dialog.getByRole('button', {name: '保存', exact: true}).click();
+
+  await expect(dialog).toBeHidden();
+  const row = page.locator('.label414-row', {hasText: 'helmet'}).last();
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('安全帽');
+  await expect(row).toContainText('toukui1');
+  await expect(row).toContainText('toukui2');
+
+  expect(saveRequests.some(value =>
+    value.startsWith(`GET /api/projects/${project.id}/images`)
+  )).toBe(false);
+
+  await row.getByRole('button', {name: '编辑'}).click();
+  dialog = page.getByRole('dialog', {name: '编辑标签'});
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#label414Cn').fill('安全头盔');
+  await dialog.locator('#label414Aliases').fill('toukui1、helmet_old');
+  await dialog.getByRole('button', {name: '保存', exact: true}).click();
+
+  await expect(dialog).toBeHidden();
+  const edited = page.locator('.label414-row', {hasText: 'helmet'}).last();
+  await expect(edited).toContainText('安全头盔');
+  await expect(edited).toContainText('helmet_old');
+
+  const labelsResponse = await request.get(`/api/v12/projects/${project.id}/labels`);
+  expect(labelsResponse.ok()).toBeTruthy();
+  const labels = (await labelsResponse.json()).items || [];
+  const helmet = labels.find(item => item.code === 'helmet');
+  expect(helmet).toBeTruthy();
+  expect(helmet.display_name).toBe('安全头盔');
+  expect(helmet.aliases).toContain('helmet_old');
+
+  page.off('request', capture);
 });
