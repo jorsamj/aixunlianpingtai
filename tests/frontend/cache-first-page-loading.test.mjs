@@ -29,7 +29,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.206/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.207/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
@@ -179,7 +179,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.206/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.207/);
 });
 
 
@@ -191,6 +191,16 @@ test('normal navigation is synchronous once startup data is ready', () => {
   assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return window\.__v53InitPromise/);
   assert.match(readiness, /return null/);
   assert.doesNotMatch(readiness, /async|await/);
+});
+
+
+test('active sidebar navigation is a user-click no-op while programmatic same-page navigation stays available', () => {
+  const navStart = source.indexOf('renderNav=function(){');
+  const navEnd = source.indexOf('\n  };', navStart);
+  assert.ok(navStart >= 0 && navEnd > navStart);
+  const navSource = source.slice(navStart, navEnd);
+  assert.match(navSource, /onclick="if\(!this\.classList\.contains\('active'\)\)setPage\('\$\{n\}'\)"/);
+  assert.doesNotMatch(navSource, /onclick="setPage\('\$\{n\}'\)"/);
 });
 
 

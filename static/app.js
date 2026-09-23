@@ -4067,7 +4067,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       {title:'高级功能',items:['模型配置','存储配置','组件检测']},
       {title:'系统与对接',items:['服务节点','平台对接']}
     );
-    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
+    document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };
 
   window.renderLabelManagement414=async function({force=false}={}){

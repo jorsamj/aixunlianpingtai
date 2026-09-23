@@ -1158,3 +1158,39 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
 
   expect(pageErrors).toEqual([]);
 });
+
+test('clicking the already active sidebar item does not invoke navigation again', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const active = page.locator('#nav .nav-btn.active').first();
+  await expect(active).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__sameNavProbeCalls = 0;
+    window.__sameNavProbeEpoch = Number(state.__navigationEpoch || 0);
+    const original = window.setPage;
+    window.setPage = function (...args) {
+      window.__sameNavProbeCalls += 1;
+      return original.apply(this, args);
+    };
+  });
+
+  await active.click();
+  await page.waitForTimeout(150);
+
+  const probe = await page.evaluate(() => ({
+    calls: window.__sameNavProbeCalls,
+    beforeEpoch: window.__sameNavProbeEpoch,
+    afterEpoch: Number(state.__navigationEpoch || 0),
+  }));
+  expect(probe.calls).toBe(0);
+  expect(probe.afterEpoch).toBe(probe.beforeEpoch);
+  expect(pageErrors).toEqual([]);
+});
+
+
