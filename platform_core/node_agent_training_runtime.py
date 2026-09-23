@@ -681,6 +681,10 @@ class AgentTrainingRunner:
             str(self._parameter(payload, "cache", False)),
             "--resource-strategy",
             str(self._parameter(payload, "resource_strategy", "auto") or "auto"),
+            "--resource-profile",
+            str(self._parameter(payload, "resource_profile", "balanced") or "balanced"),
+            "--precision",
+            str(self._parameter(payload, "precision", "auto") or "auto"),
             "--resource-context",
             str(resource_context_path),
             "--resource-resolution",
@@ -743,6 +747,11 @@ class AgentTrainingRunner:
             str(float(self._parameter(payload, "continue_threshold", 0.0))),
             "--stop-threshold",
             str(float(self._parameter(payload, "stop_threshold", 0.0))),
+            *(
+                ["--time", str(float(self._parameter(payload, "time", 0.0)))]
+                if self._parameter(payload, "time", None) is not None
+                else []
+            ),
             "--runtime-stop-policy",
             runtime_stop_policy,
             # Supplemental material/AI configuration is control-plane state and
