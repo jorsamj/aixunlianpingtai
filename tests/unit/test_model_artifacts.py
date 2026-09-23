@@ -817,6 +817,50 @@ class ArtifactCapabilityProvider:
         return not self.deleted
 
 
+
+
+def test_artifact_storage_treats_non_accessdenied_bucket_metadata_failure_as_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider()
+
+    def metadata_probe_failed():
+        return StorageHealth.unavailable("GetBucketInfo diagnostic unavailable: request rejected")
+
+    provider.health_check = metadata_probe_failed
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    result = service.test_artifact_storage(source_id)
+
+    assert result["ok"] is True
+    assert result["bucket_info_checked"] is False
+    assert result["stages"]["bucket_info_checked"] is False
+    assert "仅作为诊断" in result["warning"]
+    assert provider.operations == ["put", "stat", "read", "delete", "exists"]
+
+
+def test_artifact_storage_metadata_failure_does_not_hide_put_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(fail_stage="put")
+
+    def metadata_probe_failed():
+        return StorageHealth.unavailable("GetBucketInfo diagnostic unavailable: request rejected")
+
+    provider.health_check = metadata_probe_failed
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_WRITE_FAILED"
+    assert "写入失败（PUT）" in blocked.value.message
 def test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtrip(
     tmp_path: Path,
     monkeypatch,
