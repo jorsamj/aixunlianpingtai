@@ -44,6 +44,29 @@ test('vision providers, candidate review, and vendor target parameters are expli
     default_for_annotation: true
   }});
   expect(configured.ok()).toBeTruthy();
+  const vendorAlgorithmId = 'vendor-target-algorithm';
+  const vendorVersionId = 'vendor-target-version';
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${vendorAlgorithmId}/versions/${vendorVersionId}/deployments`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      algorithm: {id: vendorAlgorithmId, name: '厂商转换参数'},
+      version: {id: vendorVersionId, version_name: '20260924080000', model_name: 'best.pt', stored_path: '/models/best.pt'},
+      items: []
+    })
+  }));
+  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({items: [
+      {id:'onnx-ready', name:'Ultralytics ONNX', kind:'ultralytics', mode:'local', status:'ready', targets:['onnx'], message:'ONNX ready'},
+      {id:'paddle-ready', name:'Paddle Export', kind:'paddle', mode:'local', status:'ready', targets:['paddle_inference'], message:'Paddle ready'},
+      {id:'trt-ready', name:'TensorRT 4090', kind:'tensorrt', mode:'local', status:'ready', targets:['tensorrt'], message:'TensorRT ready'},
+      {id:'atlas-ready', name:'Atlas CANN', kind:'ascend', mode:'local', status:'ready', targets:['ascend'], detected_soc_versions:['Ascend310P3'], message:'CANN ready'},
+      {id:'rknn-ready', name:'RKNN Toolkit', kind:'rockchip', mode:'local', status:'ready', targets:['rockchip'], supported_chips:['rk3568','rk3576'], supported_precisions:['fp16','int8'], message:'RKNN ready'},
+      {id:'sophon-ready', name:'TPU-MLIR', kind:'sophon', mode:'local', status:'ready', targets:['sophon'], message:'Sophon ready'}
+    ]})
+  }));
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '模型配置'}));
   }, project.id);
@@ -95,13 +118,34 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(candidateDialog.getByRole('button', {name: '全部接受'})).toBeVisible();
   await candidateDialog.getByRole('button', {name: '暂不处理'}).click();
 
-  await page.evaluate(() => window.setPage('部署转换'));
-  await page.locator('.deploy-target-card', {hasText: '华为 Atlas'}).click();
-  await expect(page.locator('#dpSoc')).toBeVisible();
-  await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('#dpChip option')).toHaveText(['RK3568', 'RK3576']);
-  await page.locator('.deploy-target-card', {hasText: 'NVIDIA TensorRT'}).click();
-  await expect(page.locator('#dpTargetEnvironment')).toBeVisible();
+  await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [vendorAlgorithmId, vendorVersionId]);
+  const versionDialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(versionDialog).toBeVisible();
+  await versionDialog.getByRole('button', {name: '选择转换目标'}).click();
+  const conversionDialog = page.getByRole('dialog', {name: '新建版本转换'});
+  await expect(conversionDialog).toBeVisible();
+  await expect(conversionDialog.locator('input[name="conv428Target"]')).toHaveCount(6);
+
+  await conversionDialog.locator('input[name="conv428Target"][value="onnx"]').check();
+  await expect(conversionDialog.locator('#conv428Opset')).toBeVisible();
+  await expect(conversionDialog.locator('#conv428Resource')).toContainText('Ultralytics ONNX');
+
+  await conversionDialog.locator('input[name="conv428Target"][value="paddle_inference"]').check();
+  await expect(conversionDialog.locator('#conv428Resource')).toContainText('Paddle Export');
+
+  await conversionDialog.locator('input[name="conv428Target"][value="ascend"]').check();
+  await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('Ascend310P3');
+
+  await conversionDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
+  await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(conversionDialog.locator('.convert428-resource-status')).toContainText('RKNN Toolkit');
+
+  await conversionDialog.locator('input[name="conv428Target"][value="tensorrt"]').check();
+  await expect(conversionDialog.locator('#conv428TargetEnvironment')).toBeVisible();
+  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
+
+  await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
+  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeEnabled();
 });
 
 test('version conversion shows configured compiler resources and their readiness', async ({page, request}) => {
@@ -145,11 +189,7 @@ test('version conversion shows configured compiler resources and their readiness
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('未检测到 RKNN-Toolkit2');
   await expect(createDialog.getByRole('button', {name: '配置部署资源'})).toBeVisible();
   await createDialog.getByRole('button', {name: '取消'}).click();
-  await historyDialog.locator('button[aria-label="关闭"]').click();
-  await page.evaluate(() => window.setPage('部署转换'));
-  await expect(page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'})).toBeVisible();
-  await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('.deploy-resource-readiness')).toContainText('Windows RKNN-Toolkit2');
+  await expect(historyDialog).toBeVisible();
 });
 
 test('module graph is cache-busted and exposes platform helpers', async ({page, request}) => {
