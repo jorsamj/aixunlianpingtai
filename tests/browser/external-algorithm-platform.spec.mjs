@@ -216,6 +216,10 @@ test('changlian platform page tests draft credentials before manual sync', async
   await page.evaluate(() => { window.__externalPlatformStableRoot = document.querySelector('[data-external-platform-page="1"]'); });
 
   await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
+  await expect(page.getByRole('button', {name: '概览', exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name: /厂商对应表/})).toBeVisible();
+
+  await page.getByRole('button', {name: '接口契约', exact: true}).click();
   const apiContract = page.locator('[data-changlian-api-contract="1"]');
   await expect(apiContract).toBeVisible();
   await expect(apiContract).toContainText('已核对 31 个官方 OpenAPI 接口');
@@ -223,6 +227,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(apiContract).toContainText('修改算法版本');
   await expect(apiContract).toContainText('POST /internal/algorithm/algorithm-version/edit');
 
+  await page.getByRole('button', {name: '连接配置', exact: true}).click();
   await page.locator('#externalBaseUrl').fill('https://draft.example.test');
   await page.locator('#externalAccessKey').fill('draft-ak');
   await page.locator('#externalAccessSecret').fill('draft-secret');
