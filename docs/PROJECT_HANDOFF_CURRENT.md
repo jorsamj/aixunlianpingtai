@@ -1,3 +1,14 @@
+<!-- LIVE_HANDOFF_2026_09_24_CURRENT_CUTOFF -->
+> ## 2026-09-24 当前接手入口（最高优先级）
+>
+> 最新代码/CI 截止基线（本文档提交前）：`3b6187a2124ed536f63a37be6ebb2c69f7ed049c`；`VERSION.txt=42.24.0`。该基线 51 checks：41 success / 10 failure，因此不能宣称全绿。新会话第一步必须重新读取远端真实 HEAD。
+>
+> 本轮训练资源链已完成：三档自动资源配置前后端一致、中央服务器/GPU调度、多GPU真实并发预算、精度 truth、远程 RAM/disk cache evidence、忙 GPU 等待。训练详情/日志也已收敛到唯一 `TrainingRecoveryRuntime` + durable SSE，成功终态不再被旧 error 误报，详情/日志/telemetry/结构化失败证据已统一。
+>
+> 当前重点不再是重新设计训练 UI，而是：**先清理/分类 10 个真实 completed CI failures，再做 focused 训练详情浏览器与 Linux GPU/Agent 现场验收。** 已确认其中包含 stale/mis-scoped tests：训练 BF16 guard 误扫 Sophon 部署 BF16、Windows Workers 测试仍期待 Linux 上限、旧 AI label wrapper exact assertion、旧“工作台”导航与 build marker。其余失败必须逐个读日志/focused reproduce 后再决定是否改生产。
+>
+> 完整接手说明：`docs/CODEX_HANDOFF_2026-09-24_CURRENT.md`；训练详情专项：`docs/CODEX_HANDOFF_2026-09-24_TRAINING_DETAIL_LOGS.md`。
+>
 <!-- LIVE_HANDOFF_TRAINING_DETAIL_LOG_2026_09_24 -->
 > ## 2026-09-24 训练详情 / 日志 / 错误提示最新覆盖
 >

@@ -1,5 +1,30 @@
 # Training Detail / Log Truth Handoff — 2026-09-24
 
+## 2026-09-24 latest handoff cutoff
+
+Current code/CI cutoff before the next documentation commit is `3b6187a2124ed536f63a37be6ebb2c69f7ed049c`; `VERSION.txt` remains `42.24.0`.
+
+The training detail/log closure described below has already landed in production code. The next session must **verify it rather than build another modal/runtime**. Current CI for the cutoff HEAD is **51 total / 41 success / 10 failure**, so the branch is not green.
+
+Important failure classification from real logs:
+
+- confirmed stale/mis-scoped:
+  - training BF16 permanent guard scans all `static/app.js` and hits valid Sophon deployment BF16 even though training BF16 is removed;
+  - Windows training resource tests expect Workers 8/12 although Windows production safety cap is 4;
+  - label-normalization frontend contract expects a retired exact `createAiLabelCanonical429` wrapper;
+  - broad navigation suite still contains retired `工作台` expectations and exact stale build markers.
+- focused reproduction still required:
+  - External Algorithm Publish Real Chrome;
+  - Storage Source Real Chrome;
+  - Model/RKNN Agent Real Chrome;
+  - External Algorithm Platform Real Chrome;
+  - Remote Material permanent guard;
+  - frontend legacy-poll compatibility guard;
+  - remaining broad-browser request-count / selector failures.
+
+Do not change training-detail production behavior merely because one of these unrelated/stale checks is red. See `docs/CODEX_HANDOFF_2026-09-24_CURRENT.md` for the full current handoff.
+
+
 > Branch: `feature/external-algorithm-publishing`  
 > Code baseline before this documentation commit: `8e50195f76d0aa58ccf6082bdbd7c93029b528b7`  
 > `VERSION.txt = 42.24.0` — do not change.  
