@@ -632,7 +632,8 @@ def decide_training_quality_gate(value, *, metric, stop_threshold, continue_thre
 
 
 def derive_training_completion_metadata(
-    trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None
+    trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None,
+    max_train_hours=None, elapsed_hours=None,
 ):
     """Return durable, user-facing completion truth without guessing from 100% progress."""
     requested = max(0, int(requested_epochs or 0))
@@ -660,6 +661,29 @@ def derive_training_completion_metadata(
             training_outcome="needs_optimization",
             completion_reason="quality_gate_below_continue_threshold",
             completion_message=f"训练提前结束：{gate}，模型产物校验通过",
+        )
+        return result
+    try:
+        max_hours = float(max_train_hours) if max_train_hours is not None else None
+        elapsed = float(elapsed_hours) if elapsed_hours is not None else None
+    except (TypeError, ValueError, OverflowError):
+        max_hours = elapsed = None
+    if (
+        max_hours is not None
+        and max_hours > 0
+        and elapsed is not None
+        and elapsed >= max_hours * 0.95
+        and requested > 0
+        and completed > 0
+        and completed < requested
+    ):
+        result.update(
+            training_outcome="completed",
+            completion_reason="time_limit_reached",
+            completion_message=(
+                f"训练已达到最大训练时长 {max_hours:g} 小时，"
+                "当前模型产物校验通过"
+            ),
         )
         return result
     if not (requested > 0 and completed > 0 and completed < requested):
@@ -1003,6 +1027,7 @@ def main():
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
         retries = 0
+        training_start_monotonic = time.monotonic()
         while True:
             try:
                 evidence["effective_args"] = dict(train_args)
@@ -1181,6 +1206,8 @@ def main():
             completed_epochs=completed_epochs,
             gate_reason=gate_reason,
             ai_plan=ai_plan,
+            max_train_hours=args.time,
+            elapsed_hours=(time.monotonic()-training_start_monotonic)/3600.0,
         )
         training_report["completion"]={k:v for k,v in completion.items() if k != "completion_message"}
         update_job(
