@@ -38,7 +38,7 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await openStoragePage(page);
   await expect(page.getByText('素材存储', {exact: true})).toBeVisible();
   await expect(page.getByText('算法与转换结果存储', {exact: true})).toBeVisible({timeout: 10_000});
-  await expect(page.getByText('自动归档已启用', {exact: true})).toBeVisible();
+  await expect(page.getByText('独立配置 · 自动归档', {exact: true})).toBeVisible();
   await expect(page.locator('#modelArtifactStorageSource')).toHaveCount(0);
   await expect(page.locator('#modelArtifactEndpoint')).toBeVisible();
   await expect(page.locator('#modelArtifactBucket')).toBeVisible();
