@@ -371,15 +371,15 @@ jobs:
           if grep -Fq 'await window.refreshCurrentPage413?.()' static/modules/material-pagination-runtime.js; then echo "material navigation must not launch broad stale project refreshes" >&2; exit 1; fi
           if grep -Fq 'materialAwareSetPage' static/modules/material-pagination-runtime.js; then echo "material pagination must not own a second setPage wrapper" >&2; exit 1; fi
           grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
-          grep -Fq "'部署转换': ['loadDeployData', 'refreshDeployTasks', 'refreshDeployJobsV39']" static/modules/navigation-stability.js
+          grep -Fq "if (requested === '部署转换' || requested === '部署产物') return '算法列表';" static/modules/navigation-stability.js
           grep -Fq "'deploy-jobs-v39','部署转换'" static/app.js
-          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422548';" static/main.mjs
+          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';" static/main.mjs
           grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
           grep -Fq "registerPageOwner('平台对接'" static/main.mjs
           grep -Fq "['标签管理', 'renderLabelManagement414']" static/main.mjs
           grep -Fq "['存储配置', 'renderStorageSources61']" static/main.mjs
           grep -Fq "['训练资源', 'renderResources']" static/main.mjs
-          grep -Fq "['工作台', 'renderDashboardCanonical422']" static/main.mjs
+          grep -Fq "['总览', 'renderDashboardCanonical422']" static/main.mjs
           grep -Fq 'refreshPageExtrasInBackground(page)' static/main.mjs
           grep -Fq "source: 'background-data'" static/main.mjs
           grep -Fq 'function renderCanonicalOwner(page' static/main.mjs
