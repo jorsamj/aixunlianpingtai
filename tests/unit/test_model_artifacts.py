@@ -9,6 +9,8 @@ import pytest
 from platform_core.errors import PlatformError
 from platform_core.algorithms import save_algorithms
 from platform_core.model_artifacts import (
+    ARTIFACT_OSS_SOURCE_ID,
+    ArtifactOSSConfigPayload,
     ModelArtifactConfigPayload,
     ModelArtifactService,
     build_artifact_object_key,
@@ -52,6 +54,80 @@ def _service(root: Path):
         auto_upload_enabled=True,
     ))
     return service
+
+
+
+
+def test_artifact_oss_config_is_standalone_from_material_storage(tmp_path: Path):
+    service = _service(tmp_path)
+
+    result = service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+        endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+        bucket="new24hlink",
+        access_key_id="LTAI-artifact",
+        access_key_secret="artifact-secret",
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+        root_prefix="changlian-ai/artifacts",
+    ))
+
+    assert result["config"]["storage_source_id"] == ARTIFACT_OSS_SOURCE_ID
+    assert result["artifact_storage"]["dedicated"] is True
+    assert result["artifact_storage"]["endpoint"] == "https://oss-cn-hangzhou.aliyuncs.com"
+    assert result["artifact_storage"]["bucket"] == "new24hlink"
+    assert result["artifact_storage"]["credential_configured"] is True
+    source = service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+    assert source is not None
+    assert source.type == "oss"
+    assert source.config["usage"] == "model_artifact"
+    assert source.config["prefix"] == ""
+    assert source.config["public_base_url"] == "https://new24hlink.oss-cn-hangzhou.aliyuncs.com"
+    credentials = service.storage_credentials_factory().get(source.secret_ref)
+    assert credentials == {
+        "access_key_id": "LTAI-artifact",
+        "access_key_secret": "artifact-secret",
+    }
+
+
+def test_artifact_oss_config_blank_credentials_preserve_existing_secret(tmp_path: Path):
+    service = _service(tmp_path)
+    service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+        endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+        bucket="new24hlink",
+        access_key_id="LTAI-artifact",
+        access_key_secret="artifact-secret",
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+        root_prefix="changlian-ai/artifacts",
+    ))
+
+    result = service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+        endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+        bucket="new24hlink",
+        public_base_url="https://models.example.com",
+        root_prefix="changlian-ai/artifacts-v2",
+    ))
+
+    source = service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+    assert source is not None
+    assert service.storage_credentials_factory().get(source.secret_ref) == {
+        "access_key_id": "LTAI-artifact",
+        "access_key_secret": "artifact-secret",
+    }
+    assert result["config"]["root_prefix"] == "changlian-ai/artifacts-v2"
+    assert result["artifact_storage"]["public_base_url"] == "https://models.example.com"
+
+
+def test_artifact_oss_first_save_requires_own_credentials_without_legacy_oss(tmp_path: Path):
+    service = _service(tmp_path)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+            endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+            bucket="new24hlink",
+            root_prefix="changlian-ai/artifacts",
+        ))
+
+    assert blocked.value.code == "MODEL_ARTIFACT_OSS_CREDENTIAL_REQUIRED"
+    assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID) is None
 
 
 def _seed(root: Path):
