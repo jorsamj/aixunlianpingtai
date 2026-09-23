@@ -177,3 +177,63 @@ test('training resource page reuses recent training options on revisit', async (
   await page.waitForTimeout(150);
   expect(optionGets).toBe(firstVisitGets);
 });
+
+
+test('dashboard revisit reuses focused source and quality extras', async ({page}) => {
+  let sourceGets = 0;
+  let qualityGets = 0;
+
+  await page.route('**/api/v42/projects/*/sources', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    sourceGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [{
+        id:'dashboard-source-cache-1',
+        name:'总览缓存素材源',
+        type:'folder',
+        source:'/data/dashboard-cache',
+        collect_mode:'auto',
+        runtime_status:'ready',
+        status:'ready',
+        enabled:true,
+        dataset_id:'default',
+      }]}),
+    });
+  });
+
+  await page.route('**/api/v42/projects/*/quality-overview', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    qualityGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        algorithms:[{
+          algorithm_id:'dashboard-quality-1',
+          precision:0.82,
+          recall:0.78,
+          map50:0.80,
+        }],
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await expect.poll(() => [sourceGets, qualityGets]).toEqual([1, 1]);
+  await expect(page.locator('[data-dashboard-source-count]')).toHaveText('1');
+  const firstVisit = {sourceGets, qualityGets};
+
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#title')).toContainText('算法列表');
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await expect(page.locator('[data-dashboard-source-count]')).toHaveText('1');
+  await page.waitForTimeout(150);
+
+  expect({sourceGets, qualityGets}).toEqual(firstVisit);
+});
