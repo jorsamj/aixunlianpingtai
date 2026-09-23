@@ -105,6 +105,16 @@ function trainingStatusText(status) {
   return ({queued: '排队中', waiting: '等待资源', pending: '等待提交', starting: '启动中', running: '训练中', pausing: '暂停中', paused: '已暂停', resuming: '恢复中', stopping: '停止中', cancel_requested: '取消中'})[String(status || '').toLowerCase()] || String(status || '训练中');
 }
 
+function trainingFilterText(value) {
+  return ({
+    trainable: '仅可训练',
+    training: '训练中',
+    trained: '已有版本',
+    untrained: '尚未训练',
+    blocked: '不可训练',
+  })[String(value || '')] || String(value || '');
+}
+
 export function installAlgorithmListRuntime({getState, projectId, notify} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__algorithmListRuntimeInstalled) return window.AlgorithmListRuntime;
@@ -116,6 +126,8 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let lastRefreshAt = 0;
   let refreshError = '';
   let externalProvider = null;
+  let trainingWarmupHandle = null;
+  let trainingWarmupGeneration = 0;
   const renderedRows = new Map();
   const filters = {
     query: '',
@@ -251,20 +263,95 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     };
   }
 
+  function algorithmTrainability(algorithm) {
+    const meta = providerMeta(algorithm);
+    if (meta.external) {
+      const ready = meta.readiness?.ready !== false;
+      return {
+        ready,
+        message: ready ? '' : String(meta.readiness?.message || '当前外部算法不可训练'),
+      };
+    }
+    const supported = new Set(['yolo_ultralytics', 'paddle_detection']);
+    const ready = supported.has(String(algorithm?.algorithm_type || ''));
+    return {
+      ready,
+      message: ready ? '' : '当前算法类型暂不支持直接训练',
+    };
+  }
+
+  function warmTrainingInputs(algorithmId = '', {includePreflight = true} = {}) {
+    const runtime = window.TrainingCreateHydrationRuntime;
+    if (!runtime?.prewarm) return null;
+    return runtime.prewarm(String(algorithmId || ''), {includePreflight}).catch(() => null);
+  }
+
+  function cancelTrainingWarmup() {
+    trainingWarmupGeneration += 1;
+    if (trainingWarmupHandle == null) return;
+    if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(trainingWarmupHandle);
+    else clearTimeout(trainingWarmupHandle);
+    trainingWarmupHandle = null;
+  }
+
+  function scheduleTrainingWarmup(rows = []) {
+    cancelTrainingWarmup();
+    const generation = trainingWarmupGeneration;
+    // The common training options/recommendation are global for the current
+    // project. Warm them once as soon as the algorithm list is usable.
+    queueMicrotask(() => {
+      if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
+      void warmTrainingInputs('', {includePreflight: false});
+    });
+    // Real-time ChangLian preflight remains authoritative. Move the latency
+    // off the click path by warming a small visible window while the browser is idle.
+    const candidates = rows.filter(row => {
+      const meta = providerMeta(row);
+      return meta.external && algorithmTrainability(row).ready;
+    }).slice(0, 6);
+    if (!candidates.length) return;
+    const run = async () => {
+      trainingWarmupHandle = null;
+      for (const row of candidates) {
+        if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
+        await warmTrainingInputs(row.id, {includePreflight: true});
+      }
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      trainingWarmupHandle = window.requestIdleCallback(() => void run(), {timeout: 800});
+    } else {
+      trainingWarmupHandle = window.setTimeout(() => void run(), 80);
+    }
+  }
+
   function algorithmMatches(algorithm) {
     if (!matchesSearch(algorithm)) return false;
     if (filters.industry !== 'all' && String(algorithm?.industry || '') !== filters.industry) return false;
     if (filters.type !== 'all' && String(algorithm?.algorithm_type || '') !== filters.type) return false;
-    if (externalProvider?.matches) return externalProvider.matches(algorithm, {
-      source: filters.source,
-      trainingStatus: filters.status,
-      selectedCategoryIds: [...filters.selectedCategoryIds],
-      jobs: state().jobs || [],
-    }) !== false;
+    const meta = providerMeta(algorithm);
+    const trainability = algorithmTrainability(algorithm);
+    if (externalProvider?.matches) {
+      const providerMatch = externalProvider.matches(algorithm, {
+        source: filters.source,
+        trainingStatus: filters.status,
+        selectedCategoryIds: [...filters.selectedCategoryIds],
+        jobs: state().jobs || [],
+      });
+      if (filters.status === 'blocked' && !meta.external) return trainability.ready === false;
+      if (providerMatch === false) return false;
+      if (filters.status === 'trainable') return trainability.ready;
+      return true;
+    }
     const external = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL';
     if (filters.source === 'internal' && external) return false;
     if (filters.source === 'external' && !external) return false;
-    return filters.selectedCategoryIds.length === 0;
+    if (filters.selectedCategoryIds.length !== 0) return false;
+    if (filters.status === 'trainable') return trainability.ready;
+    if (filters.status === 'blocked') return !trainability.ready;
+    if (filters.status === 'trained') return (algorithm.versions || []).length > 0;
+    if (filters.status === 'untrained') return (algorithm.versions || []).length === 0;
+    if (filters.status === 'training') return Boolean(activeJob(algorithm.id, state().jobs || []));
+    return true;
   }
 
   function trainingCount(id) {
@@ -280,20 +367,29 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function shellHtml() {
-    return `<section class="entity-page algorithm-list-page alg428-shell" data-algorithm-list-owner="AlgorithmListRuntime">
-      <header class="entity-page-header"><div><h2>算法列表</h2><p>管理和查看所有算法，支持筛选、训练和版本管理</p></div><div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建算法</button></div></header>
-      <section class="entity-query-surface"><div class="entity-query-grid algorithm-query-grid">
-        <label class="entity-search"><span>⌕</span><input id="alg412Q" class="input" type="search" placeholder="搜索算法名称 / 算法ID" data-algorithm-query></label>
-        <select class="select" data-algorithm-source-filter><option value="all">来源 · 全部</option><option value="internal">本平台</option><option value="external">外部平台</option></select>
-        <select id="alg412Industry" class="select" data-algorithm-industry-filter></select>
-        <select id="alg412Type" class="select" data-algorithm-type-filter><option value="all">算法类型 · 全部</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python</option></select>
-        <select class="select" data-algorithm-training-status-filter><option value="all">训练状态 · 全部</option><option value="trainable">可训练</option><option value="training">训练中</option><option value="trained">已有版本</option><option value="untrained">尚未训练</option><option value="blocked">不可训练</option></select>
-        <div class="algorithm-category-control"><button class="btn algorithm-category-trigger" data-category-picker-toggle>品目筛选 <span></span></button><div class="algorithm-category-popover" data-category-popover hidden></div></div>
-        <button class="btn entity-reset" data-algorithm-reset>重置</button>
-      </div><div class="entity-applied-filters" data-algorithm-applied hidden></div></section>
-      <div class="entity-sortbar"><button data-algorithm-sort="comprehensive" class="on">综合排序</button><button data-algorithm-sort="updated">更新时间</button><button data-algorithm-sort="training">训练次数</button><button data-algorithm-sort="metric">当前指标</button></div>
+    return `<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">
+      <header class="algorithm-list-hero">
+        <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法列表</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
+        <div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建算法</button></div>
+      </header>
+      <section class="entity-query-surface algorithm-filter-surface">
+        <div class="algorithm-filter-primary">
+          <label class="entity-search algorithm-search"><span>⌕</span><input id="alg412Q" class="input" type="search" placeholder="搜索算法名称 / 算法ID" data-algorithm-query></label>
+          <button type="button" class="algorithm-trainable-toggle" data-algorithm-trainable-only><i>✓</i><span>仅看可训练</span><em data-algorithm-trainable-count>0</em></button>
+          <div class="algorithm-category-control"><button class="btn algorithm-category-trigger" data-category-picker-toggle>品目筛选 <span></span></button><div class="algorithm-category-popover" data-category-popover hidden></div></div>
+        </div>
+        <div class="algorithm-filter-secondary">
+          <select class="select" data-algorithm-source-filter><option value="all">来源 · 全部</option><option value="internal">本平台</option><option value="external">外部平台</option></select>
+          <select id="alg412Industry" class="select" data-algorithm-industry-filter></select>
+          <select id="alg412Type" class="select" data-algorithm-type-filter><option value="all">算法类型 · 全部</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python</option></select>
+          <select class="select" data-algorithm-training-status-filter><option value="all">训练状态 · 全部</option><option value="trainable">可训练</option><option value="training">训练中</option><option value="trained">已有版本</option><option value="untrained">尚未训练</option><option value="blocked">不可训练</option></select>
+          <button class="btn entity-reset" data-algorithm-reset>重置</button>
+        </div>
+        <div class="entity-applied-filters" data-algorithm-applied hidden></div>
+      </section>
+      <div class="algorithm-list-meta"><div class="entity-sortbar"><button data-algorithm-sort="comprehensive" class="on">综合排序</button><button data-algorithm-sort="updated">最近更新</button><button data-algorithm-sort="training">训练次数</button><button data-algorithm-sort="metric">mAP50</button></div><span data-algorithm-result-count></span></div>
       <div class="entity-region-error" data-algorithm-error hidden></div>
-      <section class="entity-table-surface"><div class="entity-table-scroll"><table class="entity-table algorithm-table"><thead><tr><th>算法名称</th><th>状态</th><th>当前版本</th><th>当前指标</th><th>训练次数</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="alg412List"></tbody></table></div><footer class="entity-pagination" data-algorithm-pagination></footer></section>
+      <section class="algorithm-card-surface"><div id="alg412List" class="algorithm-card-grid"></div><footer class="entity-pagination algorithm-card-pagination" data-algorithm-pagination></footer></section>
     </section>`;
   }
 
@@ -322,6 +418,11 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (control && control.value !== value) control.value = value;
     }
     for (const button of root.querySelectorAll('[data-algorithm-sort]')) button.classList.toggle('on', button.dataset.algorithmSort === viewState.sort);
+    const trainableToggle = root.querySelector('[data-algorithm-trainable-only]');
+    const trainableCount = (state().algorithms || []).filter(row => algorithmTrainability(row).ready).length;
+    if (trainableToggle) trainableToggle.classList.toggle('on', filters.status === 'trainable');
+    const trainableCountNode = root.querySelector('[data-algorithm-trainable-count]');
+    if (trainableCountNode) trainableCountNode.textContent = String(trainableCount);
     const sync = root.querySelector('[data-algorithm-sync]');
     if (sync) sync.hidden = !externalSnapshot().externalMode;
     const categories = filters.selectedCategoryIds.map(categoryById).filter(Boolean);
@@ -335,7 +436,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       ...(filters.source !== 'all' ? [{key: 'source', label: filters.source === 'external' ? '外部平台' : '本平台'}] : []),
       ...(filters.industry !== 'all' ? [{key: 'industry', label: filters.industry}] : []),
       ...(filters.type !== 'all' ? [{key: 'type', label: algorithmTypeText(filters.type)}] : []),
-      ...(filters.status !== 'all' ? [{key: 'status', label: filters.status}] : [])];
+      ...(filters.status !== 'all' ? [{key: 'status', label: trainingFilterText(filters.status)}] : [])];
     if (applied) {
       applied.hidden = tags.length === 0;
       applied.innerHTML = tags.length ? `<span>已选：</span>${tags.map(tag => `<button data-remove-filter="${esc(tag.key)}">${esc(tag.label)} ×</button>`).join('')}<button class="entity-filter-clear" data-algorithm-reset>清空</button>` : '';
@@ -382,14 +483,44 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const metric = algorithmVersionMap50(version);
     const count = trainingCount(algorithm.id);
     const meta = providerMeta(algorithm);
+    const trainability = algorithmTrainability(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
-    const status = run ? String(run.status_text || trainingStatusText(run.status)) : algorithm.external_active === false ? '已下架' : meta.readiness?.ready === false ? '待同步' : version ? '已训练' : '未训练';
-    const statusClass = run ? 'running' : version ? 'success' : meta.readiness?.ready === false ? 'warning' : 'neutral';
+    const status = run
+      ? String(run.status_text || trainingStatusText(run.status))
+      : algorithm.external_active === false ? '已下架'
+        : !trainability.ready ? '不可训练'
+          : version ? '已训练' : '可训练';
+    const statusClass = run ? 'running' : !trainability.ready ? 'warning' : version ? 'success' : 'neutral';
     const open = Boolean(state().alg428Expanded?.[algorithm.id]);
-    const tags = [algorithm.industry, algorithmTypeText(algorithm.algorithm_type)].filter(Boolean).slice(0, 2);
+    const tags = [algorithm.industry, algorithmTypeText(algorithm.algorithm_type), meta.sourceLabel || '本平台'].filter(Boolean);
     const updated = algorithm.updated_at || version?.finished_at || version?.created_at || algorithm.created_at;
-    const html = `<tr class="alg428-card alg428-asset-row ${open ? 'open' : ''}" data-algorithm-id="${esc(algorithm.id)}"><td colspan="7"><div class="algorithm-row-grid"><div class="algorithm-name-cell"><span class="algorithm-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span><div><button class="algorithm-name-link" data-algorithm-toggle="${esc(algorithm.id)}" title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</button><span>${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}<em>${esc(meta.sourceLabel || '本平台')}</em></span></div></div><div><span class="entity-status ${statusClass}" title="${esc(meta.readiness?.message || '')}">${esc(status)}</span></div><div><b>${esc(version?.version_name || '-')}</b><small>${(algorithm.versions || []).length} 个版本</small></div><div><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b><small>当前 mAP50</small></div><div><b>${count}</b><small>次</small></div><div><span>${dateText(updated)}</span></div><div class="entity-row-actions"><button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button><button onclick="algorithmReport429('${esc(algorithm.id)}')">综合报告</button><button class="primary-link" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${meta.readiness?.ready === false ? `disabled title="${esc(meta.readiness?.message || '当前不可训练')}"` : ''}>训练</button><details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details><button class="algorithm-expand" data-algorithm-toggle="${esc(algorithm.id)}">⌄</button></div>${open ? `<div class="algorithm-version-surface"><header><b>迭代版本</b><span>当前版本决定训练、转换和检测的默认起点</span></header>${versionRowsHtml(algorithm)}</div>` : ''}</div></td></tr>`;
-    return {id: String(algorithm.id || ''), html, signature: JSON.stringify({algorithm, count, meta, status, open})};
+    const remark = String(algorithm.remark || '').trim() || '暂无算法说明';
+    const html = `<article class="alg428-card algorithm-registry-card ${open ? 'open' : ''}" data-algorithm-id="${esc(algorithm.id)}" data-algorithm-card="1" tabindex="0" aria-expanded="${open ? 'true' : 'false'}">
+      <div class="alg428-main algorithm-card-main">
+        <header class="algorithm-card-head">
+          <span class="algorithm-avatar algorithm-card-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span>
+          <div class="algorithm-card-title"><div><h3 title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</h3><span class="entity-status ${statusClass}" title="${esc(trainability.message || meta.readiness?.message || '')}">${esc(status)}</span></div><div class="algorithm-card-tags">${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}</div></div>
+          <span class="algorithm-card-chevron" aria-hidden="true">⌄</span>
+        </header>
+        <p class="algorithm-card-description" title="${esc(remark)}">${esc(remark)}</p>
+        <div class="algorithm-card-stats">
+          <div><span>当前版本</span><b>${esc(version?.version_name || '尚未训练')}</b><small>${(algorithm.versions || []).length} 个版本</small></div>
+          <div><span>当前 mAP50</span><b class="${metric == null ? '' : 'metric'}">${metric == null ? '-' : `${metric.toFixed(1)}%`}</b><small>${metric == null ? '暂无指标' : '当前版本'}</small></div>
+          <div><span>训练次数</span><b>${count}</b><small>历史任务</small></div>
+        </div>
+        <footer class="algorithm-card-footer">
+          <div class="algorithm-card-updated"><span>最近更新</span><b>${dateText(updated)}</b></div>
+          <div class="entity-row-actions algorithm-card-actions">
+            <button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button>
+            <button onclick="algorithmReport429('${esc(algorithm.id)}')">报告</button>
+            <button class="primary-link" data-algorithm-train="${esc(algorithm.id)}" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${trainability.ready ? '' : `disabled title="${esc(trainability.message || '当前不可训练')}"`}>训练</button>
+            <details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
+          </div>
+        </footer>
+      </div>
+      ${open ? `<div class="algorithm-version-surface"><header><b>迭代版本</b><span>当前版本决定训练、转换和检测的默认起点</span></header>${versionRowsHtml(algorithm)}</div>` : ''}
+    </article>`;
+    return {id: String(algorithm.id || ''), html, signature: JSON.stringify({algorithm, count, meta, trainability, status, open})};
   }
 
   function renderRows() {
@@ -400,21 +531,41 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const maxPage = Math.max(1, Math.ceil(all.length / viewState.pageSize));
     viewState.page = Math.min(Math.max(1, viewState.page), maxPage);
     const rows = all.slice((viewState.page - 1) * viewState.pageSize, viewState.page * viewState.pageSize);
-    if (!doc?.createElement || typeof body.querySelectorAll !== 'function') body.innerHTML = rows.map(row => algorithmRowView(row).html).join('');
-    else if (!rows.length) { body.innerHTML = '<tr class="entity-empty-row"><td colspan="7"><div class="entity-empty"><b>暂无符合条件的算法</b><span>请调整筛选条件或新建算法</span></div></td></tr>'; renderedRows.clear(); }
-    else {
-      body.querySelector('.entity-empty-row')?.remove();
-      const existing = new Map([...body.querySelectorAll('tr[data-algorithm-id]')].map(row => [String(row.dataset.algorithmId || ''), row]));
+    if (!doc?.createElement || typeof body.querySelectorAll !== 'function') {
+      body.innerHTML = rows.map(row => algorithmRowView(row).html).join('');
+    } else if (!rows.length) {
+      body.innerHTML = '<div class="entity-empty algorithm-card-empty"><b>暂无符合条件的算法</b><span>请调整筛选条件或新建算法</span></div>';
+      renderedRows.clear();
+    } else {
+      body.querySelector('.algorithm-card-empty')?.remove();
+      const existing = new Map([...body.querySelectorAll('[data-algorithm-id]')].map(row => [String(row.dataset.algorithmId || ''), row]));
       const wanted = new Set();
       rows.forEach((algorithm, index) => {
-        const item = algorithmRowView(algorithm); wanted.add(item.id); let row = existing.get(item.id) || null;
-        if (!row || renderedRows.get(item.id) !== item.signature) { const holder = doc.createElement('tbody'); holder.innerHTML = item.html; const next = holder.firstElementChild; if (!next) return; if (row) row.replaceWith(next); row = next; }
-        const reference = body.children[index] || null; if (reference !== row) body.insertBefore(row, reference); renderedRows.set(item.id, item.signature);
+        const item = algorithmRowView(algorithm);
+        wanted.add(item.id);
+        let row = existing.get(item.id) || null;
+        if (!row || renderedRows.get(item.id) !== item.signature) {
+          const holder = doc.createElement('div');
+          holder.innerHTML = item.html;
+          const next = holder.firstElementChild;
+          if (!next) return;
+          if (row) row.replaceWith(next);
+          row = next;
+        }
+        const reference = body.children[index] || null;
+        if (reference !== row) body.insertBefore(row, reference);
+        renderedRows.set(item.id, item.signature);
       });
-      for (const [id, row] of existing) if (!wanted.has(id)) { row.remove(); renderedRows.delete(id); }
+      for (const [id, row] of existing) if (!wanted.has(id)) {
+        row.remove();
+        renderedRows.delete(id);
+      }
     }
+    const count = root.querySelector('[data-algorithm-result-count]');
+    if (count) count.textContent = `共 ${all.length} 个算法`;
     const pagination = root.querySelector('[data-algorithm-pagination]');
     if (pagination) pagination.innerHTML = `<span>共 ${all.length} 条</span><div><span>${viewState.pageSize} 条/页</span><button data-algorithm-page="${viewState.page - 1}" ${viewState.page <= 1 ? 'disabled' : ''}>‹</button>${Array.from({length: maxPage}, (_, index) => index + 1).slice(Math.max(0, viewState.page - 3), Math.max(5, viewState.page + 2)).map(page => `<button data-algorithm-page="${page}" class="${page === viewState.page ? 'on' : ''}">${page}</button>`).join('')}<button data-algorithm-page="${viewState.page + 1}" ${viewState.page >= maxPage ? 'disabled' : ''}>›</button></div>`;
+    scheduleTrainingWarmup(rows);
     return true;
   }
 
@@ -460,14 +611,33 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const sort = event.target.closest('[data-algorithm-sort]'); if (sort) { viewState.sort = sort.dataset.algorithmSort; viewState.page = 1; return renderPage(); }
       const page = event.target.closest('[data-algorithm-page]'); if (page && !page.disabled) { viewState.page = Number(page.dataset.algorithmPage || 1); return renderRows(); }
       const toggleRow = event.target.closest('[data-algorithm-toggle]'); if (toggleRow) return toggle(toggleRow.dataset.algorithmToggle);
+      if (event.target.closest('[data-algorithm-trainable-only]')) return setFilters({status: filters.status === 'trainable' ? 'all' : 'trainable'});
       if (event.target.closest('[data-category-picker-toggle]')) return openCategoryPicker();
       if (event.target.closest('[data-category-close]')) return cancelCategoryPicker();
       if (event.target.closest('[data-category-clear]')) { viewState.draftCategoryIds.clear(); return renderCategoryPicker(); }
       if (event.target.closest('[data-category-confirm]')) return confirmCategoryPicker();
       const recent = event.target.closest('[data-category-recent]'); if (recent) return toggleDraftCategory(recent.dataset.categoryRecent);
       const drill = event.target.closest('[data-category-drill]'); if (drill) { const row = categoryById(drill.closest('[data-category-id]')?.dataset.categoryId); if (row) viewState.categoryPath = [...(row.ancestorIds || []), row.id]; return renderCategoryPicker(); }
-      if (event.target.closest('[data-algorithm-sync]')) void externalProvider?.sync?.();
+      if (event.target.closest('[data-algorithm-sync]')) return void externalProvider?.sync?.();
+      const card = event.target.closest('[data-algorithm-card]');
+      if (card && !event.target.closest('button,a,input,select,textarea,label,details,summary')) return toggle(card.dataset.algorithmId);
     });
+    root.addEventListener('keydown', event => {
+      const card = event.target.closest?.('[data-algorithm-card]');
+      if (!card || event.target !== card || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      toggle(card.dataset.algorithmId);
+    });
+    const prewarmCard = event => {
+      const card = event.target.closest?.('[data-algorithm-card]');
+      if (!card) return;
+      const algorithm = (state().algorithms || []).find(row => String(row.id) === String(card.dataset.algorithmId || ''));
+      if (!algorithm || !algorithmTrainability(algorithm).ready) return;
+      void warmTrainingInputs(algorithm.id, {includePreflight: true});
+    };
+    root.addEventListener('pointerover', prewarmCard, {passive: true});
+    root.addEventListener('focusin', prewarmCard);
+    root.addEventListener('touchstart', prewarmCard, {passive: true});
   }
 
   function toggle(id) {
@@ -553,7 +723,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422560',
+    build: 'algorithm-list-runtime-422561',
     toggle,
     refresh,
     render: renderPage,
@@ -580,6 +750,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     },
     destroy() {
       destroyed = true;
+      cancelTrainingWarmup();
       renderedRows.clear();
       externalProvider = null;
       doc?.removeEventListener?.('click', onRefreshCapture, true);
