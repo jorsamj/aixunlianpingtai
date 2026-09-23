@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-import {installTrainingTaskVisibilityRuntime, tickTrainingClockRows} from '../../static/modules/training-task-visibility-runtime.js';
+import {
+  filterTrainingTaskJobs,
+  installTrainingTaskVisibilityRuntime,
+  tickTrainingClockRows,
+  trainingTaskStatusCounts,
+} from '../../static/modules/training-task-visibility-runtime.js';
 
 function cleanup() {
   delete globalThis.window;
@@ -169,16 +174,12 @@ test('visibility renderer keeps transitional non-terminal training states in act
     trainingTaskRuntime: fixture.runtime,
     pollRegistry: window.PollRegistryRuntime,
   });
-  visibility.render();
+  window.setTrainTab428('active');
 
   assert.match(fixture.dom.body.innerHTML, /starting-1/);
   assert.match(fixture.dom.body.innerHTML, /stopping-1/);
   assert.doesNotMatch(fixture.dom.body.innerHTML, /done-1/);
-  assert.equal(fixture.dom.activeCount.textContent, '2');
-  assert.equal(fixture.dom.historyCount.textContent, '1');
-
-  fixture.state.train428Tab = 'history';
-  visibility.render();
+  window.setTrainTab428('history');
   assert.doesNotMatch(fixture.dom.body.innerHTML, /starting-1/);
   assert.match(fixture.dom.body.innerHTML, /done-1/);
 
@@ -307,6 +308,43 @@ test('batch mode is transient and remains inside the canonical ten-column task t
   assert.match(source, /selectedIds\.clear\(\)/);
   assert.match(source, /batchMode = false/);
   assert.doesNotMatch(source, /<th><input[^>]+data-training-batch/);
+});
+
+test('status tabs derive counts from the current authoritative task snapshot', () => {
+  const jobs = [
+    {id: 'r1', status: 'running'},
+    {id: 'q1', status: 'queued'},
+    {id: 'q2', status: 'waiting'},
+    {id: 'd1', status: 'completed'},
+    {id: 'f1', status: 'failed'},
+    {id: 's1', status: 'stopped'},
+  ];
+  assert.deepEqual(trainingTaskStatusCounts(jobs), {
+    all: 6, running: 1, queued: 2, completed: 1, failed: 1, stopped: 1,
+  });
+  jobs.push({id: 'r2', status: 'starting'});
+  assert.equal(trainingTaskStatusCounts(jobs).running, 2);
+});
+
+test('task filters and pagination are pure view operations over the supplied snapshot', () => {
+  const jobs = [
+    {id: '1', task_name: '车辆夜间训练', asset_algorithm_name: '车辆检测', status: 'running', queue_priority: 20},
+    {id: '2', task_name: '烟火训练', asset_algorithm_name: '烟火检测', status: 'queued', queue_priority: 50},
+    {id: '3', task_name: '车辆历史训练', asset_algorithm_name: '车辆检测', status: 'completed', queue_priority: 20},
+  ];
+  const original = structuredClone(jobs);
+  assert.deepEqual(filterTrainingTaskJobs(jobs, {tab: 'running', query: '车辆'}).map(row => row.id), ['1']);
+  assert.deepEqual(filterTrainingTaskJobs(jobs, {tab: 'all', algorithm: '车辆检测', priority: '20'}).map(row => row.id), ['1', '3']);
+  assert.deepEqual(jobs, original);
+});
+
+test('visibility runtime source owns presentation only and does not fetch or copy task truth', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /fetch\s*\(|requestJson|setInterval\s*\(/);
+  assert.doesNotMatch(source, /state\(\)\.jobs\s*=|const\s+jobsSnapshot\s*=\s*\[/);
+  assert.match(source, /trainingTaskStatusCounts\(jobs\)/);
+  assert.match(source, /filterTrainingTaskJobs\(jobs,/);
+  assert.match(source, /PageHeader|entity-page-header/);
 });
 
 

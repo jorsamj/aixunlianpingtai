@@ -3782,127 +3782,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.__clInitLegacy412=async function(){const view=document.getElementById('view');if(view)view.innerHTML='<div class="boot412"><i></i><b>正在读取算法与素材</b><span>先加载核心数据，其余资源后台补齐</span></div>';await window.loadCore412();render();state.uiReady=true;if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null)};
 
   // -------- stable algorithm renderer --------
-  function verRow412(a,v){const can=!!String(v.stored_path||'').trim(),isCurrent=String(a.current_version_id||'')===String(v.id||'');return `<div class="alg428-version-row ${isCurrent?'is-current':''}"><div class="alg428-version-id"><i></i><div><b>${esc(v.version_name||'-')} ${isCurrent?'<em class="alg428-current-badge">当前版本</em>':''}</b><span>${dt412(v.finished_at||v.created_at)}</span></div></div><div class="alg428-version-status"><span>训练状态</span><b>${esc((typeof status429==='function'?status429(v.training_status||v.status||'done'):(v.training_status||v.status||'已完成')))}</b></div><div class="alg428-version-accuracy"><span>正确率 · mAP50</span><b>${pct412(versionMetric412(v))}</b></div><div class="alg428-version-model"><span>训练成果</span><b>${can?esc(v.model_name||'模型文件'):'无模型文件'}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="event.stopPropagation();openVersionReport429('${a.id}','${v.id}')">训练报告</button>${v.training_lineage?`<button class="btn mini" onclick="event.stopPropagation();openVersionLineage429('${a.id}','${v.id}')">训练溯源</button>`:''}${v.evaluation?`<button class="btn mini" onclick="event.stopPropagation();openVersionEvaluation429('${a.id}','${v.id}')">独立评测</button>`:''}<button class="btn mini primary" onclick="event.stopPropagation();openVersionConvert428('${a.id}','${v.id}')">转换</button>${can?`<a class="btn mini" onclick="event.stopPropagation()" href="/api/v12/projects/${pid()}/algorithms/${a.id}/versions/${v.id}/download">下载模型</a>`:''}${isCurrent?'':`<button class="btn mini" onclick="event.stopPropagation();openVersionRollback('${a.id}','${v.id}')">回退到此版本</button>`}</div></div>`}
-  window.renderAlg412=function(){
-    const box=document.getElementById('alg412List');
-    if(!box)return;
-    const q=(window.AlgorithmListRuntime?.filterState?.().query??document.getElementById('alg412Q')?.value??'').trim().toLowerCase();
-    const ind=document.getElementById('alg412Industry')?.value||'all';
-    const typ=document.getElementById('alg412Type')?.value||'all';
-    const rows=(state.algorithms||[]).filter(a=>
-      (window.AlgorithmListRuntime?.matchesSearch?.(a,q)??(!q||`${a.name} ${a.code||''} ${a.algorithm_code||''} ${a.product_code||''} ${a.external_product_code||''} ${a.external_product_id||''} ${a.remark||''} ${a.industry||''} ${a.algorithm_type||''}`.toLowerCase().includes(q)))
-      &&(ind==='all'||a.industry===ind)
-      &&(typ==='all'||a.algorithm_type===typ)
-    );
-    const views=rows.map(a=>{
-      const vs=a.versions||[];
-      const current=vs.find(v=>String(v.id||'')===String(a.current_version_id||''))||vs[0];
-      const open=!!state.alg428Expanded?.[a.id];
-      const run=activeJob412(a);
-      const trainingCount=(state.jobs||[]).filter(j=>j.asset_algorithm_id===a.id||j.algorithm_asset_id===a.id).length;
-      const remark=String(a.remark||'').trim();
-      const statusHtml=run
-        ? `<span class="alg428-running">${esc(run.status_text||run.status)}</span>`
-        : current
-          ? '<span class="alg429-last is-trained">已训练</span>'
-          : '<span class="alg429-last">未训练</span>';
-      const html=`<article class="alg428-card alg428-asset-row ${open?'open':''}" data-algorithm-id="${esc(a.id)}">
-        <div class="alg428-main alg428-asset-main" onclick="toggleAlgorithm412('${a.id}')">
-          <div class="alg428-asset-name">
-            <div class="alg428-logo">${esc((a.name||'算').slice(0,1))}</div>
-            <div class="alg428-info">
-              <div class="alg428-title"><b>${esc(a.name)}</b><span>${esc(algType412(a.algorithm_type))}</span></div>
-              <p title="${esc(remark)}">${esc(remark||'暂无说明')}</p>
-            </div>
-          </div>
-          <div class="alg428-asset-scene"><b>${esc(a.industry||'—')}</b><span>${esc(algType412(a.algorithm_type))}</span></div>
-          <div class="alg428-state">${statusHtml}</div>
-          <div class="alg428-current-version"><b>${esc(current?.version_name||'—')}</b><span>${vs.length} 个版本</span></div>
-          <div class="alg428-current-metric"><b>${pct412(versionMetric412(current))}</b><span>mAP50</span></div>
-          <div class="alg428-train-count"><b>${trainingCount}</b><span>次</span></div>
-          <div class="alg428-actions" onclick="event.stopPropagation()">
-            <button class="btn mini" onclick="viewAlgorithm429('${a.id}')">详情</button>
-            <button class="btn mini" onclick="algorithmReport429('${a.id}')">综合报告</button>
-            <button class="btn mini" onclick="editAlgorithm423('${a.id}')">编辑</button>
-            <button class="btn mini primary" onclick="startAlgorithmTraining429('${a.id}')">训练</button>
-            <button class="btn mini danger" onclick="delAlgorithm('${a.id}')">删除</button>
-            <i class="alg428-chevron" aria-hidden="true">⌄</i>
-          </div>
-        </div>
-        ${open?`<div class="alg428-versions"><div class="alg428-version-head"><b>迭代版本</b><span>当前版本决定后续训练、转换与检测的默认起点</span></div>${vs.length?vs.map(v=>verRow412(a,v)).join(''):'<div class="empty alg428-empty">暂无版本，点击“训练”开始第一次迭代</div>'}</div>`:''}
-      </article>`;
-      const signature=JSON.stringify({
-        algorithm:a,
-        open,
-        trainingCount,
-        run:run?{
-          id:run.id,status:run.status,status_text:run.status_text,
-          progress_percent:run.progress_percent,current_epoch:run.current_epoch,
-          total_epochs:run.total_epochs,phase:run.phase,updated_at:run.updated_at,
-        }:null,
-      });
-      return {id:String(a.id||''),html,signature};
-    });
-
-    const createCard=view=>{
-      const holder=document.createElement('div');
-      holder.innerHTML=view.html.trim();
-      const card=holder.firstElementChild;
-      if(card)card.__algorithmRenderSignature=view.signature;
-      return card;
-    };
-    const canPatch=typeof document.createElement==='function'
-      &&typeof box.querySelectorAll==='function'
-      &&typeof box.insertBefore==='function'
-      &&box.children;
-    if(!canPatch){
-      box.innerHTML=views.map(view=>view.html).join('')||'<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
-      queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
-      return;
-    }
-    if(!views.length){
-      if(!box.querySelector('.alg428-list-empty'))box.innerHTML='<div class="empty alg428-list-empty">暂无符合当前筛选条件的算法</div>';
-      queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
-      return;
-    }
-
-    box.querySelector('.alg428-list-empty')?.remove();
-    const existing=new Map([...box.querySelectorAll('.alg428-card[data-algorithm-id]')].map(card=>[String(card.dataset.algorithmId||''),card]));
-    const wanted=new Set();
-    views.forEach((view,index)=>{
-      wanted.add(view.id);
-      let card=existing.get(view.id)||null;
-      if(!card||card.__algorithmRenderSignature!==view.signature){
-        const nextCard=createCard(view);
-        if(!nextCard)return;
-        if(card)card.replaceWith(nextCard);
-        card=nextCard;
-      }
-      const reference=box.children[index]||null;
-      if(reference!==card)box.insertBefore(card,reference);
-    });
-    for(const [id,card] of existing){
-      if(!wanted.has(id))card.remove();
-    }
-    queueMicrotask(()=>window.AlgorithmListRuntime?.runDecorators?.());
-  };
-  window.renderAlgorithms423=function(){
-    const inds=[...new Set((state.algorithms||[]).map(a=>a.industry).filter(Boolean))].sort();
-    document.getElementById('view').innerHTML=`<section class="alg428-shell">
-      <div class="alg428-toolbar">
-        <div class="filter423">
-          <input id="alg412Q" class="input" placeholder="搜索算法名称、编码或说明" value="${esc(window.AlgorithmListRuntime?.filterState?.().query||'')}" oninput="window.AlgorithmListRuntime?.setFilters?.({query:this.value},{render:false});renderAlg412()">
-          <select id="alg412Industry" class="select" onchange="renderAlg412()"><option value="all">全部行业场景</option>${inds.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
-          <select id="alg412Type" class="select" onchange="renderAlg412()"><option value="all">全部算法类型</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV 传统视觉</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python / 其他</option></select>
-        </div>
-        <button class="btn primary" type="button" data-action="algorithm.create">＋ 新建算法</button>
-      </div>
-      <div class="alg428-list-head" aria-hidden="true"><span>算法名称</span><span>行业场景</span><span>状态</span><span>当前版本</span><span>当前指标</span><span>训练次数</span><span>操作</span></div>
-      <div id="alg412List" class="alg428-list"></div>
-    </section>`;
-    renderAlg412();
-  };
-  window.toggleAlgorithm412=async function(id){state.alg428Expanded=state.alg428Expanded||{};state.alg428Expanded[id]=!state.alg428Expanded[id];if(state.alg428Expanded[id]){const r=await safe(api(`/api/v12/projects/${pid()}/algorithms`));if(r?.items)state.algorithms=r.items}renderAlg412()};
+  window.renderAlg412=function(){return window.AlgorithmListRuntime?.renderRows?.()};
+  window.renderAlgorithms423=function(){return window.AlgorithmListRuntime?.render?.()};
+  window.toggleAlgorithm412=function(id){return window.AlgorithmListRuntime?.toggle?.(id)};
   window.toggleAlgorithm428=window.toggleAlgorithm412;
 
   // -------- data pool: raw vs ready are orthogonal to annotation --------
@@ -4029,7 +3911,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
   '总览':'总览','质量中心':'总览',
-  '算法列表':'算法生成','训练任务':'算法生成','训练资源':'算法生成',
+  '算法列表':'算法生成','训练任务':'算法生成','训练资源':'高级功能',
   '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
   '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
   '平台对接':'系统与对接','服务节点':'系统与对接',
@@ -4117,12 +3999,12 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   renderNav=function(){
     const groups=[
       {title:'总览',items:['总览','质量中心']},
-      {title:'算法生成',items:['算法列表','训练任务','训练资源']},
+      {title:'算法生成',items:['算法列表','训练任务']},
       {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗','标签管理']},
     ];
     if(state.v427Advanced)groups.push(
-      {title:'高级功能',items:['模型配置','存储配置','组件检测']},
-      {title:'系统与对接',items:['服务节点','平台对接']}
+      {title:'高级功能',items:['训练资源','模型配置','存储配置','组件检测','服务节点']},
+      {title:'系统与对接',items:['平台对接']}
     );
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };

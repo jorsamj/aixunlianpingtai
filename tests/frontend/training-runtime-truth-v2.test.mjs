@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import {
   trainingProgressView,
   trainingStageView,
-  trainingTaskRow,
 } from '../../static/modules/training-task-runtime.js';
+import {trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 test('preparation stages never masquerade as Epoch 0 progress', () => {
   const html = trainingTaskRow({

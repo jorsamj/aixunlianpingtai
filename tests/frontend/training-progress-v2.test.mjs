@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {trainingProgressView, trainingTaskRow} from '../../static/modules/training-task-runtime.js';
+import {trainingProgressView} from '../../static/modules/training-task-runtime.js';
+import {trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 test('training progress v2 renders real epoch metrics throughput and rolling ETA', () => {
   const job = {

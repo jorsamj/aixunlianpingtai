@@ -290,7 +290,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /preserveConfigDraft: configEditing && !refreshConfigPanel/);
   assert.match(source, /input\.dataset\.externalDirtyBound === '1'/);
   const renderStart = source.indexOf('async function render({reload = true, force = false, refreshConfigPanel = false} = {})');
-  const renderEnd = source.indexOf('\n\n  const nav =', renderStart);
+  const renderEnd = source.indexOf('  const detachAlgorithmListProvider', renderStart);
   assert.ok(renderStart >= 0 && renderEnd > renderStart);
   assert.doesNotMatch(source.slice(renderStart, renderEnd), /view\.innerHTML = configFormHtml\(config\)/);
   assert.match(source, /if \(config && \(!reload \|\| \(!force && fresh\)\)\) return true/);
@@ -299,42 +299,20 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /除人员登录参考外，内部算法接口均已进入 Provider contract/);
   assert.match(source, /\/readiness\?project_id=/);
   assert.match(source, /loadReadiness/);
-  assert.match(source, /data-external-stale/);
   assert.match(source, /external-master-data-stale/);
   assert.match(source, /trainingReadiness/);
 });
 
 
-test('external algorithm decorator is DOM-idempotent under mutation observers', () => {
+test('external platform exposes truth provider and never decorates algorithm-list DOM', () => {
   const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-
-  const pickerStart = source.indexOf('function renderAlgorithmCategoryPicker(');
-  const decoratorStart = source.indexOf('function decorateAlgorithmCards()');
-  const decoratorEnd = source.indexOf('function installAlgorithmDecorator()', decoratorStart);
-  assert.ok(pickerStart >= 0 && decoratorStart > pickerStart && decoratorEnd > decoratorStart);
-
-  const pickerBlock = source.slice(pickerStart, decoratorStart);
-  const decoratorBlock = source.slice(decoratorStart, decoratorEnd);
-
-  assert.match(decoratorBlock, /data-algorithm-source-filter/);
-  assert.match(decoratorBlock, /内部算法/);
-  assert.match(decoratorBlock, /外部算法/);
-  assert.match(decoratorBlock, /data-algorithm-training-status-filter/);
-  assert.match(decoratorBlock, /全部训练状态/);
-  assert.match(decoratorBlock, /renderAlgorithmCategoryPicker/);
-
-  assert.match(pickerBlock, /data-category-picker-toggle/);
-  assert.match(pickerBlock, /data-category-select/);
-  assert.match(pickerBlock, /data-category-search/);
-  assert.match(pickerBlock, /categoryPickerSignature/);
-  assert.match(pickerBlock, /categoryBar\.dataset\.categoryPickerSignature === pickerSignature/);
-
-  assert.match(decoratorBlock, /data-external-list-sync/);
-  assert.match(decoratorBlock, /同步畅联云/);
-  assert.doesNotMatch(decoratorBlock, /removeAttribute\('data-action'\)/);
-  assert.doesNotMatch(decoratorBlock, /legacyIndustry\.hidden = true/);
-  assert.match(decoratorBlock, /else if \(trainingState\.status === 'stale'\)/);
-  assert.match(decoratorBlock, /if \(!staleBadge\)/);
+  assert.match(source, /algorithmListRuntime\?\.setExternalProvider\?\.\(algorithmListProvider\)/);
+  assert.match(source, /snapshot:\s*\(\) =>/);
+  assert.match(source, /categories:\s*cacheData\?\.categories/);
+  assert.match(source, /matches:\s*\(algorithm, filters/);
+  assert.doesNotMatch(source, /function decorateAlgorithmCards\(/);
+  assert.doesNotMatch(source, /registerDecorator\('external-algorithm-platform'/);
+  assert.doesNotMatch(source, /data-external-category-filter/);
 });
 
 
@@ -367,19 +345,16 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
 
 test('algorithm list keeps search and base filters while adding source filters', () => {
   const appSource = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const listSource = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
   const externalSource = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(appSource, /id="alg412Q" class="input" placeholder="搜索算法名称、编码或说明"/);
-  assert.match(appSource, /id="alg412Industry"/);
-  assert.match(appSource, /id="alg412Type"/);
-  assert.match(externalSource, /dataset\.algorithmSourceFilter/);
-  assert.match(externalSource, /dataset\.algorithmTrainingStatusFilter/);
-  assert.match(externalSource, /algorithmListRuntime\?\.filterState\?\.\(\)/);
-  assert.match(externalSource, /algorithmListRuntime\?\.setFilters\?\.\(patch, options\)/);
-  assert.doesNotMatch(externalSource, /let selectedSource = 'all'/);
-  assert.doesNotMatch(externalSource, /let selectedTrainingStatus = 'all'/);
-  assert.doesNotMatch(externalSource, /const selectedCategoryIds = new Set\(\);/);
-  assert.match(appSource, /external_product_id/);
-  assert.match(appSource, /product_code/);
+  assert.match(listSource, /placeholder="搜索算法名称 \/ 算法ID"/);
+  assert.match(listSource, /data-algorithm-industry-filter/);
+  assert.match(listSource, /data-algorithm-type-filter/);
+  assert.match(listSource, /data-algorithm-source-filter/);
+  assert.match(listSource, /data-algorithm-training-status-filter/);
+  assert.match(appSource, /window\.renderAlgorithms423=function\(\)\{return window\.AlgorithmListRuntime\?\.render\?\.\(\)\}/);
+  assert.match(appSource, /window\.renderAlg412=function\(\)\{return window\.AlgorithmListRuntime\?\.renderRows\?\.\(\)\}/);
+  assert.doesNotMatch(externalSource, /dataset\.algorithmSourceFilter/);
 });
 
 test('sync settings enforce 60-second automatic pull without claiming webhook support', () => {

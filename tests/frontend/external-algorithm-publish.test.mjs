@@ -171,7 +171,7 @@ test('manual publish fetches read-only status before write request', () => {
     'utf8',
   );
   const start = source.indexOf('async function publishVersion(');
-  const end = source.indexOf('function decorateVersionRows()', start);
+  const end = source.indexOf('function schedulePlatformPage()', start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
   const statusRead = block.indexOf('const status = await requestJson(');
@@ -180,6 +180,8 @@ test('manual publish fetches read-only status before write request', () => {
   assert.ok(statusRead >= 0);
   assert.ok(preflight > statusRead);
   assert.ok(publishWrite > preflight);
+  assert.doesNotMatch(source, /function decorateVersionRows\(/);
+  assert.doesNotMatch(source, /registerDecorator/);
 });
 
 

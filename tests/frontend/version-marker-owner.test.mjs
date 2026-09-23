@@ -44,14 +44,14 @@ test('canonical chrome owners keep the formal badge and footer values', () => {
 
 
 test('entry bundles advance cache-bust markers without changing the formal release badge', () => {
-  assert.equal(index.includes('/static/app.js?v=42.25.194'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.194'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.217'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.212'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
   assert.equal(main.includes("./modules/model-artifact-runtime.js?v=65005"), true);
-  assert.equal(main.includes("./modules/training-task-runtime.js?v=422548"), true);
+  assert.equal(main.includes("./modules/training-task-runtime.js?v=422560"), true);
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
-  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js?v=422546'), true);
-  assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422212"), true);
+  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js?v=422560'), true);
+  assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422214"), true);
   assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=422542'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v42.24.0</span>'), true);

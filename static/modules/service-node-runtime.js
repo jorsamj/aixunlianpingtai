@@ -210,7 +210,6 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let loadInflight = null;
   let destroyed = false;
   const connectivityResults = new Map();
-  let navObserver = null;
   let unregisterPageOwner = null;
 
   function restoreNodeSnapshot() {
@@ -592,35 +591,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     } catch (error) { notify?.(error?.message || error); }
   }
 
-  function decorateNavigation() {
-    if (destroyed) return;
-    const nav = document.getElementById('nav');
-    if (!nav) return;
-    const groups = [...nav.querySelectorAll('.nav-group')];
-    const preferred = groups.find(group => group.querySelector('.nav-group-title')?.textContent.trim() === '配置中心') || groups.at(-1);
-    const owner = preferred || nav;
-    let button = nav.querySelector('[data-service-node-nav="1"]');
-    if (!button) {
-      button = document.createElement('button');
-      button.dataset.serviceNodeNav = '1';
-      button.className = 'nav-btn';
-      button.innerHTML = '<span class="nav-left"><i>◆</i><b>服务节点</b></span><span class="nav-arrow">›</span>';
-      button.addEventListener('click', () => window.setPage?.(PAGE));
-      owner.appendChild(button);
-    }
-    button.classList.toggle('active', currentPage() === PAGE);
-  }
-
-  const nav = document.getElementById('nav');
-  if (nav) {
-    navObserver = new MutationObserver(decorateNavigation);
-    navObserver.observe(nav, {childList: true, subtree: true});
-  }
-  unregisterPageOwner = window.NavigationStability?.registerPageOwner?.(PAGE, () => {
-    decorateNavigation();
-    return render();
-  }) || null;
-  decorateNavigation();
+  unregisterPageOwner = window.NavigationStability?.registerPageOwner?.(PAGE, () => render()) || null;
 
   const runtime = {
     build: 'service-node-runtime-422539',
@@ -639,9 +610,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     destroy() {
       destroyed = true;
       clearPoll();
-      navObserver?.disconnect();
       unregisterPageOwner?.();
-      document.querySelector('[data-service-node-nav="1"]')?.remove();
       if (window.ServiceNodeRuntime === runtime) window.ServiceNodeRuntime = null;
       window.__serviceNodeRuntimeInstalled = false;
     },

@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {algorithmListSearchMatch, installAlgorithmListRuntime} from '../../static/modules/algorithm-list-runtime.js';
+import {
+  algorithmCategoryColumns,
+  algorithmCategorySearch,
+  algorithmListSearchMatch,
+  installAlgorithmListRuntime,
+} from '../../static/modules/algorithm-list-runtime.js';
 
 function response(body) {
   return {
@@ -25,11 +30,9 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
     jobs: [],
     alg428Expanded: {},
   };
-  let renders = 0;
   let requests = 0;
   globalThis.window = {
     fetch: async () => { requests += 1; return response({items: []}); },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -40,12 +43,10 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
   assert.equal(window.toggleAlgorithm412('a1'), true);
   assert.equal(state.alg428Expanded.a1, true);
   assert.equal(requests, 0);
-  assert.equal(renders, 1);
 
   assert.equal(window.toggleAlgorithm428('a1'), false);
   assert.equal(state.alg428Expanded.a1, false);
   assert.equal(requests, 0);
-  assert.equal(renders, 2);
 
   runtime.destroy();
   cleanup();
@@ -60,7 +61,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
     alg428Expanded: {},
   };
   const urls = [];
-  let renders = 0;
   globalThis.window = {
     async fetch(url) {
       urls.push(url);
@@ -68,7 +68,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
       if (url.endsWith('/jobs')) return response([{id: 'j2', status: 'running'}]);
       throw new Error(`unexpected URL: ${url}`);
     },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -85,7 +84,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);
   assert.equal(result.cached, false);
   assert.equal(result.stale, false);
-  assert.equal(renders, 1);
 
   runtime.destroy();
   cleanup();
@@ -212,28 +210,13 @@ test('focused refresh uses raw fetch but discards results after navigation and a
   cleanup();
 });
 
-test('registered decorators run after canonical card render without replacing renderAlg412', () => {
+test('algorithm runtime exposes no DOM decorator layer', () => {
   const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [], jobs: [], alg428Expanded: {}};
-  let renders = 0;
-  let decorated = 0;
-  const renderAlg412 = () => { renders += 1; };
-  globalThis.document = {
-    body: {},
-    getElementById: id => id === 'alg412List' ? {} : null,
-    addEventListener() {},
-    removeEventListener() {},
-  };
-  globalThis.MutationObserver = class { observe() {} disconnect() {} };
-  globalThis.window = {renderAlg412, fetch: async () => response({items: []})};
+  globalThis.window = {fetch: async () => response({items: []})};
   const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
-  runtime.registerDecorator('test', () => { decorated += 1; });
-  runtime.renderCards();
-  assert.equal(window.renderAlg412, renderAlg412);
-  assert.equal(renders, 1);
-  runtime.runDecorators();
-  assert.ok(decorated >= 1);
+  assert.equal(runtime.registerDecorator, undefined);
+  assert.equal(runtime.runDecorators, undefined);
   runtime.destroy();
-  delete globalThis.MutationObserver;
   cleanup();
 });
 
@@ -285,4 +268,66 @@ test('algorithm runtime owns unified list filters and searches provider identifi
 
   runtime.destroy();
   cleanup();
+});
+
+test('category filtering uses only real external_category_id and separates draft from applied state', () => {
+  const state = {
+    page: '算法列表', project: {id: 'p1'}, jobs: [], alg428Expanded: {},
+    algorithms: [
+      {id: 'local', name: '本地车辆算法', source_type: 'LOCAL', industry: '车辆', versions: []},
+      {id: 'external-match', name: '外部算法', source_type: 'EXTERNAL', external_category_id: 'leaf', versions: []},
+      {id: 'external-other', name: '车辆相关外部算法', source_type: 'EXTERNAL', external_category_id: 'other', versions: []},
+    ],
+  };
+  const categories = [
+    {categoryId: 'root', categoryName: '车辆相关', parentId: ''},
+    {categoryId: 'leaf', categoryName: '机动车检测', parentId: 'root'},
+    {categoryId: 'other', categoryName: '人脸识别', parentId: ''},
+  ];
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({
+      categories,
+      externalMode: true,
+      categoryRows: [
+        {id: 'root', name: '车辆相关', parentId: '', ancestorIds: [], path: '车辆相关', hasChildren: true},
+        {id: 'leaf', name: '机动车检测', parentId: 'root', ancestorIds: ['root'], path: '车辆相关 / 机动车检测', hasChildren: false},
+        {id: 'other', name: '人脸识别', parentId: '', ancestorIds: [], path: '人脸识别', hasChildren: false},
+      ],
+    }),
+    matches: (algorithm, filters) => {
+      if (!filters.selectedCategoryIds.length) return true;
+      return filters.selectedCategoryIds.includes(String(algorithm.external_category_id || ''));
+    },
+  });
+
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.cancelCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, ['leaf']);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['external-match']);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('category presentation supports real arbitrary depth in three visible panes and full-path search', () => {
+  const rows = [
+    {id: 'root', name: '安全治理', parentId: '', depth: 0, ancestorIds: [], path: '安全治理', hasChildren: true},
+    {id: 'vehicle', name: '车辆', parentId: 'root', depth: 1, ancestorIds: ['root'], path: '安全治理 / 车辆', hasChildren: true},
+    {id: 'parking', name: '违停', parentId: 'vehicle', depth: 2, ancestorIds: ['root', 'vehicle'], path: '安全治理 / 车辆 / 违停', hasChildren: true},
+    {id: 'night', name: '夜间违停', parentId: 'parking', depth: 3, ancestorIds: ['root', 'vehicle', 'parking'], path: '安全治理 / 车辆 / 违停 / 夜间违停', hasChildren: false},
+  ];
+  const columns = algorithmCategoryColumns(rows, ['root', 'vehicle', 'parking']);
+  assert.equal(columns.length, 3);
+  assert.deepEqual(columns.map(column => column.parentId), ['root', 'vehicle', 'parking']);
+  assert.deepEqual(algorithmCategorySearch(rows, '夜间').map(row => row.path), ['安全治理 / 车辆 / 违停 / 夜间违停']);
 });

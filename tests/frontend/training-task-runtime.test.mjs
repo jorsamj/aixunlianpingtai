@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installTrainingTaskRuntime, trainingTaskRow} from '../../static/modules/training-task-runtime.js';
+import {installTrainingTaskRuntime} from '../../static/modules/training-task-runtime.js';
+import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
+
+const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
 
 function response(body) {
   return {
@@ -35,6 +38,7 @@ test('focused training refresh fetches jobs only and patches the task table', as
     getState: () => state,
     projectId: () => state.project.id,
   });
+  runtime.setViewAdapter({render() { patches += 1; }});
   const result = await runtime.refresh();
 
   assert.deepEqual(urls, ['/api/projects/p%201/jobs']);
@@ -79,6 +83,12 @@ test('successive jobs responses replace status progress epoch and elapsed row tr
     getState: () => state,
     projectId: () => state.project.id,
   });
+  runtime.setViewAdapter({render() {
+    const tab = state.train428Tab || 'active';
+    body.innerHTML = filterTrainingTaskJobs(state.jobs, {tab}).map(trainingTaskRow).join('');
+    activeCount.textContent = String(filterTrainingTaskJobs(state.jobs, {tab: 'active'}).length);
+    historyCount.textContent = String(filterTrainingTaskJobs(state.jobs, {tab: 'history'}).length);
+  }});
   await runtime.refresh({source: 'poll'});
   assert.match(body.innerHTML, /Epoch 3\/100/);
   assert.match(body.innerHTML, /3%/);
@@ -353,7 +363,7 @@ test('training row prioritizes waiting-resource truth and suppresses an unproved
   const previousDocument = globalThis.document;
   // trainingTaskRow is pure and does not require runtime installation.
   cleanup();
-  return import('../../static/modules/training-task-runtime.js').then(({trainingTaskRow}) => {
+  return import('../../static/modules/training-task-visibility-runtime.js').then(({trainingTaskPresentationRow: trainingTaskRow}) => {
     const html = trainingTaskRow({
       id: 'wait-1', status: 'waiting', queue_priority: 1, priority_scheme: 'lower_number_first',
       resource_queue_position: 2, resource_wait_reason: 'GPU_MEMORY_BUSY',
@@ -375,7 +385,7 @@ test('training row prioritizes waiting-resource truth and suppresses an unproved
 });
 
 test('training row shows a numeric position only when the backend proves it exact', async () => {
-  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow} = await import('../../static/modules/training-task-visibility-runtime.js');
   const exact = trainingTaskRow({
     id: 'cpu-2', status: 'queued', resource_pool_label: 'CPU',
     resource_queue_position: 2, resource_queue_position_exact: true,
@@ -393,7 +403,7 @@ test('training row shows a numeric position only when the backend proves it exac
 });
 
 test('completed training below requested epochs is shown as early completion instead of stuck running', async () => {
-  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow} = await import('../../static/modules/training-task-visibility-runtime.js');
   const html = trainingTaskRow({
     id: 'done-180',
     status: 'done',
@@ -413,7 +423,8 @@ test('completed training below requested epochs is shown as early completion ins
 
 
 test('training list and row use canonical task_status over stale legacy status', async () => {
-  const {trainingTaskRow, visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow, filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
   const task = {
     id: 'truth-1',
     status: 'completed',
@@ -442,7 +453,8 @@ test('training list and row use canonical task_status over stale legacy status',
 
 
 test('visible training jobs match durable priority rank and FIFO order', async () => {
-  const {visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const {filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
   const jobs = [
     {id: 'fifo-new', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:02:00Z'},
     {id: 'promoted', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 2, queued_at: '2026-08-30T10:03:00Z'},
@@ -457,7 +469,8 @@ test('visible training jobs match durable priority rank and FIFO order', async (
 
 
 test('visible training jobs prefer backend-proven queue positions within one resource', async () => {
-  const {visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const {filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
   const jobs = [
     {id: 'later-array', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 3, resource_queue_position_exact: true, queued_at: '2026-08-30T10:01:00Z'},
     {id: 'highest', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', resource_queue_position: 1, resource_queue_position_exact: true, queued_at: '2026-08-30T10:03:00Z'},

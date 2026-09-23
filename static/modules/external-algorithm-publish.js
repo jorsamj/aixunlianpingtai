@@ -135,7 +135,6 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   const state = () => getState?.() || {};
   let config = null;
   let loading = false;
-  let unregisterAlgorithmDecorator = null;
   let mutationQueued = false;
 
   function currentProjectId() {
@@ -305,51 +304,18 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     }
   }
 
-  function decorateVersionRows() {
-    if (String(state().page || '') !== '算法列表') return;
-    for (const row of document.querySelectorAll('.alg428-version-row')) {
-      if (row.querySelector('[data-external-publish-action]')) continue;
-      const convert = [...row.querySelectorAll('button')].find(button => String(button.getAttribute('onclick') || '').includes('openVersionConvert428('));
-      const match = String(convert?.getAttribute('onclick') || '').match(/openVersionConvert428\('([^']+)'\s*,\s*'([^']+)'\)/);
-      if (!match) continue;
-      const [_, algorithmId, versionId] = match;
-      const {algorithm, version} = versionFromIds(algorithmId, versionId);
-      if (!algorithm || String(algorithm.source_type || '').toUpperCase() !== 'EXTERNAL' || String(algorithm.provider_type || '').toUpperCase() !== 'CHANG_LIAN') continue;
-      const actions = row.querySelector('.alg428-version-actions');
-      if (!actions) continue;
-      const button = document.createElement('button');
-      button.className = 'btn mini';
-      button.dataset.externalPublishAction = '1';
-      button.textContent = publicationActionLabel(version || {});
-      button.disabled = String(version?.external_publish_status || '').toLowerCase() === 'published';
-      button.title = '将该版本已完成的转换产物上传到发布存储源，并同步到新畅联';
-      button.onclick = event => {
-        event.stopPropagation();
-        void publishVersion(algorithmId, versionId, button);
-      };
-      actions.appendChild(button);
-    }
-  }
-
-  function installRendererHook() {
-    if (unregisterAlgorithmDecorator || !algorithmListRuntime?.registerDecorator) return;
-    unregisterAlgorithmDecorator = algorithmListRuntime.registerDecorator('external-algorithm-publish', decorateVersionRows);
-  }
-
-  function scheduleDecorate() {
+  function schedulePlatformPage() {
     if (mutationQueued) return;
     mutationQueued = true;
     queueMicrotask(() => {
       mutationQueued = false;
-      installRendererHook();
-      decorateVersionRows();
       void decoratePlatformPage();
     });
   }
 
-  const observer = new MutationObserver(scheduleDecorate);
+  const observer = new MutationObserver(schedulePlatformPage);
   observer.observe(document.body, {childList: true, subtree: true});
-  scheduleDecorate();
+  schedulePlatformPage();
 
   const runtime = {
     build: 'external-algorithm-publish-64003',
@@ -357,13 +323,10 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     saveConfig,
     runAutoOnce,
     publishVersion,
-    decorateVersionRows,
     decoratePlatformPage,
     config: () => config,
     destroy() {
       observer.disconnect();
-      unregisterAlgorithmDecorator?.();
-      unregisterAlgorithmDecorator = null;
       window.__externalAlgorithmPublishRuntimeInstalled = false;
       if (window.ExternalAlgorithmPublishRuntime === runtime) window.ExternalAlgorithmPublishRuntime = null;
     },

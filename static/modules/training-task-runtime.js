@@ -1,11 +1,6 @@
-import {canonicalTaskPhase, canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js';
+import {canonicalTaskPhase, trainingDisplayStatus} from './task-runtime-truth.js';
 
 const TRAINING_PAGE = '训练任务';
-const ACTIVE_STATUSES = new Set([
-  'queued', 'waiting', 'pending', 'starting', 'running',
-  'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested',
-]);
-const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'succeeded', 'success', 'failed', 'stopped', 'cancelled', 'canceled']);
 const REFRESH_DEDUP_WINDOW_MS = 120;
 const PAGE_ENTRY_REUSE_MS = 5000;
 
@@ -33,21 +28,9 @@ const STAGE_LABELS = Object.freeze({
   cancelled: '已取消',
 });
 
-const FAILURE_STAGE_LABELS = Object.freeze({
-  training_process: '训练进程失败',
-  post_training: '训练结束后处理失败',
-  final_validation: '最终模型验证失败',
-});
-
 function rowsFrom(body) {
   if (Array.isArray(body)) return body;
   return Array.isArray(body?.items) ? body.items : [];
-}
-
-function esc(value) {
-  return String(value ?? '').replace(/[&<>"']/g, char => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[char]);
 }
 
 export function formatTrainingDuration(value) {
@@ -114,11 +97,6 @@ export function trainingProgressView(job = {}) {
   return {epoch, totalEpochs, currentBatch, totalBatches, elapsedSeconds, etaSeconds, metricLine: parts.join(' · ')};
 }
 
-function dateText(value) {
-  if (!value) return '-';
-  return String(value).replace('T', ' ').replace('Z', '').slice(0, 19);
-}
-
 function statusText(status) {
   return ({
     queued: '排队中', waiting: '等待资源', pending: '等待中', starting: '启动中',
@@ -129,28 +107,6 @@ function statusText(status) {
   })[status] || status || '-';
 }
 
-function statusClass(status) {
-  if (['done', 'finished', 'completed', 'succeeded', 'success'].includes(status)) return 'ok';
-  if (['failed', 'stopped', 'cancelled', 'canceled'].includes(status)) return 'err';
-  if (['running', 'queued', 'waiting', 'pending', 'starting', 'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return 'warn';
-  return '';
-}
-
-function resourceName(job) {
-  return job?.execution_resource?.name
-    || job?.resource_name
-    || job?.server_name
-    || job?.resource_key
-    || '-';
-}
-
-function priorityValue(job) {
-  const raw = Number(job?.queue_priority ?? 50);
-  if (job?.priority_scheme === 'lower_number_first') return Math.max(1, Math.min(999, Number.isFinite(raw) ? raw : 50));
-  const legacy = {100: 1, 80: 20, 50: 50};
-  return legacy[raw] ?? Math.max(1, Math.min(999, 101 - (Number.isFinite(raw) ? raw : 50)));
-}
-
 export function trainingBatchActionEligible(job, action) {
   const status = trainingDisplayStatus(job);
   if (action === 'pause') return status === 'running';
@@ -159,34 +115,6 @@ export function trainingBatchActionEligible(job, action) {
     return ['queued', 'waiting', 'pending', 'starting', 'running', 'pausing', 'paused', 'resuming'].includes(status);
   }
   return false;
-}
-
-function queueRuntimeMeta(job) {
-  const status = trainingDisplayStatus(job);
-  if (!['queued', 'waiting'].includes(status)) return '';
-  const pool = String(job?.resource_pool_label || '').trim();
-  const position = Number(job?.resource_queue_position || 0);
-  const reason = String(job?.resource_wait_reason || '').trim();
-  const parts = pool ? [pool] : [];
-  if (status === 'waiting') {
-    if (reason) parts.push(reason);
-    return parts.join(' · ');
-  }
-  if (position > 0 && job?.resource_queue_position_exact === true) {
-    parts.push(`队列第 ${position} 位`);
-  } else {
-    parts.push('排队中');
-    if (position > 0) {
-      const ahead = Math.max(0, position - 1);
-      parts.push(ahead > 0 ? `前方约 ${ahead} 个候选任务（动态）` : '当前处于资源候选首位（动态）');
-    }
-  }
-  return parts.join(' · ');
-}
-
-function workerRuntimeMeta(job) {
-  const worker = String(job?.task_worker_id || '').trim();
-  return worker ? `执行节点 ${worker}` : '';
 }
 
 export function trainingStageView(job = {}) {
@@ -218,143 +146,6 @@ export function trainingStageView(job = {}) {
 
   if (detail === label) detail = '';
   return {stage, label, detail};
-}
-
-function completionRuntimeMeta(job, progress) {
-  if (!['done', 'finished', 'completed', 'succeeded', 'success'].includes(String(job?.status || '').toLowerCase())) return '';
-  const completed = finiteNumber(progress?.epoch);
-  const requested = finiteNumber(progress?.totalEpochs);
-  if (!(completed > 0 && requested > 0 && completed < requested)) return '';
-  const outcome = String(job?.training_outcome || '').trim();
-  const reason = String(job?.completion_reason || '').trim();
-  if (outcome === 'target_reached' || reason === 'quality_target_reached') return '达到质量目标，提前完成';
-  if (outcome === 'needs_optimization' || reason === 'quality_gate_below_continue_threshold') return '提前结束（需继续优化）';
-  if (reason === 'early_stopping') {
-    const patience = finiteNumber(job?.early_stopping_patience);
-    if (String(job?.early_stopping_reason || '') === 'patience' && patience !== null && patience > 0) {
-      return `连续 ${Math.round(patience)} Epoch 无提升，Early Stopping`;
-    }
-    return 'Early Stopping，提前完成';
-  }
-  return '提前完成';
-}
-
-function terminalRuntimeMeta(job, stage) {
-  const status = trainingDisplayStatus(job);
-  if (['done', 'finished', 'completed', 'succeeded', 'success'].includes(status)) return '';
-  if (!DONE_STATUSES.has(status)) return '';
-
-  const taskStatus = canonicalTaskStatus(job);
-  const failureStage = String(job?.failure_stage || '').trim().toLowerCase();
-  let label = '';
-  if (taskStatus === 'BLOCKED_BY_ENVIRONMENT') label = '训练环境不可用';
-  else if (taskStatus === 'BLOCKED_BY_HARDWARE') label = '训练硬件不可用';
-  else if (status === 'cancelled' || status === 'canceled') label = '已取消';
-  else if (status === 'stopped') label = '已停止';
-  else if (status === 'failed') label = FAILURE_STAGE_LABELS[failureStage] || stage.label || '训练失败';
-  else label = stage.label || statusText(status);
-
-  const reason = String(job?.current_item || job?.message || job?.error || '').trim();
-  if (!reason || reason === label) return label;
-  return `${label} · ${reason}`;
-}
-
-function actions(job) {
-  const id = esc(job.id);
-  const status = trainingDisplayStatus(job);
-  const detail = `<button class="btn mini" onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
-  const log = `<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button>`;
-  if (['starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return `${detail}${log}<span class="train428-action-lock">状态切换中</span>`;
-  if (status === 'queued' || status === 'waiting' || status === 'pending') return `${detail}${log}<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (status === 'running') return `${detail}${log}<button class="btn mini" onclick="pauseTrain428('${id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (status === 'paused') return `${detail}${log}<button class="btn mini primary" onclick="resumeTrain428('${id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  return `${detail}${log}${job.auto_version_id ? `<button class="btn mini primary" onclick="trainingReport425('${id}')">训练报告</button>` : ''}<button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-}
-
-export function trainingTaskRow(job, {batchMode = false, selected = false} = {}) {
-  const status = trainingDisplayStatus(job);
-  const percent = canonicalTaskProgressPercent(job);
-  const progress = trainingProgressView(job);
-  const totalEpochs = progress.totalEpochs ?? '-';
-  const queueMeta = queueRuntimeMeta(job);
-  const workerMeta = workerRuntimeMeta(job);
-  const completionMeta = completionRuntimeMeta(job, progress);
-  const stage = trainingStageView(job);
-  const done = DONE_STATUSES.has(status);
-  const successful = ['done', 'finished', 'completed', 'succeeded', 'success'].includes(status);
-  const terminalMeta = terminalRuntimeMeta(job, stage);
-  const epochStarted = Number(progress.epoch || 0) > 0;
-  const recoveryMeta = job?.recovery?.available === true ? 'Checkpoint 已保留' : '';
-  const algorithmName = job.asset_algorithm_name || job.algorithm_name || '未命名算法';
-  const taskName = job.task_name || job.run_name || job.auto_version_name || '训练任务';
-  const progressScale = Math.max(0, Math.min(100, percent)) / 100;
-  const clockActive = ['starting', 'running', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status);
-  const elapsedClock = progress.elapsedSeconds === null || progress.elapsedSeconds === undefined ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
-  const etaClock = progress.etaSeconds === null || progress.etaSeconds === undefined ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
-
-  const progressMeta = [];
-  if (completionMeta) progressMeta.push(completionMeta);
-  if (epochStarted) {
-    progressMeta.push(`Epoch ${progress.epoch}/${totalEpochs}`);
-    if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
-      progressMeta.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
-    }
-  } else if (!done) {
-    progressMeta.push(stage.label);
-  }
-  if (done && !successful && terminalMeta && !progressMeta.includes(terminalMeta)) {
-    progressMeta.push(terminalMeta);
-  }
-
-  const stageDetails = [stage.detail, queueMeta, workerMeta, recoveryMeta]
-    .filter(Boolean)
-    .filter((value, index, values) => values.indexOf(value) === index)
-    .join(' · ');
-
-  const batchCheckbox = batchMode
-    ? `<label class="train428-select"><input type="checkbox" data-training-batch-select="${esc(job.id)}" ${selected ? 'checked' : ''} aria-label="选择训练任务 ${esc(taskName)}"><span></span></label>`
-    : '';
-  return `<tr data-job-id="${esc(job.id)}" data-clock-active="${clockActive ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${batchCheckbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${progressScale.toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsedClock}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${etaClock}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td><span class="train428-started">${esc(dateText(job.started_at || job.created_at))}</span></td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
-}
-
-export function visibleTrainingJobs(jobs, tab = 'active') {
-  const rows = Array.isArray(jobs) ? jobs : [];
-  const filtered = tab === 'history'
-    ? rows.filter(job => {
-        const status = trainingDisplayStatus(job);
-        return DONE_STATUSES.has(status) || !ACTIVE_STATUSES.has(status);
-      })
-    : rows.filter(job => ACTIVE_STATUSES.has(trainingDisplayStatus(job)));
-  const rank = status => status === 'running' ? 0 : status === 'paused' ? 1 : status === 'waiting' ? 2 : status === 'queued' ? 3 : 4;
-  return [...filtered].sort((a, b) => {
-    const aStatus = trainingDisplayStatus(a), bStatus = trainingDisplayStatus(b);
-    const ar = rank(aStatus), br = rank(bStatus);
-    if (ar !== br) return ar - br;
-    if (['queued', 'waiting'].includes(aStatus)) {
-      const sameResource = String(a?.resource_key || '') === String(b?.resource_key || '');
-      const aPosition = Number(a?.resource_queue_position), bPosition = Number(b?.resource_queue_position);
-      const hasExactPosition = sameResource
-        && a?.resource_queue_position_exact === true
-        && b?.resource_queue_position_exact === true
-        && Number.isFinite(aPosition) && aPosition > 0
-        && Number.isFinite(bPosition) && bPosition > 0;
-      if (hasExactPosition && aPosition !== bPosition) return aPosition - bPosition;
-      const priority = priorityValue(a) - priorityValue(b);
-      if (priority) return priority;
-      const aRank = Number(a?.queue_rank), bRank = Number(b?.queue_rank);
-      const hasDurableRank = Number.isFinite(aRank) && Number.isFinite(bRank) && (aRank !== 0 || bRank !== 0);
-      if (hasDurableRank && aRank !== bRank) return bRank - aRank;
-      const aLegacy = Number(a?.priority_tiebreaker), bLegacy = Number(b?.priority_tiebreaker);
-      const hasLegacyTie = Number.isFinite(aLegacy) && Number.isFinite(bLegacy) && (aLegacy !== 0 || bLegacy !== 0);
-      if (hasLegacyTie && aLegacy !== bLegacy) return aLegacy - bLegacy;
-      const aTime = Date.parse(a?.queued_at || a?.created_at || '');
-      const bTime = Date.parse(b?.queued_at || b?.created_at || '');
-      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
-      return String(a?.queued_at || a?.created_at || '').localeCompare(String(b?.queued_at || b?.created_at || ''))
-        || String(a?.id || '').localeCompare(String(b?.id || ''));
-    }
-    return String(b.started_at || b.created_at || '').localeCompare(String(a.started_at || a.created_at || ''));
-  });
 }
 
 async function responseError(response, fallback = '操作失败') {
@@ -406,36 +197,8 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       && Number(s.__navigationEpoch || 0) === startEpoch;
   }
 
-  function patchFinalTrainingTable() {
-    if (!doc || String(state().page || '') !== TRAINING_PAGE) return false;
-    const root = doc.querySelector?.('.train428-page');
-    const body = root?.querySelector?.('.train428-table tbody');
-    if (!root || !body) {
-      if (typeof window.updateTrainingJobTable === 'function') {
-        window.updateTrainingJobTable();
-        return true;
-      }
-      return false;
-    }
-    const jobs = state().jobs || [];
-    const active = jobs.filter(job => ACTIVE_STATUSES.has(trainingDisplayStatus(job)));
-    const history = jobs.filter(job => {
-      const status = trainingDisplayStatus(job);
-      return DONE_STATUSES.has(status) || !ACTIVE_STATUSES.has(status);
-    });
-    const buttons = root.querySelectorAll?.('.train428-tabs button') || [];
-    const activeCount = buttons[0]?.querySelector?.('span');
-    const historyCount = buttons[1]?.querySelector?.('span');
-    if (activeCount) activeCount.textContent = String(active.length);
-    if (historyCount) historyCount.textContent = String(history.length);
-    const visible = visibleTrainingJobs(jobs, state().train428Tab || 'active');
-    body.innerHTML = visible.map(trainingTaskRow).join('') || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
-    return true;
-  }
-
   function renderTrainingView() {
-    if (typeof viewAdapter?.render === 'function') return viewAdapter.render();
-    return patchFinalTrainingTable();
+    return typeof viewAdapter?.render === 'function' ? viewAdapter.render() : false;
   }
 
   function finalizeViewRefresh(result, options = {}) {
@@ -717,7 +480,6 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     refresh,
     acceptCreatedTask,
     batchAction,
-    patch: patchFinalTrainingTable,
     setViewAdapter,
     state() {
       return {

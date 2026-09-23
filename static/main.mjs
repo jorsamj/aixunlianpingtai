@@ -8,14 +8,14 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=42
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422504';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63018';
-import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64003';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422560';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63019';
+import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64004';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65005';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422547';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422548';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422560';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422500';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
@@ -42,7 +42,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422548';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
 
 const UI_BUILD_VERSION = '42.25.0-dev';

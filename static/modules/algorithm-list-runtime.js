@@ -42,6 +42,69 @@ export function algorithmListSearchMatch(algorithm = {}, query = '') {
   return values.some(value => String(value ?? '').toLowerCase().includes(needle));
 }
 
+export function algorithmCategorySearch(rows = [], query = '') {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return [];
+  return rows.filter(row => `${row?.name || ''} ${row?.path || ''}`.toLowerCase().includes(needle));
+}
+
+export function algorithmCategoryColumns(rows = [], activePath = []) {
+  const path = Array.from(activePath || [], value => String(value || '')).filter(Boolean);
+  const parentIds = ['', ...path].slice(-3);
+  while (parentIds.length < 3) parentIds.push(`__empty_${parentIds.length}`);
+  return parentIds.map(parentId => ({
+    parentId,
+    rows: rows.filter(row => String(row?.parentId || '') === parentId),
+  }));
+}
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char]));
+}
+
+function dateText(value) {
+  if (!value) return '-';
+  return String(value).replace('T', ' ').replace('Z', '').slice(0, 16);
+}
+
+function algorithmTypeText(value) {
+  return ({
+    yolo_ultralytics: 'YOLO / Ultralytics',
+    paddle_detection: 'PaddleDetection',
+    opencv: 'OpenCV',
+    mmdetection: 'MMDetection',
+    custom_python: '自定义 Python',
+  })[String(value || '')] || String(value || '未分类');
+}
+
+function currentVersion(algorithm = {}) {
+  const versions = Array.isArray(algorithm.versions) ? algorithm.versions : [];
+  return versions.find(row => String(row.id || '') === String(algorithm.current_version_id || '')) || versions[0] || null;
+}
+
+function versionMetric(version = {}) {
+  const metrics = version?.metrics || version?.evaluation?.metrics || {};
+  for (const value of [version?.map50, version?.mAP50, version?.accuracy, metrics?.map50, metrics?.mAP50, metrics?.['metrics/mAP50(B)']]) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number > 1 ? number : number * 100;
+  }
+  return null;
+}
+
+function activeJob(algorithmId, jobs = []) {
+  const active = new Set(['queued', 'waiting', 'pending', 'starting', 'running', 'pausing', 'paused', 'resuming']);
+  return jobs.find(job => {
+    const id = job?.asset_algorithm_id || job?.algorithm_asset_id || job?.algorithm_id || '';
+    return String(id) === String(algorithmId) && active.has(String(job?.status || '').toLowerCase());
+  }) || null;
+}
+
+function trainingStatusText(status) {
+  return ({queued: '排队中', waiting: '等待资源', pending: '等待提交', starting: '启动中', running: '训练中', pausing: '暂停中', paused: '已暂停', resuming: '恢复中', stopping: '停止中', cancel_requested: '取消中'})[String(status || '').toLowerCase()] || String(status || '训练中');
+}
+
 export function installAlgorithmListRuntime({getState, projectId, notify} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__algorithmListRuntimeInstalled) return window.AlgorithmListRuntime;
@@ -51,45 +114,40 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let destroyed = false;
   let inflight = null;
   let lastRefreshAt = 0;
-  let decoratorQueued = false;
-  const decorators = new Map();
+  let refreshError = '';
+  let externalProvider = null;
+  const renderedRows = new Map();
   const filters = {
     query: '',
     selectedCategoryIds: [],
     source: 'all',
     status: 'all',
+    industry: 'all',
+    type: 'all',
+  };
+  const viewState = {
+    sort: 'comprehensive',
+    page: 1,
+    pageSize: 10,
+    categoryOpen: false,
+    categoryQuery: '',
+    categoryPath: [],
+    draftCategoryIds: new Set(),
   };
   const originalToggle412 = window.toggleAlgorithm412;
   const originalToggle428 = window.toggleAlgorithm428;
 
-  function ensureAlgorithmShell() {
-    if (destroyed || String(state().page || '') !== ALGORITHM_PAGE) return false;
-    if (!doc || doc.getElementById('alg412List')) return true;
-    if (typeof window.renderAlgorithms423 === 'function') {
-      window.renderAlgorithms423();
-    }
-    return !doc || Boolean(doc.getElementById('alg412List'));
+  function externalSnapshot() {
+    const value = externalProvider?.snapshot?.() || {};
+    return {
+      categories: Array.isArray(value.categories) ? value.categories : [],
+      categoryRows: Array.isArray(value.categoryRows) ? value.categoryRows : [],
+      externalMode: value.externalMode === true,
+    };
   }
 
-  function runDecorators() {
-    if (!ensureAlgorithmShell()) return false;
-    for (const [name, callback] of decorators.entries()) {
-      try {
-        callback?.({state: state(), root: doc?.getElementById('alg412List') || null});
-      } catch (error) {
-        console.warn?.(`algorithm list decorator failed: ${name}`, error);
-      }
-    }
-    return true;
-  }
-
-  function scheduleDecorators() {
-    if (destroyed || decoratorQueued) return;
-    decoratorQueued = true;
-    queueMicrotask(() => {
-      decoratorQueued = false;
-      runDecorators();
-    });
+  function categoryRows() {
+    return externalSnapshot().categoryRows;
   }
 
   function filterState() {
@@ -121,8 +179,10 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
         ? status
         : 'all';
     }
-    if (render && String(state().page || '') === ALGORITHM_PAGE) renderCards();
-    else scheduleDecorators();
+    if (Object.prototype.hasOwnProperty.call(next, 'industry')) filters.industry = String(next.industry || 'all');
+    if (Object.prototype.hasOwnProperty.call(next, 'type')) filters.type = String(next.type || 'all');
+    viewState.page = 1;
+    if (render && String(state().page || '') === ALGORITHM_PAGE) renderPage();
     return filterState();
   }
 
@@ -130,23 +190,283 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     return algorithmListSearchMatch(algorithm, query);
   }
 
-  function registerDecorator(name, callback) {
-    const key = String(name || '').trim();
-    if (!key) throw new Error('算法列表扩展名称不能为空');
-    if (typeof callback !== 'function') throw new Error(`算法列表扩展 ${key} 必须是函数`);
-    decorators.set(key, callback);
-    scheduleDecorators();
-    return () => {
-      if (decorators.get(key) === callback) decorators.delete(key);
+  function categoryById(id) {
+    return categoryRows().find(row => String(row.id) === String(id)) || null;
+  }
+
+  function setExternalProvider(provider) {
+    externalProvider = provider && typeof provider === 'object' ? provider : null;
+    const valid = new Set(categoryRows().map(row => String(row.id)));
+    filters.selectedCategoryIds = filters.selectedCategoryIds.filter(id => valid.has(id));
+    if (String(state().page || '') === ALGORITHM_PAGE) renderPage();
+    return () => { if (externalProvider === provider) externalProvider = null; };
+  }
+
+  function openCategoryPicker() {
+    viewState.categoryOpen = true;
+    viewState.categoryQuery = '';
+    viewState.categoryPath = [];
+    viewState.draftCategoryIds = new Set(filters.selectedCategoryIds);
+    renderCategoryPicker();
+    return runtimeState();
+  }
+
+  function cancelCategoryPicker() {
+    viewState.categoryOpen = false;
+    viewState.categoryQuery = '';
+    viewState.categoryPath = [];
+    viewState.draftCategoryIds = new Set(filters.selectedCategoryIds);
+    renderCategoryPicker();
+    return runtimeState();
+  }
+
+  function toggleDraftCategory(id) {
+    const key = String(id || '');
+    if (!categoryById(key)) return runtimeState();
+    if (viewState.draftCategoryIds.has(key)) viewState.draftCategoryIds.delete(key);
+    else viewState.draftCategoryIds.add(key);
+    renderCategoryPicker();
+    return runtimeState();
+  }
+
+  function confirmCategoryPicker() {
+    const valid = [...viewState.draftCategoryIds].filter(id => categoryById(id));
+    filters.selectedCategoryIds = valid;
+    try {
+      const previous = JSON.parse(localStorage.getItem('cl_algorithm_recent_categories_v1') || '[]');
+      localStorage.setItem('cl_algorithm_recent_categories_v1', JSON.stringify([...new Set([...valid, ...(Array.isArray(previous) ? previous : [])])].slice(0, 6)));
+    } catch (_) {}
+    viewState.categoryOpen = false;
+    viewState.page = 1;
+    renderPage();
+    return filterState();
+  }
+
+  function providerMeta(algorithm) {
+    return externalProvider?.meta?.(algorithm) || {
+      external: String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL',
+      sourceLabel: String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL' ? '外部平台' : '本平台',
+      readiness: {ready: true, status: 'local', message: ''},
     };
   }
 
-  function renderCards() {
-    if (!ensureAlgorithmShell()) return false;
-    if (typeof window.renderAlg412 !== 'function') return false;
-    window.renderAlg412();
-    scheduleDecorators();
+  function algorithmMatches(algorithm) {
+    if (!matchesSearch(algorithm)) return false;
+    if (filters.industry !== 'all' && String(algorithm?.industry || '') !== filters.industry) return false;
+    if (filters.type !== 'all' && String(algorithm?.algorithm_type || '') !== filters.type) return false;
+    if (externalProvider?.matches) return externalProvider.matches(algorithm, {
+      source: filters.source,
+      trainingStatus: filters.status,
+      selectedCategoryIds: [...filters.selectedCategoryIds],
+      jobs: state().jobs || [],
+    }) !== false;
+    const external = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL';
+    if (filters.source === 'internal' && external) return false;
+    if (filters.source === 'external' && !external) return false;
+    return filters.selectedCategoryIds.length === 0;
+  }
+
+  function trainingCount(id) {
+    return (state().jobs || []).filter(job => String(job?.asset_algorithm_id || job?.algorithm_asset_id || job?.algorithm_id || '') === String(id)).length;
+  }
+
+  function visibleAlgorithms() {
+    const rows = (state().algorithms || []).filter(algorithmMatches);
+    if (viewState.sort === 'updated') return [...rows].sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+    if (viewState.sort === 'training') return [...rows].sort((a, b) => trainingCount(b.id) - trainingCount(a.id));
+    if (viewState.sort === 'metric') return [...rows].sort((a, b) => (versionMetric(currentVersion(b)) ?? -1) - (versionMetric(currentVersion(a)) ?? -1));
+    return [...rows].sort((a, b) => Number(Boolean(activeJob(b.id, state().jobs || []))) - Number(Boolean(activeJob(a.id, state().jobs || []))));
+  }
+
+  function shellHtml() {
+    return `<section class="entity-page algorithm-list-page alg428-shell" data-algorithm-list-owner="AlgorithmListRuntime">
+      <header class="entity-page-header"><div><h2>算法列表</h2><p>管理和查看所有算法，支持筛选、训练和版本管理</p></div><div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建算法</button></div></header>
+      <section class="entity-query-surface"><div class="entity-query-grid algorithm-query-grid">
+        <label class="entity-search"><span>⌕</span><input id="alg412Q" class="input" type="search" placeholder="搜索算法名称 / 算法ID" data-algorithm-query></label>
+        <select class="select" data-algorithm-source-filter><option value="all">来源 · 全部</option><option value="internal">本平台</option><option value="external">外部平台</option></select>
+        <select id="alg412Industry" class="select" data-algorithm-industry-filter></select>
+        <select id="alg412Type" class="select" data-algorithm-type-filter><option value="all">算法类型 · 全部</option><option value="yolo_ultralytics">YOLO / Ultralytics</option><option value="paddle_detection">PaddleDetection</option><option value="opencv">OpenCV</option><option value="mmdetection">MMDetection</option><option value="custom_python">自定义 Python</option></select>
+        <select class="select" data-algorithm-training-status-filter><option value="all">训练状态 · 全部</option><option value="trainable">可训练</option><option value="training">训练中</option><option value="trained">已有版本</option><option value="untrained">尚未训练</option><option value="blocked">不可训练</option></select>
+        <div class="algorithm-category-control"><button class="btn algorithm-category-trigger" data-category-picker-toggle>品目筛选 <span></span></button><div class="algorithm-category-popover" data-category-popover hidden></div></div>
+        <button class="btn entity-reset" data-algorithm-reset>重置</button>
+      </div><div class="entity-applied-filters" data-algorithm-applied hidden></div></section>
+      <div class="entity-sortbar"><button data-algorithm-sort="comprehensive" class="on">综合排序</button><button data-algorithm-sort="updated">更新时间</button><button data-algorithm-sort="training">训练次数</button><button data-algorithm-sort="metric">当前指标</button></div>
+      <div class="entity-region-error" data-algorithm-error hidden></div>
+      <section class="entity-table-surface"><div class="entity-table-scroll"><table class="entity-table algorithm-table"><thead><tr><th>算法名称</th><th>状态</th><th>当前版本</th><th>当前指标</th><th>训练次数</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="alg412List"></tbody></table></div><footer class="entity-pagination" data-algorithm-pagination></footer></section>
+    </section>`;
+  }
+
+  function ensureAlgorithmShell() {
+    if (destroyed || String(state().page || '') !== ALGORITHM_PAGE || !doc) return null;
+    let root = doc.querySelector?.('[data-algorithm-list-owner="AlgorithmListRuntime"]');
+    if (root) return root;
+    const host = doc.getElementById?.('view');
+    if (!host) return null;
+    host.innerHTML = shellHtml();
+    root = host.querySelector?.('[data-algorithm-list-owner="AlgorithmListRuntime"]') || null;
+    bindShell(root);
+    return root;
+  }
+
+  function renderControls(root) {
+    const industries = [...new Set((state().algorithms || []).map(row => String(row?.industry || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+    const industry = root.querySelector('[data-algorithm-industry-filter]');
+    const signature = industries.join('|');
+    if (industry?.dataset.signature !== signature) {
+      industry.dataset.signature = signature;
+      industry.innerHTML = `<option value="all">行业场景 · 全部</option>${industries.map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}`;
+    }
+    for (const [selector, value] of [['[data-algorithm-query]', filters.query], ['[data-algorithm-source-filter]', filters.source], ['[data-algorithm-industry-filter]', filters.industry], ['[data-algorithm-type-filter]', filters.type], ['[data-algorithm-training-status-filter]', filters.status]]) {
+      const control = root.querySelector(selector);
+      if (control && control.value !== value) control.value = value;
+    }
+    for (const button of root.querySelectorAll('[data-algorithm-sort]')) button.classList.toggle('on', button.dataset.algorithmSort === viewState.sort);
+    const sync = root.querySelector('[data-algorithm-sync]');
+    if (sync) sync.hidden = !externalSnapshot().externalMode;
+    const categories = filters.selectedCategoryIds.map(categoryById).filter(Boolean);
+    const trigger = root.querySelector('[data-category-picker-toggle]');
+    if (trigger) {
+      trigger.classList.toggle('has-selection', categories.length > 0);
+      trigger.querySelector('span').textContent = categories.length ? `已选 ${categories.length}` : '';
+    }
+    const applied = root.querySelector('[data-algorithm-applied]');
+    const tags = [...categories.map(row => ({key: `category:${row.id}`, label: row.name})),
+      ...(filters.source !== 'all' ? [{key: 'source', label: filters.source === 'external' ? '外部平台' : '本平台'}] : []),
+      ...(filters.industry !== 'all' ? [{key: 'industry', label: filters.industry}] : []),
+      ...(filters.type !== 'all' ? [{key: 'type', label: algorithmTypeText(filters.type)}] : []),
+      ...(filters.status !== 'all' ? [{key: 'status', label: filters.status}] : [])];
+    if (applied) {
+      applied.hidden = tags.length === 0;
+      applied.innerHTML = tags.length ? `<span>已选：</span>${tags.map(tag => `<button data-remove-filter="${esc(tag.key)}">${esc(tag.label)} ×</button>`).join('')}<button class="entity-filter-clear" data-algorithm-reset>清空</button>` : '';
+    }
+  }
+
+  function renderCategoryPicker() {
+    const popover = doc?.querySelector?.('[data-algorithm-list-owner="AlgorithmListRuntime"] [data-category-popover]');
+    if (!popover) return false;
+    popover.hidden = !viewState.categoryOpen;
+    if (!viewState.categoryOpen) return true;
+    const rows = categoryRows();
+    const active = new Set(viewState.categoryPath);
+    const search = algorithmCategorySearch(rows, viewState.categoryQuery);
+    const columns = algorithmCategoryColumns(rows, viewState.categoryPath);
+    let recentIds = [];
+    try { recentIds = JSON.parse(localStorage.getItem('cl_algorithm_recent_categories_v1') || '[]'); } catch (_) {}
+    const recent = (Array.isArray(recentIds) ? recentIds : []).map(categoryById).filter(Boolean).slice(0, 6);
+    const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}"><label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span>${esc(row.name)}</span></label>${row.hasChildren ? '<button data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
+    const body = viewState.categoryQuery
+      ? `<div class="algorithm-category-search-results">${search.map(row => `<label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></label>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
+      : `<div class="algorithm-category-columns">${columns.map(column => `<div class="algorithm-category-column">${column.rows.map(item).join('') || '<div class="algorithm-category-column-empty">请选择上级品目</div>'}</div>`).join('')}</div>`;
+    const selected = [...viewState.draftCategoryIds].map(categoryById).filter(Boolean);
+    popover.innerHTML = `<header><b>选择品目</b><button data-category-close>×</button></header><label class="algorithm-category-search"><span>⌕</span><input type="search" value="${esc(viewState.categoryQuery)}" placeholder="搜索品目名称或路径" data-category-search></label>${recent.length ? `<div class="algorithm-category-recent"><span>最近使用：</span>${recent.map(row => `<button data-category-recent="${esc(row.id)}">${esc(row.name)}</button>`).join('')}</div>` : ''}${body}<footer><div><b>已选择 ${selected.length} 项</b><span>${selected.slice(0, 2).map(row => `<em>${esc(row.name)}</em>`).join('')}${selected.length > 2 ? `<em>+${selected.length - 2}</em>` : ''}</span></div><div><button class="btn" data-category-clear>清空</button><button class="btn primary" data-category-confirm>确定</button></div></footer>`;
     return true;
+  }
+
+  function versionRowsHtml(algorithm) {
+    const versions = Array.isArray(algorithm?.versions) ? algorithm.versions : [];
+    if (!versions.length) return '<div class="entity-empty compact">暂无版本，点击“训练”开始第一次迭代</div>';
+    return versions.map(version => {
+      const metric = versionMetric(version);
+      const current = String(algorithm.current_version_id || '') === String(version.id || '');
+      const external = String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL' && String(algorithm.provider_type || '').toUpperCase() === 'CHANG_LIAN';
+      const published = String(version.external_publish_status || '').toLowerCase() === 'published';
+      const downloadable = Boolean(String(version.stored_path || '').trim());
+      const pid = encodeURIComponent(String(projectId?.() || ''));
+      return `<div class="alg428-version-row"><div><b>${esc(version.version_name || '-')} ${current ? '<em>当前版本</em>' : ''}</b><span>${dateText(version.finished_at || version.created_at)}</span></div><div><span>mAP50</span><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="openVersionReport429('${esc(algorithm.id)}','${esc(version.id)}')">训练报告</button>${version.training_lineage ? `<button class="btn mini" onclick="openVersionLineage429('${esc(algorithm.id)}','${esc(version.id)}')">训练溯源</button>` : ''}${version.evaluation ? `<button class="btn mini" onclick="openVersionEvaluation429('${esc(algorithm.id)}','${esc(version.id)}')">独立评测</button>` : ''}<button class="btn mini" onclick="openVersionConvert428('${esc(algorithm.id)}','${esc(version.id)}')">转换</button>${downloadable ? `<a class="btn mini" href="/api/v12/projects/${pid}/algorithms/${encodeURIComponent(String(algorithm.id || ''))}/versions/${encodeURIComponent(String(version.id || ''))}/download">下载模型</a>` : ''}${external ? `<button class="btn mini" data-external-publish-action onclick="window.AlgorithmListRuntime.publishVersion('${esc(algorithm.id)}','${esc(version.id)}',this)" ${published ? 'disabled' : ''}>${published ? '已发布' : '发布'}</button>` : ''}${current ? '' : `<button class="btn mini" onclick="openVersionRollback('${esc(algorithm.id)}','${esc(version.id)}')">回退</button>`}</div></div>`;
+    }).join('');
+  }
+
+  function algorithmRowView(algorithm) {
+    const version = currentVersion(algorithm);
+    const metric = versionMetric(version);
+    const count = trainingCount(algorithm.id);
+    const meta = providerMeta(algorithm);
+    const run = activeJob(algorithm.id, state().jobs || []);
+    const status = run ? String(run.status_text || trainingStatusText(run.status)) : algorithm.external_active === false ? '已下架' : meta.readiness?.ready === false ? '待同步' : version ? '已训练' : '未训练';
+    const statusClass = run ? 'running' : version ? 'success' : meta.readiness?.ready === false ? 'warning' : 'neutral';
+    const open = Boolean(state().alg428Expanded?.[algorithm.id]);
+    const tags = [algorithm.industry, algorithmTypeText(algorithm.algorithm_type)].filter(Boolean).slice(0, 2);
+    const updated = algorithm.updated_at || version?.finished_at || version?.created_at || algorithm.created_at;
+    const html = `<tr class="alg428-card alg428-asset-row ${open ? 'open' : ''}" data-algorithm-id="${esc(algorithm.id)}"><td colspan="7"><div class="algorithm-row-grid"><div class="algorithm-name-cell"><span class="algorithm-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span><div><button class="algorithm-name-link" data-algorithm-toggle="${esc(algorithm.id)}" title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</button><span>${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}<em>${esc(meta.sourceLabel || '本平台')}</em></span></div></div><div><span class="entity-status ${statusClass}" title="${esc(meta.readiness?.message || '')}">${esc(status)}</span></div><div><b>${esc(version?.version_name || '-')}</b><small>${(algorithm.versions || []).length} 个版本</small></div><div><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b><small>当前 mAP50</small></div><div><b>${count}</b><small>次</small></div><div><span>${dateText(updated)}</span></div><div class="entity-row-actions"><button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button><button onclick="algorithmReport429('${esc(algorithm.id)}')">综合报告</button><button class="primary-link" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${meta.readiness?.ready === false ? `disabled title="${esc(meta.readiness?.message || '当前不可训练')}"` : ''}>训练</button><details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details><button class="algorithm-expand" data-algorithm-toggle="${esc(algorithm.id)}">⌄</button></div>${open ? `<div class="algorithm-version-surface"><header><b>迭代版本</b><span>当前版本决定训练、转换和检测的默认起点</span></header>${versionRowsHtml(algorithm)}</div>` : ''}</div></td></tr>`;
+    return {id: String(algorithm.id || ''), html, signature: JSON.stringify({algorithm, count, meta, status, open})};
+  }
+
+  function renderRows() {
+    const root = ensureAlgorithmShell();
+    const body = root?.querySelector?.('#alg412List');
+    if (!body) return false;
+    const all = visibleAlgorithms();
+    const maxPage = Math.max(1, Math.ceil(all.length / viewState.pageSize));
+    viewState.page = Math.min(Math.max(1, viewState.page), maxPage);
+    const rows = all.slice((viewState.page - 1) * viewState.pageSize, viewState.page * viewState.pageSize);
+    if (!doc?.createElement || typeof body.querySelectorAll !== 'function') body.innerHTML = rows.map(row => algorithmRowView(row).html).join('');
+    else if (!rows.length) { body.innerHTML = '<tr class="entity-empty-row"><td colspan="7"><div class="entity-empty"><b>暂无符合条件的算法</b><span>请调整筛选条件或新建算法</span></div></td></tr>'; renderedRows.clear(); }
+    else {
+      body.querySelector('.entity-empty-row')?.remove();
+      const existing = new Map([...body.querySelectorAll('tr[data-algorithm-id]')].map(row => [String(row.dataset.algorithmId || ''), row]));
+      const wanted = new Set();
+      rows.forEach((algorithm, index) => {
+        const item = algorithmRowView(algorithm); wanted.add(item.id); let row = existing.get(item.id) || null;
+        if (!row || renderedRows.get(item.id) !== item.signature) { const holder = doc.createElement('tbody'); holder.innerHTML = item.html; const next = holder.firstElementChild; if (!next) return; if (row) row.replaceWith(next); row = next; }
+        const reference = body.children[index] || null; if (reference !== row) body.insertBefore(row, reference); renderedRows.set(item.id, item.signature);
+      });
+      for (const [id, row] of existing) if (!wanted.has(id)) { row.remove(); renderedRows.delete(id); }
+    }
+    const pagination = root.querySelector('[data-algorithm-pagination]');
+    if (pagination) pagination.innerHTML = `<span>共 ${all.length} 条</span><div><span>${viewState.pageSize} 条/页</span><button data-algorithm-page="${viewState.page - 1}" ${viewState.page <= 1 ? 'disabled' : ''}>‹</button>${Array.from({length: maxPage}, (_, index) => index + 1).slice(Math.max(0, viewState.page - 3), Math.max(5, viewState.page + 2)).map(page => `<button data-algorithm-page="${page}" class="${page === viewState.page ? 'on' : ''}">${page}</button>`).join('')}<button data-algorithm-page="${viewState.page + 1}" ${viewState.page >= maxPage ? 'disabled' : ''}>›</button></div>`;
+    return true;
+  }
+
+  function renderPage() {
+    const root = ensureAlgorithmShell();
+    if (!root) return false;
+    renderControls(root);
+    const error = root.querySelector('[data-algorithm-error]');
+    if (error) { error.hidden = !refreshError; error.textContent = refreshError; }
+    renderRows();
+    renderCategoryPicker();
+    return true;
+  }
+
+  function resetFilters() {
+    Object.assign(filters, {query: '', selectedCategoryIds: [], source: 'all', status: 'all', industry: 'all', type: 'all'});
+    viewState.page = 1;
+    renderPage();
+  }
+
+  function runtimeState() {
+    return {inflight: Boolean(inflight), lastRefreshAt, error: refreshError, ...filterState(), industry: filters.industry, type: filters.type, sort: viewState.sort, page: viewState.page, categoryOpen: viewState.categoryOpen, draftCategoryIds: [...viewState.draftCategoryIds]};
+  }
+
+  function bindShell(root) {
+    if (!root || root.dataset.bound === '1') return;
+    root.dataset.bound = '1';
+    root.addEventListener('input', event => {
+      if (event.target.matches('[data-algorithm-query]')) setFilters({query: event.target.value});
+      if (event.target.matches('[data-category-search]')) { viewState.categoryQuery = event.target.value; renderCategoryPicker(); root.querySelector('[data-category-search]')?.focus?.(); }
+    });
+    root.addEventListener('change', event => {
+      if (event.target.matches('[data-algorithm-source-filter]')) setFilters({source: event.target.value});
+      if (event.target.matches('[data-algorithm-industry-filter]')) setFilters({industry: event.target.value});
+      if (event.target.matches('[data-algorithm-type-filter]')) setFilters({type: event.target.value});
+      if (event.target.matches('[data-algorithm-training-status-filter]')) setFilters({status: event.target.value});
+      if (event.target.matches('[data-category-check]')) toggleDraftCategory(event.target.dataset.categoryCheck);
+    });
+    root.addEventListener('click', event => {
+      if (event.target.closest('[data-algorithm-reset]')) return resetFilters();
+      const remove = event.target.closest('[data-remove-filter]');
+      if (remove) { const key = String(remove.dataset.removeFilter || ''); if (key.startsWith('category:')) filters.selectedCategoryIds = filters.selectedCategoryIds.filter(id => id !== key.slice(9)); else if (key in filters) filters[key] = 'all'; return renderPage(); }
+      const sort = event.target.closest('[data-algorithm-sort]'); if (sort) { viewState.sort = sort.dataset.algorithmSort; viewState.page = 1; return renderPage(); }
+      const page = event.target.closest('[data-algorithm-page]'); if (page && !page.disabled) { viewState.page = Number(page.dataset.algorithmPage || 1); return renderRows(); }
+      const toggleRow = event.target.closest('[data-algorithm-toggle]'); if (toggleRow) return toggle(toggleRow.dataset.algorithmToggle);
+      if (event.target.closest('[data-category-picker-toggle]')) return openCategoryPicker();
+      if (event.target.closest('[data-category-close]')) return cancelCategoryPicker();
+      if (event.target.closest('[data-category-clear]')) { viewState.draftCategoryIds.clear(); return renderCategoryPicker(); }
+      if (event.target.closest('[data-category-confirm]')) return confirmCategoryPicker();
+      const recent = event.target.closest('[data-category-recent]'); if (recent) return toggleDraftCategory(recent.dataset.categoryRecent);
+      const drill = event.target.closest('[data-category-drill]'); if (drill) { const row = categoryById(drill.closest('[data-category-id]')?.dataset.categoryId); if (row) viewState.categoryPath = [...(row.ancestorIds || []), row.id]; return renderCategoryPicker(); }
+      if (event.target.closest('[data-algorithm-sync]')) void externalProvider?.sync?.();
+    });
   }
 
   function toggle(id) {
@@ -155,7 +475,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     s.alg428Expanded = s.alg428Expanded || {};
     const key = String(id || '');
     s.alg428Expanded[key] = !s.alg428Expanded[key];
-    renderCards();
+    renderRows();
     return s.alg428Expanded[key];
   }
   toggle.__algorithmListRuntime = true;
@@ -165,7 +485,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     if (destroyed) throw new Error('算法列表模块已销毁');
     const now = Date.now();
     if (minAgeMs > 0 && now - lastRefreshAt < minAgeMs) {
-      if (render) renderCards();
+      if (render) renderPage();
       return {algorithms: state().algorithms || [], jobs: state().jobs || [], cached: true};
     }
     if (inflight) return inflight;
@@ -196,12 +516,17 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       s.algorithms = listFrom(algorithmBody);
       s.jobs = listFrom(jobBody);
       lastRefreshAt = Date.now();
-      if (render && String(s.page || '') === ALGORITHM_PAGE) renderCards();
+      refreshError = '';
+      if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();
 
     try {
       return await inflight;
+    } catch (error) {
+      refreshError = String(error?.message || error || '算法列表刷新失败');
+      if (render && String(state().page || '') === ALGORITHM_PAGE) renderPage();
+      throw error;
     } finally {
       inflight = null;
     }
@@ -222,32 +547,40 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     ).finally(() => { target.disabled = false; });
   };
 
-  const domObserver = doc?.body ? new MutationObserver(() => {
-    if (String(state().page || '') === ALGORITHM_PAGE) scheduleDecorators();
-  }) : null;
-  domObserver?.observe(doc.body, {childList: true, subtree: true});
-
   window.toggleAlgorithm412 = toggle;
   window.toggleAlgorithm428 = toggle;
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422504',
+    build: 'algorithm-list-runtime-422560',
     toggle,
     refresh,
-    renderCards,
-    registerDecorator,
-    runDecorators,
+    render: renderPage,
+    renderCards: renderPage,
+    renderRows,
     filterState,
     setFilters,
     matchesSearch,
-    state() {
-      return {inflight: Boolean(inflight), lastRefreshAt, decorators: [...decorators.keys()]};
+    visibleAlgorithms,
+    setExternalProvider,
+    openCategoryPicker,
+    cancelCategoryPicker,
+    toggleDraftCategory,
+    confirmCategoryPicker,
+    resetFilters,
+    state: runtimeState,
+    openDetail(id) {
+      window.viewAlgorithm429?.(String(id));
+      const algorithm = (state().algorithms || []).find(row => String(row.id) === String(id));
+      if (algorithm) queueMicrotask(() => externalProvider?.decorateDetail?.(algorithm));
+    },
+    publishVersion(algorithmId, versionId, button) {
+      return window.ExternalAlgorithmPublishRuntime?.publishVersion?.(algorithmId, versionId, button);
     },
     destroy() {
       destroyed = true;
-      decorators.clear();
-      domObserver?.disconnect();
+      renderedRows.clear();
+      externalProvider = null;
       doc?.removeEventListener?.('click', onRefreshCapture, true);
       if (window.toggleAlgorithm412 === toggle) window.toggleAlgorithm412 = originalToggle412;
       if (window.toggleAlgorithm428 === toggle) window.toggleAlgorithm428 = originalToggle428;
@@ -257,6 +590,5 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   };
   window.AlgorithmListRuntime = runtime;
   window.__algorithmListRuntimeInstalled = true;
-  scheduleDecorators();
   return runtime;
 }
