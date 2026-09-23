@@ -83,50 +83,66 @@ def _patch_host(monkeypatch):
     )
 
 
-def test_auto_never_upscales_explicit_batch_or_enables_disabled_cache(monkeypatch):
+def test_auto_balanced_owns_batch_workers_and_cache(monkeypatch):
     _patch_host(monkeypatch)
     result = training_metrics.resolve_resources(
-        _request(batch=16, workers=4, cache=False),
+        _request(batch=8, workers=0, cache=False),
         _context(),
         _Model(),
         _Torch(_Cuda()),
     )
 
-    assert result["requested_batch"] == 16
-    assert result["resolved_batch"] == 16
-    assert result["requested_workers"] == 4
-    assert result["resolved_workers"] == 4
-    assert result["requested_cache"] is False
-    assert result["resolved_cache"] is False
-    assert not result["adjustments"]
+    assert result["resource_profile"] == "balanced"
+    assert result["resolved_batch"] > 8
+    assert result["resolved_workers"] == 8
+    assert result["resolved_cache"] == "disk"
+    assert any("batch auto-resolved" in item for item in result["adjustments"])
+    assert any("workers auto-resolved" in item for item in result["adjustments"])
+    assert any("cache auto-resolved" in item for item in result["adjustments"])
 
 
-def test_auto_preserves_workers_zero_as_explicit_single_process_loader(monkeypatch):
+def test_auto_profiles_trade_throughput_for_headroom(monkeypatch):
     _patch_host(monkeypatch)
-    result = training_metrics.resolve_resources(
-        _request(workers=0),
+    stability = training_metrics.resolve_resources(
+        _request(batch=8, workers=0, cache=False, resource_profile="stability"),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    balanced = training_metrics.resolve_resources(
+        _request(batch=8, workers=0, cache=False, resource_profile="balanced"),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    performance = training_metrics.resolve_resources(
+        _request(batch=8, workers=0, cache=False, resource_profile="performance"),
         _context(),
         _Model(),
         _Torch(_Cuda()),
     )
 
-    assert result["resolved_workers"] == 0
+    assert stability["resolved_batch"] <= balanced["resolved_batch"] <= performance["resolved_batch"]
+    assert stability["resolved_workers"] <= balanced["resolved_workers"] <= performance["resolved_workers"]
+    assert stability["target_gpu_memory_fraction"] == pytest.approx(0.58)
+    assert balanced["target_gpu_memory_fraction"] == pytest.approx(0.70)
+    assert performance["target_gpu_memory_fraction"] == pytest.approx(0.82)
 
 
-def test_auto_can_downscale_batch_for_safety_but_never_upscale(monkeypatch):
+def test_auto_selects_ram_cache_when_dataset_safely_fits(monkeypatch):
     _patch_host(monkeypatch)
     result = training_metrics.resolve_resources(
-        _request(batch=64),
-        _context(reserved_bytes=3 * GIB),
+        _request(batch=-1, workers=0, cache=False),
+        _context(decoded_dataset_bytes=2 * GIB),
         _Model(),
         _Torch(_Cuda()),
     )
 
-    assert 1 <= result["resolved_batch"] < 64
-    assert any("batch downscaled 64->" in item for item in result["adjustments"])
+    assert result["resolved_cache"] == "ram"
+    assert result["resolved_batch"] > 0
 
 
-def test_auto_batch_minus_one_explicitly_delegates_batch_selection(monkeypatch):
+def test_auto_batch_minus_one_remains_supported(monkeypatch):
     _patch_host(monkeypatch)
     result = training_metrics.resolve_resources(
         _request(batch=-1),
@@ -137,8 +153,7 @@ def test_auto_batch_minus_one_explicitly_delegates_batch_selection(monkeypatch):
 
     assert result["requested_batch"] == -1
     assert result["resolved_batch"] > 0
-    assert result["resolved_batch"] <= 64
-    assert "delegated selection" in " ".join(result["reasons"])
+    assert result["resolved_batch"] <= 128
 
 
 def test_manual_batch_minus_one_is_rejected(monkeypatch):
@@ -151,18 +166,6 @@ def test_manual_batch_minus_one_is_rejected(monkeypatch):
             _Torch(_Cuda()),
         )
 
-
-def test_auto_does_not_turn_false_cache_into_disk_even_when_disk_is_available(monkeypatch):
-    _patch_host(monkeypatch)
-    result = training_metrics.resolve_resources(
-        _request(cache=False),
-        _context(remote_cache_ready=True, decoded_dataset_bytes=2 * GIB),
-        _Model(),
-        _Torch(_Cuda()),
-    )
-
-    assert result["resolved_cache"] is False
-    assert "user requested cache=false" in " ".join(result["reasons"])
 
 
 def test_manual_keeps_exact_values(monkeypatch):
