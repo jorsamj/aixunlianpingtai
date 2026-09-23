@@ -1148,6 +1148,13 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         task_artifacts=artifacts,
     )
     task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    payload["remote_execution"]["training"]["params"].update({
+        "resource_strategy": "auto",
+        "resource_profile": "performance",
+        "gpu_policy": "exclusive",
+        "precision": "bf16",
+        "time": 2.5,
+    })
     artifacts.atomic_write_json(task.task_id, "snapshot.json", {
         "schema_version": 3,
         "snapshot_id": "snapshot-remote-one",
@@ -1198,6 +1205,16 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
             "completion_reason": "requested_epochs_completed",
             "completed_epochs": 3,
             "requested_epochs": 3,
+            "actual_train_params": {
+                "epochs": 3,
+                "imgsz": 640,
+                "batch": 12,
+                "resource_strategy": "auto",
+                "resource_profile": "performance",
+                "gpu_policy": "exclusive",
+                "precision": "bf16",
+                "time": 2.5,
+            },
             "best_path": str(best),
             "last_path": str(last),
             "verified_models": [str(best), str(last)],
@@ -1333,6 +1350,11 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
+    assert version["training_lineage"]["parameters"]["requested"]["resource_profile"] == "performance"
+    assert version["training_lineage"]["parameters"]["requested"]["precision"] == "bf16"
+    assert version["training_lineage"]["parameters"]["actual"]["batch"] == 12
+    assert version["training_lineage"]["parameters"]["actual"]["gpu_policy"] == "exclusive"
+    assert version["training_lineage"]["parameters"]["actual"]["time"] == 2.5
     assert version["external_analysis_id"] == "analysis-visual-1"
     assert version["evaluation"]["benchmark_scope"]["binding_level"] == "bundle_verified"
     assert len(version["evaluation"]["benchmark_scope"]["evaluation_input_digest"]) == 64

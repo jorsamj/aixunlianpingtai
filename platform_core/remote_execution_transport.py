@@ -3187,7 +3187,9 @@ class RemoteExecutionTransportService:
         worker_id = str(getattr(task, "worker_id", "") or "")
         selected_gpu = result.get("selected_gpu")
         selected_gpu = dict(selected_gpu) if isinstance(selected_gpu, Mapping) else {}
-        actual_params = report.get("configuration")
+        actual_params = completion.get("actual_train_params")
+        if not isinstance(actual_params, Mapping):
+            actual_params = report.get("configuration")
         actual_params = dict(actual_params) if isinstance(actual_params, Mapping) else {}
         primary_model = next(
             (item for item in committed_models if str(item.get("role") or "") == primary_role),

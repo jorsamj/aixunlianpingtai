@@ -21,8 +21,16 @@ def test_training_lineage_is_public_safe_and_derives_agent_node():
             "assigned_device": "cuda:0",
             "secret_url": "https://forbidden.example/signed",
         },
-        requested_params={"epochs": 30, "batch": 4, "unknown": "drop"},
-        actual_params={"epochs": 28, "batch": 4, "imgsz": 640},
+        requested_params={
+            "epochs": 30, "batch": 4, "resource_strategy": "auto",
+            "resource_profile": "performance", "gpu_policy": "exclusive",
+            "precision": "bf16", "time": 2.5, "unknown": "drop",
+        },
+        actual_params={
+            "epochs": 28, "batch": 4, "imgsz": 640,
+            "resource_strategy": "auto", "resource_profile": "performance",
+            "gpu_policy": "exclusive", "precision": "bf16", "time": 2.5,
+        },
         artifacts=[{
             "role": "best",
             "artifact_id": "art-1",
@@ -40,8 +48,19 @@ def test_training_lineage_is_public_safe_and_derives_agent_node():
     assert lineage["execution"]["node_id"] == "node-7"
     assert "secret_url" not in str(lineage)
     assert "signed_url" not in str(lineage)
-    assert lineage["parameters"]["requested"] == {"batch": 4, "epochs": 30}
+    assert lineage["parameters"]["requested"] == {
+        "batch": 4,
+        "epochs": 30,
+        "gpu_policy": "exclusive",
+        "precision": "bf16",
+        "resource_profile": "performance",
+        "resource_strategy": "auto",
+        "time": 2.5,
+    }
     assert lineage["parameters"]["actual"]["epochs"] == 28
+    assert lineage["parameters"]["actual"]["resource_profile"] == "performance"
+    assert lineage["parameters"]["actual"]["precision"] == "bf16"
+    assert lineage["parameters"]["actual"]["time"] == 2.5
 
 
 def test_training_lineage_rejects_invalid_dataset_revision():

@@ -821,6 +821,16 @@ def main():
         else "bf16" if precision == "bf16"
         else False
     )
+
+    def recorded_train_params(values):
+        return {
+            **dict(values),
+            "resource_strategy": args.resource_strategy,
+            "resource_profile": args.resource_profile,
+            "gpu_policy": args.gpu_policy,
+            "precision": precision,
+        }
+
     actual_model = resolve_training_model(args.model, pretrained)
     train_args = {
         "data": args.data,
@@ -931,8 +941,8 @@ def main():
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
         persist_resolution(resolution_path, resolved)
-        evidence["effective_args"] = dict(train_args)
-        update_job(job_file, resolved_resources=resolved, actual_train_params=train_args, device_evidence=evidence)
+        evidence["effective_args"] = recorded_train_params(train_args)
+        update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
                                     gpu_uuid=resource_context.get("gpu_uuid"))
         telemetry.start()
@@ -986,7 +996,7 @@ def main():
         except Exception as cb_err:
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
         def attach_resource_callbacks(target, effective_args=None):
-            runtime_args = dict(effective_args or train_args)
+            runtime_args = recorded_train_params(effective_args or train_args)
             first_batch_seen = False
 
             def pretrain_start(_trainer):
@@ -1031,8 +1041,8 @@ def main():
         training_start_monotonic = time.monotonic()
         while True:
             try:
-                evidence["effective_args"] = dict(train_args)
-                update_job(job_file, device_evidence=evidence, actual_train_params=train_args)
+                evidence["effective_args"] = recorded_train_params(train_args)
+                update_job(job_file, device_evidence=evidence, actual_train_params=recorded_train_params(train_args))
                 train_result = model.train(**train_args)
                 break
             except Exception as train_error:
@@ -1057,7 +1067,7 @@ def main():
                 with telemetry.lock:
                     telemetry.resolved = dict(resolved)
                 persist_resolution(resolution_path, resolved)
-                update_job(job_file, resolved_resources=resolved, actual_train_params=train_args)
+                update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args))
                 print(f"[资源调整] CUDA OOM；第 {retries}/6 次重试，batch={train_args['batch']}", flush=True)
             # Release traceback-held tensors before building the next bounded attempt.
             del model
