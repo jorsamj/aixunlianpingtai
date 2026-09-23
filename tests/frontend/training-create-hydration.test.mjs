@@ -175,6 +175,44 @@ test('closed or superseded shell cannot open a stale training dialog', async () 
 });
 
 
+test('prewarm hydrates shared training inputs before click and coalesces external preflight', async () => {
+  const originalWindow = globalThis.window;
+  const calls = [];
+  const state = {
+    algorithms: [{id: 'external-1', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN'}],
+    targets: [],
+    rec: null,
+  };
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => 'opened',
+      request: async url => {
+        calls.push(url);
+        if (url.startsWith('/api/training_options')) return {targets: [{status: 'ready', algorithms: [{key: 'yolo'}], base_models: []}]};
+        return {device: 'cpu'};
+      },
+      preflight: async aid => { calls.push(`preflight:${aid}`); },
+      preflightFresh: () => false,
+    });
+    await Promise.all([
+      runtime.prewarm('external-1'),
+      runtime.prewarm('external-1'),
+    ]);
+    assert.equal(calls.filter(row => row.startsWith('/api/training_options')).length, 1);
+    assert.equal(calls.filter(row => row === '/api/system/recommendation').length, 1);
+    assert.equal(calls.filter(row => row === 'preflight:external-1').length, 1);
+    const before = calls.length;
+    await runtime.prewarm('', {includePreflight: false});
+    assert.equal(calls.length, before);
+    runtime.destroy();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
 test('recent external preflight opens the canonical training form without a preparation flash', async () => {
   const originalWindow = globalThis.window;
   let preflights = 0;
