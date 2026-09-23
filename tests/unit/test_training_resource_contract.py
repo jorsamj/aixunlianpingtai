@@ -98,7 +98,8 @@ def test_auto_balanced_owns_batch_workers_and_cache(monkeypatch):
 
     assert result["resource_profile"] == "balanced"
     assert result["resolved_batch"] > 8
-    assert result["resolved_workers"] == 8
+    expected_workers = 4 if training_metrics.os.name == "nt" else 8
+    assert result["resolved_workers"] == expected_workers
     assert result["resolved_cache"] == "disk"
     assert any("batch auto-resolved" in item for item in result["adjustments"])
     assert any("workers auto-resolved" in item for item in result["adjustments"])
@@ -169,9 +170,14 @@ def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatc
         _Torch(_Cuda(devices=2)),
     )
 
-    assert single_job["resolved_workers"] == 12
-    assert second_parallel_job["resolved_workers"] == 7
-    assert single_job["resolved_workers"] > second_parallel_job["resolved_workers"]
+    if training_metrics.os.name == "nt":
+        # Windows intentionally caps Ultralytics loader workers at 4 for runtime safety.
+        assert single_job["resolved_workers"] == 4
+        assert second_parallel_job["resolved_workers"] == 4
+    else:
+        assert single_job["resolved_workers"] == 12
+        assert second_parallel_job["resolved_workers"] == 7
+        assert single_job["resolved_workers"] > second_parallel_job["resolved_workers"]
 
 
 def test_auto_selects_ram_cache_when_dataset_safely_fits(monkeypatch):
