@@ -572,9 +572,24 @@ class AgentTrainingRunner:
                 )
             except (TypeError, ValueError):
                 dataset_bytes = 0
+        counts = payload.get("counts")
+        counts = counts if isinstance(counts, Mapping) else {}
+        try:
+            train_image_count = max(
+                1,
+                int(
+                    counts.get("train")
+                    or counts.get("training")
+                    or counts.get("train_images")
+                    or 1
+                ),
+            )
+        except (TypeError, ValueError):
+            train_image_count = 1
         resource_context = {
             "concurrent_reservations": 1,
             "dataset_bytes": dataset_bytes,
+            "train_image_count": train_image_count,
             "decoded_dataset_bytes": None,
             "remote_cache_ready": True,
             "gpu_uuid": str(gpu.get("uuid") or "") or None,
