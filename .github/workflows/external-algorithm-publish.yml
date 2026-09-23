@@ -89,6 +89,13 @@ jobs:
           grep -Fq 'test_artifact_storage_public_url_403_fails_changlian_filepath' tests/unit/test_model_artifacts.py
           grep -Fq 'test_artifact_storage_full_bucket_and_object_permissions_pass' tests/unit/test_model_artifacts.py
           grep -Fq 'test_generic_storage_health_contract_still_blocks_bucket_metadata_access_denied' tests/unit/test_model_artifacts.py
+          grep -Fq 'def save_artifact_oss_config(' platform_core/model_artifacts.py
+          grep -Fq 'ARTIFACT_OSS_SOURCE_ID = "model_artifact_oss"' platform_core/model_artifacts.py
+          grep -Fq '@router.put("/api/v64/model-artifacts/oss-config")' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_artifact_oss_config_is_standalone_from_material_storage' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_oss_config_blank_credentials_preserve_existing_secret' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_oss_first_save_requires_own_credentials_without_legacy_oss' tests/unit/test_model_artifacts.py
+          grep -Fq "usage||'')!=='model_artifact'" static/app.js
       - name: Syntax and wiring guards
         run: |
           python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
@@ -236,9 +243,13 @@ jobs:
           grep -Fq 're.fullmatch(r"[0-9a-f]{64}", digest)' platform_core/model_artifacts.py
           grep -Fq 'immutable_name = f"{digest}-' platform_core/model_artifacts.py
           grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
-          grep -Fq '自动归档已启用' static/modules/model-artifact-runtime.js
-          grep -Fq "toLowerCase() === 'oss'" static/modules/model-artifact-runtime.js
-          grep -Fq '请选择阿里云 OSS' static/modules/model-artifact-runtime.js
+          grep -Fq '独立配置 · 自动归档' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactEndpoint' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactBucket' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactAccessKeyId' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactAccessKeySecret' static/modules/model-artifact-runtime.js
+          grep -Fq '不需要先在“素材存储”创建或选择存储源' static/modules/model-artifact-runtime.js
+          ! grep -Fq 'modelArtifactStorageSource' static/modules/model-artifact-runtime.js
           ! grep -Fq 'id="modelArtifactAutoUpload"' static/modules/model-artifact-runtime.js
           grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
