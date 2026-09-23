@@ -77,6 +77,15 @@ test('final clean tab consumes the clean task view and PollRegistry lifecycle', 
   assert.match(source, /style="transform:scaleX/);
   assert.doesNotMatch(source, /body\.innerHTML=cleanTaskRows427\(state\.clean427\|\|\[\]\)/);
   assert.doesNotMatch(source, /setTimeout\(\(\)=>\{if\(state\.page==='自动标注及清洗'\)renderOps427\(\)\},2200\)/);
+  const progressStart = source.indexOf("const CLEAN_PROGRESS_POLL_PREFIX429='clean-task-progress:'");
+  const progressEnd = source.indexOf('\n  async function fetchTask429', progressStart);
+  assert.ok(progressStart >= 0 && progressEnd > progressStart);
+  const progress = source.slice(progressStart, progressEnd);
+  assert.match(progress, /PollRegistryRuntime/);
+  assert.match(progress, /registry\.startTimeout\(key,ownerPage/);
+  assert.match(progress, /data-clean-progress-task/);
+  assert.match(progress, /renderCleanProgress429\(task,id\)/);
+  assert.doesNotMatch(progress, /showTaskProgressCore427|setTimeout\(|setInterval\(/);
 });
 
 

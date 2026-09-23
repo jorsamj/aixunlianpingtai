@@ -3442,7 +3442,53 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.previewDataLegacy429_1=function(id){const list=matchData429(),i=list.findIndex(x=>x.id===id),x=list[i];if(!x)return;modal('图片详情',`<div class="data429-preview"><div><img src="${x.url}"></div><aside><h2>${esc(x.filename)}</h2><dl><dt>处理状态</dt><dd>${processed429(x)?'已处理':'未处理'}</dd><dt>标注状态</dt><dd>${x.annotated?'已标注':'未标注'}</dd><dt>标签</dt><dd>${esc((x.labels||[]).join('、')||'-')}</dd><dt>尺寸</dt><dd>${x.width||'-'} × ${x.height||'-'}</dd><dt>大小</dt><dd>${fmtSize424(x.size_bytes)}</dd><dt>时间</dt><dd>${dt429(x.created_at)}</dd></dl><div class="row"><button class="btn" onclick="editData427('${x.id}')">编辑名称</button><button class="btn primary" onclick="openAnnotation('${x.id}')">标注</button></div></aside></div>`,true)};
 
   // ---------- faster cleaning confirmation + full details ----------
-  window.showCleanTaskProgress429=async function(id){const t=await safe(fetchTask429('clean',id));if(t&&['awaiting_confirmation','done'].includes(t.status))return cleanDetail429(id);return window.showTaskProgressCore427?.('clean',id)};
+  const CLEAN_PROGRESS_POLL_PREFIX429='clean-task-progress:';
+  function cleanProgressPollKey429(id){return CLEAN_PROGRESS_POLL_PREFIX429+String(id||'')}
+  function cleanProgressRoot429(id){return document.querySelector(`[data-clean-progress-task="${CSS.escape(String(id||''))}"]`)}
+  function renderCleanProgress429(task,id){
+    const view=cleanTaskView427(task),root=cleanProgressRoot429(id);
+    if(!root){
+      modal('自动清洗',`<div class="wait427" data-clean-progress-task="${esc(id)}"><div class="wait427-anim"><i></i><i></i><i></i><b data-clean-progress-status></b></div><div class="wait427-progress"><i data-clean-progress-bar></i></div><div class="wait427-stats"><span>进度 <b data-clean-progress-percent></b></span><span>已处理 <b data-clean-progress-counts></b></span><span>发现问题 <b data-clean-progress-flagged></b></span></div><div class="muted-line" data-clean-progress-runtime></div><div data-clean-progress-error></div><div class="row end" data-clean-progress-actions></div></div>`,false);
+    }
+    const current=cleanProgressRoot429(id);if(!current)return false;
+    const set=(selector,value)=>{const node=current.querySelector(selector);if(node)node.textContent=value};
+    set('[data-clean-progress-status]',view.statusText||'-');
+    set('[data-clean-progress-percent]',`${Number(view.percent||0).toFixed(1)}%`);
+    set('[data-clean-progress-counts]',view.progressText||`${Number(view.processed||0)}/${Number(view.total||0)}`);
+    set('[data-clean-progress-flagged]',String(Number(view.flagged||0)));
+    set('[data-clean-progress-runtime]',view.runtimeText||'');
+    const bar=current.querySelector('[data-clean-progress-bar]');if(bar)bar.style.width=`${Math.max(0,Math.min(100,Number(view.percent||0)))}%`;
+    const error=current.querySelector('[data-clean-progress-error]');if(error)error.innerHTML=task?.error?`<div class="error-box422">${esc(task.error)}</div>`:'';
+    const actions=current.querySelector('[data-clean-progress-actions]');if(actions)actions.innerHTML=`${view.active?`<button class="btn" onclick="minimizeTask427('clean','${esc(id)}')">最小化</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
+    return true;
+  }
+  function armCleanProgressPoll429(id,ownerPage){
+    const registry=window.PollRegistryRuntime,key=cleanProgressPollKey429(id);
+    registry?.clear?.(key);
+    if(!registry?.startTimeout)return null;
+    return registry.startTimeout(key,ownerPage,async()=>{
+      if(!cleanProgressRoot429(id)){registry.clear?.(key);return}
+      const task=await safe(fetchTask429('clean',id));
+      if(!task){registry.clear?.(key);return}
+      const status=String(task.status||'').toLowerCase();
+      if(['awaiting_confirmation','done'].includes(status)){
+        registry.clear?.(key);closeModal();return window.cleanDetail429?.(id);
+      }
+      renderCleanProgress429(task,id);
+      if(cleanTaskView427(task).active)armCleanProgressPoll429(id,ownerPage);
+    },1600);
+  }
+  window.showCleanTaskProgress429=async function(id){
+    const registry=window.PollRegistryRuntime,key=cleanProgressPollKey429(id),ownerPage=String(state.page||'自动标注及清洗');
+    registry?.clear?.(key);
+    const task=await safe(fetchTask429('clean',id));
+    if(!task)return toast('清洗任务不存在');
+    const status=String(task.status||'').toLowerCase();
+    if(['awaiting_confirmation','done'].includes(status))return window.cleanDetail429?.(id);
+    renderCleanProgress429(task,id);
+    if(cleanTaskView427(task).active)armCleanProgressPoll429(id,ownerPage);
+    return task;
+  };
   async function fetchTask429(type,id){if(type==='clean'){const r=await api(`/api/v47/projects/${pid()}/clean-tasks`);return(r.items||[]).find(x=>x.id===id)}const r=await api(`/api/v33/projects/${pid()}/prelabel-tasks`);return(r.items||[]).find(x=>x.id===id)}
   function ruleNames429(r){const a=[];if(r.exact_duplicate)a.push('精确重复');if(r.near_duplicate)a.push(`近似重复（距离≤${r.near_duplicate_hamming??5}）`);if((r.min_width||0)>0||(r.min_height||0)>0)a.push(`最低分辨率 ${r.min_width||0}×${r.min_height||0}`);if((r.max_width||999999)<999999||(r.max_height||999999)<999999)a.push(`最高分辨率 ${r.max_width||'-'}×${r.max_height||'-'}`);if(r.blur_check)a.push(`模糊度阈值 ${r.blur_min_laplacian??45}`);if(r.brightness_check)a.push(`亮度 ${r.brightness_min??15}~${r.brightness_max??245}`);if(r.corrupt_check)a.push('损坏图片');return a}
   window.cleanDetailCore429=async function(id){try{const r=await api(`/api/v47/projects/${pid()}/clean-tasks/${id}/result`),t=r.task||{},res=r.result||{},items=res.items||[],rules=res.rules||t.request_payload||{},stats={};items.forEach(x=>(x.issues||[]).forEach(y=>{stats[y.name]=(stats[y.name]||0)+1}));state.v427CleanConfirm=new Set(items.filter(x=>x.suggest_delete).map(x=>String(x.image_id)));const total=t.total_images||0;modal('清洗任务详情',`<div class="clean429"><section class="clean429-head"><div><span>任务结果</span><h2>${esc(t.name||'自动清洗')}</h2><p>共检查 ${total} 张，发现 ${items.length} 张需要关注，占 ${total?((items.length/total)*100).toFixed(1):0}%</p></div><div class="clean429-kpi"><b>${items.length}</b><span>问题图片</span></div></section><section class="clean429-card"><header><b>本次清洗规则</b></header><div class="clean429-rules">${ruleNames429(rules).map(x=>`<span>${esc(x)}</span>`).join('')||'<span>未记录规则</span>'}</div></section><section class="clean429-card"><header><b>问题分布</b></header><div class="clean429-stats">${Object.entries(stats).map(([k,v])=>`<div><span>${esc(k)}</span><b>${v} 张</b><em>${total?((v/total)*100).toFixed(1):0}%</em></div>`).join('')||'<div class="empty">没有发现不合规图片</div>'}</div></section><section class="clean429-card"><header><b>逐图确认</b><span>默认勾选系统建议剔除的图片；你认为有训练价值的图片可取消勾选保留</span></header><div class="review427-grid">${items.map(x=>`<label class="review427-card"><input type="checkbox" ${state.v427CleanConfirm.has(String(x.image_id))?'checked':''} onchange="toggleCleanItem427('${x.image_id}',this.checked)"><img src="${x.url||((state.images||[]).find(i=>i.id===x.image_id)?.url)||''}" loading="lazy"><b>${esc(x.filename||'')}</b><div>${(x.issues||[]).map(y=>`<span>${esc(y.name)} · ${esc(y.detail)}</span>`).join('')}</div></label>`).join('')||'<div class="empty">本次全部合规，可直接确认进入已处理</div>'}</div></section><div class="row end"><button class="btn" onclick="closeModal()">关闭</button>${t.status==='awaiting_confirmation'?`<button class="btn primary" onclick="confirmClean429('${id}')">确认清洗结果</button>`:''}</div></div>`,true)}catch(e){toast(e.message||e)}};
