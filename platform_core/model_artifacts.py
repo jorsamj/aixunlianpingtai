@@ -537,28 +537,6 @@ class ModelArtifactService:
         return build_public_url(base_url, object_key)
 
     def test_storage(self, source_id: str, _legacy_public_base_url: str = "") -> dict[str, Any]:
-        """Strict storage-source health contract retained for material/storage callers."""
-        return self._storage_capability_probe(
-            source_id,
-            allow_bucket_metadata_access_denied=False,
-            artifact_contract=False,
-        )
-
-    def test_artifact_storage(self, source_id: str, _legacy_public_base_url: str = "") -> dict[str, Any]:
-        """Probe the final artifact prefix without requiring OSS Bucket metadata permission."""
-        return self._storage_capability_probe(
-            source_id,
-            allow_bucket_metadata_access_denied=True,
-            artifact_contract=True,
-        )
-
-    def _storage_capability_probe(
-        self,
-        source_id: str,
-        *,
-        allow_bucket_metadata_access_denied: bool,
-        artifact_contract: bool,
-    ) -> dict[str, Any]:
         source_id = str(source_id or "").strip()
         if not source_id:
             raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择算法与转换结果存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
@@ -569,37 +547,15 @@ class ModelArtifactService:
         probe_project = "_model_artifact_probe"
         self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
         provider = self._provider(probe_project, source_id)
-
         health = provider.health_check()
-        is_oss = str(source.type or "").strip().lower() == "oss"
-        health_text = str(getattr(health, "message", "") or "")
-        normalized_health = health_text.lower().replace(" ", "")
-        bucket_metadata_access_denied = bool(
-            is_oss
-            and not health.ok
-            and (
-                "accessdenied" in normalized_health
-                or "forbidden" in normalized_health
-                or "doesnotbelongtoyou" in normalized_health
-                or re.search(r"(?<!\\d)403(?!\\d)", health_text)
-            )
-        )
-        warning = ""
-        bucket_info_checked: bool | None = None
-        if is_oss:
-            bucket_info_checked = bool(health.ok)
         if not health.ok:
-            if allow_bucket_metadata_access_denied and bucket_metadata_access_denied:
-                warning = "Bucket 元信息查询无权限，但对象级完整读写测试已通过，不影响算法产物存储。"
-            else:
-                raise PlatformError(
-                    "MODEL_STORAGE_HEALTH_AUTH_FAILED",
-                    "算法产物存储认证或 Bucket 访问失败",
-                    health_text,
-                    "请检查 Endpoint、Bucket、AccessKey ID、AccessKey Secret 和 Bucket 权限。",
-                    503,
-                )
-
+            raise PlatformError(
+                "MODEL_STORAGE_HEALTH_AUTH_FAILED",
+                "算法产物存储认证或 Bucket 访问失败",
+                str(health.message or ""),
+                "请检查 Endpoint、Bucket、AccessKey ID、AccessKey Secret 和 Bucket 权限。",
+                503,
+            )
         probe_id = uuid.uuid4().hex
         root_prefix = str(self.repository.config().get("root_prefix") or "changlian-ai/artifacts")
         key = f"{_canonical_prefix(root_prefix)}/.changlian-health-check/{probe_id}.txt"
@@ -607,7 +563,6 @@ class ModelArtifactService:
         with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
             stream.write(payload)
             temporary = Path(stream.name)
-
         direct_url = ""
         direct_url_reachable = False
         stages = {
@@ -618,12 +573,178 @@ class ModelArtifactService:
             "deleted": False,
             "public_url_checked": False,
         }
-        if artifact_contract:
-            stages["bucket_info_checked"] = bucket_info_checked
+        operation_error: Exception | None = None
+        try:
+            meta = provider.upload(key, temporary, content_type="text/plain", metadata={"purpose": "healthcheck"})
+            stages["written"] = True
+            checked = provider.stat(key)
+            if int(checked.size_bytes) != int(meta.size_bytes) or int(checked.size_bytes) <= 0:
+                raise RuntimeError("写入后对象大小校验失败")
+            stages["stat_checked"] = True
+            reader = provider.open_reader(key)
+            try:
+                content = reader.read()
+            finally:
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+            if content != payload:
+                raise RuntimeError("读取内容与写入内容不一致")
+            stages["read_checked"] = True
+            if public_base_url:
+                direct_url = build_public_url(public_base_url, key)
+                try:
+                    response = requests.get(
+                        direct_url,
+                        headers={"Range": "bytes=0-0", "Cache-Control": "no-cache"},
+                        timeout=10,
+                        allow_redirects=False,
+                    )
+                except requests.RequestException as error:
+                    raise PlatformError(
+                        "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                        "OSS 长期访问地址无法读取测试文件",
+                        str(error),
+                        "OSS 凭据读写正常，但畅联云使用的 filePath 当前不可访问。请检查公网/专网连通、Bucket 权限或 CDN 域名。",
+                        409,
+                    ) from error
+                if response.status_code not in {200, 206}:
+                    raise PlatformError(
+                        "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                        "OSS 长期访问地址无法读取测试文件",
+                        f"HTTP {response.status_code}",
+                        "OSS 凭据读写正常，但长期链接无法直接读取。若 Bucket 为私有，请配置畅联云可访问的专用域名/CDN/网关，而不要写会过期的临时签名 URL。",
+                        409,
+                    )
+                direct_url_reachable = True
+                stages["public_url_checked"] = True
+        except Exception as error:
+            operation_error = error
+        finally:
+            try:
+                provider.delete(key)
+                if provider.exists(key):
+                    raise RuntimeError("DELETE 后测试对象仍然存在")
+                stages["deleted"] = True
+            except Exception as error:
+                temporary.unlink(missing_ok=True)
+                raise PlatformError(
+                    "MODEL_STORAGE_HEALTH_DELETE_FAILED",
+                    "OSS 测试对象删除失败",
+                    str(error),
+                    "测试对象未能确认删除，连接测试不会返回成功；请检查 Bucket 删除权限并清理 .changlian-health-check/。",
+                    409,
+                ) from error
+            temporary.unlink(missing_ok=True)
+        if operation_error is not None:
+            if isinstance(operation_error, PlatformError):
+                raise operation_error
+            raise PlatformError(
+                "MODEL_STORAGE_HEALTH_ROUNDTRIP_FAILED",
+                "OSS 写入、读取或校验失败",
+                str(operation_error),
+                "请检查 Endpoint、Bucket、凭据以及对象的 PUT、HEAD/STAT、GET 权限。",
+                503,
+            ) from operation_error
+        return {
+            "ok": True,
+            "storage_source_id": source_id,
+            "health": getattr(health, "status", None) or "AVAILABLE",
+            "stages": stages,
+            "public_url_checked": bool(public_base_url),
+            "public_url_reachable": direct_url_reachable,
+            "message": (
+                "OSS 读写与长期访问地址测试均通过"
+                if public_base_url and direct_url_reachable
+                else "写入、读取元数据和删除测试通过；尚未测试长期访问地址"
+            ),
+            "tested_at": utc_now(),
+        }
 
+    def test_artifact_storage(self, source_id: str, _legacy_public_base_url: str = "") -> dict[str, Any]:
+        """Probe artifact object capabilities without requiring OSS Bucket metadata access."""
+        return self._artifact_storage_capability_probe(source_id)
+
+    def _artifact_storage_capability_probe(self, source_id: str) -> dict[str, Any]:
+        source_id = str(source_id or "").strip()
+        if not source_id:
+            raise PlatformError(
+                "MODEL_STORAGE_SOURCE_REQUIRED",
+                "请选择算法与转换结果存储源",
+                "storage_source_id 为空",
+                "请选择 OSS / MinIO / S3 / 本地存储源后测试。",
+                422,
+            )
+        source = self.storage_sources_factory().get(source_id)
+        if source is None:
+            raise PlatformError(
+                "MODEL_STORAGE_SOURCE_NOT_FOUND",
+                "算法与转换结果存储源不存在",
+                source_id,
+                "请先在存储配置中创建该存储源。",
+                404,
+            )
+
+        public_base_url = str(source.config.get("public_base_url") or "").strip().rstrip("/")
+        probe_project = "_model_artifact_probe"
+        self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
+        provider = self._provider(probe_project, source_id)
+
+        # Bucket metadata is diagnostic only for the artifact-storage contract.
+        # The generic StorageSource health contract remains unchanged in
+        # test_storage(), which still fails closed on any health-check failure.
+        health = provider.health_check()
+        is_oss = str(source.type or "").strip().lower() == "oss"
+        health_text = str(getattr(health, "message", "") or "")
+        normalized_health = health_text.lower().replace(" ", "")
+        metadata_access_denied = bool(
+            is_oss
+            and not health.ok
+            and (
+                "accessdenied" in normalized_health
+                or "forbidden" in normalized_health
+                or "doesnotbelongtoyou" in normalized_health
+                or re.search(r"(?<!\d)403(?!\d)", health_text)
+            )
+        )
+        if not health.ok and not metadata_access_denied:
+            raise PlatformError(
+                "MODEL_STORAGE_HEALTH_AUTH_FAILED",
+                "算法产物存储认证或 Bucket 访问失败",
+                health_text,
+                "请检查 Endpoint、Bucket、AccessKey ID、AccessKey Secret 和 Bucket 权限。",
+                503,
+            )
+
+        bucket_info_checked: bool | None = bool(health.ok) if is_oss else None
+        warning = (
+            "Bucket 元信息查询无权限，但对象级完整读写测试已通过，不影响算法产物存储。"
+            if metadata_access_denied
+            else ""
+        )
+
+        probe_id = uuid.uuid4().hex
+        root_prefix = str(self.repository.config().get("root_prefix") or "changlian-ai/artifacts")
+        key = f"{_canonical_prefix(root_prefix)}/.changlian-health-check/{probe_id}.txt"
+        payload = b"model-artifact-storage-healthcheck"
+        with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
+            stream.write(payload)
+            temporary = Path(stream.name)
+
+        direct_url_reachable = False
+        stages = {
+            "authenticated": True,
+            "bucket_info_checked": bucket_info_checked,
+            "written": False,
+            "stat_checked": False,
+            "read_checked": False,
+            "deleted": False,
+            "public_url_checked": False,
+        }
         operation_error: Exception | None = None
         object_confirmed = False
         write_attempted = False
+
         try:
             write_attempted = True
             try:
@@ -637,10 +758,10 @@ class ModelArtifactService:
                 object_confirmed = True
             except Exception as error:
                 detail = str(getattr(error, "detail", "") or error)
-                if artifact_contract and re.search(r"(?:^|[:\\s])stat(?:\\s*:|\\b)", detail, re.IGNORECASE):
-                    # OSSStorageProvider.upload() performs a post-PUT stat. A
-                    # nested stat failure means PUT likely succeeded, so the
-                    # probe must still delete the test object before failing.
+                if re.search(r"(?:^|[:\s])stat(?:\s*:|\b)", detail, re.IGNORECASE):
+                    # OSSStorageProvider.upload() performs PUT followed by stat().
+                    # If that nested stat fails, the object may already exist and
+                    # must be cleaned up before returning the read-permission error.
                     object_confirmed = True
                     raise PlatformError(
                         "MODEL_STORAGE_OBJECT_STAT_FAILED",
@@ -649,35 +770,31 @@ class ModelArtifactService:
                         f"已尝试写入 {key}，但无法读取对象元信息；请确认 RAM 对最终算法产物目录拥有 HEAD/STAT/GET 权限。",
                         409,
                     ) from error
-                if artifact_contract:
-                    raise PlatformError(
-                        "MODEL_STORAGE_OBJECT_WRITE_FAILED",
-                        "算法产物测试对象写入失败（PUT）",
-                        detail,
-                        f"请确认 RAM 对最终算法产物目录 {key.rsplit('/', 1)[0]}/ 拥有对象写入权限。",
-                        409,
-                    ) from error
-                raise
+                raise PlatformError(
+                    "MODEL_STORAGE_OBJECT_WRITE_FAILED",
+                    "算法产物测试对象写入失败（PUT）",
+                    detail,
+                    f"请确认 RAM 对最终算法产物目录 {key.rsplit('/', 1)[0]}/ 拥有对象写入权限。",
+                    409,
+                ) from error
 
             try:
                 checked = provider.stat(key)
             except Exception as error:
-                if artifact_contract:
-                    raise PlatformError(
-                        "MODEL_STORAGE_OBJECT_STAT_FAILED",
-                        "算法产物测试对象读取权限不足（STAT）",
-                        str(getattr(error, "detail", "") or error),
-                        "PUT 已成功，但无法读取对象元信息；请确认 RAM 具备 HEAD/STAT/GET 权限。",
-                        409,
-                    ) from error
-                raise
+                raise PlatformError(
+                    "MODEL_STORAGE_OBJECT_STAT_FAILED",
+                    "算法产物测试对象读取权限不足（STAT）",
+                    str(getattr(error, "detail", "") or error),
+                    "PUT 已成功，但无法读取对象元信息；请确认 RAM 具备 HEAD/STAT/GET 权限。",
+                    409,
+                ) from error
             if int(checked.size_bytes) != int(meta.size_bytes) or int(checked.size_bytes) <= 0:
                 raise PlatformError(
-                    "MODEL_STORAGE_OBJECT_STAT_MISMATCH" if artifact_contract else "MODEL_STORAGE_HEALTH_ROUNDTRIP_FAILED",
-                    "算法产物测试对象元信息校验失败" if artifact_contract else "OSS 写入、读取或校验失败",
+                    "MODEL_STORAGE_OBJECT_STAT_MISMATCH",
+                    "算法产物测试对象元信息校验失败",
                     "写入后对象大小校验失败",
                     "请确认对象存储未被代理、网关或生命周期规则改写。",
-                    409 if artifact_contract else 503,
+                    409,
                 )
             stages["stat_checked"] = True
 
@@ -690,22 +807,20 @@ class ModelArtifactService:
                     if callable(close):
                         close()
             except Exception as error:
-                if artifact_contract:
-                    raise PlatformError(
-                        "MODEL_STORAGE_OBJECT_READ_FAILED",
-                        "算法产物测试对象读取失败（GET）",
-                        str(getattr(error, "detail", "") or error),
-                        "对象已写入且 STAT 成功，但 GET 失败；请确认 RAM 对最终算法产物目录拥有对象读取权限。",
-                        409,
-                    ) from error
-                raise
+                raise PlatformError(
+                    "MODEL_STORAGE_OBJECT_READ_FAILED",
+                    "算法产物测试对象读取失败（GET）",
+                    str(getattr(error, "detail", "") or error),
+                    "对象已写入且 STAT 成功，但 GET 失败；请确认 RAM 对最终算法产物目录拥有对象读取权限。",
+                    409,
+                ) from error
             if content != payload:
                 raise PlatformError(
-                    "MODEL_STORAGE_OBJECT_CONTENT_MISMATCH" if artifact_contract else "MODEL_STORAGE_HEALTH_ROUNDTRIP_FAILED",
-                    "算法产物测试对象内容校验失败" if artifact_contract else "OSS 写入、读取或校验失败",
+                    "MODEL_STORAGE_OBJECT_CONTENT_MISMATCH",
+                    "算法产物测试对象内容校验失败",
                     "GET 返回内容与 PUT 内容不一致",
                     "请检查 OSS/CDN/网关缓存或对象改写策略。",
-                    409 if artifact_contract else 503,
+                    409,
                 )
             stages["read_checked"] = True
 
@@ -721,21 +836,26 @@ class ModelArtifactService:
                 except requests.RequestException as error:
                     raise PlatformError(
                         "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
-                        "新畅联 filePath 不可访问" if artifact_contract else "OSS 长期访问地址无法读取测试文件",
+                        "新畅联 filePath 不可访问",
                         str(error),
                         "对象级读写已通过，但新畅联最终使用的长期 filePath 当前不可访问。请检查公网/专网连通、Bucket 访问策略、CDN 或网关。",
                         409,
                     ) from error
-                if response.status_code not in {200, 206}:
-                    raise PlatformError(
-                        "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
-                        "新畅联 filePath 不可访问" if artifact_contract else "OSS 长期访问地址无法读取测试文件",
-                        f"HTTP {response.status_code}",
-                        "对象级读写已通过，但长期 URL 无法直接读取。若 Bucket 为私有，请配置新畅联可长期访问的域名/CDN/网关；不可使用会过期的临时签名 URL。",
-                        409,
-                    )
-                direct_url_reachable = True
-                stages["public_url_checked"] = True
+                try:
+                    if response.status_code not in {200, 206}:
+                        raise PlatformError(
+                            "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                            "新畅联 filePath 不可访问",
+                            f"HTTP {response.status_code}",
+                            "对象级读写已通过，但长期 URL 无法直接读取。若 Bucket 为私有，请配置新畅联可长期访问的域名/CDN/网关；不可使用会过期的临时签名 URL。",
+                            409,
+                        )
+                    direct_url_reachable = True
+                    stages["public_url_checked"] = True
+                finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
         except Exception as error:
             operation_error = error
         finally:
@@ -749,31 +869,20 @@ class ModelArtifactService:
                 except Exception as error:
                     cleanup_error = error
             elif write_attempted and operation_error is not None:
-                # PUT may have reached OSS before the client observed a failure.
-                # Artifact probing preserves the primary operation error; the
-                # legacy strict storage-source contract keeps its old cleanup
-                # failure precedence.
+                # PUT may have reached OSS before the client observed an error.
+                # Best-effort cleanup must never hide the primary PUT failure.
                 try:
                     provider.delete(key)
-                except Exception as error:
-                    if not artifact_contract:
-                        cleanup_error = error
+                except Exception:
+                    pass
             temporary.unlink(missing_ok=True)
 
             if cleanup_error is not None:
-                if artifact_contract:
-                    raise PlatformError(
-                        "MODEL_STORAGE_OBJECT_DELETE_FAILED",
-                        "算法产物测试对象删除失败（DELETE）",
-                        str(getattr(cleanup_error, "detail", "") or cleanup_error),
-                        "测试对象未能确认删除；请确认 RAM 对最终算法产物目录拥有删除权限，并清理 .changlian-health-check/。",
-                        409,
-                    ) from cleanup_error
                 raise PlatformError(
-                    "MODEL_STORAGE_HEALTH_DELETE_FAILED",
-                    "OSS 测试对象删除失败",
-                    str(cleanup_error),
-                    "测试对象未能确认删除，连接测试不会返回成功；请检查 Bucket 删除权限并清理 .changlian-health-check/。",
+                    "MODEL_STORAGE_OBJECT_DELETE_FAILED",
+                    "算法产物测试对象删除失败（DELETE）",
+                    str(getattr(cleanup_error, "detail", "") or cleanup_error),
+                    "测试对象未能确认删除；请确认 RAM 对最终算法产物目录拥有删除权限，并清理 .changlian-health-check/。",
                     409,
                 ) from cleanup_error
 
@@ -782,9 +891,9 @@ class ModelArtifactService:
                 raise operation_error
             raise PlatformError(
                 "MODEL_STORAGE_HEALTH_ROUNDTRIP_FAILED",
-                "OSS 写入、读取或校验失败",
+                "算法产物对象级完整读写测试失败",
                 str(operation_error),
-                "请检查 Endpoint、Bucket、凭据以及对象的 PUT、HEAD/STAT、GET 权限。",
+                "请检查最终算法产物目录的 PUT、HEAD/STAT、GET、DELETE 权限。",
                 503,
             ) from operation_error
 
@@ -792,27 +901,22 @@ class ModelArtifactService:
             "对象级写入、读取、删除及新畅联长期 URL 测试均通过"
             if public_base_url and direct_url_reachable
             else "对象级写入、读取和删除测试通过；尚未配置长期访问地址"
-        ) if artifact_contract else (
-            "OSS 读写与长期访问地址测试均通过"
-            if public_base_url and direct_url_reachable
-            else "写入、读取元数据和删除测试通过；尚未测试长期访问地址"
         )
         message = f"{base_message}；{warning}" if warning else base_message
-        result = {
+        return {
             "ok": True,
             "storage_source_id": source_id,
-            "health": "AVAILABLE" if artifact_contract else (getattr(health, "status", None) or "AVAILABLE"),
+            "health": "AVAILABLE",
+            "bucket_info_checked": bucket_info_checked,
+            "warning": warning,
+            "probe_object_key": key,
             "stages": stages,
             "public_url_checked": bool(public_base_url),
             "public_url_reachable": direct_url_reachable,
             "message": message,
             "tested_at": utc_now(),
         }
-        if artifact_contract:
-            result["bucket_info_checked"] = bucket_info_checked
-            result["warning"] = warning
-            result["probe_object_key"] = key
-        return result
+
 
     def _conversion_jobs(self, project_id: str, algorithm_id: str, version_id: str) -> list[dict[str, Any]]:
         project = self.project_dir(project_id)
