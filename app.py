@@ -5903,6 +5903,7 @@ class TrainReq(BaseModel):
     imgsz: int = 640
     batch: StrictInt = 8
     resource_strategy: Literal["auto", "manual"] = "auto"
+    resource_profile: Literal["balanced", "performance", "stability"] = "balanced"
     device: str = "auto"
     gpu_policy: Literal["auto", "exclusive", "shared"] = "auto"
     estimated_gpu_memory_bytes: Optional[int] = Field(default=None, gt=0)
@@ -5917,6 +5918,8 @@ class TrainReq(BaseModel):
     paddle_command: Optional[str] = ""
     # v20 进阶训练参数，Ultralytics 本机训练生效。
     patience: int = 100
+    time: Optional[float] = None
+    precision: Literal["auto", "fp16", "bf16", "fp32"] = "auto"
     workers: StrictInt = 0
     optimizer: str = "auto"
     lr0: float = 0.01
@@ -6010,9 +6013,11 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="patience 不能小于 0")
     if int(payload.workers) < 0:
         raise HTTPException(status_code=400, detail="workers 不能小于 0")
-    allowed_optimizers = {"auto", "sgd", "adam", "adamw", "nadam", "radam", "rmsprop"}
+    allowed_optimizers = {"auto", "sgd", "musgd", "adam", "adamax", "adamw", "nadam", "radam", "rmsprop"}
     if str(payload.optimizer or "auto").strip().lower() not in allowed_optimizers:
-        raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / Adam / AdamW / NAdam / RAdam / RMSProp")
+        raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / MuSGD / Adam / Adamax / AdamW / NAdam / RAdam / RMSProp")
+    if payload.time is not None and not (0.1 <= float(payload.time) <= 720):
+        raise HTTPException(status_code=400, detail="最大训练时长 time 必须在 0.1~720 小时之间")
     if not (0 < float(payload.lr0) <= 1):
         raise HTTPException(status_code=400, detail="lr0 必须在 0~1 之间")
     if not (0 <= float(payload.lrf) <= 1):
