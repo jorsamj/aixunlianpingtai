@@ -139,3 +139,76 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   expect(requests).toContain(`POST /api/v62/projects/${projectId}/training-tasks/job-recovery-1/recovery`);
   expect(pageErrors).toEqual([]);
 });
+
+test('successful training detail never presents completion text as an error', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
+
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded = encodeURIComponent(projectId);
+  const job = {
+    id: 'job-success-detail-1',
+    task_id: 'job-success-detail-1',
+    status: 'done',
+    task_status: 'SUCCEEDED',
+    persisted_status: 'SUCCEEDED',
+    phase: 'succeeded',
+    progress_percent: 100,
+    current_epoch: 30,
+    total_epochs: 30,
+    current_item: '训练完成',
+    message: '训练完成，模型产物校验通过',
+    training_outcome: 'completed',
+    completion_reason: 'requested_epochs_completed',
+    asset_algorithm_name: '成功状态详情测试',
+    actual_device: 'cuda:0',
+    actual_train_params: {batch: 32, workers: 8, cache: 'ram', effective_precision: 'fp16'},
+    created_at: '2026-09-23T10:00:00Z',
+    started_at: '2026-09-23T10:01:00Z',
+    finished_at: '2026-09-23T10:31:00Z',
+  };
+
+  await page.route(`**/api/projects/${encoded}/jobs`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([job]),
+  }));
+  await page.route(`**/api/projects/${encoded}/jobs/job-success-detail-1`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(job),
+  }));
+  await page.route(`**/api/projects/${encoded}/jobs/job-success-detail-1/log`, route => route.fulfill({
+    status: 200,
+    contentType: 'text/plain',
+    body: 'Epoch 30/30\\ntraining completed',
+  }));
+
+  await page.locator('#refreshBtn').click();
+  await page.evaluate(() => {
+    state.train428Tab = 'history';
+    window.TrainingTaskRuntime?.patch?.();
+  });
+
+  const row = page.locator('[data-job-id="job-success-detail-1"]');
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('已完成');
+  await row.getByRole('button', {name: '详情'}).click();
+
+  const dialog = page.locator('[data-training-recovery-overlay]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('训练已完成');
+  await expect(dialog).toContainText('训练完成，模型产物校验通过');
+  await expect(dialog).toContainText('cuda:0');
+  await expect(dialog).not.toContainText('失败原因');
+  await expect(dialog).not.toContainText('失败证据');
+  await expect(dialog).not.toContainText('训练失败');
+  expect(pageErrors).toEqual([]);
+});
+
