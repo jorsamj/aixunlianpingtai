@@ -859,9 +859,11 @@ class ModelArtifactService:
         self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
         provider = self._provider(probe_project, source_id)
 
-        # Bucket metadata is diagnostic only for the artifact-storage contract.
-        # The generic StorageSource health contract remains unchanged in
-        # test_storage(), which still fails closed on any health-check failure.
+        # Artifact storage is judged by object capability on the final
+        # root_prefix. For OSS, health_check() is exactly GetBucketInfo, so any
+        # failure here is metadata diagnostic only; PUT/STAT/GET/DELETE and
+        # public URL checks below still fail closed. Generic/material storage
+        # keeps its stricter health contract in test_storage().
         health = provider.health_check()
         is_oss = str(source.type or "").strip().lower() == "oss"
         health_text = str(getattr(health, "message", "") or "")
@@ -876,21 +878,25 @@ class ModelArtifactService:
                 or re.search(r"(?<!\d)403(?!\d)", health_text)
             )
         )
-        if not health.ok and not metadata_access_denied:
+        if not is_oss and not health.ok:
             raise PlatformError(
                 "MODEL_STORAGE_HEALTH_AUTH_FAILED",
-                "算法产物存储认证或 Bucket 访问失败",
+                "算法产物存储认证或访问失败",
                 health_text,
-                "请检查 Endpoint、Bucket、AccessKey ID、AccessKey Secret 和 Bucket 权限。",
+                "请检查存储配置、凭据和访问权限。",
                 503,
             )
 
         bucket_info_checked: bool | None = bool(health.ok) if is_oss else None
-        warning = (
-            "Bucket 元信息查询无权限，但对象级完整读写测试已通过，不影响算法产物存储。"
-            if metadata_access_denied
-            else ""
-        )
+        if metadata_access_denied:
+            warning = "Bucket 元信息查询无权限，但对象级完整读写测试已通过，不影响算法产物存储。"
+        elif is_oss and not health.ok:
+            warning = (
+                "Bucket 元信息查询失败，仅作为诊断；最终对象级完整读写测试已通过。"
+                + (f" 元信息诊断：{health_text}" if health_text else "")
+            )
+        else:
+            warning = ""
 
         probe_id = uuid.uuid4().hex
         root_prefix = str(self.repository.config().get("root_prefix") or "changlian-ai/artifacts")
