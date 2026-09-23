@@ -86,7 +86,9 @@ export function createTrainingDraft(values = {}) {
       strategy: String(values.resource?.strategy || 'auto'),
       profile: String(values.resource?.profile || 'balanced'),
       device: String(values.resource?.device || 'auto'),
-      gpuPolicy: String(values.resource?.gpuPolicy || 'auto'),
+      gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'auto'))
+        ? String(values.resource?.gpuPolicy || 'auto')
+        : 'auto',
       batch: values.resource?.batch ?? null,
       workers: values.resource?.workers ?? null,
       cache: values.resource?.cache ?? null,
