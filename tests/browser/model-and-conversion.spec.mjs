@@ -166,6 +166,34 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
     name: `RKNN-Agent-资源-${Date.now()}`,
     labels: []
   }})).json();
+  const algorithmId = 'algorithm-rknn-agent-resource';
+  const versionId = 'version-rknn-agent-resource';
+
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      algorithm: {id: algorithmId, name: 'RKNN Agent 算法'},
+      version: {id: versionId, version_name: '20260924070000', model_name: 'best.pt', stored_path: '/models/best.pt'},
+      items: []
+    })
+  }));
+  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({items: [{
+      id: 'rknn-agent-ui',
+      name: 'RKNN 服务节点 Agent',
+      kind: 'rockchip',
+      mode: 'agent',
+      status: 'ready',
+      targets: ['rockchip'],
+      supported_chips: ['rk3568', 'rk3576'],
+      supported_precisions: ['fp16', 'int8'],
+      agent_nodes: [{node_id: 'rknn-agent-01', display_name: 'RKNN Agent 01'}]
+    }]})
+  }));
+
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
       projectId,
@@ -192,11 +220,22 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await expect(dialog.locator('#drRemote')).toHaveClass(/hidden/);
   await dialog.getByRole('button', {name: '关闭'}).click();
 
-  await page.evaluate(() => window.setPage('部署转换'));
-  await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('#dpChip option')).toHaveText(['RK3568', 'RK3576']);
-});
+  // The retired deployment-center page is intentionally not restored. Verify the
+  // same Agent and RKNN chip contract through the canonical version-conversion owner.
+  await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
+  const historyDialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(historyDialog).toBeVisible();
+  await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
 
+  const createDialog = page.getByRole('dialog', {name: '新建版本转换'});
+  await expect(createDialog).toBeVisible();
+  await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
+  await expect(createDialog.locator('#conv428Resource')).toHaveValue('rknn-agent-ui');
+  await expect(createDialog.locator('#conv428Resource')).toContainText('RKNN 服务节点 Agent');
+  await expect(createDialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3568');
+  await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3576');
+});
 
 test('RKNN converted_unverified job exposes board verification and upgrades after real task success', async ({page, request}) => {
   const project = await (await request.post('/api/projects', {data: {
