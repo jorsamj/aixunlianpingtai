@@ -84,6 +84,7 @@ export function createTrainingDraft(values = {}) {
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
       strategy: String(values.resource?.strategy || 'auto'),
+      profile: String(values.resource?.profile || 'balanced'),
       device: String(values.resource?.device || 'auto'),
       gpuPolicy: String(values.resource?.gpuPolicy || 'auto'),
       batch: values.resource?.batch ?? null,
@@ -128,6 +129,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     validation_percent: normalized.validationPercent,
     train_labels: normalized.newLabelCodes,
     resource_strategy: normalized.resource.strategy,
+    resource_profile: normalized.resource.profile,
     device: normalized.resource.device,
     gpu_policy: normalized.resource.gpuPolicy,
     queue_priority: normalized.priority,
