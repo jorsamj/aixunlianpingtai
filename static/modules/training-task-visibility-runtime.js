@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView} from './training-task-runtime.js?v=422560';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView} from './training-task-runtime.js?v=422561';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -289,6 +289,7 @@ export function installTrainingTaskVisibilityRuntime({
           <button type="button" class="btn mini" data-training-batch-action="pause">暂停</button>
           <button type="button" class="btn mini" data-training-batch-action="resume">继续</button>
           <button type="button" class="btn mini danger" data-training-batch-action="stop">停止</button>
+          <button type="button" class="btn mini danger" data-training-batch-action="delete">删除记录</button>
         </div></section>
       <section class="entity-table-surface training-table-surface"><div class="table-wrap"><table class="table train428-table entity-table">
         <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead>
@@ -336,7 +337,7 @@ export function installTrainingTaskVisibilityRuntime({
       toggle.disabled = batchBusy;
     }
     if (count) count.textContent = `已选 ${selectedIds.size} 项`;
-    for (const action of ['pause', 'resume', 'stop']) {
+    for (const action of ['pause', 'resume', 'stop', 'delete']) {
       const button = root.querySelector?.(`[data-training-batch-action="${action}"]`);
       if (button) button.disabled = batchBusy || eligibleSelectedCount(action) <= 0;
     }
