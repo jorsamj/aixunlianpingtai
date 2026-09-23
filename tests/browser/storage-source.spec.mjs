@@ -46,7 +46,10 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await expect(page.locator('#modelArtifactAccessKeySecret')).toBeVisible();
   await expect(page.locator('#modelArtifactPublicBaseUrl')).toBeVisible();
   await expect(page.locator('#modelArtifactPrefix')).toHaveValue('changlian-ai/artifacts');
-  await expect(page.getByText('不需要先在“素材存储”创建或选择存储源', {exact: false})).toBeVisible();
+  const artifactStorageHelp = page.locator('[data-model-artifact-panel="1"] .panel-head .subline');
+  await expect(artifactStorageHelp).toBeVisible();
+  await expect(artifactStorageHelp).toContainText('独立配置训练模型、ONNX、RKNN');
+  await expect(artifactStorageHelp).toContainText('不需要先在“素材存储”创建或选择存储源');
   await expect(page.getByText('平台本地存储', {exact: true})).toBeVisible();
   await expect.poll(() => [
     revisitGets.sources > 0,
