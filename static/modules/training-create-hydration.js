@@ -36,6 +36,7 @@ export function installTrainingCreateHydrationRuntime({
   let inflight = null;
   let openEpoch = 0;
   let destroyed = false;
+  const prewarmInflight = new Map();
 
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -96,6 +97,32 @@ export function installTrainingCreateHydrationRuntime({
     return inflight;
   };
 
+  const prewarm = async (aid = '', {includePreflight = true} = {}) => {
+    if (destroyed) return null;
+    const algorithmId = String(aid || '');
+    const state = getState?.() || {};
+    const algorithm = algorithmId
+      ? (state.algorithms || []).find(item => String(item?.id || '') === algorithmId)
+      : null;
+    const externalChangLian = Boolean(algorithm)
+      && String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
+      && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
+    const key = externalChangLian && includePreflight ? algorithmId : '__common__';
+    if (prewarmInflight.has(key)) return prewarmInflight.get(key);
+    const task = (async () => {
+      const jobs = [hydrate()];
+      const externalPreflightFresh = externalChangLian
+        && typeof preflightFresh === 'function'
+        && preflightFresh(algorithmId) === true;
+      if (includePreflight && externalChangLian && !externalPreflightFresh && typeof preflight === 'function') {
+        jobs.push(preflight(algorithmId));
+      }
+      return Promise.all(jobs);
+    })().catch(() => null).finally(() => prewarmInflight.delete(key));
+    prewarmInflight.set(key, task);
+    return task;
+  };
+
   const start = async aid => {
     const token = ++openEpoch;
     const state = getState?.() || {};
@@ -136,10 +163,12 @@ export function installTrainingCreateHydrationRuntime({
   const runtime = Object.freeze({
     hydrate,
     start,
-    build: 'training-create-hydration-422535',
+    prewarm,
+    build: 'training-create-hydration-422536',
     destroy() {
       destroyed = true;
       openEpoch += 1;
+      prewarmInflight.clear();
       if (window.startAlgorithmTraining429 === start) window.startAlgorithmTraining429 = openForm;
       if (window.TrainingCreateHydrationRuntime === runtime) window.TrainingCreateHydrationRuntime = null;
       window.__trainingCreateHydrationInstalled = false;
