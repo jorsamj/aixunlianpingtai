@@ -130,22 +130,25 @@ jobs:
           if grep -Fq 'threading.Thread(' platform_core/external_algorithm_platform.py; then echo "external auto-sync must not be owned by the Web/API router" >&2; exit 1; fi
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
           grep -q "externalAlgorithmTrainingReadiness" static/modules/external-algorithm-platform.js
-          grep -q "data-external-stale" static/modules/external-algorithm-platform.js
           grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
           grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
-          grep -Fq "categoryPickerBound" static/modules/external-algorithm-platform.js
-          grep -Fq "categoryPickerSignature" static/modules/external-algorithm-platform.js
-          grep -Fq 'categoryBar.dataset.categoryPickerSignature === pickerSignature' static/modules/external-algorithm-platform.js
-          grep -Fq 'dataset.algorithmSourceFilter' static/modules/external-algorithm-platform.js
-          grep -Fq '内部算法' static/modules/external-algorithm-platform.js
-          grep -Fq '外部算法' static/modules/external-algorithm-platform.js
-          grep -Fq 'dataset.algorithmTrainingStatusFilter' static/modules/external-algorithm-platform.js
-          grep -Fq 'data-category-select' static/modules/external-algorithm-platform.js
           grep -Fq 'externalCategoryTreeRows' static/modules/external-algorithm-platform.js
-          grep -Fq 'data-category-picker-toggle' static/modules/external-algorithm-platform.js
-          grep -Fq 'data-category-search' static/modules/external-algorithm-platform.js
-          grep -Fq 'categoryExpandedIds' static/modules/external-algorithm-platform.js
-          grep -Fq 'dataset.externalListSync' static/modules/external-algorithm-platform.js
+          grep -Fq 'const filters = {' static/modules/algorithm-list-runtime.js
+          grep -Fq 'selectedCategoryIds: []' static/modules/algorithm-list-runtime.js
+          grep -Fq "source: 'all'" static/modules/algorithm-list-runtime.js
+          grep -Fq "status: 'all'" static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryOpen: false' static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryQuery:' static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryPath: []' static/modules/algorithm-list-runtime.js
+          grep -Fq 'draftCategoryIds: new Set()' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-algorithm-source-filter' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-algorithm-training-status-filter' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-picker-toggle' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-search' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-check' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-confirm' static/modules/algorithm-list-runtime.js
+          grep -Fq "'外部平台' : '本平台'" static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-external-list-sync' static/modules/external-algorithm-platform.js
           grep -Fq '自动同步已启用' static/modules/external-algorithm-platform.js
           grep -Fq '每 60 秒主动拉取一次主数据' static/modules/external-algorithm-platform.js
           grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js
@@ -172,12 +175,12 @@ jobs:
           grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
           grep -Fq 'algorithmListSearchMatch' static/modules/algorithm-list-runtime.js
           grep -Fq 'selectedCategoryIds: []' static/modules/algorithm-list-runtime.js
-          grep -Fq 'algorithmListRuntime?.filterState?.()' static/modules/external-algorithm-platform.js
-          grep -Fq 'algorithmListRuntime?.setFilters?.(patch, options)' static/modules/external-algorithm-platform.js
+          grep -Fq 'algorithmListRuntime?.setExternalProvider?.(algorithmListProvider)' static/modules/external-algorithm-platform.js
+          grep -Fq 'matches: (algorithm, filters = {}) =>' static/modules/external-algorithm-platform.js
           ! grep -Fq "let selectedSource = 'all'" static/modules/external-algorithm-platform.js
           ! grep -Fq "let selectedTrainingStatus = 'all'" static/modules/external-algorithm-platform.js
           ! grep -Fq 'const selectedCategoryIds = new Set();' static/modules/external-algorithm-platform.js
-          grep -Fq 'external_product_id' static/app.js
+          grep -Fq 'external_product_id' static/modules/algorithm-list-runtime.js
           grep -Fq 'algorithm runtime owns unified list filters and searches provider identifiers' tests/frontend/algorithm-list-runtime.test.mjs
           grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
           grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
@@ -237,7 +240,7 @@ jobs:
           grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
           if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
           grep -q "resolve_external_training_analysis" app.py
-          grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
+          if grep -Fq "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js; then echo "external platform must not own algorithm-list rendering decorators" >&2; exit 1; fi
           grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
           grep -q "def readiness(self" platform_core/external_algorithm_platform.py
           grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
@@ -331,7 +334,7 @@ jobs:
           grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
           grep -Fq '已核对 31 个官方 OpenAPI 接口' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
-          grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
+          grep -Fq 'external-master-data-stale' static/modules/external-algorithm-platform.js
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
           grep -Fq "本次训练分析方式" static/modules/external-algorithm-platform.js
