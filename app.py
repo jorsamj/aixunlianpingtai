@@ -924,8 +924,26 @@ def enrich_job_runtime(
                     # legacy job JSON must not become a second copy of result truth.
                     job["dataset_manifest_ref"] = dataset_manifest_ref
         if durable.error:
-            job["error"] = durable.error
-            job["message"] = durable.error
+            if durable.status in {
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                TaskStatus.BLOCKED_BY_HARDWARE,
+            }:
+                job["error"] = durable.error
+                job["message"] = durable.error
+            elif durable.status is TaskStatus.PARTIAL_SUCCESS:
+                # PARTIAL_SUCCESS is a completed training lifecycle with a
+                # non-fatal post-training/evaluation warning. Never project it
+                # as the current fatal error or overwrite the successful
+                # completion message.
+                job["warning_message"] = durable.error
+                job.pop("error", None)
+            elif durable.status is TaskStatus.SUCCEEDED:
+                # A retry/recovery may leave historical task.error evidence on
+                # the durable record. Successful terminal truth wins.
+                job.pop("error", None)
+        elif durable.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+            job.pop("error", None)
         if durable.finished_at:
             # Keep the worker's own finished_at when present so started/finished use
             # the same clock representation; durable UTC is the recovery fallback.
@@ -7118,11 +7136,31 @@ def job_log(project_id: str, job_id: str):
     job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
+
+    sections: List[str] = []
     log_file = project_dir(project_id) / "jobs" / job_id / "train.log"
-    if not log_file.exists():
+    if log_file.exists():
+        text = log_file.read_text(encoding="utf-8", errors="ignore").strip()
+        if text:
+            sections.append(text)
+
+    # Durable task logs contain scheduler/worker/remote-execution lifecycle
+    # evidence that train.log alone cannot provide. Merge them into the same
+    # read-only endpoint so the frontend has one canonical log source.
+    task = _durable_training_task(project_id, job_id)
+    if task is not None and str(task.log_ref or "").strip():
+        try:
+            durable_log = shared_task_artifacts().artifact_path(job_id, task.log_ref)
+            if durable_log.is_file():
+                text = durable_log.read_text(encoding="utf-8", errors="ignore").strip()
+                if text and (not sections or text != sections[-1]):
+                    sections.append("[任务运行日志]\n" + text)
+        except (OSError, ValueError):
+            pass
+
+    if not sections:
         return "暂无日志"
-    text = log_file.read_text(encoding="utf-8", errors="ignore")
-    return text[-80000:]
+    return "\n\n".join(sections)[-120000:]
 
 
 @app.post("/api/projects/{project_id}/jobs/{job_id}/stop")

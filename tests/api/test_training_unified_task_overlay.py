@@ -67,6 +67,48 @@ def test_training_batch_delete_purges_terminal_truth_and_skips_active(client, se
     assert (artifacts.root / active_id).exists()
 
 
+def test_training_log_endpoint_merges_worker_and_durable_task_logs(client, seeded_project):
+    import app as app_module
+
+    project_id, _image = seeded_project
+    repository = app_module.shared_task_repository()
+    artifacts = app_module.shared_task_artifacts()
+    task_id = f"train-log-merge-{uuid.uuid4().hex[:10]}"
+    task = repository.create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:cpu",
+        required_capabilities=("training.ultralytics",),
+    ))
+    artifacts.atomic_write_json(task_id, "payload.json", {"task_id": task_id})
+    durable_log = artifacts.artifact_path(task_id, task.log_ref)
+    durable_log.parent.mkdir(parents=True, exist_ok=True)
+    durable_log.write_text("[scheduler] claimed by worker-1\n[worker] startup ok", encoding="utf-8")
+
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    app_module.write_json(job_dir / "job.json", {
+        "id": task_id,
+        "task_id": task_id,
+        "status": "running",
+    })
+    (job_dir / "train.log").write_text(
+        "Epoch 1/30\nmetrics/mAP50(B)=0.42",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/api/projects/{project_id}/jobs/{task_id}/log")
+
+    assert response.status_code == 200
+    assert "Epoch 1/30" in response.text
+    assert "metrics/mAP50(B)=0.42" in response.text
+    assert "[任务运行日志]" in response.text
+    assert "[scheduler] claimed by worker-1" in response.text
+    assert "[worker] startup ok" in response.text
+
+
 def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monkeypatch):
     import app as app_module
 

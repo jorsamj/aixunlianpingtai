@@ -137,6 +137,7 @@ export function installTrainingProgressStream({
     copy[index] = next;
     state().jobs = copy;
     render();
+    window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);
 
     const status = statusOf(next);
     if (TERMINAL_STATUSES.has(status)) void reconcile('stream-terminal');

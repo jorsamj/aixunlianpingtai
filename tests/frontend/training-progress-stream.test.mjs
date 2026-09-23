@@ -56,6 +56,7 @@ test('durable stream updates a known training row without a canonical GET per pr
   let renders = 0;
   let refreshes = 0;
   const realtime = [];
+  const detailUpdates = [];
   globalThis.document = {
     visibilityState: 'visible',
     addEventListener() {},
@@ -63,6 +64,7 @@ test('durable stream updates a known training row without a canonical GET per pr
   };
   globalThis.window = {
     TrainingTaskVisibilityRuntime: {render() { renders += 1; return true; }},
+    TrainingRecoveryRuntime: {acceptLiveTask(job) { detailUpdates.push(job); }},
   };
 
   const runtime = installTrainingProgressStream({
@@ -104,6 +106,8 @@ test('durable stream updates a known training row without a canonical GET per pr
   assert.equal(state.jobs[0].task_worker_id, 'gpu-worker-1');
   assert.equal(renders, 1);
   assert.equal(refreshes, 0);
+  assert.equal(detailUpdates.length, 1);
+  assert.equal(detailUpdates[0].progress_percent, 42.5);
 
   runtime.destroy();
   cleanup();

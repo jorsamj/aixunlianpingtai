@@ -66,6 +66,68 @@ def test_durable_terminal_truth_closes_legacy_running_job(tmp_path, monkeypatch)
     assert job["total_epochs"] == 300
     assert job["eta_seconds"] == 0
 
+def test_successful_durable_truth_never_projects_stale_error_as_current_failure(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "train-success-error", "project-1", TaskKind.TRAINING, "payload.json", "training:cpu",
+        required_capabilities=("training.ultralytics",),
+    ))
+    lease = repository.claim_next("worker-1", [TaskKind.TRAINING], {"training.ultralytics"})
+    assert lease is not None
+    repository.finish(
+        "train-success-error",
+        lease.lease_token,
+        TaskStatus.SUCCEEDED,
+        error="historical retry error must not become current failure",
+    )
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": "train-success-error",
+        "status": "running",
+        "message": "训练完成，模型产物校验通过",
+    })
+
+    assert job["status"] == "done"
+    assert job["task_status"] == "SUCCEEDED"
+    assert job["message"] == "训练完成，模型产物校验通过"
+    assert "error" not in job
+
+
+def test_partial_success_projects_durable_error_as_warning_not_fatal_error(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(TaskRecord.new(
+        "train-partial", "project-1", TaskKind.TRAINING, "payload.json", "training:cpu",
+        required_capabilities=("training.ultralytics",),
+    ))
+    lease = repository.claim_next("worker-1", [TaskKind.TRAINING], {"training.ultralytics"})
+    assert lease is not None
+    repository.finish(
+        "train-partial",
+        lease.lease_token,
+        TaskStatus.PARTIAL_SUCCESS,
+        error="独立评测失败，但训练模型已归档",
+    )
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": "train-partial",
+        "status": "running",
+        "message": "训练主体完成，模型已归档",
+    })
+
+    assert job["status"] == "done"
+    assert job["task_status"] == "PARTIAL_SUCCESS"
+    assert job["warning_message"] == "独立评测失败，但训练模型已归档"
+    assert job["message"] == "训练主体完成，模型已归档"
+    assert "error" not in job
+
+
+
 def test_success_aliases_are_terminal_and_attempt_version_archive(tmp_path, monkeypatch):
     import app as app_module
 

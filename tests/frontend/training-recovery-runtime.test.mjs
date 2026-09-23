@@ -45,6 +45,46 @@ test('100/100 epochs never grant recovery without backend recovery truth', () =>
   assert.equal(model.action, null);
 });
 
+test('successful completion message is never rendered as a failure reason', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-success',
+    status: 'done',
+    task_status: 'SUCCEEDED',
+    message: '训练完成，模型产物校验通过',
+    current_item: '训练完成',
+    progress_percent: 100,
+    current_epoch: 30,
+    total_epochs: 30,
+    actual_device: 'cuda:0',
+    actual_train_params: {batch: 32, workers: 8, cache: 'ram', effective_precision: 'fp16'},
+  }, {});
+
+  assert.equal(model.statusKind, 'success');
+  assert.equal(model.failureReason, '');
+  assert.deepEqual(model.warnings, []);
+  assert.equal(model.trainingLoopCompleted, true);
+  assert.equal(model.progressPercent, 100);
+  assert.equal(model.actualDevice, 'cuda:0');
+  assert.equal(model.batch, 32);
+});
+
+
+test('partial success keeps non-fatal evaluation problem as warning', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-partial',
+    status: 'done',
+    task_status: 'PARTIAL_SUCCESS',
+    message: '训练主体完成，模型已归档',
+    warning_message: '独立评测失败，但训练模型已归档',
+  }, {});
+
+  assert.equal(model.statusKind, 'partial');
+  assert.equal(model.failureReason, '');
+  assert.deepEqual(model.warnings, ['独立评测失败，但训练模型已归档']);
+});
+
+
+
 test('frontend accepts recovery only when all backend action flags agree', () => {
   const base = {
     available: true,

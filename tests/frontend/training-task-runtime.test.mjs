@@ -533,6 +533,24 @@ test('active training row exposes the 10 product-facing task fields without inte
   assert.match(html, /删除/);
 });
 
+test('partial-success training row is completed but explicitly labeled as partial', () => {
+  const html = trainingTaskRow({
+    id: 'train-partial',
+    status: 'done',
+    task_status: 'PARTIAL_SUCCESS',
+    asset_algorithm_name: '烟火检测',
+    task_name: '迭代 8',
+    progress_percent: 100,
+    current_epoch: 30,
+    total_epochs: 30,
+  });
+  assert.match(html, /部分完成/);
+  assert.match(html, /训练主体已完成 · 后处理或独立评测存在警告/);
+  assert.doesNotMatch(html, />失败</);
+});
+
+
+
 test('transitioning training task disables conflicting controls until backend truth settles', () => {
   const html = trainingTaskRow({
     id: 'train-pausing',

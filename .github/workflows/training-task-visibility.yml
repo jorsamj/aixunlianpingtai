@@ -82,7 +82,7 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422546' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422570' static/index.html
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
@@ -125,7 +125,8 @@ jobs:
           grep -Fq "if (status === 'RESUMING') return 'resuming';" static/modules/task-runtime-truth.js
           grep -Fq "if (status === 'STOPPING') return 'stopping';" static/modules/task-runtime-truth.js
           grep -Fq "if (status === 'CANCEL_REQUESTED') return 'cancel_requested';" static/modules/task-runtime-truth.js
-          grep -Fq 'function replaceTrainRunCenter429' static/app.js
+          grep -Fq "window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});" static/modules/training-recovery-runtime.js
+          grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js
           grep -Fq 'training_stats=_training_success_rate_stats(jobs)' app.py
           grep -Fq 'ended_statuses = success_statuses | {"failed", "stopped", "cancelled", "canceled"}' app.py
           grep -Fq 'test_training_success_rate_uses_all_ended_jobs_without_calling_cancellations_failures' tests/api/test_training_terminal_runtime.py
