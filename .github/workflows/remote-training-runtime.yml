@@ -179,7 +179,6 @@ jobs:
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_training_completion_metadata.py
-          tests/unit/test_training_scheduler_target.py
       - name: Agent portable training subprocess lifecycle
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -234,6 +233,7 @@ jobs:
           python -m pytest -q
           tests/api/test_training_request.py
           tests/api/test_agent_result_upload_api.py
+          tests/unit/test_training_scheduler_target.py
       - name: Permanent remote training preparation guards
         shell: bash
         run: |
