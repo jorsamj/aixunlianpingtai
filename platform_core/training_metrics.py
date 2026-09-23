@@ -51,18 +51,21 @@ def normalize_cache(value):
 
 
 def resolve_resources(request, context, model, torch):
-    """Resolve bounded training resources before ``model.train``.
+    """Resolve bounded training resources before model.train.
 
-    ``manual`` means exact user values or an explicit validation failure.
+    manual preserves the exact user values or fails explicitly.
 
-    ``auto`` is bounded by an explicit positive user request: it may reduce
-    batch/workers/cache for safety, but must never silently increase them or
-    enable cache when the user disabled it. ``batch=-1`` is the one explicit
-    opt-in sentinel that delegates batch selection to the resource resolver.
+    auto is platform-owned adaptive scheduling. The selected profile decides
+    how aggressively the worker may use GPU memory, CPU loader workers and safe
+    dataset cache. Resolution happens only before training starts; runtime
+    telemetry may diagnose headroom but never changes batch size mid-run.
     """
-    strategy = str(request.get("resource_strategy") or "auto")
+    strategy = str(request.get("resource_strategy") or "auto").strip().lower()
     if strategy not in {"auto", "manual"}:
         raise ValueError("RESOURCE_STRATEGY_INVALID")
+    profile = str(request.get("resource_profile") or "balanced").strip().lower()
+    if profile not in {"balanced", "performance", "stability"}:
+        raise ValueError("RESOURCE_PROFILE_INVALID")
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -70,10 +73,34 @@ def resolve_resources(request, context, model, torch):
     if strategy == "manual":
         if not 1 <= requested_batch <= 4096:
             raise ValueError("RESOURCE_MANUAL_INVALID: batch must be 1..4096")
-    elif requested_batch != -1 and not 1 <= requested_batch <= 4096:
-        raise ValueError("RESOURCE_REQUEST_INVALID: auto batch must be -1 or 1..4096")
-    if requested_workers < 0:
-        raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
+        if requested_workers < 0:
+            raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
+    else:
+        if requested_batch != -1 and not 1 <= requested_batch <= 4096:
+            raise ValueError("RESOURCE_REQUEST_INVALID: auto batch must be -1 or 1..4096")
+        if requested_workers < 0:
+            raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
+
+    profile_cfg = {
+        "stability": {
+            "gpu_fraction": 0.58,
+            "worker_cap": 4,
+            "ram_fraction": 0.22,
+            "batch_cap": 64,
+        },
+        "balanced": {
+            "gpu_fraction": 0.70,
+            "worker_cap": 8,
+            "ram_fraction": 0.35,
+            "batch_cap": 128,
+        },
+        "performance": {
+            "gpu_fraction": 0.82,
+            "worker_cap": 12,
+            "ram_fraction": 0.50,
+            "batch_cap": 256,
+        },
+    }[profile]
 
     cores, ram = host_resources()
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
@@ -82,7 +109,11 @@ def resolve_resources(request, context, model, torch):
     decoded = context.get("decoded_dataset_bytes")
     decoded = max(0, int(decoded)) if decoded is not None else None
     disk = shutil.disk_usage(Path(request["data"]).parent).free
-    cache_budget = max(0, int((ram or 0) * 0.25 / concurrency) - GIB)
+    ram_available = max(0, int(ram or 0))
+    cache_budget = max(
+        0,
+        int(ram_available * float(profile_cfg["ram_fraction"]) / concurrency) - GIB,
+    )
     disk_need = max(dataset_bytes * 8, (decoded or 0) * 2)
     local_ready = context.get("remote_cache_ready") is True
     reasons = []
@@ -102,45 +133,38 @@ def resolve_resources(request, context, model, torch):
             raise ValueError("RESOURCE_DISK_UNSAFE: insufficient known disk headroom for requested cache")
         reasons.append("Validated manual values; incompatible runtime changes fail explicitly")
     else:
-        batch = 1 if requested_batch == -1 else requested_batch
-
-        # AUTO may reduce workers, but must never add workers the user did not
-        # request. workers=0 is an explicit single-process DataLoader choice.
-        cap = 2 if os.name == "nt" else 8
-        if requested_cache != "ram":
+        cap = int(profile_cfg["worker_cap"])
+        if os.name == "nt":
             cap = min(cap, 4)
         cpu_loader_budget = max(0, cpu_budget - 1)
-        workers = min(requested_workers, cap, cpu_loader_budget)
+        train_image_count = max(1, int(context.get("train_image_count") or 1))
+        loader_limit = min(train_image_count, max(1, cores // max(1, torch.cuda.device_count())))
+        workers = min(cap, cpu_loader_budget, loader_limit)
         if request.get("device") == "cpu":
             workers = 0
         if workers != requested_workers:
-            adjustments.append(f"workers downscaled {requested_workers}->{workers} for CPU/runtime safety")
+            adjustments.append(f"workers auto-resolved {requested_workers}->{workers}")
         reasons.append(
-            f"Loader workers bounded by request={requested_workers}, cores={cores}, "
-            f"reservations={concurrency}, platform cap={cap}"
+            f"Adaptive loader workers profile={profile}; cores={cores}; "
+            f"reservations={concurrency}; cap={cap}; effective={workers}"
         )
 
-        # cache=False is authoritative. Requested RAM/Disk may only be
-        # downgraded when the known host budget cannot support it.
-        cache = requested_cache
-        if requested_cache is False:
-            cache = False
-            reasons.append("Cache remains disabled because the user requested cache=false")
-        elif requested_cache == "ram":
-            if local_ready and decoded and decoded * 3 <= cache_budget:
-                cache = "ram"
-            elif local_ready and decoded and disk_need + 2 * GIB <= disk:
-                cache = "disk"
-                adjustments.append("cache downscaled ram->disk for memory safety")
-            else:
-                cache = False
-                adjustments.append("cache downscaled ram->false because safe cache headroom is unavailable")
-        elif requested_cache == "disk":
-            if local_ready and decoded is not None and disk_need + 2 * GIB <= disk:
-                cache = "disk"
-            else:
-                cache = False
-                adjustments.append("cache downscaled disk->false because safe disk headroom is unavailable")
+        cache = False
+        if local_ready and decoded is not None and decoded > 0 and decoded * 3 <= cache_budget:
+            cache = "ram"
+            reasons.append(
+                f"Adaptive cache selected RAM; decoded={decoded}; safe_budget={cache_budget}"
+            )
+        elif local_ready and decoded is not None and disk_need + 2 * GIB <= disk:
+            cache = "disk"
+            reasons.append(
+                f"Adaptive cache selected disk; required={disk_need + 2 * GIB}; free={disk}"
+            )
+        else:
+            reasons.append("Adaptive cache remains disabled because safe RAM/disk headroom is unavailable")
+        if cache != requested_cache:
+            adjustments.append(f"cache auto-resolved {requested_cache}->{cache}")
+        batch = 1
 
     estimated = None
     free = total = None
@@ -157,55 +181,52 @@ def resolve_resources(request, context, model, torch):
             * (1 + float(request.get("multi_scale") or 0)) ** 2
         )
         other = max(0, int(context.get("other_reserved_bytes") or 0))
-        budget = max(0, int((free - other - GIB) * 0.65))
+        reserve_floor = max(GIB, int(total * 0.05))
+        available_after_other = max(0, free - other - reserve_floor)
+        budget = max(0, int(available_after_other * float(profile_cfg["gpu_fraction"])))
         reserved = context.get("reserved_bytes")
         if reserved:
             budget = min(budget, int(reserved))
         if strategy == "auto":
-            maximum = min(64, (budget - fixed) // max(1, per_image))
+            maximum = min(
+                int(profile_cfg["batch_cap"]),
+                (budget - fixed) // max(1, per_image),
+            )
             if maximum < 1:
-                raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds conservative budget; no CPU fallback")
-            if requested_batch == -1:
-                batch = int(maximum)
-                reasons.append(f"Explicit batch=-1 delegated selection; safe resolved batch={batch}")
-            else:
-                safe_batch = min(requested_batch, int(maximum))
-                if safe_batch < requested_batch:
-                    adjustments.append(f"batch downscaled {requested_batch}->{safe_batch} for GPU memory safety")
-                batch = safe_batch
-                reasons.append(
-                    f"GPU bounded estimate permits at most batch={maximum}; "
-                    f"requested batch={requested_batch}; effective batch={batch}"
+                raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds adaptive budget; no CPU fallback")
+            batch = int(maximum)
+            reasons.append(
+                f"Adaptive batch profile={profile}; gpu_fraction={profile_cfg['gpu_fraction']:.2f}; "
+                f"safe resolved batch={batch}"
+            )
+            if batch != requested_batch:
+                adjustments.append(f"batch auto-resolved {requested_batch}->{batch}")
+        else:
+            if fixed + requested_batch * per_image > budget and budget > 0:
+                raise ValueError(
+                    f"RESOURCE_MANUAL_INVALID: requested batch={requested_batch} exceeds current GPU budget"
                 )
+            batch = requested_batch
         estimated = fixed + batch * per_image
     elif strategy == "auto":
-        if requested_batch == -1:
-            batch = 1
-            reasons.append("Explicit batch=-1 resolved conservatively to batch=1 on CPU")
-        elif batch > 1:
-            adjustments.append(f"batch downscaled {batch}->1 for CPU safety")
-            batch = 1
-            reasons.append("Explicit CPU assignment uses conservative batch<=1")
+        batch = 1
+        if requested_batch != 1:
+            adjustments.append(f"batch auto-resolved {requested_batch}->1 for CPU")
+        reasons.append("CPU assignment uses conservative batch=1")
+    else:
+        batch = requested_batch
 
-    # DataLoader worker count is a host/dataset concurrency concern, not a batch-size
-    # concern. A perfectly valid configuration can use workers > batch (for example,
-    # batch=4/workers=8) to keep the accelerator fed. Bound it by dataset size and
-    # available CPU capacity instead of silently coupling it to batch.
     train_image_count = max(1, int(context.get("train_image_count") or 1))
     loader_limit = min(
         train_image_count,
         max(1, cores // max(1, torch.cuda.device_count())),
     )
-    if strategy == "auto":
-        limited_workers = min(workers, loader_limit)
-        if limited_workers != workers:
-            adjustments.append(f"workers downscaled {workers}->{limited_workers} for loader capacity")
-        workers = limited_workers
-    elif workers > loader_limit:
+    if strategy == "manual" and workers > loader_limit:
         raise ValueError(f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}")
 
     resolved = dict(
         resource_strategy=strategy,
+        resource_profile=profile,
         requested_batch=requested_batch,
         requested_workers=requested_workers,
         requested_cache=requested_cache,
@@ -217,6 +238,7 @@ def resolve_resources(request, context, model, torch):
         estimated_gpu_memory_bytes=estimated,
         gpu_free_bytes_at_resolution=free,
         gpu_total_bytes=total,
+        target_gpu_memory_fraction=(float(profile_cfg["gpu_fraction"]) if strategy == "auto" else None),
         available_cpu_cores=cores,
         concurrent_reservations=concurrency,
         available_ram_bytes=ram,
@@ -226,7 +248,7 @@ def resolve_resources(request, context, model, torch):
     )
     print(
         "[资源决议] "
-        f"strategy={strategy}; "
+        f"strategy={strategy}; profile={profile}; "
         f"requested(batch={requested_batch}, workers={requested_workers}, cache={requested_cache}); "
         f"effective(batch={batch}, workers={workers}, cache={cache}); "
         f"adjustments={adjustments or ['none']}",
