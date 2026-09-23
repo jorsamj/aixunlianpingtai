@@ -1,14 +1,24 @@
 const API_ROOT = '/api/v64/external-publish';
 const PLATFORM_PAGE = '平台对接';
 const TARGETS = [
-  ['onnx', 'ONNX / 通用'],
-  ['tensorrt', 'TensorRT / NVIDIA'],
-  ['ascend', '华为 Atlas / Ascend'],
-  ['rockchip', '瑞芯微 / RKNN'],
-  ['sophon', '算能 / Sophon'],
+  ['original', '通用'],
+  ['rockchip', '瑞芯微'],
+  ['tensorrt', 'NVIDIA'],
+  ['ascend', '华为 Ascend'],
+  ['sophon', '算能 Sophon'],
+  ['onnx', 'ONNX 通用运行时'],
   ['paddle_inference', 'Paddle Inference'],
-  ['original', '原始训练模型'],
 ];
+
+const VENDOR_META = {
+  original: {mark: '通', scene: '原始训练模型', note: '训练完成但尚未转换的模型统一走“通用”对应关系。', required: true},
+  rockchip: {mark: 'RK', scene: 'RKNN 转换', note: 'RK3568 / RK3576 等具体芯片型号仍以真实转换产物为准。'},
+  tensorrt: {mark: 'NV', scene: 'TensorRT 转换', note: '用于 NVIDIA GPU / TensorRT 交付产物。'},
+  ascend: {mark: '昇', scene: 'Ascend / OM', note: '用于华为 Ascend 转换产物。'},
+  sophon: {mark: '算', scene: 'Sophon / BModel', note: '用于算能转换产物。'},
+  onnx: {mark: 'ON', scene: 'ONNX', note: '通用 ONNX 交付目标，可按畅联云实际算力环境关联。'},
+  paddle_inference: {mark: 'PD', scene: 'Paddle Inference', note: 'Paddle 推理产物的扩展映射。'},
+};
 
 function rawFetch() {
   const scoped = window.fetch;
@@ -114,7 +124,7 @@ export function publicationPreflight(status = {}) {
       .filter(Boolean))];
     return {
       ready: false,
-      message: `还有 ${blocked} 个已启用转换产物缺少畅联云算力环境映射${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 畅联云版本与权重同步”补齐；不需要发布的目标请明确关闭。`,
+      message: `还有 ${blocked} 个已启用转换产物缺少畅联云厂商对应关系${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 厂商对应表”补齐；不需要发布的目标请明确关闭。`,
     };
   }
   const mapped = Number(status.mapped_artifact_count || 0);
@@ -154,11 +164,11 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
 
   function computeOptions(selected = '') {
     const rows = config?.computePlatforms || [];
-    return `<option value="">请选择算力环境</option>${rows.map(row => {
+    return `<option value="">请选择畅联云厂商 / 算力环境</option>${rows.map(row => {
       const id = String(row.computePlatformId || row.id || '');
       const name = row.computePlatformName || row.name || row.computePlatformCode || id;
       const code = row.computePlatformCode || row.code || '';
-      return `<option value="${escapeHtml(id)}" ${id === selected ? 'selected' : ''}>${escapeHtml(name)}${code ? ` · ${escapeHtml(code)}` : ''}</option>`;
+      return `<option value="${escapeHtml(id)}" data-name="${escapeHtml(name)}" data-code="${escapeHtml(code)}" ${id === selected ? 'selected' : ''}>${escapeHtml(name)}${code ? ` · ${escapeHtml(code)}` : ''} · ID ${escapeHtml(id)}</option>`;
     }).join('')}`;
   }
 
@@ -173,33 +183,78 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   function mappingRows() {
     return TARGETS.map(([key, label]) => {
       const row = config?.targetMappings?.[key] || {};
+      const meta = VENDOR_META[key] || {mark: label.slice(0, 2), scene: label, note: ''};
       const original = key === 'original';
-      return `<tr data-publish-target="${escapeHtml(key)}">
-        <td><label class="field check"><input data-publish-enabled type="checkbox" ${original || row.enabled !== false ? 'checked' : ''} ${original ? 'disabled' : ''}> ${escapeHtml(original ? '原始训练模型（必传）' : label)}</label></td>
-        <td><select class="select" data-publish-platform>${computeOptions(row.compute_platform_id || '')}</select></td>
-        <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="兜底值，如 RK3568 / RK3576"></td>
-      </tr>`;
+      const selected = String(row.compute_platform_id || '');
+      const selectedPlatform = (config?.computePlatforms || []).find(item => String(item.computePlatformId || item.id || '') === selected) || {};
+      const selectedName = selectedPlatform.computePlatformName || selectedPlatform.name || selectedPlatform.computePlatformCode || '';
+      const selectedCode = selectedPlatform.computePlatformCode || selectedPlatform.code || row.chip_code || '';
+      const enabled = original || row.enabled !== false;
+      return `<article class="external-vendor-card ${enabled ? 'enabled' : 'disabled'}" data-publish-target="${escapeHtml(key)}">
+        <div class="external-vendor-card-head">
+          <span class="external-vendor-mark">${escapeHtml(meta.mark)}</span>
+          <div><b>${escapeHtml(label)}</b><span>${escapeHtml(meta.scene)}</span></div>
+          ${original ? '<span class="pill ok">必配</span>' : `<label class="external-vendor-switch"><input data-publish-enabled type="checkbox" ${enabled ? 'checked' : ''}><span></span></label>`}
+        </div>
+        <p>${escapeHtml(meta.note)}</p>
+        <div class="field">
+          <label>关联畅联云厂商 / 算力环境</label>
+          <select class="select" data-publish-platform>${computeOptions(selected)}</select>
+        </div>
+        <input type="hidden" data-publish-chip value="${escapeHtml(row.chip_code || selectedCode || '')}">
+        <div class="external-vendor-meta">
+          <span>畅联云 ID <code data-vendor-id>${escapeHtml(selected || '未配置')}</code></span>
+          <span>平台编码 <code data-vendor-code>${escapeHtml(selectedCode || '-')}</code></span>
+          <span class="external-vendor-name" data-vendor-name>${escapeHtml(selectedName || '尚未关联')}</span>
+        </div>
+      </article>`;
     }).join('');
   }
 
   function panelHtml() {
     const c = config || normalizePublishConfig({});
-    return `<section class="panel" data-external-publish-panel="1">
-      <div class="panel-head"><div><div class="panel-title">畅联云版本与权重同步</div><div class="subline">训练成功后自动创建算法版本；原始训练模型与后续转换结果上传 OSS 后，通过官方权重接口追加到同一版本。</div></div><span class="pill ok">自动同步</span></div>
+    const configured = TARGETS.filter(([key]) => {
+      const row = c.targetMappings?.[key] || {};
+      return (key === 'original' || row.enabled !== false) && Boolean(row.compute_platform_id);
+    }).length;
+    return `<section class="panel external-vendor-panel" data-platform-tab-panel="vendor" data-external-publish-panel="1">
+      <div class="panel-head external-vendor-panel-head">
+        <div>
+          <div class="panel-title">厂商对应表</div>
+          <div class="subline">维护“本平台转换厂商 → 畅联云厂商 / 算力环境 ID”的全局对应关系。模型发布时自动按这里取 computePlatformId，不需要每个算法重复配置。</div>
+        </div>
+        <div class="external-vendor-head-actions">
+          <span class="pill ${configured ? 'ok' : 'warn'}">已配置 ${configured} / ${TARGETS.length}</span>
+          <button class="btn small" id="externalPublishRefreshPlatforms">↻ 拉取畅联云厂商</button>
+        </div>
+      </div>
       <div class="panel-body">
-        <div class="alert soft"><b>文件存储已统一</b><span>OSS 存储源、目录和长期访问域名请到“存储配置 → 算法与转换结果存储”维护；这里不重复保存存储配置。</span></div>
-        <div class="panel-title" style="margin:18px 0 6px">模型类型 → 新畅联算力环境映射</div>
-        <div class="subline" style="margin-bottom:10px">原始训练模型必须登记；转换目标可按需要启用。算力环境来自最近一次新畅联主数据同步。</div>
-        <table class="table"><thead><tr><th>模型类型</th><th>算力环境</th><th>芯片编码（产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
-        <details style="margin-top:16px"><summary>官方同步接口</summary><div class="form two" style="margin-top:12px">
-          <div class="field"><label>按产品查询版本</label><code>${escapeHtml(c.versionListByProduct)}</code></div>
-          <div class="field"><label>按版本查询权重</label><code>${escapeHtml(c.weightListByVersion)}</code></div>
-        </div><div class="subline" style="margin-top:8px">创建、查询和删除均使用新畅联官方 OpenAPI 固定路径，不允许前端修改。</div></details>
-        <details data-external-publish-automation="1" style="margin-top:16px"><summary>高级操作</summary><div class="row" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">立即检查待同步结果</button></div></details>
-        <div class="row end"><button class="btn primary" id="externalPublishSave">保存算力环境映射</button></div>
+        <div class="external-vendor-guide">
+          <div><span class="external-vendor-guide-icon">通</span><p><b>通用是特殊映射</b><small>训练刚完成、尚未转换的原始模型没有真实硬件厂商，统一使用“通用”对应的畅联云 ID。</small></p></div>
+          <div><span class="external-vendor-guide-icon">厂</span><p><b>转换结果按厂商分流</b><small>RKNN 走瑞芯微，TensorRT 走 NVIDIA，Ascend 走华为；具体芯片型号优先读取真实转换产物。</small></p></div>
+        </div>
+        <div class="external-vendor-grid">${mappingRows()}</div>
+        <div class="external-vendor-reference">
+          <div>
+            <b>畅联云参考数据</b>
+            <span>算力环境来自最近一次新畅联主数据同步；下拉项直接显示名称、平台编码和 ID。</span>
+          </div>
+          <span class="pill">${Number(c.computePlatforms?.length || 0)} 个可选项</span>
+        </div>
+        <details class="external-vendor-advanced">
+          <summary>高级操作与官方同步接口</summary>
+          <div class="form two" style="margin-top:12px">
+            <div class="field"><label>按产品查询版本</label><code>${escapeHtml(c.versionListByProduct)}</code></div>
+            <div class="field"><label>按版本查询权重</label><code>${escapeHtml(c.weightListByVersion)}</code></div>
+          </div>
+          <div class="subline" style="margin-top:8px">创建、查询和删除均使用新畅联官方 OpenAPI 固定路径，不允许前端修改。</div>
+          <div data-external-publish-automation="1" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">立即检查待同步结果</button></div>
+        </details>
+        <div class="external-vendor-savebar"><span>修改对应关系后，只影响后续发布/补同步，不会重复创建已存在的畅联云算法版本。</span><button class="btn primary" id="externalPublishSave">保存厂商对应表</button></div>
       </div>
     </section>`;
   }
+
   function collectConfig() {
     const mappings = {};
     for (const row of document.querySelectorAll('[data-publish-target]')) {
@@ -250,6 +305,42 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     if (save) save.onclick = () => void saveConfig().catch(error => notify?.(error?.message || error));
     const run = document.getElementById('externalPublishAutoRun');
     if (run) run.onclick = () => void runAutoOnce().catch(error => notify?.(error?.message || error));
+    const refresh = document.getElementById('externalPublishRefreshPlatforms');
+    if (refresh) refresh.onclick = () => void (async () => {
+      refresh.disabled = true;
+      const original = refresh.textContent;
+      refresh.textContent = '正在拉取…';
+      try {
+        await window.ExternalAlgorithmPlatformRuntime?.syncNow?.();
+        await loadConfig({silent: true});
+        notify?.('畅联云厂商 / 算力环境已刷新');
+      } catch (error) {
+        notify?.(error?.message || error);
+      } finally {
+        if (refresh.isConnected) { refresh.disabled = false; refresh.textContent = original || '↻ 拉取畅联云厂商'; }
+      }
+    })();
+
+    for (const row of document.querySelectorAll('[data-publish-target]')) {
+      const enabled = row.querySelector('[data-publish-enabled]');
+      const select = row.querySelector('[data-publish-platform]');
+      const chip = row.querySelector('[data-publish-chip]');
+      const syncMeta = () => {
+        const option = select?.selectedOptions?.[0];
+        const id = String(select?.value || '');
+        const name = String(option?.dataset?.name || '');
+        const code = String(option?.dataset?.code || '');
+        const idNode = row.querySelector('[data-vendor-id]');
+        const codeNode = row.querySelector('[data-vendor-code]');
+        const nameNode = row.querySelector('[data-vendor-name]');
+        if (idNode) idNode.textContent = id || '未配置';
+        if (codeNode) codeNode.textContent = code || chip?.value || '-';
+        if (nameNode) nameNode.textContent = name || '尚未关联';
+        if (chip && code) chip.value = code;
+      };
+      if (select) select.onchange = syncMeta;
+      if (enabled) enabled.onchange = () => row.classList.toggle('disabled', !enabled.checked);
+    }
   }
 
   async function decoratePlatformPage() {
@@ -262,7 +353,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       finally { loading = false; }
     }
     if (!config || String(state().page || '') !== PLATFORM_PAGE) return;
-    const historyPanel = [...shell.querySelectorAll('.panel')].find(panel => panel.textContent.includes('同步记录'));
+    const historyPanel = shell.querySelector('[data-platform-tab-panel="history"]');
     if (historyPanel) historyPanel.insertAdjacentHTML('beforebegin', panelHtml());
     else shell.insertAdjacentHTML('beforeend', panelHtml());
     bindPanel();
