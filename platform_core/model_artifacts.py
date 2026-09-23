@@ -579,12 +579,9 @@ class ModelArtifactService:
             and not health.ok
             and (
                 "accessdenied" in normalized_health
-                or "status:403" in normalized_health
-                or "status=403" in normalized_health
-                or "http403" in normalized_health
-                or "403forbidden" in normalized_health
-                or "youareforbidden" in normalized_health
+                or "forbidden" in normalized_health
                 or "doesnotbelongtoyou" in normalized_health
+                or re.search(r"(?<!\\d)403(?!\\d)", health_text)
             )
         )
         warning = ""
