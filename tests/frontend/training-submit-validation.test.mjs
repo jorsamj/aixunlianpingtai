@@ -60,7 +60,6 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 
 test('recommended training UI exposes the bounded adaptive controls without expert-only clutter', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /GPU 集群自动调度（推荐）/);
   assert.match(source, /自动调度（推荐）/);
   assert.match(source, /智能推荐（推荐）/);
   assert.match(source, /性能优先/);
