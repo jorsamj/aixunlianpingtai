@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
 
 test('label management has one canonical browser owner', () => {
   assert.match(
@@ -23,4 +24,12 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /window\.submitInlineLabelCreate414=async function/);
   assert.match(app, /平台标签已创建并选中；仍需确认后才会正式入库/);
   assert.match(app, /\/api\/projects\/\$\{pid\(\)\}\/labels/);
+  const saveStart = app.indexOf('window.saveLabel414=async function(classId)');
+  const saveEnd = app.indexOf('\n  window.deleteLabel414=', saveStart);
+  assert.ok(saveStart >= 0 && saveEnd > saveStart);
+  const save = app.slice(saveStart, saveEnd);
+  assert.match(save, /await refreshLabels414\(true\);closeModal\(\)/);
+  assert.doesNotMatch(save, /refreshImages414|\/images/);
+  assert.doesNotMatch(app, /refreshImages414/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.204/);
 });

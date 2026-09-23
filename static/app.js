@@ -4095,7 +4095,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     try{
       if(classId===null){await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color,aliases})})}
       else await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,display_name:display||code,color,hotkey,aliases})});
-      await Promise.all([refreshLabels414(true),refreshImages414()]);closeModal();
+      await refreshLabels414(true);closeModal();
       if(state.page==='标签管理')drawLabel414();
       toast(classId===null?'标签已创建':'标签及已有标注已同步更新');
     }catch(e){toast(e.message||e)}
