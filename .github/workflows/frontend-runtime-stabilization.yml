@@ -181,7 +181,7 @@ jobs:
           grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
           grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
           if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
-          grep -Fq "build: 'model-artifacts-65005'" static/modules/model-artifact-runtime.js
+          grep -Fq "build: 'model-artifacts-65007'" static/modules/model-artifact-runtime.js
           grep -Fq 'registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE' static/modules/model-artifact-runtime.js
           grep -Fq 'function patchAuditRows(body)' static/modules/model-artifact-runtime.js
           if grep -Fq 'window.setInterval(' static/modules/model-artifact-runtime.js; then echo 'model artifact audit polling must stay PollRegistry-owned' >&2; exit 1; fi
