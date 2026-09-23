@@ -20,6 +20,23 @@ function cleanup() {
   delete globalThis.document;
 }
 
+
+test('training task runtime owns no DOM listeners or DOM inspection', () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  globalThis.document = new Proxy({}, {
+    get() { throw new Error('TrainingTaskRuntime must not inspect DOM'); },
+  });
+  globalThis.window = {fetch: async () => response([])};
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  assert.ok(runtime);
+  runtime.destroy();
+  cleanup();
+});
+
 test('focused training refresh fetches jobs only and patches the task table', async () => {
   const state = {page: '训练任务', project: {id: 'p 1'}, jobs: [], __navigationEpoch: 4};
   const urls = [];

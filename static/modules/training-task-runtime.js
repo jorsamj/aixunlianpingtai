@@ -166,7 +166,6 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   if (typeof window === 'undefined') return null;
   if (window.__trainingTaskRuntimeInstalled) return window.TrainingTaskRuntime;
 
-  const doc = typeof document !== 'undefined' ? document : null;
   const state = () => getState?.() || {};
   const nativeFetch = fetchImpl
     || window.fetch?.__pageRequestScopeOriginal
@@ -450,31 +449,6 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     if (typeof window[name] === 'function') window[name].__trainingTaskRuntime = true;
   }
 
-  function isOwnedRefreshButton(button) {
-    if (!button || String(state().page || '') !== TRAINING_PAGE) return false;
-    if (button.id === 'refreshBtn') return true;
-    if (!button.closest?.('#view')) return false;
-    const label = String(button.textContent || '').trim();
-    return label === '刷新状态' || label === '完整刷新' || label === '刷新';
-  }
-
-  const onClickCapture = event => {
-    const button = event?.target?.closest?.('button');
-    if (!isOwnedRefreshButton(button)) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    if (button.disabled || inflight) return;
-    button.disabled = true;
-    void runtime.refresh({render: true, source: 'manual'}).then(
-      result => { if (!result?.stale) notify?.('训练任务已刷新'); },
-      error => notify?.(error?.message || error),
-    ).finally(() => {
-      if (button?.isConnected !== false) button.disabled = false;
-      window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
-    });
-  };
-  doc?.addEventListener?.('click', onClickCapture, true);
-
   const runtime = {
     build: 'training-task-runtime-422507',
     refresh,
@@ -493,7 +467,6 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     destroy() {
       destroyed = true;
       viewAdapter = null;
-      doc?.removeEventListener?.('click', onClickCapture, true);
       for (const [name, fn] of Object.entries(previous)) {
         if (fn === undefined) delete window[name];
         else window[name] = fn;

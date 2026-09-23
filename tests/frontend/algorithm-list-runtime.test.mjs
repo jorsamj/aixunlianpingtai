@@ -5,6 +5,7 @@ import {
   algorithmCategoryColumns,
   algorithmCategorySearch,
   algorithmListSearchMatch,
+  algorithmVersionMap50,
   installAlgorithmListRuntime,
 } from '../../static/modules/algorithm-list-runtime.js';
 
@@ -304,6 +305,10 @@ test('category filtering uses only real external_category_id and separates draft
 
   assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
   runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('root');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
   runtime.toggleDraftCategory('leaf');
   assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
   assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
@@ -330,4 +335,11 @@ test('category presentation supports real arbitrary depth in three visible panes
   assert.equal(columns.length, 3);
   assert.deepEqual(columns.map(column => column.parentId), ['root', 'vehicle', 'parking']);
   assert.deepEqual(algorithmCategorySearch(rows, '夜间').map(row => row.path), ['安全治理 / 车辆 / 违停 / 夜间违停']);
+});
+
+
+test('current mAP50 never falls back to generic accuracy', () => {
+  assert.equal(algorithmVersionMap50({accuracy: 0.91}), null);
+  assert.ok(Math.abs(algorithmVersionMap50({map50: 0.926}) - 92.6) < 1e-9);
+  assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
 });

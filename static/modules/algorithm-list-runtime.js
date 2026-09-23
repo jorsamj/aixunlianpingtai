@@ -84,9 +84,9 @@ function currentVersion(algorithm = {}) {
   return versions.find(row => String(row.id || '') === String(algorithm.current_version_id || '')) || versions[0] || null;
 }
 
-function versionMetric(version = {}) {
+export function algorithmVersionMap50(version = {}) {
   const metrics = version?.metrics || version?.evaluation?.metrics || {};
-  for (const value of [version?.map50, version?.mAP50, version?.accuracy, metrics?.map50, metrics?.mAP50, metrics?.['metrics/mAP50(B)']]) {
+  for (const value of [version?.map50, version?.mAP50, metrics?.map50, metrics?.mAP50, metrics?.['metrics/mAP50(B)']]) {
     const number = Number(value);
     if (Number.isFinite(number)) return number > 1 ? number : number * 100;
   }
@@ -222,7 +222,8 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
   function toggleDraftCategory(id) {
     const key = String(id || '');
-    if (!categoryById(key)) return runtimeState();
+    const row = categoryById(key);
+    if (!row || row.hasChildren === true) return runtimeState();
     if (viewState.draftCategoryIds.has(key)) viewState.draftCategoryIds.delete(key);
     else viewState.draftCategoryIds.add(key);
     renderCategoryPicker();
@@ -230,7 +231,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function confirmCategoryPicker() {
-    const valid = [...viewState.draftCategoryIds].filter(id => categoryById(id));
+    const valid = [...viewState.draftCategoryIds].filter(id => { const row = categoryById(id); return row && row.hasChildren !== true; });
     filters.selectedCategoryIds = valid;
     try {
       const previous = JSON.parse(localStorage.getItem('cl_algorithm_recent_categories_v1') || '[]');
@@ -274,7 +275,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const rows = (state().algorithms || []).filter(algorithmMatches);
     if (viewState.sort === 'updated') return [...rows].sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
     if (viewState.sort === 'training') return [...rows].sort((a, b) => trainingCount(b.id) - trainingCount(a.id));
-    if (viewState.sort === 'metric') return [...rows].sort((a, b) => (versionMetric(currentVersion(b)) ?? -1) - (versionMetric(currentVersion(a)) ?? -1));
+    if (viewState.sort === 'metric') return [...rows].sort((a, b) => (algorithmVersionMap50(currentVersion(b)) ?? -1) - (algorithmVersionMap50(currentVersion(a)) ?? -1));
     return [...rows].sort((a, b) => Number(Boolean(activeJob(b.id, state().jobs || []))) - Number(Boolean(activeJob(a.id, state().jobs || []))));
   }
 
@@ -352,10 +353,10 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const columns = algorithmCategoryColumns(rows, viewState.categoryPath);
     let recentIds = [];
     try { recentIds = JSON.parse(localStorage.getItem('cl_algorithm_recent_categories_v1') || '[]'); } catch (_) {}
-    const recent = (Array.isArray(recentIds) ? recentIds : []).map(categoryById).filter(Boolean).slice(0, 6);
-    const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}"><label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span>${esc(row.name)}</span></label>${row.hasChildren ? '<button data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
+    const recent = (Array.isArray(recentIds) ? recentIds : []).map(categoryById).filter(row => row && row.hasChildren !== true).slice(0, 6);
+    const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}"><label>${row.hasChildren ? '<span aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span>${esc(row.name)}</span></label>${row.hasChildren ? '<button data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
     const body = viewState.categoryQuery
-      ? `<div class="algorithm-category-search-results">${search.map(row => `<label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></label>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
+      ? `<div class="algorithm-category-search-results">${search.map(row => row.hasChildren ? `<div><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></div>` : `<label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></label>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
       : `<div class="algorithm-category-columns">${columns.map(column => `<div class="algorithm-category-column">${column.rows.map(item).join('') || '<div class="algorithm-category-column-empty">请选择上级品目</div>'}</div>`).join('')}</div>`;
     const selected = [...viewState.draftCategoryIds].map(categoryById).filter(Boolean);
     popover.innerHTML = `<header><b>选择品目</b><button data-category-close>×</button></header><label class="algorithm-category-search"><span>⌕</span><input type="search" value="${esc(viewState.categoryQuery)}" placeholder="搜索品目名称或路径" data-category-search></label>${recent.length ? `<div class="algorithm-category-recent"><span>最近使用：</span>${recent.map(row => `<button data-category-recent="${esc(row.id)}">${esc(row.name)}</button>`).join('')}</div>` : ''}${body}<footer><div><b>已选择 ${selected.length} 项</b><span>${selected.slice(0, 2).map(row => `<em>${esc(row.name)}</em>`).join('')}${selected.length > 2 ? `<em>+${selected.length - 2}</em>` : ''}</span></div><div><button class="btn" data-category-clear>清空</button><button class="btn primary" data-category-confirm>确定</button></div></footer>`;
@@ -366,7 +367,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const versions = Array.isArray(algorithm?.versions) ? algorithm.versions : [];
     if (!versions.length) return '<div class="entity-empty compact">暂无版本，点击“训练”开始第一次迭代</div>';
     return versions.map(version => {
-      const metric = versionMetric(version);
+      const metric = algorithmVersionMap50(version);
       const current = String(algorithm.current_version_id || '') === String(version.id || '');
       const external = String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL' && String(algorithm.provider_type || '').toUpperCase() === 'CHANG_LIAN';
       const published = String(version.external_publish_status || '').toLowerCase() === 'published';
@@ -378,7 +379,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
   function algorithmRowView(algorithm) {
     const version = currentVersion(algorithm);
-    const metric = versionMetric(version);
+    const metric = algorithmVersionMap50(version);
     const count = trainingCount(algorithm.id);
     const meta = providerMeta(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
