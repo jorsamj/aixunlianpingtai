@@ -495,7 +495,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65005',
+    build: 'model-artifacts-65006',
     refresh,
     renderPanels,
     openAuditDetail,
