@@ -505,7 +505,17 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (flags.success) merged.recovery = undefined;
     openSnapshot = {...(openSnapshot || {}), job: merged, recovery};
     renderOpenDetail(merged, recovery, openSnapshot.log || '');
-    scheduleDetailRefresh(merged);
+    if (flags.active) {
+      scheduleDetailRefresh(merged);
+    } else {
+      stopDetailTimer();
+      queueMicrotask(() => {
+        if (String(openTaskId) !== taskId) return;
+        void refreshOpenDetail({includeRecovery: flags.failed}).catch(error => {
+          notify?.(`训练终态对账失败，已保留最后实时状态：${error?.message || error}`);
+        });
+      });
+    }
     return true;
   }
 

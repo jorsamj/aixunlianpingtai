@@ -240,6 +240,89 @@ test('successful canonical task truth suppresses stale recoverable failure metad
   assert.equal(model.progressPercent, 100);
 });
 
+test('terminal live event performs one final canonical detail and log reconciliation', async () => {
+  const state = {
+    project: {id: 'p1'},
+    jobs: [{
+      id: 'train-terminal-reconcile',
+      task_id: 'train-terminal-reconcile',
+      status: 'running',
+      task_status: 'RUNNING',
+      progress_percent: 72,
+      message: 'Epoch 8/10',
+    }],
+  };
+  const calls = [];
+  let finalMode = false;
+  globalThis.window = {
+    PollRegistryRuntime: {
+      clear() {},
+      startTimeout() {},
+    },
+  };
+  const runtime = installTrainingRecoveryRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+    fetchImpl: async url => {
+      calls.push(String(url));
+      if (String(url).endsWith('/log')) {
+        return {
+          ok: true,
+          status: 200,
+          async text() { return finalMode ? 'training finished\nmodel verified' : 'Epoch 8/10'; },
+        };
+      }
+      return response(finalMode ? {
+        id: 'train-terminal-reconcile',
+        task_id: 'train-terminal-reconcile',
+        status: 'done',
+        task_status: 'SUCCEEDED',
+        persisted_status: 'SUCCEEDED',
+        phase: 'committed',
+        progress_percent: 100,
+        message: '训练完成，模型产物校验通过',
+        artifact_verified: true,
+        verified_models: ['best.pt'],
+      } : {
+        id: 'train-terminal-reconcile',
+        task_id: 'train-terminal-reconcile',
+        status: 'running',
+        task_status: 'RUNNING',
+        progress_percent: 72,
+        message: 'Epoch 8/10',
+      });
+    },
+  });
+
+  await runtime.openDetail('train-terminal-reconcile');
+  calls.length = 0;
+  finalMode = true;
+
+  assert.equal(runtime.acceptLiveTask({
+    id: 'train-terminal-reconcile',
+    task_id: 'train-terminal-reconcile',
+    status: 'SUCCEEDED',
+    persisted_status: 'SUCCEEDED',
+    phase: 'committed',
+    progress_percent: 100,
+  }), true);
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.deepEqual(calls, [
+    '/api/projects/p1/jobs/train-terminal-reconcile',
+    '/api/projects/p1/jobs/train-terminal-reconcile/log',
+  ]);
+  assert.equal(state.jobs[0].task_status, 'SUCCEEDED');
+  assert.equal(state.jobs[0].artifact_verified, true);
+  assert.deepEqual(state.jobs[0].verified_models, ['best.pt']);
+  assert.equal(state.jobs[0].message, '训练完成，模型产物校验通过');
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('detail model exposes live metrics resources and dataset evidence', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-live-detail',

@@ -859,6 +859,7 @@ def enrich_job_runtime(
     repository=None,
     worker_runtime=None,
     queued_candidates=None,
+    allow_version_archive: bool = True,
 ) -> Dict[str, Any]:
     if not job:
         return job
@@ -1033,7 +1034,8 @@ def enrich_job_runtime(
     job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
     job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
     if (
-        str(job.get("status") or "").lower() in successful_terminal_statuses
+        allow_version_archive
+        and str(job.get("status") or "").lower() in successful_terminal_statuses
         and not job.get("never_started")
         and job.get("asset_algorithm_id")
     ):
@@ -7114,7 +7116,7 @@ def job_status(project_id: str, job_id: str):
     job = read_json(job_file, {})
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
-    job = enrich_job_runtime(project_id, job)
+    job = enrich_job_runtime(project_id, job, allow_version_archive=False)
     # Detail refresh is a single-task read projection. Do not dispatch queues or
     # rebuild the global jobs index from a 1.5s detail/log poll.
     # Return the enriched in-memory projection. Re-reading the worker-owned

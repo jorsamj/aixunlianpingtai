@@ -274,6 +274,35 @@ def test_training_job_overlay_exposes_durable_dataset_manifest_reference(tmp_pat
     assert job["dataset_manifest_ref"] == "work/bundle/manifest.json"
     assert "internal_secret" not in job
 
+def test_training_job_detail_never_archives_versions_from_read_poll(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _image = seeded_project
+    task_id = f"train-detail-readonly-{uuid.uuid4().hex[:10]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    app_module.write_json(job_dir / "job.json", {
+        "id": task_id,
+        "task_id": task_id,
+        "status": "done",
+        "progress_percent": 100,
+        "asset_algorithm_id": "algorithm-readonly-proof",
+        "message": "训练完成",
+    })
+    monkeypatch.setattr(
+        app_module,
+        "_v48_archive_training_version",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("detail GET must not archive an algorithm version")
+        ),
+    )
+
+    response = client.get(f"/api/projects/{project_id}/jobs/{task_id}")
+
+    assert response.status_code == 200
+    assert response.json()["progress_percent"] == 100
+
+
 def test_training_job_detail_returns_enriched_truth_without_rewriting_worker_file(client, seeded_project, monkeypatch):
     import app as app_module
 
