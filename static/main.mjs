@@ -350,6 +350,7 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
     pageExtrasLoadedAt.set(page, Date.now());
     if (state.page !== page) return;
     if (page === '训练资源' && window.patchTrainingResourceCardsV3?.()) return;
+    if (page === '模型配置' && window.patchModelPromptTemplatesV35?.()) return;
     if (navigationStabilityRuntime.hasPageOwner(page)) {
       renderCanonicalOwner(page, {source: 'background-data'});
     } else {

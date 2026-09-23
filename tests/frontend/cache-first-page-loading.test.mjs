@@ -29,7 +29,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.213/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.214/);
 });
 
 test('training resource background extras patch only resource cards', () => {
@@ -38,7 +38,9 @@ test('training resource background extras patch only resource cards', () => {
   assert.ok(start >= 0 && end > start);
   const refresh = main.slice(start, end);
   assert.match(refresh, /page === '训练资源' && window\.patchTrainingResourceCardsV3\?\.\(\)/);
+  assert.match(refresh, /page === '模型配置' && window\.patchModelPromptTemplatesV35\?\.\(\)/);
   assert.match(app, /window\.patchTrainingResourceCardsV3=function\(\)/);
+  assert.match(app, /window\.patchModelPromptTemplatesV35=function\(\)/);
   const patchStart = app.indexOf('window.patchTrainingResourceCardsV3=function()');
   const patchEnd = app.indexOf('\nfunction renderResources()', patchStart);
   const patch = app.slice(patchStart, patchEnd);
@@ -194,7 +196,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.209/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.210/);
 });
 
 

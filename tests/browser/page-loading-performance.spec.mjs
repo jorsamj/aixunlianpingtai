@@ -102,9 +102,12 @@ test('startup and primary pages stay within their cache-first request owners', a
 
 test('model configuration loads prompt templates once and reuses them on revisit', async ({page}) => {
   let promptGets = 0;
+  let releasePrompts;
+  const gate = new Promise(resolve => { releasePrompts = resolve; });
   await page.route('**/api/v35/prompt-templates', async route => {
     if (route.request().method() !== 'GET') return route.continue();
     promptGets += 1;
+    await gate;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -123,8 +126,18 @@ test('model configuration loads prompt templates once and reuses them on revisit
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('模型配置'));
   await expect(page.locator('#title')).toContainText('模型配置');
-  await expect(page.getByText('安全帽提示词', {exact: true})).toBeVisible({timeout: 10_000});
+  await expect(page.locator('[data-model-config-panel]')).toBeVisible();
   await expect.poll(() => promptGets).toBe(1);
+  await page.evaluate(() => {
+    window.__stableModelConfigPanel = document.querySelector('[data-model-config-panel]');
+    window.__stableModelPromptPanel = document.querySelector('[data-model-prompt-panel]');
+  });
+  releasePrompts();
+  await expect(page.getByText('安全帽提示词', {exact: true})).toBeVisible({timeout: 10_000});
+  expect(await page.evaluate(() => ({
+    config: window.__stableModelConfigPanel === document.querySelector('[data-model-config-panel]'),
+    prompt: window.__stableModelPromptPanel === document.querySelector('[data-model-prompt-panel]'),
+  }))).toEqual({config:true,prompt:true});
 
   await page.evaluate(() => window.setPage('工作台'));
   await expect(page.locator('#title')).toContainText('总览');
