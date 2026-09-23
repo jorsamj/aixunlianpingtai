@@ -159,6 +159,73 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await expect(reloadedCard.getByText(/已标注 · 1框/)).toBeVisible();
 });
 
+test('annotation paints stale cached labels before authoritative label revalidation completes', async ({page, request}) => {
+  const project = await createMaterialProject(request, `标签首屏-${Date.now()}`);
+  const image = await uploadImage(request, project.id, 'cached-labels.bmp', [110, 150, 190]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [image.id]}
+  });
+  const labelsResponse = await request.get(`/api/v12/projects/${project.id}/labels`);
+  expect(labelsResponse.ok()).toBeTruthy();
+  const cachedLabels = (await labelsResponse.json()).items || [];
+  expect(cachedLabels.length).toBeGreaterThan(0);
+
+  let releaseLabels;
+  const labelGate = new Promise(resolve => { releaseLabels = resolve; });
+  let labelGets = 0;
+
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', project.id);
+    const response = await route.fetch({url: url.toString()});
+    const snapshot = await response.json();
+    snapshot.labels = [];
+    await route.fulfill({response, json: snapshot});
+  });
+  await page.route(`**/api/v12/projects/${project.id}/labels`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    labelGets += 1;
+    await labelGate;
+    const authoritative = cachedLabels.map(label => (
+      label.code === 'person' ? {...label, display_name: '人员（权威）'} : label
+    ));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: authoritative}),
+    });
+  });
+  await page.addInitScript(({projectId, labels}) => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
+    localStorage.setItem(`mc_label_schema_v1:${projectId}`, JSON.stringify({
+      ts: Date.now() - 3 * 60 * 1000,
+      items: labels,
+    }));
+  }, {projectId: project.id, labels: cachedLabels});
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  const card = page.locator('.data412-card', {hasText: 'cached-labels.bmp'});
+  await expect(card).toBeVisible();
+  await card.getByRole('button', {name: '标注'}).click();
+
+  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  await expect(dialog).toBeVisible({timeout: 1_000});
+  const selector = dialog.getByLabel('绘制标签');
+  await expect(selector).toBeVisible();
+  await expect(selector.locator('option')).toHaveText(['人员 · person', '车辆 · vehicle']);
+  await expect.poll(() => labelGets).toBe(1);
+
+  releaseLabels();
+  await expect(selector.locator('option')).toHaveText(['人员（权威） · person', '车辆 · vehicle'], {timeout: 5_000});
+  expect(await page.evaluate(projectId => {
+    const cached = JSON.parse(localStorage.getItem(`mc_label_schema_v1:${projectId}`) || 'null');
+    return cached?.items?.find(label => label.code === 'person')?.display_name || null;
+  }, project.id)).toBe('人员（权威）');
+});
+
+
 test('batch annotation requires explicit empty confirmation and advances across consecutive images', async ({page, request}) => {
   const project = await createMaterialProject(request, `连续空标注-${Date.now()}`);
   const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
