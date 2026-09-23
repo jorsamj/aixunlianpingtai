@@ -384,6 +384,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
         "snapshot_id": archive.snapshot_id,
         "requested_device": "auto",
         "selected_device": "cuda:1",
+        "concurrent_reservations": 2,
         "selected_gpu": {
             "id": "cuda:1",
             "index": 1,
@@ -503,6 +504,7 @@ runtime_root.joinpath("worker-args.json").write_text(
         "precision": args.precision,
         "time": args.time,
         "train_image_count": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("train_image_count"),
+        "concurrent_reservations": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("concurrent_reservations"),
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -630,6 +632,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["precision"] == "bf16"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321
+    assert args["concurrent_reservations"] == 2
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 

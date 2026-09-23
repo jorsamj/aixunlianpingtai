@@ -2213,9 +2213,20 @@ class RemoteExecutionTransportService:
         resolved = assignment.get("resolved_execution_config")
         selected_device = ""
         selected_gpu = None
+        concurrent_reservations = 1
         if isinstance(resolved, Mapping):
             selected_device = str(resolved.get("selected_device") or "")
             selected_gpu = resolved.get("selected_gpu")
+            try:
+                concurrent_reservations = max(
+                    1, int(resolved.get("concurrent_reservations") or 1)
+                )
+            except (TypeError, ValueError) as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_RESOURCE_CONTEXT_INVALID",
+                    "remote training assignment has invalid concurrent reservation evidence",
+                    422,
+                ) from error
         if not selected_device:
             raise RemoteExecutionTransportError(
                 "REMOTE_TRAINING_DEVICE_MISSING",
@@ -2242,6 +2253,7 @@ class RemoteExecutionTransportService:
             "requested_device": str(payload.get("requested_device") or payload.get("device") or "auto"),
             "selected_device": selected_device,
             "selected_gpu": dict(selected_gpu) if isinstance(selected_gpu, Mapping) else None,
+            "concurrent_reservations": concurrent_reservations,
             "bundle": {
                 "type": "object",
                 "download": bundle_download,

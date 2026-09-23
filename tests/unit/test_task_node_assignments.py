@@ -304,6 +304,8 @@ def test_multi_gpu_node_assigns_distinct_gpus_then_queues_next_task(tmp_path):
         first["resolved_execution_config"]["selected_device"],
         second["resolved_execution_config"]["selected_device"],
     } == {"cuda:0", "cuda:1"}
+    assert first["resolved_execution_config"]["concurrent_reservations"] == 1
+    assert second["resolved_execution_config"]["concurrent_reservations"] == 2
     assert third is None
     assert len(allocator.list(active_only=True, node_id="gpu-dual")) == 2
 

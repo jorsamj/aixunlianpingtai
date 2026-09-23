@@ -593,8 +593,16 @@ class AgentTrainingRunner:
             )
         except (TypeError, ValueError):
             train_image_count = 1
+        try:
+            concurrent_reservations = max(
+                1, int(payload.get("concurrent_reservations") or 1)
+            )
+        except (TypeError, ValueError) as error:
+            raise AgentTrainingRuntimeError(
+                "remote training concurrent reservation evidence is invalid"
+            ) from error
         resource_context = {
-            "concurrent_reservations": 1,
+            "concurrent_reservations": concurrent_reservations,
             "dataset_bytes": dataset_bytes,
             "train_image_count": train_image_count,
             "decoded_dataset_bytes": None,
@@ -649,6 +657,7 @@ class AgentTrainingRunner:
                 "assigned_device": selected_device,
                 "selected_gpu": gpu,
                 "gpu_policy": gpu_policy,
+                "concurrent_reservations": concurrent_reservations,
                 "runtime_stop_policy": runtime_stop_policy,
                 "quality_gate": {
                     "runtime_stop_policy": runtime_stop_policy,

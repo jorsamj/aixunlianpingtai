@@ -467,16 +467,16 @@ class CentralTaskAllocator:
                         active,
                         selected_gpu=selected_gpu,
                     )
-                    ranked.append((score, node_id, node, selected_gpu))
+                    ranked.append((score, node_id, node, selected_gpu, active))
                 if not ranked:
                     continue
                 ranked.sort(key=lambda item: (-item[0], item[1]))
-                selected = (task, capability, ranked[0][2], remote_contract, ranked[0][3])
+                selected = (task, capability, ranked[0][2], remote_contract, ranked[0][3], ranked[0][4])
                 break
             if selected is None:
                 database.commit()
                 return None
-            task, capability, node, remote_contract, preselected_gpu = selected
+            task, capability, node, remote_contract, preselected_gpu, prior_active = selected
             generation = int(database.execute(
                 "SELECT COALESCE(MAX(generation),0)+1 FROM task_node_assignments WHERE task_id=?",
                 (task.task_id,),
@@ -488,6 +488,10 @@ class CentralTaskAllocator:
                 "capability": capability,
                 "selected_device": gpu["id"] if gpu else "cpu",
                 "selected_gpu": gpu,
+                # Snapshot host-level contention at reservation time. The current
+                # assignment is included so Agent workers can divide CPU/RAM/cache
+                # budgets across simultaneously reserved tasks on a multi-GPU node.
+                "concurrent_reservations": max(1, int(prior_active) + 1),
                 "node_build_id": str(node["build_id"] or ""),
                 "node_runtime": _loads(node["runtime_json"], {}),
                 "connection_mode": str(node["connection_mode"] or ""),

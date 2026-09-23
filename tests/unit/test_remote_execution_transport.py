@@ -1095,6 +1095,7 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
             "resolved_execution_config": {
                 "selected_device": "cuda:1",
                 "selected_gpu": {"index": 1, "uuid": "GPU-ONE"},
+                "concurrent_reservations": 2,
             }
         },
     )
@@ -1103,6 +1104,7 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
     assert resolved["snapshot_id"] == "snapshot-remote-one"
     assert resolved["selected_device"] == "cuda:1"
     assert resolved["selected_gpu"]["uuid"] == "GPU-ONE"
+    assert resolved["concurrent_reservations"] == 2
     assert resolved["bundle"]["download"]["sha256"] == bundle_sha
     assert resolved["bundle"]["download"]["member_count"] == 5
     assert resolved["model"] == {
