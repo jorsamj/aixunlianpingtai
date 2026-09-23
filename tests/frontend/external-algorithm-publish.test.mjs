@@ -52,6 +52,20 @@ test('version publish action reflects durable publication state', () => {
 });
 
 
+test('vendor mapping UI keeps universal original model mapping mandatory', () => {
+  const source = readFileSync(
+    new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /厂商对应表/);
+  assert.match(source, /通用是特殊映射/);
+  assert.match(source, /训练刚完成、尚未转换的原始模型/);
+  assert.match(source, /平台对接 → 厂商对应表/);
+  assert.match(source, /enabled: key === 'original' \? true/);
+  assert.match(source, /data-platform-tab-panel="vendor"/);
+  assert.match(source, /拉取畅联云厂商/);
+});
+
 test('publish UI keeps manual sync primary and stale compute mappings visible', () => {
   const source = readFileSync(
     new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
