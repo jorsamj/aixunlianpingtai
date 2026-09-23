@@ -47,15 +47,23 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   const creates=[];
   const reviews=[];
   let taskSeq=0;
+  let modelLoads=0;
+  let envLoads=0;
 
   await selectIsolatedTestProject(page,project.id);
-  await page.route(`**/api/v12/projects/${encoded}/test_models**`,route=>route.fulfill({
-    status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:models}),
-  }));
-  await page.route('**/api/v16/inference_envs',route=>route.fulfill({
-    status:200,contentType:'application/json',
-    body:JSON.stringify({items:[{id:'quality-env',name:'质量验收环境',framework:'ultralytics',status:'ready',python_path:'/opt/yolo/bin/python'}]}),
-  }));
+  await page.route(`**/api/v12/projects/${encoded}/test_models**`,route=>{
+    modelLoads+=1;
+    return route.fulfill({
+      status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:models}),
+    });
+  });
+  await page.route('**/api/v16/inference_envs',route=>{
+    envLoads+=1;
+    return route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({items:[{id:'quality-env',name:'质量验收环境',framework:'ultralytics',status:'ready',python_path:'/opt/yolo/bin/python'}]}),
+    });
+  });
   await page.route(`**/api/v61/projects/${encoded}/deployment-tests`,async route=>{
     const raw=(route.request().postDataBuffer()||Buffer.alloc(0)).toString('utf8');
     const id=`quality-task-${++taskSeq}`;
@@ -106,7 +114,17 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.goto('/');
   await page.evaluate(()=>window.setPage('质量中心'));
   await page.getByRole('button',{name:'模型检测',exact:true}).click();
+  await expect.poll(()=>modelLoads).toBe(1);
+  await expect.poll(()=>envLoads).toBe(1);
 
+  await page.getByRole('button',{name:'质量概览',exact:true}).click();
+  await page.getByRole('button',{name:'模型检测',exact:true}).click();
+  await expect.poll(()=>modelLoads).toBe(1);
+  await expect.poll(()=>envLoads).toBe(1);
+
+  await page.getByRole('button',{name:'刷新模型',exact:true}).click();
+  await expect.poll(()=>modelLoads).toBe(2);
+  await expect.poll(()=>envLoads).toBe(2);
   const a=page.locator('#benchModelA'),b=page.locator('#benchModelB');
   await expect(a).toBeVisible();
   await expect(b).toBeVisible();
