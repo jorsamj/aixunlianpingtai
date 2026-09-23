@@ -10,7 +10,7 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('#title')).toContainText('训练任务');
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
-    .toBe('training-task-runtime-422507');
+    .toBe('training-task-runtime-422508');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -200,6 +200,55 @@ test('hard refresh restores a live training task even when the bootstrap snapsho
   expect(pageErrors).toEqual([]);
 });
 
+
+test('batch delete selects terminal records and leaves active training untouched', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout:15_000});
+  const projectId=await page.evaluate(()=>state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded=encodeURIComponent(projectId);
+  let deleted=false;
+  let requestBody=null;
+
+  await page.route(`**/api/projects/${encoded}/jobs`,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    const rows=deleted
+      ? [{id:'batch-live',task_id:'batch-live',status:'running',task_status:'RUNNING',asset_algorithm_name:'实时训练',task_name:'不要删除',queue_priority:1,progress_percent:55,phase:'training'}]
+      : [
+          {id:'batch-stopped',task_id:'batch-stopped',status:'stopped',task_status:'CANCELLED',asset_algorithm_name:'烟火检测',task_name:'已停止死记录',queue_priority:50,progress_percent:20,phase:'stopped'},
+          {id:'batch-failed',task_id:'batch-failed',status:'failed',task_status:'FAILED',asset_algorithm_name:'内涝检测',task_name:'失败死记录',queue_priority:50,progress_percent:8,phase:'failed'},
+          {id:'batch-live',task_id:'batch-live',status:'running',task_status:'RUNNING',asset_algorithm_name:'实时训练',task_name:'不要删除',queue_priority:1,progress_percent:55,phase:'training'},
+        ];
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(rows)});
+  });
+  await page.route(`**/api/v48/projects/${encoded}/jobs/batch-delete`,async route=>{
+    requestBody=route.request().postDataJSON();
+    deleted=true;
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({
+        ok:true,requested:2,deleted:2,deleted_ids:['batch-stopped','batch-failed'],
+        skipped_active:0,skipped_active_ids:[],missing:0,missing_ids:[],failed:0,failures:[],
+      }),
+    });
+  });
+
+  await page.evaluate(()=>window.setPage('训练任务'));
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible({timeout:10_000});
+  await page.evaluate(()=>window.TrainingTaskRuntime.refresh({render:true,force:true,source:'batch-delete-test'}));
+
+  await page.locator('[data-training-batch-toggle]').click();
+  await page.locator('[data-training-batch-select-action="deletable-visible"]').click();
+  await expect(page.locator('[data-training-batch-count]')).toHaveText('已选 2 项');
+  await expect(page.locator('[data-job-id="batch-live"] [data-training-batch-select]')).not.toBeChecked();
+
+  page.once('dialog', dialog=>dialog.accept());
+  await page.locator('[data-training-batch-action="delete"]').click();
+  await expect(page.locator('[data-job-id="batch-stopped"]')).toHaveCount(0);
+  await expect(page.locator('[data-job-id="batch-failed"]')).toHaveCount(0);
+  await expect(page.locator('[data-job-id="batch-live"]')).toBeVisible();
+  expect(requestBody).toEqual({job_ids:['batch-stopped','batch-failed']});
+});
 
 test('batch mode appears on demand and pauses eligible tasks with one canonical refresh', async ({page}) => {
   const pageErrors=[];
