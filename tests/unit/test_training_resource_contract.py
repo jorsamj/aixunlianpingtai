@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import platform_core.training_metrics as training_metrics
+import platform_core.training_devices as training_devices
 
 
 GIB = 1024 ** 3
@@ -166,6 +167,29 @@ def test_manual_batch_minus_one_is_rejected(monkeypatch):
             _Torch(_Cuda()),
         )
 
+
+
+def test_discovered_training_device_recommends_scheduler_auto(monkeypatch):
+    monkeypatch.setattr(
+        training_devices,
+        "probe_training_devices",
+        lambda _python: {
+            "python_executable": "/python",
+            "torch_version": "2.12.1",
+            "cuda_version": "13.0",
+            "cuda_available": True,
+            "device_count": 2,
+            "gpus": [
+                {"id": "cuda:0", "index": 0, "name": "GPU0", "uuid": "GPU-0"},
+                {"id": "cuda:1", "index": 1, "name": "GPU1", "uuid": "GPU-1"},
+            ],
+            "cpu_name": "CPU",
+            "error": None,
+        },
+    )
+    result = training_devices.discover_training_devices("/python")
+    assert result["recommended"] == "auto"
+    assert result["options"][-1]["id"] == "auto"
 
 
 def test_manual_keeps_exact_values(monkeypatch):
