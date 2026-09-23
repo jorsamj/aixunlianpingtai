@@ -153,22 +153,6 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
 
   ensureStyles();
 
-  function storageOptions(selected = '') {
-    const rows = (config?.storageSources || []).filter(row => row.enabled !== false);
-    const ossRows = rows.filter(row => String(row.type || '').toLowerCase() === 'oss');
-    const visible = ossRows.some(row => String(row.id || '') === String(selected || ''))
-      ? ossRows
-      : [
-          ...ossRows,
-          ...rows.filter(row => String(row.id || '') === String(selected || '') && String(row.type || '').toLowerCase() !== 'oss'),
-        ];
-    return visible.map(row => {
-      const id = String(row.id || '');
-      const legacy = String(row.type || '').toLowerCase() !== 'oss' ? ' · 开发兼容' : '';
-      return `<option value="${escapeHtml(id)}" ${id === selected ? 'selected' : ''}>${escapeHtml(row.name || id)} · ${escapeHtml(row.type || '')}${legacy}</option>`;
-    }).join('');
-  }
-
   function storagePanel() {
     const c = config || normalizeModelArtifactConfig({});
     const credentialHint = c.credentialConfigured
