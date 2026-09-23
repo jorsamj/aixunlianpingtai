@@ -52,3 +52,50 @@ test('component scan keeps progress DOM stable and stops polling after leaving t
   await expect.poll(()=>page.evaluate(()=>window.PollRegistryRuntime?.snapshot?.().some(row=>row.key==='component-scan-v40')||false)).toBe(false);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('component page revisit reuses terminal scan snapshot without starting another scan', async ({page}) => {
+  let latestGets = 0;
+  let scanPosts = 0;
+  await page.route('**/api/v40/system/components/latest', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    latestGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id:'component-cache-1',
+        status:'done',
+        stage:'检测完成',
+        progress:100,
+        summary:{ready:1,warning:0,missing:0,total:1},
+        capabilities:[],
+        components:[{name:'Python',status:'ready',version:'3.12'}],
+      }),
+    });
+  });
+  await page.route('**/api/v40/system/components/scan', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    scanPosts += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({id:'unexpected-scan',status:'queued',progress:0}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await page.evaluate(() => window.setPage('组件检测'));
+  await expect(page.locator('#componentBody')).toContainText('Python', {timeout: 10_000});
+  await expect.poll(() => latestGets).toBe(1);
+  expect(scanPosts).toBe(0);
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('组件检测'));
+  await expect(page.locator('#componentBody')).toContainText('Python');
+  await page.waitForTimeout(150);
+  expect(latestGets).toBe(1);
+  expect(scanPosts).toBe(0);
+});
