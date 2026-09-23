@@ -282,48 +282,49 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
     name: `RKNN板端验证-${Date.now()}`,
     labels: []
   }})).json();
+  const algorithmId = 'rknn-board-algorithm';
+  const versionId = 'rknn-board-version';
   let hardwarePost = null;
   let taskReads = 0;
   let jobVerified = false;
   let releaseHardwareSuccess;
   const hardwareSuccessGate = new Promise(resolve => { releaseHardwareSuccess = resolve; });
 
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
-  }));
-  await page.route(`**/api/v39/projects/${project.id}/deploy/source-models`, route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
-  }));
-  await page.route(`**/api/v39/projects/${project.id}/deploy/artifacts`, route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
-  }));
-  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({items: [{
-      id: 'rk-job-1',
-      source_name: 'best.pt',
-      target: 'rockchip',
-      status: 'done',
-      stage: jobVerified ? 'hardware_verified' : 'converted_unverified',
-      progress: 100,
-      conversion_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
-      validation_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
-      hardware_verified: jobVerified,
-      hardware_verification: jobVerified ? {
-        task_id: 'rk-board-task-1',
-        execution_generation: 1,
-        verified_at: '2026-09-19T01:02:03+00:00',
-        node_id: 'rk3568-board-01',
-        chip: 'rk3568',
-        rknn_lite_version: '2.3.2',
-        inference_ms: 12.34,
-        output_count: 3,
-        output_shapes: [[1, 84, 8400]]
-      } : null,
-      params: {chip: 'rk3568', precision: 'fp16'},
-      resource: {name: 'RKNN Agent'}
-    }]})
+    body: JSON.stringify({
+      algorithm: {id: algorithmId, name: 'RKNN 板端算法'},
+      version: {id: versionId, version_name: '20260924090000', model_name: 'best.pt', stored_path: '/models/best.pt'},
+      items: [{
+        id: 'rk-job-1',
+        source_name: 'best.pt',
+        target: 'rockchip',
+        target_name: '瑞芯微 RKNN',
+        status: 'done',
+        stage: jobVerified ? 'hardware_verified' : 'converted_unverified',
+        progress: 100,
+        conversion_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
+        validation_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
+        hardware_verified: jobVerified,
+        runtime_verified: jobVerified,
+        hardware_verification: jobVerified ? {
+          task_id: 'rk-board-task-1',
+          execution_generation: 1,
+          verified_at: '2026-09-19T01:02:03+00:00',
+          node_id: 'rk3568-board-01',
+          chip: 'rk3568',
+          rknn_lite_version: '2.3.2',
+          inference_ms: 12.34,
+          output_count: 3,
+          output_shapes: [[1, 84, 8400]]
+        } : null,
+        params: {chip: 'rk3568', precision: 'fp16'},
+        resource_name: 'RKNN Agent',
+        outputs: [{name:'model_rk3568.rknn', size_mb:1, exists:true, download_url:'/fake/model.rknn'}],
+        package_url: '/fake/deploy.zip'
+      }]
+    })
   }));
   await page.route(`**/api/v39/projects/${project.id}/deploy/jobs/rk-job-1/hardware-tests/preflight`, async route => {
     await route.fulfill({
@@ -416,19 +417,16 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(() => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
-      page: '部署转换'
+      page: '算法列表'
     }));
   });
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => typeof window.renderDeployCenter)).toBe('function');
-  await page.evaluate(async () => {
-    if (window.__clInit) await window.__clInit();
-    window.setPage('部署转换');
-    await window.loadDeployData(true);
-    window.renderDeployCenter();
-  });
+  await expect.poll(() => page.evaluate(() => typeof window.openVersionConvert428)).toBe('function');
+  await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
 
-  const job = page.locator('.deploy-job', {hasText: 'best.pt'});
+  const historyDialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(historyDialog).toBeVisible();
+  const job = historyDialog.locator('.convert428-job', {hasText: '瑞芯微 RKNN'});
   await expect(job.getByText('RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证')).toBeVisible();
   await job.getByRole('button', {name: '板端验证'}).click();
   const dialog = page.getByRole('dialog', {name: 'RKNN 板端验证'});
