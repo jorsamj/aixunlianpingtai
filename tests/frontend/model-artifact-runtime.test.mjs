@@ -4,10 +4,24 @@ import test from 'node:test';
 
 import {
   normalizeModelArtifactConfig,
+  formatModelArtifactApiError,
   auditStatusPresentation,
   operationLabel,
   diagnosticText,
 } from '../../static/modules/model-artifact-runtime.js';
+
+
+test('artifact OSS API errors preserve message detail and solution', () => {
+  const text = formatModelArtifactApiError({
+    message: '算法产物测试对象写入失败（PUT）',
+    detail: 'upload: status: 403 AccessDenied: PutObject denied',
+    solution: '请确认 RAM 对最终算法产物目录拥有对象写入权限。',
+  }, 409);
+
+  assert.match(text, /算法产物测试对象写入失败（PUT）/);
+  assert.match(text, /详情：upload: status: 403 AccessDenied/);
+  assert.match(text, /建议：请确认 RAM/);
+});
 
 
 test('model artifact config exposes standalone artifact OSS fields without secrets', () => {
@@ -104,7 +118,7 @@ test('audit polling is PollRegistry-owned and audit rows patch by log id', () =>
   assert.match(source, /registry\.startTimeout\(AUDIT_POLL_KEY, PLATFORM_PAGE/);
   assert.match(source, /function patchAuditRows\(body\)/);
   assert.match(source, /data-audit-id=/);
-  assert.match(source, /build: 'model-artifacts-65006'/);
+  assert.match(source, /build: 'model-artifacts-65007'/);
   assert.doesNotMatch(source, /window\.setInterval\(/);
   assert.doesNotMatch(source, /body\.innerHTML = auditRowsHtml\(\)/);
 });
@@ -121,5 +135,5 @@ test('empty audit results are cached and concurrent audit reads are deduped', ()
   assert.match(source, /logsLoadedAt = Date\.now\(\)/);
   assert.match(source, /refreshLogsOnly\(\{force: true\}\)/);
   assert.doesNotMatch(source, /if \(!logs\.length && !loading\)/);
-  assert.match(source, /build: 'model-artifacts-65006'/);
+  assert.match(source, /build: 'model-artifacts-65007'/);
 });
