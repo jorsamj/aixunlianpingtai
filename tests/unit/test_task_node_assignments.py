@@ -214,6 +214,69 @@ def test_training_assignment_prefers_less_busy_gpu_inside_selected_node(tmp_path
     assert assignment["resolved_execution_config"]["selected_device"] == "cuda:1"
 
 
+def test_training_assignment_prefers_gpu_node_over_idle_cpu_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-over-cpu", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "cpu-idle",
+        ["training"],
+        resources={
+            "cpu": {"logical_cores": 64},
+            "memory": {"available_bytes": 128 * 1024**3},
+            "disk": {"free_bytes": 1024 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-available",
+        ["training"],
+        resources=training_resources(free0=12 * 1024**3, util0=15),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-available"
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:0"
+
+
+def test_training_node_busy_penalty_does_not_hide_large_real_gpu_headroom(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "existing-active", TaskKind.TRAINING)
+    create_task(repository, artifacts, "train-headroom", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-small-idle",
+        ["training"],
+        resources=training_resources(free0=4 * 1024**3, util0=5),
+    )
+    create_online_node(
+        repository,
+        "gpu-large-active",
+        ["training"],
+        resources=training_resources(free0=24 * 1024**3, util0=5),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    assert first is not None
+    # Release whichever node the first task selected and seed one active
+    # assignment explicitly on the large node through the assignment table.
+    allocator.release(first["task_id"], "test-setup")
+    with repository._connect() as database:
+        database.execute(
+            """
+            INSERT INTO task_node_assignments
+                (task_id,generation,node_id,capability,state,assigned_at,updated_at,resolved_execution_config)
+            VALUES ('synthetic-active',1,'gpu-large-active','training','ASSIGNED',
+                    '2026-09-23T00:00:00+00:00','2026-09-23T00:00:00+00:00','{}')
+            """
+        )
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-large-active"
+
+
 def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     repository, artifacts = runtime(tmp_path)
     clean = create_task(repository, artifacts, "batch-clean", TaskKind.MATERIAL_BATCH, {"operation": "CLEAN"})
