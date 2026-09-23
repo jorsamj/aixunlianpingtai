@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from filelock import FileLock
 from pydantic import BaseModel, Field
@@ -108,6 +108,42 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_upload_enabled": True,
     "updated_at": None,
 }
+
+
+def _normalize_artifact_oss_endpoint(value: Any, bucket: Any) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "https://" + text
+    parsed = urlsplit(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise PlatformError(
+            "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
+            "算法产物 OSS Endpoint 格式不正确",
+            str(value or ""),
+            "Endpoint 请填写区域服务地址，例如 https://oss-cn-hangzhou.aliyuncs.com；Bucket 单独填写。",
+            422,
+        )
+    if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise PlatformError(
+            "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
+            "算法产物 OSS Endpoint 不能包含对象路径、参数或账号信息",
+            str(value or ""),
+            "Endpoint 只填写区域服务地址；Bucket 与对象目录请分别填写。",
+            422,
+        )
+
+    host = str(parsed.hostname or "").strip(".").lower()
+    bucket_name = str(bucket or "").strip().lower()
+    # oss2.Bucket() adds the Bucket name to a standard OSS endpoint. If the
+    # user pastes the Bucket domain here as well, e.g.
+    # new24hlink.oss-cn-hangzhou.aliyuncs.com, the SDK would otherwise request
+    # new24hlink.new24hlink.oss-cn-hangzhou.aliyuncs.com.
+    if bucket_name and host.startswith(bucket_name + "."):
+        host = host[len(bucket_name) + 1:]
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{parsed.scheme.lower()}://{host}{port}"
 
 
 def _canonical_prefix(value: Any, default: str = "changlian-ai/artifacts") -> str:
@@ -566,6 +602,7 @@ class ModelArtifactService:
                 "请填写算法与转换结果实际归档使用的 Bucket。",
                 422,
             )
+        endpoint = _normalize_artifact_oss_endpoint(endpoint, bucket)
         if public_base_url and not public_base_url.startswith(("http://", "https://")):
             raise PlatformError(
                 "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
