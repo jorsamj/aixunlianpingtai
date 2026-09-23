@@ -35,10 +35,13 @@ test('canonical pages do not hydrate the complete material pool during navigatio
   assert.equal(requiresFullMaterialPool('质量中心'), false);
   assert.equal(requiresFullMaterialPool('自动标注'), false);
   assert.equal(requiresFullMaterialPool('自动标注及清洗'), false);
+  assert.equal(requiresFullMaterialPool('自动迭代'), false);
 
   const picker = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(picker, /fullPoolHydration: false/);
+  assert.doesNotMatch(main, /FULL_MATERIAL_PAGES\.(?:add|delete)\(/);
   assert.match(app, /await window\.MaterialPaginationRuntime61\?\.ensureFullPool\?\.\(\)/);
 });
 

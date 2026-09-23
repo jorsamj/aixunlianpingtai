@@ -37,7 +37,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422214';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422214';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -59,9 +59,8 @@ function fallbackToast(message) {
 
 if (typeof window.toast !== 'function') window.toast = fallbackToast;
 
-// Training owns its own paged material picker/summary and must never request the whole image pool.
-FULL_MATERIAL_PAGES.delete('训练任务');
-for (const page of ['自动迭代']) FULL_MATERIAL_PAGES.add(page);
+// Navigation never owns the complete material pool. Features that need every
+// material must hydrate it explicitly at the user-action boundary.
 
 registerAction('algorithm.create', () => {
   if (typeof window.openNewAlgorithm423 !== 'function') {
