@@ -411,6 +411,46 @@ class TaskRepository:
         database.execute("DELETE FROM gpu_reservations WHERE expires_at<=?", (now,))
         return count
 
+    def delete_terminal(
+        self,
+        task_id: str,
+        *,
+        project_id: str | None = None,
+        kind: TaskKind | str | None = None,
+    ) -> bool:
+        """Permanently delete one terminal durable task.
+
+        This is intentionally stricter than cancellation. Active/queued/review
+        tasks must never disappear from durable truth through a cleanup API.
+        """
+        expected_kind = kind.value if isinstance(kind, TaskKind) else (str(kind) if kind is not None else None)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT task_id,project_id,kind,status FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                return False
+            if project_id is not None and str(row["project_id"]) != str(project_id):
+                database.rollback()
+                raise ValueError("task project mismatch")
+            if expected_kind is not None and str(row["kind"]) != expected_kind:
+                database.rollback()
+                raise ValueError("task kind mismatch")
+            status = TaskStatus(str(row["status"]))
+            if status not in TERMINAL_STATUSES:
+                database.rollback()
+                raise ValueError("only terminal tasks can be deleted")
+            database.execute("DELETE FROM gpu_reservations WHERE task_id=?", (str(task_id),))
+            changed = database.execute(
+                "DELETE FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).rowcount
+            database.commit()
+        return changed == 1
+
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
         with closing(self._connect()) as database:
