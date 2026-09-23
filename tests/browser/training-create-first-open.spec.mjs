@@ -25,14 +25,11 @@ async function seedProject(request) {
   return {project, algorithmId: created.algorithm.id};
 }
 
-test('hard refresh first training open shows a shell before hydrating configuration', async ({page, request}) => {
+test('hard refresh algorithm list prewarms training configuration before the first click', async ({page, request}) => {
   const {project} = await seedProject(request);
   let trainingOptionsCalls = 0;
   let recommendationCalls = 0;
   let trainingDeviceCalls = 0;
-  let holdHydration = false;
-  let releaseHydration;
-  const hydrationGate = new Promise(resolve => { releaseHydration = resolve; });
 
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const response = await route.fetch();
@@ -43,9 +40,7 @@ test('hard refresh first training open shows a shell before hydrating configurat
   });
   await page.route('**/api/training_options**', route => {
     trainingOptionsCalls += 1;
-    return (async () => {
-      if (holdHydration) await hydrationGate;
-      return route.fulfill({
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({targets: [{
@@ -64,19 +59,15 @@ test('hard refresh first training open shows a shell before hydrating configurat
         }],
         base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
       }]})
-      });
-    })();
+    });
   });
   await page.route('**/api/system/recommendation', route => {
     recommendationCalls += 1;
-    return (async () => {
-      if (holdHydration) await hydrationGate;
-      return route.fulfill({
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
-      });
-    })();
+    });
   });
   await page.route('**/api/v62/training-devices', route => {
     trainingDeviceCalls += 1;
@@ -98,35 +89,33 @@ test('hard refresh first training open shows a shell before hydrating configurat
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
     .toBe('training-create-hydration-422535');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
-  expect(await page.evaluate(() => ({
+  await expect.poll(async () => page.evaluate(() => ({
     targetId: state.targets?.[0]?.id,
     hasAlgorithms: Array.isArray(state.targets?.[0]?.algorithms),
-    recommendation: state.rec,
-  }))).toEqual({
-    targetId: 'stale-ready-target',
-    hasAlgorithms: false,
-    recommendation: null,
+    recommendationDevice: state.rec?.device || null,
+  })), {timeout: 10_000}).toEqual({
+    targetId: 'first-open-ultralytics',
+    hasAlgorithms: true,
+    recommendationDevice: 'cpu',
   });
+  expect(trainingOptionsCalls).toBeGreaterThan(0);
+  expect(recommendationCalls).toBeGreaterThan(0);
 
   const beforeOptions = trainingOptionsCalls;
   const beforeRecommendation = recommendationCalls;
-  holdHydration = true;
   const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
 
-  const shell = page.locator('[data-training-create-shell="1"]');
-  await expect(shell).toBeVisible({timeout: 1_000});
-  await expect(shell.getByRole('button', {name: '重试'})).toBeDisabled();
-  releaseHydration();
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
-  await expect(dialog).toBeVisible({timeout: 10_000});
+  await expect(dialog).toBeVisible({timeout: 1_500});
+  await expect(page.locator('[data-training-create-shell="1"]')).toHaveCount(0);
   await expect(dialog.locator('#tr429Target')).toHaveValue('first-open-ultralytics');
   await expect(dialog.locator('#tr429Target')).toContainText('首次打开 Ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
   await expect(dialog.locator('#tr429Model')).toHaveText('yolo11n.pt');
 
-  expect(trainingOptionsCalls).toBe(beforeOptions + 1);
-  expect(recommendationCalls).toBe(beforeRecommendation + 1);
+  expect(trainingOptionsCalls).toBe(beforeOptions);
+  expect(recommendationCalls).toBe(beforeRecommendation);
   expect(await page.evaluate(() => ({
     targetId: state.targets?.[0]?.id,
     algorithmKey: state.targets?.[0]?.algorithms?.[0]?.key,
