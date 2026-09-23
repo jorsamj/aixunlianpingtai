@@ -311,3 +311,57 @@ def test_rknn_hardware_acceptance_report_refuses_unverified_job(client, seeded_p
     )
     assert response.status_code == 409
     assert "尚未完成真实板端 Runtime 验证" in response.text
+
+
+def test_version_deployment_projection_preserves_rknn_hardware_truth(monkeypatch):
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-projection"})
+    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id: [{
+        "id": "algorithm-projection",
+        "name": "RKNN Projection",
+        "versions": [{
+            "id": "version-projection",
+            "version_name": "20260924090000",
+            "stored_path": "/models/best.pt",
+        }],
+    }])
+    monkeypatch.setattr(app_module, "v39_list_deploy_jobs", lambda _project_id: {"items": [{
+        "id": "job-projection",
+        "source_id": "version::algorithm-projection::version-projection",
+        "source_name": "best.pt",
+        "target": "rockchip",
+        "status": "done",
+        "stage": "hardware_verified",
+        "progress": 100,
+        "params": {"chip": "rk3568", "precision": "fp16"},
+        "resource": {"name": "RKNN Agent"},
+        "validation_status": "hardware_verified",
+        "conversion_status": "hardware_verified",
+        "runtime_verified": True,
+        "hardware_verified": True,
+        "hardware_verification": {
+            "task_id": "board-task",
+            "node_id": "rk3568-board",
+            "chip": "rk3568",
+            "rknn_lite_version": "2.3.2",
+            "inference_ms": 10.5,
+            "output_count": 3,
+        },
+        "task_id": "convert-task",
+        "task_status": "SUCCEEDED",
+        "worker_id": "agent:rknn",
+        "outputs": [],
+    }]})
+
+    body = app_module.v423_version_deployments(
+        "project-projection",
+        "algorithm-projection",
+        "version-projection",
+    )
+    row = body["items"][0]
+    assert row["hardware_verified"] is True
+    assert row["runtime_verified"] is True
+    assert row["validation_status"] == "hardware_verified"
+    assert row["hardware_verification"]["node_id"] == "rk3568-board"
+    assert row["task_status"] == "SUCCEEDED"
+    assert row["worker_id"] == "agent:rknn"
+    assert row["package_url"].endswith("/deploy/jobs/job-projection/package")

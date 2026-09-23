@@ -15893,8 +15893,22 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
         rows.append({
             'id': job.get('id'), 'target': target, 'target_name': V423_DEPLOY_TARGET_NAMES.get(target, target or '-'),
             'status': job.get('status'), 'stage': job.get('stage'), 'progress': job.get('progress'),
-            'resource_name': (job.get('resource') or {}).get('name') or '', 'params': job.get('params') or {},
-            'outputs': outputs, 'created_at': job.get('created_at'), 'finished_at': job.get('finished_at'),
+            'source_name': job.get('source_name') or '',
+            'resource_name': (job.get('resource') or {}).get('name') or '',
+            'params': job.get('params') or {}, 'outputs': outputs,
+            'task_id': job.get('task_id') or '', 'task_status': job.get('task_status') or '',
+            'durable_status': job.get('durable_status') or '', 'current_item': job.get('current_item') or '',
+            'priority': job.get('priority'), 'queue_rank': job.get('queue_rank'),
+            'resource_queue_position': job.get('resource_queue_position'),
+            'resource_wait_reason': job.get('resource_wait_reason') or '',
+            'worker_id': job.get('worker_id') or '', 'lease_expires_at': job.get('lease_expires_at') or '',
+            'conversion_status': job.get('conversion_status') or '',
+            'validation_status': job.get('validation_status') or '',
+            'runtime_verified': bool(job.get('runtime_verified')),
+            'hardware_verified': bool(job.get('hardware_verified')),
+            'hardware_verification': job.get('hardware_verification') or None,
+            'package_url': f"/api/v39/projects/{project_id}/deploy/jobs/{job.get('id')}/package" if job.get('status') == 'done' else '',
+            'created_at': job.get('created_at'), 'finished_at': job.get('finished_at'),
             'message': job.get('message') or '', 'error': job.get('error') or ''
         })
     rows.sort(key=lambda x: x.get('created_at') or '', reverse=True)
