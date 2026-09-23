@@ -289,3 +289,30 @@ test('detail model exposes live metrics resources and dataset evidence', () => {
   assert.match(model.metricLine, /92\.4 img\/s/);
 });
 
+test('detail model exposes runtime resource telemetry from backend metrics truth', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-live',
+    status: 'running',
+    task_status: 'RUNNING',
+    runtime_metrics: {
+      latest: {
+        gpu_utilization: 87.5,
+        gpu_memory_percent: 71.2,
+        cpu_percent: 63.4,
+        io_wait_percent: 2.1,
+      },
+      images_per_second: 155.6,
+      epoch_duration_seconds: 18.4,
+      diagnostic: {code: 'healthy_utilization'},
+    },
+  }, {});
+
+  assert.equal(model.gpuUtilization, 87.5);
+  assert.equal(model.gpuMemoryPercent, 71.2);
+  assert.equal(model.cpuPercent, 63.4);
+  assert.equal(model.ioWaitPercent, 2.1);
+  assert.equal(model.imagesPerSecond, 155.6);
+  assert.equal(model.latestEpochDuration, 18.4);
+  assert.equal(model.diagnosticCode, 'healthy_utilization');
+});
+

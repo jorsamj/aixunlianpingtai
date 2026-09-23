@@ -135,6 +135,12 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     ? job.dataset_counts
     : (job?.counts && typeof job.counts === 'object' ? job.counts : {});
   const resourceProfile = String(actual.resource_profile || resolved.resource_profile || job?.resource_profile || requested.resource_profile || '').trim();
+  const runtimeMetrics = job?.runtime_metrics && typeof job.runtime_metrics === 'object' ? job.runtime_metrics : {};
+  const latestRuntime = runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
+  const metricNumber = value => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
   return {
     taskId: String(job?.id || job?.task_id || recovery?.task_id || ''),
     canonicalStatus: flags.canonical,
@@ -198,7 +204,13 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     datasetRevisionId: String(job?.dataset_revision_id || '').trim(),
     trainingOutcome: String(job?.training_outcome || '').trim(),
     completionReason: String(job?.completion_reason || '').trim(),
-    diagnosticCode: String(job?.runtime_metrics?.diagnostic?.code || '').trim(),
+    diagnosticCode: String(runtimeMetrics?.diagnostic?.code || '').trim(),
+    gpuUtilization: metricNumber(latestRuntime.gpu_utilization),
+    gpuMemoryPercent: metricNumber(latestRuntime.gpu_memory_percent),
+    cpuPercent: metricNumber(latestRuntime.cpu_percent),
+    ioWaitPercent: metricNumber(latestRuntime.io_wait_percent),
+    imagesPerSecond: metricNumber(runtimeMetrics.images_per_second) ?? metricNumber(progress.images_per_second),
+    latestEpochDuration: metricNumber(runtimeMetrics.epoch_duration_seconds),
     resourceReasons: Array.isArray(resolved?.reasons) ? resolved.reasons.map(String) : [],
     resourceAdjustments: Array.isArray(resolved?.adjustments) ? resolved.adjustments.map(String) : [],
     createdAt: job?.created_at || null,
@@ -272,6 +284,9 @@ function detailHtml(job, recovery, log = '') {
               <div class="training-recovery-kv"><span>训练结果</span><b>${esc(model.trainingOutcome || '-')}</b></div>
               <div class="training-recovery-kv"><span>完成原因</span><b>${esc(model.completionReason || '-')}</b></div>
               <div class="training-recovery-kv"><span>运行诊断</span><b>${esc(model.diagnosticCode || '-')}</b></div>
+              <div class="training-recovery-kv"><span>GPU 利用率 / 显存</span><b>${esc(`${model.gpuUtilization == null ? '-' : model.gpuUtilization.toFixed(1) + '%'} / ${model.gpuMemoryPercent == null ? '-' : model.gpuMemoryPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>CPU / I/O Wait</span><b>${esc(`${model.cpuPercent == null ? '-' : model.cpuPercent.toFixed(1) + '%'} / ${model.ioWaitPercent == null ? '-' : model.ioWaitPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>实时吞吐 / Epoch</span><b>${esc(`${model.imagesPerSecond == null ? '-' : model.imagesPerSecond.toFixed(1) + ' img/s'} / ${model.latestEpochDuration == null ? '-' : model.latestEpochDuration.toFixed(1) + 's'}`)}</b></div>
               <div class="training-recovery-kv"><span>错误类型</span><b>${esc(model.errorType || '-')}</b></div>
             </section>
           </div>
