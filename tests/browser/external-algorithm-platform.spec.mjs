@@ -16,6 +16,10 @@ test('changlian platform page tests draft credentials before manual sync', async
   let configSaved = false;
   let saveWrites = 0;
   let savedBaseUrl = '';
+  let configGets = 0;
+  let historyGets = 0;
+  let cacheGets = 0;
+  let readinessGets = 0;
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
     if (route.request().method() === 'PUT') {
@@ -25,6 +29,8 @@ test('changlian platform page tests draft credentials before manual sync', async
       saveWrites += 1;
     } else if (route.request().method() !== 'GET') {
       return route.continue();
+    } else {
+      configGets += 1;
     }
     await route.fulfill({
       status: 200,
@@ -92,10 +98,12 @@ test('changlian platform page tests draft credentials before manual sync', async
   });
 
   await page.route('**/api/v63/external-algorithm-platform/sync-history?limit=20', async route => {
+    historyGets += 1;
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items: []})});
   });
 
   await page.route('**/api/v63/external-algorithm-platform/cache', async route => {
+    cacheGets += 1;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -113,6 +121,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   });
 
   await page.route('**/api/v63/external-algorithm-platform/readiness?project_id=*', async route => {
+    readinessGets += 1;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -191,6 +200,19 @@ test('changlian platform page tests draft credentials before manual sync', async
 
   await page.evaluate(() => window.setPage('平台对接'));
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
+  await expect.poll(() => ({configGets, historyGets, cacheGets, readinessGets}), {timeout: 10_000}).toMatchObject({
+    configGets: 1,
+    historyGets: 1,
+    cacheGets: 1,
+    readinessGets: 1,
+  });
+  const firstVisitGets = {configGets, historyGets, cacheGets, readinessGets};
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('平台对接'));
+  await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible();
+  await page.waitForTimeout(120);
+  expect({configGets, historyGets, cacheGets, readinessGets}).toEqual(firstVisitGets);
   await page.evaluate(() => { window.__externalPlatformStableRoot = document.querySelector('[data-external-platform-page="1"]'); });
 
   await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
