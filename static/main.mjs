@@ -322,7 +322,7 @@ function renderUnknownPage(page) {
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
-const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '质量中心', '部署转换', '部署产物']);
+const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '质量中心']);
 
 function pageExtrasEnabled(page) {
   return PAGE_EXTRAS_OWNERS.has(page)
@@ -371,9 +371,6 @@ function refreshCurrentPageOwner(page) {
       force: false,
     });
     if (task && typeof task.catch === 'function') void task.catch(error => notify(error?.message || error));
-  }
-  if (page === '部署转换' && typeof window.refreshDeployJobsForVisitV39 === 'function') {
-    void window.refreshDeployJobsForVisitV39().catch(error => notify(error?.message || error));
   }
   if (page === '数据集' || page === '自动标注及清洗') {
     window.MaterialBatchRuntime62?.resume?.();
