@@ -297,11 +297,15 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
   await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–48 / 54 张');
-  await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
-  await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 54 张');
 
+  candidateRace=true;
+  await page.evaluate(() => { void window.aiReviewPage60(-1); });
   await review.getByRole('button',{name:'全部接受'}).click();
   await expect.poll(()=>decisionsBody,{timeout:5000}).not.toBeNull();
+  await expect(review).toBeHidden();
+  await page.waitForTimeout(320);
+  await expect(review).toBeHidden();
+  candidateRace=false;
 
   expect(decisionsBody.commit).toBe(true);
   expect(decisionsBody.accept_unmentioned).toBe(true);

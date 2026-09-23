@@ -29,7 +29,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.210/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.211/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
