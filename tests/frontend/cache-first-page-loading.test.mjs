@@ -179,7 +179,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.207/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.206/);
 });
 
 
