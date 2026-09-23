@@ -172,3 +172,94 @@ test('cleaning progress refresh preserves task row and progress bar nodes', asyn
   }))).toEqual({row:true, progress:true});
   expect(pageErrors).toEqual([]);
 });
+
+
+test('cleaning detail progress stays in-place and hands off to review without raw modal polling', async ({page, request}) => {
+  const project = await createProject(request);
+  await selectProject(page, project.id);
+
+  let current = {
+    id:'clean-modal-1',
+    name:'清洗详情轮询',
+    status:'running',
+    status_text:'清洗中',
+    progress:12,
+    processed_images:12,
+    total_images:100,
+    flagged_images:2,
+    execution_mode:'local',
+    phase:'analyzing',
+    current_item:'image-12',
+    created_at:'2026-09-23T00:00:00Z',
+  };
+
+  await page.route(`**/api/v47/projects/${project.id}/clean-tasks`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({items:[current]}),
+    });
+  });
+
+  await page.route(`**/api/v47/projects/${project.id}/clean-tasks/clean-modal-1/result`, async route => {
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        task:{...current,status:'awaiting_confirmation',status_text:'待确认'},
+        result:{items:[],rules:{}},
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await waitForCleanRuntime(page);
+  await page.evaluate(() => {
+    state.v427OpsTab = 'clean';
+    window.setPage('自动标注及清洗');
+  });
+
+  await page.evaluate(() => window.showTaskProgress427('clean','clean-modal-1'));
+  const dialog = page.getByRole('dialog',{name:'自动清洗'});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-clean-progress-percent]')).toHaveText('12.0%');
+  await page.evaluate(() => {
+    window.__stableCleanModalProgress = document.querySelector('[data-clean-progress-task="clean-modal-1"]');
+    window.__stableCleanModalBar = window.__stableCleanModalProgress?.querySelector('[data-clean-progress-bar]') || null;
+  });
+  await expect.poll(async () => page.evaluate(() =>
+    window.PollRegistryRuntime?.snapshot?.().some(entry => entry.key === 'clean-task-progress:clean-modal-1') || false
+  )).toBe(true);
+
+  current = {
+    ...current,
+    progress:57,
+    processed_images:57,
+    flagged_images:9,
+    current_item:'image-57',
+  };
+
+  await expect(dialog.locator('[data-clean-progress-percent]'),{timeout:5000}).toHaveText('57.0%');
+  await expect(dialog.locator('[data-clean-progress-counts]')).toHaveText('57/100');
+  await expect(dialog.locator('[data-clean-progress-flagged]')).toHaveText('9');
+  expect(await page.evaluate(() => ({
+    root: window.__stableCleanModalProgress === document.querySelector('[data-clean-progress-task="clean-modal-1"]'),
+    bar: window.__stableCleanModalBar === document.querySelector('[data-clean-progress-task="clean-modal-1"] [data-clean-progress-bar]'),
+  }))).toEqual({root:true,bar:true});
+
+  current = {
+    ...current,
+    status:'awaiting_confirmation',
+    status_text:'待确认',
+    progress:100,
+    processed_images:100,
+  };
+
+  const review = page.getByRole('dialog',{name:'清洗任务详情'});
+  await expect(review,{timeout:5000}).toBeVisible();
+  await expect(review.getByRole('button',{name:'确认清洗结果'})).toBeVisible();
+  await expect.poll(async () => page.evaluate(() =>
+    window.PollRegistryRuntime?.snapshot?.().some(entry => entry.key === 'clean-task-progress:clean-modal-1') || false
+  )).toBe(false);
+});
