@@ -473,25 +473,25 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .train428-page-v2 .train428-refresh{margin-left:0}
 .train428-table-panel{border:1px solid #e4e9f1!important;box-shadow:0 5px 18px rgba(15,23,42,.035)!important}
 .train428-page-v2 .table-wrap{overflow:auto}
-.train428-page-v2 .train428-table{min-width:1280px}
-.train428-page-v2 .train428-table thead th{padding:10px 12px;font-size:11px;font-weight:700;background:#f8fafc;color:#64748b}
-.train428-page-v2 .train428-table tbody td{padding:11px 12px}
+.train428-page-v2 .train428-table{width:100%;min-width:1040px;table-layout:fixed}
+.train428-page-v2 .train428-table thead th{padding:9px 8px;font-size:11px;font-weight:700;background:#f8fafc;color:#64748b}
+.train428-page-v2 .train428-table tbody td{padding:10px 8px}
 .train428-page-v2 .train428-table tbody tr{transition:background-color var(--motion-fast) ease}
 .train428-page-v2 .train428-table tbody tr:hover td{background:#f8fbff}
-.train428-page-v2 .train428-taskname{min-width:120px;max-width:190px}
+.train428-page-v2 .train428-taskname{min-width:0;max-width:none}
 .train428-page-v2 .train428-taskname b{font-size:12px;font-weight:700}
 .train428-page-v2 .train428-taskname em{font-size:9px}
 .train428-priority-number{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:8px;background:#f3f6fb;color:#334155;font-size:13px;font-weight:800}
-.train428-progress-main{display:grid;grid-template-columns:minmax(96px,1fr) 34px;align-items:center;gap:8px;min-width:150px}
+.train428-page-v2 .train428-progress-main{grid-template-columns:minmax(52px,1fr) 30px;gap:4px;min-width:0}
 .train428-progress-main .progress424{width:100%;margin:0}
 .train428-progress-main>b{font-size:11px;color:#334155;text-align:right}
-.train428-page-v2 .train428-progress-txt{max-width:175px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.train428-page-v2 .train428-stage{min-width:120px;max-width:180px}
+.train428-page-v2 .train428-progress-txt{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.train428-page-v2 .train428-stage{min-width:0;max-width:none}
 .train428-page-v2 .train428-stage small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .train428-started{white-space:nowrap;color:#526176;font-size:11px}
-.train428-page-v2 .train428-actions-cell{min-width:220px;flex-wrap:nowrap}
-.train428-page-v2 .train428-actions-cell .btn{white-space:nowrap}
-@media(max-width:900px){.train428-page-v2 .train428-table{min-width:1220px}}
+.train428-page-v2 .train428-actions-cell{min-width:0;gap:3px;flex-wrap:nowrap}
+.train428-page-v2 .train428-actions-cell .btn{padding:0 6px;font-size:10px;white-space:nowrap}
+@media(max-width:900px){.train428-page-v2 .train428-table{min-width:1040px}}
 @media(prefers-reduced-motion:reduce){.train428-page-v2 .train428-table tbody tr{transition:none!important}}
 
 /* training batch mode */
