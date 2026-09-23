@@ -713,7 +713,7 @@ class ArtifactCapabilityProvider:
     def upload(self, key, source, **_kwargs):
         self.operations.append("put")
         if self.fail_stage == "put":
-            raise RuntimeError("403 AccessDenied: PutObject denied")
+            raise RuntimeError("status: 403 AccessDenied: PutObject denied")
         self.payload = Path(source).read_bytes()
         self.deleted = False
         return ObjectMetadata(key=key, size_bytes=len(self.payload))
