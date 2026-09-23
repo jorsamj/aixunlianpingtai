@@ -305,6 +305,8 @@ test('batch mode is transient and remains inside the canonical ten-column task t
   assert.match(source, /data-training-batch-action="pause"/);
   assert.match(source, /data-training-batch-action="resume"/);
   assert.match(source, /data-training-batch-action="stop"/);
+  assert.match(source, /data-training-batch-action="delete">删除记录/);
+  assert.match(source, /\['pause', 'resume', 'stop', 'delete'\]/);
   assert.match(source, /selectedIds\.clear\(\)/);
   assert.match(source, /batchMode = false/);
   assert.doesNotMatch(source, /<th><input[^>]+data-training-batch/);
