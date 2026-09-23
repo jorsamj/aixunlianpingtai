@@ -300,6 +300,42 @@ def test_public_url_joins_storage_source_base_with_final_object_key_exactly_once
     assert url.count("changlian-ai/artifacts") == 1
 
 
+def test_auto_upload_uses_transport_safe_metadata_header_names(tmp_path: Path, monkeypatch):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+
+    class CaptureProvider:
+        def __init__(self):
+            self.calls = []
+
+        def exists(self, _key):
+            return False
+
+        def upload(self, key, source, *, content_type="application/octet-stream", metadata=None):
+            payload = Path(source).read_bytes()
+            meta = dict(metadata or {})
+            self.calls.append((key, meta))
+            return ObjectMetadata(
+                key=key,
+                size_bytes=len(payload),
+                sha256=str(meta.get("sha256") or ""),
+                content_type=content_type,
+            )
+
+    provider = CaptureProvider()
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    result = service.run_auto_upload_once()
+
+    assert result["uploaded"] == 2
+    original = next(meta for key, meta in provider.calls if "/training/" in key)
+    rockchip = next(meta for key, meta in provider.calls if "/rknn/rk3568/" in key)
+    assert "chip_code" not in original
+    assert "chip-code" not in original
+    assert "chip_code" not in rockchip
+    assert rockchip["chip-code"] == "rk3568"
+
+
 def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_path: Path):
     model, output = _seed(tmp_path)
     service = _service(tmp_path)
