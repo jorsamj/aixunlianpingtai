@@ -1,5 +1,31 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 09:xx 续接增量（最高优先级覆盖）
+>
+> 文档刷新前最后确认代码/测试 HEAD：`0fd99a33bec1527c1d4d3d96a220ac43d3fd999b`；`VERSION.txt = 42.24.0`。该 HEAD 当时 **51 个 checks 全部 queued、0 completed failure**，因此仍不能宣称全绿、部署候选或可上线。接手后必须重新读取实时 GitHub，不能把本段 SHA 当作当前 HEAD。
+>
+> 本轮新增 CLOSED / 永久守护：
+> - 训练设备 inventory 的 **24h 浏览器缓存**已有 Real Chrome：首次训练弹窗读取 `/api/v62/training-devices` 并持久化；整页 reload 后再次打开训练弹窗直接复用缓存，不重复探测硬件。
+> - 手动标注标签 first-paint 已有 Real Chrome：即使正式标签 API 被延迟，过期本地 schema 也会先立即显示；authoritative 响应返回后再更新 UI 与缓存，保证“快但不 stale forever”。
+> - 标签管理 usage schema 回访缓存已有 Chrome：首次进入读取，短时间离开/返回不重复请求。
+> - 训练资源页 page-extras 回访缓存已有 Chrome：首次进入允许读取 training options，短时间返回不重复加载。
+> - 组件检测终态 snapshot 回访缓存已有 Chrome：返回页面不重复 `/components/latest`，更不会自动 POST 新扫描；真正扫描仍只由用户点击触发。
+> - 模型配置提示词模板已改为按需读取并有回访缓存；平台对接、服务节点、存储配置、素材接入、视频切帧也已增加回访不重复请求守护。
+> - AI Candidate Review 已完成 54 张候选 / 34 标签 / 3 页 Chrome，跨页人工 edits 保留、乱序分页 stale fencing、关闭/提交后的 late response lifecycle fencing 均已收口。
+>
+> 已再次核对且不要重复：
+> - 数据集返回页已经是 cached page first-paint + background scoped refresh；已有 Real Chrome。
+> - 自动标注页存在 RUNNING 任务时必须恢复 PollRegistry，不允许为了“0 请求”破坏实时进度真值。
+> - 训练资源首屏的 targets / inference env / recommendation 已由 v53 bootstrap snapshot 提供；手动“刷新”才做更强 authoritative refresh。
+> - 组件检测页面进入不会自动扫描；实际扫描只由按钮触发。
+>
+> 当前仍 OPEN：
+> - 目标 HEAD 的真实 completed Actions；任何 completed failure 必须先读真实 job log。
+> - 真实 GPU / 正式模型推理 E2E。
+> - 真实 OSS 长期 URL + ChangLian Version/Weight 创建/反查/删除 + 超时幂等恢复生产 E2E。
+>
+> 不要因旧测试恢复已退役的测试发布 / standalone 检测台 / 部署中心 owner；不要再重复上述 cache/revisit/first-paint CLOSED 工作。
+>
 > ## 2026-09-23 08:xx 续接增量（覆盖前一轮续接状态）
 >
 > 文档刷新前最后确认代码/测试 HEAD：`76fbfdfd5aecce22c32de90f507a1703dbffc21b`；`VERSION.txt = 42.24.0`。该 HEAD 当时 **89 个 checks 全部 queued、0 completed failure**，因此仍不能宣称全绿、部署候选或可上线。

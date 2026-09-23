@@ -1,3 +1,13 @@
+<!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_BATCH3 -->
+> ## 2026-09-23 最新续接：缓存首屏 / 回访性能矩阵继续收口
+>
+> 文档刷新前最后确认代码/测试 HEAD：`0fd99a33bec1527c1d4d3d96a220ac43d3fd999b`；`VERSION.txt=42.24.0`；当时 **51 个 checks 全 queued、0 completed failure**。接手必须先重读实时 GitHub，不能把该 SHA 当作当前 HEAD。
+>
+> 新增 CLOSED：训练设备 24h cache 跨 reload Chrome；标注标签 stale-cache first-paint + authoritative revalidation Chrome；标签管理、训练资源、组件检测回访缓存 Chrome；模型提示词按需读取；平台对接/服务节点/存储/素材接入/视频切帧回访请求守护；AI Review 54 张/3 页跨页 edits + stale/closed lifecycle fencing。
+>
+> 仍 OPEN：目标 HEAD completed Actions、真实 GPU 推理、真实 OSS / ChangLian 生产 E2E。不要重复上述 CLOSED 性能工作。
+>
+
 <!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_BATCH2 -->
 > ## 2026-09-23 最新续接：AI 审核跨页 / stale fencing 已收口
 >
