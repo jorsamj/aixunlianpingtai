@@ -660,8 +660,8 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="external-platform-provider-mark">CL</div>
             <div>
               <div class="external-platform-eyebrow">EXTERNAL PLATFORM INTEGRATION</div>
-              <h2>新畅联平台对接</h2>
-              <p>连接、同步、厂商映射和版本权重发布统一在这里管理。常用操作前置，接口细节与诊断信息收进独立切页。</p>
+              <h2>平台对接</h2>
+              <p>连接、同步、厂商映射和版本权重发布统一在这里管理。配置保存成功后会自动锁定并持续使用；常用操作前置，接口细节与诊断信息收进独立切页。</p>
             </div>
           </div>
           <div class="external-platform-actions">
@@ -717,7 +717,7 @@ export function installExternalAlgorithmPlatformRuntime({
 
         <div class="external-platform-steps" aria-label="新畅联对接流程">
           <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存连接配置</b><span>API 地址与应用凭据</span></div></div>
-          <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>验证连接</b><span>确认鉴权与只读接口</span></div></div>
+          <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>确认鉴权与只读接口</span></div></div>
           <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>产品、分析方式、算力环境</span></div></div>
           <div class="external-step ${syncSucceeded ? 'current' : ''}"><i>4</i><div><b>配置厂商对应</b><span>通用与转换厂商映射</span></div></div>
         </div>
