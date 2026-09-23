@@ -616,6 +616,28 @@ export function installTrainingTaskVisibilityRuntime({
   };
   const detachViewAdapter = runtime.setViewAdapter(viewAdapter);
 
+  const onPageRefreshClick = event => {
+    const button = event?.target?.closest?.('#refreshBtn');
+    if (!button || destroyed || String(state().page || '') !== TRAINING_PAGE) return;
+    event.preventDefault?.();
+    event.stopImmediatePropagation?.();
+    if (button.disabled || runtime.state?.().inflight) return;
+    button.disabled = true;
+    const previousText = button.textContent;
+    button.textContent = '刷新中';
+    void runtime.refresh({render: true, source: 'manual'}).then(
+      result => { if (!result?.stale) notify?.('训练任务已刷新'); },
+      error => notify?.(error?.message || error),
+    ).finally(() => {
+      if (button?.isConnected !== false) {
+        button.disabled = false;
+        button.textContent = previousText || '刷新';
+      }
+      pollRegistry?.replaceTrainingJobTimer?.();
+    });
+  };
+  doc?.addEventListener?.('click', onPageRefreshClick, true);
+
   async function refreshOwned(options = {}) {
     return runtime.refresh(options);
   }
@@ -662,6 +684,7 @@ export function installTrainingTaskVisibilityRuntime({
       batchMode = false;
       batchBusy = false;
       detachViewAdapter?.();
+      doc?.removeEventListener?.('click', onPageRefreshClick, true);
       for (const [name, fn] of Object.entries(previous)) {
         if (fn === undefined) delete window[name];
         else window[name] = fn;
