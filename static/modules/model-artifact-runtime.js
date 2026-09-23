@@ -37,10 +37,16 @@ export function normalizeModelArtifactConfig(body = {}) {
   const storageSources = Array.isArray(body.storage_sources) ? body.storage_sources : [];
   const storageSourceId = String(config.storage_source_id || '');
   const source = storageSources.find(row => String(row.id || '') === storageSourceId);
+  const artifactStorage = body.artifact_storage || {};
   return {
     storageSourceId,
     rootPrefix: String(config.root_prefix || config.object_prefix || 'changlian-ai/artifacts'),
-    publicBaseUrl: String(source?.config?.public_base_url || ''),
+    endpoint: String(artifactStorage.endpoint || source?.config?.endpoint || ''),
+    bucket: String(artifactStorage.bucket || source?.config?.bucket || ''),
+    publicBaseUrl: String(artifactStorage.public_base_url || source?.config?.public_base_url || ''),
+    credentialConfigured: artifactStorage.credential_configured === true || source?.secret_configured === true,
+    credentialMasked: String(artifactStorage.credential_masked || source?.secret_masked || ''),
+    dedicatedStorage: artifactStorage.dedicated === true,
     autoUploadEnabled: config.auto_upload_enabled !== false,
     updatedAt: config.updated_at || null,
     storageSources,
@@ -165,8 +171,14 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
 
   function storagePanel() {
     const c = config || normalizeModelArtifactConfig({});
+    const credentialHint = c.credentialConfigured
+      ? `已配置（${escapeHtml(c.credentialMasked || '安全凭据库')}），留空表示保持现有凭据`
+      : '首次配置请填写 AccessKey ID 与 AccessKey Secret';
+    const migrationHint = c.storageSourceId && !c.dedicatedStorage
+      ? '<div class="alert soft"><b>检测到旧配置</b><span>当前算法产物仍复用了其他存储源。保存本区域后会自动迁移为独立的算法产物 OSS，不再依赖“素材存储”。</span></div>'
+      : '';
     return `<section class="panel" data-model-artifact-panel="1">
-      <div class="panel-head"><div><div class="panel-title">算法与转换结果存储</div><div class="subline">训练成功模型与 ONNX / RKNN 等转换产物统一自动归档到所选存储；新畅联版本和权重接口使用这里生成的长期访问地址。</div></div><span class="ma-pill ok">自动归档</span></div>
+      <div class="panel-head"><div><div class="panel-title">算法与转换结果存储</div><div class="subline">这里独立配置训练模型、ONNX、RKNN 等算法产物的 OSS；不需要先在“素材存储”创建或选择存储源。</div></div><span class="ma-pill ok">独立配置 · 自动归档</span></div>
       <div class="panel-body">
         <div class="ma-grid">
           <div class="ma-stat"><span>算法产物</span><strong>${Number(summary.total || 0)}</strong></div>
@@ -174,13 +186,17 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
           <div class="ma-stat"><span>待处理</span><strong>${Number(summary.pending || 0)}</strong></div>
           <div class="ma-stat"><span>上传失败</span><strong>${Number(summary.failed || 0)}</strong></div>
         </div>
+        ${migrationHint}
         <div class="form two">
-          <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择阿里云 OSS</option>${storageOptions(c.storageSourceId)}</select><div class="subline">正式环境仅展示已启用的阿里云 OSS；旧开发环境若已保存本地存储，会保留“开发兼容”项便于迁移。</div></div>
-          <div class="field"><label>算法产物根目录</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.rootPrefix)}" placeholder="changlian-ai/artifacts/"><div class="subline">只由 Artifact Binding 使用；不会与素材 Provider prefix 重复拼接。</div></div>
-          <div class="field full"><label>OSS 长期访问地址</label><div class="alert soft"><b>${escapeHtml(c.publicBaseUrl || '尚未配置')}</b><span>该地址由所选 StorageSource 持有；请在上方 OSS 存储源中维护外网地址。</span></div></div>
-          <div class="field"><label>归档策略</label><div class="alert soft"><b>自动归档已启用</b><span>训练模型和转换结果完成后自动上传到这里配置的存储，不需要人工触发。</span></div></div>
+          <div class="field"><label>OSS Endpoint</label><input id="modelArtifactEndpoint" class="input" value="${escapeHtml(c.endpoint)}" placeholder="https://oss-cn-hangzhou.aliyuncs.com"></div>
+          <div class="field"><label>Bucket</label><input id="modelArtifactBucket" class="input" value="${escapeHtml(c.bucket)}" placeholder="new24hlink"></div>
+          <div class="field"><label>AccessKey ID</label><input id="modelArtifactAccessKeyId" class="input" autocomplete="off" placeholder="${escapeHtml(credentialHint)}"></div>
+          <div class="field"><label>AccessKey Secret</label><input id="modelArtifactAccessKeySecret" class="input" type="password" autocomplete="new-password" placeholder="${escapeHtml(credentialHint)}"></div>
+          <div class="field full"><label>OSS 长期访问地址</label><input id="modelArtifactPublicBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://new24hlink.oss-cn-hangzhou.aliyuncs.com"><div class="subline">新畅联最终 filePath 使用这里的长期地址；配置后测试必须返回 HTTP 200/206。</div></div>
+          <div class="field"><label>算法产物根目录</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.rootPrefix)}" placeholder="changlian-ai/artifacts"><div class="subline">测试对象会真实写入 &lt;根目录&gt;/.changlian-health-check/，正式模型也归档在该目录下。</div></div>
+          <div class="field"><label>权限要求</label><div class="alert soft"><b>对象级权限必须完整</b><span>PUT / STAT / GET / DELETE 必须成功；Bucket 元信息 403 仅作为 warning。DELETE 失败仍会判定不可用。</span></div></div>
         </div>
-        <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物存储配置</button></div>
+        <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">保存并测试</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物 OSS</button></div>
       </div>
     </section>`;
   }
@@ -314,26 +330,46 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     }
   }
 
-  async function saveModelConfig() {
-    const payload = {
-      storage_source_id: document.getElementById('modelArtifactStorageSource')?.value || '',
-      root_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'changlian-ai/artifacts/',
-      auto_upload_enabled: true,
+  function artifactOssPayload() {
+    return {
+      endpoint: document.getElementById('modelArtifactEndpoint')?.value.trim() || '',
+      bucket: document.getElementById('modelArtifactBucket')?.value.trim() || '',
+      access_key_id: document.getElementById('modelArtifactAccessKeyId')?.value.trim() || '',
+      access_key_secret: document.getElementById('modelArtifactAccessKeySecret')?.value || '',
+      public_base_url: document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '',
+      root_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'changlian-ai/artifacts',
     };
-    await requestJson(`${MODEL_API}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-    notify?.('算法与转换结果存储配置已保存');
-    await refresh({rerender: true, force: true});
+  }
+
+  async function saveModelConfig({rerender = true, announce = true} = {}) {
+    const body = await requestJson(`${MODEL_API}/oss-config`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(artifactOssPayload()),
+    });
+    config = normalizeModelArtifactConfig(body);
+    summary = config.summary;
+    configLoadedAt = Date.now();
+    if (announce) notify?.('算法与转换结果 OSS 已独立保存');
+    if (rerender) await refresh({rerender: true, force: true});
+    return config;
   }
 
   async function testStorage() {
-    const storageSourceId = document.getElementById('modelArtifactStorageSource')?.value || '';
     const button = document.getElementById('modelArtifactTestStorage');
-    if (button) { button.disabled = true; button.textContent = '正在测试…'; }
+    if (button) { button.disabled = true; button.textContent = '保存并测试中…'; }
     try {
-      const body = await requestJson(`${MODEL_API}/storage-test`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({storage_source_id: storageSourceId})});
-      notify?.(body.message || '算法产物存储与长期访问地址测试通过');
+      const saved = await saveModelConfig({rerender: false, announce: false});
+      const body = await requestJson(`${MODEL_API}/storage-test`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({storage_source_id: saved.storageSourceId}),
+      });
+      const warning = String(body.warning || '');
+      notify?.(warning || body.message || '算法产物 OSS 对象级读写与长期地址测试通过');
+      await refresh({rerender: true, force: true});
     } finally {
-      if (button) { button.disabled = false; button.textContent = '测试存储'; }
+      if (button) { button.disabled = false; button.textContent = '保存并测试'; }
     }
   }
 
