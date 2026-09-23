@@ -155,10 +155,11 @@ def resolve_resources(request, context, model, torch):
             reasons.append(
                 f"Adaptive cache selected RAM; decoded={decoded}; safe_budget={cache_budget}"
             )
-        elif local_ready and decoded is not None and disk_need + 2 * GIB <= disk:
+        elif local_ready and dataset_bytes > 0 and disk_need + 2 * GIB <= disk:
             cache = "disk"
             reasons.append(
-                f"Adaptive cache selected disk; required={disk_need + 2 * GIB}; free={disk}"
+                f"Adaptive cache selected disk; required={disk_need + 2 * GIB}; free={disk}; "
+                f"decoded_estimate={'known' if decoded is not None else 'conservative-from-source-bytes'}"
             )
         else:
             reasons.append("Adaptive cache remains disabled because safe RAM/disk headroom is unavailable")
