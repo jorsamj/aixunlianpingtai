@@ -17,7 +17,7 @@ import {installTrainingMaterialPickerRuntime} from './modules/training-material-
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422561';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422500';
-import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422508';
+import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422509';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422517';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422507';
