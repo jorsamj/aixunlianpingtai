@@ -159,6 +159,10 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "epochs": 3,
         "imgsz": 640,
         "batch": 4,
+        "resource_strategy": "auto",
+        "resource_profile": "performance",
+        "precision": "bf16",
+        "time": 2.5,
         "requested_device": "auto",
         "device": "auto",
     }
@@ -253,6 +257,10 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["model"]["type"] == "official"
     assert training["model"]["reference"] == "yolo11n.pt"
     assert training["params"]["runtime_stop_policy"] == "target_only"
+    assert training["params"]["resource_strategy"] == "auto"
+    assert training["params"]["resource_profile"] == "performance"
+    assert training["params"]["precision"] == "bf16"
+    assert training["params"]["time"] == 2.5
     bundle = training["bundle"]
     assert bundle["storage_source_id"] == source.id
     assert bundle["object_key"].startswith("training-bundles/")
