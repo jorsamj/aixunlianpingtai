@@ -389,9 +389,26 @@ test('label management create and edit stay page-scoped without loading the full
   const project = await createMaterialProject(request, `标签管理-${Date.now()}`);
   await selectProject(page, project.id);
 
+  let usageGets = 0;
+  const countUsage = req => {
+    if (req.method() !== 'GET') return;
+    const url = new URL(req.url());
+    if (url.pathname === `/api/v54/projects/${project.id}/label-schema`) usageGets += 1;
+  };
+  page.on('request', countUsage);
+
   await page.goto('/');
   await page.getByRole('button', {name: /标签管理/}).click();
   await expect(page.locator('.label414-shell')).toBeVisible();
+  await expect.poll(() => usageGets).toBeGreaterThan(0);
+  const firstVisitUsageGets = usageGets;
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('标签管理'));
+  await expect(page.locator('.label414-shell')).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(usageGets).toBe(firstVisitUsageGets);
 
   const saveRequests = [];
   const capture = req => {
@@ -441,6 +458,7 @@ test('label management create and edit stay page-scoped without loading the full
   expect(helmet.aliases).toContain('helmet_old');
 
   page.off('request', capture);
+  page.off('request', countUsage);
 });
 
 
