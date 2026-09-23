@@ -242,7 +242,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
           <span class="pill">${Number(c.computePlatforms?.length || 0)} 个可选项</span>
         </div>
         <details class="external-vendor-advanced">
-          <summary>高级操作与官方同步接口</summary>
+          <summary>高级操作</summary><div class="panel-title" style="margin-top:12px;font-size:12px">官方同步接口</div>
           <div class="form two" style="margin-top:12px">
             <div class="field"><label>按产品查询版本</label><code>${escapeHtml(c.versionListByProduct)}</code></div>
             <div class="field"><label>按版本查询权重</label><code>${escapeHtml(c.weightListByVersion)}</code></div>
@@ -260,7 +260,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     for (const row of document.querySelectorAll('[data-publish-target]')) {
       const key = row.dataset.publishTarget;
       mappings[key] = {
-        enabled: Boolean(row.querySelector('[data-publish-enabled]')?.checked),
+        enabled: key === 'original' ? true : Boolean(row.querySelector('[data-publish-enabled]')?.checked),
         compute_platform_id: row.querySelector('[data-publish-platform]')?.value || '',
         chip_code: row.querySelector('[data-publish-chip]')?.value.trim() || '',
       };
