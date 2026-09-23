@@ -883,6 +883,8 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
+        "--resource-profile", str(payload.get("resource_profile") or "balanced"),
+        "--precision", str(payload.get("precision") or "auto"),
     ]
     value_options = {
         "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
@@ -898,6 +900,8 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for key, default in value_options.items():
         value = payload.get(f"resolved_{key}", payload.get(key, default)) if key in {"workers", "cache"} else payload.get(key, default)
         argv.extend([f"--{key.replace('_', '-')}", str(value)])
+    if payload.get("time") is not None:
+        argv.extend(["--time", str(float(payload.get("time")))])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
         "cos_lr": False, "deterministic": True, "auto_supplement": False,
@@ -1739,6 +1743,9 @@ class TrainingHandler:
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
+            "resource_profile": payload.get("resource_profile", "balanced"),
+            "precision": payload.get("precision", "auto"),
+            "max_train_hours": payload.get("time"),
             "quality_gate": {
                 "runtime_stop_policy": "target_only",
                 "eval_interval": int(payload.get("eval_interval") or 0),
