@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from .service_nodes import HEARTBEAT_TTL_SECONDS, ServiceNodeRepository
+from .training_devices import normalize_training_device
 from .task_runtime import TaskKind
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.models import utc_now
@@ -333,16 +334,46 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
     return assigned
 
 
-def _selected_gpu(row, *, assigned_gpu_ids: set[str] | None = None) -> dict[str, Any] | None:
+def _requested_training_device(task, artifacts) -> str:
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return "__invalid__"
+    if not isinstance(payload, Mapping):
+        return "__invalid__"
+    try:
+        return normalize_training_device(
+            payload.get("requested_device") or payload.get("device") or "auto"
+        )
+    except ValueError:
+        # Corrupt/legacy unknown values must never be silently converted into an
+        # automatic GPU choice. Leave the task queued for explicit repair.
+        return "__invalid__"
+
+
+def _selected_gpu(
+    row,
+    *,
+    assigned_gpu_ids: set[str] | None = None,
+    requested_device: str = "auto",
+) -> dict[str, Any] | None:
     resources = _loads(row["resource_json"], {})
     gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
     items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
     assigned = set(assigned_gpu_ids or ())
+    requested = str(requested_device or "auto").strip().lower()
     items = [
         item for item in items or []
         if isinstance(item, Mapping)
         and str(item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
         and int(item.get("memory_free_bytes") or 0) >= _MIN_TRAINING_GPU_FREE_BYTES
+        and (
+            requested == "auto"
+            or (
+                requested.startswith("cuda:")
+                and str(item.get("id") or f"cuda:{item.get('index', 0)}") == requested
+            )
+        )
     ]
     if not items:
         return None
@@ -446,6 +477,11 @@ class CentralTaskAllocator:
                             gpu_nodes.append(candidate)
                     if gpu_nodes:
                         nodes = gpu_nodes
+                requested_device = (
+                    _requested_training_device(task, self.artifacts)
+                    if capability == "training"
+                    else "auto"
+                )
                 ranked = []
                 for node in nodes:
                     active = int(database.execute(
@@ -455,7 +491,11 @@ class CentralTaskAllocator:
                     selected_gpu = None
                     if capability == "training":
                         assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
-                        selected_gpu = _selected_gpu(node, assigned_gpu_ids=assigned_gpu_ids)
+                        selected_gpu = _selected_gpu(
+                            node,
+                            assigned_gpu_ids=assigned_gpu_ids,
+                            requested_device=requested_device,
+                        )
                         # A central assignment is the reservation truth between
                         # heartbeats. Do not hand the same physical GPU to a
                         # second task while its prior assignment is active.
@@ -486,6 +526,7 @@ class CentralTaskAllocator:
                 "protocol": "agent-http-v1",
                 "node_id": str(node["node_id"]),
                 "capability": capability,
+                "requested_device": requested_device if capability == "training" else None,
                 "selected_device": gpu["id"] if gpu else "cpu",
                 "selected_gpu": gpu,
                 # Snapshot host-level contention at reservation time. The current

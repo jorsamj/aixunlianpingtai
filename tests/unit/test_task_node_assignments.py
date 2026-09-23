@@ -194,6 +194,103 @@ def test_training_assignment_prefers_less_busy_gpu_when_vram_is_close(tmp_path):
     assert assignment["resolved_execution_config"]["selected_gpu"]["utilization_percent"] == 5
 
 
+def test_manual_training_device_is_respected_even_when_another_gpu_ranks_higher(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-gpu",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+    )
+    create_online_node(
+        repository,
+        "gpu-node",
+        ["training"],
+        resources=training_resources(
+            free0=35 * 1024**3,
+            free1=18 * 1024**3,
+            util0=1,
+            util1=40,
+        ),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is not None
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["requested_device"] == "cuda:1"
+    assert resolved["selected_device"] == "cuda:1"
+
+
+def test_manual_training_device_stays_queued_when_requested_gpu_is_reserved(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-first",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+        priority=10,
+    )
+    create_online_node(
+        repository,
+        "gpu-dual-manual",
+        ["training"],
+        resources=training_resources(
+            free0=30 * 1024**3,
+            free1=20 * 1024**3,
+        ),
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    first = allocator.assign_next()
+    assert first is not None
+    assert first["resolved_execution_config"]["selected_device"] == "cuda:1"
+
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-second",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+        priority=20,
+    )
+    second = allocator.assign_next()
+
+    assert second is None
+    assert repository.get("train-manual-second").status is TaskStatus.QUEUED
+    assert len(allocator.list(active_only=True, node_id="gpu-dual-manual")) == 1
+
+
+def test_manual_training_device_can_select_another_node_with_that_gpu(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-manual-cross-node",
+        TaskKind.TRAINING,
+        {"device": "cuda:1"},
+    )
+    create_online_node(
+        repository,
+        "gpu-single-high-score",
+        ["training"],
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-dual-target",
+        ["training"],
+        resources=training_resources(free0=10 * 1024**3, free1=12 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-dual-target"
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:1"
+
+
 def test_training_assignment_prefers_less_busy_gpu_inside_selected_node(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "train-gpu-utilization-local", TaskKind.TRAINING)
