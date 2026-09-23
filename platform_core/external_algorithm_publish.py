@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from .algorithms import list_algorithms, update_algorithm_version
 from .errors import PlatformError
 from .integration_audit import IntegrationAuditRepository
-from .model_artifacts import ModelArtifactConfigPayload, ModelArtifactService, StorageTestPayload
+from .model_artifacts import ArtifactOSSConfigPayload, ModelArtifactConfigPayload, ModelArtifactService, StorageTestPayload
 from .external_algorithm_platform import (
     DEFAULT_CONFIG as EXTERNAL_PLATFORM_DEFAULT_CONFIG,
     PROVIDER_CHANGLIAN,
@@ -2622,6 +2622,10 @@ def external_algorithm_publish_router(
     @router.put("/api/v64/model-artifacts/config")
     def save_model_artifact_config(payload: ModelArtifactConfigPayload):
         return {"ok": True, "config": service.model_assets.save_config(payload)}
+
+    @router.put("/api/v64/model-artifacts/oss-config")
+    def save_model_artifact_oss_config(payload: ArtifactOSSConfigPayload):
+        return {"ok": True, **service.model_assets.save_artifact_oss_config(payload)}
 
     @router.post("/api/v64/model-artifacts/storage-test")
     def test_model_artifact_storage(payload: StorageTestPayload):
