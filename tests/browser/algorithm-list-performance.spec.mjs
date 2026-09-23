@@ -11,7 +11,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422561');
+    .toBe('algorithm-list-runtime-422562');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
@@ -247,104 +247,17 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   expect(pageErrors).toEqual([]);
 });
 
-test('publishing a pending model as an algorithm version keeps the live publish flow functional', async ({page}) => {
+test('retired test-publish route stays normalized to quality center without restoring the legacy publisher', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('测试发布'));
-  await expect(page.locator('#title')).toContainText('测试发布');
 
-  const projectId = await page.evaluate(() => state.project?.id);
-  expect(projectId).toBeTruthy();
-  const encoded = encodeURIComponent(projectId);
-  let submittedBody = null;
-  await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-publish-r20b/versions`, async route => {
-    submittedBody = route.request().postDataJSON();
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        version: {
-          id: 'version-publish-r20b',
-          version_name: '20260912143000',
-          model_name: 'publish-r20b.pt',
-          model_key: 'project::publish-r20b.pt',
-          size_mb: 8.5,
-          created_at: '2026-09-12T14:30:00Z',
-        },
-      }),
-    });
-  });
-
-  await page.evaluate(() => {
-    state.algorithms = [{
-      id: 'algo-publish-r20b',
-      name: '发布验收算法',
-      remark: 'R20b publish baseline',
-      industry: '测试',
-      algorithm_type: 'yolo_ultralytics',
-      versions: [],
-    }];
-    state.pending = [{
-      name: 'publish-r20b.pt',
-      model_key: 'project::publish-r20b.pt',
-      type: 'pt',
-      framework: 'ultralytics',
-      size_mb: 8.5,
-      job_id: 'job-publish-r20b',
-      job_name: 'R20b publish baseline',
-    }];
-    window.assignVersion('publish-r20b.pt');
-  });
-
-  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalBody input[disabled]').first()).toHaveValue('publish-r20b.pt');
-  await expect(page.locator('#algoSel')).toHaveValue('algo-publish-r20b');
-  await page.locator('#verName').fill('R20B-PUBLISH');
-  await page.locator('#verRemark').fill('发布行为基线');
-  await expect.poll(async () => page.evaluate(() => !state.__extras412)).toBe(true);
-  const requests = [];
-  page.on('request', request => {
-    const url = new URL(request.url());
-    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
-  });
-  await page.locator('#modalBody').getByRole('button', {name: '发布为算法版本'}).click();
-
-  await expect(page.locator('#modal')).toHaveClass(/hidden/);
-  await expect(page.locator('#toast')).toContainText('已发布为算法版本');
-  expect(submittedBody).toMatchObject({
-    model_name: 'publish-r20b.pt',
-    model_source: 'project',
-    version_name: 'R20B-PUBLISH',
-    remark: '发布行为基线',
-    job_id: 'job-publish-r20b',
-  });
-  await expect.poll(async () => page.evaluate(() => state.algorithms.find(x => x.id === 'algo-publish-r20b')?.versions?.[0]?.id || null)).toBe('version-publish-r20b');
-  await expect.poll(async () => page.evaluate(() => state.pending.some(x => x.name === 'publish-r20b.pt'))).toBe(false);
-  const publishRequest = `POST /api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`;
-  expect(requests.filter(row => row === publishRequest)).toEqual([publishRequest]);
-  const forbiddenReloadRequests = requests.filter(row => {
-    const path = row.slice(row.indexOf(' ') + 1).split('?')[0];
-    return path === '/api/projects'
-      || path === `/api/projects/${projectId}`
-      || path.startsWith(`/api/projects/${projectId}/datasets`)
-      || path.startsWith(`/api/projects/${projectId}/images`)
-      || path.startsWith(`/api/projects/${projectId}/jobs`)
-      || path.startsWith(`/api/projects/${projectId}/models`)
-      || path.startsWith(`/api/v12/projects/${projectId}/labels`)
-      || path.startsWith(`/api/v12/projects/${projectId}/algorithms`) && path !== `/api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`
-      || path.startsWith(`/api/v12/projects/${projectId}/publish/pending`)
-      || path.startsWith(`/api/v12/projects/${projectId}/test_models`)
-      || path === '/api/training_options'
-      || path === '/api/v16/inference_envs'
-      || path === '/api/system/recommendation'
-      || path === '/api/local_models'
-      || path.includes('/bootstrap/snapshot');
-  });
-  expect(forbiddenReloadRequests).toEqual([]);
+  await expect.poll(async () => page.evaluate(() => state.page)).toBe('质量中心');
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.getByRole('button', {name: '发布为算法版本'})).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
 
@@ -414,6 +327,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
   await expect.poll(async () => page.evaluate(() => state.algorithms.some(x => x.id === 'algo-r20h-crud'))).toBe(true);
 
   const card = page.locator('.alg428-card').filter({hasText: 'R20h 创建算法'});
+  await card.locator('details.entity-more summary').click();
   await card.getByRole('button', {name: '编辑'}).click();
   await expect(page.locator('#alg414EditName')).toHaveValue('R20h 创建算法');
   await page.locator('#alg414EditName').fill('R20h 已编辑算法');
@@ -423,6 +337,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
 
   page.once('dialog', dialog => dialog.accept());
   const editedCard = page.locator('.alg428-card').filter({hasText: 'R20h 已编辑算法'});
+  await editedCard.locator('details.entity-more summary').click();
   await editedCard.getByRole('button', {name: '删除'}).click();
   await expect(page.locator('#alg412List')).not.toContainText('R20h 已编辑算法');
   await expect.poll(async () => page.evaluate(() => state.algorithms.some(x => x.id === 'algo-r20h-crud'))).toBe(false);
@@ -460,7 +375,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422561');
+    .toBe('algorithm-list-runtime-422562');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 

@@ -736,7 +736,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422561',
+    build: 'algorithm-list-runtime-422562',
     toggle,
     refresh,
     render: renderPage,
