@@ -9358,6 +9358,104 @@ def v48_stop_job(project_id: str, job_id: str):
     return read_json(jf,job)
 
 
+_TRAINING_LEGACY_TERMINAL_STATUSES = {
+    "done", "finished", "completed", "succeeded", "success",
+    "failed", "stopped", "cancelled", "canceled",
+    "blocked_by_environment", "blocked_by_hardware",
+}
+_TRAINING_DURABLE_TERMINAL_STATUSES = {
+    TaskStatus.PARTIAL_SUCCESS,
+    TaskStatus.SUCCEEDED,
+    TaskStatus.CANCELLED,
+    TaskStatus.FAILED,
+    TaskStatus.BLOCKED_BY_ENVIRONMENT,
+    TaskStatus.BLOCKED_BY_HARDWARE,
+}
+
+
+class V48TrainingBatchDeleteReq(BaseModel):
+    job_ids: List[str] = Field(default_factory=list)
+
+
+def _purge_terminal_training_job_record(project_id: str, job_id: str) -> Dict[str, Any]:
+    job_id = str(job_id or "").strip()
+    if not job_id or job_id in {".", ".."} or "/" in job_id or "\\" in job_id:
+        raise ValueError("训练任务 ID 不合法")
+    job_dir = project_dir(project_id) / "jobs" / job_id
+    job = read_json(job_dir / "job.json", {})
+    durable = _durable_training_task(project_id, job_id)
+    if durable is None and not job:
+        return {"status": "missing", "job_id": job_id}
+
+    if durable is not None:
+        if durable.status not in _TRAINING_DURABLE_TERMINAL_STATUSES:
+            return {"status": "active", "job_id": job_id}
+    else:
+        status = str(job.get("status") or "").strip().lower()
+        if status not in _TRAINING_LEGACY_TERMINAL_STATUSES:
+            return {"status": "active", "job_id": job_id}
+
+    proc = PROCESS_REGISTRY.get(job_id)
+    if proc and proc.poll() is None:
+        return {"status": "active", "job_id": job_id}
+
+    if durable is not None:
+        shared_task_repository().delete_terminal(
+            job_id,
+            project_id=project_id,
+            kind=TaskKind.TRAINING,
+        )
+    shared_task_artifacts().delete_task(job_id)
+    shutil.rmtree(job_dir, ignore_errors=True)
+    PROCESS_REGISTRY.pop(job_id, None)
+    return {"status": "deleted", "job_id": job_id}
+
+
+@app.post("/api/v48/projects/{project_id}/jobs/batch-delete")
+def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
+    get_project(project_id)
+    job_ids = list(dict.fromkeys(str(value or "").strip() for value in payload.job_ids if str(value or "").strip()))
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="请选择需要删除的训练记录")
+    if len(job_ids) > 200:
+        raise HTTPException(status_code=400, detail="单次最多批量删除 200 条训练记录")
+
+    deleted_ids: List[str] = []
+    skipped_active_ids: List[str] = []
+    missing_ids: List[str] = []
+    failures: List[Dict[str, str]] = []
+    for job_id in job_ids:
+        try:
+            result = _purge_terminal_training_job_record(project_id, job_id)
+            status = str(result.get("status") or "")
+            if status == "deleted":
+                deleted_ids.append(job_id)
+            elif status == "active":
+                skipped_active_ids.append(job_id)
+            else:
+                missing_ids.append(job_id)
+        except Exception as error:
+            failures.append({"job_id": job_id, "message": str(error)})
+
+    try:
+        _v48_dispatch_training_queues(project_id)
+    except Exception:
+        pass
+    sync_jobs_index(project_id)
+    return {
+        "ok": not failures,
+        "requested": len(job_ids),
+        "deleted": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "skipped_active": len(skipped_active_ids),
+        "skipped_active_ids": skipped_active_ids,
+        "missing": len(missing_ids),
+        "missing_ids": missing_ids,
+        "failed": len(failures),
+        "failures": failures,
+    }
+
+
 @app.delete("/api/v12/projects/{project_id}/jobs/{job_id}")
 def v12_delete_job(project_id: str, job_id: str):
     get_project(project_id)
@@ -9365,29 +9463,28 @@ def v12_delete_job(project_id: str, job_id: str):
     job = read_json(job_dir / "job.json", {})
     durable = _durable_training_task(project_id, job_id)
 
-    # DELETE is a safety boundary, not merely a UI cleanup. A caller may bypass
-    # the frontend's Stop -> Delete sequence, so durable work must be cancelled
-    # here as well before its visible job record disappears.
+    # Durable truth is authoritative when present. A stale legacy job.json must
+    # never make a finished durable task look active, nor may a cleanup request
+    # erase live durable work without cancellation first.
     durable_active = durable is not None and durable.status in {
         TaskStatus.QUEUED,
         TaskStatus.RUNNING,
         TaskStatus.CANCEL_REQUESTED,
     }
-    legacy_active = str(job.get("status") or "").lower() in {
+    legacy_active = durable is None and str(job.get("status") or "").lower() in {
         "queued", "waiting", "pending", "running", "paused",
     }
     if durable_active or legacy_active:
         v48_stop_job(project_id, job_id)
+        # Preserve durable task artifacts while cancellation/finalization may
+        # still be completing. This keeps the existing single-record behavior.
+        shutil.rmtree(job_dir, ignore_errors=True)
     else:
-        proc = PROCESS_REGISTRY.get(job_id)
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            PROCESS_REGISTRY.pop(job_id, None)
+        try:
+            _purge_terminal_training_job_record(project_id, job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
-    shutil.rmtree(job_dir, ignore_errors=True)
     try:
         _v48_dispatch_training_queues(project_id)
     except Exception:
