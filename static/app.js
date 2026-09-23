@@ -487,7 +487,7 @@ window.__resourceDiscoveryDependencies={
     state.storageSourcesLoading61=true;
     try{
       const response=await api('/api/v61/storage-sources');
-      state.storageSources61=response.items||[];
+      state.storageSources61=(response.items||[]).filter(source=>String(source?.config?.usage||'')!=='model_artifact');
       state.storageSourcesLoadedAt61=Date.now();
       return state.storageSources61;
     }finally{state.storageSourcesLoading61=false}
