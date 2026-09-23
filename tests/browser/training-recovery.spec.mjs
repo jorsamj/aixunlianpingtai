@@ -209,6 +209,16 @@ test('successful training detail never presents completion text as an error', as
   await expect(dialog).not.toContainText('失败原因');
   await expect(dialog).not.toContainText('失败证据');
   await expect(dialog).not.toContainText('训练失败');
+
+  // Live detail refresh must update the canonical dialog in place. Replacing the
+  // whole overlay every 1.5s causes visible flicker and resets browser UI state.
+  const dialogShell = dialog.locator('.training-recovery-dialog');
+  await dialog.evaluate(node => { node.dataset.identityProbe = 'overlay-stable'; });
+  await dialogShell.evaluate(node => { node.dataset.identityProbe = 'dialog-stable'; });
+  await dialog.getByRole('button', {name: '立即刷新'}).click();
+  await expect(dialog).toHaveAttribute('data-identity-probe', 'overlay-stable');
+  await expect(dialogShell).toHaveAttribute('data-identity-probe', 'dialog-stable');
+
   expect(pageErrors).toEqual([]);
 });
 

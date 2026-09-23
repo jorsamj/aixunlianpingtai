@@ -416,11 +416,19 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const host = doc?.createElement?.('div');
     if (!host) return false;
     host.innerHTML = detailHtml(job, recovery, log);
-    const overlay = host.firstElementChild;
-    if (!overlay) return false;
-    old?.remove?.();
-    doc.body?.appendChild(overlay);
-    const dialog = overlay.querySelector?.('.training-recovery-dialog');
+    const nextOverlay = host.firstElementChild;
+    if (!nextOverlay) return false;
+    const nextDialog = nextOverlay.querySelector?.('.training-recovery-dialog');
+    let overlay = nextOverlay;
+    let dialog = nextDialog;
+    if (old && oldDialog && nextDialog) {
+      oldDialog.replaceChildren(...Array.from(nextDialog.childNodes));
+      overlay = old;
+      dialog = oldDialog;
+    } else {
+      old?.remove?.();
+      doc.body?.appendChild(nextOverlay);
+    }
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
@@ -592,7 +600,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-422506',
+    build: 'training-recovery-runtime-422507',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

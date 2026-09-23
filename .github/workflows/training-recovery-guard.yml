@@ -86,7 +86,7 @@ jobs:
           grep -Fq 'RECOVERY_ACTION_REVALIDATE = "revalidate_checkpoint"' platform_core/training_recovery_api.py
           grep -Fq 'recoveryRuntime?.hydrateJobs' static/modules/training-task-runtime.js
           grep -Fq 'installTrainingRecoveryRuntime' static/main.mjs
-          grep -Fq "build: 'training-recovery-runtime-422506'" static/modules/training-recovery-runtime.js
+          grep -Fq "build: 'training-recovery-runtime-422507'" static/modules/training-recovery-runtime.js
           grep -Fq 'Training task detail: single visual owner' static/styles.css
           if grep -Fq 'function ensureStyles' static/modules/training-recovery-runtime.js; then echo 'Training detail CSS must stay in the global stylesheet, not a runtime style owner' >&2; exit 1; fi
           grep -Fq "window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});" static/modules/training-recovery-runtime.js
@@ -94,9 +94,11 @@ jobs:
           grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js
           grep -Fq 'allow_version_archive=False' app.py
           grep -Fq 'terminal live event performs one final canonical detail and log reconciliation' tests/frontend/training-recovery-runtime.test.mjs
+          grep -Fq 'oldDialog.replaceChildren(...Array.from(nextDialog.childNodes))' static/modules/training-recovery-runtime.js
+          grep -Fq "data-identity-probe', 'overlay-stable'" tests/browser/training-recovery.spec.mjs
           grep -Fq 'training_job_detail_never_archives_versions_from_read_poll' tests/api/test_training_unified_task_overlay.py
-          grep -Fq "training-recovery-runtime.js?v=422575" static/main.mjs
-          grep -Fq 'main.mjs?v=42.25.226' static/index.html
+          grep -Fq "training-recovery-runtime.js?v=422576" static/main.mjs
+          grep -Fq 'main.mjs?v=42.25.227' static/index.html
           grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
           if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then
             echo 'TrainingRecoveryRuntime must reuse PollRegistry and must not own a polling timer' >&2
