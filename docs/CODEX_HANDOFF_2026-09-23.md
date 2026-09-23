@@ -1,5 +1,23 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 素材标注 P0 运行时修复（最新最高优先级覆盖）
+>
+> 基线 / 修复前远端 HEAD：`0a8f5c5f1eb0f2153ec04792cead5fe674c04110`。新的 Linux 预部署代码候选为其直接后继 `f50b71da760d5c136010f4d6a4495837e64be795`（`fix: share label schema cache ttl`）；`VERSION.txt = 42.24.0`。
+>
+> **用户真实症状：** `素材 → 打开标注` 直接提示 `打开标注失败：LABEL_SCHEMA_CACHE_TTL_MS is not defined`，标注工作台进入“读取失败”，标签选择与“确认无目标”不可用。这是生产回归，不是 stale test。
+>
+> **根因与 shared owner：** `static/app.js` 中唯一的 `LABEL_SCHEMA_CACHE_TTL_MS = 2 * 60 * 1000` 原本定义在 v42.14 标签管理 IIFE 内；`renderLabelManagement414()` 可在同一词法作用域正常使用，但后续 annotation workbench / `ensureWorkbench()` 位于另一个 IIFE，却直接引用该私有常量，形成跨 lexical scope 的 `ReferenceError`。修复把唯一常量提升到两个 IIFE 共同可见的文件级 lexical scope；标签管理与 annotation workbench 继续共享同一个 TTL owner。没有复制数值、没有新增 `window` 接口、fallback、第二 owner，也没有删除或降低缓存。
+>
+> **代码与缓存：** `static/app.js` 只移动唯一常量定义；`static/index.html` 将 `app.js` cache key 从 `42.25.215` 推进到 `42.25.216`。`tests/browser/material-workflows.spec.mjs` 增加精确 TTL 错误与 workbench ready 二选一守护，并把会被正常标注框遮挡的图片 hover 改为移动到无框坐标，不改变产品行为。
+>
+> **Focused evidence：** 修复前同一单例明确得到 `Received: "ttl-error"`；修复后仅运行 4 个素材标注 focused browser cases，结果 `4 passed`：打开工作台及绘制/标签选择/保存、stale cache first-paint → authoritative refresh、连续“确认无目标”、上一张/下一张自动保存及已有框恢复。`node --check static/app.js` 与 `node --check tests/browser/material-workflows.spec.mjs` 均通过。
+>
+> **CLOSED：** `LABEL_SCHEMA_CACHE_TTL_MS` ReferenceError 及其造成的标注工作台读取失败。
+>
+> **OPEN：** 当前没有其他已经 isolated 确认且尚未修复的 production blocker。Linux 真实 GPU / 正式模型训练推理、Paddle 实际环境、真实 OSS / 新畅联、Agent/RKNN 实板和生产数据增量 migration 仍需预部署现场验证；其余历史浏览器红灯继续逐条分类。
+>
+> 本轮没有运行 67 项 Frontend Runtime 或全仓库测试，没有修改 schema、产品 IA 或 `VERSION.txt`，没有 merge main、tag、release 或操作 Linux 服务器。
+
 > ## 2026-09-23 Linux 预部署前代码侧 blocker audit（最新最高优先级覆盖）
 >
 > 审计基线 / 审计前远端 HEAD：`5345eba592b4bbf48dbe19fb66e4f7458d437eb7`；`VERSION.txt = 42.24.0`。本节只覆盖代码侧预部署阻断判断，不代表 Linux 真实 GPU、OSS、新畅联或 Rockchip 实板验收完成，也不得据此宣称“全绿”或“正式可上线”。

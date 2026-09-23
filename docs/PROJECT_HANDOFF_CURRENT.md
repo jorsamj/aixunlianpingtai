@@ -1,3 +1,14 @@
+<!-- LIVE_HANDOFF_ANNOTATION_TTL_P0_2026_09_23 -->
+> ## 2026-09-23 素材标注 P0 修复（最新覆盖）
+>
+> 修复前远端 HEAD 为 `0a8f5c5f1eb0f2153ec04792cead5fe674c04110`；新的 Linux 预部署代码候选为直接后继 `f50b71da760d5c136010f4d6a4495837e64be795`；`VERSION.txt = 42.24.0`。
+>
+> **CLOSED：** `素材 → 打开标注` 的 `LABEL_SCHEMA_CACHE_TTL_MS is not defined` 是真实生产回归。唯一 TTL 定义原被封在标签管理 IIFE，后续 annotation workbench IIFE 跨 lexical scope 访问。修复只将该唯一常量提升到两个 IIFE 的共享文件级 lexical scope，未复制 TTL、未暴露到 `window`、未新增 fallback 或第二 owner。`app.js` cache key 已推进到 `42.25.216`。
+>
+> **Focused evidence：** 基线单例精确复现 `ttl-error`；修复后 4 个标注 browser cases 全部通过，覆盖打开工作台、标签选择/绘制/保存、cache-first → authoritative refresh、“确认无目标”、前后切换与已有框恢复；相关 JS syntax check 通过。
+>
+> **OPEN：** 当前没有其他已 isolated 确认且尚未修复的 production blocker。Linux 真实 GPU / 正式模型、Paddle、真实 OSS / 新畅联、Agent/RKNN 实板、生产数据增量 migration 继续等待预部署现场验证。没有运行全量 Frontend Runtime / 全仓库测试，也没有修改 `VERSION.txt`、merge main、tag 或 release。
+>
 <!-- LIVE_HANDOFF_LINUX_PREDEPLOY_AUDIT_2026_09_23 -->
 > ## 2026-09-23 Linux 预部署前代码侧 blocker audit（最新覆盖）
 >

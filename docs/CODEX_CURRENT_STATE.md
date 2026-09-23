@@ -1,3 +1,14 @@
+<!-- CURRENT_STATE_ANNOTATION_TTL_P0_2026_09_23 -->
+> ## 2026-09-23 素材标注 P0 修复（最新覆盖）
+>
+> 修复前远端 HEAD：`0a8f5c5f1eb0f2153ec04792cead5fe674c04110`；新的 Linux 预部署代码候选：`f50b71da760d5c136010f4d6a4495837e64be795`（直接后继，`fix: share label schema cache ttl`）；`VERSION.txt = 42.24.0`。
+>
+> **真实生产回归（已 CLOSED）：** 用户从 `素材 → 打开标注` 收到 `打开标注失败：LABEL_SCHEMA_CACHE_TTL_MS is not defined`。唯一 TTL 常量原在 v42.14 标签管理 IIFE 私有作用域，后续独立 annotation workbench IIFE 的 `ensureWorkbench()` 跨 lexical scope 引用它。现已把唯一常量提升到两者共同的文件级 lexical scope；标签管理和标注工作台共享同一个 TTL owner，不新增副本、`window` 接口、fallback 或第二 owner。
+>
+> `static/app.js` 只移动常量定义；`static/index.html` 的 `app.js` cache key 推进为 `42.25.216`；focused 浏览器验证 `4 passed`，覆盖工作台 ready、标签选择与绘制/保存、cache-first → authoritative refresh、“确认无目标”、已有框恢复。两个相关 JS 文件 syntax check 通过。
+>
+> **当前 blocker 状态：** 没有其他已 isolated 确认且尚未修复的 production blocker。Linux 真实 GPU / 正式模型、Paddle 环境、真实 OSS / 新畅联、Agent/RKNN 实板、生产数据增量 migration 仍为预部署现场 OPEN；未跑 67 项 Frontend Runtime 或全仓库测试，不得宣称全绿或正式可上线。
+>
 <!-- CURRENT_STATE_LINUX_PREDEPLOY_AUDIT_2026_09_23 -->
 > ## 2026-09-23 Linux 预部署前代码侧审计（最新覆盖）
 >
