@@ -115,6 +115,13 @@ test('request uses new labels for the task while inherited labels remain in effe
   assert.equal('priority' in request, false);
 });
 
+test('retired shared GPU draft state normalizes to safe auto isolation', () => {
+  const draft = createTrainingDraft({resource: {gpuPolicy: 'shared'}});
+  assert.equal(draft.resource.gpuPolicy, 'auto');
+  const exclusive = createTrainingDraft({resource: {gpuPolicy: 'exclusive'}});
+  assert.equal(exclusive.resource.gpuPolicy, 'exclusive');
+});
+
 test('request serializes cache into the backend string contract', () => {
   const base = {algorithmId: 'alg-1', materialIds: ['a', 'b'], newLabelCodes: ['fire']};
   for (const [cache, expected] of [[false, 'False'], [true, 'True'], ['False', 'False'], ['True', 'True'], ['ram', 'ram'], ['disk', 'disk']]) {
