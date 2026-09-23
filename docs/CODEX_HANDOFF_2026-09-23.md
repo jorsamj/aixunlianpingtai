@@ -1,5 +1,29 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 08:xx 续接增量（覆盖前一轮续接状态）
+>
+> 文档刷新前最后确认代码/测试 HEAD：`76fbfdfd5aecce22c32de90f507a1703dbffc21b`；`VERSION.txt = 42.24.0`。该 HEAD 当时 **89 个 checks 全部 queued、0 completed failure**，因此仍不能宣称全绿、部署候选或可上线。
+>
+> 本轮继续完成：
+> - 质量中心“选择文件夹”已有真实 Chrome 目录输入：递归两张图片 + 非图片过滤，并实际创建 A/B durable detection tasks。
+> - 自动清洗运行中详情从裸 `setTimeout` 收口到 PollRegistry page owner；弹窗原地 patch，待确认后自动切结果详情，并有 Real Chrome handoff 守护。
+> - AI Candidate Review 大批量 Chrome 已扩大到 **54 张候选 / 34 个正式标签 / 3 页**，覆盖批量映射、显式新建标签、批量统一标签、单框坐标/标签人工修改、accept-all 保留人工 edits。
+> - 修复 AI Review 跨页人工 edits 视觉回退：分页重新读取服务端 candidate 后会重新叠加当前 review session 的人工 edits。
+> - 修复 AI Review 分页乱序 stale response：`pageRequestEpoch` 只允许最后一次分页请求更新 UI。
+> - 修复审核 session 关闭/提交后的 late response 复活：加入 `closed + ownerPage + request epoch` fencing；提交或“暂不处理”后旧分页响应不能重开弹窗。
+>
+> 已再次核对且不要重复：
+> - TrainingTaskRuntime 已覆盖插队/暂停/继续/停止/删除，旧 `promoteTrain428 -> loadRelated()` 只是 legacy 定义。
+> - ZIP legacy interval 由 ZipImportRuntime sentinel 阻止成为第二 polling owner。
+> - 质量中心批量检测离页后 durable task 可继续，DOM patch 在页面不存在时 no-op；不应为了离页强制取消真实任务。
+>
+> 仍 OPEN：
+> - 目标 HEAD 的真实 completed Actions。
+> - 真实 GPU / 正式模型推理 E2E。
+> - 真实 OSS 长期 URL + ChangLian Version/Weight 创建/反查/删除 + 超时幂等恢复生产 E2E。
+>
+> 后续若 Actions 出现 completed failure，必须先读真实 job log；不要因旧测试恢复退役的测试发布/检测台/部署中心 owner。
+>
 > ## 2026-09-23 本轮续接更新（最高优先级覆盖）
 >
 > **本节覆盖本文后面较早的 P0 / NEXT 状态。接手仍必须先读取实时 GitHub，不能把下面 SHA 当作当前 HEAD。**

@@ -1,3 +1,11 @@
+<!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_BATCH2 -->
+> ## 2026-09-23 最新续接：AI 审核跨页 / stale fencing 已收口
+>
+> 先读 `docs/CODEX_HANDOFF_2026-09-23.md` 顶部最新续接增量。文档刷新前代码/测试 HEAD：`76fbfdfd5aecce22c32de90f507a1703dbffc21b`，`VERSION.txt=42.24.0`，当时 89 个 checks 全 queued。
+>
+> 新增重点：真实文件夹检测 Chrome、clean detail PollRegistry 原地 patch、AI Review 54 张/3 页大批量验收、跨页 edits 保留、乱序分页 fencing、提交/关闭后 late response 不复活。真实 GPU / OSS / ChangLian 生产 E2E 仍 OPEN；不得宣称全绿。
+>
+
 <!-- LIVE_HANDOFF_CONTINUATION_2026_09_23 -->
 > ## 2026-09-23 续接覆盖：9/23 handoff 已更新 Real Chrome / 性能收口现场
 >
