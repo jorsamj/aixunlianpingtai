@@ -324,6 +324,47 @@ test('category filtering uses only real external_category_id and separates draft
   cleanup();
 });
 
+test('trainable filter matches the real training affordance for local and external algorithms', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    jobs: [],
+    alg428Expanded: {},
+    algorithms: [
+      {id: 'local-yolo', name: '本地 YOLO', source_type: 'LOCAL', algorithm_type: 'yolo_ultralytics', versions: []},
+      {id: 'local-opencv', name: 'OpenCV', source_type: 'LOCAL', algorithm_type: 'opencv', versions: []},
+      {id: 'external-ready', name: '畅联可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+      {id: 'external-blocked', name: '畅联不可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+    ],
+  };
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({categories: [], categoryRows: [], externalMode: true}),
+    matches: () => true,
+    meta: algorithm => ({
+      external: String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL',
+      sourceLabel: '测试',
+      readiness: {ready: algorithm.id !== 'external-blocked', message: ''},
+    }),
+  });
+  runtime.setFilters({status: 'trainable'}, {render: false});
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id).sort(), ['external-ready', 'local-yolo']);
+  runtime.destroy();
+  cleanup();
+});
+
+test('algorithm registry source keeps card-wide expansion and explicit trainable quick filter', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /class="algorithm-card-grid"/);
+  assert.match(source, /data-algorithm-card="1"/);
+  assert.match(source, /data-algorithm-trainable-only/);
+  assert.match(source, /仅看可训练/);
+  assert.match(source, /!event\.target\.closest\('button,a,input,select,textarea,label,details,summary'\)/);
+  assert.match(source, /scheduleTrainingWarmup\(rows\)/);
+});
+
 test('category presentation supports real arbitrary depth in three visible panes and full-path search', () => {
   const rows = [
     {id: 'root', name: '安全治理', parentId: '', depth: 0, ancestorIds: [], path: '安全治理', hasChildren: true},
