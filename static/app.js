@@ -4517,11 +4517,17 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function eligibleFor(role){const s=splitState(),blocked=s.mode==='independent_test_set'?s[otherRole(role)]:new Set();return allCandidates().filter(row=>!blocked.has(imageId(row)))}
   function selectedLabels(ids){const chosen=new Set(ids),labels=new Set();(state.images||[]).forEach(row=>{if(chosen.has(imageId(row)))(row.labels||[]).forEach(code=>labels.add(labelText(code)))});return[...labels]}
   function renderResources(root,panel){
-    if(root.querySelector('#trV3Device'))return;
-    const resource=state.trainingDraft?.resource||{},report=state.trainingDevicesV3||{},options=report.options||[],field=document.createElement('section');
-    field.className='train-v3-resources train-ui-card train-ui-device-card';
-    field.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练设备</b><small>设备选项来自当前真实训练环境</small></div></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select">${options.map(row=>`<option value="${esc(row.id)}" ${row.available===false?'disabled':''}>${esc(row.label||row.id)}${row.available===false?'（不可用）':''}</option>`).join('')||'<option value="" disabled>设备读取失败</option>'}</select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select"><option value="auto">自动隔离（推荐）</option><option value="exclusive">独占指定 GPU</option></select></label></div><small>${esc(report.error||report.auto?.meaning||'按所选训练环境的可用设备执行')}</small>`;
-    panel.before(field);field.querySelector('#trV3Device').value=resource.device||'auto';field.querySelector('#trV3GpuPolicy').value=resource.gpuPolicy||'auto';
+    const targetId=String(document.getElementById('tr429Target')?.value||''),target=(state.targets||[]).find(row=>String(row.id||'')===targetId),existing=root.querySelector('.train-v3-resources');
+    if(existing?.dataset?.targetId===targetId)return;
+    existing?.remove?.();
+    const resource=state.trainingDraft?.resource||{},report=state.trainingDevicesV3||{},options=report.options||[],field=document.createElement('section'),schedulerOwned=target?.scheduler_owned===true;
+    field.className='train-v3-resources train-ui-card train-ui-device-card';field.dataset.targetId=targetId;
+    if(schedulerOwned){
+      field.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练设备</b><small>GPU 集群由中央调度器统一分配</small></div></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select" disabled><option value="auto">中央自动分配</option></select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select" disabled><option value="auto">单卡单任务安全隔离</option></select></label></div><small>任务启动时按在线节点、未占用 GPU、空闲显存和实时利用率选择执行卡；不会把控制机本地 cuda:N 当作远端集群设备。</small>`;
+    }else{
+      field.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练设备</b><small>设备选项来自当前真实训练环境</small></div></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select">${options.map(row=>`<option value="${esc(row.id)}" ${row.available===false?'disabled':''}>${esc(row.label||row.id)}${row.available===false?'（不可用）':''}</option>`).join('')||'<option value="" disabled>设备读取失败</option>'}</select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select"><option value="auto">自动隔离（推荐）</option><option value="exclusive">独占指定 GPU</option></select></label></div><small>${esc(report.error||report.auto?.meaning||'按所选训练环境的可用设备执行')}</small>`;
+    }
+    panel.before(field);field.querySelector('#trV3Device').value=schedulerOwned?'auto':(resource.device||'auto');field.querySelector('#trV3GpuPolicy').value=schedulerOwned?'auto':(resource.gpuPolicy||'auto');
   }
   function applyBenchmarkReuseUi(panel,s){
     const benchmark=benchmarkReuseState(),available=Boolean(benchmark?.available),enabled=Boolean(s.benchmarkReuseEnabled&&available);
