@@ -375,3 +375,49 @@ test('label management create and edit stay page-scoped without loading the full
 
   page.off('request', capture);
 });
+
+
+test('previous and next navigation auto-save the current annotation', async ({page, request}) => {
+  const project = await createMaterialProject(request, `标注前后切换-${Date.now()}`);
+  const first = await uploadImage(request, project.id, 'nav-one.bmp', [70, 120, 200]);
+  const second = await uploadImage(request, project.id, 'nav-two.bmp', [200, 120, 70]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [first.id, second.id]}
+  });
+  await selectProject(page, project.id);
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  await page.getByRole('button', {name: '批量操作'}).click();
+  const cards = page.locator('.data412-card');
+  await cards.filter({hasText: 'nav-one.bmp'}).getByRole('checkbox').check();
+  await cards.filter({hasText: 'nav-two.bmp'}).getByRole('checkbox').check();
+  await page.getByRole('button', {name: '批量标注'}).click();
+
+  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
+  const imageBox = await dialog.locator('#annImg').boundingBox();
+  expect(imageBox).not.toBeNull();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.7, imageBox.y + imageBox.height * 0.7, {steps: 4});
+  await page.mouse.up();
+  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annSaveState')).toHaveText('未保存');
+
+  await dialog.locator('#ann420Next').click();
+  await expect(dialog.locator('#ann420Filename')).toHaveText('nav-two.bmp');
+  await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
+
+  const savedResponse = await request.get(`/api/projects/${project.id}/annotations/${first.id}`);
+  expect(savedResponse.ok()).toBeTruthy();
+  const saved = await savedResponse.json();
+  expect(saved.boxes).toHaveLength(1);
+
+  await dialog.locator('#ann420Prev').click();
+  await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
+  await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
+  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
+});
