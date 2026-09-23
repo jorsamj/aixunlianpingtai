@@ -290,8 +290,16 @@ def test_training_job_detail_returns_enriched_truth_without_rewriting_worker_fil
     }
     app_module.write_json(job_dir / "job.json", original)
 
-    monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "sync_jobs_index", lambda _project_id: None)
+    monkeypatch.setattr(
+        app_module,
+        "_v48_dispatch_training_queues",
+        lambda _project_id: (_ for _ in ()).throw(AssertionError("detail GET must not dispatch queues")),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "sync_jobs_index",
+        lambda _project_id: (_ for _ in ()).throw(AssertionError("detail GET must not rebuild the global index")),
+    )
     monkeypatch.setattr(
         app_module,
         "enrich_job_runtime",

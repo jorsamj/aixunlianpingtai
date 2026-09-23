@@ -7115,10 +7115,8 @@ def job_status(project_id: str, job_id: str):
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
     job = enrich_job_runtime(project_id, job)
-    # Detail refresh is read-only with respect to job.json.
-    try: _v48_dispatch_training_queues(project_id)
-    except Exception: pass
-    sync_jobs_index(project_id)
+    # Detail refresh is a single-task read projection. Do not dispatch queues or
+    # rebuild the global jobs index from a 1.5s detail/log poll.
     # Return the enriched in-memory projection. Re-reading the worker-owned
     # job.json here would discard canonical task truth we just overlaid.
     response = dict(job)
