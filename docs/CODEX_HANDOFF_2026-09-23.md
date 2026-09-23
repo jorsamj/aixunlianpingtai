@@ -1,5 +1,68 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 Linux 预部署前代码侧 blocker audit（最新最高优先级覆盖）
+>
+> 审计基线 / 审计前远端 HEAD：`5345eba592b4bbf48dbe19fb66e4f7458d437eb7`；`VERSION.txt = 42.24.0`。本节只覆盖代码侧预部署阻断判断，不代表 Linux 真实 GPU、OSS、新畅联或 Rockchip 实板验收完成，也不得据此宣称“全绿”或“正式可上线”。
+>
+> ### A. Linux 启动
+>
+> - Web final entry 是 `app:app`，Worker final entry 是独立的 `task_worker.py`；`task_worker.py --roles all` 的正式兼容模式会隔离 training child 与 background child，不把 Web import 成 Worker 依赖。
+> - 正式生产文档仍定义 `changlian-web.service`、`changlian-worker.service` 与 `127.0.0.1:8010`。仓库没有第二个正式 Web server owner，也没有要求把监听地址改为 `0.0.0.0`；`launcher.py` 的 `0.0.0.0` 默认属于桌面/一键启动器，不是 Linux service 的监听合同。
+> - Python 启动链和关键模块语法检查通过；隔离数据目录下 `import app` 成功，264 条 route 可装载；Worker check 成功且 `web_imported=false`。生产代码没有必须依赖 `C:\` / `D:\` 开发机目录才能启动的路径。`.exe`、`Scripts` 与 Windows process 分支均有 OS guard 或 Linux candidate。
+>
+> ### B. 数据 / 数据库升级
+>
+> - canonical task truth 为 `<DATA_DIR>/task_runtime/tasks.sqlite3`，task artifacts 为 `<DATA_DIR>/task_runtime/artifacts`。项目级正式 truth 还包括 `materials.sqlite3`、`annotations.sqlite3`、`algorithms.sqlite3`；全局 owner 包括 `storage/storage_sources.sqlite3`、`model_artifacts/artifacts.sqlite3`、`external_algorithm_publish/publications.sqlite3`、integration audit、resource discovery、online feedback 等 SQLite store。
+> - 已审计路径采用 `CREATE TABLE/INDEX IF NOT EXISTS`、缺列 `ALTER TABLE ADD COLUMN`、事务与 FileLock；TaskRepository 会拒绝比当前代码更新的 schema。AlgorithmSqlStore 首次把 legacy `algorithms.json` 无损迁到 SQLite 并保留 `.pre-sql-migration-backup`。ModelArtifact 只重建 identity index，不删除 artifact rows。
+> - 启动 import 对 JSON 配置只在文件不存在时创建；v53 bootstrap 只在没有项目时创建默认项目。未发现启动时重建、覆盖、清空已有正式数据的代码。跨 build 且仍有 active task 时 Worker 默认拒绝接管，只有显式 `MC_ALLOW_ACTIVE_TASK_UPGRADE=1` 才允许继续，属于 fail-closed 升级保护。
+>
+> ### C. Web / Worker truth 与本轮真实 blocker
+>
+> - Web 与 Worker 都经 `resolve_data_dir()` 使用 `explicit > MC_TRAIN_DATA_DIR > MC_DATA_DIR`，并共享同一个 task DB / artifact root。Durable Task 必须有 Worker 才会执行；只启动 Web 会允许创建 QUEUED task，但不会消费，这是部署时必须同时启动 Worker 的架构要求。
+> - 本轮唯一 isolated 确认的真实生产 blocker：Web 明确允许正式 `framework=paddle` 训练并创建 required capability `training.paddle`，但 final training Worker owner `platform_core/training_runtime_tasks.py::worker_registration` 原先只声明 `training.ultralytics`。结果是 Paddle task 可创建成功，却没有本机 Worker 能 claim。
+> - 最小修复：同一个 `ProductionTrainingHandler` 的 capability set 增加 `training.paddle`；没有新增 handler、fallback、第二 task owner 或训练架构。测试先以缺少 capability 的预期 AssertionError 失败，再通过；`task_worker --check --roles training` 现在输出唯一 TRAINING handler 和 `training.paddle`、`training.ultralytics` 两项 capability。
+>
+> ### D. 静态资源 / 前端启动
+>
+> - `static/index.html` 当前引用 `app.js?v=42.25.215`、`main.mjs?v=42.25.211`；`main.mjs` 引用 `navigation-stability.js?v=422517`。这些是浏览器 cache key，不是 `VERSION.txt`。
+> - HTML 的 11 个本地静态引用和 JS/MJS 的 65 个相对 module import 均存在，missing=0；`static/app.js`、`static/main.mjs` 与 `static/modules/*` 共 54 个文件的 `node --check` 通过。未发现 production HTML 引用不存在脚本或旧 asset 文件。
+>
+> ### E. 训练 / 转换 / 检测 / 发布 task 链
+>
+> - 训练创建 → `TaskKind.TRAINING` → `ProductionTrainingHandler` 已闭合；训练成功 finalization 会验证 dataset snapshot、模型路径/SHA 和 commit checkpoint，再归档 Algorithm Version。ModelArtifact 后台 owner 会发现原始训练模型和转换产物，缺存储配置时保持 `PENDING`，不回写虚假成功。
+> - local ONNX/RKNN 等转换使用 `TaskKind.MODEL_CONVERSION + conversion.runtime`；Agent 转换使用 `agent.remote`。控制面 job 路径为 `projects/<id>/deployment/jobs`；Agent durable commit root 为 `projects/<id>/deploy/jobs`，ModelArtifact 按“Agent root 优先、control-plane root 兼容”去重读取，两者不是两个 conversion task owner。
+> - Quality Detection 正式 durable task 使用 `TaskKind.DEPLOYMENT_TEST + deployment.runtime`；RKNN 实板验证使用同一 task kind 加 `agent.remote`。两种 capability 均有正式消费者。
+> - OSS / 新畅联 auto-upload / auto-publish 由包含 `storage` role 的 background Worker heartbeat reporter 触发；外部服务/凭据不可用时该链路 fail closed / best effort，不阻止 Web 和基础 Worker 启动。
+>
+> ### F. 环境变量
+>
+> - 生产 truth 必须显式统一：Web 与 Worker 使用同一个 `MC_TRAIN_DATA_DIR`（或次选 `MC_DATA_DIR`）。变量缺失时 Linux 会退回代码目录下 `data`，虽然能启动，但会读错生产 truth，因此属于预部署配置必检项。
+> - 正式监听必须保持 `127.0.0.1:8010`；若使用 launcher 才由 `MC_HOST` / `MC_PORT` 控制。`MC_BUILD_REVISION` 可显式固定 build identity，缺失时回退 Git SHA / source fingerprint。
+> - `MC_CHANGLIAN_ACCESS_KEY`、`MC_CHANGLIAN_ACCESS_SECRET`、通用 `MC_SECRET_<REF>`、`MC_SECRET_MASTER_KEY` / `MC_SECRET_FILE` 只在对应 external secret backend 使用时需要；缺失不会让主平台启动失败。headless Linux 若要把凭据写入 encrypted file，则 `MC_SECRET_MASTER_KEY` 必须存在。
+> - GPU/CUDA、Paddle/Ultralytics roots、CANN/TPU/RKNN 工具、Agent、OSS、新畅联均为相应能力的条件依赖；缺失应让任务等待或明确 BLOCKED/FAILED，不应阻止主平台启动。`MC_NODE_ID` / `MC_NODE_STATE_DIR` 可选，裸机 Linux 可从 machine-id 得到稳定 identity。`MC_ALLOW_ACTIVE_TASK_UPGRADE` 默认不得设置。
+>
+> ### G. 当前 completed Actions 日志分类
+>
+> - Backend/runtime 主链的 Task Runtime Truth、Remote Training、Portable Deployment、External Algorithm Publish、Online Feedback、GPU Runtime、Storage Cache 等当前 SHA workflow 已 completed success。
+> - Remote Conversion 与 Remote RKNN Board Runtime 的失败日志都从 `setPage('部署转换')` / `.deploy-target-card` / `.deploy-job` 旧页面进入，分类为 **STALE TEST**；不得恢复退役部署中心，底层 conversion / RKNN / Agent 能力继续保留。
+> - ZIP Import 两个平台日志显示 42 个 node test 全过，最终只因永久 guard 仍硬编码 `main.mjs?v=42.25.195` 而失败，分类为 stale cache-key guard。
+> - Label Normalization 与 Training Create 的失败是 source-regex / 旧私有 helper / 旧 cache key 断言（例如旧 `createAiLabel429`、旧 `confirmEmptyAnnotation420`、旧 device cache 内部表达式），分类为 test contract drift；不能为它们恢复旧 owner。
+> - Frontend Runtime 浏览器日志中，“测试发布”“工作台”和退役部署 route 明确是 stale IA；“上传”“选择图片”的 strict locator 同时匹配新增 task-center / quality controls，属于 selector debt。其余 annotation interaction 与 source revisit 失败尚未 isolated 分类，只记录为待确认浏览器回归，不能据此修改生产代码，也不作为本轮 Linux 启动 blocker。
+>
+> ### H. 部署前必须修复
+>
+> - `training.paddle` Worker capability 断层已在本轮最小修复。当前没有其他已经确认且尚未修复的代码侧 Linux 预部署 blocker。
+>
+> ### I. 预部署中再验证
+>
+> - 两个正式 service 必须读取同一真实 DATA_DIR，Web 实际监听 `127.0.0.1:8010`，Worker registration/lease/build marker 正常。
+> - Linux 真实 GPU + 正式模型训练/推理；Paddle 实际环境；OSS 长期 URL；新畅联 Version/Weight；Agent/RKNN 实板；已有生产数据的只读启动与增量 migration 观察。上述均仍 OPEN。
+>
+> ### J. 不影响本轮预部署的债务
+>
+> - 已退役“测试发布”“部署转换 / 部署中心”“工作台”正式标题相关旧 route/标题测试；旧 cache-key guard；脆弱 source-regex 与非 exact locator；尚未 isolated 的历史浏览器交互/性能断言。
+> - 未运行全仓库测试、67 项 Frontend Runtime 或真实外部 E2E；没有修改 `VERSION.txt`、schema、正式 IA，也没有 merge main、tag、release 或操作 `/data/platform/current`。
+
 > ## 2026-09-23 Focused Runtime 修复与接手状态（最高优先级覆盖）
 >
 > 本节覆盖本文后续较早的 CI / OPEN / NEXT 描述。基线 HEAD 为

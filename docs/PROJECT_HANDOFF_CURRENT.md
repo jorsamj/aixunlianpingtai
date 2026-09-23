@@ -1,3 +1,18 @@
+<!-- LIVE_HANDOFF_LINUX_PREDEPLOY_AUDIT_2026_09_23 -->
+> ## 2026-09-23 Linux 预部署前代码侧 blocker audit（最新覆盖）
+>
+> 审计基线 / 审计前远端 HEAD：`5345eba592b4bbf48dbe19fb66e4f7458d437eb7`；`VERSION.txt = 42.24.0`。
+>
+> **CLOSED：** 发现并最小修复 Paddle durable training capability 断层。Web 会合法创建 required capability 为 `training.paddle` 的任务，而 final Worker owner `platform_core/training_runtime_tasks.py::worker_registration` 原先只声明 `training.ultralytics`；现在同一个 `ProductionTrainingHandler` 同时声明两种正式 framework capability，没有新增 handler、fallback 或第二 owner。RED 断言、focused registry、Python syntax 与 training-role Worker check 已验证。
+>
+> **代码侧未发现其他新预部署 blocker：** Web final entry 为 `app:app`，Worker final entry 为独立 `task_worker.py`；两者共享 DATA_DIR/task DB/artifacts。数据库迁移为 additive / transactional / fail-closed，未发现启动清空或覆盖正式数据。所有 HTML/module 本地引用存在，54 个关键静态 JS/MJS 文件语法通过。正式 Web 监听合同继续是 `127.0.0.1:8010`，不改为 `0.0.0.0`。
+>
+> **STALE TEST / TEST DEBT：** Remote Conversion / RKNN Actions 仍进入退役“部署转换”页面；ZIP guard 固定旧 main cache key；Label/Training Create 固定旧 source 结构；Frontend Runtime 仍期待“测试发布”“工作台”或使用歧义 locator。不得为这些红灯恢复旧 IA/owner。其余 annotation/source revisit 红灯仍需以后逐条 isolated 分类。
+>
+> **OPEN / 预部署验证：** Web/Worker 必须共用真实 `MC_TRAIN_DATA_DIR`（或 `MC_DATA_DIR`）并同时运行；Linux 真实 GPU、正式模型、Paddle 环境、真实 OSS / 新畅联、Agent/RKNN 实板和生产数据增量 migration 仍需现场证据。外部依赖缺失不应阻止主平台启动，只应让对应能力 fail closed。
+>
+> 未运行全仓库测试、67 项 Frontend Runtime 或真实外部 E2E；没有修改 schema、产品 IA、`VERSION.txt`，没有 merge main、tag、release 或操作 `/data/platform/current`。详细 A-J 审计见 `docs/CODEX_HANDOFF_2026-09-23.md` 顶部。
+>
 <!-- LIVE_HANDOFF_FOCUSED_RUNTIME_FIX_2026_09_23 -->
 > ## 2026-09-23 Focused Runtime 修复最新覆盖
 >

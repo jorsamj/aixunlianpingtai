@@ -1,3 +1,22 @@
+<!-- CURRENT_STATE_LINUX_PREDEPLOY_AUDIT_2026_09_23 -->
+> ## 2026-09-23 Linux 预部署前代码侧审计（最新覆盖）
+>
+> 审计基线 / 审计前远端 HEAD 为 `5345eba592b4bbf48dbe19fb66e4f7458d437eb7`，`VERSION.txt = 42.24.0`。本轮没有新增产品功能、schema 或第二 owner。
+>
+> **真实生产 blocker（已修）：** Web 的正式训练 API 支持 `ultralytics / paddle`，并按 framework 写 required capability；final Worker owner `platform_core/training_runtime_tasks.py::worker_registration` 却只注册 `training.ultralytics`，使 Paddle durable task 能创建但无法被本机 Worker claim。最小修复只在同一个 `ProductionTrainingHandler` capability set 增加 `training.paddle`。先验证新增断言在旧代码上按预期失败，再确认 focused registry check、Python 语法和 `task_worker --check --roles training` 通过；Worker 输出同时包含 `training.paddle`、`training.ultralytics`。
+>
+> **其余代码侧结论：** `app:app` 与独立 `task_worker.py` 可装载；Web/Worker 共享 `resolve_data_dir`、`task_runtime/tasks.sqlite3` 和 artifacts；全部正式 TaskKind 均有对应 handler/capability。SQLite 初始化/迁移为 additive、locked、transactional 或 fail-closed，未发现启动时清空/覆盖正式数据。`projects/<id>/deployment/jobs` 是 control-plane conversion root，`projects/<id>/deploy/jobs` 是 Agent durable commit root，ModelArtifact 有明确优先级和去重，不是双 owner。
+>
+> **静态启动证据：** app import 成功并装载 264 routes；HTML 11 个本地静态引用、JS/MJS 65 个相对 import 均存在；54 个 `app.js/main.mjs/modules` 文件语法通过。当前 cache key 为 `app.js?v=42.25.215`、`main.mjs?v=42.25.211`、`navigation-stability.js?v=422517`。
+>
+> **Actions 分类：** Remote Conversion / RKNN failure 依赖退役“部署转换”页面，ZIP failure 是旧 `main.mjs?v=42.25.195` guard，Label/Training Create 是旧 source-regex/cache/helper 合同，均属 stale/test debt；Frontend Runtime 中“测试发布”“工作台”是 stale IA，“上传/选择图片”是 locator ambiguity。其余 annotation/source revisit 红灯尚未 isolated 分类，不修改生产代码，不算本轮 Linux blocker。
+>
+> **部署前必须保证：** Web/Worker 使用同一真实 `MC_TRAIN_DATA_DIR`（或 `MC_DATA_DIR`）、两个 service 同时运行、Web 继续监听 `127.0.0.1:8010`。外部 OSS/新畅联/GPU/Agent 缺失时主平台仍应启动，相应能力 fail closed。
+>
+> **OPEN：** Linux 真实 GPU / 正式模型训练推理、Paddle 实际环境、真实 OSS 长期 URL、新畅联 Version/Weight、Agent/RKNN 实板、生产数据目录上的启动/增量 migration 观察，以及尚未逐条 isolated 的浏览器回归。除本轮已修 capability 断层外，当前没有确认且尚未修复的代码侧预部署 production blocker。
+>
+> 详细 A-J 证据见 `docs/CODEX_HANDOFF_2026-09-23.md` 顶部。未跑全仓库测试或 67 项 Frontend Runtime；不得宣称全绿、正式上线或生产验收完成。
+>
 <!-- CURRENT_STATE_FOCUSED_RUNTIME_FIX_2026_09_23 -->
 > ## 2026-09-23 Focused Runtime 当前真实状态（最高优先级覆盖）
 >
