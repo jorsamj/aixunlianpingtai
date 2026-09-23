@@ -316,6 +316,15 @@ test('external platform exposes truth provider and never decorates algorithm-lis
 });
 
 
+test('platform integration page exposes focused settings tabs', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(source, /external-platform-tabs/);
+  assert.match(source, /'overview', 'connection', 'sync', 'vendor', 'api', 'history'/);
+  assert.match(source, /tabButton\('vendor', '厂商对应表'/);
+  assert.match(source, /data-platform-tab-panel="overview"/);
+  assert.match(source, /state\(\)\.externalPlatformTab64 = next/);
+});
+
 test('platform page keeps a simple persistent save-test-sync flow', () => {
   const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
   assert.match(source, /external-platform-steps/);
