@@ -39,9 +39,14 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await expect(page.getByText('素材存储', {exact: true})).toBeVisible();
   await expect(page.getByText('算法与转换结果存储', {exact: true})).toBeVisible({timeout: 10_000});
   await expect(page.getByText('自动归档已启用', {exact: true})).toBeVisible();
-  await expect(page.locator('#modelArtifactStorageSource')).toBeVisible();
+  await expect(page.locator('#modelArtifactStorageSource')).toHaveCount(0);
+  await expect(page.locator('#modelArtifactEndpoint')).toBeVisible();
+  await expect(page.locator('#modelArtifactBucket')).toBeVisible();
+  await expect(page.locator('#modelArtifactAccessKeyId')).toBeVisible();
+  await expect(page.locator('#modelArtifactAccessKeySecret')).toBeVisible();
+  await expect(page.locator('#modelArtifactPublicBaseUrl')).toBeVisible();
   await expect(page.locator('#modelArtifactPrefix')).toHaveValue('changlian-ai/artifacts');
-  await expect(page.getByText('该地址由所选 StorageSource 持有', {exact: false})).toBeVisible();
+  await expect(page.getByText('不需要先在“素材存储”创建或选择存储源', {exact: false})).toBeVisible();
   await expect(page.getByText('平台本地存储', {exact: true})).toBeVisible();
   await expect.poll(() => [
     revisitGets.sources > 0,
