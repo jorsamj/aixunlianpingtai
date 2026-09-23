@@ -92,6 +92,8 @@ test('startup and primary pages stay within their cache-first request owners', a
     expect(report.refreshTrue, `${report.label} must not force-refresh the broad snapshot`).toBe(false);
   }
   expect(training.urls.filter(url => /GET \/api\/projects\/[^/]+\/jobs$/.test(url)).length).toBeLessThanOrEqual(1);
+  expect(training.urls.some(url => url.includes('/api/training_options'))).toBe(false);
+  expect(training.urls.some(url => /GET \/api\/projects\/[^/]+\/models$/.test(url))).toBe(false);
   expect(dataset.urls.some(url => url.includes('/api/v61/projects/') && url.includes('/materials?'))).toBe(true);
   expect(dataset.urls.some(url => url.includes('/algorithms') || /\/jobs(?:\?|$)/.test(url))).toBe(false);
   expect(service.urls.some(url => url.includes('/algorithms') || /\/jobs(?:\?|$)/.test(url) || url.includes('/materials'))).toBe(false);
