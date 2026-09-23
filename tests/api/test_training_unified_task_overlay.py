@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -7,6 +8,63 @@ from platform_core.task_runtime import (
     TaskRepository,
     WorkerInstanceService,
 )
+
+
+def test_training_batch_delete_purges_terminal_truth_and_skips_active(client, seeded_project):
+    import app as app_module
+
+    project_id, _image = seeded_project
+    repository = app_module.shared_task_repository()
+    artifacts = app_module.shared_task_artifacts()
+    terminal_id = f"train-delete-terminal-{uuid.uuid4().hex[:10]}"
+    active_id = f"train-delete-active-{uuid.uuid4().hex[:10]}"
+
+    for task_id in (terminal_id, active_id):
+        repository.create(TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:cpu",
+            priority=50,
+            required_capabilities=("training.ultralytics",),
+        ))
+        artifacts.atomic_write_json(task_id, "payload.json", {"task_id": task_id})
+        job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        app_module.write_json(job_dir / "job.json", {
+            "id": task_id,
+            "task_id": task_id,
+            "status": "queued",
+            "asset_algorithm_name": "批量删除验收",
+        })
+
+    repository.request_cancel(terminal_id)
+    terminal_job = app_module.project_dir(project_id) / "jobs" / terminal_id / "job.json"
+    app_module.write_json(terminal_job, {
+        "id": terminal_id,
+        "task_id": terminal_id,
+        "status": "stopped",
+        "asset_algorithm_name": "批量删除验收",
+    })
+    app_module.sync_jobs_index(project_id)
+
+    response = client.post(
+        f"/api/v48/projects/{project_id}/jobs/batch-delete",
+        json={"job_ids": [terminal_id, active_id]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] == 1
+    assert body["deleted_ids"] == [terminal_id]
+    assert body["skipped_active"] == 1
+    assert body["skipped_active_ids"] == [active_id]
+    assert repository.get(terminal_id) is None
+    assert repository.get(active_id) is not None
+    assert not (app_module.project_dir(project_id) / "jobs" / terminal_id).exists()
+    assert (app_module.project_dir(project_id) / "jobs" / active_id).exists()
+    assert not (artifacts.root / terminal_id).exists()
+    assert (artifacts.root / active_id).exists()
 
 
 def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monkeypatch):
