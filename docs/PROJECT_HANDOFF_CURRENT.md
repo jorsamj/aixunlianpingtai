@@ -1,3 +1,12 @@
+<!-- LIVE_HANDOFF_TRAINING_DETAIL_LOG_2026_09_24 -->
+> ## 2026-09-24 训练详情 / 日志 / 错误提示最新覆盖
+>
+> 代码基线：`8e50195f76d0aa58ccf6082bdbd7c93029b528b7`，`VERSION.txt=42.24.0`。已将训练详情与日志收敛到单一 `TrainingRecoveryRuntime`，实时列表/详情通过 `TrainingProgressStream` 接 durable SSE；成功终态不会再被历史 error/recovery 误判；失败任务保留结构化 error type / failure stage；详情展示真实资源档位、Batch/Workers/Cache、设备、GPU/CPU/I/O telemetry、数据版本/快照/Checkpoint/产物及统一技术日志。
+>
+> 运行中弹窗使用 PollRegistry；terminal SSE 到达后必须再拉一次最终 detail + log 后才停止。详情 GET 已明确为 read-only：不 dispatch 队列、不 rebuild 全局 index、不触发算法版本归档。旧训练详情 renderer / run center owner 已退役，不得恢复第二套 UI。
+>
+> 详细说明：`docs/CODEX_HANDOFF_2026-09-24_TRAINING_DETAIL_LOGS.md`。文档写入时 88 checks queued、0 completed failure，不得宣称全绿；真实 Linux GPU / Agent 现场仍需验证最终进度、日志和故障证据。
+>
 <!-- LIVE_HANDOFF_ANNOTATION_TTL_P0_2026_09_23 -->
 > ## 2026-09-23 素材标注 P0 修复（最新覆盖）
 >

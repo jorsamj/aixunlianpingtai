@@ -1,3 +1,18 @@
+<!-- CURRENT_STATE_TRAINING_DETAIL_LOG_2026_09_24 -->
+> ## 2026-09-24 训练详情 / 日志 / 错误提示收口（最新覆盖）
+>
+> 文档写入前代码 HEAD：`8e50195f76d0aa58ccf6082bdbd7c93029b528b7`；`VERSION.txt = 42.24.0`。当时 88 个 checks queued、0 completed failure，queued 不能视为通过。
+>
+> **CLOSED：** 训练成功被旧 error/recovery 误显示为失败；训练详情/日志多 owner；详情 GET 回写 worker truth / 重建 index / 触发队列；错误证据过少；运行中详情不跟随 SSE；终态 SSE 后详情停在最后一帧之前；远程/本地日志只有单一来源；详情布局过于平铺。当前唯一 visual owner 为 `TrainingRecoveryRuntime`，列表 owner 为 `TrainingTaskRuntime`，实时事件 owner 为 `TrainingProgressStream`。
+>
+> **后端合同：** canonical durable `task_status` 优先；SUCCEEDED 清除历史 fatal error，PARTIAL_SUCCESS 转 warning；Worker 写入 `error/error_type/failure_stage`；详情 GET 返回 enriched in-memory truth + runtime metrics / resolved resources，但明确 `allow_version_archive=False`，不承担归档业务；日志 endpoint 合并 `train.log` 与 durable scheduler/worker log。
+>
+> **刷新合同：** 运行中详情由 SSE 即时 patch + PollRegistry 1.5s detail/log 对账；收到 terminal SSE 后强制再做一次 canonical detail + final log reconcile，随后停止刷新。浏览器 cache 已推进到 `training-recovery-runtime.js?v=422575`、`main.mjs?v=42.25.226`。
+>
+> **技术债约束：** 不得恢复旧 `openTrainDetail423` renderer、旧 train run center、第二日志弹窗、runtime 私有 CSS owner、裸 setTimeout/setInterval、详情 GET 的业务副作用。
+>
+> 详细交接与 commit/test 清单见 `docs/CODEX_HANDOFF_2026-09-24_TRAINING_DETAIL_LOGS.md`。
+>
 <!-- CURRENT_STATE_ANNOTATION_TTL_P0_2026_09_23 -->
 > ## 2026-09-23 素材标注 P0 修复（最新覆盖）
 >
