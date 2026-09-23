@@ -257,7 +257,8 @@ jobs:
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
           grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
           grep -Fq '存储配置 → 算法与转换结果存储' static/modules/external-algorithm-publish.js
-          grep -Fq '原始训练模型（必传）' static/modules/external-algorithm-publish.js
+          grep -Fq '通用是特殊映射' static/modules/external-algorithm-publish.js
+          grep -Fq "enabled: key === 'original' ? true" static/modules/external-algorithm-publish.js
           grep -Fq '官方同步接口' static/modules/external-algorithm-publish.js
           grep -Fq '创建、查询和删除均使用新畅联官方 OpenAPI 固定路径' static/modules/external-algorithm-publish.js
           if grep -Fq 'id="externalPublishVersionList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian version endpoint must not be user-editable" >&2; exit 1; fi

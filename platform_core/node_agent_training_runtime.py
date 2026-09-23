@@ -540,6 +540,13 @@ class AgentTrainingRunner:
             raise AgentTrainingRuntimeError(
                 "remote training requested/selected device mismatch"
             )
+        gpu_policy = str(
+            self._parameter(payload, "gpu_policy", "auto") or "auto"
+        ).strip().lower()
+        if gpu_policy not in {"auto", "exclusive"}:
+            raise AgentTrainingRuntimeError(
+                "remote training GPU policy is unsupported; shared GPU remains disabled"
+            )
 
         project = (workdir / "project").resolve()
         job_dir = project / "jobs" / lease.task_id
@@ -641,6 +648,7 @@ class AgentTrainingRunner:
                 "requested_device": requested_device,
                 "assigned_device": selected_device,
                 "selected_gpu": gpu,
+                "gpu_policy": gpu_policy,
                 "runtime_stop_policy": runtime_stop_policy,
                 "quality_gate": {
                     "runtime_stop_policy": runtime_stop_policy,
@@ -703,6 +711,8 @@ class AgentTrainingRunner:
             str(self._parameter(payload, "resource_strategy", "auto") or "auto"),
             "--resource-profile",
             str(self._parameter(payload, "resource_profile", "balanced") or "balanced"),
+            "--gpu-policy",
+            gpu_policy,
             "--precision",
             str(self._parameter(payload, "precision", "auto") or "auto"),
             "--resource-context",

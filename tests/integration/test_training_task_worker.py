@@ -90,6 +90,7 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         "epochs": 1,
         "imgsz": 64,
         "batch": 2,
+        "gpu_policy": "auto",
         "device": "cpu",
         "eval_metric": "map50",
         "continue_threshold": 0.60,
@@ -107,7 +108,10 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         )
     )
 
+    observed_argv = {}
+
     def fake_runner(context, argv, job_file):
+        observed_argv["value"] = list(argv)
         model = project / "models" / "fake-trained.pt"
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(b"verified-model")
@@ -167,6 +171,8 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert scheduler.run_once() is True
     task = repository.get("task-one")
     assert task is not None and task.status is TaskStatus.SUCCEEDED, task.error if task else "missing task"
+    worker_argv = observed_argv["value"]
+    assert worker_argv[worker_argv.index("--gpu-policy") + 1] == "auto"
     result = artifacts.read_json("task-one", task.result_ref)
     assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
     snapshot = artifacts.read_json("task-one", "snapshot.json")

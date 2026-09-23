@@ -756,6 +756,7 @@ def main():
     parser.add_argument("--cache", default="False")
     parser.add_argument("--resource-strategy", choices=("auto", "manual"), default="auto")
     parser.add_argument("--resource-profile", choices=("balanced", "performance", "stability"), default="balanced")
+    parser.add_argument("--gpu-policy", choices=("auto", "exclusive"), default="auto")
     parser.add_argument("--precision", choices=("auto", "fp16", "bf16", "fp32"), default="auto")
     parser.add_argument("--time", type=float, default=None)
     parser.add_argument("--resource-context", default="")
@@ -809,7 +810,7 @@ def main():
     runs_dir = project_dir / "runs"
     models_dir = project_dir / "models"
     models_dir.mkdir(exist_ok=True)
-    update_job(job_file, runtime_stop_policy=runtime_stop_policy)
+    update_job(job_file, runtime_stop_policy=runtime_stop_policy, gpu_policy=args.gpu_policy)
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
@@ -925,6 +926,7 @@ def main():
             "device": runtime_device,
             "resource_strategy": args.resource_strategy,
             "resource_profile": args.resource_profile,
+            "gpu_policy": args.gpu_policy,
         }, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])

@@ -417,6 +417,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "seed": 9,
             "resource_strategy": "auto",
             "resource_profile": "performance",
+            "gpu_policy": "exclusive",
             "precision": "bf16",
             "time": 2.5,
             "runtime_stop_policy": "target_only",
@@ -477,6 +478,7 @@ parser.add_argument("--job-id", required=True)
 parser.add_argument("--run-name", required=True)
 parser.add_argument("--runtime-stop-policy", required=True)
 parser.add_argument("--resource-profile", required=True)
+parser.add_argument("--gpu-policy", required=True)
 parser.add_argument("--precision", required=True)
 parser.add_argument("--time", required=True)
 parser.add_argument("--resource-context", required=True)
@@ -497,6 +499,7 @@ runtime_root.joinpath("worker-args.json").write_text(
         "run_name": args.run_name,
         "runtime_stop_policy": args.runtime_stop_policy,
         "resource_profile": args.resource_profile,
+        "gpu_policy": args.gpu_policy,
         "precision": args.precision,
         "time": args.time,
         "train_image_count": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("train_image_count"),
@@ -623,6 +626,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["requested_device"] == "auto"
     assert args["runtime_stop_policy"] == "target_only"
     assert args["resource_profile"] == "performance"
+    assert args["gpu_policy"] == "exclusive"
     assert args["precision"] == "bf16"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321

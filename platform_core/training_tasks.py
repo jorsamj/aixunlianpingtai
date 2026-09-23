@@ -884,6 +884,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
         "--resource-profile", str(payload.get("resource_profile") or "balanced"),
+        "--gpu-policy", str(payload.get("gpu_policy") or "auto"),
         "--precision", str(payload.get("precision") or "auto"),
     ]
     value_options = {

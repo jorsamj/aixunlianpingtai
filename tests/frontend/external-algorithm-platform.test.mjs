@@ -331,7 +331,8 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   assert.match(source, /<b>保存配置<\/b>/);
   assert.match(source, /<b>测试连接<\/b>/);
   assert.match(source, /<b>同步主数据<\/b>/);
-  assert.match(source, /配置状态/);
+  assert.match(source, /external-platform-status external-platform-status-v2/);
+  assert.match(source, /<b>配置<\/b><em>\$\{escapeHtml\(savedStatus\)\}<\/em>/);
   const formStart = source.indexOf('function configFormHtml');
   const collectStart = source.indexOf('function collectForm', formStart);
   const formBlock = source.slice(formStart, collectStart);

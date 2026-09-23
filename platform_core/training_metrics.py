@@ -66,6 +66,9 @@ def resolve_resources(request, context, model, torch):
     profile = str(request.get("resource_profile") or "balanced").strip().lower()
     if profile not in {"balanced", "performance", "stability"}:
         raise ValueError("RESOURCE_PROFILE_INVALID")
+    gpu_policy = str(request.get("gpu_policy") or "auto").strip().lower()
+    if gpu_policy not in {"auto", "exclusive"}:
+        raise ValueError("GPU_POLICY_UNSUPPORTED: shared GPU scheduling is not enabled")
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -228,6 +231,7 @@ def resolve_resources(request, context, model, torch):
     resolved = dict(
         resource_strategy=strategy,
         resource_profile=profile,
+        gpu_policy=gpu_policy,
         requested_batch=requested_batch,
         requested_workers=requested_workers,
         requested_cache=requested_cache,

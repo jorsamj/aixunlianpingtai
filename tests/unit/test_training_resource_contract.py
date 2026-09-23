@@ -51,6 +51,7 @@ class _Torch:
 def _request(**overrides):
     value = {
         "resource_strategy": "auto",
+        "gpu_policy": "auto",
         "batch": 16,
         "workers": 4,
         "cache": False,
@@ -190,6 +191,25 @@ def test_discovered_training_device_recommends_scheduler_auto(monkeypatch):
     result = training_devices.discover_training_devices("/python")
     assert result["recommended"] == "auto"
     assert result["options"][-1]["id"] == "auto"
+
+
+def test_gpu_policy_is_preserved_and_shared_fails_closed(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(gpu_policy="exclusive"),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    assert result["gpu_policy"] == "exclusive"
+
+    with pytest.raises(ValueError, match="GPU_POLICY_UNSUPPORTED"):
+        training_metrics.resolve_resources(
+            _request(gpu_policy="shared"),
+            _context(),
+            _Model(),
+            _Torch(_Cuda()),
+        )
 
 
 def test_manual_keeps_exact_values(monkeypatch):

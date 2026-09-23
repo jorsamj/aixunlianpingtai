@@ -119,6 +119,7 @@ test('start payload is derived from canonical TrainingDraft instead of legacy id
   assert.equal(payload.device, '0');
   assert.equal(payload.resource_strategy, 'manual');
   assert.equal(payload.resource_profile, 'balanced');
+  assert.equal(payload.gpu_policy, 'exclusive');
   assert.equal(payload.precision, 'bf16');
   assert.equal(payload.time, 2.5);
   assert.equal(payload.batch, 16);
