@@ -43,6 +43,7 @@ test('service node page shows live resources and creates Agent credentials', asy
   const capabilities = ['training', 'material-import', 'cleaning', 'annotation', 'video', 'conversion', 'conversion.rknn', 'deployment-test', 'deployment-test.rknn', 'model-upload'];
   let nodes = [node()];
   let createdPayload = null;
+  let listGets = 0;
 
   await page.route(/\/api\/v63\/service-nodes\/gpu-a800-01\/connectivity-test$/, async route => {
     await route.fulfill({
@@ -62,6 +63,7 @@ test('service node page shows live resources and creates Agent credentials', asy
   await page.route(/\/api\/v63\/service-nodes$/, async route => {
     const method = route.request().method();
     if (method === 'GET') {
+      listGets += 1;
       await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: nodes, supported_capabilities: capabilities})});
       return;
     }
@@ -107,6 +109,16 @@ test('service node page shows live resources and creates Agent credentials', asy
   await expect(a800).toContainText('train-browser-1');
   await expect(page.locator('#summary')).toContainText('服务节点');
   await expect(page.locator('#summary')).toContainText('在线');
+  await expect.poll(() => listGets).toBeGreaterThan(0);
+  const firstVisitGets = listGets;
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('服务节点'));
+  await expect(page.locator('#title')).toHaveText('服务节点');
+  await expect(page.locator('[data-service-node-page="1"]')).toBeVisible();
+  await page.waitForTimeout(120);
+  expect(listGets).toBe(firstVisitGets);
 
   await page.evaluate(() => {
     window.__serviceNodeStableShell = document.querySelector('[data-service-node-page="1"]');
