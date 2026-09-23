@@ -938,6 +938,7 @@ def main():
             "resource_strategy": args.resource_strategy,
             "resource_profile": args.resource_profile,
             "gpu_policy": args.gpu_policy,
+            "precision": precision,
         }, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])

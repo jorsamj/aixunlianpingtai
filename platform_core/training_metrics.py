@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .annotations import atomic_write_json
 from .gpu_resources import sample_gpus
+from .training_precision import normalize_training_precision
 
 GIB = 1024 ** 3
 
@@ -69,6 +70,13 @@ def resolve_resources(request, context, model, torch):
     gpu_policy = str(request.get("gpu_policy") or "auto").strip().lower()
     if gpu_policy not in {"auto", "exclusive"}:
         raise ValueError("GPU_POLICY_UNSUPPORTED: shared GPU scheduling is not enabled")
+    precision = normalize_training_precision(request.get("precision") or "auto")
+    activation_precision_factor = (
+        2.0
+        if precision == "fp32"
+        or (precision == "auto" and request.get("amp") is False)
+        else 1.0
+    )
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -183,6 +191,7 @@ def resolve_resources(request, context, model, torch):
             * max(1.0, (params / 3_000_000) ** 0.55)
             * (int(request["imgsz"]) / 640) ** 2
             * (1 + float(request.get("multi_scale") or 0)) ** 2
+            * activation_precision_factor
         )
         other = max(0, int(context.get("other_reserved_bytes") or 0))
         reserve_floor = max(GIB, int(total * 0.05))
@@ -232,6 +241,8 @@ def resolve_resources(request, context, model, torch):
         resource_strategy=strategy,
         resource_profile=profile,
         gpu_policy=gpu_policy,
+        precision=precision,
+        activation_precision_factor=activation_precision_factor,
         requested_batch=requested_batch,
         requested_workers=requested_workers,
         requested_cache=requested_cache,

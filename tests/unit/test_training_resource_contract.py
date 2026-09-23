@@ -52,6 +52,8 @@ def _request(**overrides):
     value = {
         "resource_strategy": "auto",
         "gpu_policy": "auto",
+        "precision": "auto",
+        "amp": True,
         "batch": 16,
         "workers": 4,
         "cache": False,
@@ -129,6 +131,26 @@ def test_auto_profiles_trade_throughput_for_headroom(monkeypatch):
     assert stability["target_gpu_memory_fraction"] == pytest.approx(0.58)
     assert balanced["target_gpu_memory_fraction"] == pytest.approx(0.70)
     assert performance["target_gpu_memory_fraction"] == pytest.approx(0.82)
+
+
+def test_fp32_uses_more_conservative_activation_memory_budget_than_fp16(monkeypatch):
+    _patch_host(monkeypatch)
+    fp16 = training_metrics.resolve_resources(
+        _request(precision="fp16", amp=True),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    fp32 = training_metrics.resolve_resources(
+        _request(precision="fp32", amp=False),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert fp16["activation_precision_factor"] == pytest.approx(1.0)
+    assert fp32["activation_precision_factor"] == pytest.approx(2.0)
+    assert fp32["resolved_batch"] < fp16["resolved_batch"]
 
 
 def test_auto_selects_ram_cache_when_dataset_safely_fits(monkeypatch):
