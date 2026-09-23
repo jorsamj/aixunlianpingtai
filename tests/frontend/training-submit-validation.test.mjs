@@ -58,6 +58,26 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 });
 
 
+test('recommended training UI exposes the bounded adaptive controls without expert-only clutter', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /GPU 集群自动调度（推荐）/);
+  assert.match(source, /自动调度（推荐）/);
+  assert.match(source, /智能推荐（推荐）/);
+  assert.match(source, /性能优先/);
+  assert.match(source, /稳定优先/);
+  assert.match(source, /最大训练时长/);
+  assert.match(source, /训练精度/);
+  assert.match(source, /ts428Patience/);
+  assert.match(source, /ts428Lrf/);
+  assert.match(source, /ts428Warmup/);
+  assert.match(source, /ts428CloseMosaic/);
+  assert.match(source, /Batch（手动模式）/);
+  assert.match(source, /Workers（手动模式）/);
+  assert.match(source, /缓存（手动模式）/);
+  assert.doesNotMatch(source, /量化感知训练（QAT）/);
+  assert.doesNotMatch(source, /torch\.compile 模式/);
+});
+
 test('external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const hydration = readFileSync(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
