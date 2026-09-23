@@ -58,3 +58,45 @@ test('video progress delta keeps row and progress nodes stable', async ({page}) 
   }))).toEqual({row:true, progress:true});
   expect(pageErrors).toEqual([]);
 });
+
+
+test('video page revisit reuses the recent task snapshot without another list request', async ({page}) => {
+  let listGets = 0;
+  await page.route('**/api/v33/projects/*/video-tasks', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    listGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [{
+        id:'video-cache-1',
+        video_name:'cached.mp4',
+        status:'DONE',
+        task_status:'SUCCEEDED',
+        phase:'done',
+        progress_percent:100,
+        progress:100,
+        result:{extracted_frames:12},
+        mode:'fixed_count',
+        fixed_count:12,
+        split:'train',
+        created_at:'2026-09-23T00:00:00Z',
+        updated_at:'2026-09-23T00:00:01Z',
+      }]}),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout:15_000});
+  await page.evaluate(() => window.setPage('视频切帧'));
+  await expect(page.locator('[data-task-id="video-cache-1"]')).toBeVisible({timeout:10_000});
+  await expect.poll(() => listGets).toBeGreaterThan(0);
+  const firstVisitGets = listGets;
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('视频切帧'));
+  await expect(page.locator('[data-task-id="video-cache-1"]')).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(listGets).toBe(firstVisitGets);
+});
