@@ -407,6 +407,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "reference": "yolo11n.pt",
             "base_selection_reason": "mother_model",
         },
+        "counts": {"train": 321, "validation": 40, "test": 40},
         "params": {
             "epochs": 3,
             "imgsz": 640,
@@ -478,6 +479,7 @@ parser.add_argument("--runtime-stop-policy", required=True)
 parser.add_argument("--resource-profile", required=True)
 parser.add_argument("--precision", required=True)
 parser.add_argument("--time", required=True)
+parser.add_argument("--resource-context", required=True)
 args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
@@ -497,6 +499,7 @@ runtime_root.joinpath("worker-args.json").write_text(
         "resource_profile": args.resource_profile,
         "precision": args.precision,
         "time": args.time,
+        "train_image_count": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("train_image_count"),
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -622,6 +625,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["resource_profile"] == "performance"
     assert args["precision"] == "bf16"
     assert args["time"] == "2.5"
+    assert args["train_image_count"] == 321
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
