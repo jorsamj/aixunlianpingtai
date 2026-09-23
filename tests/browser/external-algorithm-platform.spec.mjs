@@ -422,7 +422,9 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(categoryPopover.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
   await expect(categoryPopover.getByText('行为分析', {exact: true})).toBeVisible();
   await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
-  await expect(page.getByRole('button', {name: '↻ 同步畅联云'})).toBeVisible();
+  const syncButton = listOwner.locator('[data-algorithm-sync]');
+  await expect(syncButton).toBeVisible();
+  await expect(syncButton).toHaveText('同步畅联云');
 
   const card = page.locator('.alg428-card', {hasText: '待同步抽烟检测'});
   await expect(card).toBeVisible();
