@@ -263,6 +263,17 @@ def _online_nodes(
     return result
 
 
+def _gpu_rank_value(item: Mapping[str, Any]) -> float:
+    free = float(item.get("memory_free_bytes") or 0)
+    total = float(item.get("memory_total_bytes") or 0)
+    utilization = max(0.0, min(100.0, float(item.get("utilization_percent") or 0)))
+    # Treat utilization as real contention, not just display telemetry. A GPU
+    # with slightly less free VRAM but very low utilization should beat a busy
+    # card when both have enough memory.
+    utilization_penalty = total * (utilization / 100.0) * 0.35
+    return free - utilization_penalty
+
+
 def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     resources = _loads(row["resource_json"], {})
     memory = resources.get("memory", {}) if isinstance(resources, Mapping) else {}
@@ -273,14 +284,11 @@ def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     disk_free = float((disk or {}).get("free_bytes") or 0)
     cores = float((cpu or {}).get("logical_cores") or 0)
     gpus = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
-    gpus = gpus if isinstance(gpus, list) else []
-    vram_free = max(
-        (float(item.get("memory_free_bytes") or 0) for item in gpus if isinstance(item, Mapping)),
-        default=0.0,
-    )
+    gpus = [item for item in (gpus if isinstance(gpus, list) else []) if isinstance(item, Mapping)]
+    best_gpu_score = max((_gpu_rank_value(item) for item in gpus), default=0.0)
     penalty = float(active) * 1e18
     score = (
-        vram_free * 1000.0 + memory_free * 10.0 + cores * 1e9 - penalty
+        best_gpu_score * 1000.0 + memory_free * 10.0 + cores * 1e9 - penalty
         if capability == "training"
         else memory_free * 10.0 + disk_free + cores * 1e9 - penalty
     )
@@ -294,7 +302,7 @@ def _selected_gpu(row) -> dict[str, Any] | None:
     items = [item for item in items or [] if isinstance(item, Mapping)]
     if not items:
         return None
-    best = max(items, key=lambda item: float(item.get("memory_free_bytes") or 0))
+    best = max(items, key=_gpu_rank_value)
     return {
         "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
         "index": int(best.get("index") or 0),
@@ -302,6 +310,11 @@ def _selected_gpu(row) -> dict[str, Any] | None:
         "name": best.get("name"),
         "memory_free_bytes": int(best.get("memory_free_bytes") or 0),
         "memory_total_bytes": int(best.get("memory_total_bytes") or 0),
+        "utilization_percent": (
+            int(best.get("utilization_percent"))
+            if best.get("utilization_percent") is not None
+            else None
+        ),
     }
 
 
