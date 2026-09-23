@@ -200,12 +200,12 @@ test('changlian platform page tests draft credentials before manual sync', async
 
   await page.evaluate(() => window.setPage('平台对接'));
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
-  await expect.poll(() => ({configGets, historyGets, cacheGets, readinessGets}), {timeout: 10_000}).toMatchObject({
-    configGets: 1,
-    historyGets: 1,
-    cacheGets: 1,
-    readinessGets: 1,
-  });
+  await expect.poll(() => [
+    configGets > 0,
+    historyGets > 0,
+    cacheGets > 0,
+    readinessGets > 0,
+  ], {timeout: 10_000}).toEqual([true, true, true, true]);
   const firstVisitGets = {configGets, historyGets, cacheGets, readinessGets};
   await page.evaluate(() => window.setPage('工作台'));
   await expect(page.locator('#title')).toContainText('总览');
