@@ -88,6 +88,38 @@ def test_artifact_oss_config_is_standalone_from_material_storage(tmp_path: Path)
     }
 
 
+def test_artifact_oss_bucket_domain_is_normalized_to_service_endpoint(tmp_path: Path):
+    service = _service(tmp_path)
+
+    result = service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+        endpoint="new24hlink.oss-cn-hangzhou.aliyuncs.com",
+        bucket="new24hlink",
+        access_key_id="LTAI-artifact",
+        access_key_secret="artifact-secret",
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+        root_prefix="changlian-ai/artifacts",
+    ))
+
+    assert result["artifact_storage"]["endpoint"] == "https://oss-cn-hangzhou.aliyuncs.com"
+    source = service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+    assert source is not None
+    assert source.config["endpoint"] == "https://oss-cn-hangzhou.aliyuncs.com"
+
+
+def test_artifact_oss_endpoint_without_scheme_defaults_to_https(tmp_path: Path):
+    service = _service(tmp_path)
+
+    result = service.save_artifact_oss_config(ArtifactOSSConfigPayload(
+        endpoint="oss-cn-hangzhou.aliyuncs.com",
+        bucket="new24hlink",
+        access_key_id="LTAI-artifact",
+        access_key_secret="artifact-secret",
+        root_prefix="changlian-ai/artifacts",
+    ))
+
+    assert result["artifact_storage"]["endpoint"] == "https://oss-cn-hangzhou.aliyuncs.com"
+
+
 def test_artifact_oss_config_blank_credentials_preserve_existing_secret(tmp_path: Path):
     service = _service(tmp_path)
     service.save_artifact_oss_config(ArtifactOSSConfigPayload(
