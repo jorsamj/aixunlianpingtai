@@ -716,7 +716,7 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
 
         <div class="external-platform-steps" aria-label="新畅联对接流程">
-          <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存连接配置</b><span>API 地址与应用凭据</span></div></div>
+          <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存配置</b><span>API 地址与应用凭据</span></div></div>
           <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>确认鉴权与只读接口</span></div></div>
           <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>产品、分析方式、算力环境</span></div></div>
           <div class="external-step ${syncSucceeded ? 'current' : ''}"><i>4</i><div><b>配置厂商对应</b><span>通用与转换厂商映射</span></div></div>
