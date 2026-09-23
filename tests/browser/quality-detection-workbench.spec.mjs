@@ -1,4 +1,7 @@
 import {test, expect} from '@playwright/test';
+import {promises as fs} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
@@ -181,6 +184,33 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchRun64').click();
   await expect.poll(()=>creates.length).toBe(4);
   expect(creates[3].raw).toContain('\r\n\r\nB\r\n');
+
+  const folder=await fs.mkdtemp(path.join(os.tmpdir(),'quality-folder-'));
+  try{
+    const nested=path.join(folder,'nested');
+    await fs.mkdir(nested,{recursive:true});
+    await fs.writeFile(path.join(folder,'folder-one.bmp'),bmp(96,72,[90,150,190]));
+    await fs.writeFile(path.join(nested,'folder-two.bmp'),bmp(96,72,[190,150,90]));
+    await fs.writeFile(path.join(folder,'ignore.txt'),Buffer.from('not an image'));
+
+    await page.evaluate(()=>window.clearBenchFiles64());
+    await page.locator('#benchFolder64').setInputFiles(folder);
+    await expect(page.locator('#benchFileCount64')).toHaveText('已选择 2 张图片');
+    await expect(page.locator('#benchFileList64')).toContainText('folder-one.bmp');
+    await expect(page.locator('#benchFileList64')).toContainText('folder-two.bmp');
+    await expect(page.locator('#benchFileList64')).not.toContainText('ignore.txt');
+
+    await page.locator('#benchMode64').selectOption('compare');
+    await page.locator('#benchRun64').click();
+    await expect(page.locator('#benchBatchList64 .bench64-result-row.done')).toHaveCount(2);
+    await expect.poll(()=>creates.length).toBe(8);
+    for(const task of creates.slice(4)){
+      expect(task.raw).toContain('name="detection_item_total"');
+      expect(task.raw).toContain('\r\n\r\n2\r\n');
+    }
+  }finally{
+    await fs.rm(folder,{recursive:true,force:true});
+  }
 
   const history=page.locator('.bench64-history-row',{hasText:'history-batch'});
   await expect(history).toBeVisible();
