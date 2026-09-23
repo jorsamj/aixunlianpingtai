@@ -128,6 +128,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let externalProvider = null;
   let trainingWarmupHandle = null;
   let trainingWarmupGeneration = 0;
+  let commonTrainingWarmupProjectId = '';
+  let commonTrainingWarmupAt = 0;
+  const COMMON_TRAINING_WARMUP_TTL_MS = 5 * 60 * 1000;
   const renderedRows = new Map();
   const filters = {
     query: '',
@@ -298,11 +301,21 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     cancelTrainingWarmup();
     const generation = trainingWarmupGeneration;
     // The common training options/recommendation are global for the current
-    // project. Warm them once as soon as the algorithm list is usable.
-    queueMicrotask(() => {
-      if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
-      void warmTrainingInputs('', {includePreflight: false});
-    });
+    // project. Warm them once, then keep local card rerenders network-free.
+    const currentProjectId = String(projectId?.() || '');
+    const now = Date.now();
+    const commonWarmupFresh = currentProjectId
+      && commonTrainingWarmupProjectId === currentProjectId
+      && now - commonTrainingWarmupAt >= 0
+      && now - commonTrainingWarmupAt < COMMON_TRAINING_WARMUP_TTL_MS;
+    if (!commonWarmupFresh) {
+      commonTrainingWarmupProjectId = currentProjectId;
+      commonTrainingWarmupAt = now;
+      queueMicrotask(() => {
+        if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
+        void warmTrainingInputs('', {includePreflight: false});
+      });
+    }
     // Real-time ChangLian preflight remains authoritative. Move the latency
     // off the click path by warming a small visible window while the browser is idle.
     const candidates = rows.filter(row => {

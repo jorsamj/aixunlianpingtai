@@ -210,6 +210,10 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
 
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#modalBody')).toContainText('20260912100000');
+  // Algorithm-list startup may prewarm common training inputs once. The mutation
+  // itself must remain focused and must not trigger another training-options GET.
+  await page.waitForTimeout(150);
+  requests.length = 0;
   page.once('dialog', dialog => dialog.accept());
   await page.locator('#modalBody').getByRole('button', {name: '删除版本'}).click();
 

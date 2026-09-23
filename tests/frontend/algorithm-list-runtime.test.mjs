@@ -363,6 +363,8 @@ test('algorithm registry source keeps card-wide expansion and explicit trainable
   assert.match(source, /仅看可训练/);
   assert.match(source, /!event\.target\.closest\('button,a,input,select,textarea,label,details,summary'\)/);
   assert.match(source, /scheduleTrainingWarmup\(rows\)/);
+  assert.match(source, /COMMON_TRAINING_WARMUP_TTL_MS = 5 \* 60 \* 1000/);
+  assert.match(source, /commonTrainingWarmupProjectId === currentProjectId/);
 });
 
 test('category presentation supports real arbitrary depth in three visible panes and full-path search', () => {
