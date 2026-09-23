@@ -1,3 +1,10 @@
+<!-- CURRENT_STATE_TRAINING_DETAIL_CI_FOLLOWUP_2026_09_24 -->
+> ## 2026-09-24 训练详情收口后的 CI 红灯分类
+>
+> 训练详情代码基线 `8e50195f...` 出现两个 completed failure 后已读取真实日志：External Algorithm Platform Real Chrome 是测试仍引用退役 `[data-external-category-filter]`；ZIP Windows contract 是 guard 仍硬编码 `main.mjs?v=42.25.195`。前者的 Platform contract/wiring 已成功，后者 42 个 ZIP frontend tests 全成功，因此均分类为 **stale test/guard debt**，不是训练详情产品回归。
+>
+> 已以 `3262d5c100caa214517000e985b7b71437edf472` 迁移到当前 `AlgorithmListRuntime` 品目 owner，并把 ZIP 的无关 global cache exact-version guard 改为有效 cache-busted main 入口检查。没有恢复旧 DOM、旧页面 owner 或旧 cache key；`VERSION.txt=42.24.0`。该 HEAD 新 checks 当时仍 queued，不能宣称全绿。
+>
 <!-- CURRENT_STATE_TRAINING_DETAIL_LOG_2026_09_24 -->
 > ## 2026-09-24 训练详情 / 日志 / 错误提示收口（最新覆盖）
 >

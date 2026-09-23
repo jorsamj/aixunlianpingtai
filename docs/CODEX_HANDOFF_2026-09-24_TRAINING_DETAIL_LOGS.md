@@ -111,3 +111,13 @@ Keep this hierarchy. Do not flatten all raw fields into one long legacy table.
   - CUDA OOM / failed final validation error evidence.
 - Remote Agent training should be verified with a real node for the same detail/log contract.
 - No merge `main`, tag, release, or `VERSION.txt` change was performed in this batch.
+
+## CI follow-up after the closure
+
+After code baseline `8e50195f...` began producing completed results, two unrelated failures were read from the actual job logs before any change:
+
+- **External Algorithm Platform / Real Chrome**: backend contract + frontend contract + wiring guards were green. The browser test still queried retired `[data-external-category-filter]`; current category/filter ownership is `AlgorithmListRuntime`. The test was migrated to `[data-algorithm-list-owner="AlgorithmListRuntime"]`, `[data-category-picker-toggle]`, `[data-category-popover]`, `[data-category-check]` and `[data-category-confirm]`. Production DOM/owner was not reverted.
+- **ZIP Import Durable Runtime / Windows contract**: all 42 frontend ZIP contracts passed; only the permanent guard failed because it hard-coded retired global cache key `main.mjs?v=42.25.195`. The guard now verifies a valid cache-busted `main.mjs?v=42.25.<number>` entry while ZIP-specific cache/owner guards remain exact.
+
+CI-debt fix commit: `3262d5c100caa214517000e985b7b71437edf472` (`test: align stale browser and cache guards`). `VERSION.txt` remains `42.24.0`. New HEAD checks were queued at the time of this documentation update, so this section does not claim green.
+
