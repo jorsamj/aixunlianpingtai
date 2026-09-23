@@ -93,7 +93,10 @@ export function buildTrainingStartPayload({draft, target, algorithm, trainingDra
   return trainingDraftToRequest(draft, parameters);
 }
 
-export function validateTrainingDevice(draft, devices = []) {
+export function validateTrainingDevice(draft, devices = [], target = null) {
+  if (target?.scheduler_owned === true) {
+    return {id: 'auto', type: 'scheduler', available: true};
+  }
   const device = String(draft?.resource?.device || '').trim();
   if (!device) throw new Error('请选择可用训练设备');
   const match = (devices || []).find(row => String(row?.id || '') === device);
@@ -333,7 +336,7 @@ export function installTrainingSubmitRuntime({
       if (!algorithm) throw new Error('训练算法不可用，请重新选择训练资源');
 
       lastStage = 'validate-device';
-      validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
+      validateTrainingDevice(draft, state.trainingDevicesV3?.options || [], target);
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
       if (benchmarkContext) {
@@ -425,7 +428,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422507',
+    build: 'training-submit-422508',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,
