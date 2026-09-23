@@ -637,7 +637,7 @@ class ModelArtifactService:
                 object_confirmed = True
             except Exception as error:
                 detail = str(getattr(error, "detail", "") or error)
-                if artifact_contract and "stat" in detail.lower():
+                if artifact_contract and re.search(r"(?:^|[:\\s])stat(?:\\s*:|\\b)", detail, re.IGNORECASE):
                     # OSSStorageProvider.upload() performs a post-PUT stat. A
                     # nested stat failure means PUT likely succeeded, so the
                     # probe must still delete the test object before failing.
