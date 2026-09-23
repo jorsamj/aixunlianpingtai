@@ -29,6 +29,7 @@ test('hard refresh first training open shows a shell before hydrating configurat
   const {project} = await seedProject(request);
   let trainingOptionsCalls = 0;
   let recommendationCalls = 0;
+  let trainingDeviceCalls = 0;
   let holdHydration = false;
   let releaseHydration;
   const hydrationGate = new Promise(resolve => { releaseHydration = resolve; });
@@ -77,11 +78,14 @@ test('hard refresh first training open shows a shell before hydrating configurat
       });
     })();
   });
-  await page.route('**/api/v62/training-devices', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
-  }));
+  await page.route('**/api/v62/training-devices', route => {
+    trainingDeviceCalls += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+    });
+  });
 
   await selectIsolatedTestProject(page, project.id, '算法列表');
 
@@ -134,6 +138,27 @@ test('hard refresh first training open shows a shell before hydrating configurat
     model: 'yolo11n.pt',
     recommendationDevice: 'cpu',
   });
+  await expect.poll(() => trainingDeviceCalls).toBeGreaterThan(0);
+  const deviceCallsAfterFirstOpen = trainingDeviceCalls;
+  expect(await page.evaluate(projectId => {
+    const cached = JSON.parse(localStorage.getItem(`cl_training_devices_v3_${projectId}`) || 'null');
+    return {
+      hasCache: Boolean(cached?.devices?.options?.length),
+      recommended: cached?.devices?.recommended || null,
+    };
+  }, project.id)).toEqual({hasCache: true, recommended: 'cpu'});
+
+  // A full browser reload must restore the recent 24h device inventory instead of probing hardware again.
+  await page.evaluate(() => window.closeModal());
+  await page.reload();
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  const reloadedCard = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  await reloadedCard.getByRole('button', {name: '训练'}).click();
+  const secondDialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  await expect(secondDialog).toBeVisible({timeout: 10_000});
+  await expect(secondDialog.locator('#trV3Device')).toContainText('CPU');
+  await page.waitForTimeout(180);
+  expect(trainingDeviceCalls).toBe(deviceCallsAfterFirstOpen);
 });
 
 
