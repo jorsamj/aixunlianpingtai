@@ -1,3 +1,17 @@
+<!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_CODEX_TAKEOVER -->
+> ## 2026-09-23 Codex 接手最新覆盖
+>
+> 文档写入前最后确认代码/测试 HEAD：`c9064dcde055daab926252bf67aea181af6aa0f5`；`VERSION.txt=42.24.0`；当时 **89 个 checks 全 queued、0 completed failure**。接手第一步必须重新读取实时 GitHub，不得把该 SHA 当作现在的 HEAD。
+>
+> 最新 CLOSED：P0 手动标注 / ZIP / 质量中心模型检测 / clean PollRegistry / AI Review 多页 stale lifecycle；P1 启动与页面回访 cache-first、训练任务 jobs-only、训练提交 scoped refresh、训练设备 24h cache、标签 first-paint、标签/训练资源/组件检测/平台对接/服务节点/存储/素材接入/视频切帧/Dashboard 回访缓存。训练资源与模型提示词 background refresh 已改为局部 patch，不再重建正在填写的表单。
+>
+> 最新 OPEN：目标 HEAD completed Actions、真实 GPU 推理、真实 OSS + ChangLian Version/Weight 创建/反查/删除/超时幂等生产 E2E。
+>
+> **接手完整说明优先读：`docs/CODEX_HANDOFF_2026-09-23.md` 顶部“10:xx Codex 接手最终刷新”。**
+>
+> 可直接给 Codex 的执行提示词已写入：`docs/CODEX_TAKEOVER_PROMPT_2026-09-23.md`。
+>
+
 <!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_BATCH3 -->
 > ## 2026-09-23 最新续接：缓存首屏 / 回访性能矩阵继续收口
 >

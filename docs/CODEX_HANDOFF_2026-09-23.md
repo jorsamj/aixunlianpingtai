@@ -1,5 +1,97 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 10:xx Codex 接手最终刷新（最高优先级覆盖）
+>
+> **本节是当前最高优先级交接。接手后第一步仍必须重新读取 GitHub 远端真实状态，不能把下面 SHA 当作当前 HEAD。**
+>
+> 文档写入前最后确认代码/测试 HEAD：
+> `c9064dcde055daab926252bf67aea181af6aa0f5`
+>
+> `VERSION.txt = 42.24.0`。
+>
+> 该 HEAD 写文档前的 GitHub check-runs：**89 个 queued、0 completed、0 completed failure**。因此：
+> - queued 绝不等于通过；
+> - 不能据此宣称“全绿 / 部署候选 / 可以正式上线”；
+> - 后续只要出现 completed failure，必须先读取该 job 的真实日志，再决定是 stale guard、测试隔离、旧 route 断言，还是产品行为问题。
+>
+> ### 这轮已经 CLOSED，不要重复做
+>
+> **P0 Real Chrome / 产品合同**
+> - 手动标注：标签 first-paint、画框、拖框、四角 resize、删除、撤销、滚轮缩放、100%、适应窗口、连续空图显式“确认无目标”、上一张/下一张自动保存、stale response fencing。
+> - ZIP / 批量导入：exact canonical code 自动复用、合法英文文件标签显式新增、正式标签 API → refresh → mapping → durable start、关闭重开、Unified Upload Task Center 恢复、浏览器 refresh recovery。
+> - 质量中心模型检测：builtin / algorithm version、A/B、A-only、B-only、confidence、单图/多图、真实目录 input、非图片过滤、durable `DEPLOYMENT_TEST`、批次历史、人工核验、Online Feedback evidence bridge、stale model SHA fail closed。
+> - 自动清洗运行中详情：已从裸 timer 迁到 PollRegistry；同一个弹窗原地 patch，关闭/切页停止，进入待确认后自动切正式结果详情；有 Real Chrome handoff 守护。
+> - AI Candidate Review：已覆盖大量正式标签和多页候选；跨页人工 edits 保留、乱序分页 stale fencing、关闭/提交后的 late response lifecycle fencing；人工 edits 不会在翻页后视觉回退。
+>
+> **P1 cache-first / revisit / 页面稳定性**
+> - 导航不再声明 full-material page owner；完整素材池只允许在明确用户动作边界 lazy hydrate。
+> - `page-loading-performance.spec.mjs` 已进入正式 Frontend Runtime Stabilization Real Chrome。
+> - 启动 bootstrap snapshot 首屏画完后不再无条件做第二轮 broad extras + render。
+> - 训练创建成功后不再 broad `loadRelated()`；算法列表 / 训练任务各自 scoped refresh。
+> - 训练任务页 jobs-only；不会顺手读取 `training_options` / `models`。
+> - 标签保存不再调用不存在的 `refreshImages414()`；只刷新 authoritative label schema。
+> - 重复点击当前已激活导航不会产生第二次 navigation epoch / page owner。
+> - 退役的部署转换 / 部署产物已从 final page-extras owner 移除；底层转换、ModelArtifact、OSS、RKNN、新畅联同步能力仍保留。
+> - 训练设备 24h 浏览器 cache 已有 reload Chrome 守护。
+> - 标注标签 stale cache first-paint + authoritative revalidation 已有 Chrome。
+> - 标签管理、训练资源、组件检测、平台对接、服务节点、存储、素材接入、视频切帧、Dashboard 等回访缓存已经有守护。
+> - 训练资源 authoritative background refresh 只 patch resource cards，不重建用户正在填写的接入表单。
+> - 模型配置 prompt templates 改为按需读取；background refresh 只 patch prompt 区域，不重建 model config 表单。
+>
+> ### 当前 final asset / runtime 参考
+>
+> 文档写入前：
+> - `static/index.html`：`app.js?v=42.25.214`
+> - `static/index.html`：`main.mjs?v=42.25.210`
+> - `VERSION.txt` 仍必须保持 `42.24.0`
+>
+> 上述 asset key 是当前代码现场参考；后续如果改对应 runtime，必须同步现有永久 guard，不允许出现“源码改了但浏览器继续命中旧 asset”的情况。
+>
+> ### 已核对但不要机械删除 / 恢复
+>
+> - 训练素材旧 V3 全量 `/images` picker 是 compatibility fallback；final TrainingMaterialPickerRuntime 使用 server-paged training-materials。
+> - 算法列表旧展开 / 旧 render 仍可能存在定义，但 final AlgorithmListRuntime 已覆盖；不要因为字符串存在就误判正式 owner。
+> - ZIP legacy interval 是 compatibility bridge；正式 ZipImportRuntime 安装后用 sentinel 阻止第二 polling owner。
+> - `pollAnnotationIndex412` 当前无调用点。
+> - AI / 清洗结果只在明确用户动作且返回项缺 URL 时按需 `ensureFullPool()`。
+> - TrainingTaskRuntime 已覆盖插队 / 暂停 / 继续 / 停止 / 删除；旧函数里的 broad reload 不是 final owner。
+> - 不要恢复“测试发布 / standalone 检测台 / 部署中心”来兼容旧测试。
+>
+> ### 当前仍 OPEN
+>
+> 1. **当前目标 HEAD 的 GitHub Actions 真实 completed 结果**。这是下一任接手者第一优先级。
+> 2. **真实 GPU / 正式模型推理 E2E**。浏览器中受控推理替身只能证明 UI / durable-task / API 合同，不能当生产 GPU 验收。
+> 3. **真实 OSS 长期 URL + ChangLian Version/Weight 生产 E2E**：
+>    - 原始训练模型上传；
+>    - 转换产物上传；
+>    - Version / Weight 创建；
+>    - 远端反查；
+>    - 删除 / 回退；
+>    - 网络超时后的幂等恢复；
+>    - URL 长期可读性。
+> 4. P0 Real Chrome/CI 真正 completed 后，再继续全站 performance profile；只修真实 duplicate fetch / whole-root repaint / stale response / double owner。
+>
+> ### Codex 下一步执行顺序
+>
+> ```text
+> 1. 重新读取 origin/feature/external-algorithm-publishing 当前真实 HEAD
+> 2. 读取 VERSION.txt，必须仍为 42.24.0
+> 3. 读取最近至少 30 个 commits
+> 4. 读取目标 HEAD 的 check-runs / Actions
+> 5. 对所有 completed failure 读取真实 job log
+> 6. 完整阅读本文件顶部最新覆盖 + PROJECT_HANDOFF_CURRENT + CODEX_CURRENT_STATE
+> 7. 只处理真实 failure / 真实可达 owner，不重复 CLOSED 工作
+> 8. Actions 大量 queued 时可继续独立审计，但部署结论必须等目标 HEAD completed checks
+> 9. 若远端 HEAD 期间前进，立即停止写入，重新 compare 后再继续
+> 10. 不 merge main、不 tag、不 release、不 force push、不修改 VERSION.txt
+> ```
+>
+> ### 下一任最重要的判断原则
+>
+> `真实状态 → final owner → canonical truth → 最小正确修复 → focused test → Real Chrome → CI`
+>
+> 不要先看到旧函数就删；不要先看到旧测试就恢复旧产品入口；不要用 mock 成功替代真实 GPU / OSS / ChangLian 生产 E2E。
+>
 > ## 2026-09-23 09:xx 续接增量（最高优先级覆盖）
 >
 > 文档刷新前最后确认代码/测试 HEAD：`0fd99a33bec1527c1d4d3d96a220ac43d3fd999b`；`VERSION.txt = 42.24.0`。该 HEAD 当时 **51 个 checks 全部 queued、0 completed failure**，因此仍不能宣称全绿、部署候选或可上线。接手后必须重新读取实时 GitHub，不能把本段 SHA 当作当前 HEAD。

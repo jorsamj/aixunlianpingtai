@@ -1,3 +1,15 @@
+<!-- CURRENT_STATE_CONTINUATION_2026_09_23_CODEX_TAKEOVER -->
+> ## 2026-09-23 Codex 接手当前状态
+>
+> 文档写入前最后确认 HEAD：`c9064dcde055daab926252bf67aea181af6aa0f5`；`VERSION.txt=42.24.0`；89 个 checks 全 queued、0 completed failure。
+>
+> 当前主线已经从“继续造功能”转到：**等待真实 CI completed 结果 + 只修真实失败 + 补真实 GPU / OSS / ChangLian 生产 E2E + 在 P0 真通过后继续全站 performance profile**。
+>
+> 不要重复：手动标注、ZIP 可恢复映射、质量中心检测、AI Review 多页/stale fencing、clean PollRegistry、训练提交 scoped refresh、训练任务 jobs-only、启动去二次 extras、训练设备缓存、标签 first-paint、页面 revisit cache、训练资源/模型 prompt background 局部 patch、退役部署 page owner 等 CLOSED 工作。
+>
+> 接手先读实时 GitHub，再读 `docs/CODEX_HANDOFF_2026-09-23.md` 最新顶部覆盖；Codex 可直接使用 `docs/CODEX_TAKEOVER_PROMPT_2026-09-23.md`。
+>
+
 <!-- CURRENT_STATE_CONTINUATION_2026_09_23_BATCH3 -->
 > ## 2026-09-23 最新状态：缓存首屏与页面回访守护继续补齐
 >
