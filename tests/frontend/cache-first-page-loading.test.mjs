@@ -29,13 +29,14 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.211/);
+  assert.match(html, /\/static\/app\.js\?v=42\.25\.212/);
 });
 
 test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
   const extras = block('async function extras412', 'window.loadPageExtras413=extras412');
   assert.doesNotMatch(extras, /\/jobs/);
   assert.doesNotMatch(extras, /modelConfigs|model-configs/);
+  assert.match(extras, /if\(page==='模型配置'\)load\('promptTemplates','\/api\/v35\/prompt-templates','items'\)/);
 });
 
 
@@ -179,7 +180,7 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.doesNotMatch(wiring, /loadRelated/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.207/);
+  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.208/);
 });
 
 
@@ -231,7 +232,7 @@ test('page extras have their own freshness and quality extras only run on the de
   const end = main.indexOf('\n\nfunction refreshCurrentPageOwner(page)', start);
   assert.ok(start >= 0 && end > start);
   const refresh = main.slice(start, end);
-  assert.match(refresh, /PAGE_EXTRAS_OWNERS = new Set\(\['训练资源', '质量中心'\]\)/);
+  assert.match(refresh, /PAGE_EXTRAS_OWNERS = new Set\(\['训练资源', '模型配置', '质量中心'\]\)/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*(?:部署转换|部署产物)/);
   assert.doesNotMatch(refresh, /page === '部署转换'/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*'训练任务'/);

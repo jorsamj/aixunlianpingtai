@@ -3751,6 +3751,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       load('inferenceEnvs','/api/v16/inference_envs','items');
     }
     if(['训练任务','测试发布','部署转换','部署产物'].includes(page))load('models',`/api/projects/${id}/models`);
+    if(page==='模型配置')load('promptTemplates','/api/v35/prompt-templates','items');
     const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected')toast(result.reason?.message||String(result.reason));
     // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
   }

@@ -322,7 +322,7 @@ function renderUnknownPage(page) {
 const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
-const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '质量中心']);
+const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '模型配置', '质量中心']);
 
 function pageExtrasEnabled(page) {
   return PAGE_EXTRAS_OWNERS.has(page)

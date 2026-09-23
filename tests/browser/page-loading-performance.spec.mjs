@@ -98,3 +98,38 @@ test('startup and primary pages stay within their cache-first request owners', a
   expect(dataset.urls.some(url => url.includes('/algorithms') || /\/jobs(?:\?|$)/.test(url))).toBe(false);
   expect(service.urls.some(url => url.includes('/algorithms') || /\/jobs(?:\?|$)/.test(url) || url.includes('/materials'))).toBe(false);
 });
+
+
+test('model configuration loads prompt templates once and reuses them on revisit', async ({page}) => {
+  let promptGets = 0;
+  await page.route('**/api/v35/prompt-templates', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    promptGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [{
+        id: 'prompt-cache-1',
+        name: '安全帽提示词',
+        framework: 'common',
+        labels: ['helmet'],
+        save_format: 'internal',
+        prompt: '识别安全帽',
+      }]}),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('模型配置'));
+  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.getByText('安全帽提示词', {exact: true})).toBeVisible({timeout: 10_000});
+  await expect.poll(() => promptGets).toBe(1);
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('模型配置'));
+  await expect(page.getByText('安全帽提示词', {exact: true})).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(promptGets).toBe(1);
+});
