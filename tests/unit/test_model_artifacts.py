@@ -670,3 +670,200 @@ def test_storage_test_rejects_unreadable_delivery_url(tmp_path: Path, monkeypatc
         service.test_storage("default_local")
 
     assert blocked.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"
+
+
+def _configure_artifact_oss(service: ModelArtifactService, *, public_base_url: str = "") -> str:
+    source_id = "artifact_oss"
+    service.storage_sources_factory().create({
+        "id": source_id,
+        "name": "算法产物 OSS",
+        "type": "oss",
+        "enabled": True,
+        "config": {
+            "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+            "bucket": "new24hlink",
+            "prefix": "materials-only",
+            "public_base_url": public_base_url,
+        },
+    })
+    service.save_config(ModelArtifactConfigPayload(
+        storage_source_id=source_id,
+        root_prefix="changlian-ai/artifacts/",
+        auto_upload_enabled=True,
+    ))
+    return source_id
+
+
+class ArtifactCapabilityProvider:
+    def __init__(self, *, bucket_info_ok: bool = True, fail_stage: str = ""):
+        self.bucket_info_ok = bucket_info_ok
+        self.fail_stage = fail_stage
+        self.operations = []
+        self.payload = b""
+        self.deleted = False
+
+    def health_check(self):
+        self.operations.append("health")
+        if self.bucket_info_ok:
+            return StorageHealth.available("bucket ready")
+        return StorageHealth.unavailable(
+            "AccessDenied: status=403, eventName=GetBucketInfo"
+        )
+
+    def upload(self, key, source, **_kwargs):
+        self.operations.append("put")
+        if self.fail_stage == "put":
+            raise RuntimeError("403 AccessDenied: PutObject denied")
+        self.payload = Path(source).read_bytes()
+        self.deleted = False
+        return ObjectMetadata(key=key, size_bytes=len(self.payload))
+
+    def stat(self, key):
+        self.operations.append("stat")
+        if self.fail_stage == "stat":
+            raise RuntimeError("403 AccessDenied: HeadObject denied")
+        return ObjectMetadata(key=key, size_bytes=len(self.payload))
+
+    def open_reader(self, _key):
+        self.operations.append("read")
+        if self.fail_stage == "get":
+            raise RuntimeError("403 AccessDenied: GetObject denied")
+        return BytesIO(self.payload)
+
+    def delete(self, _key):
+        self.operations.append("delete")
+        if self.fail_stage == "delete":
+            raise RuntimeError("403 AccessDenied: DeleteObject denied")
+        self.deleted = True
+
+    def exists(self, _key):
+        self.operations.append("exists")
+        return not self.deleted
+
+
+def test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtrip(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(bucket_info_ok=False)
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    result = service.test_artifact_storage(source_id)
+
+    assert result["ok"] is True
+    assert result["health"] == "AVAILABLE"
+    assert result["bucket_info_checked"] is False
+    assert result["stages"]["bucket_info_checked"] is False
+    assert "Bucket 元信息查询无权限" in result["warning"]
+    assert "不影响算法产物存储" in result["message"]
+    assert result["probe_object_key"].startswith(
+        "changlian-ai/artifacts/.changlian-health-check/"
+    )
+    assert provider.operations == ["health", "put", "stat", "read", "delete", "exists"]
+
+
+def test_artifact_storage_put_403_reports_write_permission(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(fail_stage="put")
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_WRITE_FAILED"
+    assert "写入失败（PUT）" in blocked.value.message
+
+
+def test_artifact_storage_get_403_reports_read_permission(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(fail_stage="get")
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_READ_FAILED"
+    assert "读取失败（GET）" in blocked.value.message
+    assert provider.operations[-2:] == ["delete", "exists"]
+
+
+def test_artifact_storage_delete_403_reports_delete_permission(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(fail_stage="delete")
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_DELETE_FAILED"
+    assert "删除失败（DELETE）" in blocked.value.message
+
+
+def test_artifact_storage_public_url_403_fails_changlian_filepath(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(
+        service,
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+    )
+    provider = ArtifactCapabilityProvider()
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 403})(),
+    )
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"
+    assert blocked.value.message == "新畅联 filePath 不可访问"
+
+
+def test_artifact_storage_full_bucket_and_object_permissions_pass(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(
+        service,
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+    )
+    provider = ArtifactCapabilityProvider()
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 206})(),
+    )
+
+    result = service.test_artifact_storage(source_id)
+
+    assert result["ok"] is True
+    assert result["bucket_info_checked"] is True
+    assert result["warning"] == ""
+    assert result["public_url_checked"] is True
+    assert result["public_url_reachable"] is True
+    assert provider.operations == ["health", "put", "stat", "read", "delete", "exists"]
+
+
+def test_generic_storage_health_contract_still_blocks_bucket_metadata_access_denied(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(bucket_info_ok=False)
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_HEALTH_AUTH_FAILED"
+    assert provider.operations == ["health"]
