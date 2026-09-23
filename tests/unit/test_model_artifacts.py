@@ -746,9 +746,16 @@ def test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtri
     monkeypatch,
 ):
     service = _service(tmp_path)
-    source_id = _configure_artifact_oss(service)
+    source_id = _configure_artifact_oss(
+        service,
+        public_base_url="https://new24hlink.oss-cn-hangzhou.aliyuncs.com",
+    )
     provider = ArtifactCapabilityProvider(bucket_info_ok=False)
     monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 206})(),
+    )
 
     result = service.test_artifact_storage(source_id)
 
@@ -758,6 +765,8 @@ def test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtri
     assert result["stages"]["bucket_info_checked"] is False
     assert "Bucket 元信息查询无权限" in result["warning"]
     assert "不影响算法产物存储" in result["message"]
+    assert result["public_url_checked"] is True
+    assert result["public_url_reachable"] is True
     assert result["probe_object_key"].startswith(
         "changlian-ai/artifacts/.changlian-health-check/"
     )
@@ -805,6 +814,30 @@ def test_artifact_storage_stat_403_reports_read_permission(tmp_path: Path, monke
     assert provider.operations[-2:] == ["delete", "exists"]
 
 
+def test_artifact_storage_nested_post_put_stat_403_is_read_failure_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider()
+
+    def upload_with_nested_stat_error(key, source, **_kwargs):
+        provider.operations.extend(["put", "stat"])
+        provider.payload = Path(source).read_bytes()
+        provider.deleted = False
+        raise RuntimeError("upload: stat: status: 403 AccessDenied: HeadObject denied")
+
+    provider.upload = upload_with_nested_stat_error
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_STAT_FAILED"
+    assert provider.operations == ["health", "put", "stat", "delete", "exists"]
+
+
 def test_artifact_storage_delete_403_reports_delete_permission(tmp_path: Path, monkeypatch):
     service = _service(tmp_path)
     source_id = _configure_artifact_oss(service)
@@ -839,6 +872,7 @@ def test_artifact_storage_public_url_403_fails_changlian_filepath(
 
     assert blocked.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"
     assert blocked.value.message == "新畅联 filePath 不可访问"
+    assert provider.operations[-2:] == ["delete", "exists"]
 
 
 def test_artifact_storage_full_bucket_and_object_permissions_pass(
