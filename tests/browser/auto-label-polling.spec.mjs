@@ -257,7 +257,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   const editor=page.getByRole('dialog',{name:'编辑AI候选框'});
   await expect(editor).toBeVisible();
   await editor.locator('.ai60-edit-row select').first().selectOption('helmet');
-  await editor.locator('.ai60-edit-row input').filter({has:undefined}).first().fill('12');
+  await editor.locator('.ai60-edit-row input[type="number"]').first().fill('12');
   await editor.getByRole('button',{name:'保存候选修改'}).click();
   await expect(editor).toBeHidden();
   await expect(review).toBeVisible();
