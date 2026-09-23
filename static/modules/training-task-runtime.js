@@ -114,6 +114,13 @@ export function trainingBatchActionEligible(job, action) {
   if (action === 'stop') {
     return ['queued', 'waiting', 'pending', 'starting', 'running', 'pausing', 'paused', 'resuming'].includes(status);
   }
+  if (action === 'delete') {
+    return [
+      'done', 'finished', 'completed', 'succeeded', 'success',
+      'failed', 'stopped', 'cancelled', 'canceled',
+      'blocked_by_environment', 'blocked_by_hardware',
+    ].includes(status);
+  }
   return false;
 }
 
@@ -322,7 +329,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   }
 
   async function batchAction(action, ids = []) {
-    const actionName = ({pause: '暂停', resume: '继续', stop: '停止'})[action];
+    const actionName = ({pause: '暂停', resume: '继续', stop: '停止', delete: '删除'})[action];
     if (!actionName) throw new Error('不支持的批量训练操作');
     const uniqueIds = [...new Set((ids || []).map(String).filter(Boolean))];
     const jobs = Array.isArray(state().jobs) ? state().jobs : [];
@@ -338,6 +345,10 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       const confirmed = window.confirm(`确认停止选中的 ${eligible.length} 个训练任务？`);
       if (!confirmed) return {ok: false, cancelled: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
     }
+    if (action === 'delete' && typeof window.confirm === 'function') {
+      const confirmed = window.confirm(`确认永久删除选中的 ${eligible.length} 条已结束训练记录？\n\n只删除任务记录和任务运行缓存；已经生成的算法版本与模型成果不会删除。运行中、排队中、暂停中的任务不会被删除。`);
+      if (!confirmed) return {ok: false, cancelled: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
+    }
 
     const pid = encodeURIComponent(projectId?.() || '');
     const lockKey = `batch:${action}`;
@@ -345,25 +356,50 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     mutationLocks.add(lockKey);
     const failures = [];
     let succeeded = 0;
+    let backendSkipped = 0;
     try {
-      for (const job of eligible) {
-        const id = String(job?.id || job?.task_id || '');
-        try {
-          const response = await nativeFetch(
-            `/api/v48/projects/${pid}/jobs/${encodeURIComponent(id)}/${action}`,
-            {method: 'POST'},
-          );
-          const error = await responseError(response, `${actionName}训练失败`);
-          if (error) throw error;
-          succeeded += 1;
-        } catch (error) {
-          failures.push({id, message: String(error?.message || error)});
+      if (action === 'delete') {
+        const response = await nativeFetch(
+          `/api/v48/projects/${pid}/jobs/batch-delete`,
+          {
+            method: 'POST',
+            headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              job_ids: eligible.map(job => String(job?.id || job?.task_id || '')).filter(Boolean),
+            }),
+          },
+        );
+        const error = await responseError(response, '批量删除训练记录失败');
+        if (error) throw error;
+        const body = await response.json();
+        succeeded = Math.max(0, Number(body?.deleted || 0));
+        backendSkipped = Math.max(0, Number(body?.skipped_active || 0)) + Math.max(0, Number(body?.missing || 0));
+        for (const item of body?.failures || []) {
+          failures.push({
+            id: String(item?.job_id || ''),
+            message: String(item?.message || '删除失败'),
+          });
+        }
+      } else {
+        for (const job of eligible) {
+          const id = String(job?.id || job?.task_id || '');
+          try {
+            const response = await nativeFetch(
+              `/api/v48/projects/${pid}/jobs/${encodeURIComponent(id)}/${action}`,
+              {method: 'POST'},
+            );
+            const error = await responseError(response, `${actionName}训练失败`);
+            if (error) throw error;
+            succeeded += 1;
+          } catch (error) {
+            failures.push({id, message: String(error?.message || error)});
+          }
         }
       }
 
       let refreshError = null;
       try { await refreshAfterMutation(); } catch (errorAfterMutation) { refreshError = errorAfterMutation; }
-      const skipped = uniqueIds.length - eligible.length;
+      const skipped = uniqueIds.length - eligible.length + backendSkipped;
       const summary = [
         `批量${actionName}完成：成功 ${succeeded}`,
         failures.length ? `失败 ${failures.length}` : '',
@@ -379,6 +415,17 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         skipped,
         failures,
         refreshError: refreshError ? String(refreshError?.message || refreshError) : '',
+      };
+    } catch (error) {
+      notify?.(error?.message || error);
+      return {
+        ok: false,
+        action,
+        attempted: eligible.length,
+        succeeded,
+        failed: failures.length || 1,
+        skipped: uniqueIds.length - eligible.length + backendSkipped,
+        failures: failures.length ? failures : [{id: '', message: String(error?.message || error)}],
       };
     } finally {
       mutationLocks.delete(lockKey);
@@ -450,7 +497,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   }
 
   const runtime = {
-    build: 'training-task-runtime-422507',
+    build: 'training-task-runtime-422508',
     refresh,
     acceptCreatedTask,
     batchAction,
