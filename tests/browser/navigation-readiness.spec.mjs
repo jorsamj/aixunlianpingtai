@@ -182,7 +182,7 @@ test('main runtime preserves the canonical page registry created by classic app 
   expect(registry.workbenchKnown).toBe(true);
   expect(registry.qualityKnown).toBe(true);
   expect(registry.modelKnown).toBe(true);
-  expect(registry.pages).toContain('工作台');
+  expect(registry.pages).toContain('总览');
   expect(registry.pages).toContain('平台对接');
   expect(registry.pages).toContain('服务节点');
   expect(pageErrors).toEqual([]);

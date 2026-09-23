@@ -380,8 +380,9 @@ test('quality-center detection keeps multi-image and folder pickers after page r
   await expect(page.locator('#title')).toContainText('质量中心');
   await expect(page.locator('#benchFiles64')).toHaveAttribute('multiple', '');
   await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
-  await expect(page.getByRole('button', {name: '选择图片'})).toBeVisible();
-  await expect(page.getByRole('button', {name: '选择文件夹'})).toBeVisible();
+  const detectionShell = page.locator('[data-quality-detection-shell="1"]');
+  await expect(detectionShell.getByRole('button', {name: '选择图片'})).toBeVisible();
+  await expect(detectionShell.getByRole('button', {name: '选择文件夹'})).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });
@@ -1118,7 +1119,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
   await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
 
   const pages = [
-    '工作台',
+    '总览',
     '质量中心',
     '标签管理',
     '模型配置',

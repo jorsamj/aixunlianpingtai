@@ -359,7 +359,7 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
 
-  await page.getByRole('button', {name: '上传'}).click();
+  await page.locator('.data426-head button[onclick="openDataUpload426()"]').click();
   await page.locator('#up426Images').setInputFiles({
     name: 'single.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [80, 120, 210])
   });
@@ -375,7 +375,7 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   await readyDialog.getByRole('button', {name: '确认无需清洗'}).click();
   await expect(page.getByRole('button', {name: /已处理1/})).toBeVisible();
 
-  await page.getByRole('button', {name: '上传'}).click();
+  await page.locator('.data426-head button[onclick="openDataUpload426()"]').click();
   await page.locator('#up426Images').setInputFiles([
     {name: 'multi-one.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [160, 80, 80])},
     {name: 'multi-two.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [80, 160, 80])}
