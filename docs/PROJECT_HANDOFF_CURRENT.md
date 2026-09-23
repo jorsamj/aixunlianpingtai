@@ -1,3 +1,22 @@
+<!-- LIVE_HANDOFF_FOCUSED_RUNTIME_FIX_2026_09_23 -->
+> ## 2026-09-23 Focused Runtime 修复最新覆盖
+>
+> 基线 HEAD：`6dc0d7d3856f2a8015b78188ba93f14a2242a85f`。当前本地代码修复提交：`8a29809afb797eeef9bafc946d70797c41ef8830`（`fix: route late UI helpers through final owners`）。`VERSION.txt = 42.24.0`。
+>
+> **真实根因：** `9839cb46` 把清洗进度逻辑放进后置 IIFE 后仍调用前一 IIFE 的私有 `cleanTaskView427`，触发 `cleanTaskView427 is not defined`。唯一 final owner 为 `PlatformCore.cleaning.cleanTaskView`（`static/modules/cleaning.js`，由 `static/main.mjs` 安装）。后置 helper 已直接调用该 owner；没有暴露旧函数、没有新 fallback、没有第二 owner。
+>
+> AI Candidate Review 的 focused reproduce 证明分页 edits 已保留，失败实为后置 IIFE 取不到私有 `displayLabel412`，只显示 raw code。AI v60 的标签展示现复用 `PlatformCore.materials.labelDisplay`。本轮 `static/app.js` 共 7 行替换。
+>
+> **Focused evidence：** JS 语法检查通过；Playwright `2 passed`：remote cleaning progress、AI Candidate Review accept-all。没有运行 67 项 Frontend Runtime 或更大测试范围，不能宣称全绿、正式可上线或生产验收完成。
+>
+> **CLOSED：** `cleanTaskView427` ReferenceError；AI Candidate Review accept-all focused case。
+>
+> **STALE TEST / TEST DEBT：** 算法版本发布测试仍依赖退役“测试发布”页面；旧 RKNN 页面测试仍依赖退役“部署转换 / 部署中心”route。迁移测试，不恢复旧 IA；底层版本发布和 RKNN 转换 / 板端验证能力继续保留。
+>
+> **OPEN：** “工作台 / 总览”按 alias / stale test / final navigation owner 继续判定；其他 broad 浏览器红灯尚未 focused 分类；Linux 真实 GPU / 正式模型推理 E2E；真实 OSS / 新畅联生产 E2E；Rockchip 实板验收。当前没有其他已 focused 确认且仍未修复的生产 bug。
+>
+> **下一步最小动作：** 每次 isolated reproduce 一个失败并分类；不为测试恢复退役入口。随后进入 Linux 真实 GPU、正式模型、OSS 与新畅联合同验证。
+>
 <!-- LIVE_HANDOFF_CONTINUATION_2026_09_23_CODEX_TAKEOVER -->
 > ## 2026-09-23 Codex 接手最新覆盖
 >

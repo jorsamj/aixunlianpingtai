@@ -1,5 +1,54 @@
 # Codex / AI 接手交接 — 2026-09-23
 
+> ## 2026-09-23 Focused Runtime 修复与接手状态（最高优先级覆盖）
+>
+> 本节覆盖本文后续较早的 CI / OPEN / NEXT 描述。基线 HEAD 为
+> `6dc0d7d3856f2a8015b78188ba93f14a2242a85f`，`VERSION.txt = 42.24.0`。
+> 本轮本地代码修复提交为
+> `8a29809afb797eeef9bafc946d70797c41ef8830`
+>（`fix: route late UI helpers through final owners`）。
+>
+> ### 本轮真实生产回归与修复原则
+>
+> - `cleanTaskView427 is not defined` 是真实生产运行时回归。提交 `9839cb46` 将清洗进度逻辑放入后置 IIFE，却仍调用前一个 IIFE 的私有 `cleanTaskView427`，形成跨词法作用域调用。
+> - 清洗任务视图的 final owner 是 `PlatformCore.cleaning.cleanTaskView`，实现位于 `static/modules/cleaning.js`，由 `static/main.mjs` 安装。
+> - 后置 UI helper 现在直接调用既有 final owner；没有把旧私有函数暴露到 `window`，没有新增 fallback，也没有建立第二 owner。
+> - 同轮确认 AI Candidate Review 的分页 edits 实际没有丢失；失败文本已经是修改后的 `helmet`。真正回归是后置 AI Review IIFE 无法访问前一 IIFE 的私有 `displayLabel412`，因而只显示 raw code。AI v60 的四个标签展示点现统一调用既有 `PlatformCore.materials.labelDisplay(code, state.labels)`。
+> - 生产代码改动只涉及 `static/app.js`，共 7 行替换；没有修改 `VERSION.txt`、schema 或产品 IA。
+>
+> ### 验证边界
+>
+> - `node --check static/app.js` 通过。
+> - focused Playwright：`2 passed`：
+>   1. remote cleaning progress；
+>   2. AI Candidate Review accept-all。
+> - 本轮没有运行 67 项 Frontend Runtime、全仓库测试或真实 GPU / OSS / ChangLian E2E，因此不得写“全绿”“正式可上线”或“生产验收完成”。
+>
+> ### CLOSED
+>
+> - `cleanTaskView427` ReferenceError 已按 final owner 修复。
+> - AI Candidate Review accept-all focused case 已通过，跨页 edits、坐标修改、label mapping 与 accept-all decisions 在该单例中保持有效。
+>
+> ### STALE TEST / TEST DEBT
+>
+> - 算法版本发布浏览器测试仍先进入已退役的“测试发布”页面并期待旧标题；final navigation 的正式契约是 `测试发布 → 质量中心`。应迁移测试入口，不得恢复旧页面或修改生产 IA 迎合旧断言。
+> - 仍依赖已退役“部署转换 / 部署中心”页面的 RKNN 浏览器用例属于旧 route / 旧页面测试债务；底层 RKNN 转换、ModelArtifact 与板端验证能力必须保留，但不能恢复部署中心。
+>
+> ### OPEN
+>
+> - 暂无除上述已修项目之外、已经 focused 独立确认且尚未修复的生产 bug；其余浏览器红灯必须逐条单独复现后再分类。
+> - “工作台 / 总览”标题与 route 仍需按 alias、stale test 和 final navigation owner 单独判断；不允许为测试恢复旧产品入口。
+> - broad Frontend Runtime 中出现过的其他浏览器回归尚未逐条 focused 确认，当前只能列为待分类，不能直接当生产 bug，也不能包装成 CLOSED。
+> - Linux 真实 GPU / 正式模型推理 E2E 仍未完成。
+> - 真实 OSS 长期 URL 与新畅联 Version / Weight 创建、反查、删除、回退及超时幂等生产 E2E 仍未完成。
+> - Rockchip 真实板卡验收继续独立 OPEN；旧页面测试失败不能替代底层能力验证。
+>
+> ### 下一步最小动作
+>
+> 1. 每次只 isolated reproduce 一个浏览器失败，先判断 production bug / stale test / 测试隔离 / 时序问题。
+> 2. 优先完成“工作台 / 总览”final navigation owner 判定，再处理其他尚未确认的浏览器回归。
+> 3. Linux 预部署阶段只做真实 GPU、正式模型、OSS 与新畅联生产合同验证；不恢复退役产品 IA。
+>
 > ## 2026-09-23 10:xx Codex 接手最终刷新（最高优先级覆盖）
 >
 > **本节是当前最高优先级交接。接手后第一步仍必须重新读取 GitHub 远端真实状态，不能把下面 SHA 当作当前 HEAD。**
