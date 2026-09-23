@@ -130,6 +130,32 @@ def test_capability_cancel_retry_cursor_and_expired_lease(tmp_path):
     assert recovered.attempt == 1
 
 
+def test_delete_terminal_refuses_live_task_and_purges_finished_truth(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add(repository, "delete-terminal", "project-1", 5)
+
+    with pytest.raises(ValueError, match="only terminal tasks"):
+        repository.delete_terminal(
+            "delete-terminal",
+            project_id="project-1",
+            kind=TaskKind.TRAINING,
+        )
+
+    cancelled = repository.request_cancel("delete-terminal")
+    assert cancelled.status is TaskStatus.CANCELLED
+    assert repository.delete_terminal(
+        "delete-terminal",
+        project_id="project-1",
+        kind=TaskKind.TRAINING,
+    ) is True
+    assert repository.get("delete-terminal") is None
+    assert repository.delete_terminal(
+        "delete-terminal",
+        project_id="project-1",
+        kind=TaskKind.TRAINING,
+    ) is False
+
+
 def test_heartbeat_and_finish_require_the_current_lease(tmp_path):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     add(repository, "task-1", "project-1", 5)
