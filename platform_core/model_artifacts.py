@@ -1253,17 +1253,25 @@ class ModelArtifactService:
                 if int(meta.size_bytes) != int(row["size_bytes"]) or (meta.sha256 and str(meta.sha256) != str(row["sha256"])):
                     raise RuntimeError("同名对象已存在但内容校验不一致")
             else:
+                upload_metadata = {
+                    "sha256": str(row["sha256"]),
+                    "algorithm": str(row["algorithm_id"]),
+                    "version": str(row["version_id"]),
+                    "target": str(row["target"]),
+                }
+                chip_code = str(row.get("chip_code") or "").strip()
+                if chip_code:
+                    # OSS custom metadata header names must stay transport-safe.
+                    # Underscores can be dropped by intermediaries / OSS while
+                    # still being included in the client-side signature, which
+                    # yields SignatureDoesNotMatch. Use the canonical hyphenated
+                    # header name instead: x-oss-meta-chip-code.
+                    upload_metadata["chip-code"] = chip_code
                 meta = provider.upload(
                     object_key,
                     source_path,
                     content_type=mimetypes.guess_type(source_path.name)[0] or "application/octet-stream",
-                    metadata={
-                        "sha256": str(row["sha256"]),
-                        "algorithm": str(row["algorithm_id"]),
-                        "version": str(row["version_id"]),
-                        "target": str(row["target"]),
-                        "chip_code": str(row.get("chip_code") or ""),
-                    },
+                    metadata=upload_metadata,
                 )
             if int(meta.size_bytes) != int(row["size_bytes"]):
                 raise RuntimeError("上传后文件大小校验失败")
