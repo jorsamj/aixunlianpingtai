@@ -791,6 +791,20 @@ def test_artifact_storage_get_403_reports_read_permission(tmp_path: Path, monkey
     assert provider.operations[-2:] == ["delete", "exists"]
 
 
+def test_artifact_storage_stat_403_reports_read_permission(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    source_id = _configure_artifact_oss(service)
+    provider = ArtifactCapabilityProvider(fail_stage="stat")
+    monkeypatch.setattr(service, "_provider", lambda *_args: provider)
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_artifact_storage(source_id)
+
+    assert blocked.value.code == "MODEL_STORAGE_OBJECT_STAT_FAILED"
+    assert "读取权限不足（STAT）" in blocked.value.message
+    assert provider.operations[-2:] == ["delete", "exists"]
+
+
 def test_artifact_storage_delete_403_reports_delete_permission(tmp_path: Path, monkeypatch):
     service = _service(tmp_path)
     source_id = _configure_artifact_oss(service)
