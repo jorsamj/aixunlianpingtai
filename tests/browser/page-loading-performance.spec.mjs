@@ -133,3 +133,47 @@ test('model configuration loads prompt templates once and reuses them on revisit
   await page.waitForTimeout(150);
   expect(promptGets).toBe(1);
 });
+
+
+test('training resource page reuses recent training options on revisit', async ({page}) => {
+  let optionGets = 0;
+  await page.route('**/api/training_options**', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    optionGets += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id: 'resource-cache-ultralytics',
+        name: '缓存训练资源',
+        type: 'local',
+        framework: 'ultralytics',
+        status: 'ready',
+        algorithms: [{
+          key: 'yolo_detect',
+          name: 'Ultralytics Detect',
+          base_model: 'yolo11n.pt',
+          default_epochs: 20,
+          default_imgsz: 640,
+          default_batch: 4,
+        }],
+        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      }]}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await page.evaluate(() => window.setPage('训练资源'));
+  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.getByText('缓存训练资源', {exact: true})).toBeVisible({timeout: 10_000});
+  await expect.poll(() => optionGets).toBe(1);
+  const firstVisitGets = optionGets;
+
+  await page.evaluate(() => window.setPage('工作台'));
+  await expect(page.locator('#title')).toContainText('总览');
+  await page.evaluate(() => window.setPage('训练资源'));
+  await expect(page.getByText('缓存训练资源', {exact: true})).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(optionGets).toBe(firstVisitGets);
+});
