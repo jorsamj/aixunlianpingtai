@@ -8,6 +8,16 @@ function rawFetch() {
   return scoped?.__pageRequestScopeOriginal || scoped;
 }
 
+export function formatModelArtifactApiError(body = {}, status = 0) {
+  const message = String(body?.message || '').trim();
+  const detail = String(body?.detail || '').trim();
+  const solution = String(body?.solution || '').trim();
+  const parts = [message];
+  if (detail && detail !== message) parts.push(`详情：${detail}`);
+  if (solution) parts.push(`建议：${solution}`);
+  return parts.filter(Boolean).join('；') || `请求失败（HTTP ${status || '-'}）`;
+}
+
 async function requestJson(url, options = {}) {
   const response = await rawFetch()(url, {
     headers: {'Accept': 'application/json', ...(options.headers || {})},
@@ -16,7 +26,7 @@ async function requestJson(url, options = {}) {
   const text = await response.text();
   let body = {};
   try { body = text ? JSON.parse(text) : {}; } catch (_) { body = {detail: text}; }
-  if (!response.ok) throw new Error(String(body.message || body.detail || `请求失败（HTTP ${response.status}）`));
+  if (!response.ok) throw new Error(formatModelArtifactApiError(body, response.status));
   return body;
 }
 
@@ -495,7 +505,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65006',
+    build: 'model-artifacts-65007',
     refresh,
     renderPanels,
     openAuditDetail,
