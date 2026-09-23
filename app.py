@@ -6089,6 +6089,11 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / MuSGD / Adam / Adamax / AdamW / NAdam / RAdam / RMSProp")
     if payload.time is not None and not (0.1 <= float(payload.time) <= 720):
         raise HTTPException(status_code=400, detail="最大训练时长 time 必须在 0.1~720 小时之间")
+    if str(payload.gpu_policy or "auto").strip().lower() == "shared":
+        raise HTTPException(
+            status_code=400,
+            detail="当前训练调度采用单卡单任务安全隔离，尚未启用 GPU 共享；请选择自动隔离或独占。",
+        )
     if not (0 < float(payload.lr0) <= 1):
         raise HTTPException(status_code=400, detail="lr0 必须在 0~1 之间")
     if not (0 <= float(payload.lrf) <= 1):
