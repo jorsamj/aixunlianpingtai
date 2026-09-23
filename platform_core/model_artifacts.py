@@ -753,11 +753,14 @@ class ModelArtifactService:
                     cleanup_error = error
             elif write_attempted and operation_error is not None:
                 # PUT may have reached OSS before the client observed a failure.
-                # Best-effort cleanup must not hide the primary write error.
+                # Artifact probing preserves the primary operation error; the
+                # legacy strict storage-source contract keeps its old cleanup
+                # failure precedence.
                 try:
                     provider.delete(key)
-                except Exception:
-                    pass
+                except Exception as error:
+                    if not artifact_contract:
+                        cleanup_error = error
             temporary.unlink(missing_ok=True)
 
             if cleanup_error is not None:
