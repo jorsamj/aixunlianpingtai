@@ -10,7 +10,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
-    .toBe('training-recovery-runtime-422506');
+    .toBe('training-recovery-runtime-422507');
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
     .toBe('training-task-runtime-422506');
 
