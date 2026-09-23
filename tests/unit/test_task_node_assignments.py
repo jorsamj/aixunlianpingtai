@@ -65,7 +65,7 @@ def create_online_node(
     })
 
 
-def training_resources(*, free0, free1=0, memory=32 * 1024**3):
+def training_resources(*, free0, free1=0, memory=32 * 1024**3, util0=0, util1=0):
     gpus = [{
         "id": "cuda:0",
         "index": 0,
@@ -73,6 +73,7 @@ def training_resources(*, free0, free1=0, memory=32 * 1024**3):
         "name": "NVIDIA A800",
         "memory_free_bytes": free0,
         "memory_total_bytes": 40 * 1024**3,
+        "utilization_percent": util0,
     }]
     if free1:
         gpus.append({
@@ -82,6 +83,7 @@ def training_resources(*, free0, free1=0, memory=32 * 1024**3):
             "name": "NVIDIA A800",
             "memory_free_bytes": free1,
             "memory_total_bytes": 40 * 1024**3,
+            "utilization_percent": util1,
         })
     return {
         "cpu": {"logical_cores": 16},
@@ -168,6 +170,48 @@ def test_training_assignment_chooses_best_node_and_gpu_and_persists_execution_sn
     assert resolved["selected_gpu"]["memory_free_bytes"] == 30 * 1024**3
     assert resolved["node_build_id"] == "build-gpu-large"
     assert resolved["node_runtime"]["cuda_version"] == "12.4"
+
+
+def test_training_assignment_prefers_less_busy_gpu_when_vram_is_close(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-utilization", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-busy",
+        ["training"],
+        resources=training_resources(free0=22 * 1024**3, util0=95),
+    )
+    create_online_node(
+        repository,
+        "gpu-idle",
+        ["training"],
+        resources=training_resources(free0=21 * 1024**3, util0=5),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-idle"
+    assert assignment["resolved_execution_config"]["selected_gpu"]["utilization_percent"] == 5
+
+
+def test_training_assignment_prefers_less_busy_gpu_inside_selected_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-gpu-utilization-local", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-node",
+        ["training"],
+        resources=training_resources(
+            free0=22 * 1024**3,
+            free1=21 * 1024**3,
+            util0=95,
+            util1=5,
+        ),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["resolved_execution_config"]["selected_device"] == "cuda:1"
 
 
 def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
