@@ -74,6 +74,7 @@ def _portable_params(payload: Mapping[str, Any]) -> dict[str, Any]:
         "continue_threshold", "stop_threshold", "single_cls", "pretrained",
         "rect", "amp", "cos_lr", "deterministic", "auto_supplement",
         "ai_intervention_enabled", "supplement_count", "resource_strategy",
+        "resource_profile", "precision", "time",
     )
     result = {}
     for key in keys:
