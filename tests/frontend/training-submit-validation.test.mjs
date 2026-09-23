@@ -194,3 +194,22 @@ test('algorithm card keeps training transition states active and empty confirmat
   assert.match(deleteOwner, /ann420ConfirmEmpty/);
   assert.match(deleteOwner, /confirmEmpty\.hidden=/);
 });
+
+
+test('training form exposes bounded professional augmentation without fake GPU sharing', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /GPU 使用策略[\s\S]*自动隔离（推荐）[\s\S]*独占指定 GPU/);
+  assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
+  for (const id of [
+    'ts428MultiScale', 'ts428HsvH', 'ts428HsvS', 'ts428HsvV',
+    'ts428Translate', 'ts428Scale', 'ts428FlipUD', 'ts428FlipLR', 'ts428Rect',
+  ]) {
+    assert.match(source, new RegExp('id="' + id + '"'));
+  }
+  assert.match(source, /multi_scale:num\('ts428MultiScale'/);
+  assert.match(source, /hsv_h:num\('ts428HsvH'/);
+  assert.match(source, /translate:num\('ts428Translate'/);
+  assert.match(source, /fliplr:num\('ts428FlipLR'/);
+  assert.match(source, /rect:!!document\.getElementById\('ts428Rect'\)/);
+  assert.match(source, /若发生显存 OOM，会在同一张 GPU 上有界降低 Batch 后重试/);
+});
