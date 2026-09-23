@@ -19,9 +19,9 @@ function draft(overrides = {}) {
     newLabelCodes: ['fire'],
     experimentPercent: 35,
     validationPercent: 18,
-    resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
+    resource: {strategy: 'manual', profile: 'balanced', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
     config: {
-      model: 'custom.pt', epochs: 30, imgsz: 640, optimizer: 'auto',
+      model: 'custom.pt', epochs: 30, time: 2.5, imgsz: 640, precision: 'bf16', optimizer: 'auto',
       lr0: .01, lrf: .01, momentum: .937, weight_decay: .0005,
       warmup_epochs: 3, close_mosaic: 10, mosaic: 1, mixup: 0,
       hsv_h: .015, hsv_s: .7, hsv_v: .4, degrees: 0, translate: .1,
@@ -117,10 +117,27 @@ test('start payload is derived from canonical TrainingDraft instead of legacy id
   assert.equal(payload.validation_percent, 18);
   assert.equal(payload.queue_priority, 7);
   assert.equal(payload.device, '0');
+  assert.equal(payload.resource_strategy, 'manual');
+  assert.equal(payload.resource_profile, 'balanced');
+  assert.equal(payload.precision, 'bf16');
+  assert.equal(payload.time, 2.5);
   assert.equal(payload.batch, 16);
   assert.equal(payload.workers, 4);
   assert.equal(payload.cache, 'False');
   assert.equal(payload.model, 'custom.pt');
+});
+
+test('recommended mode preserves scheduler-owned auto device and adaptive profile', () => {
+  const value = draft({
+    resource: {strategy: 'auto', profile: 'performance', device: 'auto', gpuPolicy: 'auto', batch: 8, workers: 0, cache: false},
+    config: {precision: 'auto', time: null},
+  });
+  const parameters = buildTrainingEngineParameters({draft: value, target, algorithm});
+  assert.equal(parameters.resource_strategy, 'auto');
+  assert.equal(parameters.resource_profile, 'performance');
+  assert.equal(parameters.device, 'auto');
+  assert.equal(parameters.precision, 'auto');
+  assert.equal(parameters.time, null);
 });
 
 test('submit readiness depends only on canonical draft, inheritance and submitting state', () => {
