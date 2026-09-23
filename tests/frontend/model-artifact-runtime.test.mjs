@@ -10,23 +10,35 @@ import {
 } from '../../static/modules/model-artifact-runtime.js';
 
 
-test('model artifact config uses backend field names without frontend-only aliases leaking', () => {
+test('model artifact config exposes standalone artifact OSS fields without secrets', () => {
   const config = normalizeModelArtifactConfig({
     config: {
-      storage_source_id: 'oss-prod',
+      storage_source_id: 'model_artifact_oss',
       root_prefix: 'changlian-ai/artifacts/',
       auto_upload_enabled: true,
     },
-    storage_sources: [{
-      id: 'oss-prod', name: '生产 OSS',
-      config: {public_base_url: 'https://models.example.com'},
-    }],
+    artifact_storage: {
+      source_id: 'model_artifact_oss',
+      dedicated: true,
+      configured: true,
+      endpoint: 'https://oss-cn-hangzhou.aliyuncs.com',
+      bucket: 'new24hlink',
+      public_base_url: 'https://models.example.com',
+      credential_configured: true,
+      credential_masked: 'LTA****1234',
+    },
+    storage_sources: [],
     summary: {total: 8, uploaded: 7, failed: 1, pending: 0},
   });
 
-  assert.equal(config.storageSourceId, 'oss-prod');
+  assert.equal(config.storageSourceId, 'model_artifact_oss');
   assert.equal(config.rootPrefix, 'changlian-ai/artifacts/');
+  assert.equal(config.endpoint, 'https://oss-cn-hangzhou.aliyuncs.com');
+  assert.equal(config.bucket, 'new24hlink');
   assert.equal(config.publicBaseUrl, 'https://models.example.com');
+  assert.equal(config.credentialConfigured, true);
+  assert.equal(config.credentialMasked, 'LTA****1234');
+  assert.equal(config.dedicatedStorage, true);
   assert.equal(config.autoUploadEnabled, true);
   assert.equal(config.summary.failed, 1);
 });
@@ -62,16 +74,17 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /畅联云交互日志/);
   assert.match(source, /storage-test/);
   assert.match(source, /root_prefix:/);
-  assert.match(source, /source\?\.config\?\.public_base_url/);
-  assert.doesNotMatch(source, /modelArtifactPublicBaseUrl/);
-  assert.doesNotMatch(source, /modelArtifactSuggestPublicUrl/);
-  assert.match(source, /toLowerCase\(\) === 'oss'/);
-  assert.match(source, /请选择阿里云 OSS/);
-  assert.match(source, /开发兼容/);
-  assert.match(source, /OSS 长期访问地址/);
-  assert.match(source, /StorageSource/);
-  assert.match(source, /不会与素材 Provider prefix 重复拼接/);
-  assert.match(source, /自动归档已启用/);
+  assert.match(source, /oss-config/);
+  assert.match(source, /modelArtifactEndpoint/);
+  assert.match(source, /modelArtifactBucket/);
+  assert.match(source, /modelArtifactAccessKeyId/);
+  assert.match(source, /modelArtifactAccessKeySecret/);
+  assert.match(source, /modelArtifactPublicBaseUrl/);
+  assert.match(source, /不需要先在“素材存储”创建或选择存储源/);
+  assert.match(source, /保存并测试/);
+  assert.match(source, /DELETE 失败仍会判定不可用/);
+  assert.doesNotMatch(source, /modelArtifactStorageSource/);
+  assert.doesNotMatch(source, /请选择阿里云 OSS/);
   assert.doesNotMatch(source, /id="modelArtifactAutoUpload"/);
   assert.match(source, /存储配置/);
   assert.match(source, /run-auto/);
