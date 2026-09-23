@@ -310,6 +310,31 @@ def _score_node(
 
 
 _MIN_TRAINING_GPU_FREE_BYTES = 1024**3
+_MIN_TRAINING_GPU_FREE_RATIO = 0.10
+_MAX_TRAINING_GPU_UTILIZATION_PERCENT = 85.0
+
+
+def _gpu_is_training_candidate(item: Mapping[str, Any]) -> bool:
+    try:
+        free = max(0, int(item.get("memory_free_bytes") or 0))
+        total = max(0, int(item.get("memory_total_bytes") or 0))
+        utilization_value = item.get("utilization_percent")
+        utilization = (
+            float(utilization_value)
+            if utilization_value is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        return False
+    minimum_free = max(
+        _MIN_TRAINING_GPU_FREE_BYTES,
+        int(total * _MIN_TRAINING_GPU_FREE_RATIO) if total > 0 else 0,
+    )
+    if free < minimum_free:
+        return False
+    if utilization is not None and utilization >= _MAX_TRAINING_GPU_UTILIZATION_PERCENT:
+        return False
+    return True
 
 
 def _assigned_gpu_ids(database, node_id: str) -> set[str]:
@@ -366,7 +391,7 @@ def _selected_gpu(
         item for item in items or []
         if isinstance(item, Mapping)
         and str(item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
-        and int(item.get("memory_free_bytes") or 0) >= _MIN_TRAINING_GPU_FREE_BYTES
+        and _gpu_is_training_candidate(item)
         and (
             requested == "auto"
             or (

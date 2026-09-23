@@ -194,6 +194,38 @@ def test_training_assignment_prefers_less_busy_gpu_when_vram_is_close(tmp_path):
     assert assignment["resolved_execution_config"]["selected_gpu"]["utilization_percent"] == 5
 
 
+def test_training_assignment_waits_when_only_gpu_is_externally_saturated(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-busy-only", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-busy-only",
+        ["training"],
+        resources=training_resources(free0=22 * 1024**3, util0=95),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is None
+    assert repository.get("train-busy-only").status is TaskStatus.QUEUED
+
+
+def test_training_assignment_waits_when_only_gpu_has_too_little_relative_vram(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts, "train-low-vram-only", TaskKind.TRAINING)
+    create_online_node(
+        repository,
+        "gpu-low-vram-only",
+        ["training"],
+        resources=training_resources(free0=2 * 1024**3, util0=5),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+
+    assert assignment is None
+    assert repository.get("train-low-vram-only").status is TaskStatus.QUEUED
+
+
 def test_manual_training_device_is_respected_even_when_another_gpu_ranks_higher(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(
