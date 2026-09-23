@@ -1056,6 +1056,8 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
         },
         "params": {"epochs": 3, "imgsz": 640, "batch": 4},
         "counts": {"train": 3, "validation": 1, "test": 1, "total": 5},
+        "dataset_bytes": 1000,
+        "decoded_dataset_bytes": 6000,
     }
     payload = {
         "target": "remote",
@@ -1105,6 +1107,8 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
     assert resolved["selected_device"] == "cuda:1"
     assert resolved["selected_gpu"]["uuid"] == "GPU-ONE"
     assert resolved["concurrent_reservations"] == 2
+    assert resolved["dataset_bytes"] == 1000
+    assert resolved["decoded_dataset_bytes"] == 6000
     assert resolved["bundle"]["download"]["sha256"] == bundle_sha
     assert resolved["bundle"]["download"]["member_count"] == 5
     assert resolved["model"] == {

@@ -409,6 +409,8 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "base_selection_reason": "mother_model",
         },
         "counts": {"train": 321, "validation": 40, "test": 40},
+        "dataset_bytes": 512 * 1024 * 1024,
+        "decoded_dataset_bytes": 2 * 1024**3,
         "params": {
             "epochs": 3,
             "imgsz": 640,
@@ -504,6 +506,8 @@ runtime_root.joinpath("worker-args.json").write_text(
         "precision": args.precision,
         "time": args.time,
         "train_image_count": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("train_image_count"),
+        "dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("dataset_bytes"),
+        "decoded_dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("decoded_dataset_bytes"),
         "concurrent_reservations": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("concurrent_reservations"),
     }}, sort_keys=True),
     encoding="utf-8",
@@ -632,6 +636,8 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["precision"] == "fp16"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321
+    assert args["dataset_bytes"] == 512 * 1024 * 1024
+    assert args["decoded_dataset_bytes"] == 2 * 1024**3
     assert args["concurrent_reservations"] == 2
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"

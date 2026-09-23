@@ -263,6 +263,8 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["params"]["gpu_policy"] == "exclusive"
     assert training["params"]["precision"] == "fp16"
     assert training["params"]["time"] == 2.5
+    assert training["dataset_bytes"] > 0
+    assert training["decoded_dataset_bytes"] == 5 * (640 ** 2) * 3
     bundle = training["bundle"]
     assert bundle["storage_source_id"] == source.id
     assert bundle["object_key"].startswith("training-bundles/")

@@ -608,6 +608,19 @@ class RemoteTrainingPrepareHandler:
             )
             self._target(context, training_task_id)
 
+            dataset_bytes = sum(int(row.get("size_bytes") or 0) for row in images)
+            decoded_dataset_bytes = (
+                sum(
+                    max(
+                        int(row["width"]) * int(row["height"]),
+                        int(payload.get("imgsz") or 640) ** 2,
+                    ) * 3
+                    for row in images
+                )
+                if images and all(row.get("width") and row.get("height") for row in images)
+                else None
+            )
+
             remote_execution = {
                 "version": 1,
                 "task_kind": "TRAINING",
@@ -632,6 +645,8 @@ class RemoteTrainingPrepareHandler:
                     "params": _portable_params(payload),
                     "counts": dict(getattr(split_manifest, "counts", {}) or {}),
                     "selected_image_count": len(images),
+                    "dataset_bytes": dataset_bytes,
+                    "decoded_dataset_bytes": decoded_dataset_bytes,
                 },
             }
             updated_payload = {

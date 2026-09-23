@@ -577,15 +577,31 @@ class AgentTrainingRunner:
             )
 
         download = ((payload.get("bundle") or {}).get("download"))
-        dataset_bytes = 0
-        if isinstance(download, Mapping):
+        try:
+            dataset_bytes = max(
+                0,
+                int(
+                    payload.get("dataset_bytes")
+                    or (
+                        download.get("uncompressed_size_bytes")
+                        if isinstance(download, Mapping)
+                        else 0
+                    )
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise AgentTrainingRuntimeError(
+                "remote training dataset byte evidence is invalid"
+            ) from error
+        decoded_dataset_bytes = payload.get("decoded_dataset_bytes")
+        if decoded_dataset_bytes is not None:
             try:
-                dataset_bytes = max(
-                    0,
-                    int(download.get("uncompressed_size_bytes") or 0),
-                )
-            except (TypeError, ValueError):
-                dataset_bytes = 0
+                decoded_dataset_bytes = max(0, int(decoded_dataset_bytes))
+            except (TypeError, ValueError) as error:
+                raise AgentTrainingRuntimeError(
+                    "remote training decoded dataset byte evidence is invalid"
+                ) from error
         counts = payload.get("counts")
         counts = counts if isinstance(counts, Mapping) else {}
         try:
@@ -612,7 +628,7 @@ class AgentTrainingRunner:
             "concurrent_reservations": concurrent_reservations,
             "dataset_bytes": dataset_bytes,
             "train_image_count": train_image_count,
-            "decoded_dataset_bytes": None,
+            "decoded_dataset_bytes": decoded_dataset_bytes,
             "remote_cache_ready": True,
             "gpu_uuid": str(gpu.get("uuid") or "") or None,
             "gpu_name": str(gpu.get("name") or "") or None,

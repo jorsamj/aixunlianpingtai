@@ -2242,6 +2242,16 @@ class RemoteExecutionTransportService:
             for key, value in params.items()
             if value is None or isinstance(value, (str, int, float, bool))
         }
+        dataset_bytes = _positive_int(
+            training.get("dataset_bytes") or bundle.get("uncompressed_size_bytes"),
+            "training.dataset_bytes",
+        )
+        decoded_dataset_bytes = training.get("decoded_dataset_bytes")
+        if decoded_dataset_bytes is not None:
+            decoded_dataset_bytes = _positive_int(
+                decoded_dataset_bytes,
+                "training.decoded_dataset_bytes",
+            )
         return {
             "schema_version": 1,
             "task_kind": "TRAINING",
@@ -2254,6 +2264,8 @@ class RemoteExecutionTransportService:
             "selected_device": selected_device,
             "selected_gpu": dict(selected_gpu) if isinstance(selected_gpu, Mapping) else None,
             "concurrent_reservations": concurrent_reservations,
+            "dataset_bytes": dataset_bytes,
+            "decoded_dataset_bytes": decoded_dataset_bytes,
             "bundle": {
                 "type": "object",
                 "download": bundle_download,
