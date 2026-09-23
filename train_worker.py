@@ -674,7 +674,6 @@ def derive_training_completion_metadata(
         and elapsed is not None
         and elapsed >= max_hours * 0.95
         and requested > 0
-        and completed > 0
         and completed < requested
     ):
         result.update(
