@@ -31,3 +31,15 @@ test('training material picker has one public owner plus one decorator', () => {
   assert.match(app, /window\.decorateTrainPickerBulk412=function\(\)/);
   assert.match(app, /window\.openTrainPicker429=function openTrainPickerCanonical412\(\)/);
 });
+
+test('legacy training run center is fully retired in favor of TrainingRecoveryRuntime', () => {
+  for (const token of [
+    'function trainRunCenter429(',
+    'function replaceTrainRunCenter429(',
+    'async function readTrainRunCenter429(',
+    'window.showTrainLog423=async function',
+    'window.refreshTrainRunCenter429=async function',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.match(app, /Training detail\/log rendering is exclusively owned by TrainingRecoveryRuntime/);
+});
+

@@ -4676,42 +4676,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
   window.startAlgorithmTraining429=window.openTrainingCreateCanonical429;
   window.startAlgorithmTraining423=window.openTrainingCreateCanonical429;
-  const successfulTrainStatus429=status=>['done','finished','completed','succeeded','success'].includes(String(status||'').toLowerCase());
-  const trainingStatusText429=status=>({queued:'排队中',waiting:'等待资源',pending:'等待中',starting:'启动中',running:'训练中',pausing:'暂停中',paused:'已暂停',resuming:'恢复中',stopping:'停止中',cancel_requested:'取消中',done:'已完成',finished:'已完成',completed:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',stopped:'已停止',cancelled:'已取消',canceled:'已取消'})[String(status||'').toLowerCase()]||String(status||'-');
-  function trainRunCenter429(job,log){
-    const e=job.device_evidence||{},r=job.resolved_resources||{},m=job.runtime_metrics||{},args=job.actual_train_params||{},diagnosis=m.diagnostic||{};
-    const labels={memory_pressure_oom:'显存不足，已触发 OOM',cpu_bottleneck:'CPU 供给不足',io_bottleneck:'数据读取受限',gpu_saturated:'GPU 持续繁忙',insufficient_samples:'采样不足',unknown:'暂无足够证据'};
-    const rows=[['所属算法',job.asset_algorithm_name||job.algorithm_name||job.asset_algorithm_id||'-'],['训练任务',job.id],['数据版本',job.dataset_revision_id?String(job.dataset_revision_id).slice(0,12):'准备中'],['训练快照',job.snapshot_id?String(job.snapshot_id).slice(0,12):'准备中'],['请求设备',job.requested_device],['分配设备',job.assigned_device],['实际设备',job.actual_device],['GPU 名称',e.gpu_name],['GPU UUID',e.gpu_uuid],['GPU 索引',e.gpu_index],['进程 PID',e.pid],['Torch / CUDA',`${e.torch_version||'—'} / ${e.cuda_version||'—'}`],['实际 batch',args.batch??r.resolved_batch],['实际 workers',args.workers??r.resolved_workers],['实际 cache',args.cache??r.resolved_cache],['运行诊断',labels[diagnosis.code]||diagnosis.code||'等待采样']];
-    const success=successfulTrainStatus429(job.status),failed=String(job.status||'').toLowerCase()==='failed';
-    const title=success?'训练已完成':failed?(job.message||job.error||'训练失败'):(job.message||job.current_item||job.status||'等待执行');
-    const note=success?'训练成果已完成归档；历史失败信息不会继续作为当前状态展示。':failed?String(job.error||job.message||'请查看工程师技术日志定位失败原因'):(r.reasons||[]).join('；');
-    return `<div class="trainlog428 trainlog429" data-train-run-center="${esc(job.id)}"><div class="trainlog429-head"><div><span>训练任务</span><h2>${esc(title)}</h2><p>Epoch ${esc(String(job.current_epoch||0))} / ${esc(String(job.total_epochs||job.epochs||'—'))}</p></div><span class="pill ${success?'ok':failed?'err':'warn'}">${esc(trainingStatusText429(job.status))}</span></div><table class="table"><tbody>${rows.map(([label,value])=>`<tr><th>${esc(label)}</th><td>${esc(value==null?'尚未产生':String(value))}</td></tr>`).join('')}</tbody></table>${note?`<div class="trainlog429-note ${failed?'err':''}">${esc(note)}</div>`:''}<details><summary>工程师技术日志</summary><pre class="log" data-train-tech-log>${esc(log||'暂无技术日志')}</pre></details><div class="row end"><button class="btn" data-train-log-refresh onclick="refreshTrainRunCenter429('${esc(job.id)}')">刷新</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`;
-  }
-  async function readTrainRunCenter429(id){const [job,log]=await Promise.all([api(`/api/projects/${pid()}/jobs/${id}`),safe(api(`/api/projects/${pid()}/jobs/${id}/log`))]);return{job,log:log||''}}
-  function replaceTrainRunCenter429(id,job,log){
-    const selector=`[data-train-run-center="${CSS.escape(String(id))}"]`,root=document.querySelector(selector);
-    if(!root){modal('训练运行中心',trainRunCenter429(job,log),true);return}
-    const shell=document.createElement('div');shell.innerHTML=trainRunCenter429(job,log);const next=shell.firstElementChild;if(next)root.replaceWith(next);
-  }
-  window.showTrainLog423=async function(id){
-    const cached=(state.jobs||[]).find(job=>String(job.id)===String(id));
-    if(cached)modal('训练运行中心',trainRunCenter429(cached,''),true);
-    try{
-      const value=await readTrainRunCenter429(id);
-      replaceTrainRunCenter429(id,value.job,value.log);
-      return true;
-    }catch(error){
-      if(!cached){toast(error.message||error);return false}
-      toast(`训练日志详情刷新失败，已显示当前任务状态：${error.message||error}`);
-      return true;
-    }
-  };
-  window.refreshTrainRunCenter429=async function(id){
-    const root=document.querySelector(`[data-train-run-center="${CSS.escape(String(id))}"]`);if(!root)return window.showTrainLog423(id);
-    const button=root.querySelector('[data-train-log-refresh]');if(button){button.disabled=true;button.textContent='刷新中…'}
-    try{const value=await readTrainRunCenter429(id);const shell=document.createElement('div');shell.innerHTML=trainRunCenter429(value.job,value.log);const next=shell.firstElementChild;if(next)root.replaceWith(next)}
-    catch(error){toast(error.message||error);if(button){button.disabled=false;button.textContent='刷新'}}
-  };
+  // Training detail/log rendering is exclusively owned by TrainingRecoveryRuntime.
+  // Do not add a fallback modal here; a second owner can disagree with canonical task truth.
+
 })();
 
 /* Stable single-instance manual/batch annotation workbench. */

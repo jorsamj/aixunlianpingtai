@@ -312,6 +312,8 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     openTrainingRecoveryDetail: window.openTrainingRecoveryDetail,
     revalidateTrainingCheckpoint: window.revalidateTrainingCheckpoint,
     showTrainLog423: window.showTrainLog423,
+    showTrainLog424: window.showTrainLog424,
+    openTrainDetail423: window.openTrainDetail423,
     refreshTrainRunCenter429: window.refreshTrainRunCenter429,
   };
   const locks = new Set();
@@ -557,6 +559,8 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   window.openTrainingRecoveryDetail = taskId => openDetail(taskId, {focus: 'overview'});
   window.revalidateTrainingCheckpoint = recover;
   window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});
+  window.showTrainLog424 = taskId => openDetail(taskId, {focus: 'log'});
+  window.openTrainDetail423 = taskId => openDetail(taskId, {focus: 'overview'});
   window.refreshTrainRunCenter429 = taskId => {
     if (String(openTaskId) !== String(taskId)) return openDetail(taskId, {focus: 'log'});
     return refreshOpenDetail({includeRecovery: true});
