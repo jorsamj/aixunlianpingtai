@@ -20,6 +20,8 @@ on:
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/training_metrics.py'
+      - 'platform_core/training_devices.py'
       - 'platform_core/snapshots.py'
       - 'platform_core/training_lineage.py'
       - 'platform_core/training_evaluation.py'
@@ -43,6 +45,9 @@ on:
       - 'tests/unit/test_model_artifacts.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_training_completion_metadata.py'
+      - 'tests/unit/test_training_scheduler_target.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
@@ -68,6 +73,8 @@ on:
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/training_metrics.py'
+      - 'platform_core/training_devices.py'
       - 'platform_core/snapshots.py'
       - 'platform_core/training_lineage.py'
       - 'platform_core/training_evaluation.py'
@@ -91,6 +98,9 @@ on:
       - 'tests/unit/test_model_artifacts.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_training_completion_metadata.py'
+      - 'tests/unit/test_training_scheduler_target.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
@@ -122,6 +132,8 @@ jobs:
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
           platform_core/training_tasks.py
+          platform_core/training_metrics.py
+          platform_core/training_devices.py
           platform_core/snapshots.py
           platform_core/training_lineage.py
           platform_core/training_evaluation.py
@@ -153,6 +165,9 @@ jobs:
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_model_artifacts.py
           tests/unit/test_task_node_assignments.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_completion_metadata.py
+          tests/unit/test_training_scheduler_target.py
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
@@ -162,6 +177,9 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_training_transport.py
           tests/unit/test_task_node_assignments.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_completion_metadata.py
+          tests/unit/test_training_scheduler_target.py
       - name: Agent portable training subprocess lifecycle
         run: >-
           python -m pytest -q --confcutdir=tests/unit
