@@ -153,6 +153,27 @@ def test_fp32_uses_more_conservative_activation_memory_budget_than_fp16(monkeypa
     assert fp32["resolved_batch"] < fp16["resolved_batch"]
 
 
+def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatch):
+    _patch_host(monkeypatch)
+
+    single_job = training_metrics.resolve_resources(
+        _request(workers=0, resource_profile="performance"),
+        _context(concurrent_reservations=1),
+        _Model(),
+        _Torch(_Cuda(devices=2)),
+    )
+    second_parallel_job = training_metrics.resolve_resources(
+        _request(workers=0, resource_profile="performance"),
+        _context(concurrent_reservations=2),
+        _Model(),
+        _Torch(_Cuda(devices=2)),
+    )
+
+    assert single_job["resolved_workers"] == 12
+    assert second_parallel_job["resolved_workers"] == 7
+    assert single_job["resolved_workers"] > second_parallel_job["resolved_workers"]
+
+
 def test_auto_selects_ram_cache_when_dataset_safely_fits(monkeypatch):
     _patch_host(monkeypatch)
     result = training_metrics.resolve_resources(

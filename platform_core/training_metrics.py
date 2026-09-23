@@ -149,7 +149,10 @@ def resolve_resources(request, context, model, torch):
             cap = min(cap, 4)
         cpu_loader_budget = max(0, cpu_budget - 1)
         train_image_count = max(1, int(context.get("train_image_count") or 1))
-        loader_limit = min(train_image_count, max(1, cores // max(1, torch.cuda.device_count())))
+        # Divide host CPU by tasks actually reserved on this host, not by the
+        # number of installed GPUs. An idle multi-GPU server should not throttle
+        # a single training job before the other GPUs have work.
+        loader_limit = min(train_image_count, max(1, cpu_loader_budget))
         workers = min(cap, cpu_loader_budget, loader_limit)
         if request.get("device") == "cpu":
             workers = 0
