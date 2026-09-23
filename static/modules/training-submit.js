@@ -41,6 +41,8 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     device: draft.resource?.device || config.device || 'auto',
     include_empty: false,
     patience: config.patience ?? 100,
+    time: config.time ?? null,
+    precision: config.precision || 'auto',
     workers: integerParameter(draft.resource?.workers ?? config.workers, 0, 'Workers'),
     optimizer: config.optimizer || 'auto',
     lr0: config.lr0 ?? .01,
@@ -80,6 +82,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     auto_convert_targets: config.auto_convert_targets || [],
     ai_intervention_enabled: false,
     resource_strategy: draft.resource?.strategy || config.resource_strategy || 'auto',
+    resource_profile: draft.resource?.profile || config.resource_profile || 'balanced',
     gpu_policy: draft.resource?.gpuPolicy || config.gpu_policy || 'auto',
   };
 }
@@ -422,7 +425,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422506',
+    build: 'training-submit-422507',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,
