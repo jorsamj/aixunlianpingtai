@@ -17,10 +17,10 @@ import {installTrainingMaterialPickerRuntime} from './modules/training-material-
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422561';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422500';
-import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
-import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
-import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
+import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422508';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422517';
+import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422507';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422551';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
