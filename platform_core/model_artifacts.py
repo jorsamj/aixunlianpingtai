@@ -20,13 +20,16 @@ from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms
 from .errors import PlatformError
-from .secrets import SecretCredentialStore
+from .secrets import SecretCredentialStore, secret_ref
 from .storage import StorageProviderFactory, StorageSourceRepository
 
 
 SUCCESSFUL_CONVERSION_STATUSES = {
     "done", "finished", "completed", "success", "succeeded", "partial_success", "blocked_by_hardware",
 }
+
+ARTIFACT_OSS_SOURCE_ID = "model_artifact_oss"
+ARTIFACT_OSS_SOURCE_NAME = "算法与转换结果 OSS"
 
 _DELIVERABLE_SUFFIXES: dict[str, frozenset[str]] = {
     "onnx": frozenset({".onnx"}),
@@ -87,6 +90,15 @@ class ModelArtifactConfigPayload(BaseModel):
 class StorageTestPayload(BaseModel):
     storage_source_id: str
     public_base_url: str = ""
+
+
+class ArtifactOSSConfigPayload(BaseModel):
+    endpoint: str
+    bucket: str
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    public_base_url: str = ""
+    root_prefix: str = "changlian-ai/artifacts"
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -486,14 +498,38 @@ class ModelArtifactService:
     def public_config(self) -> dict[str, Any]:
         config = self.repository.config()
         credentials = self.storage_credentials_factory()
+        repository = self.storage_sources_factory()
         sources = []
-        for source in self.storage_sources_factory().list():
+        for source in repository.list():
             state = credentials.public_state(source.secret_ref) if source.secret_ref else {"configured": False, "masked": ""}
             sources.append(source.to_public_dict(
                 secret_configured=bool(state.get("configured")),
                 secret_masked=str(state.get("masked") or ""),
             ))
-        return {"config": config, "storage_sources": sources, "summary": self.repository.summary()}
+
+        selected_id = str(config.get("storage_source_id") or "").strip()
+        selected = repository.get(selected_id) if selected_id else None
+        selected_state = (
+            credentials.public_state(selected.secret_ref)
+            if selected is not None and selected.secret_ref
+            else {"configured": False, "masked": ""}
+        )
+        artifact_storage = {
+            "source_id": str(selected.id if selected is not None else ""),
+            "dedicated": bool(selected is not None and selected.id == ARTIFACT_OSS_SOURCE_ID),
+            "configured": bool(selected is not None and str(selected.type or "").lower() == "oss"),
+            "endpoint": str(selected.config.get("endpoint") or "") if selected is not None else "",
+            "bucket": str(selected.config.get("bucket") or "") if selected is not None else "",
+            "public_base_url": str(selected.config.get("public_base_url") or "") if selected is not None else "",
+            "credential_configured": bool(selected_state.get("configured")),
+            "credential_masked": str(selected_state.get("masked") or ""),
+        }
+        return {
+            "config": config,
+            "artifact_storage": artifact_storage,
+            "storage_sources": sources,
+            "summary": self.repository.summary(),
+        }
 
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
@@ -504,6 +540,139 @@ class ModelArtifactService:
             if not source.enabled:
                 raise PlatformError("MODEL_STORAGE_SOURCE_DISABLED", "算法与转换结果存储源已停用", source_id, "请启用存储源后再保存。", 409)
         return self.repository.save_config(payload)
+
+
+    def save_artifact_oss_config(self, payload: ArtifactOSSConfigPayload) -> dict[str, Any]:
+        endpoint = str(payload.endpoint or "").strip()
+        bucket = str(payload.bucket or "").strip()
+        public_base_url = str(payload.public_base_url or "").strip().rstrip("/")
+        root_prefix = _canonical_prefix(payload.root_prefix or "changlian-ai/artifacts")
+        access_key_id = str(payload.access_key_id or "").strip()
+        access_key_secret = str(payload.access_key_secret or "")
+
+        if not endpoint:
+            raise PlatformError(
+                "MODEL_ARTIFACT_OSS_ENDPOINT_REQUIRED",
+                "请填写算法产物 OSS Endpoint",
+                "endpoint 为空",
+                "请填写例如 https://oss-cn-hangzhou.aliyuncs.com。",
+                422,
+            )
+        if not bucket:
+            raise PlatformError(
+                "MODEL_ARTIFACT_OSS_BUCKET_REQUIRED",
+                "请填写算法产物 OSS Bucket",
+                "bucket 为空",
+                "请填写算法与转换结果实际归档使用的 Bucket。",
+                422,
+            )
+        if public_base_url and not public_base_url.startswith(("http://", "https://")):
+            raise PlatformError(
+                "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
+                "算法产物长期访问地址格式不正确",
+                public_base_url,
+                "长期访问地址必须以 http:// 或 https:// 开头。",
+                422,
+            )
+        if bool(access_key_id) != bool(access_key_secret):
+            raise PlatformError(
+                "MODEL_ARTIFACT_OSS_CREDENTIAL_INCOMPLETE",
+                "AccessKey ID 与 AccessKey Secret 必须同时填写",
+                "只填写了一个凭据字段",
+                "若已有凭据可两个都留空；如需更换，请同时填写新的 AccessKey ID 与 AccessKey Secret。",
+                422,
+            )
+
+        repository = self.storage_sources_factory()
+        credentials = self.storage_credentials_factory()
+        current = repository.get(ARTIFACT_OSS_SOURCE_ID)
+        reference = (
+            current.secret_ref
+            if current is not None and current.secret_ref
+            else secret_ref("storage-source", ARTIFACT_OSS_SOURCE_ID)
+        )
+
+        new_credentials: dict[str, str] | None = None
+        if access_key_id and access_key_secret:
+            new_credentials = {
+                "access_key_id": access_key_id,
+                "access_key_secret": access_key_secret,
+            }
+        elif current is None:
+            # One-time migration aid only: if the old artifact binding reused
+            # a material OSS source, clone its credential into the dedicated
+            # artifact source. Subsequent edits are fully independent.
+            previous_id = str(self.repository.config().get("storage_source_id") or "").strip()
+            previous = repository.get(previous_id) if previous_id else None
+            if previous is not None and str(previous.type or "").lower() == "oss" and previous.secret_ref:
+                inherited = credentials.get(previous.secret_ref) or {}
+                if inherited.get("access_key_id") and inherited.get("access_key_secret"):
+                    new_credentials = {
+                        "access_key_id": str(inherited["access_key_id"]),
+                        "access_key_secret": str(inherited["access_key_secret"]),
+                    }
+
+        if current is None and new_credentials is None:
+            raise PlatformError(
+                "MODEL_ARTIFACT_OSS_CREDENTIAL_REQUIRED",
+                "请填写算法产物 OSS 的 AccessKey",
+                "独立算法产物 OSS 尚未配置凭据",
+                "首次保存请在“算法与转换结果存储”中直接填写 AccessKey ID 和 AccessKey Secret；不再依赖素材存储。",
+                422,
+            )
+        if current is not None and str(current.type or "").lower() != "oss":
+            raise PlatformError(
+                "MODEL_ARTIFACT_OSS_SOURCE_CONFLICT",
+                "算法产物专用存储源类型冲突",
+                f"{ARTIFACT_OSS_SOURCE_ID} type={current.type}",
+                "请删除冲突的系统存储源后重新保存算法产物 OSS 配置。",
+                409,
+            )
+
+        source_config = {
+            "endpoint": endpoint,
+            "bucket": bucket,
+            "prefix": "",
+            "public_base_url": public_base_url,
+            "protect_existing_objects": True,
+            "usage": "model_artifact",
+        }
+        if current is None:
+            try:
+                repository.create({
+                    "id": ARTIFACT_OSS_SOURCE_ID,
+                    "name": ARTIFACT_OSS_SOURCE_NAME,
+                    "type": "oss",
+                    "config": source_config,
+                    "secret_ref": reference,
+                    "enabled": True,
+                })
+                if new_credentials is not None:
+                    credentials.set(reference, new_credentials)
+            except Exception:
+                created = repository.get(ARTIFACT_OSS_SOURCE_ID)
+                if created is not None:
+                    try:
+                        repository.delete(ARTIFACT_OSS_SOURCE_ID)
+                    except Exception:
+                        pass
+                raise
+        else:
+            repository.update(ARTIFACT_OSS_SOURCE_ID, {
+                "name": ARTIFACT_OSS_SOURCE_NAME,
+                "config": source_config,
+                "secret_ref": reference,
+                "enabled": True,
+            })
+            if new_credentials is not None:
+                credentials.set(reference, new_credentials)
+
+        self.repository.save_config(ModelArtifactConfigPayload(
+            storage_source_id=ARTIFACT_OSS_SOURCE_ID,
+            root_prefix=root_prefix,
+            auto_upload_enabled=True,
+        ))
+        return self.public_config()
 
     def _provider(self, project_id: str, source_id: str):
         source = self.storage_sources_factory().get(source_id)
