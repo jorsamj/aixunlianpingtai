@@ -3235,18 +3235,63 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function cacheKey428(kind,...ids){return`cl_train_v428_${kind}_${pid()}_${ids.join('_')}`}
   function readCache428(k){try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}}
   function writeCache428(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
-  async function deploymentHistory428(aid,vid,force=false){const k=cacheKey428('verdeploy',aid,vid);if(!force){const c=readCache428(k);if(c)return c}const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);writeCache428(k,r);return r}
-  async function deployResources428(force=false){const k=cacheKey428('deployresources');if(!force){const c=readCache428(k);if(c)return c}const r=await api('/api/v39/deploy/resources');writeCache428(k,r);return r}
+  const conversionHistoryInflight428=new Map();
+  let deployResourcesInflight428=null;
+  async function deploymentHistory428(aid,vid,force=false){
+    const k=cacheKey428('verdeploy',aid,vid),inflightKey=`${pid()}:${aid}:${vid}`;
+    if(!force){const c=readCache428(k);if(c)return c}
+    if(conversionHistoryInflight428.has(inflightKey))return conversionHistoryInflight428.get(inflightKey);
+    const task=api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`).then(r=>{writeCache428(k,r);return r}).finally(()=>conversionHistoryInflight428.delete(inflightKey));
+    conversionHistoryInflight428.set(inflightKey,task);return task
+  }
+  async function deployResources428(force=false){
+    const k=cacheKey428('deployresources');
+    if(!force){const c=readCache428(k);if(c)return c}
+    if(deployResourcesInflight428)return deployResourcesInflight428;
+    const task=api('/api/v39/deploy/resources').then(r=>{writeCache428(k,r);return r}).finally(()=>{if(deployResourcesInflight428===task)deployResourcesInflight428=null});
+    deployResourcesInflight428=task;return task
+  }
+  window.loadVersionConversionHistory428=deploymentHistory428;
+  window.loadVersionConversionResources428=deployResources428;
   function deployOutput428(job){return (job.outputs||[]).map(o=>`<div class="alg428-output"><div><b>${esc(o.name||'-')}</b><span>${o.size_mb!=null?Number(o.size_mb).toFixed(2)+' MB':''}</span></div>${o.exists&&o.download_url?`<a class="btn mini primary" href="${o.download_url}">下载</a>`:'<span class="pill warn">文件不可用</span>'}</div>`).join('')||'<span class="muted-line">暂无可下载产物</span>'}
+  const versionConversionPollKey428=(aid,vid)=>`version-conversion:${aid}:${vid}`;
+  const versionConversionRoot428=(aid,vid)=>[...document.querySelectorAll('.convert428[data-version-conversion-aid]')].find(node=>String(node.dataset.versionConversionAid||'')===String(aid)&&String(node.dataset.versionConversionVid||'')===String(vid))||null;
   const conversionActive428=status=>['queued','waiting_resource','running','stopping','cancel_requested'].includes(String(status||'').toLowerCase());
   function conversionHardware428(job){const rockchip=['rockchip','rknn'].includes(String(job?.target||'').toLowerCase()),verified=Boolean(job?.hardware_verified),evidence=job?.hardware_verification||{},chip=String(evidence.chip||job?.params?.chip||'').toUpperCase();if(!rockchip)return'';if(verified)return `<div class="alert ok convert428-hardware"><b>RKNN 实机已验证</b><span>${esc(chip||'Rockchip')} · ${esc(evidence.node_id||'-')}${Number.isFinite(Number(evidence.inference_ms))?` · 推理 ${Number(evidence.inference_ms).toFixed(2)} ms`:''}${Number.isFinite(Number(evidence.output_count))?` · 输出 ${Number(evidence.output_count)} 组`:''}</span></div>`;const status=String(job?.conversion_status||job?.validation_status||job?.stage||'').toLowerCase();return status==='converted_unverified'?'<div class="alert warn convert428-hardware"><b>待板端验证</b><span>RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证。</span></div>':''}
   function conversionActions428(job){const active=conversionActive428(job?.status),rockchip=['rockchip','rknn'].includes(String(job?.target||'').toLowerCase()),verified=Boolean(job?.hardware_verified),chip=String(job?.params?.chip||'').toLowerCase(),status=String(job?.conversion_status||job?.validation_status||job?.stage||'').toLowerCase(),canVerify=rockchip&&job?.status==='done'&&!verified&&status==='converted_unverified'&&['rk3568','rk3576'].includes(chip);return `<div class="row convert428-actions"><button class="btn mini" onclick="openDeployLog('${esc(job.id)}')">日志</button>${verified?`<button class="btn mini" onclick="openRknnAcceptanceReport('${esc(job.id)}')">验收报告</button>`:''}${canVerify?`<button class="btn mini primary" onclick="openRknnHardwareVerify('${esc(job.id)}')">板端验证</button>`:''}${active?`<button class="btn mini danger" onclick="stopDeployJob('${esc(job.id)}')">停止</button>`:''}${job?.package_url?`<a class="btn mini" href="${esc(job.package_url)}">下载部署包</a>`:''}${!active?`<button class="btn mini danger" onclick="deleteDeployJob('${esc(job.id)}')">删除</button>`:''}</div>`}
   function rememberVersionConversion428(aid,vid,r){state.conv428VersionContext={aid:String(aid||''),vid:String(vid||'')};state.conv428Jobs=Array.isArray(r?.items)?r.items:[];return r}
   window.versionConversionJob428=id=>(state.conv428Jobs||[]).find(job=>String(job?.id||'')===String(id||''))||null;
-  function historyHtml428(aid,vid,r){const rows=r?.items||[],v=r?.version||{};rememberVersionConversion428(aid,vid,r);return `<div class="convert428" data-version-conversion-aid="${esc(aid)}" data-version-conversion-vid="${esc(vid)}"><div class="convert428-top"><div><b>${esc(v.version_name||'-')}</b><span>${rows.length} 条转换记录</span></div><div class="row"><button class="btn" onclick="refreshVersionConvert428('${aid}','${vid}')">刷新</button>${String(v.stored_path||'').trim()?`<button class="btn primary" onclick="openNewConvert428('${aid}','${vid}')">＋ 新建转换</button>`:''}</div></div>${rows.length?rows.map(j=>`<article class="convert428-job" data-conversion-job-id="${esc(j.id)}"><header><div><b>${esc(j.target_name||TARGET_NAMES428[j.target]||j.target)}</b><span>${esc(j.resource_name||'-')} · ${dt428(j.created_at)}</span></div>${statusPill428(j.status)}</header><div class="convert428-progress"><i style="width:${Math.max(0,Math.min(100,Number(j.progress||0)))}%"></i></div><p>${esc(j.error||j.message||j.stage||'')}</p>${conversionHardware428(j)}<div class="convert428-outputs">${deployOutput428(j)}</div>${conversionActions428(j)}</article>`).join(''):`<div class="convert428-empty"><b>这个版本还没有转换记录</b><span>${String(v.stored_path||'').trim()?'选择目标硬件后即可开始转换':'本版本没有可用模型产物，无法进行部署转换'}</span>${String(v.stored_path||'').trim()?`<button class="btn primary" onclick="openNewConvert428('${aid}','${vid}')">选择转换目标</button>`:''}</div>`}</div>`}
-  function replaceVersionConversionBody428(aid,vid,r){const root=[...document.querySelectorAll('.convert428[data-version-conversion-aid]')].find(node=>String(node.dataset.versionConversionAid||'')===String(aid)&&String(node.dataset.versionConversionVid||'')===String(vid));const body=root?.closest('.modal-body');if(!body)return false;body.innerHTML=historyHtml428(aid,vid,r);return true}
-  window.openVersionConvert428=async function(aid,vid){try{const r=rememberVersionConversion428(aid,vid,await deploymentHistory428(aid,vid,false));modal('版本转换',historyHtml428(aid,vid,r),true)}catch(e){toast(e.message||e)}};
-  window.refreshVersionConvert428=async function(aid,vid,{quiet=false}={}){try{const r=rememberVersionConversion428(aid,vid,await deploymentHistory428(aid,vid,true));replaceVersionConversionBody428(aid,vid,r);if(!quiet)toast('已重新读取转换记录');return r}catch(e){toast(e.message||e);return null}};
+  function historyHtml428(aid,vid,r){const rows=r?.items||[],v=r?.version||{};rememberVersionConversion428(aid,vid,r);return `<div class="convert428" data-version-conversion-aid="${esc(aid)}" data-version-conversion-vid="${esc(vid)}"><div class="convert428-top"><div><b>${esc(v.version_name||'-')}</b><span>${rows.length} 条转换记录</span></div><div class="row"><button class="btn" onclick="refreshVersionConvert428('${aid}','${vid}')">刷新</button>${String(v.stored_path||'').trim()?`<button class="btn primary" onclick="openNewConvert428('${aid}','${vid}')">＋ 新建转换</button>`:''}</div></div>${rows.length?rows.map(j=>{const progress=Math.max(0,Math.min(100,Number(j.progress||0))),status=String(j.status||'').toLowerCase();return `<article class="convert428-job" data-conversion-job-id="${esc(j.id)}" data-conversion-status="${esc(status)}"><header><div><b>${esc(j.target_name||TARGET_NAMES428[j.target]||j.target)}</b><span>${esc(j.resource_name||'-')} · ${dt428(j.created_at)}</span></div>${statusPill428(j.status)}</header><div class="convert428-progress"><i data-conversion-progress data-progress="${progress.toFixed(2)}" style="width:${progress}%"></i></div><p data-conversion-message>${esc(j.error||j.message||j.stage||'')}</p>${conversionHardware428(j)}<div class="convert428-outputs">${deployOutput428(j)}</div>${conversionActions428(j)}</article>`}).join(''):`<div class="convert428-empty"><b>这个版本还没有转换记录</b><span>${String(v.stored_path||'').trim()?'选择目标硬件后即可开始转换':'本版本没有可用模型产物，无法进行部署转换'}</span>${String(v.stored_path||'').trim()?`<button class="btn primary" onclick="openNewConvert428('${aid}','${vid}')">选择转换目标</button>`:''}</div>`}</div>`}
+  function replaceVersionConversionBody428(aid,vid,r){const root=versionConversionRoot428(aid,vid),body=root?.closest('.modal-body');if(!body)return false;body.innerHTML=historyHtml428(aid,vid,r);return true}
+  function patchVersionConversionLive428(aid,vid,r){
+    const root=versionConversionRoot428(aid,vid),rows=Array.isArray(r?.items)?r.items:[],cards=root?[...root.querySelectorAll('[data-conversion-job-id]')]:[];
+    if(!root||cards.length!==rows.length)return false;
+    for(const job of rows){
+      const card=cards.find(node=>String(node.dataset.conversionJobId||'')===String(job?.id||''));if(!card)return false;
+      const previous=String(card.dataset.conversionStatus||''),next=String(job?.status||'').toLowerCase();
+      if(conversionActive428(previous)&&!conversionActive428(next))return false;
+      card.dataset.conversionStatus=next;
+      const pill=card.querySelector('header .pill');if(pill)pill.outerHTML=statusPill428(job.status);
+      const progress=Math.max(0,Math.min(100,Number(job?.progress||0))),bar=card.querySelector('[data-conversion-progress]');if(bar){bar.dataset.progress=progress.toFixed(2);bar.style.width=`${progress}%`}
+      const message=card.querySelector('[data-conversion-message]');if(message)message.textContent=job?.error||job?.message||job?.stage||'';
+    }
+    rememberVersionConversion428(aid,vid,r);return true
+  }
+  function scheduleVersionConversionPoll428(aid,vid,r){
+    const registry=window.PollRegistryRuntime,key=versionConversionPollKey428(aid,vid),rows=Array.isArray(r?.items)?r.items:[];
+    registry?.clear?.(key);
+    if(!registry||!versionConversionRoot428(aid,vid)||!rows.some(job=>conversionActive428(job?.status)))return null;
+    return registry.startTimeout(key,String(state.page||'算法列表'),async()=>{
+      if(!versionConversionRoot428(aid,vid))return;
+      try{
+        const next=await deploymentHistory428(aid,vid,true),active=(next?.items||[]).some(job=>conversionActive428(job?.status));
+        if(active){if(!patchVersionConversionLive428(aid,vid,next))replaceVersionConversionBody428(aid,vid,next);scheduleVersionConversionPoll428(aid,vid,next)}
+        else replaceVersionConversionBody428(aid,vid,next);
+      }catch(_){if(versionConversionRoot428(aid,vid))scheduleVersionConversionPoll428(aid,vid,r)}
+    },1500)
+  }
+  window.openVersionConvert428=async function(aid,vid){try{const r=rememberVersionConversion428(aid,vid,await deploymentHistory428(aid,vid,false));modal('版本转换',historyHtml428(aid,vid,r),true);scheduleVersionConversionPoll428(aid,vid,r)}catch(e){toast(e.message||e)}};
+  window.refreshVersionConvert428=async function(aid,vid,{quiet=false}={}){try{const r=rememberVersionConversion428(aid,vid,await deploymentHistory428(aid,vid,true));replaceVersionConversionBody428(aid,vid,r);scheduleVersionConversionPoll428(aid,vid,r);if(!quiet)toast('已重新读取转换记录');return r}catch(e){toast(e.message||e);return null}};
   window.refreshActiveVersionConvert428=async function(){const ctx=state.conv428VersionContext||{};if(!ctx.aid||!ctx.vid)return false;return Boolean(await window.refreshVersionConvert428(ctx.aid,ctx.vid,{quiet:true}))};
   function targetResources428(rows,target){return(rows||[]).filter(x=>x.status==='ready'&&(x.targets||[]).includes(target))}
   window.openNewConvertLegacy428=async function(aid,vid){try{const rr=await deployResources428(false),hist=await deploymentHistory428(aid,vid,false),v=hist.version||{};if(!String(v.stored_path||'').trim())return toast('当前版本没有可用模型产物');modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${['ascend','rockchip','sophon'].map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(TARGET_NAMES428[t])}</b><span>${t==='ascend'?'输出 .om':t==='rockchip'?'输出 .rknn':'输出 .bmodel'}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field"><label>精度</label><select id="conv428Precision" class="select"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（需要校准数据）</option></select></div><div class="field"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field"><label>芯片型号</label><input id="conv428Chip" class="input" value=""></div></div></section><div id="conv428Warn" class="alert soft"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);state.conv428Resources=rr.items||[];setTimeout(refreshConvertResource428,20)}catch(e){toast(e.message||e)}};
@@ -3272,7 +3317,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       await api(`/api/v39/projects/${pid()}/deploy/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})});
       localStorage.removeItem(cacheKey428('verdeploy',aid,vid));closeModal();
       const r=rememberVersionConversion428(aid,vid,await deploymentHistory428(aid,vid,true));
-      modal('版本转换',historyHtml428(aid,vid,r),true);toast('转换任务已创建')
+      modal('版本转换',historyHtml428(aid,vid,r),true);scheduleVersionConversionPoll428(aid,vid,r);toast('转换任务已创建')
     }catch(e){toast(e.message||e)}
   };
 
@@ -4371,8 +4416,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   const targetOutput416=t=>({onnx:'输出 .onnx',paddle_inference:'输出 .pdmodel / .pdiparams',tensorrt:'输出 .engine',ascend:'输出 .om',rockchip:'输出 .rknn',sophon:'输出 .bmodel'})[t]||'生成部署产物';
   const statusLabel416=s=>({ready:'可用',missing:'不可用',unchecked:'未检测',configured:'待检测'}[s]||s||'未知');
   const matching416=(rows,t)=>(rows||[]).filter(x=>(x.targets||[]).includes(t)||String(x.kind||'').toLowerCase()===targetKind416(t));
-  async function resources416(){try{const r=await api('/api/v39/deploy/resources');write416(resourceCacheKey416(),r);return r}catch(error){const cached=read416(resourceCacheKey416());if(cached?.items)return cached;throw error}}
-  async function history416(aid,vid){const k=historyCacheKey416(aid,vid),cached=read416(k);if(cached)return cached;const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);write416(k,r);return r}
+  async function resources416(){if(typeof window.loadVersionConversionResources428==='function')return window.loadVersionConversionResources428(false);try{const r=await api('/api/v39/deploy/resources');write416(resourceCacheKey416(),r);return r}catch(error){const cached=read416(resourceCacheKey416());if(cached?.items)return cached;throw error}}
+  async function history416(aid,vid){if(typeof window.loadVersionConversionHistory428==='function')return window.loadVersionConversionHistory428(aid,vid,false);const k=historyCacheKey416(aid,vid),cached=read416(k);if(cached)return cached;const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);write416(k,r);return r}
   function resourceStatusHtml416(rows,target){
     if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 部署资源”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
     return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务');return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(statusLabel416(r.status))}</span></div><p>${esc(detail)}</p></div>`}).join('');
