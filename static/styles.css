@@ -745,7 +745,8 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .external-platform-tab.active{background:#111827;color:#fff;box-shadow:0 4px 10px rgba(15,23,42,.12)}
 .external-platform-tab em{min-width:19px;height:19px;padding:0 6px;border-radius:999px;display:grid;place-items:center;background:#eef2f7;color:#64748b;font-size:10px;font-style:normal}
 .external-platform-tab.active em{background:rgba(255,255,255,.16);color:#fff}
-.external-platform-shell:not([data-active-tab="overview"]) [data-platform-tab-panel]{display:none}
+.external-platform-shell [data-platform-tab-panel]{display:none}
+.external-platform-shell[data-active-tab="overview"] [data-platform-tab-panel="overview"],
 .external-platform-shell[data-active-tab="connection"] [data-platform-tab-panel="connection"],
 .external-platform-shell[data-active-tab="sync"] [data-platform-tab-panel="sync"],
 .external-platform-shell[data-active-tab="vendor"] [data-platform-tab-panel="vendor"],
