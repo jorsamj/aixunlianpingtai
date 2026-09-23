@@ -7119,7 +7119,9 @@ def job_status(project_id: str, job_id: str):
     try: _v48_dispatch_training_queues(project_id)
     except Exception: pass
     sync_jobs_index(project_id)
-    response = read_json(job_file, job)
+    # Return the enriched in-memory projection. Re-reading the worker-owned
+    # job.json here would discard canonical task truth we just overlaid.
+    response = dict(job)
     from platform_core.training_metrics import read_metrics
     task = _durable_training_task(project_id, job_id)
     metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")

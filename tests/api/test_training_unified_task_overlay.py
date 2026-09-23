@@ -273,3 +273,46 @@ def test_training_job_overlay_exposes_durable_dataset_manifest_reference(tmp_pat
 
     assert job["dataset_manifest_ref"] == "work/bundle/manifest.json"
     assert "internal_secret" not in job
+
+def test_training_job_detail_returns_enriched_truth_without_rewriting_worker_file(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _image = seeded_project
+    task_id = f"train-detail-{uuid.uuid4().hex[:10]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    original = {
+        "id": task_id,
+        "task_id": task_id,
+        "status": "running",
+        "progress_percent": 21,
+        "message": "worker-owned snapshot",
+    }
+    app_module.write_json(job_dir / "job.json", original)
+
+    monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
+    monkeypatch.setattr(app_module, "sync_jobs_index", lambda _project_id: None)
+    monkeypatch.setattr(
+        app_module,
+        "enrich_job_runtime",
+        lambda _project_id, job, **_kwargs: {
+            **job,
+            "status": "done",
+            "task_status": "SUCCEEDED",
+            "persisted_status": "SUCCEEDED",
+            "phase": "committed",
+            "progress_percent": 100,
+            "message": "训练完成，模型产物校验通过",
+        },
+    )
+
+    response = client.get(f"/api/projects/{project_id}/jobs/{task_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_status"] == "SUCCEEDED"
+    assert body["phase"] == "committed"
+    assert body["progress_percent"] == 100
+    assert body["message"] == "训练完成，模型产物校验通过"
+    assert app_module.read_json(job_dir / "job.json", {}) == original
+
