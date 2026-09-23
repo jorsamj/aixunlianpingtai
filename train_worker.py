@@ -67,6 +67,25 @@ def publish_startup_stage(job_file: Path, stage: str, message: str, progress_per
     )
 
 
+def training_failure_metadata(job_file: Path, error: Exception):
+    job = read_json(job_file, {})
+    context = " ".join(
+        str(job.get(key) or "")
+        for key in ("startup_stage", "current_item", "message")
+    ).lower()
+    if any(token in context for token in ("final_validation", "验证", "盲测", "评测")):
+        stage = "final_validation"
+    elif any(token in context for token in ("finalizing", "产物", "归档", "checkpoint")):
+        stage = "post_training"
+    else:
+        stage = "training_process"
+    return {
+        "error": str(error),
+        "error_type": type(error).__name__,
+        "failure_stage": stage,
+    }
+
+
 def as_bool(v):
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1259,7 +1278,14 @@ def main():
     except Exception as e:
         print("训练失败：", e, flush=True)
         traceback.print_exc()
-        update_job(job_file, status="failed", message=f"训练失败：{e}", artifact_verified=False, finished_at=now_iso())
+        update_job(
+            job_file,
+            status="failed",
+            message=f"训练失败：{e}",
+            artifact_verified=False,
+            finished_at=now_iso(),
+            **training_failure_metadata(job_file, e),
+        )
         sys.exit(1)
     finally:
         if telemetry is not None:

@@ -126,3 +126,27 @@ def test_training_completion_metadata_distinguishes_quality_target_from_early_st
     )
     assert target["completion_reason"] == "quality_target_reached"
     assert target["quality_gate_reason"] == "map50 达到提前完成阈值 0.850"
+
+def test_training_failure_metadata_keeps_structured_summary_outside_traceback(tmp_path):
+    job_file = tmp_path / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": "train-failure",
+            "status": "running",
+            "current_item": "最终模型验证",
+            "message": "正在执行独立评测集盲测",
+        }),
+        encoding="utf-8",
+    )
+
+    metadata = train_worker.training_failure_metadata(
+        job_file,
+        RuntimeError("CUDA out of memory"),
+    )
+
+    assert metadata == {
+        "error": "CUDA out of memory",
+        "error_type": "RuntimeError",
+        "failure_stage": "final_validation",
+    }
+

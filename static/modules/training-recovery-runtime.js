@@ -144,6 +144,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     statusMessage: String(job?.message || job?.current_item || '').trim(),
     failureStage: recovery?.failure_stage || job?.failure_stage || '',
     failureReason: errors[0] || '',
+    errorType: String(job?.error_type || '').trim(),
     errors,
     warnings,
     completedEpochs,
@@ -271,6 +272,7 @@ function detailHtml(job, recovery, log = '') {
               <div class="training-recovery-kv"><span>训练结果</span><b>${esc(model.trainingOutcome || '-')}</b></div>
               <div class="training-recovery-kv"><span>完成原因</span><b>${esc(model.completionReason || '-')}</b></div>
               <div class="training-recovery-kv"><span>运行诊断</span><b>${esc(model.diagnosticCode || '-')}</b></div>
+              <div class="training-recovery-kv"><span>错误类型</span><b>${esc(model.errorType || '-')}</b></div>
             </section>
           </div>
           <section class="training-recovery-panel">

@@ -50,6 +50,7 @@ on:
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_training_realtime_progress.py'
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
       - 'tests/unit/test_training_scheduler_target.py'
@@ -179,6 +180,7 @@ jobs:
           tests/unit/test_model_artifacts.py
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
           tests/unit/test_training_scheduler_target.py
