@@ -507,7 +507,7 @@ class AlgorithmSqlStore:
                     (self.project_id, provider),
                 ).fetchall()
                 existing = {str(row["external_product_id"] or ""): str(row["id"]) for row in rows if row["external_product_id"]}
-                added = updated = unchanged = inactivated = 0
+                added = updated = unchanged = deleted = 0
                 for product_id, master_raw in incoming.items():
                     master = dict(master_raw)
                     algorithm_id = existing.get(str(product_id))
@@ -538,18 +538,30 @@ class AlgorithmSqlStore:
                     pid = str(row["external_product_id"] or "")
                     if pid in incoming_ids:
                         continue
-                    current = self._read_one_conn(conn, str(row["id"]))
-                    if current is not None and current.get("external_active") is not False:
-                        current["external_active"] = False
-                        current["external_last_synced_at"] = synced_at
-                        current["updated_at"] = synced_at
-                        self._update_algorithm_conn(conn, current)
-                        inactivated += 1
+                    # A provider row that is absent from the complete (unfiltered)
+                    # remote product set is deleted locally rather than converted
+                    # into a synthetic "inactive" tombstone. Cross-store task /
+                    # artifact cleanup is owned by ExternalAlgorithmPlatformService
+                    # before this metadata transaction runs.
+                    changed = conn.execute(
+                        "DELETE FROM algorithms WHERE project_id=? AND id=?",
+                        (self.project_id, str(row["id"])),
+                    ).rowcount
+                    deleted += int(changed or 0)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-        return {"added": added, "updated": updated, "unchanged": unchanged, "inactivated": inactivated, "total": len(incoming)}
+        return {
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "deleted": deleted,
+            # Compatibility field for older UI/history readers. Missing remote
+            # products are no longer represented as inactive tombstones.
+            "inactivated": 0,
+            "total": len(incoming),
+        }
 
     def _read_one_conn(self, conn: sqlite3.Connection, algorithm_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM algorithms WHERE project_id=? AND id=?", (self.project_id, str(algorithm_id))).fetchone()

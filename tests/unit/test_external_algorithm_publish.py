@@ -51,6 +51,40 @@ def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_name
     assert config["weight_list_by_version"] == "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
 
 
+def test_publication_repository_delete_algorithm_cascades_version_and_weight_mappings(tmp_path: Path):
+    repository = ExternalPublicationRepository(tmp_path)
+    algorithm = {"id": "a1", "external_product_id": "p1"}
+    version = {
+        "id": "v1",
+        "version_name": "20260924090000",
+        "version_no": "20260924090000",
+        "external_analysis_id": "analysis-1",
+    }
+    publication = repository.ensure_publication(
+        project_id="project-1",
+        algorithm=algorithm,
+        version=version,
+    )
+    repository.ensure_artifact_publication(
+        publication["publication_key"],
+        {
+            "artifact_id": "artifact-a1",
+            "chip_code": "",
+        },
+        {
+            "compute_platform_id": "cp-general",
+            "chip_code": "",
+        },
+    )
+
+    result = repository.delete_algorithm("project-1", "a1")
+
+    assert result["publications_deleted"] == 1
+    assert result["artifact_mappings_deleted"] == 1
+    assert repository.publication("project-1", "a1", "v1") is None
+    assert repository.artifact_publication("artifact-a1") is None
+
+
 def test_new_external_publish_save_does_not_persist_legacy_storage_fields(tmp_path: Path):
     repository = ExternalPublicationRepository(tmp_path)
 

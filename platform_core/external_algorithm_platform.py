@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -1105,6 +1106,7 @@ def mirror_products_to_algorithms(
         selected_analysis = _choose_analysis(analyses)
         cid = _category_id(product)
         name = str(_value_from(product, "productName", "name", "algorithmName") or pid).strip()
+        product_status = str(_value_from(product, "status") or "1").strip()
         incoming[pid] = {
             "id": _stable_external_id(provider, pid),
             "name": name,
@@ -1126,12 +1128,233 @@ def mirror_products_to_algorithms(
                 or selected_analysis.get("compute_platform_ids")
                 or []
             ),
-            "external_active": True,
+            "external_active": product_status == "1",
+            "external_status": product_status,
             "external_last_synced_at": synced_at,
             "external_master_data_digest": str(master_digest or ""),
         }
 
     return AlgorithmSqlStore(algorithms_path).sync_external_algorithms(incoming, provider=provider, synced_at=synced_at)
+
+
+class ExternalAlgorithmLocalPurger:
+    """Delete local state owned by a provider algorithm that no longer exists remotely.
+
+    The remote master-data product has already disappeared, so this purger never
+    calls ChangLian delete APIs. It only removes local derivative state and the
+    platform's model-delivery objects. Running durable work is cancelled first;
+    metadata deletion is deferred until the worker has acknowledged cancellation.
+    """
+
+    _ACTIVE = {"QUEUED", "RUNNING", "CANCEL_REQUESTED", "AWAITING_CONFIRMATION"}
+
+    def __init__(self, data_dir: Path, secret_store_factory: Callable[[], Any]):
+        self.data_dir = Path(data_dir)
+        self.secret_store_factory = secret_store_factory
+
+    def _project_root(self, project_id: str) -> Path:
+        return self.data_dir / "projects" / str(project_id)
+
+    @staticmethod
+    def _deploy_algorithm_id(job: Mapping[str, Any]) -> str:
+        source = job.get("source_meta") if isinstance(job.get("source_meta"), Mapping) else {}
+        trace = job.get("source_trace") if isinstance(job.get("source_trace"), Mapping) else {}
+        direct = str(
+            source.get("algorithm_id")
+            or trace.get("algorithm_id")
+            or job.get("algorithm_id")
+            or ""
+        ).strip()
+        if direct:
+            return direct
+        source_id = str(job.get("source_id") or "")
+        if source_id.startswith("version::"):
+            parts = source_id.split("::", 2)
+            if len(parts) >= 3:
+                return str(parts[1])
+        return ""
+
+    @staticmethod
+    def _training_algorithm_id(job: Mapping[str, Any], payload: Mapping[str, Any] | None = None) -> str:
+        payload = payload if isinstance(payload, Mapping) else {}
+        return str(
+            job.get("asset_algorithm_id")
+            or job.get("algorithm_asset_id")
+            or payload.get("algorithm_asset_id")
+            or payload.get("asset_algorithm_id")
+            or ""
+        ).strip()
+
+    def purge(self, project_id: str, algorithm: Mapping[str, Any]) -> Dict[str, int]:
+        from .external_algorithm_publish import ExternalPublicationRepository
+        from .model_artifacts import ModelArtifactService
+        from .storage import StorageSourceRepository
+        from .task_runtime import ArtifactStore, TaskKind, TaskRepository, TaskStatus
+
+        project_id = str(project_id)
+        algorithm_id = str(algorithm.get("id") or "").strip()
+        if not algorithm_id:
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_DELETE_ID_MISSING",
+                "外部算法删除身份不完整",
+                str(algorithm.get("external_product_id") or ""),
+                "请重新同步新畅联主数据。",
+                409,
+            )
+
+        project_root = self._project_root(project_id)
+        task_repository = TaskRepository(self.data_dir / "task_runtime" / "tasks.sqlite3")
+        task_artifacts = ArtifactStore(self.data_dir / "task_runtime" / "artifacts")
+        owned_task_ids: set[str] = set()
+        training_task_ids: set[str] = set()
+        conversion_task_ids: set[str] = set()
+        legacy_active: list[str] = []
+
+        jobs_root = project_root / "jobs"
+        for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                job = {}
+            task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
+            durable = task_repository.get(task_id)
+            payload = (
+                task_artifacts.read_json(task_id, durable.payload_ref, default={})
+                if durable is not None else {}
+            )
+            if self._training_algorithm_id(job, payload) != algorithm_id:
+                continue
+            training_task_ids.add(task_id)
+            owned_task_ids.add(task_id)
+            status = str(job.get("status") or "").strip().lower()
+            if durable is None and status in {
+                "queued", "waiting", "pending", "running", "paused", "cancel_requested"
+            }:
+                legacy_active.append(f"TRAINING:{task_id}")
+
+        deploy_roots = [
+            project_root / "deploy" / "jobs",
+            project_root / "deployment" / "jobs",
+        ]
+        deploy_dirs: dict[str, Path] = {}
+        for root in deploy_roots:
+            for job_file in root.glob("*/job.json") if root.exists() else ():
+                try:
+                    job = json.loads(job_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    job = {}
+                if self._deploy_algorithm_id(job) != algorithm_id:
+                    continue
+                task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
+                conversion_task_ids.add(task_id)
+                owned_task_ids.add(task_id)
+                deploy_dirs[task_id] = job_file.parent
+                durable = task_repository.get(task_id)
+                status = str(job.get("status") or "").strip().lower()
+                if durable is None and status in {
+                    "queued", "waiting", "pending", "running", "cancel_requested"
+                }:
+                    legacy_active.append(f"MODEL_CONVERSION:{task_id}")
+
+        # Include remote-input preparation tasks linked to owned training tasks,
+        # and deployment tests linked to owned conversion tasks.
+        cursor = None
+        while True:
+            page = task_repository.list(project_id=project_id, limit=100, cursor=cursor)
+            for task in page.items:
+                payload = task_artifacts.read_json(
+                    task.task_id, task.payload_ref, default={}
+                )
+                if not isinstance(payload, Mapping):
+                    payload = {}
+                if (
+                    task.kind is TaskKind.TRAINING_PREPARE
+                    and str(payload.get("training_task_id") or "") in training_task_ids
+                ):
+                    owned_task_ids.add(task.task_id)
+                elif (
+                    task.kind is TaskKind.DEPLOYMENT_TEST
+                    and str(payload.get("source_conversion_job_id") or "") in conversion_task_ids
+                ):
+                    owned_task_ids.add(task.task_id)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+
+        pending: list[str] = []
+        for task_id in sorted(owned_task_ids):
+            task = task_repository.get(task_id)
+            if task is None:
+                continue
+            if task.status.value in self._ACTIVE:
+                try:
+                    task = task_repository.request_cancel(task_id)
+                except Exception as error:
+                    pending.append(f"{task.kind.value}:{task_id}:{error}")
+                    continue
+            if task.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+                pending.append(f"{task.kind.value}:{task_id}")
+
+        if legacy_active or pending:
+            detail = "；".join((legacy_active + pending)[:20])
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_DELETE_WAITING_FOR_TASKS",
+                "外部算法已从新畅联删除，正在停止其本地任务",
+                detail,
+                "平台已请求取消 durable 任务；待运行任务退出后再次同步即可完成算法及训练成果硬删除。",
+                409,
+            )
+
+        tasks_deleted = 0
+        for task_id in sorted(owned_task_ids):
+            task = task_repository.get(task_id)
+            if task is not None:
+                try:
+                    if task_repository.delete_terminal(
+                        task_id, project_id=project_id, kind=task.kind,
+                    ):
+                        tasks_deleted += 1
+                except ValueError:
+                    raise PlatformError(
+                        "EXTERNAL_ALGORITHM_DELETE_TASK_ACTIVE",
+                        "外部算法仍有非终态任务，暂不能删除",
+                        f"{task.kind.value}:{task_id}",
+                        "请等待任务停止后重新同步。",
+                        409,
+                    )
+            task_artifacts.delete_task(task_id)
+            shutil.rmtree(jobs_root / task_id, ignore_errors=True)
+            for root in deploy_roots:
+                shutil.rmtree(root / task_id, ignore_errors=True)
+            shutil.rmtree(project_root / "predictions" / task_id, ignore_errors=True)
+
+        # Remove model objects (including OSS) before dropping their canonical rows.
+        model_assets = ModelArtifactService(
+            data_dir=self.data_dir,
+            project_dir=lambda pid: self._project_root(pid),
+            algorithms_file=lambda pid: self._project_root(pid) / "algorithms.json",
+            storage_sources_factory=lambda: StorageSourceRepository(
+                self.data_dir / "storage" / "storage_sources.sqlite3"
+            ),
+            storage_credentials_factory=lambda: SecretCredentialStore(
+                self.secret_store_factory()
+            ),
+        )
+        artifact_summary = model_assets.purge_algorithm(project_id, algorithm_id)
+        publication_summary = ExternalPublicationRepository(
+            self.data_dir
+        ).delete_algorithm(project_id, algorithm_id, provider=PROVIDER_CHANGLIAN)
+
+        shutil.rmtree(
+            project_root / "algorithm_versions" / algorithm_id,
+            ignore_errors=True,
+        )
+
+        return {
+            "tasks_deleted": tasks_deleted,
+            **artifact_summary,
+            **publication_summary,
+        }
 
 
 def algorithm_is_external_readonly(algorithms_path: Path, algorithm_id: str) -> bool:
@@ -1266,11 +1489,16 @@ class ExternalAlgorithmPlatformService:
         data_dir: Path,
         secret_store_factory: Callable[[], Any],
         client_factory: Callable[..., ChangLianClient] = ChangLianClient,
+        local_purger: Any | None = None,
     ):
-        self.repository = ExternalPlatformRepository(Path(data_dir))
+        self.data_dir = Path(data_dir)
+        self.repository = ExternalPlatformRepository(self.data_dir)
         self.secret_store_factory = secret_store_factory
         self.client_factory = client_factory
-        self.audit = IntegrationAuditRepository(Path(data_dir))
+        self.audit = IntegrationAuditRepository(self.data_dir)
+        self.local_purger = local_purger or ExternalAlgorithmLocalPurger(
+            self.data_dir, secret_store_factory,
+        )
 
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
@@ -1942,8 +2170,11 @@ class ExternalAlgorithmPlatformService:
         try:
             client = self._client()
             categories = flatten_category_tree(client.category_tree())
+            # Deletion truth must come from the complete provider product set.
+            # Do not use the normal status=1 convenience filter here: status=2
+            # means "已下架", while complete absence means "已删除".
             products = _validated_external_items(
-                client.products(),
+                client.products(status=""),
                 id_resolver=_product_id,
                 error_code="EXTERNAL_PRODUCT_ID_MISSING",
                 entity_name="算法产品",
@@ -1985,6 +2216,33 @@ class ExternalAlgorithmPlatformService:
                 "compute_platforms": compute_platforms,
             }
             previous_cache = self.repository.cache()
+
+            incoming_product_ids = {_product_id(row) for row in products if _product_id(row)}
+            existing_external = [
+                dict(row)
+                for row in list_algorithms(Path(algorithms_path))
+                if str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
+                and str(row.get("provider_type") or "").upper() == PROVIDER_CHANGLIAN
+            ]
+            purge_summary = {
+                "algorithms_purged": 0,
+                "tasks_deleted": 0,
+                "artifacts_deleted": 0,
+                "remote_objects_deleted": 0,
+                "publications_deleted": 0,
+            }
+            for existing_algorithm in existing_external:
+                product_id = str(existing_algorithm.get("external_product_id") or "")
+                if product_id and product_id in incoming_product_ids:
+                    continue
+                current = self.local_purger.purge(project_id, existing_algorithm)
+                purge_summary["algorithms_purged"] += 1
+                for key in (
+                    "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
+                    "publications_deleted",
+                ):
+                    purge_summary[key] += int(current.get(key) or 0)
+
             self.repository.save_cache(cache)
             try:
                 mirror = mirror_products_to_algorithms(
@@ -2015,6 +2273,7 @@ class ExternalAlgorithmPlatformService:
                     "analyses": sum(len(rows) for rows in analyses_by_product.values()),
                     "compute_platforms": len(compute_platforms),
                     **mirror,
+                    **purge_summary,
                 },
             })
             self.repository.append_history(history)

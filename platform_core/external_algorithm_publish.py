@@ -656,6 +656,51 @@ class ExternalPublicationRepository:
             )
         return current
 
+    def delete_algorithm(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        *,
+        provider: str = PROVIDER_CHANGLIAN,
+    ) -> dict[str, int]:
+        """Delete provider outbox/publication rows for one local algorithm."""
+        provider_id = self._provider(provider)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            publications = database.execute(
+                """
+                SELECT publication_key
+                FROM external_version_publications
+                WHERE provider = ? AND project_id = ? AND algorithm_id = ?
+                """,
+                (provider_id, str(project_id), str(algorithm_id)),
+            ).fetchall()
+            keys = [str(row["publication_key"]) for row in publications]
+            artifact_count = 0
+            mapping_count = 0
+            for key in keys:
+                artifact_count += int(database.execute(
+                    "SELECT COUNT(*) FROM external_model_artifacts WHERE publication_key=?",
+                    (key,),
+                ).fetchone()[0] or 0)
+                mapping_count += int(database.execute(
+                    "SELECT COUNT(*) FROM external_artifact_publications WHERE publication_key=?",
+                    (key,),
+                ).fetchone()[0] or 0)
+            database.execute(
+                """
+                DELETE FROM external_version_publications
+                WHERE provider = ? AND project_id = ? AND algorithm_id = ?
+                """,
+                (provider_id, str(project_id), str(algorithm_id)),
+            )
+            database.commit()
+        return {
+            "publications_deleted": len(keys),
+            "legacy_artifacts_deleted": artifact_count,
+            "artifact_mappings_deleted": mapping_count,
+        }
+
     def patch_publication(self, publication_key: str, **changes: Any) -> Dict[str, Any]:
         allowed = {"external_algo_version_id", "status", "last_error", "attempts", "updated_at", "published_at"}
         values = {key: value for key, value in changes.items() if key in allowed}

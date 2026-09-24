@@ -58,6 +58,55 @@ def _service(root: Path):
 
 
 
+def test_purge_algorithm_deletes_remote_objects_and_canonical_rows(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    source = tmp_path / "projects" / "p1" / "algorithm_versions" / "a1" / "v1" / "best.pt"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"model")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    row = service.repository.upsert({
+        "artifact_id": "artifact-a1",
+        "project_id": "p1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "artifact_kind": "original",
+        "target": "original",
+        "chip_code": "",
+        "conversion_job_id": "",
+        "file_name": "best.pt",
+        "source_path": str(source),
+        "sha256": digest,
+        "size_bytes": source.stat().st_size,
+        "metadata": {},
+    })
+    service.repository.patch(
+        row["artifact_id"],
+        storage_source_id="default_local",
+        object_key="models/a1/best.pt",
+        public_url="https://models.example.com/models/a1/best.pt",
+        storage_status="UPLOADED",
+    )
+
+    class Provider:
+        def __init__(self):
+            self.deleted = []
+
+        def exists(self, key):
+            return True
+
+        def delete(self, key):
+            self.deleted.append(key)
+
+    provider = Provider()
+    monkeypatch.setattr(service, "_provider", lambda _project_id, _source_id: provider)
+
+    result = service.purge_algorithm("p1", "a1")
+
+    assert result == {"artifacts_deleted": 1, "remote_objects_deleted": 1}
+    assert provider.deleted == ["models/a1/best.pt"]
+    assert service.repository.get("artifact-a1") is None
+
+
 def test_artifact_oss_config_is_standalone_from_material_storage(tmp_path: Path):
     service = _service(tmp_path)
 

@@ -306,7 +306,42 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
     assert algorithm_is_external_readonly(path, external["id"]) is True
 
 
-def test_missing_external_product_is_inactivated_not_deleted(tmp_path: Path):
+def test_missing_external_product_is_deleted_with_versions(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    save_algorithms(path, [
+        {
+            "id": "external-p1",
+            "name": "抽烟检测",
+            "source_type": SOURCE_EXTERNAL,
+            "provider_type": PROVIDER_CHANGLIAN,
+            "external_product_id": "p1",
+            "external_active": True,
+            "versions": [{"id": "v1"}],
+            "current_version_id": "v1",
+        },
+        {
+            "id": "local-keep",
+            "name": "本地算法",
+            "versions": [],
+            "current_version_id": None,
+        },
+    ])
+
+    result = mirror_products_to_algorithms(
+        algorithms_path=path,
+        products=[],
+        categories=[],
+        analyses_by_product={},
+        synced_at="2026-09-17T00:00:00Z",
+    )
+
+    rows = list_algorithms(path)
+    assert result["deleted"] == 1
+    assert result["inactivated"] == 0
+    assert [row["id"] for row in rows] == ["local-keep"]
+
+
+def test_remote_status_two_is_retained_as_inactive_not_deleted(tmp_path: Path):
     path = tmp_path / "algorithms.json"
     save_algorithms(path, [
         {
@@ -323,16 +358,22 @@ def test_missing_external_product_is_inactivated_not_deleted(tmp_path: Path):
 
     result = mirror_products_to_algorithms(
         algorithms_path=path,
-        products=[],
-        categories=[],
-        analyses_by_product={},
+        products=[{
+            "productId": "p1",
+            "productName": "抽烟检测",
+            "categoryId": "c1",
+            "status": 2,
+        }],
+        categories=[{"categoryId": "c1", "categoryName": "行为分析"}],
+        analyses_by_product={"p1": []},
         synced_at="2026-09-17T00:00:00Z",
     )
 
     rows = list_algorithms(path)
-    assert result["inactivated"] == 1
+    assert result["deleted"] == 0
     assert len(rows) == 1
     assert rows[0]["external_active"] is False
+    assert rows[0]["external_status"] == "2"
     assert rows[0]["versions"] == [{"id": "v1"}]
 
 
@@ -346,7 +387,7 @@ class FakeChangLianClient:
     def category_tree(self):
         return {"data": [{"categoryId": "c1", "categoryName": "园区", "children": []}]}
 
-    def products(self):
+    def products(self, **_filters):
         return {"data": [{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1", "status": 1, "productType": 3}]}
 
     def product_info(self, product_id):
@@ -455,6 +496,75 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     row = list_algorithms(algorithms_path)[0]
     assert row["external_product_id"] == "p1"
     assert row["source_type"] == SOURCE_EXTERNAL
+
+
+def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(tmp_path: Path):
+    calls = []
+
+    class CompleteListClient(FakeChangLianClient):
+        state = {"rows": []}
+
+        def products(self, **filters):
+            calls.append(dict(filters))
+            return {"data": list(self.state["rows"])}
+
+    class Purger:
+        def __init__(self):
+            self.items = []
+
+        def purge(self, project_id, algorithm):
+            self.items.append((project_id, algorithm["id"], algorithm["external_product_id"]))
+            return {
+                "tasks_deleted": 2,
+                "artifacts_deleted": 3,
+                "remote_objects_deleted": 3,
+                "publications_deleted": 1,
+            }
+
+    memory = MemorySecretStore()
+    purger = Purger()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=CompleteListClient,
+        local_purger=purger,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    algorithms_path = tmp_path / "project-hard-delete" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-p1",
+        "name": "已从远端删除",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": True,
+        "versions": [{"id": "v1"}],
+        "current_version_id": "v1",
+    }])
+
+    result = service.sync(
+        project_id="project-hard-delete",
+        algorithms_path=algorithms_path,
+    )
+
+    assert calls[-1].get("status") == ""
+    assert purger.items == [("project-hard-delete", "external-p1", "p1")]
+    assert result["mirror"]["deleted"] == 1
+    assert list_algorithms(algorithms_path) == []
+    counts = result["sync"]["counts"]
+    assert counts["algorithms_purged"] == 1
+    assert counts["tasks_deleted"] == 2
+    assert counts["artifacts_deleted"] == 3
+    assert counts["remote_objects_deleted"] == 3
+    assert counts["publications_deleted"] == 1
 
 
 def test_sync_rejects_concurrent_project_sync_without_mutating_state(tmp_path: Path):
@@ -939,7 +1049,7 @@ def test_draft_connection_blank_secret_reuses_saved_secret_without_exposing_it(t
 
 
 class MissingProductIdClient(FakeChangLianClient):
-    def products(self):
+    def products(self, **_filters):
         return {"data": [{"productName": "缺少 Product ID", "categoryId": "c1"}]}
 
 
@@ -1312,7 +1422,7 @@ def test_training_preflight_rechecks_changlian_and_blocks_non_visual_change(tmp_
     state = {"analysis_id": "a1", "analysis_type": 1, "analysis_status": 1, "product_status": 1}
 
     class MutableTrainingPreflightClient(FakeChangLianClient):
-        def products(self):
+        def products(self, **_filters):
             return {"data": [{
                 "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
                 "status": state["product_status"], "productType": 3,
@@ -1425,7 +1535,7 @@ def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(t
     state = {"product_status": 1}
 
     class DisabledAfterSyncClient(FakeChangLianClient):
-        def products(self):
+        def products(self, **_filters):
             return {"data": [{
                 "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
                 "status": state["product_status"], "productType": 3,

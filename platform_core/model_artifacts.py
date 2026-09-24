@@ -492,6 +492,25 @@ class ModelArtifactRepository:
             rows = database.execute(sql, args).fetchall()
         return [self._public(row) for row in rows]
 
+    def delete_algorithm(self, project_id: str, algorithm_id: str) -> list[dict[str, Any]]:
+        """Delete canonical ModelArtifact rows owned by one project algorithm."""
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            rows = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ?
+                ORDER BY created_at, artifact_id
+                """,
+                (str(project_id), str(algorithm_id)),
+            ).fetchall()
+            database.execute(
+                "DELETE FROM model_artifacts WHERE project_id = ? AND algorithm_id = ?",
+                (str(project_id), str(algorithm_id)),
+            )
+            database.commit()
+        return [self._public(row) for row in rows]
+
     def summary(self, *, project_id: str = "") -> dict[str, int]:
         clause = "WHERE project_id = ?" if project_id else ""
         args = (str(project_id),) if project_id else ()
@@ -1456,6 +1475,56 @@ class ModelArtifactService:
                     for key in ("discovered", "uploaded", "failed", "pending"):
                         summary[key] += current[key]
         return summary
+
+    def purge_algorithm(self, project_id: str, algorithm_id: str) -> dict[str, Any]:
+        """Remove model-delivery objects and rows for a deleted algorithm.
+
+        Remote objects are deleted before metadata rows so a storage permission
+        failure cannot silently orphan an object while reporting the purge done.
+        The operation is idempotent: already-missing objects are accepted.
+        """
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self.repository.list(
+                project_id=str(project_id),
+                algorithm_id=str(algorithm_id),
+                limit=500,
+                offset=offset,
+            )
+            rows.extend(page)
+            if len(page) < 500:
+                break
+            offset += len(page)
+        remote_deleted = 0
+        errors: list[str] = []
+        for row in rows:
+            source_id = str(row.get("storage_source_id") or "").strip()
+            object_key = str(row.get("object_key") or "").strip()
+            if not source_id or not object_key:
+                continue
+            try:
+                provider = self._provider(str(project_id), source_id)
+                if provider.exists(object_key):
+                    provider.delete(object_key)
+                remote_deleted += 1
+            except Exception as error:
+                errors.append(
+                    f"{row.get('artifact_id') or '-'} {object_key}: {error}"
+                )
+        if errors:
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_ARTIFACT_PURGE_FAILED",
+                "外部算法模型成果清理失败",
+                "；".join(errors[:10]),
+                "请检查算法与转换结果存储的删除权限后重新同步；平台不会在模型成果未清理完成时删除算法主记录。",
+                409,
+            )
+        removed = self.repository.delete_algorithm(str(project_id), str(algorithm_id))
+        return {
+            "artifacts_deleted": len(removed),
+            "remote_objects_deleted": remote_deleted,
+        }
 
     def retry(self, artifact_id: str) -> dict[str, Any]:
         row = self.repository.get(artifact_id)

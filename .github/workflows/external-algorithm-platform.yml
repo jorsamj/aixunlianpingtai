@@ -219,6 +219,13 @@ jobs:
           if grep -Fq 'str(_value_from(row, "status") or "")' platform_core/external_algorithm_platform.py; then echo "analysis status must preserve numeric zero" >&2; exit 1; fi
           grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
           grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_missing_external_product_is_deleted_with_versions' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_remote_status_two_is_retained_as_inactive_not_deleted' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
+          grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
+          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py
+          if grep -Fq 'current["external_active"] = False' platform_core/algorithm_sql_store.py; then echo "missing ChangLian products must be hard-deleted, not tombstoned inactive" >&2; exit 1; fi
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
           grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
