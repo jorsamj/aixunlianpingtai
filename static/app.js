@@ -444,20 +444,21 @@ window.refreshTrainingResourceTruthV3=async function({force=false}={}){
   const projectId=pid();
   if(!projectId)return null;
   const commonHydrator=window.TrainingCreateHydrationRuntime?.hydrateCommon;
-  const [common,environments]=await Promise.all([
-    typeof commonHydrator==='function'
-      ? commonHydrator({force})
-      : (async()=>{
-          const [options,recommendation]=await Promise.all([
-            api(`/api/training_options?project_id=${projectId}`),
-            safe(api('/api/system/recommendation')),
-          ]);
-          state.targets=options?.targets||[];
-          if(recommendation)state.rec=recommendation;
-          return state;
-        })(),
-    safe(api('/api/v16/inference_envs')),
-  ]);
+  const commonPromise=typeof commonHydrator==='function'
+    ? commonHydrator({force})
+    : (async()=>{
+        const [options,recommendation]=await Promise.all([
+          api(`/api/training_options?project_id=${projectId}`),
+          safe(api('/api/system/recommendation')),
+        ]);
+        state.targets=options?.targets||[];
+        if(recommendation)state.rec=recommendation;
+        return state;
+      })();
+  const environmentsPromise=safe(api('/api/v16/inference_envs'));
+  const common=await commonPromise;
+  if(state.page==='训练资源')window.patchTrainingResourceCardsV3?.();
+  const environments=await environmentsPromise;
   if(environments)state.inferenceEnvs=environments.items||[];
   return {targets:state.targets,inferenceEnvs:state.inferenceEnvs,recommendation:state.rec,common};
 };
@@ -2241,7 +2242,10 @@ window.installUsability417=function(){
     const wrapTable=table=>{if(!table.parentElement?.classList.contains('table-wrap')){const wrap=document.createElement('div');wrap.className='table-wrap';table.parentNode?.insertBefore(wrap,table);wrap.appendChild(table)}};
     if(root.matches?.('table.table'))wrapTable(root);
     root.querySelectorAll('table.table').forEach(wrapTable);
-    root.querySelectorAll('.subline,.compact-note,.callout,.import-box,.v42-stepbar,.v42-loopline,.v42-wizard-head').forEach(x=>x.remove());
+    root.querySelectorAll('.subline,.compact-note,.callout,.import-box,.v42-stepbar,.v42-loopline,.v42-wizard-head').forEach(x=>{
+      if(x.classList.contains('subline')&&x.closest('[data-model-artifact-panel="1"]'))return;
+      x.remove();
+    });
     root.querySelectorAll('.v42-source-hero>div:first-child,.v42-quality-head>div:first-child,.v42-loop-hero>div:first-child').forEach(x=>x.remove());
     root.querySelectorAll('.panel').forEach(p=>{const t=p.querySelector('.panel-title')?.textContent?.trim();if(['接入方式','系统原则','一条主流程','快速入口','使用建议'].includes(t))p.remove()});
     root.querySelectorAll('.empty').forEach(simplifyEmpty);
