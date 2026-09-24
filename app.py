@@ -18497,6 +18497,70 @@ def get_annotation_task(project_id: str, task_id: str):
     return public_annotation_task(task, summary=_annotation_summary(task))
 
 
+@app.get("/api/v60/projects/{project_id}/annotation-material-states")
+def annotation_material_states(project_id: str, image_ids: str = ""):
+    get_project(project_id)
+    requested = list(dict.fromkeys(
+        value.strip() for value in str(image_ids or "").split(",") if value.strip()
+    ))
+    if len(requested) > 100:
+        raise HTTPException(status_code=422, detail="单次最多查询 100 张素材的 AI 标注状态")
+    if not requested:
+        return {"items": []}
+
+    repository = shared_task_repository()
+    page = repository.list(
+        project_id=project_id,
+        kinds={TaskKind.AI_ANNOTATION},
+        limit=100,
+    )
+    ranks = {"candidate_failed": 1, "awaiting_confirmation": 2, "committing": 3}
+    projected: Dict[str, Dict[str, Any]] = {}
+    for task in page.items:
+        phase = str(task.stage or "").upper()
+        if task.status is TaskStatus.AWAITING_CONFIRMATION:
+            public_state = "awaiting_confirmation"
+        elif (
+            phase in {"REVIEW_QUEUED", "APPLYING_REVIEW"}
+            and task.status in {
+                TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED,
+            }
+        ):
+            public_state = "committing"
+        else:
+            continue
+        if not task.result_ref:
+            continue
+
+        store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
+        try:
+            rows = store.get_many(requested)
+        except (FileNotFoundError, ValueError):
+            continue
+        for image_id, item in rows.items():
+            candidate_status = str(item.get("status") or "")
+            if candidate_status == "failed":
+                state = "candidate_failed"
+            elif candidate_status not in {"success", "empty"}:
+                continue
+            elif public_state == "committing":
+                if item.get("accepted") is not True:
+                    continue
+                state = "committing"
+            else:
+                state = "awaiting_confirmation"
+
+            current = projected.get(image_id)
+            if current and ranks.get(str(current.get("state")), 0) >= ranks[state]:
+                continue
+            projected[image_id] = {
+                "image_id": image_id,
+                "state": state,
+                "task_id": task.task_id,
+            }
+    return {"items": [projected[key] for key in requested if key in projected]}
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
 def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None):
     task = _require_annotation_review_task(project_id, task_id)

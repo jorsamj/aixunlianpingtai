@@ -190,6 +190,21 @@ class CandidateStore:
             row = db.execute("SELECT * FROM candidates WHERE image_id=?", (str(image_id),)).fetchone()
         return self._decode(row) if row else None
 
+    def get_many(self, image_ids) -> dict[str, dict]:
+        ids = list(dict.fromkeys(str(value) for value in image_ids or [] if str(value)))
+        if not ids:
+            return {}
+        if len(ids) > 200:
+            raise ValueError("candidate batch lookup is limited to 200 image ids")
+        self._ready()
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT * FROM candidates WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {str(row["image_id"]): self._decode(row) for row in rows}
+
     def read_page(self, *, cursor: str | None, limit: int = 50) -> CandidatePage:
         self._ready()
         try:

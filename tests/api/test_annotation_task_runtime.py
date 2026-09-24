@@ -135,3 +135,47 @@ def test_cancel_and_retry_use_shared_runtime_states(client, seeded_project, isol
     assert retried.json()["id"] != task_id
     assert retried.json()["retry_of"] == task_id
     assert retried.json()["status"] == "QUEUED"
+
+
+def test_material_state_projection_distinguishes_pending_review_from_commit(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 2, repository, artifacts)
+
+    pending = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=image-0,image-1,missing"
+    )
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["items"] == [
+        {"image_id": "image-0", "state": "awaiting_confirmation", "task_id": task_id},
+        {"image_id": "image-1", "state": "awaiting_confirmation", "task_id": task_id},
+    ]
+
+    accepted = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={
+            "decisions": [{"image_id": "image-0", "accepted": True}],
+            "reject_unmentioned": True,
+            "accept_unmentioned": False,
+            "commit": True,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    committing = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=image-0,image-1"
+    )
+    assert committing.status_code == 200, committing.text
+    assert committing.json()["items"] == [
+        {"image_id": "image-0", "state": "committing", "task_id": task_id},
+    ]
+
+
+def test_material_state_projection_is_bounded(client, seeded_project):
+    project_id, _image = seeded_project
+    image_ids = ",".join(f"image-{index}" for index in range(101))
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states?image_ids={image_ids}"
+    )
+    assert response.status_code == 422

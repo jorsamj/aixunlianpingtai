@@ -3987,6 +3987,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const count=document.getElementById('data412Count');if(count)count.textContent=`${all.length} 张`;
     const selected=document.getElementById('data412SelCount');if(selected)selected.textContent=`已选 ${state.data412Selected.size} 张`;
     const pager=document.getElementById('data412Pager');if(pager)pager.innerHTML=`<button class="btn mini" ${state.data412Page<=1?'disabled':''} onclick="state.data412Page--;renderData412Cards()">上一页</button><span>${state.data412Page} / ${pages}</span><button class="btn mini" ${state.data412Page>=pages?'disabled':''} onclick="state.data412Page++;renderData412Cards()">下一页</button>`;
+    if(state.data412Tab==='processed'&&rows.length)void window.refreshAiMaterialStates60?.(rows.map(row=>String(row.id)));
   }
   window.renderDatasets424=function(){const scoped=datasetScope412(),pendingIndex=scoped.filter(x=>x.annotation_index_pending).length,raw=scoped.filter(x=>!x.annotation_index_pending&&!isProcessed412(x)&&!x.annotated).length,ready=scoped.filter(isProcessed412).length,labs=actualLabels412();document.getElementById('view').innerHTML=`<section class="data426-shell">${pendingIndex?`<div class="data412-indexing"><i></i><span>正在后台整理 ${pendingIndex} 张历史素材的标注索引，页面可继续操作，完成后自动刷新。</span></div>`:''}<div class="data426-head"><div class="data424-tabs"><button class="${state.data412Tab==='unprocessed'?'on':''}" onclick="setData412Tab('unprocessed')"><span>未处理</span><b>${raw}</b></button><button class="${state.data412Tab==='processed'?'on':''}" onclick="setData412Tab('processed')"><span>已处理</span><b>${ready}</b></button></div><div class="row"><button class="btn primary" onclick="openDataUpload426()">上传</button>${state.data412Tab==='unprocessed'?`<button class="btn" onclick="createClean427({image_ids:dataRows412().map(x=>x.id)})">清洗当前素材</button><button class="btn" onclick="markReady412(dataRows412().map(x=>x.id))">当前素材无需清洗</button>`:''}<button class="btn danger" onclick="toggleDelete412()">${state.data412DeleteMode?'取消删除':'删除'}</button></div></div><section class="panel data426-panel">${state.data412Tab==='processed'?`<div class="data426-filtertop"><div class="data426-filter-title"><b>标签筛选</b><span>多选时，只要命中任意一个标签即可</span></div><div class="data426-chips"><button class="data426-chip clear ${state.data412Labels.size?'':'on'}" onclick="clearLabels412()">全部</button>${labs.map(l=>`<button class="data426-chip ${state.data412Labels.has(l)?'on':''}" onclick="toggleLabel412('${esc(l)}')">${esc(l)}</button>`).join('')}</div></div>`:''}<div class="data426-toolbar"><input id="data412Q" class="input" placeholder="搜索素材名称" oninput="state.data412Page=1;renderData412Cards()">${state.data412Tab==='processed'?`<select id="data412Ann" class="select compact427" onchange="state.data412Page=1;renderData412Cards()"><option value="all">全部标注</option><option value="marked">已标注</option><option value="unmarked">待标注</option></select>`:''}<span id="data412Count"></span>${state.data412DeleteMode?`<b id="data412SelCount">已选 ${state.data412Selected.size} 张</b><button class="btn" onclick="selectAll412()">全选当前</button><button class="btn" onclick="invert412()">反选当前</button><button class="btn danger" onclick="batchDelete412()">删除已选</button>`:''}</div><div id="data412Grid" class="data426-grid"></div><div id="data412Pager" class="data426-pager"></div></section></section>`;renderData412Cards();window.decorateDatasetControls414?.();window.decorateDatasetUsability417?.();const storageApi=window.PlatformCore?.storage,selected=state.materialSourceFilter61||'all',toolbar=document.querySelector('.data426-toolbar');if(toolbar&&!document.getElementById('materialSource61')){const enabled=storageApi?.enabledStorageSources?.(state.storageSources61)||[];toolbar.insertAdjacentHTML('afterbegin',`<select id="materialSource61" class="select storage61-filter" onchange="state.materialSourceFilter61=this.value;state.data412Page=1;renderDatasets424()"><option value="all">全部来源</option>${enabled.map(source=>`<option value="${source.id}" ${source.id===selected?'selected':''}>${esc(source.name)}</option>`).join('')}</select>`)}document.querySelectorAll('.data412-card[data-material-id]').forEach(card=>{const row=(state.images||[]).find(item=>String(item.id)===String(card.dataset.materialId)),meta=card.querySelector('.data426-meta'),source=(state.storageSources61||[]).find(item=>item.id===(row?.storage_source_id||'default_local'));if(row&&meta&&!meta.querySelector('.storage61-badge'))meta.insertAdjacentHTML('beforeend',`<span class="storage61-badge">${esc(storageApi?.storageSourceLabel?.(source)||row.storage_type||'本地')}</span>`)});if(!state.storageSourcesLoadedAt61&&!state.storageSourcesLoading61)window.loadStorageSources61?.().then(()=>state.page==='数据集'&&renderDatasets424()).catch(()=>{});window.renderSupplementDataBanner63?.()};
   window.setData412Tab=t=>{state.data412Tab=t;state.data412Labels.clear();state.data412Selected.clear();state.data412DeleteMode=false;state.data412Page=1;renderDatasets424()};
@@ -4000,7 +4001,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.batchDelete412=async()=>{const ids=[...state.data412Selected];if(!ids.length)return toast('请选择要删除的素材');if(!confirm(`确认删除 ${ids.length} 张素材？对应图片和标注会一起删除。`))return;const r=await api(`/api/v46/projects/${pid()}/images/batch-delete`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})});const deleted=new Set((r.deleted_images||[]).map(x=>String(typeof x==='object'?x.id:x)));state.images=(state.images||[]).filter(x=>!deleted.has(String(x.id)));state.data412Selected.clear();state.data412DeleteMode=false;renderDatasets424();const failed=(r.failed_items||[]).length;toast(failed?`已删除 ${deleted.size} 张，${failed} 张失败并已保留`:`已删除 ${deleted.size} 张`)};
   window.markReady412=async ids=>{ids=(ids||[]).filter(Boolean);if(!ids.length)return toast('当前没有可操作素材');const r=await api(`/api/v52/projects/${pid()}/images/mark-ready`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})});const set=new Set(r.image_ids||ids);(state.images||[]).forEach(x=>{if(set.has(String(x.id))||set.has(x.id)){x.processing_status='processed';x.clean_skipped=true}});if(state.page==='数据集')renderDatasets424();toast(`已确认 ${r.changed||ids.length} 张无需清洗`)};
 
-  window.previewData429=function(id){const list=dataRows412(),idx=list.findIndex(x=>String(x.id)===String(id)),x=idx>=0?list[idx]:(state.images||[]).find(y=>String(y.id)===String(id));if(!x)return;state.data426PreviewList=list.length?list:[x];state.data426PreviewIndex=Math.max(0,idx);const raw=!isProcessed412(x)&&!x.annotated;const body=`<div class="data429-preview"><div class="data412-previewstage"><img src="${x.url}">${raw?'':ov412(x)}</div><aside><h2>${esc(x.filename)}</h2><dl><dt>处理状态</dt><dd>${raw?'未处理':'已处理'}</dd><dt>标注状态</dt><dd>${x.annotated?'已标注':'待标注'}</dd>${raw?'':`<dt>标签</dt><dd>${esc((x.labels||[]).map(displayLabel412).join('、')||'-')}</dd>`}<dt>尺寸</dt><dd>${x.width||'-'} × ${x.height||'-'}</dd><dt>时间</dt><dd>${dt412(x.created_at)}</dd></dl><div class="row">${raw?`<button class="btn" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn primary" onclick="closeModal();createClean427({image_ids:['${x.id}']})">清洗</button>`:`<button class="btn primary" onclick="openAnnotation('${x.id}')">${x.annotated?'编辑标注':'标注'}</button>`}</div></aside></div>`;modal('图片详情',body,true)};
+  window.previewData429=function(id){const list=dataRows412(),idx=list.findIndex(x=>String(x.id)===String(id)),x=idx>=0?list[idx]:(state.images||[]).find(y=>String(y.id)===String(id));if(!x)return;state.data426PreviewList=list.length?list:[x];state.data426PreviewIndex=Math.max(0,idx);const raw=!isProcessed412(x)&&!x.annotated,transient=state.aiMaterialStates60?.[String(x.id)]||null;const body=`<div class="data429-preview"><div class="data412-previewstage"><img src="${x.url}">${raw?'':ov412(x)}</div><aside><h2>${esc(x.filename)}</h2><dl><dt>处理状态</dt><dd>${raw?'未处理':'已处理'}</dd><dt>标注状态</dt><dd>${esc(window.materialAnnotationStatusV66?.(x)||(x.annotated?'已标注':'待标注'))}</dd><dt>标注来源</dt><dd>${esc(window.annotationOriginLabelV66?.(x)||'—')}</dd><dt>最后标注</dt><dd>${esc(window.annotationUpdatedTextV66?.(x)||'—')}</dd>${transient?.task_id?`<dt>AI任务</dt><dd>${esc(transient.task_id)}</dd>`:''}${raw?'':`<dt>标签</dt><dd>${esc((x.labels||[]).map(displayLabel412).join('、')||'-')}</dd>`}<dt>尺寸</dt><dd>${x.width||'-'} × ${x.height||'-'}</dd><dt>时间</dt><dd>${dt412(x.created_at)}</dd></dl><div class="row">${raw?`<button class="btn" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn primary" onclick="closeModal();createClean427({image_ids:['${x.id}']})">清洗</button>`:`<button class="btn primary" onclick="openAnnotation('${x.id}')">${x.annotated?'编辑标注':'标注'}</button>`}</div></aside></div>`;modal('图片详情',body,true)};
 
   // -------- import review + label remap --------
   function reviewRows412(){const ids=state.import412?.image_ids||[];const set=new Set(ids.map(String));return(state.images||[]).filter(x=>set.has(String(x.id)))}
@@ -4837,12 +4838,22 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(origin==='imported')return `导入标注 · ${boxes}框`;
       return `人工标注 · ${boxes}框`;
     }
+    const transient=state.aiMaterialStates60?.[String(row?.id)]?.state||'';
+    if(transient==='committing')return 'AI正在入库';
+    if(transient==='awaiting_confirmation')return 'AI待审核';
+    if(transient==='candidate_failed')return 'AI候选失败';
     return '待标注';
   };
   window.annotationOriginLabelV66=function(row){
     const stateValue=String(row?.annotation_state||row?.annotation_status||'');
     const origin=String(row?.annotation_origin||'').toLowerCase();
-    if(!['annotated','confirmed_empty'].includes(stateValue)&&!row?.annotated)return '—';
+    const transient=state.aiMaterialStates60?.[String(row?.id)]||null;
+    if(!['annotated','confirmed_empty'].includes(stateValue)&&!row?.annotated){
+      if(transient?.state==='committing')return 'AI候选 · 已人工确认，正在入库';
+      if(transient?.state==='awaiting_confirmation')return 'AI候选 · 待人工审核';
+      if(transient?.state==='candidate_failed')return 'AI候选 · 生成失败';
+      return '—';
+    }
     if(origin==='mixed')return 'AI审核确认 + 人工编辑';
     if(origin==='ai_confirmed')return 'AI审核确认';
     if(origin==='imported')return '导入标注';
@@ -5064,11 +5075,33 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.annotationTasks60=state.annotationTasks60||[];
   state.annotationTasks60LoadedAt=Number(state.annotationTasks60LoadedAt||0);
   state.annotationTasks60RefreshPromise=null;
+  state.aiMaterialStates60=state.aiMaterialStates60||{};
+  state.aiMaterialStatesLoadedAt60=Number(state.aiMaterialStatesLoadedAt60||0);
+  state.aiMaterialStatesSignature60=String(state.aiMaterialStatesSignature60||'');
+  state.aiMaterialStatesRequest60=Number(state.aiMaterialStatesRequest60||0);
   const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks${id?`/${id}`:''}`;
   const taskView=task=>window.PlatformCore?.annotationTasks?.annotationTaskView(task)||{};
   const imageById=id=>(state.images||[]).find(image=>String(image.id)===String(id));
   const time=value=>{if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString()};
   const elapsed=task=>{const start=Date.parse(task.created_at||''),end=Date.parse(task.finished_at||task.updated_at||'');return Number.isFinite(start)&&Number.isFinite(end)?fmtTime424(Math.max(0,(end-start)/1000)):'-'};
+
+  window.refreshAiMaterialStates60=async function(imageIds){
+    const ids=[...new Set((imageIds||[]).map(String).filter(Boolean))].slice(0,100);
+    if(!ids.length)return {};
+    const signature=`${pid()}:${[...ids].sort().join(',')}`,now=Date.now();
+    if(signature===state.aiMaterialStatesSignature60&&now-state.aiMaterialStatesLoadedAt60<5000)return state.aiMaterialStates60;
+    const requestId=Number(state.aiMaterialStatesRequest60||0)+1;state.aiMaterialStatesRequest60=requestId;
+    try{
+      const response=await api(`/api/v60/projects/${pid()}/annotation-material-states?image_ids=${encodeURIComponent(ids.join(','))}`);
+      if(requestId!==state.aiMaterialStatesRequest60||state.page!=='数据集')return state.aiMaterialStates60;
+      const next={...state.aiMaterialStates60};
+      ids.forEach(id=>delete next[id]);
+      for(const item of response.items||[])if(item?.image_id)next[String(item.image_id)]={state:String(item.state||''),task_id:String(item.task_id||'')};
+      state.aiMaterialStates60=next;state.aiMaterialStatesSignature60=signature;state.aiMaterialStatesLoadedAt60=Date.now();
+      for(const id of ids){const image=imageById(id);if(image)try{patchMaterialCard412(image)}catch(_){}}
+      return next;
+    }catch(_){return state.aiMaterialStates60}
+  };
 
   function applyTaskResult(result){
     for(const summary of result.image_summaries||[]){
@@ -5459,6 +5492,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       });
       renderProgress(terminal);
       window.MaterialPaginationRuntime61?.invalidate?.();
+      state.aiMaterialStatesSignature60='';state.aiMaterialStatesLoadedAt60=0;
       if(state.page==='数据集')await window.reloadMaterialPage61?.();
       await refreshAnnotationTasks60().catch(()=>[]);
       if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);

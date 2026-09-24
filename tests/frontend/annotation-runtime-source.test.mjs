@@ -98,3 +98,15 @@ test('material detail exposes durable annotation status, provenance, and update 
   assert.match(source, /AI审核确认 \+ 人工编辑/);
   assert.match(source, /annotation_summary_at/);
 });
+
+
+test('dataset cards show transient AI review truth without treating it as formal annotation', () => {
+  assert.match(source, /annotation-material-states\?image_ids=/);
+  assert.match(source, /AI待审核/);
+  assert.match(source, /AI正在入库/);
+  assert.match(source, /AI候选失败/);
+  assert.match(source, /state\.aiMaterialStates60/);
+  assert.match(source, /state\.data412Tab==='processed'.*refreshAiMaterialStates60/s);
+  assert.match(source, /标注来源/);
+  assert.match(source, /AI任务/);
+});

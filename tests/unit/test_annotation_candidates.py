@@ -103,3 +103,20 @@ def test_review_can_replace_candidate_boxes_before_acceptance(tmp_path: Path):
     assert item["accepted"] is True
     assert item["boxes"] == [{"label": "smoke", "class_id": 1, "x1": 1, "y1": 2, "x2": 30, "y2": 40}]
     assert store.summary()["boxes"] == 1
+
+
+def test_candidate_get_many_is_bounded_and_preserves_review_truth(tmp_path: Path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="batch-lookup", page_size=50)
+    store.initialize(labels=["fire"], total_images=3)
+    store.append_items([
+        {"image_id": "one", "status": "success", "boxes": [{"label": "fire"}]},
+        {"image_id": "two", "status": "empty", "boxes": []},
+        {"image_id": "three", "status": "failed", "boxes": [], "error": "timeout"},
+    ])
+    store.apply_decisions([CandidateDecision(image_id="two", accepted=True)])
+    rows = store.get_many(["two", "missing", "one"])
+    assert list(rows) == ["one", "two"] or set(rows) == {"one", "two"}
+    assert rows["one"]["accepted"] is None
+    assert rows["two"]["accepted"] is True
+    with pytest.raises(ValueError, match="limited to 200"):
+        store.get_many([f"image-{index}" for index in range(201)])
