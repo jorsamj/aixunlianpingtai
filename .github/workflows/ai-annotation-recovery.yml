@@ -6,6 +6,7 @@ on:
       - feature/external-algorithm-publishing
       - refactor/frontend-runtime-stabilization
     paths:
+      - app.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotations.py
@@ -13,6 +14,7 @@ on:
       - static/styles.css
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
+      - tests/api/test_annotation_task_runtime.py
       - tests/browser/material-workflows.spec.mjs
       - tests/browser/auto-label-polling.spec.mjs
       - tests/unit/test_annotation_candidates.py
@@ -23,6 +25,7 @@ on:
       - .github/workflows/ai-annotation-recovery.yml
   pull_request:
     paths:
+      - app.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotations.py
@@ -30,6 +33,7 @@ on:
       - static/styles.css
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
+      - tests/api/test_annotation_task_runtime.py
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
       - tests/frontend/annotation-task-view.test.mjs
@@ -101,3 +105,32 @@ jobs:
               raise SystemExit('CandidateStore durable recovery/fencing contract is missing')
           if '恢复执行 · 第 ${attempt} 次执行' not in frontend:
               raise SystemExit('annotation recovery frontend truth is missing')
+
+
+  annotation-api-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Compile annotation API contract
+        run: >-
+          python -m py_compile
+          app.py
+          tests/api/test_annotation_task_runtime.py
+      - name: Durable annotation API truth
+        run: >-
+          python -m pytest -q
+          tests/api/test_annotation_task_runtime.py
+      - name: Version and diff guard
+        shell: bash
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
