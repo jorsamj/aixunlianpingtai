@@ -28,3 +28,18 @@ test('version conversion uses explicit core and one public canonical owner', () 
   assert.match(app, /window\.decorateConvertResourceButton417=function\(\)/);
   assert.match(app, /window\.openNewConvert428=async function openNewConvertCanonical428\(\.\.\.args\)/);
 });
+
+
+test('retired deployment page is no longer a public action target', () => {
+  assert.equal(app.includes('onclick="setPage(\'部署转换\')"'), false);
+  assert.equal(app.includes('closeModal();setPage(\'部署转换\')'), false);
+  assert.doesNotMatch(app, /window\.startDeployVersion=.*setPage\?\.\('部署转换'\)/);
+  assert.match(
+    app,
+    /window\.startDeployVersion=\(aid,vid\)=>\{closeModal\(\);return window\.openVersionConvert428\?\.\(aid,vid\)\}/,
+  );
+  assert.equal(
+    app.includes("onclick=\"closeModal();openVersionConvert428('\${aid}','\${vid}')\""),
+    true,
+  );
+});
