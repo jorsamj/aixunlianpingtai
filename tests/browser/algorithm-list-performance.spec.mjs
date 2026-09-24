@@ -130,6 +130,7 @@ test('algorithm registry cards expand from non-action areas and can show only tr
     window.AlgorithmListRuntime?.render?.();
   });
 
+  await expect(page.locator('[data-algorithm-list-owner="AlgorithmListRuntime"]')).toHaveCount(1);
   const trainable = page.locator('[data-algorithm-id="trainable-card"]');
   const blocked = page.locator('[data-algorithm-id="blocked-card"]');
   await expect(trainable).toBeVisible();

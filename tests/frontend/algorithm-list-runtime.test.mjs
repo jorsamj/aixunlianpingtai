@@ -384,6 +384,15 @@ test('category presentation supports real arbitrary depth in three visible panes
 });
 
 
+test('algorithm list has exactly one canonical page and card renderer owner', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/function renderPage\(/g) || []).length, 1);
+  assert.equal((source.match(/<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">/g) || []).length, 1);
+  assert.equal((main.match(/registerPageOwner\('算法列表'/g) || []).length, 1);
+});
+
 test('current mAP50 never falls back to generic accuracy', () => {
   assert.equal(algorithmVersionMap50({accuracy: 0.91}), null);
   assert.ok(Math.abs(algorithmVersionMap50({map50: 0.926}) - 92.6) < 1e-9);
