@@ -148,16 +148,26 @@ jobs:
           grep -q "test_publish_blocks_before_remote_version_when_public_base_url_missing" tests/unit/test_external_algorithm_publish.py
           grep -q "test_publish_blocks_before_remote_version_when_model_asset_storage_missing" tests/unit/test_external_algorithm_publish.py
           grep -q "MODEL_ARTIFACT_UPLOAD_FAILED" platform_core/external_algorithm_publish.py
-          grep -q "Upload and verify every local model artifact before creating a remote" platform_core/external_algorithm_publish.py
+          grep -Fq "Mandatory phase: original must be deliverable before creating a remote" platform_core/external_algorithm_publish.py
           grep -q "test_model_asset_upload_failure_happens_before_remote_version_creation" tests/unit/test_external_algorithm_publish.py
           grep -q "transport_ready === false" static/modules/external-algorithm-publish.js
           grep -q "manual publish preflight blocks missing model delivery configuration" tests/frontend/external-algorithm-publish.test.mjs
-          grep -q "MODEL_ARTIFACT_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
-          grep -q "test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "ORIGINAL_MODEL_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_original_and_mapped_conversion_when_other_conversion_lacks_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_original_weight_allows_empty_chip_code" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_save_reactivates" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_allows_empty_version_no_and_omits_it_from_remote_payload" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_contract_failed_publication_is_rearmed_once_without_losing_attempt_audit" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_blocked_config_does_not_auto_retry_until_publish_config_changes" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'status="BLOCKED_CONFIG"' platform_core/external_algorithm_publish.py
           grep -q "test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored" tests/unit/test_external_algorithm_publish.py
           grep -q "export function publicationPreflight" static/modules/external-algorithm-publish.js
           grep -q "publicationPreflight(status)" static/modules/external-algorithm-publish.js
           grep -q "manual publish fetches read-only status before write request" tests/frontend/external-algorithm-publish.test.mjs
+          grep -Fq "待映射后自动追加" static/modules/external-algorithm-publish.js
+          grep -Fq "deferred_conversion_count" platform_core/external_algorithm_publish.py
           grep -q "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE" platform_core/external_algorithm_publish.py
           grep -q "test_publish_config_rejects_stale_compute_platform_mapping" tests/unit/test_external_algorithm_publish.py
           grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
@@ -216,6 +226,7 @@ jobs:
           grep -q "test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_external_algorithm_publish.py
           grep -q "test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_with_empty_version_no_recovers_unique_name_and_analysis" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
           grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
@@ -304,6 +315,7 @@ jobs:
           if grep -q "window.renderAlg412 =" static/modules/external-algorithm-publish.js; then echo "external publish must not wrap renderAlg412" >&2; exit 1; fi
           test ! -e tools/_one_shot_model_asset_integration.py
           test ! -e .github/workflows/_one_shot_model_asset_integration.yml
+          grep -Fq 'PUBLICATION_SCHEMA_VERSION = 4' platform_core/external_algorithm_publish.py
           test "$(cat VERSION.txt)" = "42.24.0"
 
 

@@ -123,20 +123,33 @@ test('manual publish preflight allows original model delivery while conversions 
     {ready: false, message: '当前版本还没有可交付的训练模型或转换产物。'},
   );
 
-  const blocked = publicationPreflight({
+  const deferred = publicationPreflight({
     conversion_active: false,
     discovered: [
+      {target: 'original', publish_mapping_status: 'mapped'},
       {target: 'onnx', publish_mapping_status: 'blocked'},
       {target: 'rockchip', publish_mapping_status: 'mapped'},
     ],
-    mapped_artifact_count: 1,
+    mapped_artifact_count: 2,
     blocked_artifact_count: 1,
+    deferred_conversion_count: 1,
+    ignored_artifact_count: 0,
+    publish_ready: true,
+  });
+  assert.equal(deferred.ready, true);
+  assert.match(deferred.message, /待映射后自动追加/);
+
+  const blockedOriginal = publicationPreflight({
+    conversion_active: false,
+    discovered: [{target: 'original', publish_mapping_status: 'blocked'}],
+    mapped_artifact_count: 0,
+    blocked_artifact_count: 1,
+    deferred_conversion_count: 0,
     ignored_artifact_count: 0,
     publish_ready: false,
   });
-  assert.equal(blocked.ready, false);
-  assert.match(blocked.message, /ONNX/);
-  assert.match(blocked.message, /补齐/);
+  assert.equal(blockedOriginal.ready, false);
+  assert.match(blockedOriginal.message, /original/);
 });
 
 test('manual publish preflight blocks missing model delivery configuration', () => {

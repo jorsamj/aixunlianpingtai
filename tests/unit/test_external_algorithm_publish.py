@@ -185,8 +185,9 @@ class FakePublishingClient:
         row = {
             "algoVersionId": f"av-{type(self).version_creates}",
             "versionName": payload["versionName"],
-            "versionNo": payload["versionNo"],
         }
+        if payload.get("versionNo"):
+            row["versionNo"] = payload["versionNo"]
         if payload.get("analysisId"):
             row["analysisId"] = payload["analysisId"]
         type(self).versions.append(row)
@@ -316,8 +317,9 @@ class RecoveringPublishingClient(FakePublishingClient):
         row = {
             "algoVersionId": "recovered-version",
             "versionName": payload["versionName"],
-            "versionNo": payload["versionNo"],
         }
+        if payload.get("versionNo"):
+            row["versionNo"] = payload["versionNo"]
         if payload.get("analysisId"):
             row["analysisId"] = payload["analysisId"]
         type(self).versions.append(row)
@@ -333,11 +335,13 @@ class RecoveringPublishingClient(FakePublishingClient):
 class AmbiguousAnalysisRecoveringClient(FakePublishingClient):
     def create_algorithm_version(self, payload):
         type(self).version_creates += 1
-        type(self).versions.append({
+        row = {
             "algoVersionId": "ambiguous-version",
             "versionName": payload["versionName"],
-            "versionNo": payload["versionNo"],
-        })
+        }
+        if payload.get("versionNo"):
+            row["versionNo"] = payload["versionNo"]
+        type(self).versions.append(row)
         raise RuntimeError("connection reset after server commit")
 
 
@@ -1501,7 +1505,7 @@ def test_model_asset_upload_failure_happens_before_remote_version_creation(tmp_p
     assert publication["status"] == "FAILED"
 
 
-def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_path: Path):
+def test_publish_original_and_mapped_conversion_when_other_conversion_lacks_mapping(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
@@ -1513,20 +1517,23 @@ def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_p
     status = service.publication_status("p1", "a1", "v1")
     assert status["mapped_artifact_count"] == 2
     assert status["blocked_artifact_count"] == 1
+    assert status["deferred_conversion_count"] == 1
     assert status["ignored_artifact_count"] == 0
-    assert status["publish_ready"] is False
+    assert status["publish_ready"] is True
     blocked = next(row for row in status["discovered"] if row["publish_mapping_status"] == "blocked")
     assert blocked["target"] == "onnx"
-    assert "尚未配置畅联云算力环境" in blocked["publish_mapping_detail"]
 
-    try:
-        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
-        assert False, "partial mapping must not be silently published as complete"
-    except Exception as error:
-        assert getattr(error, "code", "") == "MODEL_ARTIFACT_MAPPING_INCOMPLETE"
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
-    assert FakePublishingClient.version_creates == 0
-    assert FakePublishingClient.weight_creates == 0
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert result["external_algo_version_id"]
+    assert len(result["deferred_conversions"]) == 1
+    assert "onnx" in result["deferred_conversions"][0]
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    assert {row["fileName"] for row in FakePublishingClient.weights} == {"best.pt", "model.rknn"}
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync("p1", algorithm, version, result["publication"]) is False
 
 
 def test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored(tmp_path: Path):
@@ -1608,6 +1615,75 @@ def test_publish_uses_distinct_durable_version_name_and_number(tmp_path: Path):
         "versionNo": "2026.09.21-001",
         "analysisId": "analysis-1",
     }
+
+
+def test_publish_allows_empty_version_no_and_omits_it_from_remote_payload(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["version_no"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.last_version_payload["versionName"] == "20260917120000"
+    assert FakePublishingClient.last_version_payload["analysisId"] == "analysis-1"
+    assert "versionNo" not in FakePublishingClient.last_version_payload
+
+
+def test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["version_no"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    FakePublishingClient.versions = [{
+        "algoVersionId": "remote-existing",
+        "versionName": "20260917120000",
+        "versionNo": "remote-sequence-42",
+        "analysisId": "analysis-1",
+    }]
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["external_algo_version_id"] == "remote-existing"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 1
+
+
+def test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["version_no"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    FakePublishingClient.versions = [
+        {
+            "algoVersionId": remote_id,
+            "versionName": "20260917120000",
+            "versionNo": remote_no,
+            "analysisId": "analysis-1",
+        }
+        for remote_id, remote_no in (("remote-a", "1"), ("remote-b", "2"))
+    ]
+    service = _service(tmp_path, memory)
+
+    with pytest.raises(PlatformError) as error:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert error.value.code == "EXTERNAL_VERSION_RECOVERY_AMBIGUOUS"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
 
 
 def test_version_recovery_uses_full_identity_then_falls_back_to_analysis(tmp_path: Path):
@@ -1791,7 +1867,7 @@ def test_weight_recovery_never_downgrades_when_remote_chip_code_is_empty(tmp_pat
     assert FakePublishingClient.weight_creates == 0
 
 
-def test_missing_weight_field_blocks_before_remote_version_or_weight_post(tmp_path: Path):
+def test_original_weight_allows_empty_chip_code(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
@@ -1806,28 +1882,121 @@ def test_missing_weight_field_blocks_before_remote_version_or_weight_post(tmp_pa
         },
     ))
 
-    with pytest.raises(PlatformError) as error:
-        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
-    assert error.value.code == "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE"
-    assert FakePublishingClient.version_creates == 0
-    assert FakePublishingClient.weight_creates == 0
-    publication = service.repository.publication("p1", "a1", "v1")
-    assert publication["status"] == "FAILED"
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.last_weight_payload["fileName"] == "best.pt"
+    assert FakePublishingClient.last_weight_payload["filePath"].startswith("https://platform.example/")
+    assert "chipCode" not in FakePublishingClient.last_weight_payload
+
+
+def test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_save_reactivates(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path, target="rockchip", chip="", content=b"rk-without-chip")
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+        },
+    ))
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert first["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    assert first["deferred_conversions"]
+    blocked_artifact = next(
+        row for row in first["artifacts"]
+        if row["target"] == "rockchip"
+    )
+    assert blocked_artifact["sync_status"] == "BLOCKED_CONFIG"
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync("p1", algorithm, version, first["publication"]) is False
 
     service.save_config(ExternalPublishConfigPayload(
-        storage_source_id="default_local",
-        public_base_url="https://platform.example",
         target_mappings={
-            "original": TargetMapping(compute_platform_id="cp-rk", chip_code="PYTORCH"),
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
             "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
-    retried = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "PUBLISHED"
+    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
 
-    assert retried["publication"]["status"] == "PUBLISHED"
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert second["publication"]["status"] == "PUBLISHED"
     assert FakePublishingClient.version_creates == 1
-    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    rknn = next(row for row in FakePublishingClient.weights if row["fileName"].endswith(".rknn"))
+    assert rknn["chipCode"] == "RK3568"
+
+
+def test_legacy_contract_failed_publication_is_rearmed_once_without_losing_attempt_audit(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithm, version = _version(tmp_path)
+    publication = service.repository.ensure_publication(
+        project_id="p1", algorithm=algorithm, version=version,
+    )
+    service.repository.patch_publication(
+        publication["publication_key"],
+        status="FAILED",
+        attempts=1152,
+        last_error="新畅联权重发布字段不完整",
+    )
+
+    reopened = ExternalPublicationRepository(tmp_path)
+    repaired = reopened.publication("p1", "a1", "v1")
+
+    assert repaired["status"] == "PENDING"
+    assert repaired["last_error"] == ""
+    assert repaired["attempts"] == 1152
+
+
+def test_blocked_config_does_not_auto_retry_until_publish_config_changes(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="", chip_code=""),
+        },
+    ))
+
+    with pytest.raises(PlatformError) as blocked:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert blocked.value.code == "ORIGINAL_MODEL_MAPPING_INCOMPLETE"
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "BLOCKED_CONFIG"
+    attempts = publication["attempts"]
+    assert service.repository.auto_retry_due(publication) is False
+
+    skipped = service.publish(
+        project_id="p1", algorithm_id="a1", version_id="v1", automatic=True,
+    )
+    assert skipped["skipped"] is True
+    assert service.repository.publication("p1", "a1", "v1")["attempts"] == attempts
+
+    service.save_config(ExternalPublishConfigPayload(
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+        },
+    ))
+    reactivated = service.repository.publication("p1", "a1", "v1")
+    assert reactivated["status"] == "PENDING"
+    assert service.repository.auto_retry_due(reactivated) is True
 
 
 def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path):
@@ -2061,6 +2230,35 @@ def test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_r
     assert result["status"] == "deleted"
     assert result["external_algo_version_id"] == "remote-version-recovered"
     assert FakePublishingClient.removed_version_ids == ["remote-version-recovered"]
+
+
+def test_rollback_with_empty_version_no_recovers_unique_name_and_analysis(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["version_no"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    FakePublishingClient.versions = [{
+        "algoVersionId": "remote-version-no-number",
+        "versionName": "20260917120000",
+        "versionNo": "server-side-number",
+        "analysisId": "analysis-1",
+    }]
+    service = _service(tmp_path, memory)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+
+    result = service.delete_version_for_rollback(
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+
+    assert result["status"] == "deleted"
+    assert result["external_algo_version_id"] == "remote-version-no-number"
+    assert FakePublishingClient.removed_version_ids == ["remote-version-no-number"]
 
 
 def test_rollback_remote_delete_uses_official_version_remove(tmp_path: Path):

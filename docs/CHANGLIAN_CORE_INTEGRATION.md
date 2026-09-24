@@ -163,12 +163,13 @@ POST /internal/algorithm/algorithm-version/add
 当前核心 payload：
 
 ```text
-versionName
-versionNo
 analysisId 或 productId（二选一）
+versionName（平台稳定幂等身份）
+versionNo（可选）
 ```
 
-当训练已经绑定明确 analysisId 时，优先发送 analysisId。
+当训练已经绑定明确 analysisId 时，优先发送 analysisId。平台仍尽量持久化
+`versionNo`，但远端新增时有值才发送；历史记录缺少 `versionNo` 不得阻断发布。
 
 幂等恢复：
 
@@ -189,10 +190,12 @@ POST /internal/algorithm/algorithm-weight/add
 ```text
 algoVersionId
 computePlatformId
-chipCode
 fileName
 filePath
+chipCode（可选；RKNN/rockchip 等芯片相关目标必须有）
 ```
+
+original 通用训练模型允许 `chipCode` 为空。
 
 幂等恢复：
 
@@ -205,9 +208,11 @@ GET /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 ```text
 fileName
 computePlatformId
-chipCode
+chipCode（存在时）
+filePath（远端返回时）
 ```
 
+original 无 `chipCode` 时以“空芯片身份”参与唯一恢复；多条相关候选仍 fail-closed，
 避免网络超时后重复登记。
 
 ### 5.3 完整版本 / 权重管理接口
@@ -313,6 +318,9 @@ RK3576
 → 转换产物自动归档 OSS
 → 复用同一 algoVersionId 追加转换权重
 → 畅联云侧核验版本、权重与 filePath
+
+配置型永久错误进入 `BLOCKED_CONFIG`，自动发布不会持续增加 attempts；只有发布映射实际变更后重新激活。
+网络/远端瞬时失败使用退避重试。旧版由“chipCode/versionNo 过严合同”造成的 FAILED 记录会在升级后自动重新置为 PENDING，一次性走幂等恢复。
 ```
 
 破坏性删除需在可控测试数据上单独验证 `algorithm-version/remove` 的真实副作用；远端删除结果不确定时本地必须保持 fail-closed。

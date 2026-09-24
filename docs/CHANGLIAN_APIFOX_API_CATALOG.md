@@ -69,10 +69,14 @@ GET  /internal/algorithm/algorithm-version/getInfo/{algoVersionId}
 新增版本 payload：
 
 ```text
-analysisId 与 productId 二选一
-versionName
-versionNo
+analysisId 与 productId 二选一（官方新增身份要求）
+versionName（平台保留为稳定幂等身份）
+versionNo（可选；有值则发送，无值不阻断创建）
 ```
+
+平台本地会尽量持久化 `versionNo`，但不会把它误当成新畅联新增接口的强制字段。
+幂等恢复时，有 `versionNo` 使用 `versionName + versionNo + analysisId`；无 `versionNo` 时使用
+`versionName + analysisId` 唯一恢复，多条候选仍 fail-closed。
 
 修改版本时 `algoVersionId` 必填。
 
@@ -95,19 +99,29 @@ GET  /internal/algorithm/algorithm-weight/getInfo/{weightId}
 新增权重发布 payload：
 
 ```text
-algoVersionId
-computePlatformId
-chipCode
-fileName
-filePath
+algoVersionId      # 新增 Weight 必须有
+computePlatformId  # 平台业务映射要求
+fileName           # 平台交付要求
+filePath           # 平台交付要求，长期 OSS/CDN 地址
+chipCode           # 官方可选；RKNN/rockchip 等芯片相关产物由平台业务强制要求
 ```
 
-平台发布流程继续坚持：
+通用 original 训练模型允许 `chipCode` 为空；平台不得在调用新畅联 API 前因为空
+`chipCode` 拒绝 `.pt` 权重。
+
+平台发布流程按“原始模型优先、转换后追加”执行：
 
 ```text
-本地训练版本
-→ 转换产物
-→ 模型资产存储
+本地训练成功
+→ original (.pt) 上传模型资产存储
+→ 创建/恢复新畅联 Version
+→ 创建/恢复 original Weight
+→ Version 至少达到 PUBLISHED
+
+随后独立追加：
+ONNX / RKNN / TensorRT / Ascend / Sophon / Paddle Inference
+→ 各自产物成功且映射可用时追加到同一个 algoVersionId
+→ 某个转换未映射或尚未成功，不阻断 original
 → 稳定 public URL
 → 创建/恢复远端算法版本
 → 新增/恢复远端算法权重

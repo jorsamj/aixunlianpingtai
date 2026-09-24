@@ -117,24 +117,25 @@ export function publicationPreflight(status = {}) {
     return {ready: false, message: '当前版本还没有可交付的训练模型或转换产物。'};
   }
   const blocked = Number(status.blocked_artifact_count || 0);
-  if (blocked > 0) {
+  const mapped = Number(status.mapped_artifact_count || 0);
+  if (mapped <= 0 || status.publish_ready === false) {
     const targets = [...new Set(discovered
       .filter(row => row.publish_mapping_status === 'blocked')
       .map(row => String(row.target || '').toUpperCase())
       .filter(Boolean))];
-    return {
-      ready: false,
-      message: `还有 ${blocked} 个已启用转换产物缺少畅联云厂商对应关系${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 厂商对应表”补齐；不需要发布的目标请明确关闭。`,
-    };
-  }
-  const mapped = Number(status.mapped_artifact_count || 0);
-  if (mapped <= 0 || status.publish_ready === false) {
-    return {ready: false, message: '当前没有已完成映射的可发布转换产物。'};
+    if (blocked > 0) {
+      return {
+        ready: false,
+        message: `原始训练模型尚未具备发布条件${targets.length ? `（当前缺少：${targets.join('、')}）` : ''}，请先补齐 original 的畅联云算力环境映射。`,
+      };
+    }
+    return {ready: false, message: '当前没有已完成映射的原始训练模型。'};
   }
   const ignored = Number(status.ignored_artifact_count || 0);
+  const deferred = Number(status.deferred_conversion_count || 0);
   return {
     ready: true,
-    message: `发布预检通过：将同步 ${mapped} 个权重${ignored ? `，另有 ${ignored} 个转换目标已明确关闭发布` : ''}。`,
+    message: `发布预检通过：将先同步原始模型及当前已映射权重${deferred ? `；另有 ${deferred} 个转换权重待映射后自动追加` : ''}${ignored ? `；${ignored} 个转换目标已明确关闭发布` : ''}。`,
   };
 }
 
@@ -409,7 +410,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   schedulePlatformPage();
 
   const runtime = {
-    build: 'external-algorithm-publish-64003',
+    build: 'external-algorithm-publish-64004',
     loadConfig,
     saveConfig,
     runAutoOnce,

@@ -36,7 +36,7 @@ from .secrets import SecretCredentialStore
 from .storage import StorageProviderFactory, StorageSourceRepository
 
 
-PUBLICATION_SCHEMA_VERSION = 3
+PUBLICATION_SCHEMA_VERSION = 4
 DEFAULT_AUTO_PUBLISH_RETRY_SECONDS = 300
 SUCCESSFUL_VERSION_STATUSES = {"SUCCEEDED", "PARTIAL_SUCCESS", "DONE", "FINISHED", "COMPLETED"}
 ACTIVE_CONVERSION_STATUSES = {"queued", "running", "waiting", "pending", "cancel_requested"}
@@ -390,6 +390,21 @@ class ExternalPublicationRepository:
             """
         )
         cls._backfill_legacy_artifact_mappings(database)
+        # v4 fixes two locally over-strict ChangLian contracts. Re-arm only
+        # failures whose durable error text proves they came from those old
+        # checks; do not touch network/storage failures or UNKNOWN identities.
+        database.execute(
+            """
+            UPDATE external_version_publications
+            SET status='PENDING', last_error=''
+            WHERE status IN ('FAILED', 'PARTIAL')
+              AND (
+                last_error LIKE '%新畅联权重发布字段不完整%'
+                OR last_error LIKE '%本地算法版本身份不完整%'
+                OR last_error LIKE '%缺少字段：chipCode%'
+              )
+            """
+        )
 
     @classmethod
     def _backfill_legacy_artifact_mappings(cls, database: sqlite3.Connection) -> None:
@@ -511,10 +526,34 @@ class ExternalPublicationRepository:
         body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
         body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
         body["updated_at"] = utc_now()
+        mapping_changed = (
+            previous.get("target_mappings") != body.get("target_mappings")
+        )
         with self.lock:
             temp = self.config_path.with_suffix(".tmp")
             temp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
             temp.replace(self.config_path)
+        # Configuration-blocked publications are dormant until the canonical
+        # publish mapping actually changes. Keep attempts as immutable audit truth.
+        if mapping_changed:
+            with closing(self._connect()) as database:
+                stamp = utc_now()
+                database.execute(
+                    """
+                    UPDATE external_version_publications
+                    SET status='PENDING', last_error='', updated_at=?
+                    WHERE status='BLOCKED_CONFIG'
+                    """,
+                    (stamp,),
+                )
+                database.execute(
+                    """
+                    UPDATE external_artifact_publications
+                    SET sync_status='PENDING', last_error='', updated_at=?
+                    WHERE sync_status='BLOCKED_CONFIG'
+                    """,
+                    (stamp,),
+                )
         return self.config()
 
     @classmethod
@@ -840,7 +879,7 @@ class ExternalPublicationRepository:
 
     def auto_retry_due(self, publication: Mapping[str, Any]) -> bool:
         status = str(publication.get("status") or "PENDING").upper()
-        if status in {"PUBLISHED", "UNKNOWN"}:
+        if status in {"PUBLISHED", "UNKNOWN", "BLOCKED_CONFIG"}:
             return False
         if status not in {"FAILED", "PARTIAL"}:
             return True
@@ -1489,19 +1528,23 @@ class ExternalAlgorithmPublishService:
         exact_ids: set[str] = set()
         incomplete_ids: set[str] = set()
         incomplete_without_id = 0
+        expected_name = str(version_name or "").strip()
+        expected_no = str(version_no or "").strip()
         expected_analysis = str(analysis_id or "").strip()
         expected_product = str(product_id or "").strip()
+        require_number = bool(expected_no)
         for source in rows:
             row = dict(source)
             remote_name = str(row.get("versionName") or "").strip()
             remote_no = str(row.get("versionNo") or "").strip()
-            name_matches = bool(remote_name) and remote_name == str(version_name)
-            number_matches = bool(remote_no) and remote_no == str(version_no)
+            name_matches = bool(remote_name) and remote_name == expected_name
+            number_matches = (remote_no == expected_no) if require_number else True
             remote_analysis = self._remote_version_analysis_id(row)
             analysis_matches = not expected_analysis or remote_analysis == expected_analysis
             remote_product = str(row.get("productId") or row.get("product_id") or "").strip()
             product_matches = not expected_product or not remote_product or remote_product == expected_product
             remote_id = self._remote_version_id(row)
+
             if name_matches and number_matches and analysis_matches and product_matches:
                 if remote_id:
                     exact_ids.add(remote_id)
@@ -1509,19 +1552,19 @@ class ExternalAlgorithmPublishService:
                     incomplete_without_id += 1
                 continue
 
-            # A fully populated, explicitly different identity is another
-            # version, not a recovery candidate.  Only a partial row that
-            # could still be the requested identity makes recovery ambiguous.
             missing_name = not remote_name
-            missing_number = not remote_no
+            missing_number = require_number and not remote_no
             missing_analysis = bool(expected_analysis) and not remote_analysis
+            number_compatible = (not require_number) or number_matches or missing_number
             no_explicit_conflict = (
                 (name_matches or missing_name)
-                and (number_matches or missing_number)
+                and number_compatible
                 and (analysis_matches or missing_analysis)
                 and product_matches
             )
-            has_identity_overlap = name_matches or number_matches
+            has_identity_overlap = name_matches or (
+                require_number and bool(remote_no) and remote_no == expected_no
+            )
             if has_identity_overlap and no_explicit_conflict and (
                 missing_name or missing_number or missing_analysis
             ):
@@ -1531,18 +1574,19 @@ class ExternalAlgorithmPublishService:
                     incomplete_without_id += 1
 
         unresolved_incomplete_ids = incomplete_ids - exact_ids
-        if (
-            len(exact_ids) == 1
-            and not unresolved_incomplete_ids
-            and not incomplete_without_id
-        ):
+        if len(exact_ids) == 1 and not unresolved_incomplete_ids and not incomplete_without_id:
             return next(iter(exact_ids))
         if len(exact_ids) > 1 or unresolved_incomplete_ids or incomplete_without_id:
+            identity = (
+                "versionName + versionNo + analysisId"
+                if require_number else
+                "versionName + analysisId"
+            )
             raise PlatformError(
                 "EXTERNAL_VERSION_RECOVERY_AMBIGUOUS",
                 "无法唯一恢复新畅联算法版本",
-                f"versionName={version_name}; versionNo={version_no}; analysisId={expected_analysis or '-'}; exact={len(exact_ids)}; incomplete={len(unresolved_incomplete_ids) + incomplete_without_id}",
-                "远端候选必须同时匹配 versionName、versionNo 和本地绑定的 analysisId；字段不足或多条候选时平台不会猜测或重复创建。",
+                f"versionName={expected_name}; versionNo={expected_no or '-'}; analysisId={expected_analysis or '-'}; exact={len(exact_ids)}; incomplete={len(unresolved_incomplete_ids) + incomplete_without_id}",
+                f"远端候选必须能由 {identity} 唯一确认；字段不足或多条候选时平台不会猜测或重复创建。",
                 409,
             )
         return ""
@@ -1624,14 +1668,14 @@ class ExternalAlgorithmPublishService:
         if existing:
             return existing
         product_id = str(algorithm.get("external_product_id") or "")
-        version_name = str(version.get("version_name") or version.get("id") or "")
+        version_name = str(version.get("version_name") or version.get("id") or "").strip()
         version_no = str(version.get("version_no") or "").strip()
-        if not version_name.strip() or not version_no:
+        if not version_name:
             raise PlatformError(
                 "EXTERNAL_VERSION_IDENTITY_INCOMPLETE",
                 "本地算法版本身份不完整",
-                f"versionName={version_name or '-'}; versionNo={version_no or '-'}",
-                "创建或恢复新畅联版本前必须先持久化非空 versionName 和 versionNo。",
+                "versionName=-",
+                "创建新畅联版本至少需要稳定的 versionName；versionNo 可为空。",
                 409,
             )
         analysis_id = str(version.get("external_analysis_id") or "").strip()
@@ -1653,13 +1697,20 @@ class ExternalAlgorithmPublishService:
             )
             raise
         if recovered:
-            self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
+            self.repository.patch_publication(
+                str(publication["publication_key"]),
+                external_algo_version_id=recovered,
+                status="VERSION_READY",
+                last_error="",
+            )
             return recovered
+
         payload: Dict[str, Any] = {
             "versionName": version_name,
-            "versionNo": version_no,
             "analysisId": analysis_id,
         }
+        if version_no:
+            payload["versionNo"] = version_no
         try:
             response = client.create_algorithm_version(payload)
         except Exception as error:
@@ -1670,12 +1721,22 @@ class ExternalAlgorithmPublishService:
             except PlatformError:
                 recovered = ""
             if recovered:
-                self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
+                self.repository.patch_publication(
+                    str(publication["publication_key"]),
+                    external_algo_version_id=recovered,
+                    status="VERSION_READY",
+                    last_error="",
+                )
                 return recovered
-            self.repository.patch_publication(str(publication["publication_key"]), status="UNKNOWN", last_error=str(error))
+            self.repository.patch_publication(
+                str(publication["publication_key"]), status="UNKNOWN", last_error=str(error)
+            )
             raise PlatformError(
-                "EXTERNAL_VERSION_CREATE_UNKNOWN", "新畅联算法版本创建结果无法确认", str(error),
-                "请先检查新畅联版本列表；确认是否已生成该版本后，再执行重新同步。系统不会在结果未知时盲目重复创建。", 502,
+                "EXTERNAL_VERSION_CREATE_UNKNOWN",
+                "新畅联算法版本创建结果无法确认",
+                str(error),
+                "请先检查新畅联版本列表；确认是否已生成该版本后，再执行重新同步。系统不会在结果未知时盲目重复创建。",
+                502,
             ) from error
         version_id = _remote_id(response, ("algoVersionId", "algorithmVersionId", "versionId", "id"))
         if not version_id:
@@ -1689,12 +1750,24 @@ class ExternalAlgorithmPublishService:
                 )
                 raise
         if not version_id:
-            self.repository.patch_publication(str(publication["publication_key"]), status="UNKNOWN", last_error="新增版本接口未返回 algoVersionId，且版本列表无法反查")
-            raise PlatformError(
-                "EXTERNAL_VERSION_ID_MISSING", "新畅联未返回算法版本 ID", "创建接口成功但没有可解析的 algoVersionId。",
-                "请让新畅联创建版本接口直接返回 algoVersionId，或确认版本列表接口路径可用于反查。", 502,
+            self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="UNKNOWN",
+                last_error="新增版本接口未返回 algoVersionId，且版本列表无法反查",
             )
-        self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=version_id, status="VERSION_READY", last_error="")
+            raise PlatformError(
+                "EXTERNAL_VERSION_ID_MISSING",
+                "新畅联未返回算法版本 ID",
+                "创建接口成功但没有可解析的 algoVersionId。",
+                "请让新畅联创建版本接口直接返回 algoVersionId，或确认版本列表接口路径可用于反查。",
+                502,
+            )
+        self.repository.patch_publication(
+            str(publication["publication_key"]),
+            external_algo_version_id=version_id,
+            status="VERSION_READY",
+            last_error="",
+        )
         return version_id
 
     def _reuse_uploaded_model_asset(self, artifact: Mapping[str, Any]) -> Dict[str, Any] | None:
@@ -1784,19 +1857,24 @@ class ExternalAlgorithmPublishService:
 
     @staticmethod
     def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, str]:
-        payload = {
+        target = str(artifact.get("target") or "").strip().lower()
+        chip_code = _canonical_chip_code(artifact.get("remote_chip_code") or "")
+        payload: Dict[str, str] = {
             "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
-            "chipCode": _canonical_chip_code(artifact.get("remote_chip_code") or ""),
             "fileName": str(artifact.get("file_name") or "").strip(),
             "filePath": str(artifact.get("public_url") or "").strip(),
         }
-        missing = [field for field, value in payload.items() if not value]
+        if chip_code:
+            payload["chipCode"] = chip_code
+        missing = [field for field in ("computePlatformId", "fileName", "filePath") if not payload.get(field)]
+        if target == "rockchip" and not chip_code:
+            missing.append("chipCode")
         if missing:
             raise PlatformError(
                 "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE",
                 "新畅联权重发布字段不完整",
                 "缺少字段：" + ", ".join(missing),
-                "computePlatformId、chipCode、fileName、filePath 全部具备后才允许创建远端算法版本。",
+                "algoVersionId、computePlatformId、fileName、filePath 按平台业务合同必须具备；chipCode 仅在 RKNN/rockchip 等芯片相关产物上强制要求，original 通用模型允许为空。",
                 409,
             )
         return payload
@@ -1812,7 +1890,7 @@ class ExternalAlgorithmPublishService:
                 "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE",
                 "新畅联权重发布字段不完整",
                 "缺少字段：algoVersionId",
-                "algoVersionId、computePlatformId、chipCode、fileName、filePath 全部具备后才允许调用 algorithm-weight/add。",
+                "创建 Weight 时必须具备 algoVersionId；chipCode 对通用 original 模型不是必填。",
                 409,
             )
         return payload
@@ -1830,12 +1908,12 @@ class ExternalAlgorithmPublishService:
             ) from error
         exact_ids: set[str] = set()
         related: list[Mapping[str, Any]] = []
+        expected_chip = _canonical_chip_code(artifact.get("remote_chip_code") or "")
         for row in rows:
             same_file = str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
             same_platform = str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
             remote_chip = _canonical_chip_code(row.get("chipCode") or "")
-            expected_chip = _canonical_chip_code(artifact.get("remote_chip_code") or "")
-            same_chip = bool(remote_chip) and remote_chip == expected_chip
+            same_chip = remote_chip == expected_chip
             remote_path = str(row.get("filePath") or "").strip()
             expected_path = str(artifact.get("public_url") or "").strip()
             same_path = not remote_path or remote_path == expected_path
@@ -1845,14 +1923,14 @@ class ExternalAlgorithmPublishService:
                     exact_ids.add(weight_id)
                 else:
                     related.append(row)
-            elif same_file and same_platform and (not remote_chip or same_chip):
+            elif same_file and same_platform:
                 related.append(row)
         if len(exact_ids) > 1 or related:
             raise PlatformError(
                 "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS",
                 "无法唯一恢复新畅联权重文件",
                 f"fileName={artifact.get('file_name') or '-'}; computePlatformId={artifact.get('compute_platform_id') or '-'}; chipCode={artifact.get('remote_chip_code') or '-'}; exact={len(exact_ids)}; related={len(related)}",
-                "恢复必须严格匹配 fileName、computePlatformId、chipCode；远端返回 filePath 时还必须与当前长期地址一致。",
+                "恢复必须由 fileName + computePlatformId + 可用的 chipCode 唯一确认；无 chipCode 的 original 使用空芯片身份，远端返回 filePath 时还必须与当前长期地址一致。",
                 409,
             )
         if len(exact_ids) == 1:
@@ -2090,15 +2168,33 @@ class ExternalAlgorithmPublishService:
             else:
                 ignored.append(row)
             classified.append(row)
+
+        original_mapped = [
+            row for row in mapped
+            if _artifact_target_identity(row.get("target")) == "training"
+        ]
+        original_blocked = [
+            row for row in blocked
+            if _artifact_target_identity(row.get("target")) == "training"
+        ]
+        deferred_conversions = [
+            row for row in blocked
+            if _artifact_target_identity(row.get("target")) != "training"
+        ]
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
         transport = self._publish_transport_state()
         identity = self._external_identity_state(algorithm, version)
         return {
             "ok": True,
-            "algorithm": {"id": algorithm_id, "name": algorithm.get("name"), "external_product_id": algorithm.get("external_product_id")},
+            "algorithm": {
+                "id": algorithm_id,
+                "name": algorithm.get("name"),
+                "external_product_id": algorithm.get("external_product_id"),
+            },
             "version": {
                 "id": version_id,
                 "version_name": version.get("version_name"),
+                "version_no": version.get("version_no") or "",
                 "external_algo_version_id": str((publication or {}).get("external_algo_version_id") or ""),
                 "external_publish_status": str((publication or {}).get("status") or "").lower(),
             },
@@ -2108,26 +2204,37 @@ class ExternalAlgorithmPublishService:
             "mapped_artifact_count": len(mapped),
             "blocked_artifact_count": len(blocked),
             "ignored_artifact_count": len(ignored),
+            "deferred_conversion_count": len(deferred_conversions),
             "transport_ready": bool(transport["ready"]),
             "transport_issues": list(transport["issues"]),
             "public_base_url_configured": bool(transport["public_base_url"]),
             "model_asset_storage_source_id": str(transport["storage_source_id"] or ""),
             "identity_ready": bool(identity["ready"]),
             "identity_issues": list(identity["issues"]),
-            "publish_ready": bool(mapped) and not blocked and bool(transport["ready"]) and bool(identity["ready"]),
+            # Only the mandatory original training model gates creation of the
+            # ChangLian Version. Optional conversion mappings may be completed later.
+            "publish_ready": bool(original_mapped)
+            and not original_blocked
+            and bool(transport["ready"])
+            and bool(identity["ready"]),
             "conversion_active": conversion_active,
         }
 
     def publish(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         self._assert_current_external_identity(algorithm, version)
-        if str(version.get("training_status") or "").upper() not in SUCCESSFUL_VERSION_STATUSES or version.get("artifact_verified") is not True:
+        if (
+            str(version.get("training_status") or "").upper() not in SUCCESSFUL_VERSION_STATUSES
+            or version.get("artifact_verified") is not True
+        ):
             raise PlatformError(
-                "ALGORITHM_VERSION_NOT_PUBLISHABLE", "算法版本尚不可发布", str(version.get("version_name") or version_id),
-                "仅训练成功且模型产物已通过完整性校验的版本可以发布。", 409,
+                "ALGORITHM_VERSION_NOT_PUBLISHABLE",
+                "算法版本尚不可发布",
+                str(version.get("version_name") or version_id),
+                "仅训练成功且模型产物已通过完整性校验的版本可以发布。",
+                409,
             )
-        # Fail before any remote ChangLian write. Missing local delivery configuration
-        # must never create an empty remote Algorithm Version.
+
         self._assert_publish_transport_ready()
         publication = self._version_publication(
             project_id, algorithm, version, create=True,
@@ -2138,57 +2245,92 @@ class ExternalAlgorithmPublishService:
             and str(publication.get("status") or "").upper() != "PUBLISHED"
             and not self.repository.auto_retry_due(publication)
         ):
-            return {"ok": True, "skipped": True, "reason": "retry_not_due", "publication": publication}
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "retry_not_due",
+                "publication": publication,
+            }
+
         attempts = int(publication.get("attempts") or 0) + 1
-        publication = self.repository.patch_publication(str(publication["publication_key"]), status="PREPARING", attempts=attempts, last_error="")
+        publication = self.repository.patch_publication(
+            str(publication["publication_key"]),
+            status="PREPARING",
+            attempts=attempts,
+            last_error="",
+        )
         discovered = self.discover_artifacts(project_id, algorithm, version)
-        selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
-        blocked: list[Dict[str, Any]] = []
+        original_selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        original_blocked: list[Dict[str, Any]] = []
+        conversion_selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        deferred_conversions: list[Dict[str, Any]] = []
+
         for item in discovered:
-            state = self._mapping_state(str(item.get("target") or ""))
+            target = str(item.get("target") or "")
+            state = self._mapping_state(target)
+            is_original = _artifact_target_identity(target) == "training"
             if state.get("mapping"):
-                selected.append((item, state["mapping"]))
-            elif state.get("status") == "blocked":
-                blocked.append({
-                    **dict(item),
-                    "detail": state.get("detail") or "",
-                    "code": state.get("code") or "",
-                    "message": state.get("message") or "",
-                    "solution": state.get("solution") or "",
-                    "status_code": state.get("status_code") or 409,
-                })
-        if blocked:
-            specific = next((row for row in blocked if str(row.get("code") or "").startswith("EXTERNAL_COMPUTE_PLATFORM_")), None)
-            if specific is not None:
-                raise PlatformError(
-                    str(specific.get("code") or "EXTERNAL_COMPUTE_PLATFORM_MAPPING_INVALID"),
-                    str(specific.get("message") or "畅联云算力环境映射不可用"),
-                    str(specific.get("detail") or ""),
-                    str(specific.get("solution") or "请重新同步畅联云主数据并重新选择算力环境。"),
-                    int(specific.get("status_code") or 409),
-                )
-            detail = "；".join(
-                f"{row.get('target') or '-'} / {row.get('file_name') or '-'}：{row.get('detail') or '缺少发布映射'}"
-                for row in blocked
+                if is_original:
+                    original_selected.append((item, state["mapping"]))
+                else:
+                    conversion_selected.append((item, state["mapping"]))
+                continue
+            if state.get("status") != "blocked":
+                continue
+            row = {
+                **dict(item),
+                "detail": state.get("detail") or "",
+                "code": state.get("code") or "",
+                "message": state.get("message") or "",
+                "solution": state.get("solution") or "",
+                "status_code": state.get("status_code") or 409,
+            }
+            if is_original:
+                original_blocked.append(row)
+            else:
+                deferred_conversions.append(row)
+
+        if not any(_artifact_target_identity(item.get("target")) == "training" for item in discovered):
+            self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="FAILED",
+                last_error="训练原始模型产物不存在",
             )
             raise PlatformError(
-                "MODEL_ARTIFACT_MAPPING_INCOMPLETE",
-                "部分转换产物尚未配置畅联云算力环境",
-                detail[:2000],
-                "请在“平台对接 → 畅联云版本与权重同步”补齐所有已启用转换目标的算力环境；不需要发布的目标请明确关闭。",
+                "ORIGINAL_MODEL_ARTIFACT_REQUIRED",
+                "训练原始模型产物不存在",
+                str(version.get("version_name") or version_id),
+                "训练成功版本必须先保留可发布的原始模型，再追加 ONNX/RKNN 等转换权重。",
                 409,
             )
-        if not selected:
-            self.repository.patch_publication(str(publication["publication_key"]), status="FAILED", last_error="没有可发布且已映射算力环境的转换产物")
-            raise PlatformError(
-                "NO_MAPPED_MODEL_ARTIFACT", "没有可发布的模型转换产物", "转换结果尚未生成，或转换目标未映射到新畅联算力环境。",
-                "请在“平台对接 → 畅联云版本与权重同步”配置需要交付的算力环境和芯片编码。", 409,
+
+        if original_blocked or not original_selected:
+            row = original_blocked[0] if original_blocked else {}
+            message = str(row.get("message") or "原始训练模型尚未配置畅联云算力环境")
+            detail = str(row.get("detail") or "original 缺少 computePlatformId 映射")
+            solution = str(
+                row.get("solution")
+                or "请只补齐 original 的通用算力环境映射；chipCode 对 original 可留空。"
             )
-        # Upload and verify every local model artifact before creating a remote
-        # ChangLian Algorithm Version. A storage failure must never leave an
-        # empty remote version behind.
-        uploaded_artifacts: list[Dict[str, Any]] = []
-        for item, mapping in selected:
+            self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="BLOCKED_CONFIG",
+                last_error=message[:2000],
+            )
+            raise PlatformError(
+                str(row.get("code") or "ORIGINAL_MODEL_MAPPING_INCOMPLETE"),
+                message,
+                detail,
+                solution,
+                int(row.get("status_code") or 409),
+            )
+
+        def prepare_artifact(
+            item: Mapping[str, Any],
+            mapping: Mapping[str, Any],
+            *,
+            config_blocking: bool,
+        ) -> Dict[str, Any]:
             try:
                 stored = self._upload_artifact(item, algorithm, version)
                 provider_mapping = self.repository.ensure_artifact_publication(
@@ -2197,13 +2339,27 @@ class ExternalAlgorithmPublishService:
                     mapping,
                     provider=PROVIDER_CHANGLIAN,
                 )
-                uploaded_artifacts.append({**stored, **provider_mapping})
+                uploaded = {**stored, **provider_mapping}
+                self._weight_artifact_payload(uploaded)
+                self.artifact_url_probe(str(uploaded.get("public_url") or ""))
+                return uploaded
             except PlatformError as error:
-                self.repository.patch_publication(
-                    str(publication["publication_key"]),
-                    status="FAILED",
-                    last_error=str(getattr(error, "message", "") or error)[:2000],
-                )
+                if (
+                    config_blocking
+                    and str(getattr(error, "code", "") or "")
+                    == "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE"
+                ):
+                    self.repository.patch_publication(
+                        str(publication["publication_key"]),
+                        status="BLOCKED_CONFIG",
+                        last_error=str(getattr(error, "message", "") or error)[:2000],
+                    )
+                else:
+                    self.repository.patch_publication(
+                        str(publication["publication_key"]),
+                        status="FAILED",
+                        last_error=str(getattr(error, "message", "") or error)[:2000],
+                    )
                 raise
             except Exception as error:
                 self.repository.patch_publication(
@@ -2215,63 +2371,130 @@ class ExternalAlgorithmPublishService:
                     "MODEL_ARTIFACT_UPLOAD_FAILED",
                     "算法产物上传失败",
                     str(error),
-                    "请检查“存储配置 → 算法与转换结果存储”的 OSS 连接、凭据和长期访问地址；修复后重新同步。畅联云版本尚未创建。",
+                    "请检查“存储配置 → 算法与转换结果存储”的 OSS 连接、凭据和长期访问地址；修复后重新同步。",
                     502,
                 ) from error
 
+        # Mandatory phase: original must be deliverable before creating a remote
+        # Version, preventing an empty Version while allowing optional conversions
+        # to arrive later.
+        original_item, original_mapping = original_selected[0]
+        original_uploaded = prepare_artifact(
+            original_item,
+            original_mapping,
+            config_blocking=True,
+        )
         self._assert_artifact_publications_reconciled(
             str(publication["publication_key"])
         )
+
         client = self._external_client()
         if hasattr(client, "set_audit_context"):
             client.set_audit_context(
-                project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
+                project_id=project_id,
+                algorithm_id=algorithm_id,
+                version_id=version_id,
                 external_product_id=str(algorithm.get("external_product_id") or ""),
                 external_analysis_id=str(version.get("external_analysis_id") or ""),
             )
-        # Weight fields other than the not-yet-created algoVersionId must be
-        # complete before any remote mutation.  Otherwise a rejected Weight
-        # payload could leave an empty ChangLian Version behind.
+        external_version_id = self._ensure_external_version(
+            publication, algorithm, version, client,
+        )
+
         try:
-            for uploaded in uploaded_artifacts:
-                self._weight_artifact_payload(uploaded)
-                self.artifact_url_probe(str(uploaded.get("public_url") or ""))
-        except PlatformError as error:
+            if hasattr(client, "set_audit_context"):
+                client.set_audit_context(
+                    artifact_id=str(original_uploaded.get("artifact_id") or ""),
+                    external_algo_version_id=external_version_id,
+                )
+            self._sync_weight(original_uploaded, external_version_id, client)
+        except Exception as error:
             self.repository.patch_publication(
                 str(publication["publication_key"]),
                 status="FAILED",
                 last_error=str(getattr(error, "message", "") or error)[:2000],
             )
             raise
-        external_version_id = self._ensure_external_version(publication, algorithm, version, client)
-        failures: list[str] = []
-        synced = 0
-        for uploaded in uploaded_artifacts:
+
+        # The user-visible ChangLian Version is now complete at its minimum
+        # contract: Version + original Weight + durable filePath.
+        publication = self.repository.patch_publication(
+            str(publication["publication_key"]),
+            status="PUBLISHED",
+            last_error="",
+            published_at=utc_now(),
+        )
+
+        conversion_failures: list[str] = []
+        config_blocked_conversions: list[str] = []
+        for item, mapping in conversion_selected:
+            uploaded: Dict[str, Any] | None = None
             try:
+                stored = self._upload_artifact(item, algorithm, version)
+                provider_mapping = self.repository.ensure_artifact_publication(
+                    str(publication["publication_key"]),
+                    stored,
+                    mapping,
+                    provider=PROVIDER_CHANGLIAN,
+                )
+                uploaded = {**stored, **provider_mapping}
+                self._weight_artifact_payload(uploaded)
+                self.artifact_url_probe(str(uploaded.get("public_url") or ""))
                 if hasattr(client, "set_audit_context"):
                     client.set_audit_context(
                         artifact_id=str(uploaded.get("artifact_id") or ""),
                         external_algo_version_id=external_version_id,
                     )
                 self._sync_weight(uploaded, external_version_id, client)
-                synced += 1
+            except PlatformError as error:
+                code = str(getattr(error, "code", "") or "")
+                label = f"{item.get('target') or '-'} / {item.get('file_name') or '-'}"
+                if code == "EXTERNAL_WEIGHT_CONTRACT_INCOMPLETE":
+                    config_blocked_conversions.append(
+                        f"{label}: {getattr(error, 'message', str(error))}"
+                    )
+                    if uploaded and uploaded.get("artifact_id"):
+                        self.repository.patch_artifact_publication(
+                            str(uploaded["artifact_id"]),
+                            provider=PROVIDER_CHANGLIAN,
+                            sync_status="BLOCKED_CONFIG",
+                            last_error=str(getattr(error, "message", "") or error)[:2000],
+                        )
+                else:
+                    conversion_failures.append(
+                        f"{label}: {getattr(error, 'message', str(error))}"
+                    )
             except Exception as error:
-                failures.append(f"{uploaded.get('file_name') or '-'}: {getattr(error, 'message', str(error))}")
-        if failures:
-            status = "PARTIAL" if synced else "FAILED"
-            publication = self.repository.patch_publication(str(publication["publication_key"]), status=status, last_error="；".join(failures)[:2000])
-        else:
-            publication = self.repository.patch_publication(str(publication["publication_key"]), status="PUBLISHED", last_error="", published_at=utc_now())
-        if failures:
-            raise PlatformError(
-                "EXTERNAL_PUBLISH_PARTIAL_FAILURE", "模型发布未全部完成", "；".join(failures),
-                "已成功的版本和权重不会重复创建；请修复失败项后点击“重新同步”。", 502,
+                conversion_failures.append(
+                    f"{item.get('target') or '-'} / {item.get('file_name') or '-'}: {error}"
+                )
+
+        if conversion_failures:
+            publication = self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="PARTIAL",
+                last_error="；".join(conversion_failures)[:2000],
             )
+        else:
+            publication = self.repository.patch_publication(
+                str(publication["publication_key"]),
+                status="PUBLISHED",
+                last_error="",
+                published_at=str(publication.get("published_at") or utc_now()),
+            )
+
+        deferred = [
+            f"{row.get('target') or '-'} / {row.get('file_name') or '-'}: {row.get('detail') or '尚未配置发布映射'}"
+            for row in deferred_conversions
+        ]
+        deferred.extend(config_blocked_conversions)
         return {
             "ok": True,
             "publication": publication,
             "external_algo_version_id": external_version_id,
             "artifacts": self._publication_artifacts(str(publication["publication_key"])),
+            "deferred_conversions": deferred,
+            "conversion_failures": conversion_failures,
         }
 
     def publication_requires_sync(
@@ -2284,17 +2507,33 @@ class ExternalAlgorithmPublishService:
         publication = self._version_publication(
             project_id, algorithm, version, create=False,
         )
-        if not publication or str(publication.get("status") or "").upper() != "PUBLISHED":
+        if not publication:
             return True
+        status = str(publication.get("status") or "").upper()
+        if status == "BLOCKED_CONFIG":
+            return False
+        if status != "PUBLISHED":
+            return True
+
         publication_key = str(publication.get("publication_key") or "")
         stored = {
             str(row.get("artifact_id") or ""): row
             for row in self._publication_artifacts(publication_key)
         }
         for item in self.discover_artifacts(project_id, algorithm, version):
-            mapping_state = self._mapping_state(str(item.get("target") or ""))
+            target = str(item.get("target") or "")
+            is_original = _artifact_target_identity(target) == "training"
+            mapping_state = self._mapping_state(target)
             if mapping_state.get("status") == "ignored":
                 continue
+            if mapping_state.get("status") == "blocked":
+                # Missing optional conversion mappings are deferred, not retried.
+                # If config later supplies a mapping, this branch becomes mapped
+                # and the artifact is automatically appended to the same Version.
+                if is_original:
+                    return True
+                continue
+
             artifact_id = str(item.get("artifact_id") or "")
             current = stored.get(artifact_id)
             if current is None:
@@ -2307,10 +2546,11 @@ class ExternalAlgorithmPublishService:
                     and str(row.get("chip_code") or "").strip().lower()
                     == str(item.get("chip_code") or "").strip().lower()
                 ), None)
-            if mapping_state.get("status") == "blocked":
-                return True
+            if current and str(current.get("sync_status") or "").upper() == "BLOCKED_CONFIG":
+                continue
             if not current or str(current.get("sync_status") or "").upper() != "SYNCED":
                 return True
+
             mapping = mapping_state.get("mapping") or {}
             expected_compute_platform_id = str(mapping.get("compute_platform_id") or "")
             expected_chip_code = _canonical_chip_code(
@@ -2371,14 +2611,6 @@ class ExternalAlgorithmPublishService:
             version_name = str(version.get("version_name") or version_id)
             version_no = str(version.get("version_no") or "").strip()
             analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
-            if not version_no:
-                raise PlatformError(
-                    "EXTERNAL_VERSION_DELETE_AMBIGUOUS",
-                    "回退前缺少完整的新畅联版本身份",
-                    f"versionName={version_name}; versionNo=-",
-                    "远端删除恢复必须同时具备 versionName、versionNo 和已绑定的 analysisId。",
-                    409,
-                )
             try:
                 external_version_id = self._recover_external_version(
                     client,
@@ -2392,7 +2624,7 @@ class ExternalAlgorithmPublishService:
                     "EXTERNAL_VERSION_DELETE_AMBIGUOUS",
                     "无法唯一确认要删除的新畅联算法版本，已停止本地删除",
                     str(error),
-                    "请先在新畅联核对 versionName、versionNo 和 analysisId；平台不会在远端身份不确定时只删除本地记录。",
+                    "请先在新畅联核对 versionName、可用的 versionNo 和 analysisId；versionNo 为空时必须由 versionName + analysisId 唯一确认，平台不会猜测或只删除本地记录。",
                     409,
                 ) from error
 
