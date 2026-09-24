@@ -4876,7 +4876,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div>
       </div>
       <aside class="side-panel ann-side ann420-inspector">
-        <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"></div></section>
+        <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div></section>
         <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象</span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
         <div class="hint-card ann420-shortcuts"><b>快捷操作</b><span>拖拽空白处新建框 · 拖动框移动 · 四角缩放 · 滚轮缩放 · Delete 删除 · Ctrl/⌘ + S 保存</span></div>
       </aside>
@@ -5153,7 +5153,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   function ensureReviewShell(){
     if(document.querySelector('.ai60-review'))return;
-    modal('AI待确认标注 · 审核工作台',`<div class="review427 ai60-review ai66-review">
+    modal('AI标注审核工作台 · 待确认',`<div class="review427 ai60-review ai66-review">
       <header class="ai66-review-head">
         <div><span class="ai66-eyebrow">HUMAN REVIEW</span><h3>AI候选结果审核</h3><p>AI候选结果不会自动写入正式标注；只有人工确认后的结果才会写入正式标注。</p></div>
         <div id="ai60ReviewSummary" class="ai66-review-summary"></div>

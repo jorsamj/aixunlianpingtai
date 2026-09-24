@@ -227,7 +227,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(taskRow).toBeVisible({timeout:10_000});
   await taskRow.getByRole('button',{name:'审核'}).click();
 
-  const review=page.getByRole('dialog',{name:'AI待确认标注 · 审核工作台',exact:true});
+  const review=page.getByRole('dialog',{name:'AI标注审核工作台 · 待确认',exact:true});
   await expect(review).toBeVisible();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
   await expect(review.locator('#ai60PlatformLabelOptions option')).toHaveCount(34);
