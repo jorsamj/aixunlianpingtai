@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#f5f7fb" />
+  <title>登录 · 畅联云算法训练</title>
+  <link rel="stylesheet" href="/static/auth.css?v=422600" />
+</head>
+<body class="auth-page">
+  <main class="login-shell">
+    <section class="login-visual" aria-hidden="true">
+      <div class="login-visual-grid"></div>
+      <div class="login-brand-mark">CL</div>
+      <div class="login-visual-copy">
+        <span class="login-eyebrow">VISION TRAINING STUDIO</span>
+        <h1>畅联云算法训练</h1>
+        <p>算法素材、训练、转换与发布的一体化工作台</p>
+      </div>
+      <div class="login-signal">
+        <i></i><span>畅联云统一身份认证</span>
+      </div>
+    </section>
+
+    <section class="login-panel">
+      <form class="login-card" id="changlianLoginForm" novalidate>
+        <header>
+          <div class="login-mobile-mark">CL</div>
+          <span class="login-kicker">账号登录</span>
+          <h2>登录工作台</h2>
+          <p>使用您的畅联云账号完成身份验证</p>
+        </header>
+
+        <label class="login-field">
+          <span>用户名</span>
+          <input id="loginUsername" name="username" type="text" autocomplete="username" maxlength="128" placeholder="请输入畅联云用户名" required autofocus />
+        </label>
+
+        <label class="login-field">
+          <span>密码</span>
+          <div class="password-field">
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" maxlength="512" placeholder="请输入密码" required />
+            <button id="togglePassword" type="button" aria-label="显示或隐藏密码">显示</button>
+          </div>
+        </label>
+
+        <details class="login-advanced">
+          <summary>验证码信息（如畅联云要求）</summary>
+          <div class="login-advanced-grid">
+            <label class="login-field">
+              <span>验证码</span>
+              <input id="loginCode" name="code" type="text" autocomplete="off" maxlength="128" placeholder="可选" />
+            </label>
+            <label class="login-field">
+              <span>UUID</span>
+              <input id="loginUuid" name="uuid" type="text" autocomplete="off" maxlength="256" placeholder="可选" />
+            </label>
+          </div>
+        </details>
+
+        <div class="login-error hidden" id="loginError" role="alert"></div>
+        <button class="login-submit" id="loginSubmit" type="submit">
+          <span>登录</span>
+          <i aria-hidden="true">→</i>
+        </button>
+
+        <footer>
+          <span class="login-lock">✓</span>
+          <span>账号由畅联云直接校验，本平台不保存您的密码</span>
+        </footer>
+      </form>
+    </section>
+  </main>
+  <script src="/static/login.js?v=422600"></script>
+</body>
+</html>

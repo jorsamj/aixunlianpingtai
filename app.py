@@ -62,6 +62,14 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
+from platform_core.changlian_login_auth import (
+    DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
+    SESSION_COOKIE_NAME,
+    ChangLianLoginClient,
+    ChangLianLoginError,
+    SignedSessionManager,
+    auth_guard_decision,
+)
 from platform_core.labels import (
     active_label_options,
     confirmed_alias_updates,
@@ -231,6 +239,42 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
 
+_CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
+    "MC_CHANGLIAN_LOGIN_BASE_URL",
+    DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
+).strip() or DEFAULT_CHANGLIAN_LOGIN_BASE_URL
+_CHANGLIAN_LOGIN_CLIENT = ChangLianLoginClient(base_url=_CHANGLIAN_LOGIN_BASE_URL)
+_CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(DATA_DIR / "auth")
+
+
+@app.middleware("http")
+async def changlian_login_guard(request: Request, call_next):
+    decision = auth_guard_decision(
+        request.url.path,
+        authorization=request.headers.get("authorization"),
+    )
+    if decision in {"public", "machine"}:
+        return await call_next(request)
+
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is not None:
+        request.state.changlian_user = claims
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        error = PlatformError(
+            code="AUTH_REQUIRED",
+            message="请先登录畅联云账号",
+            detail="当前浏览器会话未登录或登录已过期。",
+            solution="请重新登录后继续操作。",
+            status_code=401,
+        )
+        return JSONResponse(status_code=401, content=error_body(error))
+
+    return RedirectResponse(url="/login?next=%2F", status_code=307)
+
 
 def fast_json_response(content: Any) -> Response:
     """Serialize large JSON payloads without FastAPI's extra recursive copy."""
@@ -297,6 +341,106 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
         status_code=422,
     )
     return JSONResponse(status_code=422, content=error_body(error))
+
+class ChangLianLoginReq(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+    code: Optional[str] = Field(default=None, max_length=128)
+    uuid: Optional[str] = Field(default=None, max_length=256)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def changlian_login_page(request: Request):
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is not None:
+        return RedirectResponse(url="/", status_code=303)
+    return HTMLResponse(
+        (STATIC_DIR / "login.html").read_text(encoding="utf-8"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/api/auth/session")
+def changlian_auth_session(request: Request):
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is None:
+        return {"authenticated": False, "user": None}
+    return {
+        "authenticated": True,
+        "user": {"username": str(claims.get("username") or "")},
+        "expires_at": int(claims.get("exp") or 0),
+    }
+
+
+@app.post("/api/auth/login")
+def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
+    username = str(payload.username or "").strip()
+    if not username:
+        raise PlatformError(
+            code="LOGIN_USERNAME_REQUIRED",
+            message="请输入畅联云用户名",
+            detail="username 不能为空。",
+            solution="请输入畅联云账号后重试。",
+            status_code=422,
+        )
+    try:
+        result = _CHANGLIAN_LOGIN_CLIENT.login(
+            username=username,
+            password=payload.password,
+            code=payload.code,
+            uuid=payload.uuid,
+        )
+    except ChangLianLoginError as error:
+        raise PlatformError(
+            code=error.code,
+            message=error.message,
+            detail=error.detail,
+            solution=error.solution,
+            status_code=error.status_code,
+        ) from error
+
+    token = _CHANGLIAN_AUTH_SESSIONS.issue(username)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "authenticated": True,
+            "user": {"username": username},
+            "provider": "changlian",
+            "upstream": {
+                "code": result.get("code"),
+                "message": result.get("message", ""),
+            },
+        }
+    )
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=_CHANGLIAN_AUTH_SESSIONS.ttl_seconds,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+def changlian_auth_logout():
+    response = JSONResponse({"ok": True, "authenticated": False})
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+    )
+    return response
+
 
 @app.get("/api/system/version")
 def system_version():
