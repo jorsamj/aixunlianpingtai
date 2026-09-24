@@ -1,16 +1,22 @@
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 import requests
 
-from platform_core.changlian_login_auth import (
-    DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
-    ChangLianLoginClient,
-    ChangLianLoginError,
-    SignedSessionManager,
-    auth_guard_decision,
-)
+
+MODULE_PATH = Path(__file__).resolve().parents[2] / "platform_core" / "changlian_login_auth.py"
+SPEC = importlib.util.spec_from_file_location("changlian_login_auth_contract", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+AUTH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(AUTH)
+
+DEFAULT_CHANGLIAN_LOGIN_BASE_URL = AUTH.DEFAULT_CHANGLIAN_LOGIN_BASE_URL
+ChangLianLoginClient = AUTH.ChangLianLoginClient
+ChangLianLoginError = AUTH.ChangLianLoginError
+SignedSessionManager = AUTH.SignedSessionManager
+auth_guard_decision = AUTH.auth_guard_decision
 
 
 class FakeResponse:
