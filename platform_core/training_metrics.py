@@ -51,6 +51,61 @@ def normalize_cache(value):
     raise ValueError("RESOURCE_CACHE_INVALID: cache must be ram, disk, or false")
 
 
+def effective_loader_resources(train_image_count, batch, workers):
+    """Apply the small, stable DataLoader constraints that affect resource truth.
+
+    Ultralytics caps the loader batch by dataset length and caps worker
+    processes by the final number of loader batches, using zero workers for a
+    single-batch loader. Platform CPU/profile limits are applied before this
+    helper; keeping only these final constraints here avoids copying framework
+    internals while ensuring the resource decision is executable.
+    """
+    try:
+        train_images = int(train_image_count)
+        candidate_batch = int(batch)
+        candidate_workers = int(workers)
+    except (TypeError, ValueError) as error:
+        raise ValueError("RESOURCE_DATASET_INVALID: loader resources must be integers") from error
+    if train_images < 1:
+        raise ValueError("RESOURCE_DATASET_INVALID: train_image_count must be >= 1")
+    if candidate_batch < 1:
+        raise ValueError("RESOURCE_REQUEST_INVALID: effective batch must be >= 1")
+    if candidate_workers < 0:
+        raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
+
+    effective_batch = min(candidate_batch, train_images)
+    loader_batches = int(math.ceil(train_images / effective_batch))
+    worker_batch_cap = 0 if loader_batches <= 1 else loader_batches
+    effective_workers = min(candidate_workers, worker_batch_cap)
+    return {
+        "train_image_count": train_images,
+        "candidate_batch": candidate_batch,
+        "effective_batch": effective_batch,
+        "candidate_workers": candidate_workers,
+        "effective_workers": effective_workers,
+        "loader_batches": loader_batches,
+        "worker_batch_cap": worker_batch_cap,
+    }
+
+
+def runtime_loader_resources(trainer):
+    """Read the effective runtime values from the constructed training loader."""
+    loader = getattr(trainer, "train_loader", None)
+    if loader is None:
+        raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: trainer has no train_loader")
+    batch = getattr(loader, "batch_size", None)
+    workers = getattr(loader, "num_workers", None)
+    if batch is None or workers is None:
+        raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: train_loader resource truth is incomplete")
+    args = getattr(trainer, "args", None)
+    cache = normalize_cache(getattr(args, "cache", False))
+    return {
+        "runtime_batch": int(batch),
+        "runtime_workers": int(workers),
+        "runtime_cache": cache,
+    }
+
+
 def resolve_resources(request, context, model, torch):
     """Resolve bounded training resources before model.train.
 
@@ -117,6 +172,12 @@ def resolve_resources(request, context, model, torch):
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
     cpu_budget = max(1, cores // concurrency)
     dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
+    try:
+        train_image_count = int(context.get("train_image_count"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("RESOURCE_DATASET_INVALID: train_image_count is required") from error
+    if train_image_count < 1:
+        raise ValueError("RESOURCE_DATASET_INVALID: train_image_count must be >= 1")
     decoded = context.get("decoded_dataset_bytes")
     decoded = max(0, int(decoded)) if decoded is not None else None
     disk = shutil.disk_usage(Path(request["data"]).parent).free
@@ -148,19 +209,16 @@ def resolve_resources(request, context, model, torch):
         if os.name == "nt":
             cap = min(cap, 4)
         cpu_loader_budget = max(0, cpu_budget - 1)
-        train_image_count = max(1, int(context.get("train_image_count") or 1))
         # Divide host CPU by tasks actually reserved on this host, not by the
         # number of installed GPUs. An idle multi-GPU server should not throttle
-        # a single training job before the other GPUs have work.
-        loader_limit = min(train_image_count, max(1, cpu_loader_budget))
-        workers = min(cap, cpu_loader_budget, loader_limit)
+        # a single training job before the other GPUs have work. The final
+        # DataLoader batch-count cap is applied after GPU batch resolution.
+        workers = min(cap, cpu_loader_budget)
         if request.get("device") == "cpu":
             workers = 0
-        if workers != requested_workers:
-            adjustments.append(f"workers auto-resolved {requested_workers}->{workers}")
         reasons.append(
-            f"Adaptive loader workers profile={profile}; cores={cores}; "
-            f"reservations={concurrency}; cap={cap}; effective={workers}"
+            f"Adaptive loader worker candidate profile={profile}; cores={cores}; "
+            f"reservations={concurrency}; cap={cap}; candidate={workers}"
         )
 
         cache = False
@@ -212,33 +270,61 @@ def resolve_resources(request, context, model, torch):
                 raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds adaptive budget; no CPU fallback")
             batch = int(maximum)
             reasons.append(
-                f"Adaptive batch profile={profile}; gpu_fraction={profile_cfg['gpu_fraction']:.2f}; "
-                f"safe resolved batch={batch}"
+                f"Adaptive batch capacity profile={profile}; gpu_fraction={profile_cfg['gpu_fraction']:.2f}; "
+                f"candidate_batch={batch}"
             )
-            if batch != requested_batch:
-                adjustments.append(f"batch auto-resolved {requested_batch}->{batch}")
         else:
             if fixed + requested_batch * per_image > budget and budget > 0:
                 raise ValueError(
                     f"RESOURCE_MANUAL_INVALID: requested batch={requested_batch} exceeds current GPU budget"
                 )
             batch = requested_batch
-        estimated = fixed + batch * per_image
     elif strategy == "auto":
         batch = 1
-        if requested_batch != 1:
-            adjustments.append(f"batch auto-resolved {requested_batch}->1 for CPU")
-        reasons.append("CPU assignment uses conservative batch=1")
+        reasons.append("CPU assignment uses conservative batch candidate=1")
     else:
         batch = requested_batch
 
-    train_image_count = max(1, int(context.get("train_image_count") or 1))
-    loader_limit = min(
-        train_image_count,
-        max(1, cores // max(1, torch.cuda.device_count())),
-    )
-    if strategy == "manual" and workers > loader_limit:
-        raise ValueError(f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}")
+    candidate_batch = int(batch)
+    candidate_workers = int(workers)
+    loader = effective_loader_resources(train_image_count, candidate_batch, candidate_workers)
+    batch = loader["effective_batch"]
+    workers = loader["effective_workers"]
+
+    if strategy == "manual":
+        if batch != requested_batch:
+            raise ValueError(
+                f"RESOURCE_MANUAL_INVALID: requested batch={requested_batch} exceeds "
+                f"train image count={train_image_count}; runtime batch would be {batch}"
+            )
+        if workers != requested_workers:
+            raise ValueError(
+                f"RESOURCE_MANUAL_INVALID: requested workers={requested_workers} exceeds "
+                f"runtime loader cap={loader['worker_batch_cap']} for "
+                f"{loader['loader_batches']} loader batches"
+            )
+    else:
+        if candidate_batch != batch:
+            adjustments.append(
+                f"batch capped {candidate_batch}->{batch} by train image count {train_image_count}"
+            )
+        if candidate_workers != workers:
+            adjustments.append(
+                f"workers capped {candidate_workers}->{workers} by loader batch count "
+                f"{loader['loader_batches']}"
+            )
+        if batch != requested_batch:
+            adjustments.append(f"batch auto-resolved {requested_batch}->{batch}")
+        if workers != requested_workers:
+            adjustments.append(f"workers auto-resolved {requested_workers}->{workers}")
+        reasons.append(
+            f"DataLoader constraints train_images={train_image_count}; "
+            f"effective_batch={batch}; loader_batches={loader['loader_batches']}; "
+            f"worker_batch_cap={loader['worker_batch_cap']}; effective_workers={workers}"
+        )
+
+    if str(request.get("device", "")).startswith("cuda:"):
+        estimated = fixed + batch * per_image
 
     resolved = dict(
         resource_strategy=strategy,
@@ -252,6 +338,11 @@ def resolve_resources(request, context, model, torch):
         resolved_batch=batch,
         resolved_workers=workers,
         resolved_cache=cache,
+        resource_candidate_batch=candidate_batch,
+        resource_candidate_workers=candidate_workers,
+        train_image_count=train_image_count,
+        loader_batches=loader["loader_batches"],
+        loader_worker_batch_cap=loader["worker_batch_cap"],
         adjustments=adjustments,
         reasons=reasons,
         estimated_gpu_memory_bytes=estimated,
@@ -457,19 +548,28 @@ class TrainingMetrics:
             db.execute("INSERT OR REPLACE INTO summary VALUES (1,?)", (json.dumps(summary),))
 
     def on_train_start(self, trainer):
-        actual = dict(resolved_batch=int(trainer.batch_size),
-                      resolved_workers=int(trainer.train_loader.num_workers),
-                      resolved_cache=normalize_cache(trainer.args.cache))
-        if any(actual[key] != self.resolved[key] for key in actual):
-            raise RuntimeError(f"RESOURCE_RUNTIME_MISMATCH: requested={self.resolved}; actual={actual}")
+        runtime = runtime_loader_resources(trainer)
+        expected = {
+            "runtime_batch": int(self.resolved["resolved_batch"]),
+            "runtime_workers": int(self.resolved["resolved_workers"]),
+            "runtime_cache": self.resolved["resolved_cache"],
+        }
+        if any(runtime[key] != expected[key] for key in expected):
+            raise RuntimeError(
+                f"RESOURCE_RUNTIME_MISMATCH: resolved={expected}; runtime={runtime}"
+            )
         dataset = trainer.train_loader.dataset
-        if actual["resolved_cache"] == "ram" and hasattr(dataset, "ims") and any(image is None for image in dataset.ims):
+        if runtime["runtime_cache"] == "ram" and hasattr(dataset, "ims") and any(image is None for image in dataset.ims):
             raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime declined requested RAM cache")
+        with self.lock:
+            self.resolved.update(runtime)
+        return dict(runtime)
 
     def on_epoch_start(self, trainer):
         self.epoch_started = time.monotonic()
-        actual = int(trainer.batch_size)
-        if actual != self.resolved["resolved_batch"]:
+        loader = getattr(trainer, "train_loader", None)
+        actual = getattr(loader, "batch_size", None)
+        if actual is None or int(actual) != self.resolved["resolved_batch"]:
             raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime changed batch; explicit worker retry required")
 
     def on_epoch_end(self, trainer):

@@ -50,6 +50,7 @@ on:
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_training_metrics_fd.py'
       - 'tests/unit/test_training_realtime_progress.py'
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
@@ -110,6 +111,7 @@ on:
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_training_metrics_fd.py'
       - 'tests/unit/test_training_realtime_progress.py'
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
@@ -181,6 +183,7 @@ jobs:
           tests/unit/test_model_artifacts.py
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_metrics_fd.py
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
@@ -195,6 +198,7 @@ jobs:
           tests/unit/test_remote_training_transport.py
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_metrics_fd.py
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
@@ -261,6 +265,12 @@ jobs:
           grep -Fq 'TRAINING_PRECISION_UNSUPPORTED' platform_core/training_precision.py
           grep -Fq 'normalize_training_precision(payload.precision)' app.py
           grep -Fq 'verify_effective_training_precision(' train_worker.py
+          grep -Fq 'def effective_loader_resources(train_image_count, batch, workers):' platform_core/training_metrics.py
+          grep -Fq 'batch capped' platform_core/training_metrics.py
+          grep -Fq 'worker_batch_cap' platform_core/training_metrics.py
+          grep -Fq 'runtime_loader_resources(trainer)' platform_core/training_metrics.py
+          grep -Fq 'RESOURCE_RUNTIME_MISMATCH' platform_core/training_metrics.py
+          grep -Fq 'test_resource_runtime_mismatch_guard_still_fails_closed' tests/unit/test_training_metrics_fd.py
           grep -Fq 'ultralytics==8.4.127' requirements.txt
           python - <<'PY'
           from pathlib import Path

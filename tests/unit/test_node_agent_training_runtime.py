@@ -1027,3 +1027,29 @@ def test_agent_rejects_dataset_revision_mismatch(tmp_path, monkeypatch):
             raise AgentTrainingRuntimeError(
                 "portable training bundle dataset revision changed"
             )
+
+
+def test_agent_runtime_result_preserves_requested_resolved_and_effective_resources():
+    runner = object.__new__(AgentTrainingRunner)
+    result = runner._runtime_result({
+        "training_outcome": "completed",
+        "requested_train_params": {"batch": 4, "workers": 0, "cache": False},
+        "resolved_resources": {"resolved_batch": 11, "resolved_workers": 0, "resolved_cache": "ram"},
+        "runtime_resources": {"runtime_batch": 11, "runtime_workers": 0, "runtime_cache": "ram"},
+        "actual_train_params": {"batch": 11, "workers": 0, "cache": "ram"},
+    })
+
+    assert result["requested_train_params"]["batch"] == 4
+    assert result["resolved_resources"]["resolved_batch"] == 11
+    assert result["resolved_resources"]["resolved_workers"] == 0
+    assert result["runtime_resources"]["runtime_batch"] == 11
+    assert result["runtime_resources"]["runtime_workers"] == 0
+    assert result["actual_train_params"]["batch"] == 11
+
+
+def test_agent_failure_source_prefers_worker_job_error_over_secondary_message():
+    source = Path("platform_core/node_agent_training_runtime.py").read_text(encoding="utf-8")
+    error_read = source.index('error = str(job.get("error") or "").strip()')
+    message_read = source.index('error = str(job.get("message") or "").strip()', error_read)
+    assert error_read >= 0
+    assert message_read > error_read

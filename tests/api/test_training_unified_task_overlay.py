@@ -353,3 +353,41 @@ def test_training_job_detail_returns_enriched_truth_without_rewriting_worker_fil
     assert body["message"] == "训练完成，模型产物校验通过"
     assert app_module.read_json(job_dir / "job.json", {}) == original
 
+
+
+def test_training_job_detail_failed_overlay_preserves_worker_root_cause_and_exposes_task_error(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = repository.create(TaskRecord.new(
+        "train-root-cause", "project-1", TaskKind.TRAINING, "payload.json",
+        "training:cpu", required_capabilities=("training.ultralytics",),
+    ))
+    lease = repository.claim_next(
+        "training-worker",
+        [TaskKind.TRAINING],
+        {"training.ultralytics"},
+    )
+    assert lease is not None
+    repository.finish(
+        task.task_id,
+        lease.lease_token,
+        app_module.TaskStatus.FAILED,
+        error=(
+            "RuntimeError: training process exited with returncode=1; "
+            "completion_handshake=job status is not done"
+        ),
+    )
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": task.task_id,
+        "task_id": task.task_id,
+        "status": "failed",
+        "error": "RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0",
+        "message": "训练失败：RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0",
+    })
+
+    assert job["error"].startswith("RESOURCE_RUNTIME_MISMATCH")
+    assert job["message"].startswith("训练失败：RESOURCE_RUNTIME_MISMATCH")
+    assert "completion_handshake=job status is not done" in job["task_error"]

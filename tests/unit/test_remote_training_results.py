@@ -39,6 +39,10 @@ def _job(project: Path):
             "test_result": {"status": "passed"},
         },
         "actual_device": "cuda:0",
+        "requested_train_params": {"batch": 4, "workers": 0, "cache": False},
+        "resolved_resources": {"resolved_batch": 11, "resolved_workers": 0, "resolved_cache": "ram"},
+        "runtime_resources": {"runtime_batch": 11, "runtime_workers": 0, "runtime_cache": "ram"},
+        "actual_train_params": {"batch": 11, "workers": 0, "cache": "ram"},
         "finished_at": "2026-09-18T02:00:00+00:00",
     }
 
@@ -71,6 +75,12 @@ def test_training_result_archive_round_trip_verifies_identity_and_models(tmp_pat
     assert verified.manifest["training_outcome"] == "completed"
     assert verified.manifest["completion"]["runtime_stop_policy"] == "target_only"
     assert verified.manifest["completion"]["quality_gate"]["runtime_stop_policy"] == "target_only"
+    assert verified.manifest["completion"]["requested_train_params"]["batch"] == 4
+    assert verified.manifest["completion"]["resolved_resources"]["resolved_batch"] == 11
+    assert verified.manifest["completion"]["resolved_resources"]["resolved_workers"] == 0
+    assert verified.manifest["completion"]["runtime_resources"]["runtime_batch"] == 11
+    assert verified.manifest["completion"]["runtime_resources"]["runtime_workers"] == 0
+    assert verified.manifest["completion"]["actual_train_params"]["batch"] == 11
     assert verified.manifest["training_report"]["metrics"]["metrics/mAP50(B)"] == 0.75
     assert {row["role"] for row in verified.models} == {"best", "last"}
     assert all((verified.root / row["ref"]).is_file() for row in verified.models)

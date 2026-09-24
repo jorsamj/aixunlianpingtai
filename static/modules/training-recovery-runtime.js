@@ -105,13 +105,14 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const requestedEpochs = numberOrNull(recovery?.requested_epochs) ?? numberOrNull(progress.total_epochs) ?? numberOrNull(job.total_epochs) ?? numberOrNull(job.epochs);
   const recoverable = flags.failed && canRecoverTrainingTask(recovery);
   const errors = flags.failed ? uniqueText([
-    recovery?.failure_reason,
     job?.error,
     job?.failure_reason,
+    job?.runtime_error,
+    job?.process_error,
+    job?.task_error,
+    recovery?.failure_reason,
     report?.validation_error,
     testResult?.error,
-    job?.process_error,
-    job?.runtime_error,
     job?.ai_intervention_last?.action === 'error' ? job?.ai_intervention_last?.reason : '',
     job?.version_archive_error,
     job?.message,
@@ -126,8 +127,10 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     report?.test_note,
   ]);
   const resolved = job?.resolved_resources && typeof job.resolved_resources === 'object' ? job.resolved_resources : {};
+  const runtime = job?.runtime_resources && typeof job.runtime_resources === 'object' ? job.runtime_resources : {};
   const actual = job?.actual_train_params && typeof job.actual_train_params === 'object' ? job.actual_train_params : {};
   const requested = job?.requested_train_params && typeof job.requested_train_params === 'object' ? job.requested_train_params : {};
+  const resourceStrategy = String(resolved.resource_strategy || requested.resource_strategy || job?.resource_strategy || '').trim().toLowerCase();
   const selectedGpu = job?.selected_gpu && typeof job.selected_gpu === 'object'
     ? job.selected_gpu
     : (resolved?.selected_gpu && typeof resolved.selected_gpu === 'object' ? resolved.selected_gpu : {});
@@ -186,9 +189,20 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     resourceProfileLabel: resourceProfileLabel(resourceProfile),
     gpuPolicy: String(actual.gpu_policy || resolved.gpu_policy || job?.gpu_policy || requested.gpu_policy || '').trim(),
     precision: String(actual.effective_precision || actual.precision || resolved.precision || job?.precision || requested.precision || '').trim(),
-    batch: actual.batch ?? resolved.resolved_batch ?? job?.batch ?? requested.batch ?? null,
-    workers: actual.workers ?? resolved.resolved_workers ?? job?.workers ?? requested.workers ?? null,
-    cache: actual.cache ?? resolved.resolved_cache ?? job?.cache ?? requested.cache ?? null,
+    requestedBatch: requested.batch ?? job?.batch ?? null,
+    resolvedBatch: resolved.resolved_batch ?? null,
+    runtimeBatch: runtime.runtime_batch ?? actual.batch ?? null,
+    requestedWorkers: requested.workers ?? job?.workers ?? null,
+    requestedWorkersText: resourceStrategy === 'auto' ? '自动' : (requested.workers ?? job?.workers ?? null),
+    resolvedWorkers: resolved.resolved_workers ?? null,
+    runtimeWorkers: runtime.runtime_workers ?? actual.workers ?? null,
+    requestedCache: requested.cache ?? job?.cache ?? null,
+    requestedCacheText: (requested.cache ?? job?.cache ?? null) === false ? '关闭' : (requested.cache ?? job?.cache ?? null),
+    resolvedCache: resolved.resolved_cache ?? null,
+    runtimeCache: runtime.runtime_cache ?? actual.cache ?? null,
+    batch: runtime.runtime_batch ?? actual.batch ?? resolved.resolved_batch ?? job?.batch ?? requested.batch ?? null,
+    workers: runtime.runtime_workers ?? actual.workers ?? resolved.resolved_workers ?? job?.workers ?? requested.workers ?? null,
+    cache: runtime.runtime_cache ?? actual.cache ?? resolved.resolved_cache ?? job?.cache ?? requested.cache ?? null,
     model: String(actual.model || job?.model || requested.model || '').split(/[\\/]/).pop(),
     imgsz: actual.imgsz ?? job?.imgsz ?? requested.imgsz ?? null,
     optimizer: String(actual.optimizer || job?.optimizer || requested.optimizer || '').trim(),
@@ -263,7 +277,7 @@ function detailHtml(job, recovery, log = '') {
             <div><small>已用 / 剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
             <div><small>实际设备</small><b>${esc(model.actualDevice || model.assignedDevice || model.requestedDevice || '-')}</b><span>${esc(model.gpuName || model.workerId || '-')}</span></div>
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
-            <div><small>Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
+            <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
           </section>
           ${statusHtml}${reasonHtml}${warningHtml}
           <div class="training-recovery-columns">
@@ -273,6 +287,9 @@ function detailHtml(job, recovery, log = '') {
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
               <div class="training-recovery-kv"><span>Optimizer / lr0</span><b>${esc(`${model.optimizer || '-'} / ${model.lr0 ?? '-'}`)}</b></div>
               <div class="training-recovery-kv"><span>最大训练时长</span><b>${esc(model.timeLimit ? `${model.timeLimit} h` : '不限')}</b></div>
+              <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc(`Batch ${model.requestedBatch ?? '-'} · Workers ${model.requestedWorkersText ?? '-'} · Cache ${model.requestedCacheText ?? '-'}`)}</b></div>
+              <div class="training-recovery-kv"><span>自动资源决议</span><b>${esc(`Batch ${model.resolvedBatch ?? '-'} · Workers ${model.resolvedWorkers ?? '-'} · Cache ${model.resolvedCache ?? '-'}`)}</b></div>
+              <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc(`Batch ${model.runtimeBatch ?? '-'} · Workers ${model.runtimeWorkers ?? '-'} · Cache ${model.runtimeCache ?? '-'}`)}</b></div>
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`)}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
@@ -611,7 +628,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-422507',
+    build: 'training-recovery-runtime-422508',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

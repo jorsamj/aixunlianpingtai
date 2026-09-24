@@ -865,6 +865,8 @@ def enrich_job_runtime(
         return job
     repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
+    worker_error = str(job.get("error") or "").strip()
+    worker_message = str(job.get("message") or "").strip()
     durable = repository.get(str(job_id)) if job_id else None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
@@ -930,8 +932,13 @@ def enrich_job_runtime(
                 TaskStatus.BLOCKED_BY_ENVIRONMENT,
                 TaskStatus.BLOCKED_BY_HARDWARE,
             }:
-                job["error"] = durable.error
-                job["message"] = durable.error
+                # Durable task error is lifecycle evidence. Preserve the
+                # worker-owned job error/message as the root cause when they
+                # exist instead of overwriting them with completion-handshake
+                # or scheduler wrappers.
+                job["task_error"] = durable.error
+                job["error"] = worker_error or durable.error
+                job["message"] = worker_message or worker_error or durable.error
             elif durable.status is TaskStatus.PARTIAL_SUCCESS:
                 # PARTIAL_SUCCESS is a completed training lifecycle with a
                 # non-fatal post-training/evaluation warning. Never project it

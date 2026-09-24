@@ -173,6 +173,9 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert task is not None and task.status is TaskStatus.SUCCEEDED, task.error if task else "missing task"
     worker_argv = observed_argv["value"]
     assert worker_argv[worker_argv.index("--gpu-policy") + 1] == "auto"
+    resource_context = artifacts.read_json("task-one", "resource-context.json")
+    assert resource_context["train_image_count"] == 4
+    assert resource_context["decoded_dataset_bytes"] == 7 * (64 ** 2) * 3
     result = artifacts.read_json("task-one", task.result_ref)
     assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
     snapshot = artifacts.read_json("task-one", "snapshot.json")

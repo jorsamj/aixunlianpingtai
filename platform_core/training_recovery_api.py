@@ -56,7 +56,7 @@ def _checkpoint_state(failure: Mapping[str, Any], *, verify_hash: bool = False) 
 
 
 def _failure_reason(task, failure: Mapping[str, Any]) -> str:
-    for key in ("recovery_error", "completion_error", "last_job_message"):
+    for key in ("last_job_message", "recovery_error", "completion_error"):
         value = str(failure.get(key) or "").strip()
         if value:
             return value

@@ -156,3 +156,22 @@ def test_recovery_action_requeues_same_task_after_checkpoint_hash_verification(t
     assert retried.task_id == task.task_id
     assert retried.status is TaskStatus.QUEUED
     assert retried.retry_of == task.task_id
+
+
+def test_recovery_reason_prefers_worker_root_cause_over_completion_handshake(tmp_path):
+    task = failed_training_task()
+    checkpoint = tmp_path / "best.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    failure = recovery_failure(
+        task,
+        checkpoint,
+        digest,
+        last_job_message="训练失败：RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0",
+        completion_error="job status is not done",
+    )
+
+    truth = training_recovery_truth(task, FakeArtifacts(failure))
+
+    assert truth["failure_reason"].startswith("训练失败：RESOURCE_RUNTIME_MISMATCH")
+    assert truth["failure_reason"] != "job status is not done"

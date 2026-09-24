@@ -936,6 +936,10 @@ class AgentTrainingRunner:
             "requested_device",
             "assigned_device",
             "actual_device",
+            "requested_train_params",
+            "resolved_resources",
+            "runtime_resources",
+            "actual_train_params",
             "progress_percent",
             "finished_at",
         )
@@ -1148,7 +1152,9 @@ class AgentTrainingRunner:
                     "training worker produced no durable job result"
                 )
             if launched.process.returncode != 0:
-                error = str(job.get("message") or "").strip()
+                error = str(job.get("error") or "").strip()
+                if not error:
+                    error = str(job.get("message") or "").strip()
                 if not error:
                     try:
                         error = runtime_log.read_text(

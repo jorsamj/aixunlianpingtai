@@ -1024,17 +1024,21 @@ def main():
                 publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)
 
             def verify_runtime(trainer):
-                telemetry.on_train_start(trainer)
+                runtime_resources = telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
                 effective_precision = verify_effective_training_precision(
                     precision, getattr(trainer, "amp", False)
                 )
+                runtime_args["batch"] = runtime_resources["runtime_batch"]
+                runtime_args["workers"] = runtime_resources["runtime_workers"]
+                runtime_args["cache"] = runtime_resources["runtime_cache"]
                 runtime_args["amp"] = bool(getattr(trainer, "amp", False))
                 runtime_args["effective_precision"] = effective_precision
                 evidence.update(
                     runtime_device=str(trainer.device),
                     effective_precision=effective_precision,
+                    runtime_resources=dict(runtime_resources),
                     effective_args=dict(runtime_args),
                 )
                 publish_startup_stage(
@@ -1044,6 +1048,8 @@ def main():
                     28,
                     actual_device=assigned,
                     device_evidence=evidence,
+                    resolved_resources=resolved,
+                    runtime_resources=runtime_resources,
                     actual_train_params=runtime_args,
                 )
 

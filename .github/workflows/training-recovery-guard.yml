@@ -86,7 +86,7 @@ jobs:
           grep -Fq 'RECOVERY_ACTION_REVALIDATE = "revalidate_checkpoint"' platform_core/training_recovery_api.py
           grep -Fq 'recoveryRuntime?.hydrateJobs' static/modules/training-task-runtime.js
           grep -Fq 'installTrainingRecoveryRuntime' static/main.mjs
-          grep -Fq "build: 'training-recovery-runtime-422507'" static/modules/training-recovery-runtime.js
+          grep -Fq "build: 'training-recovery-runtime-422508'" static/modules/training-recovery-runtime.js
           grep -Fq 'Training task detail: single visual owner' static/styles.css
           if grep -Fq 'function ensureStyles' static/modules/training-recovery-runtime.js; then echo 'Training detail CSS must stay in the global stylesheet, not a runtime style owner' >&2; exit 1; fi
           grep -Fq "window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});" static/modules/training-recovery-runtime.js
@@ -98,7 +98,11 @@ jobs:
           grep -Fq 'oldDialog.replaceChildren(...Array.from(nextDialog.childNodes))' static/modules/training-recovery-runtime.js
           grep -Fq "data-identity-probe', 'overlay-stable'" tests/browser/training-recovery.spec.mjs
           grep -Fq 'training_job_detail_never_archives_versions_from_read_poll' tests/api/test_training_unified_task_overlay.py
-          grep -Fq "training-recovery-runtime.js?v=422577" static/main.mjs
+          grep -Fq 'test_training_job_detail_failed_overlay_preserves_worker_root_cause_and_exposes_task_error' tests/api/test_training_unified_task_overlay.py
+          grep -Fq 'job["task_error"] = durable.error' app.py
+          grep -Fq 'old_resource_context = context.artifacts.read_json(' platform_core/training_recovery_tasks.py
+          grep -Fq '"resource-context.json"' platform_core/training_recovery_tasks.py
+          grep -Fq "training-recovery-runtime.js?v=422578" static/main.mjs
           grep -Eq 'main\.mjs\?v=[0-9]+(\.[0-9]+)*' static/index.html
           grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
           if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then

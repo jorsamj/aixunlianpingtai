@@ -273,3 +273,79 @@ def test_manual_keeps_exact_values(monkeypatch):
     assert result["resolved_batch"] == 16
     assert result["resolved_workers"] == 4
     assert result["resolved_cache"] is False
+
+
+def test_auto_tiny_dataset_caps_batch_and_workers_to_executable_loader_truth(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(batch=4, workers=0, cache=False, resource_profile="balanced"),
+        _context(train_image_count=11, decoded_dataset_bytes=2 * GIB),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert result["resource_candidate_batch"] > 11
+    assert result["resolved_batch"] == 11
+    assert result["loader_batches"] == 1
+    assert result["resolved_workers"] == 0
+    assert any("batch capped" in item and "->11" in item for item in result["adjustments"])
+    assert any("workers capped" in item and "->0" in item for item in result["adjustments"])
+    assert any("train_images=11" in item and "loader_batches=1" in item for item in result["reasons"])
+
+
+def test_auto_single_image_dataset_is_one_batch_with_zero_workers(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(batch=4, workers=0, cache=False),
+        _context(train_image_count=1, decoded_dataset_bytes=64 * 1024 ** 2),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert result["resolved_batch"] == 1
+    assert result["loader_batches"] == 1
+    assert result["resolved_workers"] == 0
+
+
+def test_effective_loader_resources_caps_workers_by_real_batch_count():
+    resolved = training_metrics.effective_loader_resources(
+        train_image_count=100,
+        batch=50,
+        workers=8,
+    )
+
+    assert resolved["effective_batch"] == 50
+    assert resolved["loader_batches"] == 2
+    assert resolved["worker_batch_cap"] == 2
+    assert resolved["effective_workers"] == 2
+
+
+def test_effective_loader_resources_preserves_large_dataset_parallelism():
+    resolved = training_metrics.effective_loader_resources(
+        train_image_count=10_000,
+        batch=128,
+        workers=8,
+    )
+
+    assert resolved["effective_batch"] == 128
+    assert resolved["loader_batches"] == 79
+    assert resolved["effective_workers"] == 8
+
+
+def test_manual_rejects_values_that_ultralytics_loader_would_change(monkeypatch):
+    _patch_host(monkeypatch)
+    with pytest.raises(ValueError, match="requested batch=16 exceeds train image count=11"):
+        training_metrics.resolve_resources(
+            _request(resource_strategy="manual", batch=16, workers=0, cache=False),
+            _context(train_image_count=11),
+            _Model(),
+            _Torch(_Cuda()),
+        )
+
+    with pytest.raises(ValueError, match="requested workers=4 exceeds runtime loader cap=2"):
+        training_metrics.resolve_resources(
+            _request(resource_strategy="manual", batch=50, workers=4, cache=False),
+            _context(train_image_count=100),
+            _Model(),
+            _Torch(_Cuda()),
+        )

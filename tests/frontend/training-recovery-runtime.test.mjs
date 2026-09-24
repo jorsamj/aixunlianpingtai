@@ -399,3 +399,56 @@ test('detail model exposes runtime resource telemetry from backend metrics truth
   assert.equal(model.diagnosticCode, 'healthy_utilization');
 });
 
+
+
+test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-mismatch',
+    status: 'failed',
+    task_status: 'FAILED',
+    error: 'RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0',
+    message: 'training process exited with returncode=1',
+    requested_train_params: {
+      batch: 4,
+      workers: 0,
+      cache: false,
+    },
+    resolved_resources: {
+      resource_strategy: 'auto',
+      resolved_batch: 11,
+      resolved_workers: 0,
+      resolved_cache: 'ram',
+      adjustments: ['batch capped 100->11 by train image count 11'],
+    },
+    runtime_resources: {
+      runtime_batch: 11,
+      runtime_workers: 0,
+      runtime_cache: 'ram',
+    },
+    actual_train_params: {
+      batch: 11,
+      workers: 0,
+      cache: 'ram',
+    },
+  }, {
+    failure_reason: 'training process exited with returncode=1; completion_handshake=job status is not done',
+    process_returncode: 1,
+    checkpoint_available: false,
+    recoverable: false,
+  });
+
+  assert.equal(model.errors[0], 'RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0');
+  assert.match(model.errors[1], /completion_handshake=job status is not done/);
+  assert.equal(model.requestedBatch, 4);
+  assert.equal(model.requestedWorkers, 0);
+  assert.equal(model.requestedWorkersText, '自动');
+  assert.equal(model.requestedCache, false);
+  assert.equal(model.requestedCacheText, '关闭');
+  assert.equal(model.resolvedBatch, 11);
+  assert.equal(model.resolvedWorkers, 0);
+  assert.equal(model.resolvedCache, 'ram');
+  assert.equal(model.runtimeBatch, 11);
+  assert.equal(model.runtimeWorkers, 0);
+  assert.equal(model.runtimeCache, 'ram');
+  assert.equal(model.batch, 11);
+});
