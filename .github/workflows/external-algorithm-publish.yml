@@ -157,7 +157,8 @@ jobs:
           grep -q "ORIGINAL_MODEL_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
           grep -q "test_publish_original_and_mapped_conversion_when_other_conversion_lacks_mapping" tests/unit/test_external_algorithm_publish.py
           grep -q "test_original_weight_allows_empty_chip_code" tests/unit/test_external_algorithm_publish.py
-          grep -q "test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_save_reactivates" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_missing_chip_is_deferred_until_new_chip_bound_artifact_arrives" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'chip_code = _canonical_chip_code(artifact.get("chip_code") or "")' platform_core/external_algorithm_publish.py
           grep -q "test_publish_allows_empty_version_no_and_omits_it_from_remote_payload" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique" tests/unit/test_external_algorithm_publish.py

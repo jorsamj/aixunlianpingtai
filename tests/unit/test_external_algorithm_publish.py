@@ -1892,41 +1892,51 @@ def test_original_weight_allows_empty_chip_code(tmp_path: Path):
     assert "chipCode" not in FakePublishingClient.last_weight_payload
 
 
-def test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_save_reactivates(tmp_path: Path):
+def test_rockchip_missing_chip_is_deferred_until_new_chip_bound_artifact_arrives(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
     _seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path, target="rockchip", chip="", content=b"rk-without-chip")
     service = _service(tmp_path, memory)
-    service.save_config(ExternalPublishConfigPayload(
-        target_mappings={
-            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
-            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
-        },
-    ))
-
-    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
-
-    assert first["conversion_failures"] == [], first["conversion_failures"]
-    assert first["publication"]["status"] == "PUBLISHED", first
-    assert FakePublishingClient.version_creates == 1
-    assert FakePublishingClient.weight_creates == 1
-    assert first["deferred_conversions"]
-    assert "RKNN 产物缺少芯片身份" in first["deferred_conversions"][0]
-    assert all(row["target"] != "rockchip" for row in first["artifacts"])
-    algorithm, version = _version(tmp_path)
-    assert service.publication_requires_sync("p1", algorithm, version, first["publication"]) is False
-
+    # Even a configured provider chip must not invent canonical identity for a
+    # conversion artifact whose own job metadata omitted chip/soc_version.
     service.save_config(ExternalPublishConfigPayload(
         target_mappings={
             "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
             "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert first["conversion_failures"] == []
+    assert first["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    assert first["deferred_conversions"]
+    assert "RKNN 产物缺少芯片身份" in first["deferred_conversions"][0]
+    assert all(row["target"] != "rockchip" for row in first["artifacts"])
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync(
+        "p1", algorithm, version, first["publication"],
+    ) is False
+
+    # A new, correctly identified conversion is a new artifact identity and
+    # automatically becomes appendable to the already-published remote Version.
+    _seed_conversion(
+        tmp_path,
+        job_id="convert-rk3568-fixed",
+        target="rockchip",
+        chip="rk3568",
+        content=b"rk-with-chip",
+    )
+    algorithm, version = _version(tmp_path)
     publication = service.repository.publication("p1", "a1", "v1")
     assert publication["status"] == "PUBLISHED"
-    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
+    assert service.publication_requires_sync(
+        "p1", algorithm, version, publication,
+    ) is True
 
     second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
     assert second["publication"]["status"] == "PUBLISHED"

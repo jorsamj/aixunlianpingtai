@@ -1507,9 +1507,10 @@ class ExternalAlgorithmPublishService:
         state = self._mapping_state(target)
         mapping = state.get("mapping")
         if mapping and target == "rockchip":
-            chip_code = _canonical_chip_code(
-                artifact.get("chip_code") or mapping.get("chip_code") or ""
-            )
+            # The canonical RKNN artifact identity must come from the conversion
+            # result itself. A provider mapping may translate the remote code,
+            # but must never invent the chip identity of a local .rknn file.
+            chip_code = _canonical_chip_code(artifact.get("chip_code") or "")
             if not chip_code:
                 return {
                     "status": "blocked",
@@ -1518,7 +1519,7 @@ class ExternalAlgorithmPublishService:
                     "detail": "RKNN 产物缺少芯片身份",
                     "code": "MODEL_ARTIFACT_CHIP_REQUIRED",
                     "message": "RKNN 产物缺少芯片身份",
-                    "solution": "请为该 RKNN 转换结果保留真实芯片型号，或在 rockchip 厂商映射中配置 RK3568/RK3576。",
+                    "solution": "请重新生成或修复该 RKNN 转换结果，确保转换任务自身保留真实 chip/soc_version（RK3568/RK3576）；厂商映射不能替代产物真实芯片身份。",
                     "status_code": 409,
                 }
         return state
