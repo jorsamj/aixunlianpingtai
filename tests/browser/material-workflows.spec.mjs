@@ -81,6 +81,10 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
 
   const dialog = page.getByRole('dialog', {name: '图片标注'});
   await expect(dialog).toBeVisible();
+  await expect(page.locator('.annotation-workbench-modal')).toBeVisible();
+  await expect(dialog.locator('#annLabels')).toBeVisible();
+  await expect(dialog.locator('#annBoxes')).toBeVisible();
+  await expect(dialog.locator('.ann420-toolbar-primary')).toBeVisible();
   const workbenchOutcome = await Promise.race([
     expect(dialog.locator('#annSaveState')).toHaveText('已保存').then(() => 'ready'),
     expect(page.getByText('打开标注失败：LABEL_SCHEMA_CACHE_TTL_MS is not defined')).toBeVisible().then(() => 'ttl-error'),
@@ -161,7 +165,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await page.getByRole('button', {name: /已处理/}).click();
   const reloadedCard = page.locator('.data412-card', {hasText: 'annotation-flow.bmp'});
   await expect(reloadedCard.locator('.data412-box')).toHaveCount(1);
-  await expect(reloadedCard.getByText(/已标注 · 1框/)).toBeVisible();
+  await expect(reloadedCard.getByText(/人工标注 · 1框/)).toBeVisible();
 });
 
 test('annotation paints stale cached labels before authoritative label revalidation completes', async ({page, request}) => {

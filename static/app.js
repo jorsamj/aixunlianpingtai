@@ -4864,7 +4864,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
           <span class="ann414-state ann420-file-state"><span id="ann420Filename"></span><b id="annSaveState">已保存</b></span>
           <div class="ann-zoom ann420-zoom">
             <button class="btn mini" title="缩小" onclick="zoomAnn(-0.1)">−</button><span id="zoomText">100%</span><button class="btn mini" title="放大" onclick="zoomAnn(0.1)">＋</button>
-            <button class="btn mini" onclick="resetAnnotationZoom420()">1:1</button><button class="btn mini" onclick="fitAnnotation420()">适应</button>
+            <button class="btn mini" onclick="resetAnnotationZoom420()">100%</button><button class="btn mini" onclick="fitAnnotation420()">适应窗口</button>
           </div>
         </div>
         <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div>
