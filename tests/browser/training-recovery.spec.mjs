@@ -7,6 +7,10 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
@@ -146,6 +150,10 @@ test('successful training detail never presents completion text as an error', as
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
 
