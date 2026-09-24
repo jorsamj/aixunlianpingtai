@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -534,7 +535,7 @@ def test_readiness_and_training_guard_reject_stale_project_master_data(tmp_path:
     assert getattr(error.value, "status_code", 409) == 409
 
 
-def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
+def test_auto_sync_due_uses_fixed_china_time_slots_and_manual_sync_does_not_consume_them(tmp_path: Path):
     memory = MemorySecretStore()
     service = ExternalAlgorithmPlatformService(
         data_dir=tmp_path,
@@ -551,14 +552,46 @@ def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
         access_secret="secret",
         endpoints=EndpointPayload(),
     ))
-    assert service.auto_sync_due() is True
+
+    before_first = datetime(2026, 9, 24, 23, 59, tzinfo=timezone.utc)
+    first_slot = datetime(2026, 9, 25, 0, 0, tzinfo=timezone.utc)
+    assert service.auto_sync_due(now=before_first) is False
+    assert service.auto_sync_due(now=first_slot) is True
+
     service.repository.append_history({
-        "id": "recent",
+        "id": "manual-after-eight",
         "sync_type": "manual",
         "status": "success",
-        "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z"),
+        "finished_at": "2026-09-25T00:05:00Z",
     })
-    assert service.auto_sync_due() is False
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 0, 6, tzinfo=timezone.utc)) is True
+
+    service.repository.append_history({
+        "id": "auto-eight",
+        "sync_type": "auto",
+        "status": "success",
+        "finished_at": "2026-09-25T00:07:00Z",
+    })
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 3, 59, tzinfo=timezone.utc)) is False
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 4, 0, tzinfo=timezone.utc)) is True
+
+    service.repository.append_history({
+        "id": "auto-noon-failed",
+        "sync_type": "auto",
+        "status": "failed",
+        "finished_at": "2026-09-25T04:01:00Z",
+    })
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc)) is False
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc)) is True
+
+    service.repository.append_history({
+        "id": "auto-three",
+        "sync_type": "auto",
+        "status": "success",
+        "finished_at": "2026-09-25T07:02:00Z",
+    })
+    assert service.auto_sync_due(now=datetime(2026, 9, 25, 23, 59, tzinfo=timezone.utc)) is False
+    assert service.auto_sync_due(now=datetime(2026, 9, 26, 0, 0, tzinfo=timezone.utc)) is True
 
 
 def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
@@ -584,7 +617,9 @@ def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
     assert public["mode"] == "external"
     assert public["auto_sync_enabled"] is True
     assert public["auto_publish_enabled"] is True
-    assert public["auto_sync_interval_seconds"] == 60
+    assert public["auto_sync_interval_seconds"] == 600
+    assert public["auto_sync_schedule_local_times"] == ["08:00", "12:00", "15:00"]
+    assert public["auto_sync_timezone"] == "Asia/Shanghai"
 
 def test_external_training_analysis_requires_choice_for_multiple_methods():
     import pytest

@@ -214,6 +214,10 @@ export function normalizeExternalPlatformConfig(body = {}) {
     baseUrl: config.base_url || '',
     autoSyncEnabled: Boolean(config.auto_sync_enabled),
     autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 60),
+    autoSyncScheduleLocalTimes: Array.isArray(config.auto_sync_schedule_local_times)
+      ? config.auto_sync_schedule_local_times.map(String)
+      : ['08:00', '12:00', '15:00'],
+    autoSyncTimezone: config.auto_sync_timezone || 'Asia/Shanghai',
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
     authMode: config.auth_mode || 'test_sign_bridge',
     businessAuthMode: config.business_auth_mode || 'authorization_bearer',
@@ -744,14 +748,14 @@ export function installExternalAlgorithmPlatformRuntime({
             <aside class="external-config-aside">
               <div><span>连接方式</span><b>${escapeHtml(sourceStatus)}</b></div>
               <div><span>凭据状态</span><b>${escapeHtml(credential.configured ? '已安全保存' : '未配置')}</b></div>
-              <div><span>自动同步</span><b>每 60 秒</b></div>
+              <div><span>自动同步</span><b>08:00 / 12:00 / 15:00</b></div>
               <div><span>训练成果发布</span><b>后台自动执行</b></div>
             </aside>
           </div>
           <details data-external-sync-settings="1" class="external-sync-details">
             <summary>同步策略说明</summary>
             <div class="external-sync-policy">
-              <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台固定每 60 秒主动拉取一次主数据。</span></div>
+              <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据。</span></div>
               <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
             </div>
           </details>
@@ -902,7 +906,6 @@ export function installExternalAlgorithmPlatformRuntime({
       provider: document.getElementById('externalProvider')?.value || 'changlian',
       base_url: document.getElementById('externalBaseUrl')?.value.trim() || '',
       auto_sync_enabled: mode === 'external',
-      auto_sync_interval_seconds: 60,
       auto_publish_enabled: mode === 'external',
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,

@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional
 from urllib.parse import urljoin
@@ -30,7 +30,12 @@ SOURCE_EXTERNAL = "EXTERNAL"
 CONFIG_SCHEMA_VERSION = 2
 CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
+# Kept only for config/API backward compatibility. Automatic master-data sync
+# is schedule-owned by AUTO_SYNC_SCHEDULE_LOCAL_TIMES, not interval-owned.
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60
+AUTO_SYNC_TIMEZONE_NAME = "Asia/Shanghai"
+AUTO_SYNC_TIMEZONE = timezone(timedelta(hours=8), name=AUTO_SYNC_TIMEZONE_NAME)
+AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
     {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"human_login"},
@@ -264,11 +269,10 @@ class ExternalPlatformRepository:
             result.update(body)
             result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
             if str(result.get("mode") or "local") == "external":
-                # Provider has no webhook/subscription contract. Keep master data
-                # quasi-realtime by polling every 60 seconds and automatically
-                # publish completed training/conversion results.
+                # Provider has no webhook/subscription contract. Automatic master
+                # data reconciliation is fixed to the canonical China-time slots;
+                # completed training/conversion results remain auto-published.
                 result["auto_sync_enabled"] = True
-                result["auto_sync_interval_seconds"] = 60
                 result["auto_publish_enabled"] = True
             return result
 
@@ -282,7 +286,8 @@ class ExternalPlatformRepository:
             "provider": str(value.get("provider") or "changlian"),
             "base_url": normalize_base_url(value.get("base_url")),
             "auto_sync_enabled": mode == "external",
-            "auto_sync_interval_seconds": 60,
+            # Legacy compatibility field only; scheduling no longer reads it.
+            "auto_sync_interval_seconds": int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
             "auto_publish_enabled": mode == "external",
             "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
             "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
@@ -1286,6 +1291,8 @@ class ExternalAlgorithmPlatformService:
             "base_url": config.get("base_url", ""),
             "auto_sync_enabled": bool(config.get("auto_sync_enabled")),
             "auto_sync_interval_seconds": int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
+            "auto_sync_schedule_local_times": list(AUTO_SYNC_SCHEDULE_LOCAL_TIMES),
+            "auto_sync_timezone": AUTO_SYNC_TIMEZONE_NAME,
             "auto_publish_enabled": bool(config.get("auto_publish_enabled")),
             "auth_mode": "test_sign_bridge",
             "business_auth_mode": "authorization_bearer",
@@ -2047,22 +2054,49 @@ class ExternalAlgorithmPlatformService:
             return False
         if not str(config.get("base_url") or "").strip():
             return False
-        interval = max(60, min(86400, int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS)))
-        history = self.repository.history()
-        latest = history[0] if history else None
-        if not latest:
-            return True
-        stamp = latest.get("finished_at") or latest.get("started_at")
-        if not stamp:
-            return True
-        try:
-            last = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        except ValueError:
-            return True
+
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
-        return (current - last).total_seconds() >= interval
+        local_now = current.astimezone(AUTO_SYNC_TIMEZONE)
+        due_slots = []
+        for value in AUTO_SYNC_SCHEDULE_LOCAL_TIMES:
+            hour, minute = (int(part) for part in value.split(":", 1))
+            slot = local_now.replace(
+                hour=hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+            if slot <= local_now:
+                due_slots.append(slot)
+        if not due_slots:
+            return False
+        latest_due_slot = due_slots[-1].astimezone(timezone.utc)
+
+        # Manual reconciliation must not consume a scheduled automatic slot.
+        # Any automatic attempt (success or failure) consumes that slot so a
+        # provider outage cannot cause every Worker heartbeat to hammer it.
+        latest_auto = next(
+            (
+                item
+                for item in self.repository.history()
+                if str(item.get("sync_type") or "") == "auto"
+            ),
+            None,
+        )
+        if latest_auto is None:
+            return True
+        stamp = latest_auto.get("finished_at") or latest_auto.get("started_at")
+        if not stamp:
+            return True
+        try:
+            last_auto = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if last_auto.tzinfo is None:
+            last_auto = last_auto.replace(tzinfo=timezone.utc)
+        return last_auto.astimezone(timezone.utc) < latest_due_slot
 
 
 def external_algorithm_platform_router(

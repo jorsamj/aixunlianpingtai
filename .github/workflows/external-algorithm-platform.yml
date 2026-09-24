@@ -131,7 +131,8 @@ jobs:
           grep -Fq 'test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync' tests/unit/test_external_algorithm_platform.py
           grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
           grep -q "installModelArtifactRuntime" static/main.mjs
-          grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
+          grep -Fq 'AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")' platform_core/external_algorithm_platform.py
+          grep -Fq 'AUTO_SYNC_TIMEZONE_NAME = "Asia/Shanghai"' platform_core/external_algorithm_platform.py
           grep -Fq 'ExternalAlgorithmAutoSyncReporter' task_worker.py
           grep -Fq 'instance_lease.add_renew_hook(external_sync_reporter.report)' task_worker.py
           grep -Fq 'name="external-algorithm-platform-auto-sync"' platform_core/external_algorithm_auto_sync.py
@@ -158,9 +159,10 @@ jobs:
           grep -Fq "'外部平台' : '本平台'" static/modules/algorithm-list-runtime.js
           grep -Fq 'data-external-list-sync' static/modules/external-algorithm-platform.js
           grep -Fq '自动同步已启用' static/modules/external-algorithm-platform.js
-          grep -Fq '每 60 秒主动拉取一次主数据' static/modules/external-algorithm-platform.js
-          grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js
-          grep -Fq 'DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60' platform_core/external_algorithm_platform.py
+          grep -Fq '每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据' static/modules/external-algorithm-platform.js
+          if grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js; then echo "ChangLian UI must not own an interval-based sync setting" >&2; exit 1; fi
+          grep -Fq 'latest_due_slot' platform_core/external_algorithm_platform.py
+          grep -Fq 'if str(item.get("sync_type") or "") == "auto"' platform_core/external_algorithm_platform.py
           grep -Fq 'test_legacy_v12_training_entry_enforces_external_analysis_gate' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_uses_analysis_get_info_as_authoritative_training_truth' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_can_train_when_get_info_proves_enabled_visual_analysis' tests/unit/test_external_algorithm_platform.py

@@ -236,7 +236,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   await page.locator('[data-external-sync-settings="1"] summary').click();
   await expect(page.locator('#externalAutoSyncInterval')).toHaveCount(0);
   await expect(page.locator('.external-sync-policy')).toContainText('自动同步已启用');
-  await expect(page.locator('.external-sync-policy')).toContainText('固定每 60 秒主动拉取一次主数据');
+  await expect(page.locator('.external-sync-policy')).toContainText('每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据');
   const syncButton = page.getByRole('button', {name: '↻ 立即同步'});
   await expect(syncButton).toBeDisabled();
   await expect(syncButton).toHaveAttribute('title', /未保存修改/);
@@ -248,7 +248,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(testedPayload.access_key).toBe('draft-ak');
   expect(testedPayload.access_secret).toBe('draft-secret');
   expect(testedPayload.mode).toBe('external');
-  expect(testedPayload.auto_sync_interval_seconds).toBe(60);
+  expect(testedPayload.auto_sync_interval_seconds).toBeUndefined();
 
   const connectionResult = page.locator('#externalConnectionResult');
   await expect(connectionResult.getByText('连接成功')).toBeVisible();
@@ -263,7 +263,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(savedPayload.base_url).toBe('https://draft.example.test');
   expect(savedPayload.access_key).toBe('draft-ak');
   expect(savedPayload.access_secret).toBe('draft-secret');
-  expect(savedPayload.auto_sync_interval_seconds).toBe(60);
+  expect(savedPayload.auto_sync_interval_seconds).toBeUndefined();
   await expect.poll(() => saveWrites).toBe(1);
 
   // Saved configuration is locked until the user explicitly enters edit mode.

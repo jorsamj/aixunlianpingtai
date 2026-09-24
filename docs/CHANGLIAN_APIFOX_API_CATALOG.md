@@ -195,9 +195,10 @@ SSE / WebSocket 推送
 因此新畅联 → 本平台主数据同步目前只能由本平台主动拉取，不能宣称服务端推送式“实时同步”。平台支持：
 
 - 手动立即同步；
-- 外部模式自动同步由服务端强制启用，Provider 主数据拉取间隔固定为 60 秒，作为准实时同步；
-- 后台 Worker heartbeat hook 负责触发到期检查，Web/API 进程不再持有自动同步 daemon timer；
-- `auto_sync_due()` 仍强制 Provider 主数据两次拉取至少间隔 60 秒；远端网络 I/O 使用一次性、FileLock 保护的后台执行，不阻塞 Worker lease heartbeat。
+- 外部模式自动同步由服务端强制启用，每天按北京时间 08:00、12:00、15:00 各执行一轮 Provider 主数据拉取；
+- 后台 Worker heartbeat hook 负责触发固定时段到期检查，Web/API 进程不持有自动同步 daemon timer；
+- `auto_sync_due()` 以当天最近一个已到固定时段为真相：同一时段自动同步最多尝试一次；手动立即同步不占用后续固定时段；若 Worker 在时点短暂离线，恢复后补执行当天最近一个尚未执行的时段；
+- 远端网络 I/O 使用一次性、FileLock 保护的后台执行，不阻塞 Worker lease heartbeat。
 
 若后续新畅联新增 Webhook/事件订阅文档，应优先升级为事件驱动，并保留定时拉取作为兜底对账。
 

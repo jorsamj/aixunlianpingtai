@@ -13,7 +13,7 @@ class ExternalAlgorithmAutoSyncReporter:
 
     The heartbeat hook itself must stay fast. Remote provider I/O therefore runs
     in a guarded one-shot daemon thread; there is no independent timer. The
-    service-level auto_sync_due() remains the authoritative >=60 second cadence.
+    service-level auto_sync_due() remains the authoritative fixed-schedule gate.
     """
 
     def __init__(

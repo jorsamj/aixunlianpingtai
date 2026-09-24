@@ -33,6 +33,8 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(local.provider, 'changlian');
   assert.equal(local.endpoints.token, '/internal/auth/token');
   assert.equal(local.autoSyncIntervalSeconds, 60);
+  assert.deepEqual(local.autoSyncScheduleLocalTimes, ['08:00', '12:00', '15:00']);
+  assert.equal(local.autoSyncTimezone, 'Asia/Shanghai');
   assert.equal(local.authMode, 'test_sign_bridge');
 
   const external = normalizeExternalPlatformConfig({
@@ -254,8 +256,8 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.doesNotMatch(source, /训练成果自动发布/);
   assert.doesNotMatch(source, /<b>训练与发布<\/b>/);
   assert.match(source, /auto_publish_enabled: mode === 'external'/);
-  assert.match(source, /auto_sync_interval_seconds: 60/);
-  assert.match(source, /每 60 秒主动拉取一次主数据/);
+  assert.doesNotMatch(source, /auto_sync_interval_seconds: 60/);
+  assert.match(source, /每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据/);
   assert.match(source, /\/internal\/base\/category\/tree/);
   assert.match(source, /\/internal\/base\/compute-platform\/listAll/);
   assert.match(source, /\/internal\/algorithm\/product-ai\/listAll/);
@@ -367,13 +369,13 @@ test('algorithm list keeps search and base filters while adding source filters',
   assert.doesNotMatch(externalSource, /dataset\.algorithmSourceFilter/);
 });
 
-test('sync settings enforce 60-second automatic pull without claiming webhook support', () => {
+test('sync settings expose the fixed 08 12 15 China-time schedule without claiming webhook support', () => {
   const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
   assert.match(source, /自动同步已启用/);
-  assert.match(source, /每 60 秒主动拉取一次主数据/);
+  assert.match(source, /每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据/);
   assert.match(source, /没有 Webhook、订阅或推送接口/);
   assert.match(source, /auto_sync_enabled: mode === 'external'/);
-  assert.match(source, /auto_sync_interval_seconds: 60/);
+  assert.doesNotMatch(source, /auto_sync_interval_seconds: 60/);
   assert.doesNotMatch(source, /id="externalAutoSyncInterval"/);
 });
 
