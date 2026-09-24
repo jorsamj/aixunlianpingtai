@@ -235,6 +235,68 @@ test('annotation paints stale cached labels before authoritative label revalidat
 });
 
 
+test('professional annotation workbench survives repeated open-close cycles and keeps essential controls visible at 1366x768', async ({page, request}) => {
+  await page.setViewportSize({width: 1366, height: 768});
+  const project = await createMaterialProject(request, `标注台稳定性-${Date.now()}`);
+  const image = await uploadImage(request, project.id, 'workbench-stability.bmp', [72, 132, 198]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [image.id]}
+  });
+  await selectProject(page, project.id);
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  const card = page.locator('.data412-card', {hasText: 'workbench-stability.bmp'});
+  await expect(card).toBeVisible();
+
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
+  for (let cycle = 0; cycle < 20; cycle += 1) {
+    await card.getByRole('button', {name: '标注'}).click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
+    await dialog.getByRole('button', {name: '关闭', exact: true}).click();
+    await expect(dialog).toBeHidden();
+  }
+
+  await card.getByRole('button', {name: '标注'}).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
+
+  const essential = [
+    dialog.getByRole('button', {name: '保存并继续', exact: true}),
+    dialog.getByRole('button', {name: '确认无目标', exact: true}),
+    dialog.getByRole('button', {name: '← 上一张', exact: true}),
+    dialog.getByRole('button', {name: '下一张 →', exact: true}),
+    dialog.getByLabel('绘制标签'),
+    dialog.getByRole('button', {name: '撤销', exact: true}),
+    dialog.getByRole('button', {name: '重做', exact: true}),
+    dialog.getByRole('button', {name: '删除框', exact: true}),
+    dialog.getByRole('button', {name: '100%', exact: true}),
+    dialog.getByRole('button', {name: '适应窗口', exact: true}),
+    dialog.locator('#annLabels'),
+    dialog.locator('#annBoxes'),
+  ];
+  for (const control of essential) {
+    await expect(control).toBeVisible();
+    const rect = await control.boundingBox();
+    expect(rect).not.toBeNull();
+    expect(rect.x).toBeGreaterThanOrEqual(0);
+    expect(rect.y).toBeGreaterThanOrEqual(0);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(1366);
+    expect(rect.y + rect.height).toBeLessThanOrEqual(768);
+  }
+
+  const imageBox = await dialog.locator('#annImg').boundingBox();
+  expect(imageBox).not.toBeNull();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.7, imageBox.y + imageBox.height * 0.7, {steps: 5});
+  await page.mouse.up();
+  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annBoxes [data-ann-box-key]')).toHaveCount(1);
+});
+
 test('batch annotation requires explicit empty confirmation and advances across consecutive images', async ({page, request}) => {
   const project = await createMaterialProject(request, `连续空标注-${Date.now()}`);
   const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
