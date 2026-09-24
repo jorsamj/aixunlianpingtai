@@ -30,9 +30,12 @@ test('backend owns ChangLian POST login and does not use internal application to
 
 test('authenticated shell exposes current cloud identity and logout without storing credentials', () => {
   assert.match(indexHtml, /id="authUsername"/);
+  assert.match(indexHtml, /id="authSessionLife"/);
   assert.match(indexHtml, /id="logoutBtn"/);
   assert.match(indexHtml, /auth-session\.js/);
   assert.match(sessionJs, /fetch\('\/api\/auth\/session'/);
+  assert.match(sessionJs, /天保持登录|小时有效|分钟有效/);
+  assert.match(sessionJs, /upstream_token_expires_at/);
   assert.match(sessionJs, /fetch\('\/api\/auth\/logout'/);
   assert.doesNotMatch(sessionJs, /password|localStorage|sessionStorage/);
 });

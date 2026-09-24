@@ -85,7 +85,7 @@
     }
   });
 
-  void fetch('/api/auth/session', {credentials: 'same-origin'})
+  void fetch('/api/auth/session', {credentials: 'same-origin', cache: 'no-store'})
     .then(response => response.ok ? response.json() : null)
     .then(body => {
       if (body && body.authenticated) window.location.replace(safeNext());

@@ -327,9 +327,19 @@ def _public_auth_session(claims: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _auth_test_bypass_enabled() -> bool:
+    # Some focused browser harnesses import app.py before their environment
+    # bootstrap completes. Re-read the existing test-only flag at request time
+    # so authentication never breaks unrelated isolated regression suites.
+    return (
+        ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
+        or os.environ.get("MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", "").strip() == "1"
+    )
+
+
 @app.middleware("http")
 async def changlian_login_guard(request: Request, call_next):
-    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+    if _auth_test_bypass_enabled():
         return await call_next(request)
 
     decision = auth_guard_decision(
