@@ -176,7 +176,7 @@ jobs:
           grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
           grep -Fq '"external_analysis_id": external_analysis_id' app.py
           if grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py; then echo "Web/API auto-sync timer must stay retired" >&2; exit 1; fi
-          grep -Fq '后台 Worker heartbeat hook 负责触发到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
+          grep -Fq '后台 Worker heartbeat hook 负责触发固定时段到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -Fq 'test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer' tests/unit/test_external_algorithm_auto_sync.py
           grep -Fq '外部模式下自动同步和自动发布由服务端强制启用' docs/CHANGLIAN_CORE_INTEGRATION.md
           if grep -Fq '自动同步 / 自动发布放在高级设置' docs/CHANGLIAN_CORE_INTEGRATION.md; then echo "ChangLian core handoff drifted back to optional auto sync/publish" >&2; exit 1; fi
