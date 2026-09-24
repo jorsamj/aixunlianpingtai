@@ -1502,6 +1502,27 @@ class ExternalAlgorithmPublishService:
             "detail": str((mapping or {}).get("compute_platform_id") or ""),
         }
 
+    def _artifact_mapping_state(self, artifact: Mapping[str, Any]) -> Dict[str, Any]:
+        target = str(artifact.get("target") or "").strip().lower()
+        state = self._mapping_state(target)
+        mapping = state.get("mapping")
+        if mapping and target == "rockchip":
+            chip_code = _canonical_chip_code(
+                artifact.get("chip_code") or mapping.get("chip_code") or ""
+            )
+            if not chip_code:
+                return {
+                    "status": "blocked",
+                    "enabled": True,
+                    "mapping": None,
+                    "detail": "RKNN 产物缺少芯片身份",
+                    "code": "MODEL_ARTIFACT_CHIP_REQUIRED",
+                    "message": "RKNN 产物缺少芯片身份",
+                    "solution": "请为该 RKNN 转换结果保留真实芯片型号，或在 rockchip 厂商映射中配置 RK3568/RK3576。",
+                    "status_code": 409,
+                }
+        return state
+
     @staticmethod
     def _remote_version_id(row: Mapping[str, Any]) -> str:
         for key in ("algoVersionId", "algorithmVersionId", "versionId", "id"):
@@ -2158,7 +2179,7 @@ class ExternalAlgorithmPublishService:
         ignored: list[Dict[str, Any]] = []
         classified: list[Dict[str, Any]] = []
         for item in discovered:
-            state = self._mapping_state(str(item.get("target") or ""))
+            state = self._artifact_mapping_state(item)
             row = {
                 **dict(item),
                 "publish_mapping_status": state["status"],
@@ -2274,7 +2295,7 @@ class ExternalAlgorithmPublishService:
 
         for item in discovered:
             target = str(item.get("target") or "")
-            state = self._mapping_state(target)
+            state = self._artifact_mapping_state(item)
             is_original = _artifact_target_identity(target) == "training"
             if state.get("mapping"):
                 if is_original:
@@ -2530,7 +2551,7 @@ class ExternalAlgorithmPublishService:
         for item in self.discover_artifacts(project_id, algorithm, version):
             target = str(item.get("target") or "")
             is_original = _artifact_target_identity(target) == "training"
-            mapping_state = self._mapping_state(target)
+            mapping_state = self._artifact_mapping_state(item)
             if mapping_state.get("status") == "ignored":
                 continue
             if mapping_state.get("status") == "blocked":

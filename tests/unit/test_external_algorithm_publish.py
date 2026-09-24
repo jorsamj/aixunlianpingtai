@@ -1913,11 +1913,8 @@ def test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_s
     assert FakePublishingClient.version_creates == 1
     assert FakePublishingClient.weight_creates == 1
     assert first["deferred_conversions"]
-    blocked_artifact = next(
-        row for row in first["artifacts"]
-        if row["target"] == "rockchip"
-    )
-    assert blocked_artifact["sync_status"] == "BLOCKED_CONFIG"
+    assert "RKNN 产物缺少芯片身份" in first["deferred_conversions"][0]
+    assert all(row["target"] != "rockchip" for row in first["artifacts"])
     algorithm, version = _version(tmp_path)
     assert service.publication_requires_sync("p1", algorithm, version, first["publication"]) is False
 
