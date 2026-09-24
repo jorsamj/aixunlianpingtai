@@ -4439,8 +4439,22 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(chip){if(target==='rockchip')chip.value=(first?.supported_chips||[])[0]||'';else if(target==='sophon')chip.value='bm1684x';else if(target==='ascend'){const socs=first?.detected_soc_versions||first?.remote_health?.soc_versions||[];chip.value=socs[0]||''}else chip.value=''}
     if(status)status.innerHTML=resourceStatusHtml416(configured,target);
     if(warn){
-      if(ready.length)warn.textContent=target==='rockchip'?('已检测到可用 RKNN-Toolkit2；当前资源支持 '+((first?.supported_chips||[]).join(' / ')||'其已检测芯片')+'。')):target==='sophon'?'已检测到可用 TPU-MLIR；FP16 / BF16 / FP32 可直接编译，INT8 需校准数据。':target==='ascend'?'已检测到可用 Atlas/CANN 资源；请确认目标 soc_version。':target==='tensorrt'?'已检测到 TensorRT trtexec；Engine 与目标 GPU / CUDA / TensorRT 环境绑定。':target==='onnx'?'已检测到可用 ONNX 导出环境。':'已检测到可用 Paddle Inference 导出环境。';
-      else warn.textContent=target==='rockchip'?'请配置安装了 RKNN-Toolkit2 的 Linux/WSL2、远程转换服务器或服务节点 Agent，检测通过后才能创建 .rknn。':`当前没有已检测通过的${targetLabel416(target)}资源；已配置资源的状态和处理建议见下方。`
+      if(ready.length){
+        const readyMessages={
+          sophon:'已检测到可用 TPU-MLIR；FP16 / BF16 / FP32 可直接编译，INT8 需校准数据。',
+          ascend:'已检测到可用 Atlas/CANN 资源；请确认目标 soc_version。',
+          tensorrt:'已检测到 TensorRT trtexec；Engine 与目标 GPU / CUDA / TensorRT 环境绑定。',
+          onnx:'已检测到可用 ONNX 导出环境。',
+          paddle_inference:'已检测到可用 Paddle Inference 导出环境。',
+        };
+        warn.textContent=target==='rockchip'
+          ? `已检测到可用 RKNN-Toolkit2；当前资源支持 ${(first?.supported_chips||[]).join(' / ')||'其已检测芯片'}。`
+          : (readyMessages[target]||`已检测到可用${targetLabel416(target)}资源。`);
+      }else{
+        warn.textContent=target==='rockchip'
+          ? '请配置安装了 RKNN-Toolkit2 的 Linux/WSL2、远程转换服务器或服务节点 Agent，检测通过后才能创建 .rknn。'
+          : `当前没有已检测通过的${targetLabel416(target)}资源；已配置资源的状态和处理建议见下方。`;
+      }
     }
     refreshConvertCalibration428();
   };
