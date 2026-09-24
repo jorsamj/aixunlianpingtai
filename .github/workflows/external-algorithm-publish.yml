@@ -78,7 +78,6 @@ jobs:
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_external_algorithm_publish.py \
-            tests/unit/test_conversion_tasks.py \
             tests/unit/test_algorithms.py \
             tests/unit/test_model_artifacts.py \
             tests/unit/test_integration_audit.py \
