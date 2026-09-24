@@ -33,7 +33,8 @@ export function installTrainingCreateHydrationRuntime({
   const openForm = openTrainingForm || window.openTrainingCreateCanonical429;
   if (typeof openForm !== 'function') return null;
 
-  let inflight = null;
+  let optionsInflight = null;
+  let recommendationInflight = null;
   let commonLoadedAt = 0;
   let commonProjectId = '';
   let openEpoch = 0;
@@ -78,68 +79,88 @@ export function installTrainingCreateHydrationRuntime({
       }, {once: true});
     }
   }
-  const hydrate = async ({force = false, requireTrainable = true, revalidateOptions = false} = {}) => {
+  const projectContext = () => {
     const state = getState?.() || {};
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目尚未加载完成');
     const projectKey = String(pid);
     if (commonProjectId && commonProjectId !== projectKey) commonLoadedAt = 0;
     commonProjectId = projectKey;
-    const commonReady = Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
-    const ready = requireTrainable ? trainingCreationInputsReady(state) : commonReady;
-    if (!force && !revalidateOptions && ready) return state;
+    return {state, pid, projectKey};
+  };
 
-    if (inflight) {
-      const result = await inflight;
-      if (revalidateOptions && !force) {
-        const age = Date.now() - Number(commonLoadedAt || 0);
-        if (!(commonLoadedAt > 0 && age >= 0 && age < COMMON_INPUT_TTL_MS)) {
-          return hydrate({requireTrainable, revalidateOptions: true});
-        }
-      }
-      if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
-        throw new Error('没有读取到可用训练配置，请检查训练资源');
-      }
-      return result;
-    }
+  const hydrateOptions = async ({force = false, requireTrainable = true, revalidate = false, maxAgeMs = COMMON_INPUT_TTL_MS} = {}) => {
+    const {state, pid, projectKey} = projectContext();
+    const age = Date.now() - Number(commonLoadedAt || 0);
+    const fresh = commonLoadedAt > 0 && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0);
+    const usable = requireTrainable
+      ? trainingOptionsHydrated(state.targets)
+      : Array.isArray(state.targets) && state.targets.length > 0;
+    if (!force && ((revalidate && fresh) || (!revalidate && usable))) return state.targets || [];
+    if (optionsInflight?.projectKey === projectKey) return optionsInflight.promise;
 
-    inflight = (async () => {
-      const needsOptions = force || revalidateOptions || (requireTrainable
-        ? !trainingOptionsHydrated(state.targets)
-        : !Array.isArray(state.targets) || state.targets.length === 0);
-      const needsRecommendation = force || state.rec == null;
-      const [optionsResult, recommendationResult] = await Promise.all([
-        needsOptions ? request(`/api/training_options?project_id=${encodeURIComponent(pid)}`) : Promise.resolve(null),
-        needsRecommendation ? request('/api/system/recommendation') : Promise.resolve(null),
-      ]);
-      if (optionsResult) {
-        state.targets = optionsResult.targets || [];
+    const task = request(`/api/training_options?project_id=${encodeURIComponent(pid)}`)
+      .then(optionsResult => {
+        if (String(projectId?.() || '') !== projectKey) return getState?.()?.targets || [];
+        const liveState = getState?.() || state;
+        liveState.targets = optionsResult?.targets || [];
         commonLoadedAt = Date.now();
         commonProjectId = projectKey;
-      }
-      if (recommendationResult) state.rec = recommendationResult;
-      return state;
-    })().finally(() => { inflight = null; });
+        return liveState.targets;
+      })
+      .finally(() => {
+        if (optionsInflight?.promise === task) optionsInflight = null;
+      });
+    optionsInflight = {projectKey, promise: task};
+    return task;
+  };
 
-    const result = await inflight;
+  const hydrateRecommendation = async ({force = false} = {}) => {
+    const {state, projectKey} = projectContext();
+    if (!force && state.rec != null) return state.rec;
+    if (recommendationInflight?.projectKey === projectKey) return recommendationInflight.promise;
+
+    const task = request('/api/system/recommendation')
+      .then(recommendationResult => {
+        if (String(projectId?.() || '') !== projectKey) return getState?.()?.rec ?? null;
+        const liveState = getState?.() || state;
+        liveState.rec = recommendationResult;
+        return recommendationResult;
+      })
+      .finally(() => {
+        if (recommendationInflight?.promise === task) recommendationInflight = null;
+      });
+    recommendationInflight = {projectKey, promise: task};
+    return task;
+  };
+
+  const hydrate = async ({force = false, requireTrainable = true, revalidateOptions = false} = {}) => {
+    const {state} = projectContext();
+    const ready = requireTrainable
+      ? trainingCreationInputsReady(state)
+      : Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
+    if (!force && !revalidateOptions && ready) return state;
+
+    await Promise.all([
+      hydrateOptions({force, requireTrainable, revalidate: revalidateOptions}),
+      hydrateRecommendation({force}),
+    ]);
+    const result = getState?.() || state;
     if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
       throw new Error('没有读取到可用训练配置，请检查训练资源');
     }
     return result;
   };
+
   const hydrateCommon = async ({force = false, maxAgeMs = COMMON_INPUT_TTL_MS} = {}) => {
-    const pid = projectId?.();
-    if (!pid) throw new Error('当前项目尚未加载完成');
-    const projectKey = String(pid);
-    if (commonProjectId !== projectKey) {
-      commonProjectId = projectKey;
-      commonLoadedAt = 0;
-    }
+    const {state, projectKey} = projectContext();
     const age = Date.now() - Number(commonLoadedAt || 0);
-    if (!force && commonLoadedAt > 0 && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0)) {
-      return getState?.() || {};
+    if (!force && commonLoadedAt > 0 && commonProjectId === projectKey && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0)) {
+      return state;
     }
-    return hydrate({force, requireTrainable: false, revalidateOptions: !force});
+    await hydrateOptions({force, requireTrainable: false, revalidate: !force, maxAgeMs});
+    if ((getState?.() || state).rec == null) void hydrateRecommendation().catch(() => {});
+    return getState?.() || state;
   };
 
   const prewarm = async (aid = '', {includePreflight = true} = {}) => {
@@ -210,7 +231,7 @@ export function installTrainingCreateHydrationRuntime({
     hydrateCommon,
     start,
     prewarm,
-    build: 'training-create-hydration-422538',
+    build: 'training-create-hydration-422539',
     destroy() {
       destroyed = true;
       openEpoch += 1;

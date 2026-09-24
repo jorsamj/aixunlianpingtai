@@ -168,6 +168,7 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
    v42.1 — 畅联云算法训练 / 统计驾驶舱 + 去说明化界面
    ============================================================ */
 .page-desc,.title-sub,.subline,.compact-note,.v42-stepbar,.v42-loopline{display:none!important}
+[data-model-artifact-panel="1"] .panel-head .subline{display:block!important;white-space:normal;line-height:1.55}
 .v42-wizard-head{display:none!important}
 .v42-source-hero>div:first-child,.v42-quality-head>div:first-child,.v42-loop-hero>div:first-child{display:none!important}
 .v42-source-hero,.v42-quality-head,.v42-loop-hero{justify-content:flex-end;background:transparent;border:0;box-shadow:none;padding:0;margin:0 0 14px}

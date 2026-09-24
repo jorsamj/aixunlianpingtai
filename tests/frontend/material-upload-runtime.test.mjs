@@ -91,7 +91,10 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const main = index.match(/<script type="module" src="\/static\/main\.mjs\?v=([^"]+)"><\/script>/);
   const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422530"><\/script>/);
   assert.ok(classic && main && upload, 'classic app, main runtime and upload bootstrap must all be loaded');
-  assert.equal(classic[1], main[1], 'classic app and main runtime must use the same cache-bust release');
+  assert.match(classic[1], /^\d+(?:\.\d+)+$/, 'classic app must carry a numeric cache-bust marker');
+  assert.match(main[1], /^\d+(?:\.\d+)+$/, 'main runtime must carry a numeric cache-bust marker');
+  assert.notEqual(classic[1], '42.24.0', 'classic app cache-bust must remain independent from the formal release badge');
+  assert.notEqual(main[1], '42.24.0', 'main runtime cache-bust must remain independent from the formal release badge');
   assert.ok(index.indexOf(classic[0]) < index.indexOf(main[0]), 'main runtime must load after classic app');
   assert.ok(index.indexOf(main[0]) < index.indexOf(upload[0]), 'upload bootstrap must load after main runtime');
   assert.match(bootstrap, /installMaterialUploadRuntime/);

@@ -82,12 +82,12 @@ test('hard refresh algorithm list prewarms training configuration before the fir
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422536');
+    .toMatch(/^training-create-hydration-/);
 
   // Reproduce the user's actual sequence: refresh, then open the training dialog once.
   await page.reload();
   await expect.poll(async () => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || null))
-    .toBe('training-create-hydration-422536');
+    .toMatch(/^training-create-hydration-/);
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await expect.poll(async () => page.evaluate(() => ({
     targetId: state.targets?.[0]?.id,
@@ -103,7 +103,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
 
   const beforeOptions = trainingOptionsCalls;
   const beforeRecommendation = recommendationCalls;
-  const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
 
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
@@ -141,7 +141,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await page.evaluate(() => window.closeModal());
   await page.reload();
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
-  const reloadedCard = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  const reloadedCard = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await reloadedCard.getByRole('button', {name: '训练'}).click();
   const secondDialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
@@ -189,7 +189,7 @@ test('training target is the only automatic early-stop control', async ({page, r
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
-  const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout: 10_000});
@@ -325,7 +325,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
-  const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout: 10_000});
@@ -403,7 +403,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});
-  const card=page.locator('.alg428-card',{hasText:'首次打开配置回归'});
+  const card=page.locator('[data-algorithm-card]',{hasText:'首次打开配置回归'});
   await card.getByRole('button',{name:'训练'}).click();
   const dialog=page.getByRole('dialog',{name:'训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout:10000});

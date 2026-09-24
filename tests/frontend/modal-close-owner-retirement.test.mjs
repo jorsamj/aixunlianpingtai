@@ -25,7 +25,9 @@ test('canonical close preserves storage polling cleanup and annotation dirty-sav
   assert.match(block, /beforeCloseStorageImport61/);
   assert.match(block, /annotationWorkbench\?\.dirty/);
   assert.match(block, /await window\.saveAnn\(true\)/);
-  assert.match(block, /annotationWorkbench\?\.invalidate/);
+  assert.match(block, /const workbench=state\.annotationWorkbench/);
+  assert.match(block, /typeof workbench\?\.cancel==='function'/);
+  assert.match(block, /workbench\.cancel\(\);else workbench\?\.invalidate\?\.\(\)/);
   assert.match(block, /closeModalCore424/);
 });
 

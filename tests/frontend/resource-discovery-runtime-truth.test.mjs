@@ -86,13 +86,16 @@ test('training resource refresh stays scoped instead of reloading the whole appl
   assert.match(resourcePage, /onclick="refreshTrainingResourcePageV3\(\)">刷新<\/button>/);
   assert.doesNotMatch(resourcePage, /loadAll\(\)\.then\(render\)/);
 
-  const truthStart = app.indexOf('window.refreshTrainingResourceTruthV3=async function()');
+  const truthStart = app.indexOf('window.refreshTrainingResourceTruthV3=async function({force=false}={})');
   const truthEnd = app.indexOf('window.__resourceDiscoveryDependencies={', truthStart);
   assert.ok(truthStart >= 0 && truthEnd > truthStart);
   const truth = app.slice(truthStart, truthEnd);
+  assert.match(truth, /TrainingCreateHydrationRuntime\?\.hydrateCommon/);
+  assert.match(truth, /commonHydrator\(\{force\}\)/);
   assert.match(truth, /\/api\/training_options\?project_id=/);
   assert.match(truth, /\/api\/v16\/inference_envs/);
   assert.match(truth, /\/api\/system\/recommendation/);
+  assert.match(truth, /patchTrainingResourceCardsV3\?\.\(\)/);
   assert.doesNotMatch(truth, /loadAll\(/);
   assert.doesNotMatch(truth, /loadRelated\(/);
 

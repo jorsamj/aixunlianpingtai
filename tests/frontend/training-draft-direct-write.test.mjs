@@ -62,6 +62,7 @@ test('TrainingDraftRuntime is wrapper-free and leaves classic entrypoints untouc
 
 test('app.js visible training entrypoint owns canonical reset before rendering the modal', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const algorithmList = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
   const dialogOwner = app.indexOf('window.openTrainingCreateDialog429=function(aid){const a=');
   const dialogAlias = app.indexOf('window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;', dialogOwner);
   assert.ok(dialogOwner >= 0 && dialogAlias > dialogOwner);
@@ -76,12 +77,9 @@ test('app.js visible training entrypoint owns canonical reset before rendering t
   assert.match(app.slice(canonicalOwner, canonicalEnd), /openTrainingCreateDialog429\?\.\(algorithmId\)/);
   assert.match(app, /window\.startAlgorithmTraining423=window\.openTrainingCreateCanonical429/);
 
-  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
-  const stablePage = app.lastIndexOf('window.renderAlgorithms423=function(){');
-  assert.ok(stableCards >= 0 && stablePage > stableCards);
-  const cardSource = app.slice(stableCards, stablePage);
-  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
-  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
+  assert.match(algorithmList, /data-algorithm-train="\$\{esc\(algorithm\.id\)\}"/);
+  assert.match(algorithmList, /onclick="startAlgorithmTraining429\('\$\{esc\(algorithm\.id\)\}'\)"/);
+  assert.equal(algorithmList.includes('startAlgorithmTraining423'), false);
 });
 
 test('final classic picker split and settings actions own their canonical writes directly', () => {

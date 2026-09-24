@@ -21,7 +21,7 @@ test('shadowed dashboard page renderers are physically retired', () => {
   assert.equal((app.match(/window\.renderHomeDashboard(?:=renderHomeDashboard)?=function\(\)/g) || []).length, 1);
   assert.match(app, /window\.renderHomeDashboard=renderHomeDashboard=function\(\)\{renderDashboardBody42\(\)/);
   assert.match(app, /window\.renderDashboardCanonical422=function\(\)/);
-  assert.match(main, /\['工作台', 'renderDashboardCanonical422'\]/);
+  assert.match(main, /\['总览', 'renderDashboardCanonical422'\]/);
 });
 
 test('algorithm and dataset navigation are canonical owners', () => {
@@ -248,10 +248,11 @@ test('navigation chrome resolves to direct final owners without wrapper chaining
   assert.ok(navStart >= 0 && navEnd > navStart);
   const finalNavOwner = app.slice(navStart, navEnd);
   assert.match(finalNavOwner, /存储配置:'▣'/);
-  assert.match(finalNavOwner, /\{title:'总览',items:\['工作台','质量中心'\]\}/);
-  assert.match(finalNavOwner, /\{title:'算法生成',items:\['算法列表','训练任务','训练资源'\]\}/);
+  assert.match(finalNavOwner, /\{title:'总览',items:\['总览','质量中心'\]\}/);
+  assert.match(finalNavOwner, /\{title:'算法生成',items:\['算法列表','训练任务'\]\}/);
   assert.match(finalNavOwner, /\{title:'数据中心',items:\['数据集','视频切帧','自动标注及清洗','标签管理'\]\}/);
-  assert.match(finalNavOwner, /\{title:'高级功能',items:\['模型配置','存储配置','组件检测'\]\}/);
+  assert.match(finalNavOwner, /\{title:'高级功能',items:\['训练资源','模型配置','存储配置','组件检测','服务节点'\]\}/);
+  assert.match(finalNavOwner, /\{title:'系统与对接',items:\['平台对接'\]\}/);
   assert.doesNotMatch(finalNavOwner, /部署资源|部署插件|部署转换|部署产物/);
   assert.doesNotMatch(finalNavOwner, /title:'测试评测'|title:'部署中心'/);
 });

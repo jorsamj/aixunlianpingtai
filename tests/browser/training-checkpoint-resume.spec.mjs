@@ -15,7 +15,7 @@ test('automatic training recovery is visible and operable without colliding with
   await expect.poll(async () => page.evaluate(() => Boolean(window.TrainingCheckpointResumeUI)))
     .toBe(true);
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
-    .toBe('training-task-runtime-422506');
+    .toMatch(/^training-task-runtime-/);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();

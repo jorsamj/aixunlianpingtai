@@ -137,8 +137,8 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await page.goto('/');
   await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
-  const algorithmCard = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
-  await expect(algorithmCard.getByRole('button', {name: '综合报告'})).toBeVisible({timeout: 20_000});
+  const algorithmCard = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
+  await expect(algorithmCard.getByRole('button', {name: '报告', exact: true})).toBeVisible({timeout: 20_000});
   await algorithmCard.getByRole('button', {name: '训练'}).click();
 
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
@@ -171,7 +171,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await qualityDialog.locator('.quality414 .row.end .btn').click();
   await trainingDialog.getByRole('button', {name: '取消'}).click();
 
-  await algorithmCard.getByRole('button', {name: '综合报告'}).click();
+  await algorithmCard.getByRole('button', {name: '报告', exact: true}).click();
   await expect(page.getByRole('dialog', {name: '算法综合训练报告'})).toBeVisible();
 });
 
@@ -198,7 +198,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await page.goto('/');
   await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
-  const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
+  const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(dialog).toBeVisible();
@@ -211,7 +211,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
   const settings = await openTrainingSettings(page, dialog);
-  await settings.locator('details.advanced427-box summary').click();
+  await settings.locator('details.advanced427-box').first().locator('summary').click();
   await settings.locator('#ts428SingleCls').check();
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
@@ -301,7 +301,7 @@ test('versioned training locks the latest version and projects the current rando
   await page.goto('/');
   await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
-  const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
+  const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
 

@@ -22,7 +22,8 @@ test('negative sample runtime is decorator-only and never captures annotation ow
 
 test('canonical annotation owners explicitly decorate and confirm empty truth', () => {
   assert.match(app, /window\.saveAnn=async function saveAnnotationCanonical420/);
-  assert.match(app, /window\.confirmEmptyAnnotation420=\(\)=>window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
+  assert.match(app, /window\.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420\(\)/);
+  assert.match(app, /await window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
   assert.ok((app.match(/window\.NegativeSampleRuntime\?\.decorate\?\.\(\);/g) || []).length >= 2);
   assert.match(main, /negative-samples\.js\?v=422544/);
 });

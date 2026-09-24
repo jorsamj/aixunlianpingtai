@@ -26,7 +26,7 @@ test('manual annotation shell paints before authoritative hydration and prefetch
   const end = source.indexOf('Persistent v60 AI annotation UI', marker);
   assert.ok(marker > 0 && end > marker);
   const stable = source.slice(marker, end);
-  assert.match(stable, /beforeLoad:id=>prepareAnnotationShell420\(id\)/);
+  assert.match(stable, /beforeLoad:\(id,\{cached\}=\{\}\)=>\{if\(!cached\)prepareAnnotationShell420\(id\)\}/);
   assert.match(stable, /state\.annotationHydrating420=true/);
   assert.match(stable, /正在读取标注…/);
   assert.match(stable, /data-ann420-edit="1"/);

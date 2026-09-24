@@ -71,6 +71,45 @@ test('first training open paints a shell before parallel hydration and then runs
   }
 });
 
+
+test('focused training resource hydration publishes options before recommendation finishes', async () => {
+  const originalWindow = globalThis.window;
+  let releaseOptions;
+  let releaseRecommendation;
+  const optionsGate = new Promise(resolve => { releaseOptions = resolve; });
+  const recommendationGate = new Promise(resolve => { releaseRecommendation = resolve; });
+  const state = {targets: [], rec: null};
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => 'opened',
+      request: async url => {
+        if (url.startsWith('/api/training_options')) {
+          await optionsGate;
+          return {targets: [{id: 'focused-gpu', status: 'ready', algorithms: [], base_models: []}]};
+        }
+        if (url === '/api/system/recommendation') {
+          await recommendationGate;
+          return {device: 'cpu'};
+        }
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+    const focused = runtime.hydrateCommon();
+    releaseOptions();
+    await focused;
+    assert.equal(state.targets[0]?.id, 'focused-gpu');
+    assert.equal(state.rec, null);
+    releaseRecommendation();
+    await Promise.resolve();
+    runtime.destroy();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
 test('subsequent internal training open reuses hydrated configuration without a loading shell', async () => {
   const originalWindow = globalThis.window;
   let requests = 0;

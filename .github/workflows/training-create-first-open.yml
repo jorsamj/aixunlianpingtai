@@ -53,7 +53,9 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'installTrainingCreateHydrationRuntime' static/main.mjs
-          grep -Fq "training-create-hydration-422535" static/modules/training-create-hydration.js
+          grep -Fq "build: 'training-create-hydration-" static/modules/training-create-hydration.js
+          grep -Fq 'const hydrateOptions = async' static/modules/training-create-hydration.js
+          grep -Fq 'const hydrateRecommendation = async' static/modules/training-create-hydration.js
           grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
           grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js

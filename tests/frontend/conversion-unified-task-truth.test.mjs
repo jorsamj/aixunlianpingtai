@@ -15,29 +15,28 @@ test('deployment conversion UI keeps queued and waiting-resource tasks live and 
 });
 
 
-test('deployment conversion progress is keyed and compositor-friendly', () => {
-  const start = source.lastIndexOf('function jobRow(j)');
-  const end = source.indexOf('window.renderDeployCenter', start);
+test('version conversion progress is keyed and patches live rows in place', () => {
+  const start = source.indexOf('function historyHtml428(aid,vid,r)');
+  const end = source.indexOf('\n  function scheduleVersionConversionPoll428', start);
   assert.ok(start >= 0 && end > start);
   const finalLayer = source.slice(start, end);
-  assert.match(finalLayer, /data-deploy-job-id=/);
-  assert.match(finalLayer, /function patchDeployJobNode\(current,next\)/);
-  assert.match(finalLayer, /currentBar\.style\.transform=nextBar\.style\.transform/);
-  assert.match(finalLayer, /data-progress=/);
-  assert.match(finalLayer, /window\.refreshDeployJobsV39=pollDeployJobs/);
-  assert.doesNotMatch(finalLayer, /deployJobList'\);if\(!box\)return;box\.innerHTML=/);
-  assert.doesNotMatch(finalLayer, /progress-bar"><i style="width:/);
+  assert.match(finalLayer, /data-conversion-job-id=/);
+  assert.match(finalLayer, /data-conversion-progress data-progress=/);
+  assert.match(finalLayer, /function patchVersionConversionLive428\(aid,vid,r\)/);
+  assert.match(finalLayer, /card\.dataset\.conversionStatus=next/);
+  assert.match(finalLayer, /bar\.dataset\.progress=progress\.toFixed\(2\)/);
+  assert.doesNotMatch(finalLayer, /deployJobList/);
 });
 
 
-test('deployment conversion polling is PollRegistry-owned and leaves with the page', () => {
-  const start = source.lastIndexOf('async function pollDeployJobs()');
-  const end = source.indexOf('window.renderDeployCenter', start);
+test('version conversion polling is PollRegistry-owned and scoped to the current page', () => {
+  const start = source.indexOf('function scheduleVersionConversionPoll428(aid,vid,r)');
+  const end = source.indexOf('\n  window.openVersionConvert428=', start);
   assert.ok(start >= 0 && end > start);
   const finalPoll = source.slice(start, end);
-  assert.match(finalPoll, /PollRegistryRuntime\?\.startTimeout/);
-  assert.match(finalPoll, /'deploy-jobs-v39','部署转换'/);
-  assert.match(finalPoll, /function clearDeployPollV39\(\)/);
-  assert.match(finalPoll, /function armDeployPollV39\(\)/);
-  assert.doesNotMatch(finalPoll, /__deployPollV39=setTimeout\(pollDeployJobs,1800\)/);
+  assert.match(finalPoll, /const registry=window\.PollRegistryRuntime/);
+  assert.match(finalPoll, /registry\.startTimeout\(key,String\(state\.page\|\|'算法列表'\)/);
+  assert.match(finalPoll, /registry\?\.clear\?\.\(key\)/);
+  assert.match(finalPoll, /versionConversionRoot428\(aid,vid\)/);
+  assert.doesNotMatch(finalPoll, /setTimeout\(/);
 });

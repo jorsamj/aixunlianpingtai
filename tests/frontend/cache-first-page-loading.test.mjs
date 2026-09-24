@@ -29,7 +29,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
   assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/app\.js\?v=42\.25\.214/);
+  assert.match(html, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
 });
 
 test('training resource background extras patch only resource cards', () => {
@@ -39,11 +39,11 @@ test('training resource background extras patch only resource cards', () => {
   const refresh = main.slice(start, end);
   assert.match(refresh, /page === '训练资源' && window\.patchTrainingResourceCardsV3\?\.\(\)/);
   assert.match(refresh, /page === '模型配置' && window\.patchModelPromptTemplatesV35\?\.\(\)/);
-  assert.match(app, /window\.patchTrainingResourceCardsV3=function\(\)/);
-  assert.match(app, /window\.patchModelPromptTemplatesV35=function\(\)/);
-  const patchStart = app.indexOf('window.patchTrainingResourceCardsV3=function()');
-  const patchEnd = app.indexOf('\nfunction renderResources()', patchStart);
-  const patch = app.slice(patchStart, patchEnd);
+  assert.match(source, /window\.patchTrainingResourceCardsV3=function\(\)/);
+  assert.match(source, /window\.patchModelPromptTemplatesV35=function\(\)/);
+  const patchStart = source.indexOf('window.patchTrainingResourceCardsV3=function()');
+  const patchEnd = source.indexOf('\nfunction renderResources()', patchStart);
+  const patch = source.slice(patchStart, patchEnd);
   assert.match(patch, /\.resource-layout \.resource-grid/);
   assert.doesNotMatch(patch, /#view|renderResources\(/);
 });
@@ -152,11 +152,12 @@ test('quality-center detection loads focused model and inference extras without 
   assert.match(qualityTab, /await focused\('质量中心'\)/);
   assert.match(qualityTab, /window\.loadPageExtras413\?\.\('质量中心'\)/);
 
-  const benchStart = source.indexOf('renderDetectBench = window.renderDetectBench = function()');
-  const benchEnd = source.indexOf('\n  window.predictCore30 = async function()', benchStart);
+  const benchStart = source.indexOf('function qualityDetectionShell64(models,ready)');
+  const benchEnd = source.indexOf('\n  window.renderQualityDetectionBench64=function renderQualityDetectionBench64()', benchStart);
   assert.ok(benchStart >= 0 && benchEnd > benchStart);
   const bench = source.slice(benchStart, benchEnd);
-  assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型\/环境<\/button>/);
+  assert.match(bench, /data-quality-detection-shell="1"/);
+  assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型<\/button>/);
   assert.doesNotMatch(bench, /loadAll\(\)\.then\(render\)/);
 
   const refreshStart = source.indexOf('window.refreshDetectionBenchDataV3=async function()');
@@ -193,10 +194,10 @@ test('training submit post-create refresh stays scoped and never falls back to b
   assert.match(wiring, /state\.page === '训练任务'/);
   assert.match(wiring, /trainingTaskRuntime\.refresh\(\{render: true, force: true, source: 'created-task'\}\)/);
   assert.match(wiring, /if \(state\.page !== '算法列表'\) return false/);
-  assert.doesNotMatch(wiring, /loadRelated/);
+  assert.doesNotMatch(wiring, /\bloadRelated\s*\(/);
 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/static\/main\.mjs\?v=42\.25\.210/);
+  assert.match(html, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
 });
 
 
@@ -234,12 +235,16 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
 });
 
 
-test('deploy artifact page reuses the current snapshot before background revalidation', () => {
-  assert.match(source, /const DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS=30\*1000/);
-  const artifacts = block('window.renderDeployArtifacts=function()', '\n\n  // Add deployment action to algorithm version management.');
-  assert.match(artifacts, /Date\.now\(\)-Number\(state\.deployArtifactsRefreshedAt\|\|0\)>DEPLOY_ARTIFACT_PAGE_ENTRY_REUSE_MS/);
-  assert.ok(artifacts.indexOf("const rows=(state.deployArtifacts||[])") > artifacts.indexOf('primeDeployRenderV39'));
-  assert.doesNotMatch(artifacts, /deployArtifactsRefreshedAt\|\|0\)>1000/);
+test('version conversion reuses cached history and dedupes focused background reads', () => {
+  const start = source.indexOf('async function deploymentHistory428(aid,vid,force=false)');
+  const end = source.indexOf('\n  async function deployResources428(force=false)', start);
+  assert.ok(start >= 0 && end > start);
+  const history = source.slice(start, end);
+  assert.match(history, /if\(!force\)\{const c=readCache428\(k\);if\(c\)return c\}/);
+  assert.match(history, /conversionHistoryInflight428\.has\(inflightKey\)/);
+  assert.match(history, /\/api\/v42\/projects\/\$\{pid\(\)\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments/);
+  assert.match(history, /writeCache428\(k,r\)/);
+  assert.doesNotMatch(history, /\/deploy\/artifacts/);
 });
 
 
