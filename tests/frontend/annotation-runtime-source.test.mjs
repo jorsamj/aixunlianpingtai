@@ -110,3 +110,10 @@ test('dataset cards show transient AI review truth without treating it as formal
   assert.match(source, /标注来源/);
   assert.match(source, /AI任务/);
 });
+
+
+test('material card patching prefers stable material id over filename', () => {
+  assert.match(source, /data-material-id=/);
+  assert.match(source, /CSS\.escape\(materialId\)/);
+  assert.match(source, /const cards=.*\.data412-card,.data429-card/s);
+});

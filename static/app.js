@@ -5044,7 +5044,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
 
   window.patchMaterialCard412=function(image){
-    if(!image)return;const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));if(!card)return;
+    if(!image)return;
+    const materialId=String(image.id||''),byId=materialId?document.querySelector(`.data412-card[data-material-id="${CSS.escape(materialId)}"]`):null;
+    const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=byId||cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));
+    if(!card)return;
     const meta=card.querySelectorAll('.data426-meta span');if(meta[1])meta[1].textContent=materialAnnotationStatus420(image);
     const tags=card.querySelector('.data426-tags');if(tags)tags.innerHTML=(image.labels||[]).map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<em>暂无标签</em>';
     const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);stage.insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
