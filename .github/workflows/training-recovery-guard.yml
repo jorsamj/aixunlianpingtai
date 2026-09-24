@@ -94,10 +94,11 @@ jobs:
           grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js
           grep -Fq 'allow_version_archive=False' app.py
           grep -Fq 'terminal live event performs one final canonical detail and log reconciliation' tests/frontend/training-recovery-runtime.test.mjs
+          grep -Fq 'incomingStatusSource = job?.task_status ?? job?.persisted_status ?? job?.status' static/modules/training-recovery-runtime.js
           grep -Fq 'oldDialog.replaceChildren(...Array.from(nextDialog.childNodes))' static/modules/training-recovery-runtime.js
           grep -Fq "data-identity-probe', 'overlay-stable'" tests/browser/training-recovery.spec.mjs
           grep -Fq 'training_job_detail_never_archives_versions_from_read_poll' tests/api/test_training_unified_task_overlay.py
-          grep -Fq "training-recovery-runtime.js?v=422576" static/main.mjs
+          grep -Fq "training-recovery-runtime.js?v=422577" static/main.mjs
           grep -Fq 'main.mjs?v=42.25.227' static/index.html
           grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
           if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then

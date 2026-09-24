@@ -507,7 +507,18 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const taskId = String(job?.id || job?.task_id || '');
     if (!openTaskId || taskId !== String(openTaskId)) return false;
     const current = openSnapshot?.job || {};
-    const merged = {...current, ...job};
+    // Live durable truth must outrank a stale task_status kept in the open
+    // detail snapshot. Some event producers expose the canonical state as
+    // persisted_status/status rather than task_status; normalize only the
+    // incoming payload before merging so RUNNING can never mask SUCCEEDED,
+    // PARTIAL_SUCCESS, FAILED, or another newer terminal state.
+    const incomingStatusSource = job?.task_status ?? job?.persisted_status ?? job?.status;
+    const incomingTaskStatus = canonicalTaskStatus(incomingStatusSource);
+    const merged = {
+      ...current,
+      ...job,
+      ...(incomingTaskStatus ? {task_status: incomingTaskStatus} : {}),
+    };
     const flags = taskStatusFlags(merged);
     const recovery = flags.success ? {} : (openSnapshot?.recovery || {});
     if (flags.success) merged.recovery = undefined;
