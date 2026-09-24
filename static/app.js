@@ -5026,9 +5026,20 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   window.closeModal=async function closeModalCanonical420(){
     window.beforeCloseStorageImport61?.();
-    const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers.at(-1);
-    if(top?.querySelector('.ann420-stable')&&state.annotationWorkbench?.dirty){const ok=await window.saveAnn(true);if(!ok)return false}
-    if(top?.querySelector('.ann420-stable')){state.annPointerAbort?.abort?.();state.annPointerAbort=null;const workbench=state.annotationWorkbench;if(typeof workbench?.cancel==='function')workbench.cancel();else workbench?.invalidate?.();state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420=''}
+    const layers=[...document.querySelectorAll('.v424-modal-layer')];
+    const base=document.getElementById('modal');
+    const top=layers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
+    const annotationRoot=top?.querySelector('.ann420-stable');
+    if(annotationRoot&&state.annotationWorkbench?.dirty){
+      const ok=await window.saveAnn(true);
+      if(!ok)return false;
+    }
+    if(annotationRoot){
+      state.annPointerAbort?.abort?.();state.annPointerAbort=null;
+      const workbench=state.annotationWorkbench;
+      if(typeof workbench?.cancel==='function')workbench.cancel();else workbench?.invalidate?.();
+      state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420='';
+    }
     return window.closeModalCore424?.();
   };
 })();

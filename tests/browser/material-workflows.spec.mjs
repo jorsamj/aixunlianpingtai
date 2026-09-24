@@ -297,6 +297,41 @@ test('professional annotation workbench survives repeated open-close cycles and 
   await expect(dialog.locator('#annBoxes [data-ann-box-key]')).toHaveCount(1);
 });
 
+
+test('closing the base annotation workbench persists dirty boxes before teardown', async ({page, request}) => {
+  const project = await createMaterialProject(request, `标注关闭保存-${Date.now()}`);
+  const image = await uploadImage(request, project.id, 'close-save.bmp', [80, 150, 210]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [image.id]}
+  });
+  await selectProject(page, project.id);
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  const card = page.locator('.data412-card', {hasText: 'close-save.bmp'});
+  await card.getByRole('button', {name: '标注'}).click();
+
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
+  await expect(dialog).toBeVisible();
+  const imageBox = await dialog.locator('#annImg').boundingBox();
+  expect(imageBox).not.toBeNull();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(imageBox.x + imageBox.width * 0.7, imageBox.y + imageBox.height * 0.7, {steps: 4});
+  await page.mouse.up();
+  await expect(dialog.locator('#annSaveState')).toHaveText('未保存');
+
+  await dialog.getByRole('button', {name: '关闭', exact: true}).click();
+  await expect(dialog).toBeHidden();
+
+  const saved = await request.get(`/api/projects/${project.id}/annotations/${image.id}`);
+  expect(saved.ok()).toBe(true);
+  const body = await saved.json();
+  expect(body.annotation?.boxes || []).toHaveLength(1);
+  expect(body.annotation?.annotation_state).toBe('annotated');
+});
+
 test('batch annotation requires explicit empty confirmation and advances across consecutive images', async ({page, request}) => {
   const project = await createMaterialProject(request, `连续空标注-${Date.now()}`);
   const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
