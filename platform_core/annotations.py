@@ -67,17 +67,17 @@ def normalize_boxes(
 def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str | None = None) -> dict:
     state = annotation_state or ("annotated" if boxes else "unannotated")
     label_counts: dict[str, int] = {}
-    sources = set()
+    source_values = []
     for box in boxes:
         label = str(box.get("label") or "").strip()
         if label:
             label_counts[label] = label_counts.get(label, 0) + 1
-        source = str(box.get("source") or "").strip().lower()
-        if source:
-            sources.add(source)
+        source_values.append(str(box.get("source") or "").strip().lower())
     labels = sorted(label_counts)
-    has_ai = any(source.startswith("ai_") or source in {"auto", "semi-auto"} for source in sources)
-    has_non_ai = any(not (source.startswith("ai_") or source in {"auto", "semi-auto"}) for source in sources)
+    is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
+    has_ai = any(is_ai_source(source) for source in source_values)
+    has_non_ai = any(not is_ai_source(source) for source in source_values)
+    has_import = any("import" in source for source in source_values if source)
     if state == "unannotated":
         origin = "unannotated"
     elif state == "confirmed_empty":
@@ -86,7 +86,7 @@ def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str
         origin = "mixed"
     elif has_ai:
         origin = "ai_confirmed"
-    elif any("import" in source for source in sources):
+    elif has_import:
         origin = "imported"
     else:
         origin = "manual"

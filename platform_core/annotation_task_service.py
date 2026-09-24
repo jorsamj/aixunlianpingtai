@@ -344,10 +344,10 @@ def commit_candidate_decisions(
             replaced_classes = {box.get("class_id") for box in incoming}
             previous = [box for box in previous if box.get("class_id") not in replaced_classes]
         final_boxes = previous + incoming
-        sources = {str(box.get("source") or "").strip().lower() for box in final_boxes}
-        sources.discard("")
-        has_ai = any(source.startswith("ai_") or source in {"auto", "semi-auto"} for source in sources)
-        has_non_ai = any(not (source.startswith("ai_") or source in {"auto", "semi-auto"}) for source in sources)
+        source_values = [str(box.get("source") or "").strip().lower() for box in final_boxes]
+        is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
+        has_ai = any(is_ai_source(source) for source in source_values)
+        has_non_ai = any(not is_ai_source(source) for source in source_values)
         annotation_origin = (
             "mixed" if has_ai and has_non_ai
             else "ai_confirmed" if incoming or has_ai or not final_boxes

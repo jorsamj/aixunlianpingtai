@@ -4089,8 +4089,17 @@ def _v52_annotation_index_worker(project_id: str):
             image_id = str(img.get("id"))
             anns = read_annotation(project_id, image_id)
             boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
+            summary = annotation_summary(boxes, anns.get('annotation_state'))
+            # Empty GT has no box-level provenance. Preserve the durable material
+            # projection written by an AI-reviewed empty commit when rebuilding
+            # an annotation index; annotated rows can reconstruct provenance from boxes.
+            if (
+                summary.get("annotation_state") == "confirmed_empty"
+                and str(img.get("annotation_origin") or "") == "ai_confirmed"
+            ):
+                summary["annotation_origin"] = "ai_confirmed"
             patch = {
-                **annotation_summary(boxes, anns.get('annotation_state')),
+                **summary,
                 "annotation_summary_at": anns.get("updated_at") or now_iso(),
             }
             if boxes:
