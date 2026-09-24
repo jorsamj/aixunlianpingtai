@@ -21,7 +21,13 @@ from pydantic import BaseModel, Field
 from .algorithms import list_algorithms, update_algorithm_version
 from .errors import PlatformError
 from .integration_audit import IntegrationAuditRepository
-from .model_artifacts import ArtifactOSSConfigPayload, ModelArtifactConfigPayload, ModelArtifactService, StorageTestPayload
+from .model_artifacts import (
+    ArtifactOSSConfigPayload,
+    ModelArtifactConfigPayload,
+    ModelArtifactService,
+    StorageTestPayload,
+    SUCCESSFUL_CONVERSION_STATUSES as MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES,
+)
 from .external_algorithm_platform import (
     DEFAULT_CONFIG as EXTERNAL_PLATFORM_DEFAULT_CONFIG,
     PROVIDER_CHANGLIAN,
@@ -40,7 +46,12 @@ PUBLICATION_SCHEMA_VERSION = 4
 DEFAULT_AUTO_PUBLISH_RETRY_SECONDS = 300
 SUCCESSFUL_VERSION_STATUSES = {"SUCCEEDED", "PARTIAL_SUCCESS", "DONE", "FINISHED", "COMPLETED"}
 ACTIVE_CONVERSION_STATUSES = {"queued", "running", "waiting", "pending", "cancel_requested"}
-SUCCESSFUL_CONVERSION_STATUSES = {"done", "finished", "completed", "success", "succeeded", "partial_success"}
+# ModelArtifact is the canonical owner of conversion deliverability. Keep the
+# external publisher on the exact same terminal set so an RKNN file that was
+# successfully generated but still awaits real-board validation
+# (blocked_by_hardware) is archived and appended to ChangLian instead of being
+# silently skipped.
+SUCCESSFUL_CONVERSION_STATUSES = frozenset(MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES)
 TARGET_KEYS = ("onnx", "tensorrt", "ascend", "rockchip", "sophon", "paddle_inference", "original")
 
 
