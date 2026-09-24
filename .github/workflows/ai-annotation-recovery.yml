@@ -3,23 +3,36 @@ name: AI Annotation Recovery
 on:
   push:
     branches:
+      - feature/external-algorithm-publishing
       - refactor/frontend-runtime-stabilization
     paths:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/annotations.py
+      - static/app.js
+      - static/styles.css
+      - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
       - tests/frontend/annotation-task-view.test.mjs
+      - tests/frontend/annotation-runtime-source.test.mjs
+      - tests/frontend/ai-review-label-usability.test.mjs
       - .github/workflows/ai-annotation-recovery.yml
   pull_request:
     paths:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/annotations.py
+      - static/app.js
+      - static/styles.css
+      - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
       - tests/frontend/annotation-task-view.test.mjs
+      - tests/frontend/annotation-runtime-source.test.mjs
+      - tests/frontend/ai-review-label-usability.test.mjs
       - .github/workflows/ai-annotation-recovery.yml
   workflow_dispatch:
 
@@ -58,7 +71,11 @@ jobs:
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
       - name: Annotation recovery frontend truth
-        run: node --test tests/frontend/annotation-task-view.test.mjs
+        run: >-
+          node --test
+          tests/frontend/annotation-task-view.test.mjs
+          tests/frontend/annotation-runtime-source.test.mjs
+          tests/frontend/ai-review-label-usability.test.mjs
       - name: Permanent recovery source guard
         shell: python
         run: |
