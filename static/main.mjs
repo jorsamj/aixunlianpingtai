@@ -10,6 +10,7 @@ import {installPageRequestScope} from './modules/page-request-scope.js?v=422502'
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422565';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63020';
+import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64005';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65008';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422578';
@@ -152,6 +153,13 @@ const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime
   algorithmListRuntime,
 });
 window.PlatformCore.runtime.externalAlgorithmPlatformRuntime = externalAlgorithmPlatformRuntime;
+
+const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
+  getState: () => state,
+  request: api,
+  notify,
+});
+window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRuntime;
 
 const externalAlgorithmPublishRuntime = installExternalAlgorithmPublishRuntime({
   getState: () => state,
@@ -470,6 +478,13 @@ const unregisterExternalPlatformPageOwner = navigationStabilityRuntime.registerP
 ));
 window.PlatformCore.runtime.externalPlatformPageOwner = {
   destroy() { unregisterExternalPlatformPageOwner?.(); },
+};
+
+const unregisterChangLianDataBrowserPageOwner = navigationStabilityRuntime.registerPageOwner('畅联云数据', () => (
+  changLianDataBrowserRuntime?.render?.()
+));
+window.PlatformCore.runtime.changLianDataBrowserPageOwner = {
+  destroy() { unregisterChangLianDataBrowserPageOwner?.(); changLianDataBrowserRuntime?.destroy?.(); },
 };
 
 // Component detection is a canonical business page. Own it directly instead of

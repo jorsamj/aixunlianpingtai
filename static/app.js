@@ -3979,7 +3979,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 /* v42.13 startup prepared snapshot */
 (()=>{
  const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
- const RESTORABLE_PAGES413=new Set(['总览','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','训练资源','组件检测','存储配置','平台对接','服务节点']);
+ const RESTORABLE_PAGES413=new Set(['总览','质量中心','算法列表','训练任务','素材接入','数据集','视频切帧','自动标注及清洗','标签管理','模型配置','训练资源','组件检测','存储配置','平台对接','畅联云数据','服务节点']);
  window.PlatformCore=window.PlatformCore||{};
  window.PlatformCore.navigation=window.PlatformCore.navigation||{};
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
@@ -3995,7 +3995,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   '算法列表':'算法生成','训练任务':'算法生成','训练资源':'高级功能',
   '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
   '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
-  '平台对接':'系统与对接','服务节点':'系统与对接',
+  '平台对接':'系统与对接','畅联云数据':'系统与对接','服务节点':'系统与对接',
  });
  renderTop=function renderTopCanonical413(){
    const crumb=document.getElementById('crumb'),title=document.getElementById('title'),desc=document.getElementById('pageDesc');
@@ -4076,7 +4076,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   window.refreshLabels414=refreshLabels414;
 
   // ---------- visible configuration center: label schema ----------
-  const icon414={总览:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',存储配置:'▣',组件检测:'⌁',平台对接:'↔',服务节点:'◫'};
+  const icon414={总览:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',存储配置:'▣',组件检测:'⌁',平台对接:'↔',畅联云数据:'▥',服务节点:'◫'};
   renderNav=function(){
     const groups=[
       {title:'总览',items:['总览','质量中心']},
@@ -4085,7 +4085,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     ];
     if(state.v427Advanced)groups.push(
       {title:'高级功能',items:['训练资源','模型配置','存储配置','组件检测','服务节点']},
-      {title:'系统与对接',items:['平台对接']}
+      {title:'系统与对接',items:['平台对接','畅联云数据']}
     );
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };

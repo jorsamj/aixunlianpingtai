@@ -198,6 +198,7 @@ test('training resource page composes an explicit base owner instead of wrapping
 
 test('platform and component pages keep dedicated owners', () => {
   assert.match(main, /registerPageOwner\('平台对接'/);
+  assert.match(main, /registerPageOwner\('畅联云数据'/);
   assert.match(main, /registerPageOwner\('组件检测'/);
 });
 
@@ -252,7 +253,7 @@ test('navigation chrome resolves to direct final owners without wrapper chaining
   assert.match(finalNavOwner, /\{title:'算法生成',items:\['算法列表','训练任务'\]\}/);
   assert.match(finalNavOwner, /\{title:'数据中心',items:\['数据集','视频切帧','自动标注及清洗','标签管理'\]\}/);
   assert.match(finalNavOwner, /\{title:'高级功能',items:\['训练资源','模型配置','存储配置','组件检测','服务节点'\]\}/);
-  assert.match(finalNavOwner, /\{title:'系统与对接',items:\['平台对接'\]\}/);
+  assert.match(finalNavOwner, /\{title:'系统与对接',items:\['平台对接','畅联云数据'\]\}/);
   assert.doesNotMatch(finalNavOwner, /部署资源|部署插件|部署转换|部署产物/);
   assert.doesNotMatch(finalNavOwner, /title:'测试评测'|title:'部署中心'/);
 });

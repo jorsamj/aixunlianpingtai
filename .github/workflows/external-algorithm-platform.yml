@@ -16,6 +16,7 @@ on:
       - static/app.js
       - static/index.html
       - static/modules/external-algorithm-platform.js
+      - static/modules/changlian-data-browser.js
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - static/modules/training-submit.js
@@ -27,7 +28,9 @@ on:
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/changlian-data-browser.test.mjs
       - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/browser/changlian-data-browser.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
       - tests/frontend/startup-render-owner.test.mjs
@@ -54,6 +57,7 @@ on:
       - static/app.js
       - static/index.html
       - static/modules/external-algorithm-platform.js
+      - static/modules/changlian-data-browser.js
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - static/modules/training-submit.js
@@ -65,7 +69,9 @@ on:
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/changlian-data-browser.test.mjs
       - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/browser/changlian-data-browser.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
       - tests/frontend/startup-render-owner.test.mjs
@@ -102,6 +108,7 @@ jobs:
         run: |
           node --test \
             tests/frontend/external-algorithm-platform.test.mjs \
+            tests/frontend/changlian-data-browser.test.mjs \
             tests/frontend/model-artifact-runtime.test.mjs \
             tests/frontend/algorithm-list-runtime.test.mjs \
             tests/frontend/startup-render-owner.test.mjs
@@ -109,6 +116,7 @@ jobs:
         run: |
           python -m py_compile app.py task_worker.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_auto_sync.py platform_core/integration_audit.py platform_core/storage/source_repository.py
           node --check static/modules/external-algorithm-platform.js
+          node --check static/modules/changlian-data-browser.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
           node --check static/modules/training-submit.js
@@ -327,10 +335,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome ChangLian manual connectivity flow
-        run: npx playwright test tests/browser/external-algorithm-platform.spec.mjs
+        run: npx playwright test tests/browser/external-algorithm-platform.spec.mjs tests/browser/changlian-data-browser.spec.mjs
       - name: Browser permanent guards
         run: |
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "changlian data page never auto-loads and manual refresh shows remote products versions weights and download links" tests/browser/changlian-data-browser.spec.mjs
+          grep -Fq "build: 'changlian-data-browser-63001'" static/modules/changlian-data-browser.js
+          grep -Fq "provider/products?status=1" static/modules/changlian-data-browser.js
           grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
           grep -Fq '已核对 31 个官方 OpenAPI 接口' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
