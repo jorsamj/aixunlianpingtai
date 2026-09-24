@@ -60,7 +60,7 @@ test('vendor mapping UI keeps universal original model mapping mandatory', () =>
   assert.match(source, /厂商对应表/);
   assert.match(source, /通用是特殊映射/);
   assert.match(source, /训练刚完成、尚未转换的原始模型/);
-  assert.match(source, /平台对接 → 厂商对应表/);
+  assert.match(source, /original 的畅联云算力环境映射/);
   assert.match(source, /enabled: key === 'original' \? true/);
   assert.match(source, /data-platform-tab-panel="vendor"/);
   assert.match(source, /拉取畅联云厂商/);
@@ -178,17 +178,18 @@ test('manual publish preflight accepts mapped artifacts and reports intentional 
   const result = publicationPreflight({
     conversion_active: false,
     discovered: [
-      {target: 'rockchip', publish_mapping_status: 'mapped'},
+      {target: 'original', publish_mapping_status: 'mapped'},
       {target: 'onnx', publish_mapping_status: 'ignored'},
     ],
     mapped_artifact_count: 1,
     blocked_artifact_count: 0,
+    deferred_conversion_count: 0,
     ignored_artifact_count: 1,
     publish_ready: true,
   });
 
   assert.equal(result.ready, true);
-  assert.match(result.message, /同步 1 个权重/);
+  assert.match(result.message, /先同步原始模型/);
   assert.match(result.message, /1 个转换目标已明确关闭发布/);
 });
 

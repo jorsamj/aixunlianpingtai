@@ -142,6 +142,8 @@ jobs:
           grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
           grep -q "def _mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "def _artifact_mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_CHIP_REQUIRED" platform_core/external_algorithm_publish.py
           grep -q "def _publish_transport_state" platform_core/external_algorithm_publish.py
           grep -q "def _assert_publish_transport_ready" platform_core/external_algorithm_publish.py
           grep -q "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED" platform_core/external_algorithm_publish.py
