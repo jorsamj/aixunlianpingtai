@@ -1908,7 +1908,7 @@ def test_rockchip_missing_chip_is_blocked_without_blocking_original_and_config_s
 
     first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
-    assert first["publication"]["status"] == "PUBLISHED"
+    assert first["publication"]["status"] == "PUBLISHED", first
     assert FakePublishingClient.version_creates == 1
     assert FakePublishingClient.weight_creates == 1
     assert first["deferred_conversions"]

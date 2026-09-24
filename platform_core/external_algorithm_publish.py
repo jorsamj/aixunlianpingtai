@@ -1923,8 +1923,15 @@ class ExternalAlgorithmPublishService:
                     exact_ids.add(weight_id)
                 else:
                     related.append(row)
-            elif same_file and same_platform:
+            elif same_file and same_platform and same_chip:
+                # Same provider identity but a conflicting filePath is unsafe.
                 related.append(row)
+            elif same_file and same_platform and expected_chip and not remote_chip:
+                # A chip-specific local artifact cannot safely claim a remote
+                # row that omitted chipCode; keep this fail-closed.
+                related.append(row)
+            # Different explicit chip identities are distinct weights and may
+            # coexist under the same Version/compute platform/file name.
         if len(exact_ids) > 1 or related:
             raise PlatformError(
                 "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS",
