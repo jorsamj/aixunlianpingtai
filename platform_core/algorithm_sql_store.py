@@ -13,7 +13,7 @@ from filelock import FileLock
 from .errors import PlatformError
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
 _INIT_LOCK_TIMEOUT = 30
@@ -612,6 +612,7 @@ class AlgorithmSqlStore:
         *,
         allow_legacy_remote_fields: bool = False,
     ) -> None:
+        version = self._canonical_training_version(version)
         if not allow_legacy_remote_fields:
             self._reject_legacy_remote_field_mutation(version)
         conn.execute(
@@ -763,7 +764,48 @@ class AlgorithmSqlStore:
                 );
             """
         )
+        self._repair_missing_training_version_numbers(conn)
         self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+
+    def _repair_missing_training_version_numbers(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT id, version_name, payload_json
+            FROM algorithm_versions
+            WHERE training_job_id IS NOT NULL
+              AND TRIM(COALESCE(version_no, '')) = ''
+            """
+        ).fetchall()
+        for row in rows:
+            version_name = str(row["version_name"] or "").strip()
+            if len(version_name) != 14 or not version_name.isdigit():
+                continue
+            payload = self._json_object(row["payload_json"])
+            payload["version_no"] = version_name
+            conn.execute(
+                "UPDATE algorithm_versions SET version_no=?, payload_json=? WHERE id=?",
+                (version_name, self._dumps(payload), str(row["id"])),
+            )
+
+    @staticmethod
+    def _canonical_training_version(version: Mapping[str, Any]) -> dict:
+        value = dict(version)
+        version_no = str(value.get("version_no") or "").strip()
+        version_name = str(value.get("version_name") or "").strip()
+        training_job_id = str(
+            value.get("task_id")
+            or value.get("job_id")
+            or value.get("training_job_id")
+            or ""
+        ).strip()
+        if (
+            not version_no
+            and training_job_id
+            and len(version_name) == 14
+            and version_name.isdigit()
+        ):
+            value["version_no"] = version_name
+        return value
 
     def _replace_all(
         self,
@@ -799,7 +841,11 @@ class AlgorithmSqlStore:
         version_ids: set[str] = set()
         for index, item in enumerate(rows):
             algorithm_id = str(item["id"])
-            versions = [dict(v) for v in (item.get("versions") or []) if isinstance(v, Mapping)]
+            versions = [
+                self._canonical_training_version(v)
+                for v in (item.get("versions") or [])
+                if isinstance(v, Mapping)
+            ]
             analyses = [dict(a) for a in (item.get("external_analyses") or []) if isinstance(a, Mapping)]
             payload = dict(item)
             payload.pop("versions", None)

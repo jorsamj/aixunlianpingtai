@@ -74,6 +74,10 @@ jobs:
           grep -q 'AlgorithmSqlStore' platform_core/algorithms.py
           grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
           grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
+          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _canonical_training_version' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_schema_v2_backfills_only_durable_timestamp_training_version_numbers' tests/unit/test_algorithm_sql_store.py
           grep -q 'def attach_version(self, algorithm_id' platform_core/algorithm_sql_store.py
           grep -Fq '"training_lineage": training_lineage' app.py
           grep -Fq '"evaluation": evaluation' app.py

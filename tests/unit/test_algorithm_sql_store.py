@@ -228,10 +228,69 @@ def test_schema_v1_store_upgrades_indexes_without_rewriting_data(tmp_path: Path)
             ).fetchall()
         }
 
-    assert schema_version == "2"
+    assert schema_version == "3"
     assert "idx_algorithms_project_sort" in indexes
     assert "idx_analyses_algorithm_sort" in indexes
     assert reopened.read_one("algorithm-preserved")["name"] == "保留算法"
+
+
+def test_schema_v2_backfills_only_durable_timestamp_training_version_numbers(tmp_path: Path):
+    project = tmp_path / "projects" / "p-version-number-v3"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    store.create_algorithm({
+        "id": "algorithm-v3",
+        "name": "版本号迁移",
+        "versions": [],
+        "current_version_id": None,
+    })
+    store.attach_version("algorithm-v3", {
+        "id": "training-version",
+        "version_name": "20260924063157",
+        "task_id": "train-durable-1",
+        "training_status": "SUCCEEDED",
+    })
+    store.attach_version("algorithm-v3", {
+        "id": "manual-version",
+        "version_name": "20260924070000",
+        "training_status": "SUCCEEDED",
+    })
+
+    with sqlite3.connect(store.db_path) as connection:
+        for version_id in ("training-version", "manual-version"):
+            payload_raw = connection.execute(
+                "SELECT payload_json FROM algorithm_versions WHERE id=?",
+                (version_id,),
+            ).fetchone()[0]
+            payload = json.loads(payload_raw)
+            payload.pop("version_no", None)
+            connection.execute(
+                "UPDATE algorithm_versions SET version_no=NULL, payload_json=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), version_id),
+            )
+        connection.execute(
+            "UPDATE algorithm_store_meta SET value='2' WHERE key='schema_version'"
+        )
+        connection.commit()
+
+    reopened = AlgorithmSqlStore(json_path)
+    reopened.ensure_ready()
+    versions = {
+        row["id"]: row
+        for row in reopened.read_one("algorithm-v3")["versions"]
+    }
+
+    assert versions["training-version"]["version_no"] == "20260924063157"
+    assert not str(versions["manual-version"].get("version_no") or "")
+    with sqlite3.connect(reopened.db_path) as connection:
+        schema_version = connection.execute(
+            "SELECT value FROM algorithm_store_meta WHERE key='schema_version'"
+        ).fetchone()[0]
+    assert schema_version == "3"
 
 
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):

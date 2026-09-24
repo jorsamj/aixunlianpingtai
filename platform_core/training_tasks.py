@@ -1387,12 +1387,14 @@ class TrainingHandler:
             "iteration_decision": iteration_decision,
         })
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         attach_version(
             algorithms_path,
             str(algorithm.get("id")),
             {
                 "id": uuid.uuid4().hex[:12],
-                "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                "version_name": version_name,
+                "version_no": version_name,
                 "stored_path": str(primary),
                 "best_path": str(best_output) if best_output else "",
                 "last_path": str(last_output) if last_output else "",

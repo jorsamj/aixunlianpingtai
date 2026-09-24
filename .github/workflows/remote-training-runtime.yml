@@ -334,6 +334,8 @@ jobs:
           grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
           grep -Fq '"external_analysis_id": str(payload.get("external_analysis_id") or "").strip()' platform_core/remote_execution_transport.py
           grep -Fq '"external_analysis_id": str(payload.get("external_analysis_id") or "").strip()' platform_core/training_tasks.py
+          grep -Fq '"version_no": version_name' platform_core/training_tasks.py
+          grep -Fq 'assert versions[0]["version_no"] == versions[0]["version_name"]' tests/integration/test_training_task_worker.py
           grep -Fq 'assert versions[0]["external_analysis_id"] == "analysis-durable-1"' tests/integration/test_training_task_worker.py
           grep -Fq 'assert version["external_analysis_id"] == "analysis-visual-1"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py

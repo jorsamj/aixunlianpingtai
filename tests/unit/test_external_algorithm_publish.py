@@ -2007,6 +2007,62 @@ def test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_sa
     assert FakePublishingClient.weight_creates == 0
 
 
+def test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    algorithms_path = _algorithms_file(tmp_path, "p1")
+    # Simulate a version written by the pre-v3 durable Training Task owner:
+    # timestamp version_name + training_job_id, but no durable version_no.
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+    store = AlgorithmSqlStore(algorithms_path)
+    store.ensure_ready()
+    with sqlite3.connect(store.db_path) as connection:
+        payload_raw = connection.execute(
+            "SELECT payload_json FROM algorithm_versions WHERE id='v1'"
+        ).fetchone()[0]
+        payload = json.loads(payload_raw)
+        payload.pop("version_no", None)
+        payload["task_id"] = "train-durable-old"
+        connection.execute(
+            """
+            UPDATE algorithm_versions
+            SET version_no=NULL, training_job_id=?, payload_json=?
+            WHERE id='v1'
+            """,
+            ("train-durable-old", json.dumps(payload, ensure_ascii=False)),
+        )
+        connection.execute(
+            "UPDATE algorithm_store_meta SET value='2' WHERE key='schema_version'"
+        )
+        connection.commit()
+
+    FakePublishingClient.versions = [{
+        "algoVersionId": "remote-version-recovered",
+        "versionName": "20260917120000",
+        "versionNo": "20260917120000",
+        "analysisId": "analysis-1",
+        "productId": "product-1",
+    }]
+
+    algorithm = list_algorithms(algorithms_path)[0]
+    version = algorithm["versions"][0]
+    assert version["version_no"] == version["version_name"]
+
+    result = service.delete_version_for_rollback(
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+
+    assert result["status"] == "deleted"
+    assert result["external_algo_version_id"] == "remote-version-recovered"
+    assert FakePublishingClient.removed_version_ids == ["remote-version-recovered"]
+
+
 def test_rollback_remote_delete_uses_official_version_remove(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()

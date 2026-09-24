@@ -7,6 +7,8 @@ on:
       - app.py
       - platform_core/external_algorithm_publish.py
       - platform_core/algorithms.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
       - platform_core/integration_audit.py
       - static/main.mjs
@@ -15,6 +17,8 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_model_artifacts.py
       - tests/unit/test_integration_audit.py
@@ -29,6 +33,8 @@ on:
       - app.py
       - platform_core/external_algorithm_publish.py
       - platform_core/algorithms.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
       - platform_core/integration_audit.py
       - static/main.mjs
@@ -37,6 +43,8 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_model_artifacts.py
       - tests/unit/test_integration_audit.py
@@ -208,6 +216,9 @@ jobs:
           grep -q "test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_external_algorithm_publish.py
           grep -q "test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
           grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
           grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py
           grep -q "EXTERNAL_VERSION_DELETE_FAILED" platform_core/external_algorithm_publish.py

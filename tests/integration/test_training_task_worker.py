@@ -194,6 +194,9 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     versions = list_algorithms(project / "algorithms.json")[0]["versions"]
     assert len(versions) == 1
     assert versions[0]["training_status"] == "SUCCEEDED"
+    assert len(str(versions[0]["version_name"])) == 14
+    assert str(versions[0]["version_name"]).isdigit()
+    assert versions[0]["version_no"] == versions[0]["version_name"]
     assert versions[0]["external_analysis_id"] == "analysis-durable-1"
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["dataset_revision_id"] == result["dataset_revision_id"]
