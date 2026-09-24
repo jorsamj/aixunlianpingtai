@@ -4223,7 +4223,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
           const l=labels.find(x=>Number(x.class_id)===Number(b.class_id));
           let row=rows.get(key);
           if(!row){
-            row=document.createElement('div');row.className='ann414-boxrow';row.dataset.annBoxKey=key;
+            row=document.createElement('div');row.className='ann414-boxrow';row.dataset.annBoxKey=key;row.setAttribute('data-ann-box-key',key);
             const summary=document.createElement('span'),dot=document.createElement('i'),title=document.createElement('b'),subtitle=document.createElement('em'),select=document.createElement('select');
             select.className='select';select.onclick=event=>event.stopPropagation();select.onchange=()=>window.relabelBox414(Number(row.dataset.i),select.value);
             summary.append(dot,title,subtitle);row.append(summary,select);
@@ -5178,7 +5178,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
       </div>
       <datalist id="ai60PlatformLabelOptions"></datalist>
-      <details class="ai66-label-tools">
+      <details class="ai66-label-tools" open>
         <summary>标签映射与批量统一</summary>
         <div id="ai60LabelMapping"></div>
         <section class="ai60-bulk-review">
