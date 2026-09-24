@@ -187,6 +187,10 @@ export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},on
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/uploads/${encodeURIComponent(uploadId)}/complete`,{method:'POST',credentials:'same-origin'}));
 }
 
+export function isZipBootstrapReconcile(reason='') {
+  return ['bootstrap', 'bootstrap-ready'].includes(String(reason || ''));
+}
+
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null;
@@ -338,7 +342,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   async function reconcile(reason='manual'){
     if(busy||destroyed)return current;const project=pid();if(!project)return null;busy=true;
     try{
-      let server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);for(const job of jobs)publishTaskCenterJob(project,job);await maybeStart(project);await refreshKnown(project);if(reason!=='bootstrap')server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);current=pickZipJob(jobs);
+      let server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);for(const job of jobs)publishTaskCenterJob(project,job);await maybeStart(project);await refreshKnown(project);if(!isZipBootstrapReconcile(reason))server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);current=pickZipJob(jobs);
       if(current){patchState(current);if(TERMINAL_ZIP_STATUSES.has(status(current))){writeIntent(project,current.id,'');eligibleSince.delete(String(current.id||''))}}
       render();await applyCompletion(current,reason);return current;
     }finally{busy=false;arm()}
