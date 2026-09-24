@@ -437,7 +437,9 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(card).toBeVisible();
   await trainingStatusFilter.selectOption('blocked');
   await expect(card).toBeVisible();
-  await expect(card.locator('[data-external-stale]')).toHaveText('待同步');
+  const status = card.locator('.entity-status');
+  await expect(status).toHaveText('不可训练');
+  await expect(status).toHaveAttribute('title', /立即同步/);
   const trainButton = card.getByRole('button', {name: '训练'});
   await expect(trainButton).toBeDisabled();
   await expect(trainButton).toHaveAttribute('title', /立即同步/);

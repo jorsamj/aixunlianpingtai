@@ -234,17 +234,15 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
     }]})
   }));
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
-      projectId,
-      page: '部署资源'
-    }));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
   await page.goto('/');
   await expect.poll(
-    () => page.evaluate(() => typeof window.openDeployResourceModal),
+    () => page.evaluate(() => typeof state !== 'undefined' && state.uiReady === true && typeof window.openDeployResourceModal === 'function'),
     {timeout: 20_000},
-  ).toBe('function');
+  ).toBe(true);
 
   await page.evaluate(() => window.openDeployResourceModal());
   const dialog = page.getByRole('dialog', {name: '新增部署资源'});

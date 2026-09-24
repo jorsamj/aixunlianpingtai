@@ -50,6 +50,17 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await expect(artifactStorageHelp).toBeVisible();
   await expect(artifactStorageHelp).toContainText('独立配置训练模型、ONNX、RKNN');
   await expect(artifactStorageHelp).toContainText('不需要先在“素材存储”创建或选择存储源');
+  const stableStorageOwner = await page.evaluate(async () => {
+    const shell = document.querySelector('.storage61-shell');
+    const mount = document.getElementById('modelArtifactStorageMount');
+    await window.renderStorageSources61?.();
+    return {
+      shell: shell === document.querySelector('.storage61-shell'),
+      mount: mount === document.getElementById('modelArtifactStorageMount'),
+      panel: Boolean(document.querySelector('[data-model-artifact-panel="1"]')),
+    };
+  });
+  expect(stableStorageOwner).toEqual({shell: true, mount: true, panel: true});
   await expect(page.getByText('平台本地存储', {exact: true})).toBeVisible();
   await expect.poll(() => [
     revisitGets.sources > 0,

@@ -194,6 +194,14 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
       </div>
     </section>`;
   }
+  function mountStoragePanel({replace = false} = {}) {
+    const mount = document.getElementById('modelArtifactStorageMount');
+    if (!mount) return false;
+    if (!replace && mount.querySelector('[data-model-artifact-panel="1"]')) return false;
+    mount.innerHTML = storagePanel();
+    bindPanels();
+    return true;
+  }
   function auditPanel() {
     return `<section class="panel" data-changlian-audit-panel="1">
       <div class="panel-head"><div><div class="panel-title">畅联云交互日志</div><div class="subline">记录鉴权、主数据同步、版本和权重接口的结果、耗时与失败原因；敏感凭据自动脱敏。</div></div></div>
@@ -454,11 +462,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
         try { await loadModelConfig(); } finally { loading = false; }
       }
       if (!config || String(state().page || '') !== STORAGE_PAGE) return;
-      const mount = document.getElementById('modelArtifactStorageMount');
-      if (mount && !mount.querySelector('[data-model-artifact-panel="1"]')) {
-        mount.innerHTML = storagePanel();
-        bindPanels();
-      }
+      mountStoragePanel();
       return;
     }
     if (page !== PLATFORM_PAGE) return;
@@ -481,7 +485,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     const page = String(state().page || '');
     if (page === STORAGE_PAGE) {
       await loadModelConfig({force});
-      if (rerender) document.querySelector('[data-model-artifact-panel="1"]')?.remove();
+      if (rerender && mountStoragePanel({replace: true})) return;
       await renderPanels();
       return;
     }
@@ -505,7 +509,7 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
   schedule();
 
   const runtime = {
-    build: 'model-artifacts-65007',
+    build: 'model-artifacts-65008',
     refresh,
     renderPanels,
     openAuditDetail,
