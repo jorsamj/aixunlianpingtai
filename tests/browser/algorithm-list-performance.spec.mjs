@@ -134,6 +134,11 @@ test('algorithm registry cards expand from non-action areas and can show only tr
   const blocked = page.locator('[data-algorithm-id="blocked-card"]');
   await expect(trainable).toBeVisible();
   await expect(blocked).toBeVisible();
+  const cardGridTracks = await page.locator('.algorithm-card-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length);
+  expect(cardGridTracks).toBe(1);
+  await expect(trainable.locator('.algorithm-card-overview')).toBeVisible();
+  await expect(trainable.locator('.algorithm-card-stats')).toBeVisible();
+  await expect(trainable.locator('.algorithm-card-side')).toBeVisible();
 
   await trainable.locator('.algorithm-card-description').click();
   await expect(trainable).toHaveClass(/open/);

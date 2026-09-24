@@ -522,26 +522,30 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const remark = String(algorithm.remark || '').trim() || '暂无算法说明';
     const html = `<article class="alg428-card algorithm-registry-card ${open ? 'open' : ''}" data-algorithm-id="${esc(algorithm.id)}" data-algorithm-card="1" tabindex="0" aria-expanded="${open ? 'true' : 'false'}">
       <div class="alg428-main algorithm-card-main">
-        <header class="algorithm-card-head">
-          <span class="algorithm-avatar algorithm-card-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span>
-          <div class="algorithm-card-title"><div><h3 title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</h3><span class="entity-status ${statusClass}" title="${esc(trainability.message || meta.readiness?.message || '')}">${esc(status)}</span></div><div class="algorithm-card-tags">${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}</div></div>
-          <span class="algorithm-card-chevron" aria-hidden="true">⌄</span>
-        </header>
-        <p class="algorithm-card-description" title="${esc(remark)}">${esc(remark)}</p>
-        <div class="algorithm-card-stats">
-          <div><span>当前版本</span><b>${esc(version?.version_name || '尚未训练')}</b><small>${(algorithm.versions || []).length} 个版本</small></div>
-          <div><span>当前 mAP50</span><b class="${metric == null ? '' : 'metric'}">${metric == null ? '-' : `${metric.toFixed(1)}%`}</b><small>${metric == null ? '暂无指标' : '当前版本'}</small></div>
-          <div><span>训练次数</span><b>${count}</b><small>历史任务</small></div>
-        </div>
-        <footer class="algorithm-card-footer">
-          <div class="algorithm-card-updated"><span>最近更新</span><b>${dateText(updated)}</b></div>
-          <div class="entity-row-actions algorithm-card-actions">
-            <button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button>
-            <button onclick="algorithmReport429('${esc(algorithm.id)}')">报告</button>
-            <button class="primary-link" data-algorithm-train="${esc(algorithm.id)}" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${trainability.ready ? '' : `disabled title="${esc(trainability.message || '当前不可训练')}"`}>训练</button>
-            <details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
+        <div class="algorithm-card-overview">
+          <section class="algorithm-card-primary">
+            <header class="algorithm-card-head">
+              <span class="algorithm-avatar algorithm-card-avatar">${esc(String(algorithm.name || '算').slice(0, 1))}</span>
+              <div class="algorithm-card-title"><div><h3 title="${esc(algorithm.name || '')}">${esc(algorithm.name || '未命名算法')}</h3><span class="entity-status ${statusClass}" title="${esc(trainability.message || meta.readiness?.message || '')}">${esc(status)}</span></div><div class="algorithm-card-tags">${tags.map(tag => `<em>${esc(tag)}</em>`).join('')}</div></div>
+              <span class="algorithm-card-chevron" aria-hidden="true">⌄</span>
+            </header>
+            <p class="algorithm-card-description" title="${esc(remark)}">${esc(remark)}</p>
+          </section>
+          <div class="algorithm-card-stats">
+            <div><span>当前版本</span><b>${esc(version?.version_name || '尚未训练')}</b><small>${(algorithm.versions || []).length} 个版本</small></div>
+            <div><span>当前 mAP50</span><b class="${metric == null ? '' : 'metric'}">${metric == null ? '-' : `${metric.toFixed(1)}%`}</b><small>${metric == null ? '暂无指标' : '当前版本'}</small></div>
+            <div><span>训练次数</span><b>${count}</b><small>历史任务</small></div>
           </div>
-        </footer>
+          <aside class="algorithm-card-side">
+            <div class="algorithm-card-updated"><span>最近更新</span><b>${dateText(updated)}</b></div>
+            <div class="entity-row-actions algorithm-card-actions">
+              <button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button>
+              <button onclick="algorithmReport429('${esc(algorithm.id)}')">报告</button>
+              <button class="primary-link" data-algorithm-train="${esc(algorithm.id)}" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${trainability.ready ? '' : `disabled title="${esc(trainability.message || '当前不可训练')}"`}>训练</button>
+              <details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
+            </div>
+          </aside>
+        </div>
       </div>
       ${open ? `<div class="algorithm-version-surface"><header><b>迭代版本</b><span>当前版本决定训练、转换和检测的默认起点</span></header>${versionRowsHtml(algorithm)}</div>` : ''}
     </article>`;
@@ -759,7 +763,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422564',
+    build: 'algorithm-list-runtime-422565',
     toggle,
     refresh,
     render: renderPage,

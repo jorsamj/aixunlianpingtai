@@ -358,6 +358,9 @@ test('algorithm registry source keeps card-wide expansion and explicit trainable
   const {readFileSync} = await import('node:fs');
   const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
   assert.match(source, /class="algorithm-card-grid"/);
+  assert.match(source, /class="algorithm-card-overview"/);
+  assert.match(source, /class="algorithm-card-primary"/);
+  assert.match(source, /class="algorithm-card-side"/);
   assert.match(source, /data-algorithm-card="1"/);
   assert.match(source, /data-algorithm-trainable-only/);
   assert.match(source, /仅看可训练/);
