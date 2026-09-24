@@ -96,9 +96,12 @@ test('external ChangLian training re-reads algorithm truth in hydration before c
   assert.ok(ownerStart >= 0 && ownerEnd > ownerStart);
   assert.doesNotMatch(owner, /preflightTraining|training-preflight/);
   assert.match(owner, /训练算法不存在或已被删除/);
-  assert.match(source, /refreshTrainRunCenter429/);
-  assert.match(source, /data-train-run-center/);
-  assert.match(source, /训练已完成/);
+  const recoveryRuntime = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /refreshTrainRunCenter429|data-train-run-center/);
+  assert.match(main, /installTrainingRecoveryRuntime/);
+  assert.match(main, /trainingRecoveryRuntime = installTrainingRecoveryRuntime/);
+  assert.match(recoveryRuntime, /window\.showTrainLog423 = taskId => openDetail\(taskId, \{focus: 'log'\}\);/);
+  assert.match(recoveryRuntime, /训练已完成/);
 });
 
 test('legacy training shell uses same-scope status helper before final visibility runtime takes ownership', () => {
@@ -114,7 +117,12 @@ test('legacy training shell uses same-scope status helper before final visibilit
 test('annotation workbench has one save owner, explicit empty confirmation, and one manual advance', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
-  assert.match(source, /confirmEmptyAnnotation420=\(\)=>window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
+  const confirmStart = source.indexOf('window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420()');
+  const confirmEnd = source.indexOf('window.patchMaterialCard412=', confirmStart);
+  assert.ok(confirmStart >= 0 && confirmEnd > confirmStart);
+  const confirmOwner = source.slice(confirmStart, confirmEnd);
+  assert.match(confirmOwner, /window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
+  assert.match(confirmOwner, /state\.annotationHydrating420\|\|state\.annotationLoadError420/);
   assert.equal((source.match(/window\.saveAnn=/g) || []).length, 1);
   assert.equal(source.includes('const baseSaveAnnotation417=window.saveAnn;'), false);
   assert.equal(source.includes('const saveAnn411=window.saveAnn;'), false);

@@ -26,7 +26,8 @@ test('training device inventory persists across browser reloads and revalidates 
   assert.match(source, /localStorage\.removeItem\(trainingDeviceCacheKeyV3\(\)\)/);
   assert.match(source, /state\.trainingDevicesV3\?\.options\?\.length\?state\.trainingDevicesV3:restoreTrainingDeviceCacheV3\(\)/);
   assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
-  assert.match(source, /applyDevices\(cachedDevices,\{persist:false\}\)/);
+  assert.match(source, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
+  assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
 });
 
 
