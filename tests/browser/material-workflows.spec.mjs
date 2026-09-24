@@ -295,6 +295,20 @@ test('professional annotation workbench survives repeated open-close cycles and 
   await page.mouse.up();
   await expect(dialog.locator('.box424')).toHaveCount(1);
   await expect(dialog.locator('#annBoxes [data-ann-box-key]')).toHaveCount(1);
+
+  await page.setViewportSize({width: 1920, height: 1080});
+  await expect(dialog).toBeVisible();
+  const desktopCard = await page.locator('.annotation-workbench-modal').boundingBox();
+  const desktopCanvas = await dialog.locator('.ann-canvas-wrap').boundingBox();
+  const desktopInspector = await dialog.locator('.ann420-inspector').boundingBox();
+  expect(desktopCard).not.toBeNull();
+  expect(desktopCanvas).not.toBeNull();
+  expect(desktopInspector).not.toBeNull();
+  expect(desktopCard.width).toBeGreaterThan(1500);
+  expect(desktopCard.height).toBeGreaterThan(900);
+  expect(desktopCanvas.width).toBeGreaterThan(800);
+  expect(desktopCanvas.height).toBeGreaterThan(700);
+  expect(desktopInspector.x + desktopInspector.width).toBeLessThanOrEqual(1920);
 });
 
 

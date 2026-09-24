@@ -88,3 +88,13 @@ test('formal material status distinguishes manual, AI-confirmed, mixed, and conf
   assert.match(stable, /已确认无目标/);
   assert.match(stable, /annotation_origin/);
 });
+
+
+test('material detail exposes durable annotation status, provenance, and update time', () => {
+  assert.match(source, /annotationOriginLabelV66/);
+  assert.match(source, /annotationUpdatedTextV66/);
+  assert.match(source, /标注来源/);
+  assert.match(source, /最后标注/);
+  assert.match(source, /AI审核确认 \+ 人工编辑/);
+  assert.match(source, /annotation_summary_at/);
+});
