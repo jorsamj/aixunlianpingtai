@@ -1,10 +1,18 @@
 import {test, expect} from '@playwright/test';
 
+async function waitForCanonicalApp(page) {
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
+}
+
 test('training task refresh and actions patch the final table without rebuilding the page', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('#title')).toContainText('训练任务');
@@ -191,6 +199,7 @@ test('hard refresh restores a live training task even when the bootstrap snapsho
   });
 
   await page.goto('/');
+  await waitForCanonicalApp(page);
 
   await expect(page.locator('#title')).toContainText('训练任务', {timeout: 15_000});
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
@@ -205,6 +214,7 @@ test('hard refresh restores a live training task even when the bootstrap snapsho
 
 test('batch delete selects terminal records and leaves active training untouched', async ({page}) => {
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await expect(page.locator('#title')).toBeVisible({timeout:15_000});
   const projectId=await page.evaluate(()=>state.project?.id);
   expect(projectId).toBeTruthy();
@@ -256,6 +266,7 @@ test('batch mode appears on demand and pauses eligible tasks with one canonical 
   const pageErrors=[];
   page.on('pageerror',error=>pageErrors.push(error));
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await expect(page.locator('#title')).toBeVisible({timeout:15_000});
   const projectId=await page.evaluate(()=>state.project?.id);
   expect(projectId).toBeTruthy();
