@@ -113,7 +113,7 @@ async function routeReadyTrainingRuntime(page) {
 async function openTrainingSettings(page, trainingDialog) {
   const advanced = trainingDialog.locator('details.train-ui-advanced');
   if (!(await advanced.getAttribute('open'))) {
-    await advanced.locator('summary').click();
+    await advanced.locator(':scope > summary').click();
   }
   const button = advanced.locator('.train-ui-edit-config');
   await expect(button).toBeVisible();
@@ -156,7 +156,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   const settingsDialog = await openTrainingSettings(page, trainingDialog);
   const advanced = settingsDialog.locator('details.advanced427-box');
   await expect(advanced).not.toHaveAttribute('open', '');
-  await advanced.locator('summary').click();
+  await advanced.locator(':scope > summary').click();
   await expect(settingsDialog.getByText('最终学习率 lrf')).toBeVisible();
   await settingsDialog.getByRole('button', {name: '取消'}).click();
   await selectAllTrainingMaterials(page, trainingDialog);
@@ -211,7 +211,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
   const settings = await openTrainingSettings(page, dialog);
-  await settings.locator('details.advanced427-box').first().locator('summary').click();
+  await settings.locator('details.advanced427-box').first().locator(':scope > summary').click();
   await settings.locator('#ts428SingleCls').check();
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();

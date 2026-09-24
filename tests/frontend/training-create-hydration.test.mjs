@@ -110,6 +110,37 @@ test('focused training resource hydration publishes options before recommendatio
   }
 });
 
+
+test('shared training truth requests carry their own signal so page navigation cannot suspend them', async () => {
+  const originalWindow = globalThis.window;
+  const state = {targets: [], rec: null};
+  const seen = [];
+  globalThis.window = {};
+  try {
+    const runtime = installTrainingCreateHydrationRuntime({
+      getState: () => state,
+      projectId: () => 'project-1',
+      openTrainingForm: () => 'opened',
+      request: async (url, options = {}) => {
+        seen.push({url, signal: options.signal});
+        if (url.startsWith('/api/training_options')) {
+          return {targets: [{id: 'shared-target', status: 'ready', algorithms: [], base_models: []}]};
+        }
+        if (url === '/api/system/recommendation') return {device: 'cpu'};
+        throw new Error(`unexpected request ${url}`);
+      },
+    });
+    await runtime.hydrate({requireTrainable: false});
+    assert.equal(seen.length, 2);
+    assert.ok(seen.every(item => item.signal instanceof AbortSignal));
+    assert.equal(state.targets[0]?.id, 'shared-target');
+    assert.equal(state.rec?.device, 'cpu');
+    runtime.destroy();
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
 test('subsequent internal training open reuses hydrated configuration without a loading shell', async () => {
   const originalWindow = globalThis.window;
   let requests = 0;

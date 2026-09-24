@@ -35,6 +35,8 @@ export function installTrainingCreateHydrationRuntime({
 
   let optionsInflight = null;
   let recommendationInflight = null;
+  let optionsController = null;
+  let recommendationController = null;
   let commonLoadedAt = 0;
   let commonProjectId = '';
   let openEpoch = 0;
@@ -84,7 +86,15 @@ export function installTrainingCreateHydrationRuntime({
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目尚未加载完成');
     const projectKey = String(pid);
-    if (commonProjectId && commonProjectId !== projectKey) commonLoadedAt = 0;
+    if (commonProjectId && commonProjectId !== projectKey) {
+      commonLoadedAt = 0;
+      optionsController?.abort?.('project-changed');
+      recommendationController?.abort?.('project-changed');
+      optionsController = null;
+      recommendationController = null;
+      optionsInflight = null;
+      recommendationInflight = null;
+    }
     commonProjectId = projectKey;
     return {state, pid, projectKey};
   };
@@ -99,7 +109,9 @@ export function installTrainingCreateHydrationRuntime({
     if (!force && ((revalidate && fresh) || (!revalidate && usable))) return state.targets || [];
     if (optionsInflight?.projectKey === projectKey) return optionsInflight.promise;
 
-    const task = request(`/api/training_options?project_id=${encodeURIComponent(pid)}`)
+    optionsController = new AbortController();
+    const controller = optionsController;
+    const task = request(`/api/training_options?project_id=${encodeURIComponent(pid)}`, {signal: controller.signal})
       .then(optionsResult => {
         if (String(projectId?.() || '') !== projectKey) return getState?.()?.targets || [];
         const liveState = getState?.() || state;
@@ -110,6 +122,7 @@ export function installTrainingCreateHydrationRuntime({
       })
       .finally(() => {
         if (optionsInflight?.promise === task) optionsInflight = null;
+        if (optionsController === controller) optionsController = null;
       });
     optionsInflight = {projectKey, promise: task};
     return task;
@@ -120,7 +133,9 @@ export function installTrainingCreateHydrationRuntime({
     if (!force && state.rec != null) return state.rec;
     if (recommendationInflight?.projectKey === projectKey) return recommendationInflight.promise;
 
-    const task = request('/api/system/recommendation')
+    recommendationController = new AbortController();
+    const controller = recommendationController;
+    const task = request('/api/system/recommendation', {signal: controller.signal})
       .then(recommendationResult => {
         if (String(projectId?.() || '') !== projectKey) return getState?.()?.rec ?? null;
         const liveState = getState?.() || state;
@@ -129,6 +144,7 @@ export function installTrainingCreateHydrationRuntime({
       })
       .finally(() => {
         if (recommendationInflight?.promise === task) recommendationInflight = null;
+        if (recommendationController === controller) recommendationController = null;
       });
     recommendationInflight = {projectKey, promise: task};
     return task;
@@ -231,10 +247,16 @@ export function installTrainingCreateHydrationRuntime({
     hydrateCommon,
     start,
     prewarm,
-    build: 'training-create-hydration-422539',
+    build: 'training-create-hydration-422540',
     destroy() {
       destroyed = true;
       openEpoch += 1;
+      optionsController?.abort?.('runtime-destroyed');
+      recommendationController?.abort?.('runtime-destroyed');
+      optionsController = null;
+      recommendationController = null;
+      optionsInflight = null;
+      recommendationInflight = null;
       prewarmInflight.clear();
       if (window.startAlgorithmTraining429 === start) window.startAlgorithmTraining429 = openForm;
       if (window.TrainingCreateHydrationRuntime === runtime) window.TrainingCreateHydrationRuntime = null;

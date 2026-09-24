@@ -66,7 +66,9 @@ test('recommended training UI exposes the bounded adaptive controls without expe
   assert.match(source, /稳定优先/);
   assert.match(source, /最大训练时长/);
   assert.match(source, /训练精度/);
-  assert.match(source, /ts428Patience/);
+  assert.doesNotMatch(source, /ts428Patience/);
+  assert.match(source, /ts428Goal/);
+  assert.match(source, /stop_threshold:goal/);
   assert.match(source, /ts428Lrf/);
   assert.match(source, /ts428Warmup/);
   assert.match(source, /ts428CloseMosaic/);

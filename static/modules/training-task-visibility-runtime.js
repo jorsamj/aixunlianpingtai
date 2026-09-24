@@ -176,7 +176,14 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
   else if (!TERMINAL_STATUSES.has(status)) progressMeta.push(stage.label);
   const terminal = terminalRuntimeMeta(job, stage);
   if (terminal && !progressMeta.includes(terminal)) progressMeta.push(terminal);
-  const stageDetails = [stage.detail, queueRuntimeMeta(job), job?.task_worker_id ? `执行节点 ${job.task_worker_id}` : '', job?.recovery?.available === true ? 'Checkpoint 已保留' : ''].filter(Boolean).join(' · ');
+  const recoveryMeta = job?.recovery?.available === true
+    ? (job?.recovery?.recoverable === true
+        && job?.recovery?.checkpoint_available === true
+        && String(job?.recovery?.recovery_action || '') === 'revalidate_checkpoint'
+      ? '可恢复 · Checkpoint 已保留'
+      : 'Checkpoint 已保留')
+    : '';
+  const stageDetails = [stage.detail, queueRuntimeMeta(job), job?.task_worker_id ? `执行节点 ${job.task_worker_id}` : '', recoveryMeta].filter(Boolean).join(' · ');
   return `<tr data-job-id="${esc(id)}" data-clock-active="${active ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${checkbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job?.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="entity-status ${statusBucket(job)}">${esc(statusText(status, job))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${(Math.max(0, Math.min(100, percent)) / 100).toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsed}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${eta}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}</div></td><td><span class="train428-started">${esc(started)}</span></td><td><div class="entity-row-actions train428-actions-cell">${taskActions(job)}</div></td></tr>`;
 }
 
@@ -667,7 +674,7 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422529',
+    build: 'training-task-visibility-422530',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
