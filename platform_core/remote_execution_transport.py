@@ -3561,7 +3561,7 @@ class RemoteExecutionTransportService:
                 encoding="utf-8",
             )
             job_tmp.replace(job_file)
-            from .external_algorithm_publish import (
+            from .external_publish_request import (
                 request_external_auto_publish_for_conversion_if_enabled,
             )
             request_external_auto_publish_for_conversion_if_enabled(

@@ -107,7 +107,7 @@ def _finalize_conversion_job(
         # Publication is additive. Failure to request publishing must never
         # downgrade a conversion artifact that is already committed durably.
         try:
-            from platform_core.external_algorithm_publish import (
+            from platform_core.external_publish_request import (
                 request_external_auto_publish_for_conversion_if_enabled,
             )
             request_external_auto_publish_for_conversion_if_enabled(

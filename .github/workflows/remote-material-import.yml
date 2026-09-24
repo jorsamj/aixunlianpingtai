@@ -22,6 +22,7 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/external_publish_request.py'
       - 'platform_core/remote_material_import.py'
       - 'platform_core/storage/detection_import.py'
       - 'platform_core/remote_material_lifecycle.py'
@@ -63,6 +64,7 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/external_publish_request.py'
       - 'platform_core/remote_material_import.py'
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
@@ -109,6 +111,7 @@ jobs:
           platform_core/node_agent_material_runtime.py
           platform_core/annotation_schema.py
           platform_core/remote_execution_transport.py
+          platform_core/external_publish_request.py
           platform_core/remote_material_import.py
           platform_core/storage/detection_import.py
           platform_core/remote_material_lifecycle.py
@@ -128,6 +131,9 @@ jobs:
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/integration/test_storage_import_worker.py
+      - name: Lightweight external publish request dependency guard
+        run: >-
+          python -c "import platform_core.external_publish_request; import sys; assert 'fastapi' not in sys.modules"
       - name: Agent material and transport contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -179,6 +185,7 @@ jobs:
           app.py
           platform_core/annotation_schema.py
           platform_core/remote_execution_transport.py
+          platform_core/external_publish_request.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
           platform_core/storage/import_candidates.py

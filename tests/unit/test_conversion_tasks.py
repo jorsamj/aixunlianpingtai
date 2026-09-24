@@ -26,7 +26,7 @@ def test_deliverable_conversion_finalization_requests_existing_publish_owner(
 ):
     requests = []
     monkeypatch.setattr(
-        "platform_core.external_algorithm_publish.request_external_auto_publish_for_conversion_if_enabled",
+        "platform_core.external_publish_request.request_external_auto_publish_for_conversion_if_enabled",
         lambda **kwargs: requests.append(kwargs) or True,
     )
 

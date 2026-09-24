@@ -1832,7 +1832,7 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     )
     publish_requests = []
     monkeypatch.setattr(
-        "platform_core.external_algorithm_publish.request_external_auto_publish_for_conversion_if_enabled",
+        "platform_core.external_publish_request.request_external_auto_publish_for_conversion_if_enabled",
         lambda **kwargs: publish_requests.append(kwargs) or True,
     )
     committed = transport.commit_result_publication(

@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, update_algorithm_version
 from .errors import PlatformError
+from .external_publish_request import (
+    request_external_auto_publish_for_conversion_if_enabled,
+    request_external_auto_publish_if_enabled,
+)
 from .integration_audit import IntegrationAuditRepository
 from .model_artifacts import (
     ArtifactOSSConfigPayload,
@@ -2867,71 +2871,6 @@ class ExternalAlgorithmPublishService:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-
-def request_external_auto_publish_if_enabled(
-    *, data_dir: Path, algorithms_path: Path, algorithm_id: str, version_id: str, now: str,
-) -> bool:
-    try:
-        external = ExternalPlatformRepository(Path(data_dir)).config()
-        if str(external.get("mode") or "local") != "external" or not bool(external.get("auto_publish_enabled")):
-            return False
-        algorithms = list_algorithms(Path(algorithms_path))
-        algorithm = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-        if not algorithm or str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL:
-            return False
-        update_algorithm_version(
-            Path(algorithms_path), str(algorithm_id), str(version_id),
-            {"external_publish_requested_at": now}, now=now,
-        )
-        return True
-    except Exception:
-        return False
-
-
-def request_external_auto_publish_for_conversion_if_enabled(
-    *,
-    data_dir: Path,
-    project_id: str,
-    conversion_job: Mapping[str, Any],
-    now: str | None = None,
-) -> bool:
-    """Request the existing external-publish owner after a deliverable conversion commit."""
-    status = str(conversion_job.get("status") or "").strip().lower()
-    if status not in SUCCESSFUL_CONVERSION_STATUSES:
-        return False
-
-    algorithm_id = ""
-    version_id = ""
-    for source in (
-        conversion_job.get("source_trace"),
-        conversion_job.get("source_meta"),
-    ):
-        if not isinstance(source, Mapping):
-            continue
-        candidate_algorithm_id = str(source.get("algorithm_id") or "").strip()
-        candidate_version_id = str(source.get("version_id") or "").strip()
-        if candidate_algorithm_id and candidate_version_id:
-            algorithm_id = candidate_algorithm_id
-            version_id = candidate_version_id
-            break
-
-    if not algorithm_id or not version_id:
-        source_id = str(conversion_job.get("source_id") or "").strip()
-        match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
-        if match:
-            algorithm_id, version_id = match.group(1), match.group(2)
-
-    project_id = str(project_id or "").strip()
-    if not project_id or not algorithm_id or not version_id:
-        return False
-
-    return request_external_auto_publish_if_enabled(
-        data_dir=Path(data_dir),
-        algorithms_path=Path(data_dir) / "projects" / project_id / "algorithms.json",
-        algorithm_id=algorithm_id,
-        version_id=version_id,
-        now=str(now or utc_now()),
-    )
 
 
 def external_algorithm_publish_router(
