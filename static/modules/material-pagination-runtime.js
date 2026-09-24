@@ -671,6 +671,13 @@ export function installMaterialPaginationRuntime() {
     load: loadMaterialPage61,
     ensureFullPool: ensureFullPool61,
     refresh: focusedRefresh61,
+    invalidate() {
+      invalidateFullPool61();
+      state.materialFilterSignature61 = '';
+      state.materialShellSignature61 = '';
+      cachedEntryPending = false;
+      return true;
+    },
     patch: patchPagedDataset61,
     render: renderPagedDataset61,
     beforeNavigate: beforeNavigate61,

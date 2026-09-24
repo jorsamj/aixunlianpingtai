@@ -3734,12 +3734,12 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   function dataCard411(x){
     const sel=state.data424Selected.has(x.id),ratio=(Number(x.width)>0&&Number(x.height)>0)?`${x.width}/${x.height}`:'16/10';
-    return `<article class="data426-card data429-card ${sel?'selected':''}" onclick="selectCard429('${x.id}')"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${ratio}"><img src="${x.url}" loading="lazy" decoding="async">${overlay411(x)}</div><span class="data429-process ${processed429(x)?'ok':''}">${processed429(x)?'已处理':'未处理'}</span>${state.data426DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="selectData429('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title" title="${esc(x.filename)}">${esc(x.filename)}</div><div class="data426-meta"><span>${fmtSize424(x.size_bytes)}</span><span>${x.annotated?`已标注 · ${x.box_count||0}框`:'未标注'}</span><span>${esc(String(x.created_at||'').slice(0,10))}</span></div><div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(l)}</span>`).join('')||'<em>无标签</em>'}</div><div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="editData427('${x.id}')">编辑</button><button class="btn mini" onclick="previewData429('${x.id}')">详情</button><button class="btn mini primary" onclick="openAnnotation('${x.id}')">标注</button></div></div></article>`;
+    return `<article class="data426-card data429-card ${sel?'selected':''}" onclick="selectCard429('${x.id}')"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${ratio}"><img src="${x.url}" loading="lazy" decoding="async">${overlay411(x)}</div><span class="data429-process ${processed429(x)?'ok':''}">${processed429(x)?'已处理':'未处理'}</span>${state.data426DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="selectData429('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title" title="${esc(x.filename)}">${esc(x.filename)}</div><div class="data426-meta"><span>${fmtSize424(x.size_bytes)}</span><span>${esc(window.materialAnnotationStatusV66?.(x)||(x.annotated?`已标注 · ${x.box_count||0}框`:'未标注'))}</span><span>${esc(String(x.created_at||'').slice(0,10))}</span></div><div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(l)}</span>`).join('')||'<em>无标签</em>'}</div><div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="editData427('${x.id}')">编辑</button><button class="btn mini" onclick="previewData429('${x.id}')">详情</button><button class="btn mini primary" onclick="openAnnotation('${x.id}')">标注</button></div></div></article>`;
   }
   window.renderData429Cards=function(){
     const all=matchData429(),pages=Math.max(1,Math.ceil(all.length/state.data429PageSize));state.data429Page=Math.min(state.data429Page,pages);const st=(state.data429Page-1)*state.data429PageSize,rows=all.slice(st,st+state.data429PageSize);const g=document.getElementById('data429Grid');if(g)g.innerHTML=rows.map(dataCard411).join('')||'<div class="empty data426-empty">当前筛选条件下没有图片</div>';const c=document.getElementById('data429Count');if(c)c.textContent=`${all.length} 张`;const sc=document.getElementById('data429Selected');if(sc)sc.textContent=`已选 ${state.data424Selected.size} 张`;const p=document.getElementById('data429Pager');if(p)p.innerHTML=`<button class="btn mini" ${state.data429Page<=1?'disabled':''} onclick="dataPage429(-1)">上一页</button><span>${state.data429Page} / ${pages}</span><button class="btn mini" ${state.data429Page>=pages?'disabled':''} onclick="dataPage429(1)">下一页</button>`;
   };
-  function previewHtml411(x,list,i){const ratio=(Number(x.width)>0&&Number(x.height)>0)?`${x.width}/${x.height}`:'16/10';return `<div class="data411-preview"><div class="data411-preview-stage" style="aspect-ratio:${ratio}"><img src="${x.url}">${overlay411(x,64)}</div><aside><h3>${esc(x.filename)}</h3><div><span>尺寸</span><b>${x.width||'-'} × ${x.height||'-'}</b></div><div><span>大小</span><b>${fmtSize424(x.size_bytes)}</b></div><div><span>标注</span><b>${x.annotated?`${x.box_count||0} 个框`:'未标注'}</b></div><div><span>标签</span><b>${esc((x.labels||[]).join('、')||'-')}</b></div><div class="row"><button class="btn" ${i<=0?'disabled':''} onclick="previewStep411(-1)">上一张</button><button class="btn" ${i>=list.length-1?'disabled':''} onclick="previewStep411(1)">下一张</button><button class="btn primary" onclick="openAnnotation('${x.id}')">编辑标注</button></div></aside></div>`}
+  function previewHtml411(x,list,i){const ratio=(Number(x.width)>0&&Number(x.height)>0)?`${x.width}/${x.height}`:'16/10';return `<div class="data411-preview"><div class="data411-preview-stage" style="aspect-ratio:${ratio}"><img src="${x.url}">${overlay411(x,64)}</div><aside><h3>${esc(x.filename)}</h3><div><span>尺寸</span><b>${x.width||'-'} × ${x.height||'-'}</b></div><div><span>大小</span><b>${fmtSize424(x.size_bytes)}</b></div><div><span>标注</span><b>${esc(window.materialAnnotationStatusV66?.(x)||(x.annotated?`${x.box_count||0} 个框`:'未标注'))}</b></div><div><span>标签</span><b>${esc((x.labels||[]).join('、')||'-')}</b></div><div class="row"><button class="btn" ${i<=0?'disabled':''} onclick="previewStep411(-1)">上一张</button><button class="btn" ${i>=list.length-1?'disabled':''} onclick="previewStep411(1)">下一张</button><button class="btn primary" onclick="openAnnotation('${x.id}')">编辑标注</button></div></aside></div>`}
   window.previewDataLegacy429_2=function(id){const list=matchData429(),i=list.findIndex(x=>x.id===id);if(i<0)return;state.data426PreviewList=list;state.data426PreviewIndex=i;modal('图片预览',previewHtml411(list[i],list,i),true)};
   window.previewStep411=function(d){const list=state.data426PreviewList||[];let i=Math.max(0,Math.min(list.length-1,(state.data426PreviewIndex||0)+d));state.data426PreviewIndex=i;const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers[layers.length-1],body=top?.querySelector('.modal-body')||document.getElementById('modalBody');if(body&&list[i])window.ModalContentRuntime.replace(body,previewHtml411(list[i],list,i))};
 
@@ -3931,11 +3931,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function dataRows412(){const tab=state.data412Tab,q=(document.getElementById('data412Q')?.value||'').trim().toLowerCase(),ann=document.getElementById('data412Ann')?.value||'all',labs=[...state.data412Labels];return datasetScope412().filter(x=>{const proc=isProcessed412(x);if(tab==='unprocessed'&&x.annotation_index_pending)return false;if(tab==='unprocessed'?(proc||x.annotated):!proc)return false;if(q&&!String(x.filename||'').toLowerCase().includes(q))return false;if(tab==='processed'&&ann==='marked'&&!x.annotated)return false;if(tab==='processed'&&ann==='unmarked'&&x.annotated)return false;if(tab==='processed'&&labs.length&&!labs.some(l=>(x.labels||[]).includes(l)))return false;return true})}
   window.dataRows412=dataRows412;
   function ov412(x){if(!x.annotated)return'';const w=Number(x.width||0),h=Number(x.height||0);if(!w||!h)return'';return (x.annotation_preview||[]).slice(0,24).map(b=>{const l=100*Number(b.x1||0)/w,t=100*Number(b.y1||0)/h,r=100*Number(b.x2||0)/w,bt=100*Number(b.y2||0)/h;return `<i class="data412-box" style="left:${l}%;top:${t}%;width:${Math.max(.2,r-l)}%;height:${Math.max(.2,bt-t)}%"><em>${esc(displayLabel412(b.label))}</em></i>`}).join('')}
-  function card412(x){const sel=state.data412Selected.has(x.id),raw=state.data412Tab==='unprocessed';return `<article class="data426-card data412-card ${sel?'selected':''}" data-material-id="${esc(x.id)}" onclick="${state.data412DeleteMode?`toggleData412('${x.id}')`:`previewData429('${x.id}')`}"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${Math.max(.3,Math.min(3,(x.width||16)/(x.height||9)))}"><img src="${x.url}" loading="lazy" decoding="async">${raw?'':ov412(x)}</div><span class="data429-process ${raw?'':'ok'}">${raw?'未处理':'已处理'}</span>${state.data412DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="setData412('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title">${esc(x.filename)}</div><div class="data426-meta"><span>${typeof fmtSize424==='function'?fmtSize424(x.size_bytes):''}</span><span>${raw?'尚未完成清洗决策':(x.annotated?`已标注 · ${x.box_count||0}框`:'待标注')}</span></div>${raw?'':`<div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(displayLabel412(l))}</span>`).join('')||'<em>暂无标签</em>'}</div>`}<div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="previewData429('${x.id}')">详情</button>${raw?`<button class="btn mini" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn mini primary" onclick="createClean427({image_ids:['${x.id}']})">清洗</button>`:`<button class="btn mini primary" onclick="openAnnotation('${x.id}')">${x.annotated?'编辑标注':'标注'}</button>`}</div></div></article>`}
+  function card412(x){const sel=state.data412Selected.has(x.id),raw=state.data412Tab==='unprocessed';return `<article class="data426-card data412-card ${sel?'selected':''}" data-material-id="${esc(x.id)}" onclick="${state.data412DeleteMode?`toggleData412('${x.id}')`:`previewData429('${x.id}')`}"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${Math.max(.3,Math.min(3,(x.width||16)/(x.height||9)))}"><img src="${x.url}" loading="lazy" decoding="async">${raw?'':ov412(x)}</div><span class="data429-process ${raw?'':'ok'}">${raw?'未处理':'已处理'}</span>${state.data412DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="setData412('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title">${esc(x.filename)}</div><div class="data426-meta"><span>${typeof fmtSize424==='function'?fmtSize424(x.size_bytes):''}</span><span>${raw?'尚未完成清洗决策':(window.materialAnnotationStatusV66?.(x)||(x.annotated?`已标注 · ${x.box_count||0}框`:'待标注'))}</span></div>${raw?'':`<div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(displayLabel412(l))}</span>`).join('')||'<em>暂无标签</em>'}</div>`}<div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="previewData429('${x.id}')">详情</button>${raw?`<button class="btn mini" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn mini primary" onclick="createClean427({image_ids:['${x.id}']})">清洗</button>`:`<button class="btn mini primary" onclick="openAnnotation('${x.id}')">${x.annotated?'编辑标注':'标注'}</button>`}</div></div></article>`}
   function dataCardSignature412(x){
     return JSON.stringify([
       x.id,x.filename,x.url,x.width,x.height,x.size_bytes,x.annotated,x.box_count,x.processing_status,x.cleaned_at,x.clean_skipped,
-      x.storage_source_id,x.storage_type,x.annotation_state,x.annotation_status,x.labels||[],x.annotation_preview||[],
+      x.storage_source_id,x.storage_type,x.annotation_state,x.annotation_status,x.annotation_origin,x.labels||[],x.annotation_preview||[],
       state.data412Tab,state.data412DeleteMode,state.data412Selected.has(x.id)
     ]);
   }
@@ -4817,12 +4817,20 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     boxes:(image?.annotation_preview||[]).map(box=>({...box})),
   });
 
-  function materialAnnotationStatus420(row){
+  window.materialAnnotationStatusV66=function(row){
     const annotationState=String(row?.annotation_state||row?.annotation_status||'');
-    if(annotationState==='confirmed_empty')return '已确认无目标';
-    if(annotationState==='annotated'||row?.annotated)return `${Number(row?.box_count||0)} 个框`;
+    const origin=String(row?.annotation_origin||'');
+    const boxes=Number(row?.box_count||0);
+    if(annotationState==='confirmed_empty')return origin==='ai_confirmed'?'AI已确认 · 无目标':'已确认无目标';
+    if(annotationState==='annotated'||row?.annotated){
+      if(origin==='mixed')return `混合标注 · ${boxes}框`;
+      if(origin==='ai_confirmed')return `AI已确认 · ${boxes}框`;
+      if(origin==='imported')return `导入标注 · ${boxes}框`;
+      return `人工标注 · ${boxes}框`;
+    }
     return '待标注';
-  }
+  };
+  const materialAnnotationStatus420=row=>window.materialAnnotationStatusV66(row);
 
   window.selectAnnotationLabel420=function(classId){
     state.activeLabel=Number(classId);
@@ -4996,7 +5004,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   window.patchMaterialCard412=function(image){
     if(!image)return;const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));if(!card)return;
-    const meta=card.querySelectorAll('.data426-meta span');if(meta[1])meta[1].textContent=image.annotated?`已标注 · ${image.box_count||0}框`:'待标注';
+    const meta=card.querySelectorAll('.data426-meta span');if(meta[1])meta[1].textContent=materialAnnotationStatus420(image);
     const tags=card.querySelector('.data426-tags');if(tags)tags.innerHTML=(image.labels||[]).map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<em>暂无标签</em>';
     const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);stage.insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
   };
@@ -5024,7 +5032,12 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function applyTaskResult(result){
     for(const summary of result.image_summaries||[]){
       const image=imageById(summary.image_id);if(!image)continue;
-      image.box_count=Number(summary.box_count)||0;image.annotated=image.box_count>0;image.labels=summary.labels||[];
+      image.box_count=Number(summary.box_count)||0;
+      image.annotation_state=String(summary.annotation_state||(image.box_count>0?'annotated':'confirmed_empty'));
+      image.annotation_status=image.annotation_state;
+      image.annotation_origin=String(summary.annotation_origin||'ai_confirmed');
+      image.annotated=['annotated','confirmed_empty'].includes(image.annotation_state);
+      image.labels=summary.labels||[];
       if(image.annotated)image.processing_status='processed';
       try{patchMaterialCard412(image)}catch(_){}
     }
@@ -5129,26 +5142,49 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function candidateOverlay(box,image){
     const width=Number(image?.width||1),height=Number(image?.height||1),x=100*Number(box.x1||0)/width,y=100*Number(box.y1||0)/height,w=100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width,h=100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height;
-    return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels))}</em></i>`;
+    const confidence=Number(box.confidence),suffix=Number.isFinite(confidence)?` · ${Math.round(confidence*100)}%`:'';
+    return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels)+suffix)}</em></i>`;
   }
   function ensureReviewShell(){
     if(document.querySelector('.ai60-review'))return;
-    modal('AI待确认标注',`<div class="review427 ai60-review">
-      <div class="review427-top">
-        <div><b>候选结果不会自动写入正式标注</b><span id="ai60ReviewSummary"></span></div>
+    modal('AI标注审核工作台',`<div class="review427 ai60-review ai66-review">
+      <header class="ai66-review-head">
+        <div><span class="ai66-eyebrow">HUMAN REVIEW</span><h3>AI候选结果审核</h3><p>候选框不会直接进入训练数据；只有人工确认后的结果才会写入正式标注。</p></div>
+        <div id="ai60ReviewSummary" class="ai66-review-summary"></div>
+      </header>
+      <section class="ai66-review-kpis">
+        <div><span>候选图片</span><b id="ai66Total">0</b></div>
+        <div><span>本页采用</span><b id="ai66Accepted">0</b></div>
+        <div><span>无目标</span><b id="ai66Empty">0</b></div>
+        <div><span>处理失败</span><b id="ai66Failed">0</b></div>
+        <div><span>人工修改</span><b id="ai66Edited">0</b></div>
+      </section>
+      <div class="ai66-review-tools">
+        <div class="ai66-review-filters">
+          <button data-ai66-filter="all" class="on" onclick="setAiReviewFilter60('all')">全部</button>
+          <button data-ai66-filter="target" onclick="setAiReviewFilter60('target')">有目标</button>
+          <button data-ai66-filter="empty" onclick="setAiReviewFilter60('empty')">无目标</button>
+          <button data-ai66-filter="edited" onclick="setAiReviewFilter60('edited')">已修改</button>
+          <button data-ai66-filter="rejected" onclick="setAiReviewFilter60('rejected')">已拒绝</button>
+          <button data-ai66-filter="failed" onclick="setAiReviewFilter60('failed')">失败</button>
+        </div>
         <div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
       </div>
       <datalist id="ai60PlatformLabelOptions"></datalist>
-      <div id="ai60LabelMapping"></div>
-      <section class="ai60-bulk-review">
-        <div><b>批量人工统一标签</b><span>把当前页已勾选图片中的全部候选框统一成同一个平台标签；只修改候选结果，点击“采用”后才会正式入库。</span></div>
-        <div class="row"><input id="ai60BulkTarget" class="input" list="ai60PlatformLabelOptions" placeholder="搜索英文标签或中文名称"><button class="btn" onclick="applyAiBulkLabel60()">应用到已勾选图片</button></div>
-      </section>
-      <div id="ai60ReviewGrid" class="review427-grid"></div>
-      <div class="row between ai60-review-footer"><div id="ai60ReviewPager"></div><div class="row"><button class="btn" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已勾选</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeAiReview60()">暂不处理</button></div></div>
+      <details class="ai66-label-tools">
+        <summary>标签映射与批量统一</summary>
+        <div id="ai60LabelMapping"></div>
+        <section class="ai60-bulk-review">
+          <div><b>批量人工统一标签</b><span>把当前页已勾选图片中的候选框统一成同一个正式平台标签。</span></div>
+          <div class="row"><input id="ai60BulkTarget" class="input" list="ai60PlatformLabelOptions" placeholder="搜索英文标签或中文名称"><button class="btn" onclick="applyAiBulkLabel60()">应用到已勾选图片</button></div>
+        </section>
+      </details>
+      <div id="ai60ReviewGrid" class="review427-grid ai66-review-grid"></div>
+      <div class="row between ai60-review-footer ai66-review-footer"><div id="ai60ReviewPager"></div><div class="row"><button class="btn danger" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已选择</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeAiReview60()">暂不处理</button></div></div>
     </div>`,true);
-  }
-  function aiReviewLabels60(){
+    const root=document.querySelector('.ai60-review'),card=root?.closest('.modal-card'),layer=root?.closest('.v424-modal-layer,.modal');
+    card?.classList.add('ai-review-workbench-modal');layer?.classList.add('ai-review-workbench-layer');
+  }  function aiReviewLabels60(){
     return (state.labels||[]).filter(item=>item?.code&&String(item.status||'active').toLowerCase()==='active');
   }
   function resolveAiReviewLabel60(value){
@@ -5225,15 +5261,34 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!changedBoxes)return toast('所选图片没有候选框；如需新增目标，请进入“编辑候选框”手工添加');
     renderReviewPage();toast(`已将 ${changedImages} 张图片的 ${changedBoxes} 个候选框统一为 ${label.display_name||label.code} · ${label.code}`);
   };
+  function reviewVisibleItems60(review){
+    const filter=String(review?.filter||'all');
+    return (review?.items||[]).filter(item=>{
+      const id=String(item.image_id),accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),failed=item.status==='failed',empty=!failed&&!(item.boxes||[]).length;
+      if(filter==='target')return !failed&&!empty;
+      if(filter==='empty')return empty;
+      if(filter==='edited')return edited;
+      if(filter==='rejected')return !failed&&!accepted;
+      if(filter==='failed')return failed;
+      return true;
+    });
+  }
+  window.setAiReviewFilter60=filter=>{const review=state.ai60Review;if(!review)return;review.filter=String(filter||'all');renderReviewPage()};
+  window.setAiDecision60=(id,accepted)=>{state.ai60Review?.decisions.set(String(id),!!accepted);renderReviewPage()};
   function renderReviewPage(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
-    const summary=document.getElementById('ai60ReviewSummary');if(summary){const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选 ${selected}/${selectable} · 已人工修改 ${review.edits.size} 张`}
+    const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;
+    const empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length,failed=review.items.filter(item=>item.status==='failed').length;
+    const summary=document.getElementById('ai60ReviewSummary');if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选择 ${selected}/${selectable}`;
+    const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=String(value)};
+    set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
+    document.querySelectorAll('[data-ai66-filter]').forEach(button=>button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all')));
     renderAiLabelMapping60();
-    const grid=document.getElementById('ai60ReviewGrid');if(grid)grid.innerHTML=review.items.map(item=>{const image=imageById(item.image_id)||item,reviewable=item.status!=='failed',checked=review.decisions.get(String(item.image_id))===true;return `<label class="review427-card ${reviewable?'':'failed'}"><input type="checkbox" ${checked?'checked':''} ${reviewable?'':'disabled'} onchange="toggleAiDecision60('${item.image_id}',this.checked)"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':`${(item.boxes||[]).length} 个候选框`}</strong></div><b>${esc(item.filename||image.filename||item.image_id)}</b><div>${item.error?`<span class="err">${esc(item.error)}</span>`:[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>`<span>${esc(window.PlatformCore.materials.labelDisplay(label,state.labels))}</span>`).join('')||'<span>未检测到目标</span>'}</div>${reviewable?`<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();editAiCandidate60('${item.image_id}')">编辑候选框</button>`:''}</label>`}).join('');
+    const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
+    if(grid)grid.innerHTML=rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:'AI判断无目标'}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
     const pager=document.getElementById('ai60ReviewPager');if(pager)pager.innerHTML=`<button class="btn mini" ${review.offset<=0?'disabled':''} onclick="aiReviewPage60(-1)">上一页</button><span>${Math.floor(review.offset/review.limit)+1} / ${Math.max(1,Math.ceil(review.total/review.limit))}</span><button class="btn mini" ${review.offset+review.items.length>=review.total?'disabled':''} onclick="aiReviewPage60(1)">下一页</button>`;
-  }
-  async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(review.items.some(item=>!item.url)){try{await window.MaterialPaginationRuntime61?.ensureFullPool?.()}catch(_){}}if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
-  window.reviewAiLabel427=async function(id){try{state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗')};await loadReviewPage(0)}catch(error){toast(error.message||error)}};
+  }  async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(review.items.some(item=>!item.url)){try{await window.MaterialPaginationRuntime61?.ensureFullPool?.()}catch(_){}}if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
+  window.reviewAiLabel427=async function(id){try{state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗')};await loadReviewPage(0)}catch(error){toast(error.message||error)}};
   window.aiReviewPage60=async direction=>{const review=state.ai60Review;if(!review||review.closed)return;try{await loadReviewPage(review.offset+direction*review.limit)}catch(error){toast(error.message||error)}};
   window.closeAiReview60=()=>{
     const review=state.ai60Review;
@@ -5241,7 +5296,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     state.ai60Edit=null;
     closeModal();
   };
-  window.toggleAiDecision60=(id,accepted)=>state.ai60Review?.decisions.set(String(id),!!accepted);
+  window.toggleAiDecision60=(id,accepted)=>{state.ai60Review?.decisions.set(String(id),!!accepted);renderReviewPage()};
   window.reviewPageSelect60=accepted=>{const review=state.ai60Review;if(!review)return;for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);renderReviewPage()};
   function renderCandidateEditor60(){
     const edit=state.ai60Edit,review=state.ai60Review,item=review?.seen.get(edit?.id),image=imageById(edit?.id)||item;if(!edit||!item)return;
@@ -5256,17 +5311,35 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit;if(!edit)return;const invalid=edit.boxes.some(box=>!['x1','y1','x2','y2'].every(key=>Number.isFinite(Number(box[key])))||Number(box.x2)<=Number(box.x1)||Number(box.y2)<=Number(box.y1)||!String(box.label||''));if(invalid)return toast('候选框坐标或标签无效，请检查');const item=state.ai60Review.seen.get(edit.id);item.boxes=edit.boxes.map(box=>({...box}));state.ai60Review.edits.set(edit.id,item.boxes);state.ai60Review.decisions.set(edit.id,true);closeModal();renderReviewPage()};
   window.completeAiReview60=async mode=>{
     const review=state.ai60Review;if(!review)return;
-    const action=window.NavigationStability?.action?.(state.page);
-    const decisions=mode==='partial'
-      ?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})}))
-      :mode==='accept'
-        ?[...review.edits].map(([image_id,boxes])=>({image_id,accepted:true,boxes}))
-        :[];
+    const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);
+    const decisions=mode==='partial'?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})})):mode==='accept'?[...review.edits].map(([image_id,boxes])=>({image_id,accepted:true,boxes})):[];
     const label_mapping=Object.fromEntries([...review.labelMapping].filter(([source,target])=>source&&target&&source!==target));
     const body={decisions,reject_unmentioned:mode!=='accept',accept_unmentioned:mode==='accept',commit:true,label_mapping};
-    try{const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(action&&!action.isCurrent())return;applyTaskResult(result);window.closeAiReview60?.();toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':result.queued_for_commit?'已确认，正在批量统一标签并写入正式标注':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);if(state.page==='自动标注及清洗')renderOps427()}catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
-  };
-  window.confirmAiLabel427=id=>completeAiReview60('partial');
+    try{
+      const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(action&&!action.isCurrent())return;
+      applyTaskResult(result);window.closeAiReview60?.();
+      if(!result.queued_for_commit){
+        toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);
+        await refreshAnnotationTasks60().catch(()=>[]);
+        if(state.page==='自动标注及清洗')renderOps427();
+        return;
+      }
+      progressShell(result.task);renderProgress(result.task);toast('人工审核已确认，正在写入正式标注');
+      const terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
+        initialTask:result.task,registry:window.PollRegistryRuntime,key:`ai-review-commit:${review.id}`,ownerPages:[ownerPage],delay:700,maxAttempts:900,
+        load:()=>api(taskApi(review.id)),onUpdate:renderProgress,
+      });
+      renderProgress(terminal);
+      window.MaterialPaginationRuntime61?.invalidate?.();
+      if(state.page==='数据集')await window.reloadMaterialPage61?.();
+      await refreshAnnotationTasks60().catch(()=>[]);
+      if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);
+      const status=String(terminal?.status||'').toUpperCase();
+      if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status))toast('AI审核结果已写入正式标注');
+      else toast(terminal?.error||'AI审核写入未成功，请查看任务详情');
+    }catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
+  };  window.confirmAiLabel427=id=>completeAiReview60('partial');
 })();
 
 /* Explicit canonical-label creation used by import/rescan/ZIP/AI confirmation.

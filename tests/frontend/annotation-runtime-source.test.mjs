@@ -75,3 +75,16 @@ test('manual annotation uses a dedicated near-fullscreen workbench with complete
   assert.match(stable, /ann420-toolbar-edit/);
   assert.match(stable, /materialAnnotationStatus420/);
 });
+
+
+test('formal material status distinguishes manual, AI-confirmed, mixed, and confirmed-empty truth', () => {
+  const marker = source.lastIndexOf('Stable single-instance manual/batch annotation workbench');
+  const end = source.indexOf('Persistent v60 AI annotation UI', marker);
+  const stable = source.slice(marker, end);
+  assert.match(stable, /materialAnnotationStatusV66/);
+  assert.match(stable, /AI已确认/);
+  assert.match(stable, /混合标注/);
+  assert.match(stable, /人工标注/);
+  assert.match(stable, /已确认无目标/);
+  assert.match(stable, /annotation_origin/);
+});

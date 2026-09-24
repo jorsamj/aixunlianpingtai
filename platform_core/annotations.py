@@ -6,7 +6,7 @@ from typing import Any, Mapping, Sequence
 
 
 PREVIEW_LIMIT = 32
-PREVIEW_FIELDS = ("class_id", "label", "x1", "y1", "x2", "y2")
+PREVIEW_FIELDS = ("class_id", "label", "x1", "y1", "x2", "y2", "source", "source_task_id", "confidence")
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -67,13 +67,29 @@ def normalize_boxes(
 def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str | None = None) -> dict:
     state = annotation_state or ("annotated" if boxes else "unannotated")
     label_counts: dict[str, int] = {}
+    sources = set()
     for box in boxes:
         label = str(box.get("label") or "").strip()
         if label:
             label_counts[label] = label_counts.get(label, 0) + 1
-    labels = sorted(
-        label_counts
-    )
+        source = str(box.get("source") or "").strip().lower()
+        if source:
+            sources.add(source)
+    labels = sorted(label_counts)
+    has_ai = any(source.startswith("ai_") or source in {"auto", "semi-auto"} for source in sources)
+    has_non_ai = any(not (source.startswith("ai_") or source in {"auto", "semi-auto"}) for source in sources)
+    if state == "unannotated":
+        origin = "unannotated"
+    elif state == "confirmed_empty":
+        origin = "confirmed_empty"
+    elif has_ai and has_non_ai:
+        origin = "mixed"
+    elif has_ai:
+        origin = "ai_confirmed"
+    elif any("import" in source for source in sources):
+        origin = "imported"
+    else:
+        origin = "manual"
     preview = [
         {field: box.get(field) for field in PREVIEW_FIELDS}
         for box in boxes[:PREVIEW_LIMIT]
@@ -85,5 +101,6 @@ def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str
         "annotated": state in {"annotated", "confirmed_empty"},
         "annotation_state": state,
         "annotation_status": state,
+        "annotation_origin": origin,
         "annotation_preview": preview,
     }

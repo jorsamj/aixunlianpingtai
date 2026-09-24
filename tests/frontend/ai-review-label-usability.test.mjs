@@ -62,3 +62,27 @@ test('AI mapping renderer skips rebuild when labels and mapping signature are un
   assert.match(source, /box\.dataset\.signature===signature/);
   assert.match(source, /datalist\.dataset\.signature!==signature/);
 });
+
+
+test('AI review is a dedicated human-review workbench with explicit per-image accept and reject', () => {
+  const source = reviewBlock();
+  assert.match(source, /AI标注审核工作台/);
+  assert.match(source, /ai-review-workbench-modal/);
+  assert.match(source, /data-ai66-filter="empty"/);
+  assert.match(source, /window\.setAiDecision60/);
+  assert.match(source, />采用<\/button>/);
+  assert.match(source, />拒绝<\/button>/);
+  assert.match(source, /AI判断无目标/);
+  assert.match(source, /已人工修改/);
+});
+
+test('AI review confirmation follows durable commit to terminal and invalidates material truth', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('window.completeAiReview60=async mode=>');
+  const end = source.indexOf('window.confirmAiLabel427=', start);
+  const complete = source.slice(start, end);
+  assert.match(complete, /waitForTaskTerminal/);
+  assert.match(complete, /ai-review-commit:/);
+  assert.match(complete, /MaterialPaginationRuntime61\?\.invalidate/);
+  assert.match(complete, /AI审核结果已写入正式标注/);
+});

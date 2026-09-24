@@ -2680,12 +2680,17 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
+def _v50_material_annotation_patch(
+    saved: Dict[str, Any], annotation_origin: Optional[str] = None,
+) -> Dict[str, Any]:
     boxes = list(saved.get("boxes") or [])
     state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
     updated = str(saved.get("updated_at") or now_iso())
+    summary = annotation_summary(boxes, state)
+    if annotation_origin:
+        summary["annotation_origin"] = str(annotation_origin)
     patch = {
-        **annotation_summary(boxes, state),
+        **summary,
         "annotation_scope": list(saved.get("annotation_scope") or []),
         "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
@@ -2696,7 +2701,10 @@ def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
     return patch
 
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+def write_annotation(
+    project_id: str, image_id: str, boxes: List[Dict[str, Any]],
+    annotation_state=None, annotation_origin: Optional[str] = None,
+):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
     # unannotated placeholder, cancel that placeholder before writing final GT.
@@ -2706,7 +2714,7 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
     saved = _v50_annotation_repository(project_id).upsert(
         image_id, boxes, annotation_state, project_material=False
     )
-    patch = _v50_material_annotation_patch(saved)
+    patch = _v50_material_annotation_patch(saved, annotation_origin)
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 

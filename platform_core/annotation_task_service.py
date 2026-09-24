@@ -282,10 +282,15 @@ def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
     return read_annotation(project_id, image_id)
 
 
-def write_formal_annotation(project_id: str, image_id: str, boxes: list[dict[str, Any]]) -> None:
+def write_formal_annotation(
+    project_id: str, image_id: str, boxes: list[dict[str, Any]],
+    *, annotation_origin: str | None = None,
+) -> None:
     from app import write_annotation
 
-    write_annotation(project_id, image_id, boxes)
+    write_annotation(
+        project_id, image_id, boxes, annotation_origin=annotation_origin,
+    )
 
 
 def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
@@ -339,12 +344,29 @@ def commit_candidate_decisions(
             replaced_classes = {box.get("class_id") for box in incoming}
             previous = [box for box in previous if box.get("class_id") not in replaced_classes]
         final_boxes = previous + incoming
-        # Accepting an empty result explicitly confirms empty only if no formal boxes exist.
+        sources = {str(box.get("source") or "").strip().lower() for box in final_boxes}
+        sources.discard("")
+        has_ai = any(source.startswith("ai_") or source in {"auto", "semi-auto"} for source in sources)
+        has_non_ai = any(not (source.startswith("ai_") or source in {"auto", "semi-auto"}) for source in sources)
+        annotation_origin = (
+            "mixed" if has_ai and has_non_ai
+            else "ai_confirmed" if incoming or has_ai or not final_boxes
+            else "manual"
+        )
+        annotation_state = "annotated" if final_boxes else "confirmed_empty"
         if incoming or not final_boxes:
-            write_formal_annotation(project_id, image_id, final_boxes)
+            write_formal_annotation(
+                project_id, image_id, final_boxes,
+                annotation_origin=annotation_origin,
+            )
             boxes_added += len(incoming)
-        summary = {"image_id": image_id, "box_count": len(final_boxes),
-                   "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")})}
+        summary = {
+            "image_id": image_id,
+            "box_count": len(final_boxes),
+            "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
+            "annotation_state": annotation_state,
+            "annotation_origin": annotation_origin,
+        }
         with closing(store._connect()) as db, db:
             db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
         if len(image_summaries) < 100:
