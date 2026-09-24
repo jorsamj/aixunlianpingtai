@@ -117,3 +117,8 @@ test('material card patching prefers stable material id over filename', () => {
   assert.match(source, /CSS\.escape\(materialId\)/);
   assert.match(source, /const cards=.*\.data412-card,.data429-card/s);
 });
+
+
+test('material card incremental patch uses the same v66 annotation status owner', () => {
+  assert.match(source, /meta\[1\]\.textContent=window\.materialAnnotationStatusV66\?\.\(image\)\|\|materialAnnotationStatus420\(image\)/);
+});
