@@ -84,7 +84,7 @@ jobs:
         run: |
           grep -Eq 'training-task-visibility-runtime\.js\?v=[0-9]+' static/index.html
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
-          grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-runtime.js
+          grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-visibility-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
           grep -Fq 'setTrainingRealtimeActive' static/modules/poll-registry.js
           grep -Fq 'const detachViewAdapter = runtime.setViewAdapter(viewAdapter);' static/modules/training-task-visibility-runtime.js
@@ -120,7 +120,7 @@ jobs:
             echo 'canonical training task table must not expose execution framework as a primary column' >&2
             exit 1
           fi
-          grep -Fq '状态切换中' static/modules/training-task-runtime.js
+          grep -Fq '状态切换中' static/modules/training-task-visibility-runtime.js
           grep -Fq "if (status === 'PAUSING') return 'pausing';" static/modules/task-runtime-truth.js
           grep -Fq "if (status === 'RESUMING') return 'resuming';" static/modules/task-runtime-truth.js
           grep -Fq "if (status === 'STOPPING') return 'stopping';" static/modules/task-runtime-truth.js
@@ -148,8 +148,8 @@ jobs:
           grep -Fq '"SUCCESS", "PARTIAL_SUCCESS"' app.py
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py
-          grep -Fq "const rows=[['所属算法',job.asset_algorithm_name||job.algorithm_name||job.asset_algorithm_id||'-'],['训练任务',job.id],['数据版本',job.dataset_revision_id" static/app.js
-          grep -Fq "['训练快照',job.snapshot_id" static/app.js
+          grep -Fq "datasetRevisionId: String(job?.dataset_revision_id || '').trim()" static/modules/training-recovery-runtime.js
+          grep -Fq '<span>训练快照</span>' static/modules/training-recovery-runtime.js
           grep -Fq 'train_[0-9a-f]{16,32}' app.py
           if grep -Fq 'setInterval(' static/modules/training-task-visibility-runtime.js; then
             echo 'visibility runtime must not create a second polling owner' >&2

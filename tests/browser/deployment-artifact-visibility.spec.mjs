@@ -97,6 +97,6 @@ test('completed conversion becomes visible in canonical version dialog without m
   complete = true;
   await expect.poll(() => historyCalls, {timeout: 8_000}).toBeGreaterThanOrEqual(2);
   await expect(job.getByText('converted.onnx', {exact: true}), {timeout: 8_000}).toBeVisible();
-  await expect(job.getByRole('link', {name: '下载'})).toHaveAttribute('href', '/download/converted.onnx');
+  await expect(job.getByRole('link', {name: '下载', exact: true})).toHaveAttribute('href', '/download/converted.onnx');
   expect(retiredArtifactCalls).toBe(0);
 });

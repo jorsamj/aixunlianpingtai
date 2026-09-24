@@ -1,7 +1,7 @@
 import {canonicalTaskPhase, trainingDisplayStatus} from './task-runtime-truth.js';
 
 const TRAINING_PAGE = '训练任务';
-const REFRESH_DEDUP_WINDOW_MS = 120;
+const REFRESH_DEDUP_WINDOW_MS = 2500;
 const PAGE_ENTRY_REUSE_MS = 5000;
 
 const STAGE_LABELS = Object.freeze({
@@ -122,6 +122,50 @@ export function trainingBatchActionEligible(job, action) {
     ].includes(status);
   }
   return false;
+}
+
+function trainingQueuePriority(job) {
+  const raw = Number(job?.queue_priority ?? 50);
+  if (job?.priority_scheme === 'lower_number_first') return Math.max(1, Math.min(999, Number.isFinite(raw) ? raw : 50));
+  const legacy = {100: 1, 80: 20, 50: 50};
+  return legacy[raw] ?? Math.max(1, Math.min(999, 101 - (Number.isFinite(raw) ? raw : 50)));
+}
+
+export function visibleTrainingJobs(jobs = []) {
+  return (Array.isArray(jobs) ? jobs : []).map((job, index) => ({job, index})).sort((left, right) => {
+    const a = left.job;
+    const b = right.job;
+    const aStatus = trainingDisplayStatus(a);
+    const bStatus = trainingDisplayStatus(b);
+    const rank = value => ['running', 'starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(value)
+      ? 0
+      : value === 'paused'
+        ? 1
+        : value === 'waiting'
+          ? 2
+          : ['queued', 'pending'].includes(value)
+            ? 3
+            : 4;
+    const rankDelta = rank(aStatus) - rank(bStatus);
+    if (rankDelta) return rankDelta;
+    if (['queued', 'waiting', 'pending'].includes(aStatus) && ['queued', 'waiting', 'pending'].includes(bStatus)) {
+      const sameResource = String(a?.resource_key || '') === String(b?.resource_key || '');
+      const aPosition = Number(a?.resource_queue_position);
+      const bPosition = Number(b?.resource_queue_position);
+      if (sameResource && a?.resource_queue_position_exact === true && b?.resource_queue_position_exact === true && aPosition > 0 && bPosition > 0 && aPosition !== bPosition) return aPosition - bPosition;
+      const priorityDelta = trainingQueuePriority(a) - trainingQueuePriority(b);
+      if (priorityDelta) return priorityDelta;
+      const aRank = Number(a?.queue_rank);
+      const bRank = Number(b?.queue_rank);
+      if (Number.isFinite(aRank) && Number.isFinite(bRank) && (aRank || bRank) && aRank !== bRank) return bRank - aRank;
+      const aLegacy = Number(a?.priority_tiebreaker);
+      const bLegacy = Number(b?.priority_tiebreaker);
+      if (Number.isFinite(aLegacy) && Number.isFinite(bLegacy) && (aLegacy || bLegacy) && aLegacy !== bLegacy) return aLegacy - bLegacy;
+      const timeDelta = Date.parse(a?.queued_at || a?.created_at || '') - Date.parse(b?.queued_at || b?.created_at || '');
+      return Number.isFinite(timeDelta) && timeDelta ? timeDelta : left.index - right.index;
+    }
+    return left.index - right.index;
+  }).map(entry => entry.job);
 }
 
 export function trainingStageView(job = {}) {

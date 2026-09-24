@@ -69,7 +69,7 @@ test('storage UI is appended only to expanded resource configuration', () => {
   assert.match(block, /public_base_url/);
   assert.match(block, /只用于素材 Provider/);
   assert.match(block, /modelArtifactStorageMount/);
-  assert.match(block, /ModelArtifactRuntime\?\.refresh\?\.\(\{rerender:true,force\}\)/);
+  assert.match(block, /ModelArtifactRuntime\?\.refresh\?\.\(\{rerender:false,force\}\)/);
   assert.match(block, /STORAGE_SOURCE_CACHE_TTL_MS=2\*60\*1000/);
   assert.match(block, /storage_source_id/);
   assert.match(block, /storage-imports\/scan/);

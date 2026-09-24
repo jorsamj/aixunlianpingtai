@@ -34,8 +34,11 @@ export function installTrainingCreateHydrationRuntime({
   if (typeof openForm !== 'function') return null;
 
   let inflight = null;
+  let commonLoadedAt = 0;
+  let commonProjectId = '';
   let openEpoch = 0;
   let destroyed = false;
+  const COMMON_INPUT_TTL_MS = 5 * 60 * 1000;
   const prewarmInflight = new Map();
 
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -75,36 +78,69 @@ export function installTrainingCreateHydrationRuntime({
       }, {once: true});
     }
   }
-  const hydrate = async ({force = false, requireTrainable = true} = {}) => {
+  const hydrate = async ({force = false, requireTrainable = true, revalidateOptions = false} = {}) => {
     const state = getState?.() || {};
-    const commonReady = Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
-    const ready = requireTrainable ? trainingCreationInputsReady(state) : commonReady;
-    if (!force && ready) return state;
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目尚未加载完成');
+    const projectKey = String(pid);
+    if (commonProjectId && commonProjectId !== projectKey) commonLoadedAt = 0;
+    commonProjectId = projectKey;
+    const commonReady = Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
+    const ready = requireTrainable ? trainingCreationInputsReady(state) : commonReady;
+    if (!force && !revalidateOptions && ready) return state;
 
-    if (!inflight) {
-      inflight = (async () => {
-        const needsOptions = force || (requireTrainable
-          ? !trainingOptionsHydrated(state.targets)
-          : !Array.isArray(state.targets) || state.targets.length === 0);
-        const needsRecommendation = force || state.rec == null;
-        const [optionsResult, recommendationResult] = await Promise.all([
-          needsOptions ? request(`/api/training_options?project_id=${encodeURIComponent(pid)}`) : Promise.resolve(null),
-          needsRecommendation ? request('/api/system/recommendation') : Promise.resolve(null),
-        ]);
-        if (optionsResult) state.targets = optionsResult.targets || [];
-        if (recommendationResult) state.rec = recommendationResult;
-        return state;
-      })().finally(() => { inflight = null; });
+    if (inflight) {
+      const result = await inflight;
+      if (revalidateOptions && !force) {
+        const age = Date.now() - Number(commonLoadedAt || 0);
+        if (!(commonLoadedAt > 0 && age >= 0 && age < COMMON_INPUT_TTL_MS)) {
+          return hydrate({requireTrainable, revalidateOptions: true});
+        }
+      }
+      if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
+        throw new Error('没有读取到可用训练配置，请检查训练资源');
+      }
+      return result;
     }
+
+    inflight = (async () => {
+      const needsOptions = force || revalidateOptions || (requireTrainable
+        ? !trainingOptionsHydrated(state.targets)
+        : !Array.isArray(state.targets) || state.targets.length === 0);
+      const needsRecommendation = force || state.rec == null;
+      const [optionsResult, recommendationResult] = await Promise.all([
+        needsOptions ? request(`/api/training_options?project_id=${encodeURIComponent(pid)}`) : Promise.resolve(null),
+        needsRecommendation ? request('/api/system/recommendation') : Promise.resolve(null),
+      ]);
+      if (optionsResult) {
+        state.targets = optionsResult.targets || [];
+        commonLoadedAt = Date.now();
+        commonProjectId = projectKey;
+      }
+      if (recommendationResult) state.rec = recommendationResult;
+      return state;
+    })().finally(() => { inflight = null; });
+
     const result = await inflight;
     if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
       throw new Error('没有读取到可用训练配置，请检查训练资源');
     }
     return result;
   };
-  const hydrateCommon = ({force = false} = {}) => hydrate({force, requireTrainable: false});
+  const hydrateCommon = async ({force = false, maxAgeMs = COMMON_INPUT_TTL_MS} = {}) => {
+    const pid = projectId?.();
+    if (!pid) throw new Error('当前项目尚未加载完成');
+    const projectKey = String(pid);
+    if (commonProjectId !== projectKey) {
+      commonProjectId = projectKey;
+      commonLoadedAt = 0;
+    }
+    const age = Date.now() - Number(commonLoadedAt || 0);
+    if (!force && commonLoadedAt > 0 && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0)) {
+      return getState?.() || {};
+    }
+    return hydrate({force, requireTrainable: false, revalidateOptions: !force});
+  };
 
   const prewarm = async (aid = '', {includePreflight = true} = {}) => {
     if (destroyed) return null;
@@ -174,7 +210,7 @@ export function installTrainingCreateHydrationRuntime({
     hydrateCommon,
     start,
     prewarm,
-    build: 'training-create-hydration-422537',
+    build: 'training-create-hydration-422538',
     destroy() {
       destroyed = true;
       openEpoch += 1;

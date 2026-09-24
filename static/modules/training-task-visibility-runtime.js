@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView} from './training-task-runtime.js?v=422561';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422563';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -54,7 +54,7 @@ export function trainingTaskStatusCounts(jobs = []) {
 
 export function filterTrainingTaskJobs(jobs = [], {tab = 'all', query = '', algorithm = 'all', priority = 'all', status = 'all'} = {}) {
   const needle = String(query || '').trim().toLowerCase();
-  return (Array.isArray(jobs) ? jobs : []).filter(job => {
+  return visibleTrainingJobs(jobs).filter(job => {
     const bucket = statusBucket(job);
     if (tab === 'active' && !ACTIVE_STATUSES.has(trainingDisplayStatus(job))) return false;
     if (tab === 'history' && !TERMINAL_STATUSES.has(trainingDisplayStatus(job))) return false;
@@ -66,32 +66,7 @@ export function filterTrainingTaskJobs(jobs = [], {tab = 'all', query = '', algo
     if (algorithm !== 'all' && algorithmName !== algorithm) return false;
     const value = String(Number(job?.queue_priority ?? job?.priority ?? 50));
     return priority === 'all' || value === String(priority);
-  }).map((job, index) => ({job, index})).sort((left, right) => {
-    const a = left.job;
-    const b = right.job;
-    const aStatus = trainingDisplayStatus(a);
-    const bStatus = trainingDisplayStatus(b);
-    const rank = value => ['running', 'starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(value) ? 0 : value === 'paused' ? 1 : value === 'waiting' ? 2 : ['queued', 'pending'].includes(value) ? 3 : 4;
-    const rankDelta = rank(aStatus) - rank(bStatus);
-    if (rankDelta) return rankDelta;
-    if (['queued', 'waiting', 'pending'].includes(aStatus) && ['queued', 'waiting', 'pending'].includes(bStatus)) {
-      const sameResource = String(a?.resource_key || '') === String(b?.resource_key || '');
-      const aPosition = Number(a?.resource_queue_position);
-      const bPosition = Number(b?.resource_queue_position);
-      if (sameResource && a?.resource_queue_position_exact === true && b?.resource_queue_position_exact === true && aPosition > 0 && bPosition > 0 && aPosition !== bPosition) return aPosition - bPosition;
-      const priorityDelta = priorityValue(a) - priorityValue(b);
-      if (priorityDelta) return priorityDelta;
-      const aRank = Number(a?.queue_rank);
-      const bRank = Number(b?.queue_rank);
-      if (Number.isFinite(aRank) && Number.isFinite(bRank) && (aRank || bRank) && aRank !== bRank) return bRank - aRank;
-      const aLegacy = Number(a?.priority_tiebreaker);
-      const bLegacy = Number(b?.priority_tiebreaker);
-      if (Number.isFinite(aLegacy) && Number.isFinite(bLegacy) && (aLegacy || bLegacy) && aLegacy !== bLegacy) return aLegacy - bLegacy;
-      const timeDelta = Date.parse(a?.queued_at || a?.created_at || '') - Date.parse(b?.queued_at || b?.created_at || '');
-      return Number.isFinite(timeDelta) && timeDelta ? timeDelta : left.index - right.index;
-    }
-    return left.index - right.index;
-  }).map(entry => entry.job);
+  });
 }
 
 function esc(value) {
@@ -566,6 +541,8 @@ export function installTrainingTaskVisibilityRuntime({
 
   function renderOwned() {
     if (destroyed || !doc || String(state().page || '') !== TRAINING_PAGE) return false;
+    const globalRefresh = doc.getElementById?.('refreshBtn');
+    if (globalRefresh) globalRefresh.onclick = null;
     const root = ensureShell();
     bindBatchControls(root);
     const body = root?.querySelector?.('.train428-table tbody');
@@ -690,7 +667,7 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422528',
+    build: 'training-task-visibility-422529',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
