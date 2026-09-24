@@ -203,12 +203,15 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(
         "platform_core.annotation_task_service.write_formal_annotation",
-        lambda _project, _image, boxes: written.__setitem__(slice(None), boxes),
+        lambda _project, _image, boxes, **_kwargs: written.__setitem__(slice(None), boxes),
     )
     first = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     second = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     assert first["boxes_added"] == 1
-    assert first["image_summaries"] == [{"image_id": "image-1", "box_count": 1, "labels": ["fire"]}]
+    assert first["image_summaries"] == [{
+        "image_id": "image-1", "box_count": 1, "labels": ["fire"],
+        "annotation_state": "annotated", "annotation_origin": "ai_confirmed",
+    }]
     assert second["boxes_added"] == 0
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"

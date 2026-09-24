@@ -79,7 +79,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await expect(card).toBeVisible();
   await card.getByRole('button', {name: '标注'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog).toBeVisible();
   await expect(page.locator('.annotation-workbench-modal')).toBeVisible();
   await expect(dialog.locator('#annLabels')).toBeVisible();
@@ -148,7 +148,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
 
   await dialog.getByRole('button', {name: '删除框', exact: true}).click();
   await expect(dialog.locator('.box424')).toHaveCount(0);
-  await expect(dialog.getByRole('button', {name: '确认无目标'})).toBeVisible();
+  await expect(dialog.getByRole('button', {name: '确认无目标', exact: true})).toBeVisible();
   await dialog.getByRole('button', {name: '撤销', exact: true}).click();
   await expect(dialog.locator('.box424')).toHaveCount(1);
 
@@ -219,7 +219,7 @@ test('annotation paints stale cached labels before authoritative label revalidat
   await expect(card).toBeVisible();
   await card.getByRole('button', {name: '标注'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog).toBeVisible({timeout: 1_000});
   const selector = dialog.getByLabel('绘制标签');
   await expect(selector).toBeVisible();
@@ -253,18 +253,18 @@ test('batch annotation requires explicit empty confirmation and advances across 
   await cards.filter({hasText: 'queue-two.bmp'}).getByRole('checkbox').check();
   await page.getByRole('button', {name: '批量标注'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-one.bmp');
 
-  const firstConfirm = dialog.getByRole('button', {name: '确认无目标'});
+  const firstConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
   await expect(firstConfirm).toBeVisible();
   await expect(firstConfirm).toBeEnabled();
   await firstConfirm.click();
 
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-two.bmp');
-  const secondConfirm = dialog.getByRole('button', {name: '确认无目标'});
+  const secondConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
   await expect(secondConfirm).toBeVisible();
   await expect(secondConfirm).toBeEnabled();
   await secondConfirm.click();
@@ -313,7 +313,7 @@ test('late annotation response cannot replace the newer image in the stable work
   await page.getByRole('button', {name: '批量标注'}).click();
 
   await firstSeen;
-  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.locator('#ann420Filename')).toHaveText('stale-one.bmp');
   await dialog.locator('#ann420Next').click();
   await expect(dialog.locator('#ann420Filename')).toHaveText('stale-two.bmp');
@@ -489,7 +489,7 @@ test('previous and next navigation auto-save the current annotation', async ({pa
   await cards.filter({hasText: 'nav-two.bmp'}).getByRole('checkbox').check();
   await page.getByRole('button', {name: '批量标注'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();

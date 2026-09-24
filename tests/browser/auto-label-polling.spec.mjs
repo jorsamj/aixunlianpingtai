@@ -188,19 +188,35 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
       }),
     });
   });
+  await page.route(`**/api/v60/projects/${encoded}/annotation-tasks/review-browser-1`, async route => {
+    await route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        id:'review-browser-1',name:'AI候选审核浏览器任务',status:'SUCCEEDED',phase:'SUCCEEDED',
+        progress:100,completed_count:54,total_count:54,failed_count:0,
+        summary:{total:54,completed:54,failed:0,boxes:54},
+        created_at:'2026-09-23T00:00:00Z',updated_at:'2026-09-23T00:02:00Z',
+      }),
+    });
+  });
+
   await page.route(`**/api/v60/projects/${encoded}/annotation-tasks/review-browser-1/decisions`, async route => {
     decisionsBody=route.request().postDataJSON();
     await route.fulfill({
       status:200,
       contentType:'application/json',
       body:JSON.stringify({
-        id:'review-browser-1',
-        status:'QUEUED',
-        phase:'REVIEW_QUEUED',
+        ok:true,
         queued_for_commit:true,
-        applied_images:0,
-        boxes_added:0,
-        image_summaries:[],
+        task:{
+          id:'review-browser-1',name:'AI候选审核浏览器任务',status:'QUEUED',phase:'REVIEW_QUEUED',
+          progress:92,completed_count:54,total_count:54,failed_count:0,
+          summary:{total:54,completed:54,failed:0,boxes:54},
+          created_at:'2026-09-23T00:00:00Z',updated_at:'2026-09-23T00:01:30Z',
+        },
+        review:{total:54,accepted:54,rejected:0,unreviewed:0,failed:0},
+        label_summary:labelSummary,
       }),
     });
   });
@@ -211,7 +227,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(taskRow).toBeVisible({timeout:10_000});
   await taskRow.getByRole('button',{name:'审核'}).click();
 
-  const review=page.getByRole('dialog',{name:'AI待确认标注'});
+  const review=page.getByRole('dialog',{name:'AI待确认标注 · 审核工作台',exact:true});
   await expect(review).toBeVisible();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
   await expect(review.locator('#ai60PlatformLabelOptions option')).toHaveCount(34);
@@ -253,14 +269,15 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   await review.locator('#ai60BulkTarget').fill('person');
   await review.getByRole('button',{name:'应用到已勾选图片'}).click();
-  await expect(review.locator('#ai60ReviewSummary')).toContainText('已人工修改 24 张');
+  await expect(review.locator('#ai66Edited')).toHaveText('24');
 
   const firstCard=review.locator('#ai60ReviewGrid .review427-card').first();
   await firstCard.getByRole('button',{name:'编辑候选框'}).click();
   const editor=page.getByRole('dialog',{name:'编辑AI候选框'});
   await expect(editor).toBeVisible();
-  await editor.locator('.ai60-edit-row select').first().selectOption('helmet');
-  await editor.locator('.ai60-edit-row input[type="number"]').first().fill('12');
+  await editor.locator('.ai66-edit-object select').first().selectOption('helmet');
+  await editor.locator('.ai66-edit-advanced').evaluate(node=>{node.open=true});
+  await editor.locator('.ai66-edit-coord input[type="number"]').first().fill('12');
   await editor.getByRole('button',{name:'保存候选修改'}).click();
   await expect(editor).toBeHidden();
   await expect(review).toBeVisible();
@@ -277,8 +294,9 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await firstAfterPaging.getByRole('button',{name:'编辑候选框'}).click();
   const editorAfterPaging=page.getByRole('dialog',{name:'编辑AI候选框'});
   await expect(editorAfterPaging).toBeVisible();
-  await expect(editorAfterPaging.locator('.ai60-edit-row select').first()).toHaveValue('helmet');
-  await expect(editorAfterPaging.locator('.ai60-edit-row input[type="number"]').first()).toHaveValue('12');
+  await expect(editorAfterPaging.locator('.ai66-edit-object select').first()).toHaveValue('helmet');
+  await editorAfterPaging.locator('.ai66-edit-advanced').evaluate(node=>{node.open=true});
+  await expect(editorAfterPaging.locator('.ai66-edit-coord input[type="number"]').first()).toHaveValue('12');
   await editorAfterPaging.getByRole('button',{name:'取消'}).click();
   await expect(editorAfterPaging).toBeHidden();
   await expect(review).toBeVisible();
