@@ -635,7 +635,8 @@ export function installTrainingTaskVisibilityRuntime({
     render: renderOwned,
     afterRefresh(result, options = {}) {
       if (destroyed || result?.stale) return;
-      if (String(options.source || '') !== 'poll') {
+      const source = String(options.source || '');
+      if (source !== 'poll' && source !== 'manual') {
         pollRegistry?.replaceTrainingJobTimer?.();
       }
     },
@@ -648,6 +649,7 @@ export function installTrainingTaskVisibilityRuntime({
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
     if (button.disabled || runtime.state?.().inflight) return;
+    pollRegistry?.clear?.('training-jobs');
     button.disabled = true;
     const previousText = button.textContent;
     button.textContent = '刷新中';
@@ -688,7 +690,7 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422527',
+    build: 'training-task-visibility-422528',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,

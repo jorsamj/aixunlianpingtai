@@ -75,27 +75,36 @@ export function installTrainingCreateHydrationRuntime({
       }, {once: true});
     }
   }
-  const hydrate = async ({force = false} = {}) => {
+  const hydrate = async ({force = false, requireTrainable = true} = {}) => {
     const state = getState?.() || {};
-    if (!force && trainingCreationInputsReady(state)) return state;
-    if (inflight) return inflight;
+    const commonReady = Array.isArray(state.targets) && state.targets.length > 0 && state.rec != null;
+    const ready = requireTrainable ? trainingCreationInputsReady(state) : commonReady;
+    if (!force && ready) return state;
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目尚未加载完成');
 
-    inflight = (async () => {
-      const needsOptions = force || !trainingOptionsHydrated(state.targets);
-      const needsRecommendation = force || state.rec == null;
-      const [optionsResult, recommendationResult] = await Promise.all([
-        needsOptions ? request(`/api/training_options?project_id=${encodeURIComponent(pid)}`) : Promise.resolve(null),
-        needsRecommendation ? request('/api/system/recommendation') : Promise.resolve(null),
-      ]);
-      if (optionsResult) state.targets = optionsResult.targets || [];
-      if (recommendationResult) state.rec = recommendationResult;
-      if (!trainingOptionsHydrated(state.targets)) throw new Error('没有读取到可用训练配置，请检查训练资源');
-      return state;
-    })().finally(() => { inflight = null; });
-    return inflight;
+    if (!inflight) {
+      inflight = (async () => {
+        const needsOptions = force || (requireTrainable
+          ? !trainingOptionsHydrated(state.targets)
+          : !Array.isArray(state.targets) || state.targets.length === 0);
+        const needsRecommendation = force || state.rec == null;
+        const [optionsResult, recommendationResult] = await Promise.all([
+          needsOptions ? request(`/api/training_options?project_id=${encodeURIComponent(pid)}`) : Promise.resolve(null),
+          needsRecommendation ? request('/api/system/recommendation') : Promise.resolve(null),
+        ]);
+        if (optionsResult) state.targets = optionsResult.targets || [];
+        if (recommendationResult) state.rec = recommendationResult;
+        return state;
+      })().finally(() => { inflight = null; });
+    }
+    const result = await inflight;
+    if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
+      throw new Error('没有读取到可用训练配置，请检查训练资源');
+    }
+    return result;
   };
+  const hydrateCommon = ({force = false} = {}) => hydrate({force, requireTrainable: false});
 
   const prewarm = async (aid = '', {includePreflight = true} = {}) => {
     if (destroyed) return null;
@@ -162,9 +171,10 @@ export function installTrainingCreateHydrationRuntime({
   window.startAlgorithmTraining423 = start;
   const runtime = Object.freeze({
     hydrate,
+    hydrateCommon,
     start,
     prewarm,
-    build: 'training-create-hydration-422536',
+    build: 'training-create-hydration-422537',
     destroy() {
       destroyed = true;
       openEpoch += 1;

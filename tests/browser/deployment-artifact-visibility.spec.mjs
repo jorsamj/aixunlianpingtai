@@ -75,7 +75,12 @@ test('completed conversion becomes visible in canonical version dialog without m
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
   });
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => typeof window.openVersionConvert428)).toBe('function');
+  await expect.poll(() => page.evaluate(() => (
+    typeof window.openVersionConvert428 === 'function'
+    && typeof state !== 'undefined'
+    && state.uiReady === true
+    && Boolean(state.project?.id)
+  ))).toBe(true);
 
   await page.evaluate(([aid, vid]) => {
     const projectId = state.project.id;

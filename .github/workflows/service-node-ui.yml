@@ -48,8 +48,8 @@ jobs:
       - name: Permanent service-node UI guards
         shell: bash
         run: |
-          grep -Fq 'service-node-bootstrap.mjs?v=422548' static/index.html
-          grep -Fq "installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422548'" static/main.mjs
+          grep -Eq 'service-node-bootstrap\.mjs\?v=[0-9]+' static/index.html
+          grep -Eq "installServiceNodeRuntime} from './modules/service-node-runtime\.js\?v=[0-9]+'" static/main.mjs
           grep -Fq 'window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;' static/main.mjs
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js

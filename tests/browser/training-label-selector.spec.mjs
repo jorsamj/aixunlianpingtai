@@ -159,7 +159,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
   await settings.locator('#ts428Batch').fill('16');
-  await settings.locator('details.advanced427-box summary').click();
+  await settings.getByText('高级训练参数', {exact: true}).click();
   await settings.locator('#ts428Workers').fill('4');
   await settings.locator('#ts428Opt').selectOption('AdamW');
   await settings.locator('#ts428Cache').selectOption('False');

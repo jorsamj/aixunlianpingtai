@@ -17,6 +17,7 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
     artifacts = app_module.shared_task_artifacts()
     repository = app_module.shared_task_repository()
     artifacts.atomic_write_json(task_id, "payload.json", {"framework": "ultralytics"})
+    capability = f"training.control.{task_id}"
     repository.create(
         TaskRecord.new(
             task_id,
@@ -24,11 +25,11 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
             TaskKind.TRAINING,
             "payload.json",
             f"training:control:{task_id}",
-            required_capabilities=("training.ultralytics",),
+            required_capabilities=(capability,),
         )
     )
     lease = repository.claim_next(
-        "control-test", {TaskKind.TRAINING}, {"training.ultralytics"}, lease_seconds=60
+        "control-test", {TaskKind.TRAINING}, {capability}, lease_seconds=60
     )
     assert lease is not None
     launched = launch_process(
@@ -93,6 +94,7 @@ def test_direct_delete_cancels_durable_training_before_hiding_job(client, seeded
     artifacts = app_module.shared_task_artifacts()
     repository = app_module.shared_task_repository()
     artifacts.atomic_write_json(task_id, "payload.json", {"framework": "ultralytics"})
+    capability = f"training.delete.{task_id}"
     repository.create(
         TaskRecord.new(
             task_id,
@@ -100,11 +102,11 @@ def test_direct_delete_cancels_durable_training_before_hiding_job(client, seeded
             TaskKind.TRAINING,
             "payload.json",
             f"training:delete:{task_id}",
-            required_capabilities=("training.ultralytics",),
+            required_capabilities=(capability,),
         )
     )
     lease = repository.claim_next(
-        "delete-control-test", {TaskKind.TRAINING}, {"training.ultralytics"}, lease_seconds=60
+        "delete-control-test", {TaskKind.TRAINING}, {capability}, lease_seconds=60
     )
     assert lease is not None
     launched = launch_process(

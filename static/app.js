@@ -440,18 +440,26 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
 
 /* Dependencies shared with the final module runtime without exposing mutable app state. */
 window.renderResourceBasePage=renderResources;
-window.refreshTrainingResourceTruthV3=async function(){
+window.refreshTrainingResourceTruthV3=async function({force=false}={}){
   const projectId=pid();
   if(!projectId)return null;
-  const [options,environments,recommendation]=await Promise.all([
-    api(`/api/training_options?project_id=${projectId}`),
+  const commonHydrator=window.TrainingCreateHydrationRuntime?.hydrateCommon;
+  const [common,environments]=await Promise.all([
+    typeof commonHydrator==='function'
+      ? commonHydrator({force})
+      : (async()=>{
+          const [options,recommendation]=await Promise.all([
+            api(`/api/training_options?project_id=${projectId}`),
+            safe(api('/api/system/recommendation')),
+          ]);
+          state.targets=options?.targets||[];
+          if(recommendation)state.rec=recommendation;
+          return state;
+        })(),
     safe(api('/api/v16/inference_envs')),
-    safe(api('/api/system/recommendation')),
   ]);
-  state.targets=options?.targets||[];
   if(environments)state.inferenceEnvs=environments.items||[];
-  if(recommendation)state.rec=recommendation;
-  return {targets:state.targets,inferenceEnvs:state.inferenceEnvs,recommendation:state.rec};
+  return {targets:state.targets,inferenceEnvs:state.inferenceEnvs,recommendation:state.rec,common};
 };
 window.refreshTrainingResourcePageV3=async function(){
   const page=state.page;
@@ -515,7 +523,6 @@ window.__resourceDiscoveryDependencies={
     }
     paintStorageRows61();
     window.StorageCacheRuntime?.decorate?.(state.storageSources61||[]);
-    void window.ModelArtifactRuntime?.renderPanels?.();
     try{
       await loadStorageSources61({force});
       if(state.page==='存储配置'){
@@ -523,7 +530,7 @@ window.__resourceDiscoveryDependencies={
         window.StorageCacheRuntime?.decorate?.(state.storageSources61||[]);
         if(force)void window.StorageCacheRuntime?.refresh?.({sources:state.storageSources61||[],force:true});
       }
-      await window.ModelArtifactRuntime?.refresh?.({rerender:true,force});
+      await window.ModelArtifactRuntime?.refresh?.({rerender:false,force});
     }catch(error){
       if(!state.storageSourcesLoadedAt61){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
       else if(force)toast(error.message||error);

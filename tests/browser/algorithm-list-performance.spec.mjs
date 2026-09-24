@@ -11,7 +11,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422562');
+    .toMatch(/^algorithm-list-runtime-\d+$/);
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
@@ -375,7 +375,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422562');
+    .toMatch(/^algorithm-list-runtime-\d+$/);
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
