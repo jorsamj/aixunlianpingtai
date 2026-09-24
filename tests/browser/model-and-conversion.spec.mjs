@@ -419,7 +419,17 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
     }));
   });
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => typeof window.openVersionConvert428)).toBe('function');
+  await expect.poll(async () => page.evaluate(expectedProjectId => ({
+    uiReady: state.uiReady === true,
+    projectId: String(state.project?.id || ''),
+    opener: typeof window.openVersionConvert428,
+    expectedProjectId: String(expectedProjectId),
+  }), project.id)).toEqual({
+    uiReady: true,
+    projectId: String(project.id),
+    opener: 'function',
+    expectedProjectId: String(project.id),
+  });
   await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
 
   const historyDialog = page.getByRole('dialog', {name: '版本转换'});

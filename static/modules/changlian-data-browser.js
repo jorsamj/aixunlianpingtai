@@ -1,5 +1,7 @@
 const PAGE = '畅联云数据';
 const BASE = '/api/v63/external-algorithm-platform/provider';
+const ENABLED_PRODUCTS_ENDPOINT = '/api/v63/external-algorithm-platform/provider/products?status=1';
+const DISABLED_PRODUCTS_ENDPOINT = '/api/v63/external-algorithm-platform/provider/products?status=0';
 
 function valueOf(row, ...keys) {
   for (const key of keys) {
@@ -200,8 +202,8 @@ export function installChangLianDataBrowserRuntime({
     render();
     refreshPromise = (async () => {
       const [enabledRaw, disabledRaw] = await Promise.all([
-        request(`${BASE}/products?status=1`),
-        request(`${BASE}/products?status=0`),
+        request(ENABLED_PRODUCTS_ENDPOINT),
+        request(DISABLED_PRODUCTS_ENDPOINT),
       ]);
       const products = mergeProducts(providerItems(enabledRaw), providerItems(disabledRaw));
       const hydrated = await mapLimit(products, 4, async product => {
