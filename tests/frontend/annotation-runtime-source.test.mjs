@@ -43,3 +43,35 @@ test('manual annotation shell paints before authoritative hydration and prefetch
   assert.match(source, /if\(!locked&&e\.key==='Delete'\)deleteActiveBox\(\)/);
   assert.match(source, /if\(!locked\)saveAnn\(false\)/);
 });
+
+
+test('manual annotation hot path paints only the active box until pointerup commit', () => {
+  const start = source.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
+  const end = source.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', start);
+  assert.ok(start > 0 && end > start);
+  const interaction = source.slice(start, end);
+  const moveStart = interaction.indexOf("st.addEventListener('pointermove'");
+  const finishStart = interaction.indexOf('const finish=', moveStart);
+  const move = interaction.slice(moveStart, finishStart);
+  assert.match(interaction, /state\.annPointerAbort\?\.abort/);
+  assert.match(interaction, /new AbortController\(\)/);
+  assert.match(interaction, /requestAnimationFrame/);
+  assert.match(move, /scheduleActivePaint\(\)/);
+  assert.doesNotMatch(move, /markDirty\(\)/);
+  assert.doesNotMatch(move, /drawBoxes\(\)/);
+  assert.doesNotMatch(interaction, /window\.addEventListener\(['"]mouse(?:move|up)/);
+  assert.match(interaction, /if\(created\|\|\(mode!=='draw'&&changed\)\)markDirty\(\)/);
+});
+
+test('manual annotation uses a dedicated near-fullscreen workbench with complete label and object panels', () => {
+  const marker = source.lastIndexOf('Stable single-instance manual/batch annotation workbench');
+  const end = source.indexOf('Persistent v60 AI annotation UI', marker);
+  const stable = source.slice(marker, end);
+  assert.match(stable, /annotation-workbench-modal/);
+  assert.match(stable, /id="annLabels"/);
+  assert.match(stable, /id="annBoxes"/);
+  assert.match(stable, /ann420-toolbar-primary/);
+  assert.match(stable, /ann420-toolbar-nav/);
+  assert.match(stable, /ann420-toolbar-edit/);
+  assert.match(stable, /materialAnnotationStatus420/);
+});

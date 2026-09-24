@@ -2654,7 +2654,7 @@ window.installUsability417=function(){
   // ---------- editable annotation boxes: move / resize / relabel ----------
   renderAnnSide=function(){
     const labels=state.labels||[],boxes=state.ann?.boxes||[];const lb=document.getElementById('annLabels'),bb=document.getElementById('annBoxes');if(!lb||!bb)return;
-    lb.innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="state.activeLabel=${l.class_id};renderAnnSide()"><span><span class="dot" style="background:${l.color}"></span>${esc(l.display_name||l.code)}</span><b>${esc(l.hotkey||'')}</b></div>`).join('');
+    lb.innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="selectAnnotationLabel420(${l.class_id})"><span><span class="dot" style="background:${l.color}"></span>${esc(l.display_name||l.code)}</span><b>${esc(l.hotkey||'')}</b></div>`).join('');
     bb.innerHTML=boxes.map((b,i)=>`<div class="boxrow424 ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}</span><select class="select" onclick="event.stopPropagation()" onchange="changeBoxLabel424(${i},this.value)">${labels.map(l=>`<option value="${l.class_id}" ${l.class_id===b.class_id?'selected':''}>${esc(l.display_name||l.code)}</option>`).join('')}</select><b>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</b></div>`).join('')||'<div class="muted">暂无框</div>';
   };
   window.changeBoxLabel424=function(i,cid){const l=(state.labels||[]).find(x=>String(x.class_id)===String(cid));const b=state.ann?.boxes?.[i];if(!l||!b)return;pushHistory();b.class_id=l.class_id;b.label=l.code;state.activeBox=i;markDirty();drawBoxes();renderAnnSide()};
@@ -3743,16 +3743,73 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.previewDataLegacy429_2=function(id){const list=matchData429(),i=list.findIndex(x=>x.id===id);if(i<0)return;state.data426PreviewList=list;state.data426PreviewIndex=i;modal('图片预览',previewHtml411(list[i],list,i),true)};
   window.previewStep411=function(d){const list=state.data426PreviewList||[];let i=Math.max(0,Math.min(list.length-1,(state.data426PreviewIndex||0)+d));state.data426PreviewIndex=i;const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers[layers.length-1],body=top?.querySelector('.modal-body')||document.getElementById('modalBody');if(body&&list[i])window.ModalContentRuntime.replace(body,previewHtml411(list[i],list,i))};
 
-  // Pointer based annotation editing is more stable than window-level mouse listeners, especially after zooming.
+  // Pointer based annotation editing is the canonical interaction owner.
+  // Hot-path rule: pointermove updates only the active box DOM. Dirty state,
+  // history side effects, sidebar rendering and autosave are committed once on pointerup.
   bindAnnotationEvents=function(){
-    const st=document.getElementById('annStage'),im=document.getElementById('annImg');if(!st||!im||st.dataset.bound411==='1')return;st.dataset.bound411='1';st.style.touchAction='none';st.style.cursor='crosshair';
-    let mode='',start=null,temp=null,boxIndex=-1,orig=null,handle='',pointerId=null;
+    const st=document.getElementById('annStage'),im=document.getElementById('annImg');
+    if(!st||!im||st.dataset.bound411==='1')return;
+    st.dataset.bound411='1';st.style.touchAction='none';st.style.cursor='crosshair';
+    state.annPointerAbort?.abort?.();
+    const controller=new AbortController();state.annPointerAbort=controller;
+    const listenerOptions={signal:controller.signal};
+    let mode='',start=null,temp=null,boxIndex=-1,orig=null,handle='',pointerId=null,changed=false,historyCaptured=false,paintRaf=0;
     const pos=e=>{const r=im.getBoundingClientRect(),size=imageSize();return{x:Math.max(0,Math.min(size.w,(e.clientX-r.left)/Math.max(1,r.width)*size.w)),y:Math.max(0,Math.min(size.h,(e.clientY-r.top)/Math.max(1,r.height)*size.h))}};
     const tempDraw=p=>{if(!start||!temp)return;const size=imageSize(),x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);Object.assign(temp.style,{left:x1/size.w*100+'%',top:y1/size.h*100+'%',width:(x2-x1)/size.w*100+'%',height:(y2-y1)/size.h*100+'%'})};
-    st.addEventListener('pointerdown',e=>{if(e.button!==0)return;pointerId=e.pointerId;try{st.setPointerCapture(pointerId)}catch(_){};const h=e.target.closest('.handle424'),bx=e.target.closest('.box424');start=pos(e);if(h&&bx){mode='resize';boxIndex=+bx.dataset.i;handle=h.dataset.h;orig={...state.ann.boxes[boxIndex]};pushHistory()}else if(bx){mode='move';boxIndex=+bx.dataset.i;orig={...state.ann.boxes[boxIndex]};state.activeBox=boxIndex;pushHistory()}else{mode='draw';temp=document.createElement('div');temp.className='drawBox';st.appendChild(temp);tempDraw(start)}e.preventDefault()});
-    st.addEventListener('pointermove',e=>{if(!mode||pointerId!==e.pointerId||!start)return;const p=pos(e),size=imageSize();if(mode==='draw'){tempDraw(p);return}const b=state.ann.boxes[boxIndex];if(!b)return;if(mode==='move'){const dx=p.x-start.x,dy=p.y-start.y,w=orig.x2-orig.x1,h=orig.y2-orig.y1;b.x1=Math.max(0,Math.min(size.w-w,orig.x1+dx));b.y1=Math.max(0,Math.min(size.h-h,orig.y1+dy));b.x2=b.x1+w;b.y2=b.y1+h}else{let x1=orig.x1,y1=orig.y1,x2=orig.x2,y2=orig.y2;if(handle.includes('w'))x1=Math.min(p.x,x2-3);if(handle.includes('e'))x2=Math.max(p.x,x1+3);if(handle.includes('n'))y1=Math.min(p.y,y2-3);if(handle.includes('s'))y2=Math.max(p.y,y1+3);Object.assign(b,{x1,y1,x2,y2})}markDirty();drawBoxes();e.preventDefault()});
-    const finish=e=>{if(!mode||pointerId!==e.pointerId||!start)return;const p=pos(e);if(mode==='draw'){const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);temp?.remove();if(x2-x1>5&&y2-y1>5){const l=(state.labels||[]).find(x=>x.class_id===state.activeLabel)||state.labels[0];if(l){pushHistory();state.ann.boxes.push({id:String(Date.now()).slice(-10),class_id:l.class_id,label:l.code,x1:Math.round(x1),y1:Math.round(y1),x2:Math.round(x2),y2:Math.round(y2)});state.activeBox=state.ann.boxes.length-1;markDirty()}}}else markDirty();try{st.releasePointerCapture(pointerId)}catch(_){};mode='';start=null;temp=null;boxIndex=-1;orig=null;pointerId=null;drawBoxes();renderAnnSide();e.preventDefault()};
-    st.addEventListener('pointerup',finish);st.addEventListener('pointercancel',finish);
+    const paintActiveBox=()=>{
+      if(boxIndex<0)return;
+      const b=state.ann?.boxes?.[boxIndex],size=imageSize(),el=st.querySelector(`.box424[data-i="${boxIndex}"]`);
+      if(!b||!el)return;
+      Object.assign(el.style,{left:b.x1/size.w*100+'%',top:b.y1/size.h*100+'%',width:(b.x2-b.x1)/size.w*100+'%',height:(b.y2-b.y1)/size.h*100+'%'});
+    };
+    const scheduleActivePaint=()=>{if(paintRaf)return;paintRaf=requestAnimationFrame(()=>{paintRaf=0;paintActiveBox()})};
+    const captureHistory=()=>{if(historyCaptured)return;pushHistory();historyCaptured=true};
+    st.addEventListener('pointerdown',e=>{
+      if(e.button!==0)return;
+      pointerId=e.pointerId;changed=false;historyCaptured=false;
+      try{st.setPointerCapture(pointerId)}catch(_){}
+      const h=e.target.closest('.handle424'),bx=e.target.closest('.box424');start=pos(e);
+      if(h&&bx){mode='resize';boxIndex=+bx.dataset.i;handle=h.dataset.h;orig={...state.ann.boxes[boxIndex]};state.activeBox=boxIndex}
+      else if(bx){mode='move';boxIndex=+bx.dataset.i;orig={...state.ann.boxes[boxIndex]};state.activeBox=boxIndex}
+      else{mode='draw';temp=document.createElement('div');temp.className='drawBox';st.appendChild(temp);tempDraw(start)}
+      if(mode!=='draw')drawBoxes();
+      e.preventDefault();
+    },listenerOptions);
+    st.addEventListener('pointermove',e=>{
+      if(!mode||pointerId!==e.pointerId||!start)return;
+      const p=pos(e),size=imageSize();
+      if(mode==='draw'){tempDraw(p);changed=true;e.preventDefault();return}
+      const b=state.ann.boxes[boxIndex];if(!b)return;
+      captureHistory();
+      if(mode==='move'){
+        const dx=p.x-start.x,dy=p.y-start.y,w=orig.x2-orig.x1,h=orig.y2-orig.y1;
+        b.x1=Math.max(0,Math.min(size.w-w,orig.x1+dx));b.y1=Math.max(0,Math.min(size.h-h,orig.y1+dy));b.x2=b.x1+w;b.y2=b.y1+h;
+      }else{
+        let x1=orig.x1,y1=orig.y1,x2=orig.x2,y2=orig.y2;
+        if(handle.includes('w'))x1=Math.min(p.x,x2-3);if(handle.includes('e'))x2=Math.max(p.x,x1+3);
+        if(handle.includes('n'))y1=Math.min(p.y,y2-3);if(handle.includes('s'))y2=Math.max(p.y,y1+3);
+        Object.assign(b,{x1,y1,x2,y2});
+      }
+      changed=true;scheduleActivePaint();e.preventDefault();
+    },listenerOptions);
+    const finish=e=>{
+      if(!mode||pointerId!==e.pointerId||!start)return;
+      const p=pos(e);let created=false;
+      if(mode==='draw'){
+        const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);temp?.remove();
+        if(x2-x1>5&&y2-y1>5){
+          const l=(state.labels||[]).find(x=>x.class_id===state.activeLabel)||state.labels[0];
+          if(l){pushHistory();state.ann.boxes.push({id:(crypto.randomUUID?.()||String(Date.now())).slice(0,12),class_id:l.class_id,label:l.code,x1:Math.round(x1),y1:Math.round(y1),x2:Math.round(x2),y2:Math.round(y2)});state.activeBox=state.ann.boxes.length-1;created=true}
+        }
+      }
+      if(paintRaf){cancelAnimationFrame(paintRaf);paintRaf=0;paintActiveBox()}
+      if(created||(mode!=='draw'&&changed))markDirty();
+      try{st.releasePointerCapture(pointerId)}catch(_){}
+      mode='';start=null;temp=null;boxIndex=-1;orig=null;handle='';pointerId=null;changed=false;historyCaptured=false;
+      drawBoxes();renderAnnSide();e.preventDefault();
+    };
+    st.addEventListener('pointerup',finish,listenerOptions);
+    st.addEventListener('pointercancel',finish,listenerOptions);
   };
   // ---------- image upload with actual browser upload progress / ETA ----------
   function uploadModal411(title,fileCount,totalBytes){return `<div class="up411"><section><b>${esc(title)}</b><span>${fileCount} 个文件 · ${bytes411(totalBytes)}</span></section><div class="up411-bar"><i id="up411Bar" style="width:0%"></i></div><div class="up411-line"><span id="up411Text">准备上传</span><b id="up411Pct">0%</b></div><div class="up411-line muted"><span>已用时间 <b id="up411Elapsed">0秒</b></span><span>预计剩余 <b id="up411Eta">计算中</b></span></div><div id="up411Result"></div></div>`}
@@ -4760,10 +4817,59 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     boxes:(image?.annotation_preview||[]).map(box=>({...box})),
   });
 
+  function materialAnnotationStatus420(row){
+    const annotationState=String(row?.annotation_state||row?.annotation_status||'');
+    if(annotationState==='confirmed_empty')return '已确认无目标';
+    if(annotationState==='annotated'||row?.annotated)return `${Number(row?.box_count||0)} 个框`;
+    return '待标注';
+  }
+
+  window.selectAnnotationLabel420=function(classId){
+    state.activeLabel=Number(classId);
+    const select=document.getElementById('ann420Label');if(select)select.value=String(state.activeLabel);
+    renderAnnSide();
+  };
+
   function ensureShell(){
     if(document.querySelector('.ann420-stable'))return;
-    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button data-ann420-edit="1" class="btn small" onclick="undoAnn()">撤销</button><button data-ann420-edit="1" class="btn small" onclick="redoAnn()">重做</button><button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" title="缩小" onclick="zoomAnn(-0.1)">−</button><span id="zoomText">100%</span><button class="btn mini" title="放大" onclick="zoomAnn(0.1)">＋</button><button class="btn mini" onclick="resetAnnotationZoom420()">100%</button><button class="btn mini" onclick="fitAnnotation420()">适应窗口</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“数据中心 → 标签管理”。拖拽新建框；滚轮缩放；拖动框可移动；四角可调整大小；切换图片前自动保存。</div></aside></div>`,true);
-    const canvas=document.querySelector('.ann420-stable .ann-canvas-wrap');
+    modal('图片标注工作台',`<div class="ann-layout pro ann414 ann417 ann420-stable">
+      <aside class="ann417-queue ann420-queue">
+        <header><div><b>图片队列</b><small>连续标注</small></div><span id="ann420Position">1 / 1</span></header>
+        <div id="ann420Queue"></div>
+      </aside>
+      <div class="ann-work">
+        <div class="ann-toolbar ann420-toolbar">
+          <div class="ann420-toolbar-group ann420-toolbar-primary">
+            <button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button>
+            <button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small ann420-empty-action" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button>
+          </div>
+          <div class="ann420-toolbar-group ann420-toolbar-nav">
+            <button id="ann420Prev" class="btn small" title="上一张 · ←">← 上一张</button>
+            <button id="ann420Next" class="btn small" title="下一张 · →">下一张 →</button>
+          </div>
+          <label class="ann417-label ann420-label-picker"><span>绘制标签</span><select id="ann420Label" class="select" onchange="selectAnnotationLabel420(this.value)"></select></label>
+          <div class="ann420-toolbar-group ann420-toolbar-edit">
+            <button data-ann420-edit="1" class="btn small" onclick="undoAnn()" title="撤销">撤销</button>
+            <button data-ann420-edit="1" class="btn small" onclick="redoAnn()" title="重做">重做</button>
+            <button data-ann420-edit="1" class="btn small danger" onclick="deleteActiveBox()" title="Delete">删除框</button>
+          </div>
+          <span class="ann414-state ann420-file-state"><span id="ann420Filename"></span><b id="annSaveState">已保存</b></span>
+          <div class="ann-zoom ann420-zoom">
+            <button class="btn mini" title="缩小" onclick="zoomAnn(-0.1)">−</button><span id="zoomText">100%</span><button class="btn mini" title="放大" onclick="zoomAnn(0.1)">＋</button>
+            <button class="btn mini" onclick="resetAnnotationZoom420()">1:1</button><button class="btn mini" onclick="fitAnnotation420()">适应</button>
+          </div>
+        </div>
+        <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div>
+      </div>
+      <aside class="side-panel ann-side ann420-inspector">
+        <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"></div></section>
+        <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象</span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
+        <div class="hint-card ann420-shortcuts"><b>快捷操作</b><span>拖拽空白处新建框 · 拖动框移动 · 四角缩放 · 滚轮缩放 · Delete 删除 · Ctrl/⌘ + S 保存</span></div>
+      </aside>
+    </div>`,true);
+    const root=document.querySelector('.ann420-stable'),card=root?.closest('.modal-card'),layer=root?.closest('.v424-modal-layer,.modal');
+    card?.classList.add('annotation-workbench-modal');layer?.classList.add('annotation-workbench-layer');
+    const canvas=root?.querySelector('.ann-canvas-wrap');
     if(canvas&&!canvas.dataset.wheelZoomBound){
       canvas.dataset.wheelZoomBound='1';
       canvas.addEventListener('wheel',event=>{if(!event.target.closest('#annStage'))return;event.preventDefault();window.zoomAnn?.(event.deltaY<0?0.1:-0.1)},{passive:false});
@@ -4775,7 +4881,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const loading=!!state.annotationHydrating420,error=String(state.annotationLoadError420||''),locked=loading||!!error;
     const ids=queueIds(),at=Math.max(0,ids.indexOf(String(image.id))),visible=workbenchApi()?.queueWindow(ids,String(image.id),9)||ids;
     const queue=document.getElementById('ann420Queue');
-    if(queue){const signature=visible.map(id=>{const row=imageById(id);return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${row.annotated?`${row.box_count||0} 框`:'待标注'}</em></span></button>`:''}).join('')}}
+    if(queue){const signature=visible.map(id=>{const row=imageById(id);return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${esc(materialAnnotationStatus420(row))}</em></span></button>`:''}).join('')}}
     const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
     const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
     const select=document.getElementById('ann420Label');if(select){const labels=state.labels||[],signature=labels.map(label=>`${label.class_id}:${label.code}:${label.display_name||''}`).join('|');if(select.dataset.signature!==signature){select.dataset.signature=signature;select.innerHTML=labels.map(label=>`<option value="${Number(label.class_id)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}if(state.activeLabel!=null)select.value=String(state.activeLabel);select.disabled=locked||!labels.length}
@@ -4783,6 +4889,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
     if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
     const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(state.ann?.boxes?.length||0);
+    const labelCount=document.getElementById('ann420LabelCount');if(labelCount)labelCount.textContent=String((state.labels||[]).length);
     const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=locked||(state.ann?.boxes?.length||0)>0;
     const saveButton=document.getElementById('ann414Save');if(saveButton){saveButton.disabled=locked;saveButton.textContent=loading?'读取中…':'保存并继续'}
     document.querySelectorAll('.ann420-stable [data-ann420-edit="1"]').forEach(button=>{button.disabled=locked});
