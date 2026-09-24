@@ -22,6 +22,7 @@ from platform_core.external_algorithm_publish import (
     ExternalPublicationRepository,
     ExternalPublishConfigPayload,
     TargetMapping,
+    request_external_auto_publish_for_conversion_if_enabled,
     request_external_auto_publish_if_enabled,
 )
 from platform_core.model_artifacts import ModelArtifactConfigPayload
@@ -2058,6 +2059,47 @@ def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path:
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"] == "2026-09-17T12:00:00Z"
     assert "external_publish_status" not in version
+
+
+
+def test_conversion_publish_request_marks_blocked_by_hardware_version(tmp_path: Path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory, auto_publish=True)
+    _seed_external_algorithm(tmp_path)
+
+    marked = request_external_auto_publish_for_conversion_if_enabled(
+        data_dir=tmp_path,
+        project_id="p1",
+        conversion_job={
+            "status": "blocked_by_hardware",
+            "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
+        },
+        now="2026-09-24T10:00:00Z",
+    )
+
+    assert marked is True
+    version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
+    assert version["external_publish_requested_at"] == "2026-09-24T10:00:00Z"
+
+
+def test_conversion_publish_request_rejects_blocked_by_environment(tmp_path: Path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory, auto_publish=True)
+    _seed_external_algorithm(tmp_path)
+
+    marked = request_external_auto_publish_for_conversion_if_enabled(
+        data_dir=tmp_path,
+        project_id="p1",
+        conversion_job={
+            "status": "blocked_by_environment",
+            "source_id": "version::a1::v1",
+        },
+        now="2026-09-24T10:01:00Z",
+    )
+
+    assert marked is False
+    version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
+    assert "external_publish_requested_at" not in version
 
 
 def test_conversion_in_progress_does_not_block_training_version_and_original_weight(tmp_path: Path):

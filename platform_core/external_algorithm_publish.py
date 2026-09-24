@@ -2888,6 +2888,52 @@ def request_external_auto_publish_if_enabled(
         return False
 
 
+def request_external_auto_publish_for_conversion_if_enabled(
+    *,
+    data_dir: Path,
+    project_id: str,
+    conversion_job: Mapping[str, Any],
+    now: str | None = None,
+) -> bool:
+    """Request the existing external-publish owner after a deliverable conversion commit."""
+    status = str(conversion_job.get("status") or "").strip().lower()
+    if status not in SUCCESSFUL_CONVERSION_STATUSES:
+        return False
+
+    algorithm_id = ""
+    version_id = ""
+    for source in (
+        conversion_job.get("source_trace"),
+        conversion_job.get("source_meta"),
+    ):
+        if not isinstance(source, Mapping):
+            continue
+        candidate_algorithm_id = str(source.get("algorithm_id") or "").strip()
+        candidate_version_id = str(source.get("version_id") or "").strip()
+        if candidate_algorithm_id and candidate_version_id:
+            algorithm_id = candidate_algorithm_id
+            version_id = candidate_version_id
+            break
+
+    if not algorithm_id or not version_id:
+        source_id = str(conversion_job.get("source_id") or "").strip()
+        match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+        if match:
+            algorithm_id, version_id = match.group(1), match.group(2)
+
+    project_id = str(project_id or "").strip()
+    if not project_id or not algorithm_id or not version_id:
+        return False
+
+    return request_external_auto_publish_if_enabled(
+        data_dir=Path(data_dir),
+        algorithms_path=Path(data_dir) / "projects" / project_id / "algorithms.json",
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        now=str(now or utc_now()),
+    )
+
+
 def external_algorithm_publish_router(
     *,
     data_dir: Path,

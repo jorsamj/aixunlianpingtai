@@ -6,6 +6,8 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/deployment/conversion_tasks.py
+      - platform_core/remote_execution_transport.py
       - platform_core/algorithms.py
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
@@ -17,6 +19,8 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_conversion_tasks.py
+      - tests/unit/test_remote_execution_transport.py
       - tests/unit/test_algorithm_sql_store.py
       - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
@@ -32,6 +36,8 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/deployment/conversion_tasks.py
+      - platform_core/remote_execution_transport.py
       - platform_core/algorithms.py
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
@@ -43,6 +49,8 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_conversion_tasks.py
+      - tests/unit/test_remote_execution_transport.py
       - tests/unit/test_algorithm_sql_store.py
       - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
@@ -70,6 +78,7 @@ jobs:
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_external_algorithm_publish.py \
+            tests/unit/test_conversion_tasks.py \
             tests/unit/test_algorithms.py \
             tests/unit/test_model_artifacts.py \
             tests/unit/test_integration_audit.py \
@@ -110,7 +119,7 @@ jobs:
           grep -Fq "usage||'')!=='model_artifact'" static/app.js
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
+          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/deployment/conversion_tasks.py platform_core/remote_execution_transport.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
           node --check static/modules/external-algorithm-publish.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
@@ -219,6 +228,14 @@ jobs:
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_blocked_by_hardware_rknn_is_still_appended_as_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'SUCCESSFUL_CONVERSION_STATUSES = frozenset(MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES)' platform_core/external_algorithm_publish.py
+          grep -Fq 'def request_external_auto_publish_for_conversion_if_enabled(' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_conversion_publish_request_marks_blocked_by_hardware_version' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_conversion_publish_request_rejects_blocked_by_environment' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
+          grep -Fq 'ConversionHandler(_data_dir)' platform_core/deployment/conversion_tasks.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
+          grep -Fq 'data_dir=DATA_DIR, project_id=project_id, conversion_job=cur' app.py
+          if sed -n '/def request_external_auto_publish_for_conversion_if_enabled/,/def external_algorithm_publish_router/p' platform_core/external_algorithm_publish.py | grep -Eq 'threading\.Thread|while True|Scheduler'; then echo "conversion publish request must reuse the existing owner, not create another poller" >&2; exit 1; fi
           grep -q "test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded" tests/unit/test_external_algorithm_publish.py

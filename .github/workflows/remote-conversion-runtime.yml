@@ -21,11 +21,13 @@ on:
       - 'tests/unit/test_conversion.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/deployment/conversion_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_conversion_tasks.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -57,11 +59,13 @@ on:
       - 'tests/unit/test_conversion.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/deployment/conversion_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_conversion_tasks.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -152,16 +156,19 @@ jobs:
           python -m py_compile
           app.py
           platform_core/remote_execution_transport.py
+          platform_core/deployment/conversion_tasks.py
           platform_core/node_agent_conversion_runtime.py
           tests/api/test_conversion_portable_contract.py
           tests/api/test_rknn_board_validation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_conversion_tasks.py
       - name: Portable creation and result commit contracts
         run: >-
           python -m pytest -q
           tests/api/test_conversion_portable_contract.py
           tests/api/test_rknn_board_validation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_conversion_tasks.py
       - name: Permanent Remote Conversion guards
         shell: bash
         run: |
@@ -225,6 +232,11 @@ jobs:
           grep -Fq '("agent.remote",)' app.py
           grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
           grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
+          grep -Fq '"params": params' platform_core/remote_execution_transport.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
+          grep -Fq 'assert job["params"]["chip"] == "rk3568"' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
+          grep -Fq 'test_deliverable_conversion_finalization_requests_existing_publish_owner' tests/unit/test_conversion_tasks.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_conversion_runtime.py

@@ -64,6 +64,7 @@ def _finalize_conversion_job(
     job: dict,
     *,
     recovered_from_completed_work: bool,
+    data_dir: Path | None = None,
 ) -> tuple[TaskStatus, str]:
     status = conversion_outcome(job)
     if status is TaskStatus.BLOCKED_BY_HARDWARE and str(job.get("status") or "").lower() != "blocked_by_hardware":
@@ -102,10 +103,24 @@ def _finalize_conversion_job(
         stage=str(job.get("stage") or ("RECOVERED" if recovered_from_completed_work else "FINISHED")),
         current_item=str(job.get("source_name") or ""),
     )
+    if data_dir is not None:
+        # Publication is additive. Failure to request publishing must never
+        # downgrade a conversion artifact that is already committed durably.
+        try:
+            from platform_core.external_algorithm_publish import (
+                request_external_auto_publish_for_conversion_if_enabled,
+            )
+            request_external_auto_publish_for_conversion_if_enabled(
+                data_dir=Path(data_dir),
+                project_id=str(context.task.project_id),
+                conversion_job=job,
+            )
+        except Exception:
+            pass
     return status, result_ref
 
 
-def run_conversion(context) -> tuple[TaskStatus, str]:
+def run_conversion(context, *, data_dir: Path | None = None) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
     job_dir = Path(str(request.get("job_dir") or "")).resolve()
     job_file = job_dir / "job.json"
@@ -165,12 +180,16 @@ def run_conversion(context) -> tuple[TaskStatus, str]:
         job_file,
         job,
         recovered_from_completed_work=False,
+        data_dir=data_dir,
     )
 
 
 class ConversionHandler:
+    def __init__(self, data_dir: Path | None = None):
+        self.data_dir = Path(data_dir) if data_dir is not None else None
+
     def run(self, context):
-        return run_conversion(context)
+        return run_conversion(context, data_dir=self.data_dir)
 
     def recover(self, context):
         request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
@@ -183,9 +202,10 @@ class ConversionHandler:
                 job_file,
                 job,
                 recovered_from_completed_work=True,
+                data_dir=self.data_dir,
             )
-        return run_conversion(context)
+        return run_conversion(context, data_dir=self.data_dir)
 
 
 def worker_registration(_data_dir: Path):
-    return {"handlers": {TaskKind.MODEL_CONVERSION: ConversionHandler()}, "capabilities": {"conversion.runtime"}}
+    return {"handlers": {TaskKind.MODEL_CONVERSION: ConversionHandler(_data_dir)}, "capabilities": {"conversion.runtime"}}

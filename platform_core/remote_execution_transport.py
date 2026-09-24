@@ -3510,6 +3510,10 @@ class RemoteExecutionTransportService:
                 "source_trace": dict(conversion.get("source_trace") or {})
                 if isinstance(conversion.get("source_trace"), Mapping)
                 else {},
+                "source_id": str(
+                    (conversion.get("source_trace") or {}).get("source_id") or job.get("source_id") or ""
+                ) if isinstance(conversion.get("source_trace"), Mapping) else str(job.get("source_id") or ""),
+                "params": params,
                 "status": "done",
                 "progress": 100,
                 "stage": "转换完成",
@@ -3557,6 +3561,14 @@ class RemoteExecutionTransportService:
                 encoding="utf-8",
             )
             job_tmp.replace(job_file)
+            from .external_algorithm_publish import (
+                request_external_auto_publish_for_conversion_if_enabled,
+            )
+            request_external_auto_publish_for_conversion_if_enabled(
+                data_dir=self.data_dir,
+                project_id=str(task.project_id),
+                conversion_job=job,
+            )
             return {
                 "conversion_artifact_committed": True,
                 "conversion_artifact_path": str(destination),

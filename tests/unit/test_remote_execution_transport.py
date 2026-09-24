@@ -1830,6 +1830,11 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
         '{"id":"convert-rknn","status":"queued","outputs":[]}',
         encoding="utf-8",
     )
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.external_algorithm_publish.request_external_auto_publish_for_conversion_if_enabled",
+        lambda **kwargs: publish_requests.append(kwargs) or True,
+    )
     committed = transport.commit_result_publication(
         task, payload, evidence, confirmed
     )
@@ -1848,6 +1853,12 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert manifest["target"]["chip"] == "rk3568"
     assert job["validation_status"] == "converted_unverified"
     assert job["hardware_verified"] is False
+    assert job["source_trace"]["algorithm_id"] == "a1"
+    assert job["source_trace"]["version_id"] == "v1"
+    assert job["params"]["chip"] == "rk3568"
+    assert len(publish_requests) == 1
+    assert publish_requests[0]["project_id"] == "p1"
+    assert publish_requests[0]["conversion_job"]["params"]["chip"] == "rk3568"
 
 
 def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path):

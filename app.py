@@ -14874,6 +14874,9 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
             for p in ad.rglob("*"):
                 if p.is_file():outputs.append({"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_mb":round(p.stat().st_size/1024/1024,3)})
             cur.update(outputs=outputs,finished_at=now_iso(),message="远程转换完成，部署产物已拉回平台",progress=100);write_json(jf,cur)
+            request_external_auto_publish_for_conversion_if_enabled(
+                data_dir=DATA_DIR, project_id=project_id, conversion_job=cur,
+            )
     except Exception as e:
         cur=read_json(jf,job);cur.update(status="failed",stage="转换失败",message=str(e),error=str(e),finished_at=now_iso(),updated_at=now_iso());write_json(jf,cur)
         with (jd/"convert.log").open("a",encoding="utf-8",errors="ignore") as f:f.write(f"\n[{now_iso()}] 远程转换失败：{e}\n")
@@ -19170,6 +19173,7 @@ from platform_core.external_algorithm_platform import (
 from platform_core.external_algorithm_publish import (
     ExternalAlgorithmPublishService,
     external_algorithm_publish_router,
+    request_external_auto_publish_for_conversion_if_enabled,
     request_external_auto_publish_if_enabled,
 )
 from platform_core.material_batches import material_batch_router
