@@ -18512,6 +18512,12 @@ def annotation_material_states(project_id: str, image_ids: str = ""):
     page = repository.list(
         project_id=project_id,
         kinds={TaskKind.AI_ANNOTATION},
+        statuses={
+            TaskStatus.AWAITING_CONFIRMATION,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCEL_REQUESTED,
+        },
         limit=100,
     )
     ranks = {"candidate_failed": 1, "awaiting_confirmation": 2, "committing": 3}

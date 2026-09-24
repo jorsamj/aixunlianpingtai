@@ -179,3 +179,23 @@ def test_material_state_projection_is_bounded(client, seeded_project):
         f"/api/v60/projects/{project_id}/annotation-material-states?image_ids={image_ids}"
     )
     assert response.status_code == 422
+
+
+def test_material_state_projection_filters_terminal_task_history(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    pending_id = _awaiting(project_id, 1, repository, artifacts)
+    for index in range(105):
+        task_id = _queued(project_id, repository, artifacts)
+        lease = repository.claim_next(
+            f"terminal-worker-{index}", {TaskKind.AI_ANNOTATION}, {"vision_provider"}
+        )
+        assert lease is not None
+        repository.finish(task_id, lease.lease_token, TaskStatus.FAILED, error="historical failure")
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states?image_ids=image-0"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {"image_id": "image-0", "state": "awaiting_confirmation", "task_id": pending_id},
+    ]
