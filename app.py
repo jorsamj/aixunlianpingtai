@@ -18511,7 +18511,7 @@ def annotation_material_states(project_id: str, image_ids: str = ""):
     repository = shared_task_repository()
     page = repository.list(
         project_id=project_id,
-        kinds={TaskKind.AI_ANNOTATION},
+        kinds={TaskKind.AI_ANNOTATION, TaskKind.MATERIAL_BATCH},
         statuses={
             TaskStatus.AWAITING_CONFIRMATION,
             TaskStatus.QUEUED,
@@ -18523,6 +18523,12 @@ def annotation_material_states(project_id: str, image_ids: str = ""):
     ranks = {"candidate_failed": 1, "awaiting_confirmation": 2, "committing": 3}
     projected: Dict[str, Dict[str, Any]] = {}
     for task in page.items:
+        if task.kind is TaskKind.MATERIAL_BATCH:
+            batch_request = shared_task_artifacts().read_json(
+                task.task_id, task.payload_ref, default={},
+            )
+            if str((batch_request or {}).get("operation") or "") != "AI_ANNOTATE":
+                continue
         phase = str(task.stage or "").upper()
         if task.status is TaskStatus.AWAITING_CONFIRMATION:
             public_state = "awaiting_confirmation"

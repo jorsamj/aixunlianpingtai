@@ -199,3 +199,75 @@ def test_material_state_projection_filters_terminal_task_history(client, seeded_
     assert response.json()["items"] == [
         {"image_id": "image-0", "state": "awaiting_confirmation", "task_id": pending_id},
     ]
+
+
+def test_material_state_projection_includes_ai_annotation_material_batches(
+    client, seeded_project, isolated_task_runtime
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = uuid.uuid4().hex[:12]
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "operation": "AI_ANNOTATE",
+        "options": {"image_ids": ["batch-image"], "labels": ["fire"]},
+    })
+    repository.create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+        f"material-batch:{task_id}", required_capabilities=("vision_provider",),
+    ))
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([
+        {"image_id": "batch-image", "status": "success", "boxes": [{"label": "fire"}]},
+    ])
+    lease = repository.claim_next(
+        "batch-worker", {TaskKind.MATERIAL_BATCH}, {"vision_provider"}
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=batch-image"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {"image_id": "batch-image", "state": "awaiting_confirmation", "task_id": task_id},
+    ]
+
+
+def test_material_state_projection_ignores_non_ai_material_batches(
+    client, seeded_project, isolated_task_runtime
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = uuid.uuid4().hex[:12]
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "operation": "CLEAN",
+        "options": {"image_ids": ["clean-image"]},
+    })
+    repository.create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+        f"material-batch:{task_id}",
+    ))
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([
+        {"image_id": "clean-image", "status": "success", "boxes": [{"label": "fire"}]},
+    ])
+    lease = repository.claim_next("clean-worker", {TaskKind.MATERIAL_BATCH}, set())
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=clean-image"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
