@@ -30,6 +30,11 @@ on:
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
       - 'tests/browser/deployment-progress-performance.spec.mjs'
+      - 'tests/browser/deployment-artifact-visibility.spec.mjs'
+      - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
+      - 'tests/frontend/deployment-artifact-refresh.test.mjs'
+      - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
   pull_request:
     branches:
@@ -59,6 +64,12 @@ on:
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
+      - 'tests/browser/deployment-progress-performance.spec.mjs'
+      - 'tests/browser/deployment-artifact-visibility.spec.mjs'
+      - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
+      - 'tests/frontend/deployment-artifact-refresh.test.mjs'
+      - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
 
 jobs:
@@ -112,6 +123,12 @@ jobs:
           tests/unit/test_task_node_assignments.py
       - name: Rockchip frontend syntax
         run: node --check static/app.js
+      - name: Canonical conversion frontend contracts
+        run: >-
+          node --test
+          tests/frontend/deployment-action-owner-retirement.test.mjs
+          tests/frontend/deployment-artifact-refresh.test.mjs
+          tests/frontend/deployment-runtime-source.test.mjs
 
   control-plane:
     runs-on: ubuntu-24.04
@@ -134,11 +151,13 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/node_agent_conversion_runtime.py
           tests/api/test_conversion_portable_contract.py
+          tests/api/test_rknn_board_validation.py
           tests/unit/test_remote_execution_transport.py
       - name: Portable creation and result commit contracts
         run: >-
           python -m pytest -q
           tests/api/test_conversion_portable_contract.py
+          tests/api/test_rknn_board_validation.py
           tests/unit/test_remote_execution_transport.py
       - name: Permanent Remote Conversion guards
         shell: bash
@@ -184,6 +203,9 @@ jobs:
           grep -Fq 'conv428CalibrationSplit' static/app.js
           grep -Fq 'conv428CalibrationCount' static/app.js
           grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
+          grep -Fq 'completed conversion becomes visible in canonical version dialog without manual refresh' tests/browser/deployment-artifact-visibility.spec.mjs
+          grep -Fq 'retired deployment page is no longer a public action target' tests/frontend/deployment-action-owner-retirement.test.mjs
+          grep -Fq 'test_version_deployment_projection_preserves_rknn_hardware_truth' tests/api/test_rknn_board_validation.py
           grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
           grep -Fq '"training",' platform_core/node_agent_executor_loop.py
@@ -231,6 +253,8 @@ jobs:
           --grep "deployment resource editor exposes service-node Agent for RKNN|RKNN Agent INT8 conversion submits frozen calibration selection from the UI"
           &&
           npx playwright test tests/browser/deployment-progress-performance.spec.mjs
+          &&
+          npx playwright test tests/browser/deployment-artifact-visibility.spec.mjs
       - name: Browser guard
         shell: bash
         run: |

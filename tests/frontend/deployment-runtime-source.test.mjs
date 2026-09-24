@@ -47,18 +47,14 @@ test('persistent deployment progress patches a stable compositor-friendly node',
   assert.doesNotMatch(finalLayer,/output\.innerHTML=\`<div class="loading">真实 Runtime 测试中/);
 });
 
-test('deployment pages paint cached low-frequency data before background refresh',()=>{
-  assert.match(source,/const DEPLOY_CACHE_TTL_MS=10\*60\*1000/);
-  assert.match(source,/function restoreDeployCacheV39\(\)/);
-  assert.match(source,/function primeDeployRenderV39\(page,renderer,firstLoadText\)/);
-  assert.match(source,/if\(!primeDeployRenderV39\('部署资源'/);
-  assert.match(source,/if\(!primeDeployRenderV39\('部署转换'/);
-  assert.match(source,/if\(!primeDeployRenderV39\('部署产物'/);
-  assert.doesNotMatch(source,/正在读取部署资源\.\.\./);
-  assert.doesNotMatch(source,/正在读取模型与部署资源\.\.\./);
-  assert.doesNotMatch(source,/正在读取部署产物\.\.\./);
+test('canonical version conversion reuses cached history and resource truth with single-flight requests',()=>{
+  assert.match(source,/const conversionHistoryInflight428=new Map\(\)/);
+  assert.match(source,/let deployResourcesInflight428=null/);
+  assert.match(source,/window\.loadVersionConversionHistory428=deploymentHistory428/);
+  assert.match(source,/window\.loadVersionConversionResources428=deployResources428/);
+  assert.match(source,/version-conversion:\$\{aid\}:\$\{vid\}/);
+  assert.match(source,/deploymentHistory428\(aid,vid,true\)/);
 });
-
 
 test('deployment plugin page restores only a sanitized persisted card snapshot',()=> {
   assert.match(source,/const DEPLOY_PLUGIN_CACHE_KEY='cl_deploy_plugins_v41_snapshot'/);
@@ -97,33 +93,26 @@ test('deployment first-render revalidation is single-flight across canonical rer
 });
 
 
-test('deployment conversion manual refresh is job-scoped instead of reloading all deployment data',()=> {
-  const start=source.indexOf('window.renderDeployCenter=function()');
-  const end=source.indexOf('window.syncAtlasSocFromResource',start);
+test('canonical version conversion manual refresh reloads only the selected version history',()=>{
+  const start=source.indexOf('window.refreshVersionConvert428=async function(aid,vid');
+  const end=source.indexOf('window.refreshActiveVersionConvert428=',start);
   assert.ok(start>=0&&end>start);
   const owner=source.slice(start,end);
-  assert.match(owner,/onclick="refreshDeployJobsV39\(\)">刷新<\/button>/);
-  assert.doesNotMatch(owner,/onclick="loadDeployData\(true\)/);
-  const pollStart=source.indexOf('async function pollDeployJobs()');
-  const pollEnd=source.indexOf('function clearDeployPollV39()',pollStart);
-  assert.ok(pollStart>=0&&pollEnd>pollStart);
-  const poll=source.slice(pollStart,pollEnd);
-  assert.match(poll,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
-  assert.doesNotMatch(poll,/deploy\/resources|source-models/);
+  assert.match(owner,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(owner,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
+  assert.doesNotMatch(owner,/loadDeployData|source-models|deploy\/artifacts|deploy\/resources/);
 });
 
-
-test('creating a deployment job reuses current resource truth and refreshes only jobs',()=> {
-  const start=source.indexOf('window.createDeployJobM4=async function()');
-  const end=source.indexOf('window.__m4OpenModelConfig=',start);
+test('canonical version conversion creation refreshes only the selected version truth',()=>{
+  const start=source.indexOf('  window.submitConvert428=async function(aid,vid)');
+  const end=source.indexOf('  // ---------------------- training creation from algorithm',start);
   assert.ok(start>=0&&end>start);
   const create=source.slice(start,end);
-  assert.match(create,/deploy\/jobs/);
-  assert.match(create,/state\.deployPresetSourceId='';window\.renderDeployCenter\(\);await window\.refreshDeployJobsV39\?\.\(\)/);
-  assert.doesNotMatch(create,/loadDeployData\(true\)/);
-  assert.match(source,/window\.createDeployJob=window\.__m4CreateDeployJob/);
+  assert.match(create,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
+  assert.match(create,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(create,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
+  assert.doesNotMatch(create,/renderDeployCenter|loadDeployData\(true\)|deploy\/artifacts|source-models/);
 });
-
 
 test('deployment resource mutations refresh only deployment resources and preserve cache age',()=> {
   const refreshStart=source.indexOf('async function refreshDeployResourcesV39()');
