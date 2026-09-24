@@ -69,6 +69,50 @@ function failureStageLabel(stage) {
   })[String(stage || '').toLowerCase()] || String(stage || '未知阶段');
 }
 
+function failedEvidence(job = {}, recovery = {}) {
+  return uniqueText([
+    job?.root_cause,
+    recovery?.root_cause,
+    recovery?.failure_reason,
+    job?.error,
+    job?.failure_reason,
+    job?.runtime_error,
+    job?.process_error,
+    job?.task_error,
+    job?.message,
+    job?.current_item,
+  ]);
+}
+
+function failureRootCause(job = {}, recovery = {}) {
+  const values = failedEvidence(job, recovery);
+  const coded = values.find(value => /\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b/.test(value));
+  if (coded) return coded;
+  const specific = values.find(value => {
+    const text = String(value || '').trim().toLowerCase();
+    return text
+      && !text.startsWith('training process exited with returncode=')
+      && text !== 'job status is not done'
+      && !text.startsWith('completion_handshake=');
+  });
+  return specific || values[0] || '';
+}
+
+function completionHandshakeText(job = {}, recovery = {}) {
+  const explicit = String(
+    recovery?.completion_handshake
+    || job?.completion_handshake
+    || job?.completion_error
+    || ''
+  ).trim();
+  if (explicit) return explicit;
+  for (const value of failedEvidence(job, recovery)) {
+    const match = String(value || '').match(/completion_handshake=([^;]+)/i);
+    if (match?.[1]) return match[1].trim();
+  }
+  return '';
+}
+
 export function canRecoverTrainingTask(recovery = {}) {
   return recovery?.available === true
     && recovery?.recoverable === true
@@ -104,19 +148,14 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const completedEpochs = numberOrNull(recovery?.completed_epochs) ?? numberOrNull(progress.epoch) ?? numberOrNull(job.current_epoch) ?? 0;
   const requestedEpochs = numberOrNull(recovery?.requested_epochs) ?? numberOrNull(progress.total_epochs) ?? numberOrNull(job.total_epochs) ?? numberOrNull(job.epochs);
   const recoverable = flags.failed && canRecoverTrainingTask(recovery);
+  const rootCause = flags.failed ? failureRootCause(job, recovery) : '';
   const errors = flags.failed ? uniqueText([
-    job?.error,
-    job?.failure_reason,
-    job?.runtime_error,
-    job?.process_error,
-    job?.task_error,
-    recovery?.failure_reason,
+    rootCause,
+    ...failedEvidence(job, recovery),
     report?.validation_error,
     testResult?.error,
     job?.ai_intervention_last?.action === 'error' ? job?.ai_intervention_last?.reason : '',
     job?.version_archive_error,
-    job?.message,
-    job?.current_item,
   ]) : [];
   const warnings = uniqueText([
     job?.warning_message,
@@ -152,7 +191,10 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     statusKind: flags.success ? (flags.partial ? 'partial' : 'success') : recoverable ? 'recoverable' : flags.failed ? 'failed' : 'active',
     statusMessage: String(job?.message || job?.current_item || '').trim(),
     failureStage: recovery?.failure_stage || job?.failure_stage || '',
-    failureReason: errors[0] || '',
+    failureStageLabel: failureStageLabel(recovery?.failure_stage || job?.failure_stage || ''),
+    rootCause,
+    failureReason: rootCause || errors[0] || '',
+    completionHandshake: completionHandshakeText(job, recovery),
     errorType: String(job?.error_type || '').trim(),
     errors,
     warnings,
@@ -258,7 +300,18 @@ function detailHtml(job, recovery, log = '') {
   const epochText = model.requestedEpochs ? `${model.completedEpochs} / ${model.requestedEpochs}` : (model.completedEpochs || '-');
   const batchText = model.totalBatches ? `${model.currentBatch ?? '-'} / ${model.totalBatches}` : '-';
   const actionHtml = model.recoverable ? `<button class="btn primary" data-training-recovery-action="${RECOVERY_ACTION_REVALIDATE}" data-task-id="${esc(model.taskId)}">重新验证 Checkpoint</button>` : '';
-  const reasonHtml = model.errors.length ? `<section class="training-recovery-reason"><header><b>错误与失败证据</b><span>任务 / Worker / 验证 / 归档</span></header>${model.errors.map(value => `<p>${esc(value)}</p>`).join('')}</section>` : '';
+  const checkpointRecoveryState = model.checkpointAvailable
+    ? (model.recoverable ? 'Checkpoint 已保留 · 可重新验证' : 'Checkpoint 已保留 · 当前不可自动恢复')
+    : '无可用 Checkpoint · 不可恢复';
+  const failureSummaryHtml = failed ? `<section class="training-recovery-panel" data-training-failure-summary>
+    <header><h4>失败主因与运行证据</h4><span>按诊断优先级展示，不改写后端事实</span></header>
+    <div class="training-recovery-kv" data-failure-rank="1"><span>1. Root cause</span><b>${esc(model.rootCause || '-')}</b></div>
+    <div class="training-recovery-kv" data-failure-rank="2"><span>2. Failure stage</span><b>${esc(model.failureStageLabel || model.failureStage || '-')}</b></div>
+    <div class="training-recovery-kv" data-failure-rank="3"><span>3. Process return code</span><b>${esc(model.processReturncode ?? '-')}</b></div>
+    <div class="training-recovery-kv" data-failure-rank="4"><span>4. Completion handshake</span><b>${esc(model.completionHandshake || '-')}</b></div>
+    <div class="training-recovery-kv" data-failure-rank="5"><span>5. Checkpoint / Recovery</span><b>${esc(checkpointRecoveryState)}</b></div>
+  </section>` : '';
+  const reasonHtml = model.errors.length ? `<section class="training-recovery-reason"><header><b>其他错误与失败证据</b><span>任务 / Worker / 验证 / 归档</span></header>${model.errors.filter(value => value !== model.rootCause).map(value => `<p>${esc(value)}</p>`).join('')}</section>` : '';
   const warningHtml = model.warnings.length ? `<section class="training-recovery-warning"><header><b>警告 / 非致命异常</b><span>不会覆盖成功终态</span></header>${model.warnings.map(value => `<p>${esc(value)}</p>`).join('')}</section>` : '';
   const statusHtml = !failed && model.statusMessage ? `<div class="training-recovery-message"><b>当前信息</b><p>${esc(model.statusMessage)}</p></div>` : '';
   const artifacts = model.artifacts.length ? model.artifacts.join('、') : '-';
@@ -279,7 +332,7 @@ function detailHtml(job, recovery, log = '') {
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
           </section>
-          ${statusHtml}${reasonHtml}${warningHtml}
+          ${statusHtml}${failureSummaryHtml}${reasonHtml}${warningHtml}
           <div class="training-recovery-columns">
             <section class="training-recovery-panel">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>

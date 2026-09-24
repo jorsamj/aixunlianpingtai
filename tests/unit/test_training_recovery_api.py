@@ -175,3 +175,4 @@ def test_recovery_reason_prefers_worker_root_cause_over_completion_handshake(tmp
 
     assert truth["failure_reason"].startswith("训练失败：RESOURCE_RUNTIME_MISMATCH")
     assert truth["failure_reason"] != "job status is not done"
+    assert truth["completion_handshake"] == "job status is not done"

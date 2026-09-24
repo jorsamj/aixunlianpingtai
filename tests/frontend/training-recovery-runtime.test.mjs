@@ -401,6 +401,20 @@ test('detail model exposes runtime resource telemetry from backend metrics truth
 
 
 
+test('failure detail source keeps the five diagnostic layers in fixed priority order', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  const positions = [
+    '1. Root cause',
+    '2. Failure stage',
+    '3. Process return code',
+    '4. Completion handshake',
+    '5. Checkpoint / Recovery',
+  ].map(label => source.indexOf(label));
+  assert.equal(positions.every(index => index >= 0), true);
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+});
+
 test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-mismatch',
@@ -431,12 +445,21 @@ test('failed detail prioritizes worker root cause and keeps requested resolved r
       cache: 'ram',
     },
   }, {
+    failure_stage: 'training_process',
     failure_reason: 'training process exited with returncode=1; completion_handshake=job status is not done',
+    completion_handshake: 'job status is not done',
     process_returncode: 1,
     checkpoint_available: false,
     recoverable: false,
   });
 
+  assert.equal(model.rootCause, 'RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0');
+  assert.equal(model.failureStage, 'training_process');
+  assert.equal(model.failureStageLabel, '训练进程');
+  assert.equal(model.processReturncode, 1);
+  assert.equal(model.completionHandshake, 'job status is not done');
+  assert.equal(model.checkpointAvailable, false);
+  assert.equal(model.recoverable, false);
   assert.equal(model.errors[0], 'RESOURCE_RUNTIME_MISMATCH: resolved workers=2; runtime workers=0');
   assert.match(model.errors[1], /completion_handshake=job status is not done/);
   assert.equal(model.requestedBatch, 4);

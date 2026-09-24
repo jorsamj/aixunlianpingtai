@@ -104,6 +104,11 @@ def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = F
         "declared_recovery_action": declared_action,
         "failure_stage": failure_stage,
         "failure_reason": _failure_reason(task, failure),
+        "completion_handshake": str(
+            failure.get("completion_handshake")
+            or failure.get("completion_error")
+            or ""
+        ).strip() or None,
         "process_returncode": failure.get("process_returncode"),
         "process_signal": failure.get("process_signal"),
         "training_loop_completed": failure.get("training_loop_completed") is True,
