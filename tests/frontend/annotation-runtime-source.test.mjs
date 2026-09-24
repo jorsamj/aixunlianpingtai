@@ -122,3 +122,14 @@ test('material card patching prefers stable material id over filename', () => {
 test('material card incremental patch uses the same v66 annotation status owner', () => {
   assert.match(source, /meta\[1\]\.textContent=window\.materialAnnotationStatusV66\?\.\(image\)\|\|materialAnnotationStatus420\(image\)/);
 });
+
+
+test('pending AI material exposes direct review action and locks duplicate commit', () => {
+  assert.match(source, /annotationMaterialActionV66/);
+  assert.match(source, /审核AI结果/);
+  assert.match(source, /AI正在入库/);
+  assert.match(source, /查看AI任务/);
+  assert.match(source, /reviewAiLabel427/);
+  assert.match(source, /showAiTask60/);
+  assert.match(source, /aiMaterialStates60\?\.\[String\(x\.id\)\]\?\.state/);
+});
