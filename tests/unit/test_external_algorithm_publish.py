@@ -296,7 +296,7 @@ class FakeChangLianSyncClient:
             }],
         }
 
-    def products(self):
+    def products(self, **_filters):
         return {
             "code": 200,
             "data": [{
