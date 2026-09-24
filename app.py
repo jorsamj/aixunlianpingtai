@@ -64,6 +64,9 @@ from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.changlian_login_auth import (
     DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
+    DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS,
+    DEFAULT_SESSION_IDLE_TTL_SECONDS,
+    DEFAULT_SESSION_RENEW_WINDOW_SECONDS,
     SESSION_COOKIE_NAME,
     ChangLianLoginClient,
     ChangLianLoginError,
@@ -244,7 +247,84 @@ _CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
     DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
 ).strip() or DEFAULT_CHANGLIAN_LOGIN_BASE_URL
 _CHANGLIAN_LOGIN_CLIENT = ChangLianLoginClient(base_url=_CHANGLIAN_LOGIN_BASE_URL)
-_CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(DATA_DIR / "auth")
+
+
+def _auth_env_seconds(name: str, default: int, *, minimum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return max(int(minimum), int(raw))
+    except ValueError:
+        return int(default)
+
+
+_CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(
+    DATA_DIR / "auth",
+    idle_ttl_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_IDLE_SECONDS",
+        DEFAULT_SESSION_IDLE_TTL_SECONDS,
+        minimum=300,
+    ),
+    absolute_ttl_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_ABSOLUTE_SECONDS",
+        DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS,
+        minimum=300,
+    ),
+    renew_window_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_RENEW_WINDOW_SECONDS",
+        DEFAULT_SESSION_RENEW_WINDOW_SECONDS,
+        minimum=60,
+    ),
+)
+
+
+def _auth_request_is_secure(request: Request) -> bool:
+    forwarded = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return forwarded == "https" or request.url.scheme == "https"
+
+
+def _set_auth_cookie(response: Response, request: Request, token: str, claims: Mapping[str, Any]) -> None:
+    try:
+        remaining = max(1, int(claims.get("exp") or 0) - int(time.time()))
+    except (TypeError, ValueError):
+        remaining = _CHANGLIAN_AUTH_SESSIONS.idle_ttl_seconds
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=remaining,
+        httponly=True,
+        secure=_auth_request_is_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _public_auth_session(claims: Mapping[str, Any]) -> Dict[str, Any]:
+    now = int(time.time())
+    expires_at = int(claims.get("exp") or 0)
+    hard_expires_at = int(
+        claims.get("hard_exp")
+        or (
+            int(claims.get("created_at") or claims.get("iat") or now)
+            + _CHANGLIAN_AUTH_SESSIONS.absolute_ttl_seconds
+        )
+    )
+    upstream_exp = claims.get("upstream_exp")
+    return {
+        "authenticated": True,
+        "user": {"username": str(claims.get("username") or "")},
+        "expires_at": expires_at,
+        "remaining_seconds": max(0, expires_at - now),
+        "absolute_expires_at": hard_expires_at,
+        "absolute_remaining_seconds": max(0, hard_expires_at - now),
+        "idle_ttl_seconds": _CHANGLIAN_AUTH_SESSIONS.idle_ttl_seconds,
+        "renew_window_seconds": _CHANGLIAN_AUTH_SESSIONS.renew_window_seconds,
+        "upstream_token_expires_at": int(upstream_exp) if upstream_exp else None,
+        "upstream_token_expiry_source": str(
+            claims.get("upstream_expiry_source") or "undocumented"
+        ),
+    }
 
 
 @app.middleware("http")
@@ -375,11 +455,18 @@ def changlian_auth_session(request: Request):
     )
     if claims is None:
         return {"authenticated": False, "user": None}
-    return {
-        "authenticated": True,
-        "user": {"username": str(claims.get("username") or "")},
-        "expires_at": int(claims.get("exp") or 0),
-    }
+
+    renewed_token = _CHANGLIAN_AUTH_SESSIONS.renew(claims)
+    if renewed_token:
+        renewed_claims = _CHANGLIAN_AUTH_SESSIONS.verify(renewed_token)
+        if renewed_claims is not None:
+            claims = renewed_claims
+
+    response = JSONResponse(_public_auth_session(claims))
+    response.headers["Cache-Control"] = "no-store"
+    if renewed_token:
+        _set_auth_cookie(response, request, renewed_token, claims)
+    return response
 
 
 @app.post("/api/auth/login")
@@ -409,28 +496,39 @@ def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
             status_code=error.status_code,
         ) from error
 
-    token = _CHANGLIAN_AUTH_SESSIONS.issue(username)
+    token = _CHANGLIAN_AUTH_SESSIONS.issue(
+        username,
+        upstream_expires_at=result.get("upstream_expires_at"),
+        upstream_expiry_source=str(
+            result.get("upstream_expiry_source") or "undocumented"
+        ),
+    )
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(token)
+    if claims is None:
+        raise PlatformError(
+            code="AUTH_SESSION_CREATE_FAILED",
+            message="登录成功但会话创建失败",
+            detail="本平台未能创建安全登录会话。",
+            solution="请刷新页面后重新登录；若持续失败，请检查服务器时间。",
+            status_code=500,
+        )
     response = JSONResponse(
         {
             "ok": True,
-            "authenticated": True,
-            "user": {"username": username},
             "provider": "changlian",
+            **_public_auth_session(claims),
             "upstream": {
                 "code": result.get("code"),
                 "message": result.get("message", ""),
+                "token_present": bool(result.get("token_present")),
+                "expires_in": result.get("upstream_expires_in"),
+                "expires_at": result.get("upstream_expires_at"),
+                "expiry_source": result.get("upstream_expiry_source"),
             },
         }
     )
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=token,
-        max_age=_CHANGLIAN_AUTH_SESSIONS.ttl_seconds,
-        httponly=True,
-        secure=request.url.scheme == "https",
-        samesite="lax",
-        path="/",
-    )
+    response.headers["Cache-Control"] = "no-store"
+    _set_auth_cookie(response, request, token, claims)
     return response
 
 

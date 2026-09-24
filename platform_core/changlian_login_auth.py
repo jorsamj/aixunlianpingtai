@@ -16,9 +16,14 @@ import requests
 
 DEFAULT_CHANGLIAN_LOGIN_BASE_URL = "http://vip.24hlink.cn/prod-api"
 SESSION_COOKIE_NAME = "mc_changlian_session"
-DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60
+DEFAULT_SESSION_IDLE_TTL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_SESSION_RENEW_WINDOW_SECONDS = 24 * 60 * 60
+# Compatibility alias for callers that still describe the rolling idle lifetime as ttl.
+DEFAULT_SESSION_TTL_SECONDS = DEFAULT_SESSION_IDLE_TTL_SECONDS
 _MACHINE_NODE_EXECUTOR_PREFIX = "/api/v63/node-executor/"
 _MACHINE_HEARTBEAT_RE = re.compile(r"^/api/v63/service-nodes/[^/]+/heartbeat/?$")
+_PROTECTED_PAGE_PATHS = {"/", "/docs", "/redoc", "/openapi.json"}
 
 
 class ChangLianLoginError(RuntimeError):
@@ -52,17 +57,85 @@ def _business_message(body: Mapping[str, Any]) -> str:
     return ""
 
 
-def _extract_login_token(body: Mapping[str, Any]) -> str:
-    candidates = [body]
+def _candidate_mappings(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    candidates: list[Mapping[str, Any]] = [body]
     data = body.get("data")
     if isinstance(data, Mapping):
         candidates.append(data)
-    for candidate in candidates:
+    return candidates
+
+
+def _extract_login_token(body: Mapping[str, Any]) -> str:
+    for candidate in _candidate_mappings(body):
         for key in ("token", "accessToken", "access_token"):
             value = candidate.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()
     return ""
+
+
+def _extract_explicit_expires_in(body: Mapping[str, Any]) -> Optional[int]:
+    for candidate in _candidate_mappings(body):
+        for key in ("expiresIn", "expires_in"):
+            value = candidate.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                seconds = int(float(value))
+            except (TypeError, ValueError):
+                continue
+            if seconds > 0:
+                return seconds
+    return None
+
+
+def _jwt_exp(token: str) -> Optional[int]:
+    value = str(token or "").strip()
+    parts = value.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    try:
+        payload = json.loads(_b64decode(parts[1]).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("exp")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        expires_at = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return expires_at if expires_at > 0 else None
+
+
+def _upstream_expiry_metadata(
+    body: Mapping[str, Any],
+    token: str,
+    *,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    current = int(time.time() if now is None else now)
+    explicit = _extract_explicit_expires_in(body)
+    if explicit is not None:
+        return {
+            "upstream_expires_in": explicit,
+            "upstream_expires_at": current + explicit,
+            "upstream_expiry_source": "expires_in",
+        }
+    jwt_expires_at = _jwt_exp(token)
+    if jwt_expires_at is not None:
+        return {
+            "upstream_expires_in": max(0, jwt_expires_at - current),
+            "upstream_expires_at": jwt_expires_at,
+            "upstream_expiry_source": "jwt_exp",
+        }
+    return {
+        "upstream_expires_in": None,
+        "upstream_expires_at": None,
+        "upstream_expiry_source": "undocumented",
+    }
 
 
 def _business_login_succeeded(body: Mapping[str, Any]) -> bool:
@@ -173,12 +246,15 @@ class ChangLianLoginClient:
                 status_code=401,
             )
 
+        token = _extract_login_token(body)
+        expiry = _upstream_expiry_metadata(body, token)
         return {
             "ok": True,
             "username": user,
             "code": body.get("code"),
             "message": message,
-            "token_present": bool(_extract_login_token(body)),
+            "token_present": bool(token),
+            **expiry,
         }
 
 
@@ -196,12 +272,24 @@ class SignedSessionManager:
         self,
         root: Path,
         *,
-        ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS,
+        idle_ttl_seconds: int = DEFAULT_SESSION_IDLE_TTL_SECONDS,
+        absolute_ttl_seconds: int = DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS,
+        renew_window_seconds: int = DEFAULT_SESSION_RENEW_WINDOW_SECONDS,
+        ttl_seconds: Optional[int] = None,
     ) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.key_path = self.root / "changlian-session.key"
-        self.ttl_seconds = max(300, int(ttl_seconds))
+        # ttl_seconds remains accepted for older focused tests/callers.
+        if ttl_seconds is not None:
+            idle_ttl_seconds = int(ttl_seconds)
+        self.idle_ttl_seconds = max(300, int(idle_ttl_seconds))
+        self.absolute_ttl_seconds = max(self.idle_ttl_seconds, int(absolute_ttl_seconds))
+        self.renew_window_seconds = max(
+            60,
+            min(int(renew_window_seconds), self.idle_ttl_seconds - 1),
+        )
+        self.ttl_seconds = self.idle_ttl_seconds
         self._key = self._load_or_create_key()
 
     def _load_or_create_key(self) -> bytes:
@@ -223,14 +311,34 @@ class SignedSessionManager:
             raise RuntimeError("invalid changlian auth session key")
         return key
 
-    def issue(self, username: str, *, now: Optional[int] = None) -> str:
+    def issue(
+        self,
+        username: str,
+        *,
+        now: Optional[int] = None,
+        created_at: Optional[int] = None,
+        hard_expires_at: Optional[int] = None,
+        upstream_expires_at: Optional[int] = None,
+        upstream_expiry_source: str = "undocumented",
+    ) -> str:
         issued_at = int(time.time() if now is None else now)
+        origin = issued_at if created_at is None else int(created_at)
+        hard_exp = (
+            origin + self.absolute_ttl_seconds
+            if hard_expires_at is None
+            else int(hard_expires_at)
+        )
+        expires_at = min(issued_at + self.idle_ttl_seconds, hard_exp)
         body = {
-            "v": 1,
+            "v": 2,
             "username": str(username or "").strip(),
             "iat": issued_at,
-            "exp": issued_at + self.ttl_seconds,
+            "created_at": origin,
+            "exp": expires_at,
+            "hard_exp": hard_exp,
             "jti": secrets.token_urlsafe(12),
+            "upstream_exp": int(upstream_expires_at) if upstream_expires_at else None,
+            "upstream_expiry_source": str(upstream_expiry_source or "undocumented"),
         }
         payload = _b64encode(
             json.dumps(
@@ -259,7 +367,7 @@ class SignedSessionManager:
             body = json.loads(_b64decode(payload).decode("utf-8"))
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             return None
-        if not isinstance(body, dict) or int(body.get("v") or 0) != 1:
+        if not isinstance(body, dict) or int(body.get("v") or 0) not in {1, 2}:
             return None
         username = str(body.get("username") or "").strip()
         if not username:
@@ -267,11 +375,48 @@ class SignedSessionManager:
         current = int(time.time() if now is None else now)
         try:
             expires_at = int(body.get("exp") or 0)
+            hard_exp = int(body.get("hard_exp") or 0)
         except (TypeError, ValueError):
             return None
         if expires_at <= current:
             return None
+        if hard_exp and hard_exp <= current:
+            return None
         return body
+
+    def needs_renewal(self, claims: Mapping[str, Any], *, now: Optional[int] = None) -> bool:
+        current = int(time.time() if now is None else now)
+        try:
+            expires_at = int(claims.get("exp") or 0)
+            created_at = int(claims.get("created_at") or claims.get("iat") or current)
+            hard_exp = int(claims.get("hard_exp") or (created_at + self.absolute_ttl_seconds))
+        except (TypeError, ValueError):
+            return False
+        if expires_at <= current or hard_exp <= current:
+            return False
+        return (expires_at - current) <= self.renew_window_seconds
+
+    def renew(self, claims: Mapping[str, Any], *, now: Optional[int] = None) -> Optional[str]:
+        current = int(time.time() if now is None else now)
+        if not self.needs_renewal(claims, now=current):
+            return None
+        try:
+            created_at = int(claims.get("created_at") or claims.get("iat") or current)
+            hard_exp = int(claims.get("hard_exp") or (created_at + self.absolute_ttl_seconds))
+            upstream_exp = claims.get("upstream_exp")
+            upstream_expires_at = int(upstream_exp) if upstream_exp else None
+        except (TypeError, ValueError):
+            return None
+        return self.issue(
+            str(claims.get("username") or ""),
+            now=current,
+            created_at=created_at,
+            hard_expires_at=hard_exp,
+            upstream_expires_at=upstream_expires_at,
+            upstream_expiry_source=str(
+                claims.get("upstream_expiry_source") or "undocumented"
+            ),
+        )
 
 
 def _has_bearer(authorization: Optional[str]) -> bool:
@@ -302,13 +447,18 @@ def auth_guard_decision(
             return "machine"
     if value.startswith("/api/"):
         return "session_api"
-    if value == "/":
+    if value.startswith("/data/"):
+        return "session_resource"
+    if value in _PROTECTED_PAGE_PATHS:
         return "session_page"
     return "public"
 
 
 __all__ = [
     "DEFAULT_CHANGLIAN_LOGIN_BASE_URL",
+    "DEFAULT_SESSION_IDLE_TTL_SECONDS",
+    "DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS",
+    "DEFAULT_SESSION_RENEW_WINDOW_SECONDS",
     "DEFAULT_SESSION_TTL_SECONDS",
     "SESSION_COOKIE_NAME",
     "ChangLianLoginClient",

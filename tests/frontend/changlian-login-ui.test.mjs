@@ -36,3 +36,21 @@ test('authenticated shell exposes current cloud identity and logout without stor
   assert.match(sessionJs, /fetch\('\/api\/auth\/logout'/);
   assert.doesNotMatch(sessionJs, /password|localStorage|sessionStorage/);
 });
+
+
+test('session runtime keeps an authenticated browser alive without browser credential storage', () => {
+  assert.match(sessionJs, /SESSION_REFRESH_INTERVAL_MS = 30 \* 60 \* 1000/);
+  assert.match(sessionJs, /setInterval/);
+  assert.match(sessionJs, /cache: 'no-store'/);
+  assert.doesNotMatch(sessionJs, /localStorage|sessionStorage/);
+});
+
+test('backend exposes rolling and absolute session lifetime without exposing upstream token', () => {
+  assert.match(backend, /DEFAULT_SESSION_IDLE_TTL_SECONDS = 7 \* 24 \* 60 \* 60/);
+  assert.match(backend, /DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS = 30 \* 24 \* 60 \* 60/);
+  assert.match(backend, /upstream_expiry_source/);
+  assert.match(app, /MC_AUTH_SESSION_IDLE_SECONDS/);
+  assert.match(app, /MC_AUTH_SESSION_ABSOLUTE_SECONDS/);
+  assert.match(app, /_set_auth_cookie/);
+  assert.doesNotMatch(app, /"token": result/);
+});
