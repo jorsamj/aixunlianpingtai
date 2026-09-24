@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -10,6 +11,17 @@ from filelock import FileLock
 
 from .algorithms import list_algorithms, update_algorithm_version
 from .model_artifacts import SUCCESSFUL_CONVERSION_STATUSES
+
+
+_EXTERNAL_PUBLISH_WAKE_EVENT = threading.Event()
+
+
+def wait_for_external_publish_owner(timeout_seconds: float = 30.0) -> bool:
+    """Wait for a durable publish request or the normal recovery interval."""
+    signaled = _EXTERNAL_PUBLISH_WAKE_EVENT.wait(max(0.0, float(timeout_seconds)))
+    if signaled:
+        _EXTERNAL_PUBLISH_WAKE_EVENT.clear()
+    return bool(signaled)
 
 
 def utc_now() -> str:
@@ -57,6 +69,7 @@ def request_external_auto_publish_if_enabled(
             {"external_publish_requested_at": str(now)},
             now=str(now),
         )
+        _EXTERNAL_PUBLISH_WAKE_EVENT.set()
         return True
     except Exception:
         return False

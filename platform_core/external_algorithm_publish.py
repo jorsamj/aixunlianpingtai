@@ -6,7 +6,6 @@ import mimetypes
 import re
 import sqlite3
 import threading
-import time
 import requests
 from contextlib import closing
 from datetime import datetime, timezone
@@ -23,6 +22,7 @@ from .errors import PlatformError
 from .external_publish_request import (
     request_external_auto_publish_for_conversion_if_enabled,
     request_external_auto_publish_if_enabled,
+    wait_for_external_publish_owner,
 )
 from .integration_audit import IntegrationAuditRepository
 from .model_artifacts import (
@@ -2909,7 +2909,10 @@ def external_algorithm_publish_router(
                         pass
             except Exception:
                 pass
-            time.sleep(30)
+            # One canonical owner remains responsible for publishing. A durable
+            # training/conversion request wakes it immediately; 30 seconds is
+            # retained only as the recovery scan interval.
+            wait_for_external_publish_owner(30)
 
     threading.Thread(target=worker_loop, name="external-algorithm-auto-publish", daemon=True).start()
 

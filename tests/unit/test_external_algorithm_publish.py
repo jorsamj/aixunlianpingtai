@@ -24,6 +24,7 @@ from platform_core.external_algorithm_publish import (
     TargetMapping,
     request_external_auto_publish_for_conversion_if_enabled,
     request_external_auto_publish_if_enabled,
+    wait_for_external_publish_owner,
 )
 from platform_core.model_artifacts import ModelArtifactConfigPayload
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
@@ -2043,6 +2044,8 @@ def test_blocked_config_does_not_auto_retry_until_publish_config_changes(tmp_pat
 
 
 def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path):
+    # Drain any signal left by a prior request in the same pytest process.
+    wait_for_external_publish_owner(0)
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory, auto_publish=True)
     _seed_external_algorithm(tmp_path)
@@ -2059,6 +2062,8 @@ def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path:
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"] == "2026-09-17T12:00:00Z"
     assert "external_publish_status" not in version
+    assert wait_for_external_publish_owner(0) is True
+    assert wait_for_external_publish_owner(0) is False
 
 
 
