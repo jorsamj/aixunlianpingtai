@@ -1,4 +1,11 @@
 import {test, expect} from '@playwright/test';
+
+async function waitForCanonicalApp(page) {
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
+}
 import {promises as fs} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -128,6 +135,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await routeReadyTrainingRuntime(page);
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
   const algorithmCard = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
   await expect(algorithmCard.getByRole('button', {name: '综合报告'})).toBeVisible({timeout: 20_000});
@@ -188,6 +196,7 @@ test('training submit sends the selected candidate pool and configured experimen
   });
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -237,6 +246,7 @@ test('training material selection does not depend on dataset groups and supports
   await routeReadyTrainingRuntime(page);
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
   await page.evaluate(async algorithmId => {
     state.datasets = [];
@@ -289,6 +299,7 @@ test('versioned training locks the latest version and projects the current rando
   });
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -325,6 +336,7 @@ test('training queue displays numeric priorities and orders each resource by pri
   }));
   await selectIsolatedTestProject(page, project.id, '训练任务');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await expect(page.locator('.nav-project-v')).toHaveText(project.name);
   await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
   await page.evaluate(async () => {
@@ -387,6 +399,7 @@ test('training report shows requested epochs actual epochs stop reason and targe
   }));
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
+  await waitForCanonicalApp(page);
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   await page.evaluate(() => window.trainingReport425('target-stop-job'));
