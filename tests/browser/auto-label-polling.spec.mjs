@@ -285,7 +285,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await review.locator('#ai60ReviewPager').getByRole('button',{name:'下一页'}).click();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
   await expect(review.locator('#ai60ReviewSummary')).toContainText('第 25–48 / 54 张');
-  await expect(review.locator('#ai60ReviewSummary')).toContainText('已人工修改 24 张');
+  await expect(review.locator('#ai66Edited')).toHaveText('24');
   await review.locator('#ai60ReviewPager').getByRole('button',{name:'上一页'}).click();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
   await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 54 张');
