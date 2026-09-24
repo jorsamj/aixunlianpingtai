@@ -59,6 +59,7 @@ on:
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
       - 'tests/integration/test_training_task_worker.py'
+      - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
@@ -120,6 +121,7 @@ on:
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
       - 'tests/integration/test_training_task_worker.py'
+      - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
@@ -228,6 +230,23 @@ jobs:
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_remote_training_prepare_task.py
           tests/integration/test_training_task_worker.py
+
+  ultralytics-loader-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install production-compatible Ultralytics loader runtime
+        run: |
+          python -m pip install --disable-pip-version-check "torch==2.5.0+cpu" "torchvision==0.20.0+cpu" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check pytest "ultralytics==8.4.143"
+      - name: Verify platform resource truth against real Ultralytics DataLoader
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_ultralytics_loader_resource_contract.py
 
   api:
     runs-on: ubuntu-24.04
