@@ -386,3 +386,16 @@ test('current mAP50 never falls back to generic accuracy', () => {
   assert.ok(Math.abs(algorithmVersionMap50({map50: 0.926}) - 92.6) < 1e-9);
   assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
 });
+
+
+test('category picker rows are whole-row interactive for drill-down and leaf selection', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /function activateCategoryRow\(id\)/);
+  assert.match(source, /data-category-row="\$\{esc\(row\.id\)\}"/);
+  assert.match(source, /const categoryRow = event\.target\.closest\('\[data-category-row\]'\)/);
+  assert.match(source, /if \(categoryRow\) return activateCategoryRow\(categoryRow\.dataset\.categoryRow\)/);
+  assert.match(source, /viewState\.categoryPath = \[\.\.\.\(row\.ancestorIds \|\| \[\]\)/);
+  assert.match(source, /return toggleDraftCategory\(row\.id\)/);
+  assert.match(source, /event\.target === categoryRow && \['Enter', ' '\]\.includes\(event\.key\)/);
+});

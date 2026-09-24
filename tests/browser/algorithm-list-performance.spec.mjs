@@ -563,3 +563,49 @@ test('algorithm version exposes persisted training lineage without job refetch',
   expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('category picker responds from the whole row for drill-down and leaf selection', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
+    .toMatch(/^algorithm-list-runtime-\d+$/);
+
+  await page.evaluate(() => {
+    window.AlgorithmListRuntime.setExternalProvider({
+      snapshot: () => ({
+        categories: [],
+        externalMode: true,
+        categoryRows: [
+          {id:'root-category',name:'安全治理',parentId:'',ancestorIds:[],path:'安全治理',hasChildren:true},
+          {id:'leaf-category',name:'烟火检测',parentId:'root-category',ancestorIds:['root-category'],path:'安全治理 / 烟火检测',hasChildren:false},
+        ],
+      }),
+      matches: () => true,
+      meta: () => ({external:false,sourceLabel:'本平台',readiness:{ready:true,status:'local',message:''}}),
+    });
+    window.AlgorithmListRuntime.openCategoryPicker();
+  });
+
+  const picker = page.locator('[data-category-popover]');
+  const rootRow = picker.locator('[data-category-row="root-category"]');
+  await expect(rootRow).toBeVisible();
+  await rootRow.click();
+  const leafRow = picker.locator('[data-category-row="leaf-category"]');
+  await expect(leafRow).toBeVisible();
+
+  await leafRow.click();
+  await expect(leafRow.locator('[data-category-check="leaf-category"]')).toBeChecked();
+
+  await leafRow.press('Space');
+  await expect(leafRow.locator('[data-category-check="leaf-category"]')).not.toBeChecked();
+
+  const search = picker.locator('[data-category-search]');
+  await search.fill('安全治理');
+  const searchParent = picker.locator('.algorithm-category-search-row[data-category-row="root-category"]');
+  await expect(searchParent).toBeVisible();
+  await searchParent.click();
+  await expect(picker.locator('[data-category-row="leaf-category"]')).toBeVisible();
+});

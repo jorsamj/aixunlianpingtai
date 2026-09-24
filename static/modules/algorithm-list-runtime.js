@@ -245,6 +245,18 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     return runtimeState();
   }
 
+  function activateCategoryRow(id) {
+    const row = categoryById(id);
+    if (!row) return runtimeState();
+    if (row.hasChildren === true) {
+      viewState.categoryQuery = '';
+      viewState.categoryPath = [...(row.ancestorIds || []).map(value => String(value || '')).filter(Boolean), String(row.id)];
+      renderCategoryPicker();
+      return runtimeState();
+    }
+    return toggleDraftCategory(row.id);
+  }
+
   function confirmCategoryPicker() {
     const valid = [...viewState.draftCategoryIds].filter(id => { const row = categoryById(id); return row && row.hasChildren !== true; });
     filters.selectedCategoryIds = valid;
@@ -468,9 +480,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     let recentIds = [];
     try { recentIds = JSON.parse(localStorage.getItem('cl_algorithm_recent_categories_v1') || '[]'); } catch (_) {}
     const recent = (Array.isArray(recentIds) ? recentIds : []).map(categoryById).filter(row => row && row.hasChildren !== true).slice(0, 6);
-    const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}"><label>${row.hasChildren ? '<span aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span>${esc(row.name)}</span></label>${row.hasChildren ? '<button data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
+    const item = row => `<div class="algorithm-category-item ${active.has(String(row.id)) ? 'active' : ''}" data-category-id="${esc(row.id)}" data-category-row="${esc(row.id)}" role="button" tabindex="0" aria-label="${row.hasChildren ? '展开' : '选择'} ${esc(row.name)}"><span class="algorithm-category-item-main">${row.hasChildren ? '<span class="algorithm-category-node-dot" aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" aria-label="选择 ${esc(row.name)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span>${esc(row.name)}</span></span>${row.hasChildren ? '<button type="button" data-category-drill aria-label="查看下级">›</button>' : ''}</div>`;
     const body = viewState.categoryQuery
-      ? `<div class="algorithm-category-search-results">${search.map(row => row.hasChildren ? `<div><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></div>` : `<label><input type="checkbox" data-category-check="${esc(row.id)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}><span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span></label>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
+      ? `<div class="algorithm-category-search-results">${search.map(row => `<div class="algorithm-category-search-row ${viewState.draftCategoryIds.has(String(row.id)) ? 'selected' : ''}" data-category-id="${esc(row.id)}" data-category-row="${esc(row.id)}" role="button" tabindex="0" aria-label="${row.hasChildren ? '展开' : '选择'} ${esc(row.name)}">${row.hasChildren ? '<span class="algorithm-category-node-dot" aria-hidden="true">·</span>' : `<input type="checkbox" data-category-check="${esc(row.id)}" aria-label="选择 ${esc(row.name)}" ${viewState.draftCategoryIds.has(String(row.id)) ? 'checked' : ''}>`}<span><b>${esc(row.name)}</b><small>${esc(row.path)}</small></span>${row.hasChildren ? '<button type="button" data-category-drill aria-label="查看下级">›</button>' : ''}</div>`).join('') || '<div class="entity-empty compact">未找到匹配品目</div>'}</div>`
       : `<div class="algorithm-category-columns">${columns.map(column => `<div class="algorithm-category-column">${column.rows.map(item).join('') || '<div class="algorithm-category-column-empty">请选择上级品目</div>'}</div>`).join('')}</div>`;
     const selected = [...viewState.draftCategoryIds].map(categoryById).filter(Boolean);
     popover.innerHTML = `<header><b>选择品目</b><button data-category-close>×</button></header><label class="algorithm-category-search"><span>⌕</span><input type="search" value="${esc(viewState.categoryQuery)}" placeholder="搜索品目名称或路径" data-category-search></label>${recent.length ? `<div class="algorithm-category-recent"><span>最近使用：</span>${recent.map(row => `<button data-category-recent="${esc(row.id)}">${esc(row.name)}</button>`).join('')}</div>` : ''}${body}<footer><div><b>已选择 ${selected.length} 项</b><span>${selected.slice(0, 2).map(row => `<em>${esc(row.name)}</em>`).join('')}${selected.length > 2 ? `<em>+${selected.length - 2}</em>` : ''}</span></div><div><button class="btn" data-category-clear>清空</button><button class="btn primary" data-category-confirm>确定</button></div></footer>`;
@@ -630,12 +642,21 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (event.target.closest('[data-category-clear]')) { viewState.draftCategoryIds.clear(); return renderCategoryPicker(); }
       if (event.target.closest('[data-category-confirm]')) return confirmCategoryPicker();
       const recent = event.target.closest('[data-category-recent]'); if (recent) return toggleDraftCategory(recent.dataset.categoryRecent);
-      const drill = event.target.closest('[data-category-drill]'); if (drill) { const row = categoryById(drill.closest('[data-category-id]')?.dataset.categoryId); if (row) viewState.categoryPath = [...(row.ancestorIds || []), row.id]; return renderCategoryPicker(); }
+      const categoryCheck = event.target.closest('[data-category-check]');
+      if (categoryCheck) return;
+      const categoryRow = event.target.closest('[data-category-row]');
+      if (categoryRow) return activateCategoryRow(categoryRow.dataset.categoryRow);
       if (event.target.closest('[data-algorithm-sync]')) return void externalProvider?.sync?.();
       const card = event.target.closest('[data-algorithm-card]');
       if (card && !event.target.closest('button,a,input,select,textarea,label,details,summary')) return toggle(card.dataset.algorithmId);
     });
     root.addEventListener('keydown', event => {
+      const categoryRow = event.target.closest?.('[data-category-row]');
+      if (categoryRow && event.target === categoryRow && ['Enter', ' '].includes(event.key)) {
+        event.preventDefault();
+        activateCategoryRow(categoryRow.dataset.categoryRow);
+        return;
+      }
       const card = event.target.closest?.('[data-algorithm-card]');
       if (!card || event.target !== card || !['Enter', ' '].includes(event.key)) return;
       event.preventDefault();
@@ -738,7 +759,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422563',
+    build: 'algorithm-list-runtime-422564',
     toggle,
     refresh,
     render: renderPage,
