@@ -249,6 +249,9 @@ _CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(DATA_DIR / "auth")
 
 @app.middleware("http")
 async def changlian_login_guard(request: Request, call_next):
+    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        return await call_next(request)
+
     decision = auth_guard_decision(
         request.url.path,
         authorization=request.headers.get("authorization"),

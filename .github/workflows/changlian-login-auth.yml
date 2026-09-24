@@ -56,6 +56,7 @@ jobs:
           grep -Fq '@app.post("/api/auth/login")' app.py
           grep -Fq 'httponly=True' app.py
           grep -Fq 'auth_guard_decision' app.py
+          grep -Fq 'if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:' app.py
           grep -Fq '_MACHINE_NODE_EXECUTOR_PREFIX' platform_core/changlian_login_auth.py
           grep -Fq '_MACHINE_HEARTBEAT_RE' platform_core/changlian_login_auth.py
           grep -Fq 'name="username"' static/login.html
