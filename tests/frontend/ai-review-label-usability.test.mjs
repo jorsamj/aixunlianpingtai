@@ -86,3 +86,25 @@ test('AI review confirmation follows durable commit to terminal and invalidates 
   assert.match(complete, /MaterialPaginationRuntime61\?\.invalidate/);
   assert.match(complete, /AI审核结果已写入正式标注/);
 });
+
+
+test('AI candidate editing is visual-first rather than coordinate-first', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('function ensureCandidateEditorShell60');
+  const end = source.indexOf('window.completeAiReview60=async mode=>', start);
+  const editor = source.slice(start, end);
+  assert.match(editor, /VISUAL BOX EDITOR/);
+  assert.match(editor, /pointerdown/);
+  assert.match(editor, /pointermove/);
+  assert.match(editor, /pointerup/);
+  assert.match(editor, /data-h="nw"/);
+  assert.match(editor, /空白处拖拽新建/);
+  assert.match(editor, /ai_candidate_reviewed/);
+  assert.match(editor, /高级坐标/);
+});
+
+test('AI review exposes low-confidence filtering', () => {
+  const source = reviewBlock();
+  assert.match(source, /data-ai66-filter="low"/);
+  assert.match(source, /Number\(box\.confidence\)<\.6/);
+});

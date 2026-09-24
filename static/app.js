@@ -5142,7 +5142,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function candidateOverlay(box,image){
     const width=Number(image?.width||1),height=Number(image?.height||1),x=100*Number(box.x1||0)/width,y=100*Number(box.y1||0)/height,w=100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width,h=100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height;
-    const confidence=Number(box.confidence),suffix=Number.isFinite(confidence)?` · ${Math.round(confidence*100)}%`:'';
+    const rawConfidence=box.confidence,confidence=Number(rawConfidence),suffix=rawConfidence!==null&&rawConfidence!==undefined&&rawConfidence!==''&&Number.isFinite(confidence)?` · ${Math.round(confidence*100)}%`:'';
     return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels)+suffix)}</em></i>`;
   }
   function ensureReviewShell(){
@@ -5166,6 +5166,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
           <button data-ai66-filter="empty" onclick="setAiReviewFilter60('empty')">无目标</button>
           <button data-ai66-filter="edited" onclick="setAiReviewFilter60('edited')">已修改</button>
           <button data-ai66-filter="rejected" onclick="setAiReviewFilter60('rejected')">已拒绝</button>
+          <button data-ai66-filter="low" onclick="setAiReviewFilter60('low')">低置信度</button>
           <button data-ai66-filter="failed" onclick="setAiReviewFilter60('failed')">失败</button>
         </div>
         <div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
@@ -5269,6 +5270,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(filter==='empty')return empty;
       if(filter==='edited')return edited;
       if(filter==='rejected')return !failed&&!accepted;
+      if(filter==='low')return !failed&&(item.boxes||[]).some(box=>box.confidence!=null&&Number(box.confidence)<.6);
       if(filter==='failed')return failed;
       return true;
     });
@@ -5298,17 +5300,101 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
   window.toggleAiDecision60=(id,accepted)=>{state.ai60Review?.decisions.set(String(id),!!accepted);renderReviewPage()};
   window.reviewPageSelect60=accepted=>{const review=state.ai60Review;if(!review)return;for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);renderReviewPage()};
-  function renderCandidateEditor60(){
-    const edit=state.ai60Edit,review=state.ai60Review,item=review?.seen.get(edit?.id),image=imageById(edit?.id)||item;if(!edit||!item)return;
-    if(!document.querySelector('.ai60-edit'))modal('编辑AI候选框','<div class="ai60-edit"><div id="ai60EditStage" class="data412-previewstage"></div><div id="ai60EditRows" class="form"></div><div class="row between"><button class="btn" onclick="addAiCandidateBox60()">＋ 添加框</button><div class="row"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveAiCandidateEdit60()">保存候选修改</button></div></div></div>',true);
-    const stage=document.getElementById('ai60EditStage');if(stage)stage.innerHTML=`<img src="${esc(item.url||image?.url||'')}">${edit.boxes.map(box=>candidateOverlay(box,image)).join('')}`;
-    const rows=document.getElementById('ai60EditRows');if(rows)rows.innerHTML=edit.boxes.map((box,index)=>`<div class="form six ai60-edit-row"><div class="field"><label>标签</label><select class="select" onchange="updateAiCandidateBox60(${index},'label',this.value)">${(state.labels||[]).map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(box.label)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select></div>${['x1','y1','x2','y2'].map(key=>`<div class="field"><label>${key}</label><input class="input" type="number" value="${Number(box[key]||0)}" onchange="updateAiCandidateBox60(${index},'${key}',this.value)"></div>`).join('')}<div class="field"><label>操作</label><button class="btn danger" onclick="deleteAiCandidateBox60(${index})">删除</button></div></div>`).join('')||'<div class="empty">当前没有候选框，可点击“添加框”。</div>';
+  function aiCandidateEditImage60(){
+    const edit=state.ai60Edit,review=state.ai60Review,item=review?.seen.get(edit?.id);
+    return imageById(edit?.id)||item||{};
   }
-  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item)return;state.ai60Edit={id:String(id),boxes:(item.boxes||[]).map(box=>({...box}))};renderCandidateEditor60()};
-  window.updateAiCandidateBox60=(index,key,value)=>{const box=state.ai60Edit?.boxes?.[index];if(!box)return;if(key==='label'){const label=(state.labels||[]).find(item=>String(item.code)===String(value));box.label=String(value);box.class_id=label?.class_id??box.class_id}else box[key]=Number(value);renderCandidateEditor60()};
-  window.deleteAiCandidateBox60=index=>{state.ai60Edit?.boxes?.splice(index,1);renderCandidateEditor60()};
-  window.addAiCandidateBox60=()=>{const edit=state.ai60Edit,image=imageById(edit?.id)||state.ai60Review?.seen.get(edit?.id),label=(state.labels||[])[0],width=Number(image?.width||100),height=Number(image?.height||100);if(!edit)return;edit.boxes.push({id:`manual-${Date.now()}`,label:label?.code||'',class_id:label?.class_id??0,x1:width*.1,y1:height*.1,x2:width*.3,y2:height*.3,confidence:1,source:'ai_candidate_reviewed'});renderCandidateEditor60()};
-  window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit;if(!edit)return;const invalid=edit.boxes.some(box=>!['x1','y1','x2','y2'].every(key=>Number.isFinite(Number(box[key])))||Number(box.x2)<=Number(box.x1)||Number(box.y2)<=Number(box.y1)||!String(box.label||''));if(invalid)return toast('候选框坐标或标签无效，请检查');const item=state.ai60Review.seen.get(edit.id);item.boxes=edit.boxes.map(box=>({...box}));state.ai60Review.edits.set(edit.id,item.boxes);state.ai60Review.decisions.set(edit.id,true);closeModal();renderReviewPage()};
+  function ensureCandidateEditorShell60(){
+    if(document.querySelector('.ai66-edit'))return;
+    modal('编辑AI候选框',`<div class="ai66-edit">
+      <header class="ai66-edit-head">
+        <div><span>VISUAL BOX EDITOR</span><b id="ai66EditFilename">候选图片</b><small>空白处拖拽新建 · 拖动框移动 · 四角缩放</small></div>
+        <label><span>新框标签</span><select id="ai66EditNewLabel" class="select"></select></label>
+      </header>
+      <div class="ai66-edit-main">
+        <div class="ai66-edit-canvas"><div id="ai60EditViewport"><div id="ai60EditStage" class="ai66-edit-stage"><img id="ai60EditImg" alt="AI候选图片"></div></div></div>
+        <aside class="ai66-edit-inspector">
+          <div class="side-title"><span>候选对象</span><b id="ai66EditCount">0</b></div>
+          <div id="ai60EditObjects"></div>
+          <details class="ai66-edit-advanced"><summary>高级坐标</summary><div id="ai60EditCoordinates"></div></details>
+        </aside>
+      </div>
+      <footer class="ai66-edit-footer"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveAiCandidateEdit60()">保存候选修改</button></footer>
+    </div>`,true);
+    const root=document.querySelector('.ai66-edit'),card=root?.closest('.modal-card'),layer=root?.closest('.v424-modal-layer,.modal');
+    card?.classList.add('ai-candidate-editor-modal');layer?.classList.add('ai-candidate-editor-layer');
+  }
+  function renderAiCandidateObjects60(){
+    const edit=state.ai60Edit;if(!edit)return;
+    const labels=aiReviewLabels60(),objects=document.getElementById('ai60EditObjects'),coords=document.getElementById('ai60EditCoordinates'),count=document.getElementById('ai66EditCount');
+    if(count)count.textContent=String(edit.boxes.length);
+    if(objects)objects.innerHTML=edit.boxes.map((box,index)=>`<div class="ai66-edit-object ${Number(edit.activeBox)===index?'active':''}" onclick="selectAiCandidateBox60(${index})"><span>${index+1}</span><select class="select" onclick="event.stopPropagation()" onchange="updateAiCandidateBox60(${index},'label',this.value)">${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(box.label)?'selected':''}>${esc(label.display_name||label.code)}</option>`).join('')}</select><button class="btn mini danger" onclick="event.stopPropagation();deleteAiCandidateBox60(${index})">删除</button></div>`).join('')||'<div class="empty">当前没有候选框，可直接在图片上拖拽新建。</div>';
+    if(coords)coords.innerHTML=edit.boxes.map((box,index)=>`<div class="ai66-edit-coord"><b>#${index+1}</b>${['x1','y1','x2','y2'].map(key=>`<label><span>${key}</span><input class="input" type="number" value="${Number(box[key]||0).toFixed(1)}" onchange="updateAiCandidateBox60(${index},'${key}',this.value)"></label>`).join('')}</div>`).join('')||'<div class="muted">无坐标</div>';
+  }
+  function paintAiCandidateBox60(index){
+    const edit=state.ai60Edit,image=aiCandidateEditImage60(),stage=document.getElementById('ai60EditStage'),box=edit?.boxes?.[index],node=stage?.querySelector(`.ai66-edit-box[data-i="${index}"]`);
+    if(!box||!node)return;
+    const width=Math.max(1,Number(image.width||1)),height=Math.max(1,Number(image.height||1));
+    Object.assign(node.style,{left:100*Number(box.x1||0)/width+'%',top:100*Number(box.y1||0)/height+'%',width:100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width+'%',height:100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height+'%'});
+  }
+  function renderAiCandidateStage60(){
+    const edit=state.ai60Edit,image=aiCandidateEditImage60(),stage=document.getElementById('ai60EditStage'),img=document.getElementById('ai60EditImg');if(!edit||!stage||!img)return;
+    const url=String(image.url||'');if(img.getAttribute('src')!==url)img.setAttribute('src',url);
+    const labels=aiReviewLabels60();
+    stage.querySelectorAll('.ai66-edit-box').forEach(node=>node.remove());
+    edit.boxes.forEach((box,index)=>{
+      const label=labels.find(item=>String(item.code)===String(box.label)),node=document.createElement('div');node.className='ai66-edit-box'+(Number(edit.activeBox)===index?' active':'');node.dataset.i=String(index);
+      const conf=box.confidence!=null&&box.confidence!==''&&Number.isFinite(Number(box.confidence))?` · ${Math.round(Number(box.confidence)*100)}%`:'';
+      node.innerHTML=`<em>${esc((label?.display_name||box.label||'目标')+conf)}</em>${Number(edit.activeBox)===index?'<i data-h="nw" class="nw"></i><i data-h="ne" class="ne"></i><i data-h="sw" class="sw"></i><i data-h="se" class="se"></i>':''}`;
+      stage.appendChild(node);paintAiCandidateBox60(index);
+    });
+    renderAiCandidateObjects60();
+  }
+  function bindAiCandidateEditor60(){
+    const edit=state.ai60Edit,stage=document.getElementById('ai60EditStage'),img=document.getElementById('ai60EditImg');if(!edit||!stage||!img||stage.dataset.bound==='1')return;
+    stage.dataset.bound='1';stage.style.touchAction='none';
+    let mode='',pointerId=null,start=null,index=-1,handle='',origin=null,temp=null,raf=0,moved=false;
+    const imagePoint=e=>{const rect=img.getBoundingClientRect(),image=aiCandidateEditImage60(),w=Math.max(1,Number(image.width||img.naturalWidth||1)),h=Math.max(1,Number(image.height||img.naturalHeight||1));return{x:Math.max(0,Math.min(w,(e.clientX-rect.left)/Math.max(1,rect.width)*w)),y:Math.max(0,Math.min(h,(e.clientY-rect.top)/Math.max(1,rect.height)*h)),w,h}};
+    const paint=()=>{raf=0;if(index>=0)paintAiCandidateBox60(index)};
+    const schedule=()=>{if(!raf)raf=requestAnimationFrame(paint)};
+    const paintTemp=p=>{if(!start||!temp)return;const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);Object.assign(temp.style,{left:100*x1/p.w+'%',top:100*y1/p.h+'%',width:100*(x2-x1)/p.w+'%',height:100*(y2-y1)/p.h+'%'})};
+    stage.addEventListener('pointerdown',e=>{
+      if(e.button!==0)return;pointerId=e.pointerId;try{stage.setPointerCapture(pointerId)}catch(_){}
+      const box=e.target.closest('.ai66-edit-box'),h=e.target.closest('[data-h]');start=imagePoint(e);moved=false;
+      if(box){index=Number(box.dataset.i);edit.activeBox=index;origin={...edit.boxes[index]};if(h){mode='resize';handle=h.dataset.h}else mode='move';renderAiCandidateStage60();bindAiCandidateEditor60()}
+      else{mode='draw';index=-1;temp=document.createElement('div');temp.className='ai66-edit-draw';stage.appendChild(temp);paintTemp(start)}
+      e.preventDefault();
+    });
+    stage.addEventListener('pointermove',e=>{
+      if(!mode||e.pointerId!==pointerId||!start)return;const p=imagePoint(e);moved=true;
+      if(mode==='draw'){paintTemp(p);e.preventDefault();return}
+      const box=edit.boxes[index];if(!box||!origin)return;
+      if(mode==='move'){const dx=p.x-start.x,dy=p.y-start.y,bw=origin.x2-origin.x1,bh=origin.y2-origin.y1;box.x1=Math.max(0,Math.min(p.w-bw,origin.x1+dx));box.y1=Math.max(0,Math.min(p.h-bh,origin.y1+dy));box.x2=box.x1+bw;box.y2=box.y1+bh}
+      else{let x1=origin.x1,y1=origin.y1,x2=origin.x2,y2=origin.y2;if(handle.includes('w'))x1=Math.min(p.x,x2-3);if(handle.includes('e'))x2=Math.max(p.x,x1+3);if(handle.includes('n'))y1=Math.min(p.y,y2-3);if(handle.includes('s'))y2=Math.max(p.y,y1+3);Object.assign(box,{x1,y1,x2,y2})}
+      box.source='ai_candidate_reviewed';schedule();e.preventDefault();
+    });
+    const finish=e=>{
+      if(!mode||e.pointerId!==pointerId||!start)return;const p=imagePoint(e);
+      if(mode==='draw'){const x1=Math.min(start.x,p.x),y1=Math.min(start.y,p.y),x2=Math.max(start.x,p.x),y2=Math.max(start.y,p.y);temp?.remove();if(x2-x1>5&&y2-y1>5){const code=document.getElementById('ai66EditNewLabel')?.value||aiReviewLabels60()[0]?.code||'',label=aiReviewLabels60().find(item=>String(item.code)===String(code));edit.boxes.push({id:`reviewed-${Date.now()}`,label:String(code),class_id:label?.class_id??0,x1,y1,x2,y2,confidence:null,source:'ai_candidate_reviewed'});edit.activeBox=edit.boxes.length-1}}
+      if(raf){cancelAnimationFrame(raf);raf=0;paint()}
+      try{stage.releasePointerCapture(pointerId)}catch(_){}
+      mode='';pointerId=null;start=null;index=-1;handle='';origin=null;temp=null;if(moved||edit.activeBox!=null)edit.dirty=true;renderAiCandidateStage60();bindAiCandidateEditor60();e.preventDefault();
+    };
+    stage.addEventListener('pointerup',finish);stage.addEventListener('pointercancel',finish);
+  }
+  function renderCandidateEditor60(){
+    const edit=state.ai60Edit,item=state.ai60Review?.seen.get(edit?.id),image=aiCandidateEditImage60();if(!edit||!item)return;
+    ensureCandidateEditorShell60();
+    const filename=document.getElementById('ai66EditFilename');if(filename)filename.textContent=item.filename||image.filename||item.image_id;
+    const newLabel=document.getElementById('ai66EditNewLabel');if(newLabel){const signature=aiReviewLabels60().map(label=>`${label.class_id}:${label.code}`).join('|');if(newLabel.dataset.signature!==signature){newLabel.dataset.signature=signature;newLabel.innerHTML=aiReviewLabels60().map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}}
+    renderAiCandidateStage60();bindAiCandidateEditor60();
+  }
+  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item)return;state.ai60Edit={id:String(id),boxes:(item.boxes||[]).map(box=>({...box})),activeBox:(item.boxes||[]).length?0:null,dirty:false};renderCandidateEditor60()};
+  window.selectAiCandidateBox60=index=>{if(!state.ai60Edit)return;state.ai60Edit.activeBox=Number(index);renderAiCandidateStage60();bindAiCandidateEditor60()};
+  window.updateAiCandidateBox60=(index,key,value)=>{const box=state.ai60Edit?.boxes?.[index];if(!box)return;if(key==='label'){const label=aiReviewLabels60().find(item=>String(item.code)===String(value));box.label=String(value);box.class_id=label?.class_id??box.class_id}else box[key]=Number(value);box.source='ai_candidate_reviewed';state.ai60Edit.activeBox=index;state.ai60Edit.dirty=true;renderAiCandidateStage60();bindAiCandidateEditor60()};
+  window.deleteAiCandidateBox60=index=>{if(!state.ai60Edit)return;state.ai60Edit.boxes.splice(index,1);state.ai60Edit.activeBox=state.ai60Edit.boxes.length?Math.min(index,state.ai60Edit.boxes.length-1):null;state.ai60Edit.dirty=true;renderAiCandidateStage60();bindAiCandidateEditor60()};
+  window.addAiCandidateBox60=()=>toast('请直接在图片空白处拖拽新建标注框');
+  window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit;if(!edit)return;const invalid=edit.boxes.some(box=>!['x1','y1','x2','y2'].every(key=>Number.isFinite(Number(box[key])))||Number(box.x2)<=Number(box.x1)||Number(box.y2)<=Number(box.y1)||!String(box.label||''));if(invalid)return toast('候选框坐标或标签无效，请检查');const item=state.ai60Review.seen.get(edit.id);item.boxes=edit.boxes.map(box=>({...box,source:'ai_candidate_reviewed'}));state.ai60Review.edits.set(edit.id,item.boxes);state.ai60Review.decisions.set(edit.id,true);state.ai60Edit=null;closeModal();renderReviewPage()};
   window.completeAiReview60=async mode=>{
     const review=state.ai60Review;if(!review)return;
     const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);
