@@ -212,6 +212,8 @@ def test_generic_queue_position_is_exact_for_one_dedicated_worker(tmp_path):
 
     public = task_to_public(second, repository)
 
+    assert public["kind"] == TaskKind.VIDEO_FRAMES.value
+    assert public["task_type"] == TaskKind.VIDEO_FRAMES.value
     assert public["resource_queue_position"] == 2
     assert public["resource_queue_position_exact"] is True
     assert repository.resource_queue_position(first.task_id) == 1

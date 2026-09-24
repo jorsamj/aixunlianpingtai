@@ -25,7 +25,7 @@ test('failed cancelled and permission states use actionable frontend copy', () =
 });
 
 test('successful discovery keeps automatic cache refresh', () => {
-  assert.match(source, /if \(SUCCESS_TASK_STATUSES\.has\(canonicalTaskStatus\(task\)\)\) \{\s*await refreshCache\(true\)/);
+  assert.match(source, /if \(SUCCESS_TASK_STATUSES\.has\(canonicalTaskStatus\(task\)\)\) \{\s*await refreshCache\(true, \{force: true\}\)/);
 });
 
 
@@ -36,4 +36,72 @@ test('resource discovery durable task polling uses shared canonical runtime trut
   assert.match(source, /isCanonicalTaskActive\(task\)/);
   assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES/);
   assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES\.has\(status\(task\.status\)\)/);
+});
+
+
+test('resource discovery polling is PollRegistry-owned and patches the live progress shell', () => {
+  assert.match(source, /dependencies\.pollRegistry \|\| window\.PollRegistryRuntime/);
+  assert.match(source, /registry\.startTimeout\(pollKey, '训练资源', tick, 1100\)/);
+  assert.match(source, /export function patchResourceDiscoveryProgress/);
+  assert.match(source, /data-rd-field="current_item"/);
+  assert.doesNotMatch(source, /setTimeout\(/);
+  assert.doesNotMatch(source, /live\.outerHTML\s*=/);
+  assert.doesNotMatch(source, /while \(!controller\.signal\.aborted/);
+});
+
+
+test('selecting a different Ultralytics environment invalidates persisted training device inventory', () => {
+  const selectStart = source.indexOf('window.selectResourceEnvironment = async index =>');
+  const selectEnd = source.indexOf('window.resourceModelsPage = async direction =>', selectStart);
+  assert.ok(selectStart >= 0 && selectEnd > selectStart);
+  const block = source.slice(selectStart, selectEnd);
+  assert.match(block, /\/api\/ultralytics_env\/select/);
+  assert.match(block, /window\.invalidateTrainingDeviceCacheV3\?\.\(\)/);
+});
+
+
+test('training resource page uses a direct base owner and throttles ordinary cache refreshes', () => {
+  assert.match(source, /const RESOURCE_CACHE_TTL_MS = 5 \* 60 \* 1000/);
+  assert.match(source, /const renderBase = dependencies\.renderBase/);
+  assert.equal(source.includes('const previousRenderResources = window.renderResources;'), false);
+  assert.match(source, /if \(!force && runtime\.cacheLoadedAt > 0 && age >= 0 && age < RESOURCE_CACHE_TTL_MS\)/);
+  assert.match(source, /if \(runtime\.cacheRefreshPromise\) return runtime\.cacheRefreshPromise/);
+  assert.match(source, /window\.refreshResourceDiscoveryCache = \(\) => refreshCache\(true, \{force: true\}\)/);
+  const ownerStart = source.indexOf('window.renderResources = function resourceDiscoveryRenderResources()');
+  const ownerEnd = source.indexOf('runtime.render = window.renderResources;', ownerStart);
+  assert.ok(ownerStart >= 0 && ownerEnd > ownerStart);
+  const owner = source.slice(ownerStart, ownerEnd);
+  assert.match(owner, /renderBase\?\.\(\)/);
+  assert.match(owner, /void refreshCache\(true\)/);
+  assert.doesNotMatch(owner, /previousRenderResources/);
+});
+
+
+test('training resource refresh stays scoped instead of reloading the whole application', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const resourceStart = app.lastIndexOf('function renderResources()');
+  const resourceEnd = app.indexOf('\nfunction ', resourceStart + 10);
+  assert.ok(resourceStart >= 0 && resourceEnd > resourceStart);
+  const resourcePage = app.slice(resourceStart, resourceEnd);
+  assert.match(resourcePage, /onclick="refreshTrainingResourcePageV3\(\)">刷新<\/button>/);
+  assert.doesNotMatch(resourcePage, /loadAll\(\)\.then\(render\)/);
+
+  const truthStart = app.indexOf('window.refreshTrainingResourceTruthV3=async function({force=false}={})');
+  const truthEnd = app.indexOf('window.__resourceDiscoveryDependencies={', truthStart);
+  assert.ok(truthStart >= 0 && truthEnd > truthStart);
+  const truth = app.slice(truthStart, truthEnd);
+  assert.match(truth, /TrainingCreateHydrationRuntime\?\.hydrateCommon/);
+  assert.match(truth, /commonHydrator\(\{force\}\)/);
+  assert.match(truth, /\/api\/training_options\?project_id=/);
+  assert.match(truth, /\/api\/v16\/inference_envs/);
+  assert.match(truth, /\/api\/system\/recommendation/);
+  assert.match(truth, /patchTrainingResourceCardsV3\?\.\(\)/);
+  assert.doesNotMatch(truth, /loadAll\(/);
+  assert.doesNotMatch(truth, /loadRelated\(/);
+
+  const depsStart = app.indexOf('window.__resourceDiscoveryDependencies={');
+  const depsEnd = app.indexOf('\n};', depsStart) + 3;
+  const deps = app.slice(depsStart, depsEnd);
+  assert.match(deps, /refreshTrainingResourceTruthV3/);
+  assert.doesNotMatch(deps, /loadAll\(/);
 });

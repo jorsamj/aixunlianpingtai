@@ -159,7 +159,7 @@ def run_ai_annotation(
         })
     if start:
         context.heartbeat(
-            progress=int(start / max(1, len(images)) * 100),
+            progress=int(start / max(1, len(images)) * 70),
             stage="AI_ANNOTATION",
             current_item=str(images[start - 1].get("id") or ""),
         )
@@ -212,7 +212,7 @@ def run_ai_annotation(
             "source": "candidate_store",
         })
         context.heartbeat(
-            progress=int((index + 1) / max(1, len(images)) * 100),
+            progress=int((index + 1) / max(1, len(images)) * 70),
             stage="AI_ANNOTATION",
             current_item=str(image.get("id") or ""),
         )
@@ -249,7 +249,14 @@ def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[s
         "label_catalog": selected,
         "label_ids": label_ids,
         "label_aliases": {
-            str(item["code"]): [str(item.get("display_name_zh") or "")]
+            str(item["code"]): list(dict.fromkeys(
+                value
+                for value in [
+                    str(item.get("display_name_zh") or "").strip(),
+                    *[str(alias).strip() for alias in item.get("aliases") or []],
+                ]
+                if value
+            ))
             for item in selected
         },
         "prompt_template": str((request.get("prompt_template_snapshot") or {}).get("prompt") or ""),
@@ -295,14 +302,20 @@ def commit_candidate_decisions(
     store: CandidateStore,
     *,
     overwrite: bool,
+    progress: Callable[[int, int, str], Any] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
+    accepted_total = max(0, int(store.summary().get("accepted") or 0))
+    processed = 0
     for item in store.iter_items():
         if item.get("accepted") is not True or item.get("status") not in {"success", "empty"}:
             continue
+        if cancelled is not None and cancelled():
+            raise InterruptedError("AI annotation review commit cancelled")
         image_id = str(item["image_id"])
         applied_count += 1
         if len(applied_images) < 100:
@@ -336,6 +349,9 @@ def commit_candidate_decisions(
             db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
         if len(image_summaries) < 100:
             image_summaries.append(summary)
+        processed += 1
+        if progress is not None:
+            progress(processed, accepted_total, image_id)
     result = {"applied_images": applied_count, "applied_image_ids": applied_images,
               "boxes_added": boxes_added, "review": store.summary(),
               "completed_image_ids": applied_images, "image_summaries": image_summaries,
@@ -345,8 +361,84 @@ def commit_candidate_decisions(
     return result
 
 
+def commit_confirmed_review(context):
+    confirmation = context.artifacts.read_json(
+        context.task.task_id, "review/confirmation.json", default=None,
+    )
+    if not isinstance(confirmation, dict) or confirmation.get("accepted") is not True:
+        return None
+    request = context.artifacts.read_json(
+        context.task.task_id, context.task.payload_ref, default={},
+    )
+    if context.task.kind is TaskKind.MATERIAL_BATCH:
+        request = (request or {}).get("options") or {}
+    store = CandidateStore(context.artifacts, task_id=context.task.task_id)
+    # Human confirmation freezes intent, not stale class indexes. Revalidate
+    # every candidate against the current active platform label catalog before
+    # writing Ground Truth, and repair class_id if the catalog order changed.
+    from app import _v47_label_catalog, get_project
+    label_ids = {
+        str(item["code"]): int(item["class_id"])
+        for item in _v47_label_catalog(get_project(context.task.project_id))
+    }
+    try:
+        store.remap_labels(dict(confirmation.get("label_mapping") or {}), label_ids)
+    except ValueError as error:
+        raise RuntimeError(
+            "confirmed annotation label mapping is no longer valid: " + str(error)
+        ) from error
+
+    def update_progress(done: int, total: int, image_id: str) -> None:
+        percent = 70.0 + 29.0 * done / max(1, total)
+        context.heartbeat(
+            progress=min(99.0, percent),
+            stage="APPLYING_REVIEW",
+            current_item=f"正在统一标签并写入正式标注 {done}/{max(1, total)} · {image_id}",
+        )
+
+    context.heartbeat(
+        progress=70.0,
+        stage="APPLYING_REVIEW",
+        current_item="正在准备标注入库",
+    )
+    result = commit_candidate_decisions(
+        context.task.project_id,
+        context.task.task_id,
+        store,
+        overwrite=bool((request or {}).get("overwrite")),
+        progress=update_progress,
+        cancelled=context.cancel_requested,
+    )
+    mapping = dict(confirmation.get("label_mapping") or {})
+    if mapping:
+        try:
+            from app import remember_project_label_aliases
+            remembered = remember_project_label_aliases(
+                context.task.project_id,
+                [{"class_id": source, "name": source} for source in mapping],
+                mapping,
+            )
+            if remembered:
+                result["remembered_label_aliases"] = remembered
+        except Exception:
+            # Alias memory is secondary metadata. Ground Truth was already
+            # committed above, so never turn a successful formal annotation
+            # commit into a false task failure because alias persistence failed.
+            result["label_alias_memory_warning"] = (
+                "正式标注已入库，但标签别名记忆未保存；不影响本次标注结果"
+            )
+    context.artifacts.atomic_write_json(
+        context.task.task_id, "review/result.json", result,
+    )
+    status = TaskStatus.PARTIAL_SUCCESS if result["review"].get("failed") else TaskStatus.SUCCEEDED
+    return status, "review/result.json"
+
+
 class AnnotationHandler:
     def run(self, context):
+        review = commit_confirmed_review(context)
+        if review is not None:
+            return review
         outcome = run_ai_annotation(context)
         return outcome.status, outcome.result_ref
 

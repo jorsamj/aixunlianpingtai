@@ -25,3 +25,23 @@ def test_unknown_annotation_label_is_rejected(client, seeded_project):
     assert response.status_code == 422
     assert response.json()["code"] == "ANNOTATION_LABEL_NOT_FOUND"
 
+
+
+def test_empty_annotation_requires_explicit_no_target_confirmation(client, seeded_project):
+    pid, image = seeded_project
+    rejected = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={"boxes": []},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "ANNOTATION_EMPTY_CONFIRMATION_REQUIRED"
+
+    confirmed = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={"boxes": [], "annotation_state": "confirmed_empty"},
+    )
+    assert confirmed.status_code == 200
+    body = confirmed.json()
+    assert body["saved_boxes"] == 0
+    assert body["annotation"]["boxes"] == []
+    assert body["annotation"]["annotation_state"] == "confirmed_empty"

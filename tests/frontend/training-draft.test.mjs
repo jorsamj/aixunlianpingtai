@@ -85,7 +85,7 @@ test('empty canonical draft has safe defaults and no hidden legacy state depende
   assert.equal(draft.experimentPercent, 20);
   assert.equal(draft.validationPercent, 20);
   assert.deepEqual(draft.resource, {
-    strategy: 'auto', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null,
+    strategy: 'auto', profile: 'balanced', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null,
   });
   assert.equal(draft.priority, 50);
 });
@@ -106,11 +106,20 @@ test('request uses new labels for the task while inherited labels remain in effe
   assert.equal(request.algorithm_asset_id, 'alg-1');
   assert.deepEqual(request.train_image_ids, ['a', 'b']);
   assert.deepEqual(request.train_labels, ['person']);
+  assert.equal(request.resource_strategy, 'manual');
+  assert.equal(request.resource_profile, 'balanced');
   assert.equal(request.batch, 16);
   assert.equal(request.workers, 4);
   assert.equal(request.cache, 'False');
   assert.equal(request.queue_priority, 30);
   assert.equal('priority' in request, false);
+});
+
+test('retired shared GPU draft state normalizes to safe auto isolation', () => {
+  const draft = createTrainingDraft({resource: {gpuPolicy: 'shared'}});
+  assert.equal(draft.resource.gpuPolicy, 'auto');
+  const exclusive = createTrainingDraft({resource: {gpuPolicy: 'exclusive'}});
+  assert.equal(exclusive.resource.gpuPolicy, 'exclusive');
 });
 
 test('request serializes cache into the backend string contract', () => {

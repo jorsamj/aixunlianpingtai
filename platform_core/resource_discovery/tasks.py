@@ -47,7 +47,7 @@ def _explicit_roots(request: Mapping[str, Any]) -> list[Path]:
 
     This helper deliberately has no machine-root fallback.  Resource discovery
     may still scan a large directory when a user explicitly selects it, but an
-    omitted roots field can never silently become '/', 'C:\\', '/data', or all
+    omitted roots field can never silently become '/', a Windows drive root, '/data', or all
     mounted filesystems.
     """
 

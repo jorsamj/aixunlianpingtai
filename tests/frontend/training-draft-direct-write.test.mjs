@@ -62,27 +62,31 @@ test('TrainingDraftRuntime is wrapper-free and leaves classic entrypoints untouc
 
 test('app.js visible training entrypoint owns canonical reset before rendering the modal', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const canonicalOwner = app.indexOf('window.startAlgorithmTraining429=function(aid){const a=');
-  const earlyAlias = app.indexOf('window.startAlgorithmTraining423=window.startAlgorithmTraining429;', canonicalOwner);
-  assert.ok(canonicalOwner >= 0 && earlyAlias > canonicalOwner);
-  const ownerSource = app.slice(canonicalOwner, earlyAlias);
-  const canonicalWrite = ownerSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
-  const modalOpen = ownerSource.indexOf('modal(`训练 · ${a.name}`');
+  const algorithmList = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const dialogOwner = app.indexOf('window.openTrainingCreateDialog429=function(aid){const a=');
+  const dialogAlias = app.indexOf('window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;', dialogOwner);
+  assert.ok(dialogOwner >= 0 && dialogAlias > dialogOwner);
+  const dialogSource = app.slice(dialogOwner, dialogAlias);
+  const canonicalWrite = dialogSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
+  const modalOpen = dialogSource.indexOf('modal(`训练 · ${a.name}`');
   assert.ok(canonicalWrite >= 0 && modalOpen > canonicalWrite);
 
-  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
-  const stablePage = app.lastIndexOf('window.renderAlgorithms423=function(){');
-  assert.ok(stableCards >= 0 && stablePage > stableCards);
-  const cardSource = app.slice(stableCards, stablePage);
-  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
-  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
+  const canonicalOwner = app.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
+  const canonicalEnd = app.indexOf('window.startAlgorithmTraining429=window.openTrainingCreateCanonical429;', canonicalOwner);
+  assert.ok(canonicalOwner >= 0 && canonicalEnd > canonicalOwner);
+  assert.match(app.slice(canonicalOwner, canonicalEnd), /openTrainingCreateDialog429\?\.\(algorithmId\)/);
+  assert.match(app, /window\.startAlgorithmTraining423=window\.openTrainingCreateCanonical429/);
+
+  assert.match(algorithmList, /data-algorithm-train="\$\{esc\(algorithm\.id\)\}"/);
+  assert.match(algorithmList, /onclick="startAlgorithmTraining429\('\$\{esc\(algorithm\.id\)\}'\)"/);
+  assert.equal(algorithmList.includes('startAlgorithmTraining423'), false);
 });
 
 test('final classic picker split and settings actions own their canonical writes directly', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const confirmAt = app.lastIndexOf('window.confirmTrainMaterialPickerV3=function(){');
   const splitAt = app.lastIndexOf('window.setTrainSplitModeV3=mode=>{');
-  const saveAt = app.lastIndexOf('window.saveTrainSettings428=function(){');
+  const saveAt = app.lastIndexOf('window.saveTrainSettings428=function saveTrainingSettingsCanonical428(){');
   assert.ok(confirmAt >= 0 && app.slice(confirmAt, confirmAt + 1400).includes('TrainingDraftRuntime.update(patch)'));
   assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
   assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));

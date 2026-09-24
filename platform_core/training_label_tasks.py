@@ -251,28 +251,39 @@ def _scoped_selected_project_images(materials, project: Path, image_ids: Sequenc
             dict(box) for box in boxes
             if str(box.get("label") or box.get("code") or "").strip() in allowed
         ]
-        if state == "annotated" and not selected_boxes:
-            present = sorted({
-                str(box.get("label") or box.get("code") or "").strip()
-                for box in boxes
-                if str(box.get("label") or box.get("code") or "").strip()
-            })
-            raise ValueError(
-                f"训练素材 {image_id} 不包含本次训练标签；当前标注为 "
-                f"{', '.join(present[:8]) or '无'}。"
-                "如果它应作为负样本，请先明确执行“确认无目标”，不能通过过滤其他标签制造负样本。"
-            )
-        row["annotation_state"] = state
-        row["annotated"] = state in {"annotated", "confirmed_empty"}
-        row["boxes"] = selected_boxes if state == "annotated" else []
-        if state == "annotated":
-            explicit = {value for value in raw_scope if value and value != "*"}
-            row["annotation_scope"] = sorted((explicit & allowed) | {
-                str(box.get("label") or box.get("code") or "").strip()
-                for box in selected_boxes
-            })
+        present = sorted({
+            str(box.get("label") or box.get("code") or "").strip()
+            for box in boxes
+            if str(box.get("label") or box.get("code") or "").strip()
+        })
+        task_filtered_negative = state == "annotated" and not selected_boxes
+        row["source_annotation_state"] = state
+        row["source_labels"] = present
+        if task_filtered_negative:
+            # Material selection decides whether the image participates in this task;
+            # the task label contract decides which classes are positive. If all
+            # source boxes belong to unselected classes, keep the image and project
+            # it to an intentional task-local background sample. Source Ground Truth
+            # in AnnotationRepository is never mutated.
+            row["annotation_state"] = "confirmed_empty"
+            row["annotated"] = True
+            row["boxes"] = []
+            row["annotation_scope"] = sorted(allowed)
+            row["negative_origin"] = "filtered_by_training_labels"
         else:
-            row["annotation_scope"] = raw_scope
+            row["annotation_state"] = state
+            row["annotated"] = state in {"annotated", "confirmed_empty"}
+            row["boxes"] = selected_boxes if state == "annotated" else []
+            if state == "annotated":
+                explicit = {value for value in raw_scope if value and value != "*"}
+                row["annotation_scope"] = sorted((explicit & allowed) | {
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for box in selected_boxes
+                })
+            else:
+                row["annotation_scope"] = raw_scope
+                if state == "confirmed_empty":
+                    row["negative_origin"] = str(row.get("negative_origin") or "explicit_confirmed_empty")
         # The persisted annotation hash describes the full Ground Truth. Once
         # boxes are projected to this task schema, Snapshot must hash the task
         # projection instead of reusing the full-project digest.

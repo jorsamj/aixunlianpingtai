@@ -215,15 +215,18 @@ export function installMaterialUploadRuntime({
     const node = document.getElementById(id);
     if (node) node.textContent = text;
   };
-  const setWidth = (id, percent) => {
+  const setProgress = (id, percent) => {
     const node = document.getElementById(id);
-    if (node) node.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (!node) return;
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    node.dataset.progress = value.toFixed(2);
+    node.style.transform = `scaleX(${(value / 100).toFixed(4)})`;
   };
   const renderShell = (total, chunkCount) => {
     window.closeModal?.();
     const body = `<div class="up411">
       <section><b>正在上传图片</b><span>${total} 个文件 · ${chunkCount} 批</span></section>
-      <div class="up411-bar"><i id="up411Bar" style="width:0%"></i></div>
+      <div class="up411-bar"><i id="up411Bar" data-progress="0.00" style="transform:scaleX(0)"></i></div>
       <div class="up411-line"><span id="up411Text">准备上传</span><b id="up411Pct">0%</b></div>
       <div class="item-sub" id="up411ServerText">服务器已处理 0 / ${total} · 成功入库 0 · 失败 0</div>
       <div class="item-sub" id="up411TransferText">当前批次尚未开始传输</div>
@@ -260,10 +263,66 @@ export function installMaterialUploadRuntime({
       return null;
     }
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
+    const uploadTaskId = `images:${Date.now()}:${Math.random().toString(16).slice(2,8)}`;
+    const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
+    const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
+    const bytesBefore = chunkBytes.map((_,index)=>chunkBytes.slice(0,index).reduce((sum,value)=>sum+value,0));
+    window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,kind:'browser-upload',title:`图片上传 · ${rows.length} 张`,status:'UPLOADING',progress:0,stage:'准备上传',detail:`${chunks.length} 个批次`});
     renderShell(rows.length, chunks.length);
     const started = performance.now();
     const state = getState() || {};
     state.recentUploadedMaterials61 = [];
+    let transferFrame = 0;
+    let pendingTransfer = null;
+    let lastTaskCenterProgressAt = 0;
+
+    const cancelTransferFrame = () => {
+      if (transferFrame && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(transferFrame);
+      }
+      transferFrame = 0;
+      pendingTransfer = null;
+    };
+
+    const paintTransfer = (payload, timestamp = performance.now()) => {
+      if (!payload) return;
+      const {event, overallBytes, overallPercent} = payload;
+      const chunkPercent = Math.round((event.ratio || 0) * 100);
+      setProgress('up411Bar', overallPercent);
+      setText('up411Pct', `${Math.round(overallPercent)}%`);
+      const transferComplete = Number(event.ratio || 0) >= 1;
+      setText('up411TransferText', transferComplete
+        ? `当前批次已上传，等待服务器入库 · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`
+        : `当前批次传输 ${chunkPercent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
+      if (timestamp - lastTaskCenterProgressAt >= 150 || transferComplete) {
+        lastTaskCenterProgressAt = timestamp;
+        window.UploadTaskCenterRuntime?.upsert?.({
+          id:uploadTaskId,
+          status:'UPLOADING',
+          progress:overallPercent,
+          stage:transferComplete ? `第 ${event.chunkNumber}/${event.chunkCount} 批已上传，等待服务器入库` : `上传第 ${event.chunkNumber}/${event.chunkCount} 批`,
+          detail:`${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`,
+        });
+      }
+    };
+
+    const scheduleTransferPaint = payload => {
+      pendingTransfer = payload;
+      if (transferFrame) return;
+      if (typeof window.requestAnimationFrame !== 'function') {
+        const latest = pendingTransfer;
+        pendingTransfer = null;
+        paintTransfer(latest);
+        return;
+      }
+      transferFrame = window.requestAnimationFrame(timestamp => {
+        transferFrame = 0;
+        const latest = pendingTransfer;
+        pendingTransfer = null;
+        paintTransfer(latest, timestamp);
+      });
+    };
+
     try {
       const aggregate = await uploadMaterialFilesSequentially(rows, {
         maxFiles,
@@ -279,18 +338,35 @@ export function installMaterialUploadRuntime({
             setText('up411Text', `正在上传第 ${event.chunkNumber}/${event.chunkCount} 批`);
             setText('up411TransferText', `当前批次 ${event.chunkSize} 张 · 等待传输`);
           } else if (event.type === 'transfer') {
-            const percent = Math.round((event.ratio || 0) * 100);
-            setText('up411TransferText', `当前批次传输 ${percent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
+            const overallBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex] * (event.ratio || 0);
+            scheduleTransferPaint({
+              event,
+              overallBytes,
+              overallPercent: Math.min(99, overallBytes / totalBytes * 100),
+            });
           } else if (event.type === 'chunk-committed') {
+            cancelTransferFrame();
             patchState(responseRows(event.response, 'uploaded'));
-            const percent = event.totalFiles ? Math.round(event.confirmedFiles / event.totalFiles * 100) : 100;
-            setWidth('up411Bar', percent);
-            setText('up411Pct', `${percent}%`);
+            const committedBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex];
+            const percent = committedBytes / totalBytes * 100;
+            setProgress('up411Bar', percent);
+            setText('up411Pct', `${Math.round(percent)}%`);
             setText('up411Text', `第 ${event.chunkNumber}/${event.chunkCount} 批服务器处理完成`);
             setText('up411ServerText', `服务器已处理 ${event.confirmedFiles} / ${event.totalFiles} · 成功入库 ${event.uploadedCount} · 失败 ${event.failedCount}`);
+            window.UploadTaskCenterRuntime?.upsert?.({
+              id:uploadTaskId,
+              status:'UPLOADING',
+              progress:percent,
+              stage:`第 ${event.chunkNumber}/${event.chunkCount} 批服务器处理完成`,
+              detail:`已确认 ${event.confirmedFiles}/${event.totalFiles}`,
+            });
           }
         },
       });
+      cancelTransferFrame();
+      setProgress('up411Bar', 100);
+      setText('up411Pct', '100%');
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'SUCCEEDED',progress:100,stage:'上传完成',detail:`成功 ${aggregate.uploaded.length} · 失败 ${aggregate.failed.length}`});
       renderResult(aggregate, (performance.now() - started) / 1000);
       if (getState()?.page === '数据集') {
         if (typeof window.reloadMaterialPage61 === 'function') await window.reloadMaterialPage61();
@@ -298,11 +374,13 @@ export function installMaterialUploadRuntime({
       }
       return aggregate;
     } catch (error) {
+      cancelTransferFrame();
       const details = error?.details || {};
       const confirmed = Number(details.confirmedFiles || 0);
       const total = rows.length;
       const out = document.getElementById('up411Result');
       if (out) out.innerHTML = `<div class="alert err">上传中断：${escapeHtml(error?.message || error)}。服务器已确认处理 ${confirmed}/${total}。为避免网络响应丢失后重复入库，系统不会自动重试当前未确认批次。</div>`;
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'FAILED',stage:'上传中断',detail:String(error?.message||error)});
       setText('up411Text', '上传中断');
       throw error;
     } finally {

@@ -92,7 +92,7 @@ def test_worker_enters_review_with_partial_generation_summary(tmp_path, monkeypa
     assert context.load_checkpoint()["next_index"] == 2
     assert context.load_checkpoint()["source"] == "candidate_store"
     assert CandidateStore(context.artifacts, task_id="ai-1").summary()["failed"] == 1
-    assert context.repository.heartbeats[-1][2] == 100
+    assert context.repository.heartbeats[-1][2] == 70
 
 
 def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path, monkeypatch):
@@ -212,6 +212,28 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     assert second["boxes_added"] == 0
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"
+
+
+def test_candidate_label_revalidation_is_fail_closed_even_without_explicit_mapping(tmp_path):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="catalog-revalidate", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{"id": "box-1", "class_id": 0, "label": "fire",
+                   "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
+    }])
+
+    # An unchanged label name may receive a different project class_id after
+    # catalog maintenance. Review commit must repair the canonical identity.
+    store.remap_labels({}, {"fire": 4})
+    assert store.get("image-1")["boxes"][0]["class_id"] == 4
+
+    # If the previously confirmed label is no longer active, do not silently
+    # write stale candidate truth into AnnotationRepository.
+    with pytest.raises(ValueError, match="candidate label is unavailable"):
+        store.remap_labels({}, {"smoke": 1})
 
 
 def test_public_worker_error_redacts_common_secret_shapes():

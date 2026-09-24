@@ -1,0 +1,166 @@
+name: Algorithm SQL Store
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+      - feature/external-algorithm-publishing-sql
+      - feature/external-algorithm-publishing-sql-crud
+    paths:
+      - app.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/training_lineage.py
+      - platform_core/training_evaluation.py
+      - platform_core/iteration_actions.py
+      - platform_core/algorithms.py
+      - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_publish.py
+      - static/app.js
+      - static/modules/training-submit.js
+      - tests/browser/algorithm-list-performance.spec.mjs
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_training_lineage.py
+      - tests/unit/test_training_evaluation.py
+      - tests/unit/test_iteration_actions.py
+      - tests/unit/test_algorithm_sql_app_contract.py
+      - tests/unit/test_algorithms.py
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_external_algorithm_publish.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/frontend/algorithm-lineage-stable-renderer.test.mjs
+      - tests/frontend/training-submit.test.mjs
+      - .github/workflows/algorithm-sql-store.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring pillow
+      - name: Syntax checks
+        run: |
+          python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/iteration_actions.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
+          node --check static/modules/external-algorithm-platform.js
+          node --check static/modules/external-algorithm-publish.js
+          node --check static/modules/training-submit.js
+      - name: SQL migration and row CRUD contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+      - name: External platform contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
+      - name: External publish contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_publish.py
+      - name: Frontend contracts
+        run: |
+          node --test tests/frontend/external-algorithm-platform.test.mjs
+          node --test tests/frontend/external-algorithm-publish.test.mjs
+          node --test tests/frontend/algorithm-lineage-stable-renderer.test.mjs
+          node --test tests/frontend/training-submit.test.mjs
+      - name: Permanent invariants
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          grep -q 'AlgorithmSqlStore' platform_core/algorithms.py
+          grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
+          grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
+          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _canonical_training_version' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_schema_v2_backfills_only_durable_timestamp_training_version_numbers' tests/unit/test_algorithm_sql_store.py
+          grep -q 'def attach_version(self, algorithm_id' platform_core/algorithm_sql_store.py
+          grep -Fq '"training_lineage": training_lineage' app.py
+          grep -Fq '"evaluation": evaluation' app.py
+          grep -Fq '"iteration_decision": iteration_decision' app.py
+          grep -Fq 'def build_evaluation_benchmark_scope' platform_core/training_evaluation.py
+          grep -Fq 'bundle_verified' platform_core/training_evaluation.py
+          grep -Fq 'benchmark_input_binding_missing' platform_core/training_evaluation.py
+          grep -Fq 'dataset_manifest=dataset_manifest' app.py
+          grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
+          grep -Fq 'def build_iteration_decision' platform_core/training_evaluation.py
+          grep -Fq 'def build_feedback_adoption_outcome' platform_core/training_evaluation.py
+          grep -Fq '"feedback_adoption_outcome": feedback_adoption_outcome' app.py
+          grep -Fq 'def build_confirmed_iteration_action' platform_core/iteration_actions.py
+          grep -Fq 'confirmed_iteration_action' app.py
+          grep -Fq 'def build_training_lineage' platform_core/training_lineage.py
+          grep -q 'def patch_version' platform_core/algorithm_sql_store.py
+          grep -q 'def rollback_version' platform_core/algorithm_sql_store.py
+          grep -q 'def sync_external_algorithms' platform_core/algorithm_sql_store.py
+          grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
+          grep -Fq 'if "external_analysis_ids" in item:' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _analysis_is_active' platform_core/algorithm_sql_store.py
+          if grep -Fq 'payload.pop("external_analysis_ids", None)' platform_core/algorithm_sql_store.py; then echo "trainable analysis subset must survive payload_json round-trip" >&2; exit 1; fi
+          grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids' tests/unit/test_algorithm_sql_store.py
+          grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
+          grep -q 'algs=list_algorithm_assets(algorithms_file(pid))' app.py
+          ! grep -Fq 'read_json(project_dir(pid)/"algorithms.json",[])' app.py
+          ! grep -q 'save_algorithms_internal' app.py
+          ! grep -q 'save_algorithms as save_algorithm_assets' app.py
+          grep -q 'merged\["id"\] = algorithm_id' platform_core/algorithm_sql_store.py
+          ! grep -q 'save_algorithms(algorithms_path, algorithms)' platform_core/external_algorithm_platform.py
+          ! grep -q 'atomic_write_json(path, list(algorithms))' platform_core/algorithms.py
+          test ! -e tools/migrate_algorithm_store_to_sql.py
+          test ! -e tools/migrate_algorithm_sql_row_crud.py
+          test ! -e tools/fix_algorithm_sql_row_crud.py
+          test ! -e tools/fix_algorithm_sql_read_bypass.py
+          test ! -e .github/workflows/algorithm-sql-migration-one-shot.yml
+          test ! -e .github/workflows/algorithm-sql-crud-one-shot.yml
+          test ! -e .github/workflows/algorithm-sql-read-bypass-one-shot.yml
+
+
+  real-chrome-lineage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome algorithm version lineage
+        run: >-
+          npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+          --grep "algorithm version exposes persisted training lineage"
+      - name: Lineage UI permanent guard
+        run: |
+          grep -Fq 'openVersionLineage429' static/app.js
+          grep -Fq '训练溯源' static/app.js
+          grep -Fq 'openVersionEvaluation429' static/app.js
+          grep -Fq '独立评测' static/app.js
+          grep -Fq '迭代决策' static/app.js
+          grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
+          grep -Fq '补数据效果' static/app.js
+          grep -Fq '严格可比' static/app.js
+          grep -Fq '评测基准' static/app.js
+          grep -Fq '已校验 Test Bundle' static/app.js
+          grep -Fq 'benchmark_scope=benchmark_scope' app.py
+          grep -Fq '仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练' static/app.js
+          grep -Fq 'confirmIterationAction429' static/app.js
+          grep -Fq 'resumeConfirmedIterationAction429' static/app.js
+          grep -Fq 'iteration-action-confirmed429' static/app.js
+          grep -Fq 'review_entry' platform_core/iteration_actions.py
+          grep -Fq 'payload.iteration_action' static/modules/training-submit.js
+          grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
+          grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

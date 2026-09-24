@@ -1,56 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import {readFileSync} from 'node:fs';
+import {overallZipProgress} from '../../static/modules/zip-import-runtime.js';
 
-const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const runtime = readFileSync(new URL('../../static/modules/zip-import-runtime.js', import.meta.url), 'utf8');
 
-function extractProgressMapper() {
-  const match = source.match(/function mapImportProcessingProgress411\(progress\)\{([^}]*)\}/);
-  assert.ok(match, 'ZIP import must define a processing-to-overall progress mapper');
-  return new Function('progress', match[1]);
-}
-
-function extractPollFailureAction() {
-  const match = source.match(/function importPollFailureAction411\(failures,code\)\{([^}]*)\}/);
-  assert.ok(match, 'ZIP import must define a bounded polling failure policy');
-  return new Function('failures', 'code', match[1]);
-}
-
-test('ZIP processing progress is projected into the whole-task 38..99 range', () => {
-  const mapProgress = extractProgressMapper();
-  assert.equal(mapProgress(0), 38);
-  assert.equal(mapProgress(8), 42.9);
-  assert.equal(mapProgress(34), 58.7);
-  assert.equal(mapProgress(45), 65.5);
-  assert.equal(mapProgress(95), 96);
-  assert.equal(mapProgress(100), 99);
-  assert.equal(mapProgress(-10), 38);
-  assert.equal(mapProgress(200), 99);
+test('ZIP whole-task progress reserves terminal 100 for done', () => {
+  assert.equal(overallZipProgress({status:'uploading',upload_progress:0}),0);
+  assert.equal(overallZipProgress({status:'uploading',upload_progress:100}),35);
+  assert.equal(overallZipProgress({status:'merging'}),36);
+  assert.equal(overallZipProgress({status:'validating'}),37);
+  assert.equal(overallZipProgress({status:'queued'}),38);
+  assert.equal(overallZipProgress({status:'running',progress:100}),99);
+  assert.equal(overallZipProgress({status:'done',progress:100}),100);
 });
 
-test('active ZIP polling uses whole-task progress instead of raw backend phase progress', () => {
-  assert.match(source, /progress:mapImportProcessingProgress411\(j\.progress\)/);
-  assert.doesNotMatch(source, /progress:Number\(j\.progress\|\|0\)/);
-  assert.match(source, /const p=e\.loaded\/e\.total\*35/);
-  assert.match(source, /progress:p,eta,uploadSeconds:elapsed/);
-  assert.match(source, /progress:38,uploadSeconds:job\.upload_seconds/);
-  assert.match(source, /stage:'导入完成'.*progress:100/);
+test('durable ZIP polling is page-scoped and centrally owned', () => {
+  const start=runtime.indexOf('function arm(){');
+  const end=runtime.indexOf('async function refreshKnown',start);
+  const arm=runtime.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(arm,/PollRegistryRuntime\?\.startTimeout/);
+  assert.match(arm,/'zip-import-runtime'/);
+  assert.match(arm,/activeZipJobs\(jobs\)/);
+  assert.doesNotMatch(arm,/while\s*\(true\)/);
 });
 
-test('ZIP polling is bounded and never spins forever when task status cannot be read', () => {
-  const action = extractPollFailureAction();
-  assert.equal(action(1, 'NETWORK_ERROR'), 'retry');
-  assert.equal(action(11, 'HTTP_503'), 'retry');
-  assert.equal(action(12, 'HTTP_503'), 'unavailable');
-  assert.equal(action(1, 'HTTP_404'), 'missing');
-
-  const pollMatch = source.match(/async function pollImport411\(jobId\)\{([\s\S]*?)\}\n  window\.doUploadZip426/);
-  assert.ok(pollMatch, 'active ZIP polling implementation must be present');
-  const pollBody = pollMatch[1];
-  assert.match(pollBody, /consecutiveErrors/);
-  assert.match(pollBody, /importPollFailureAction411\(consecutiveErrors,e\?\.code\)/);
-  assert.doesNotMatch(pollBody, /catch\(e\)\{continue\}/);
-  assert.match(source, /IMPORT_POLL_UNAVAILABLE/);
-  assert.match(source, /stage:'进度读取中断'/);
-  assert.match(source, /后台任务可能仍在执行/);
+test('multipart upload distinguishes browser transfer from server merge and import phases', () => {
+  assert.match(runtime,/onPhase\(\{stage:'正在合并与校验 ZIP'/);
+  assert.match(runtime,/uploading=\{\.\.\.uploading,progress:36,message:phase\.message\}/);
+  assert.match(runtime,/status:'MERGING',progress:36/);
+  assert.match(runtime,/if\(s==='running'\) return Math\.round\(\(3800\+backend\*61\)\/10\)\/10/);
 });

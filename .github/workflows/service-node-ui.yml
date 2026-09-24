@@ -1,0 +1,100 @@
+name: Service Node UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'static/index.html'
+      - 'static/service-nodes.css'
+      - 'static/service-node-bootstrap.mjs'
+      - 'static/modules/service-node-runtime.js'
+      - 'platform_core/service_nodes.py'
+      - 'tests/unit/test_service_node_connectivity.py'
+      - 'tests/frontend/service-node-runtime.test.mjs'
+      - 'tests/browser/service-node-management.spec.mjs'
+      - '.github/workflows/service-node-ui.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused backend test dependencies
+        run: python -m pip install --disable-pip-version-check pytest pydantic psutil filelock
+      - name: Syntax check
+        run: >-
+          node --check static/modules/service-node-runtime.js &&
+          node --check static/service-node-bootstrap.mjs &&
+          node --check tests/frontend/service-node-runtime.test.mjs &&
+          node --check tests/browser/service-node-management.spec.mjs &&
+          python -m py_compile platform_core/service_nodes.py tests/unit/test_service_node_connectivity.py
+      - name: Service node backend reachability contract
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_service_node_connectivity.py
+      - name: Service node UI contracts
+        run: node --test tests/frontend/service-node-runtime.test.mjs
+      - name: Permanent service-node UI guards
+        shell: bash
+        run: |
+          grep -Eq 'service-node-bootstrap\.mjs\?v=[0-9]+' static/index.html
+          grep -Eq "installServiceNodeRuntime} from './modules/service-node-runtime\.js\?v=[0-9]+'" static/main.mjs
+          grep -Fq 'window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;' static/main.mjs
+          grep -Fq 'service-nodes.css?v=422533' static/index.html
+          grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
+          grep -Fq "POLL_KEY = 'service-node-runtime'" static/modules/service-node-runtime.js
+          grep -Fq 'PollRegistryRuntime' static/modules/service-node-runtime.js
+          grep -Fq '/api/v63/service-nodes' static/modules/service-node-runtime.js
+          grep -Fq '>测试联通</button>' static/modules/service-node-runtime.js
+          grep -Fq 'network_reachable' static/modules/service-node-runtime.js
+          grep -Fq 'heartbeat_online' static/modules/service-node-runtime.js
+          grep -Fq 'nodeConnectivityMeta' static/modules/service-node-runtime.js
+          grep -Fq 'data-node-network-state' static/modules/service-node-runtime.js
+          grep -Fq '网络测试：' static/modules/service-node-runtime.js
+          grep -Fq 'probe_service_node_address' platform_core/service_nodes.py
+          grep -Fq 'network_reachable' platform_core/service_nodes.py
+          grep -Fq 'heartbeat_online' platform_core/service_nodes.py
+          grep -Fq "NEVER_CONNECTED: {label: '未收到心跳'" static/modules/service-node-runtime.js
+          grep -Fq "OFFLINE: {label: '心跳超时'" static/modules/service-node-runtime.js
+          grep -Fq 'const hadCache = nodes.length > 0;' static/modules/service-node-runtime.js
+          grep -Fq 'const hasSnapshot = loadedOnce || hadCache;' static/modules/service-node-runtime.js
+          grep -Fq 'function patchNodeList(list)' static/modules/service-node-runtime.js
+          grep -Fq "shell.dataset.serviceNodeBound === '1'" static/modules/service-node-runtime.js
+          grep -Fq 'Agent Token 只显示这一次' static/modules/service-node-runtime.js
+          grep -Fq "'deployment-test.rknn': '瑞芯微板端验证'" static/modules/service-node-runtime.js
+          grep -Fq 'Rockchip 板端预检' static/modules/service-node-runtime.js
+          grep -Fq 'tools/install_rockchip_agent.sh' static/modules/service-node-runtime.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome service-node regression
+        run: npx playwright test tests/browser/service-node-management.spec.mjs

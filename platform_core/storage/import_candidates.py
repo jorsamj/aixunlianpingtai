@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable, Iterator, Mapping
 
+from ..annotation_schema import build_canonical_annotation_evidence
 from .errors import redact_storage_error
 
 
@@ -249,6 +250,23 @@ class ImportCandidateStore:
                 "SELECT status, COUNT(*) FROM candidates GROUP BY status"
             )}
 
+    def existing_candidate_keys(self, keys: Iterable[str]) -> set[str]:
+        """Return the caller-bounded subset that already has candidate truth."""
+        keys = list(dict.fromkeys(_key(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError("candidate existence lookup is limited to 500 keys")
+        if not keys:
+            return set()
+        placeholders = ",".join("?" for _ in keys)
+        with closing(self._connect()) as connection:
+            return {
+                str(row[0])
+                for row in connection.execute(
+                    f"SELECT object_key FROM candidates WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
+
     def inventory_many(self, rows: Iterable[Mapping[str, object]]) -> None:
         with self._transaction() as connection:
             connection.executemany(
@@ -256,6 +274,23 @@ class ImportCandidateStore:
                 ((_key(row.get("object_key")), _nonnegative_int(row.get("size_bytes")),
                   _text(row.get("etag")), _text(row.get("sha256"))) for row in rows),
             )
+
+    def inventory_for_keys(self, keys: Iterable[str]) -> dict[str, dict]:
+        keys = list(dict.fromkeys(_key(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError("dataset object lookup is limited to 500 keys")
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with closing(self._connect()) as connection:
+            return {
+                str(row["object_key"]): dict(row)
+                for row in connection.execute(
+                    f"SELECT object_key,size_bytes,etag,sha256 FROM dataset_objects "
+                    f"WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
 
     def manifest_many(self, rows: Iterable[Mapping[str, object]]) -> None:
         with self._transaction() as connection:
@@ -322,6 +357,54 @@ class ImportCandidateStore:
                     "SELECT * FROM annotation_issues ORDER BY object_key, line_number, code LIMIT ?",
                     (_limit(example_limit, 100),))],
             }
+
+    def iter_candidates(self, batch_size: int = 500) -> Iterator[dict]:
+        """Stream all candidates in object-key order using bounded pages."""
+        limit = _limit(batch_size)
+        after = None
+        while True:
+            with closing(self._connect()) as connection:
+                if after is None:
+                    rows = connection.execute(
+                        "SELECT * FROM candidates ORDER BY object_key LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM candidates WHERE object_key>? ORDER BY object_key LIMIT ?",
+                        (after, limit),
+                    ).fetchall()
+            if not rows:
+                return
+            after = rows[-1]["object_key"]
+            yield from (dict(row) for row in rows)
+
+    def label_mapping_rows(self) -> list[dict]:
+        with closing(self._connect()) as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT class_id,name,target_label_id FROM label_mapping "
+                    "ORDER BY class_id LIMIT 10000"
+                )
+            ]
+
+    def annotation_issues_for_keys(self, keys: Iterable[str]) -> dict[str, list[dict]]:
+        keys = list(keys)
+        if len(keys) > 500:
+            raise ValueError("annotation issue lookup is limited to 500 image keys")
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        result: dict[str, list[dict]] = {str(key): [] for key in keys}
+        with closing(self._connect()) as connection:
+            for row in connection.execute(
+                f"SELECT object_key,line_number,code,severity FROM annotation_issues "
+                f"WHERE object_key IN ({placeholders}) ORDER BY object_key,line_number,code",
+                keys,
+            ):
+                result.setdefault(str(row["object_key"]), []).append(dict(row))
+        return result
 
     def iter_status(self, status: str, batch_size: int = 500) -> Iterator[dict]:
         """Yield individual rows in key order, reading at most one bounded page."""
@@ -549,6 +632,12 @@ class RescanCandidateStore(ImportCandidateStore):
                 );
                 CREATE INDEX IF NOT EXISTS ix_rescan_category ON rescan_objects(category,applied,object_key);
                 CREATE TABLE IF NOT EXISTS rescan_meta (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS rescan_annotation_deltas (
+                    object_key TEXT PRIMARY KEY, category TEXT NOT NULL,
+                    payload TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_rescan_annotation_delta
+                    ON rescan_annotation_deltas(category,applied,object_key);
             """)
 
     def meta(self, key):
@@ -583,6 +672,12 @@ class RescanCandidateStore(ImportCandidateStore):
         with self._transaction() as db:
             db.execute('DELETE FROM rescan_objects')
             db.execute('DELETE FROM candidates')
+
+    def restart_rescan_inventory(self):
+        """Reset reconciliation classification while preserving verified review candidates."""
+        with self._transaction() as db:
+            db.execute('DELETE FROM rescan_objects')
+            db.execute("DELETE FROM rescan_meta WHERE key='scan_complete'")
 
     def object_batch(self, rows):
         with self._transaction() as db:
@@ -621,7 +716,189 @@ class RescanCandidateStore(ImportCandidateStore):
                 + ','.join('?' for _ in categories) + ') ORDER BY object_key LIMIT ?',
                 (*categories, min(500, max(1, int(limit)))))] if categories else []
 
+    def iter_category_candidates(self, category, batch_size=500):
+        """Stream IMPORTABLE candidates for one rescan category in bounded pages."""
+        limit = min(500, max(1, int(batch_size)))
+        after = None
+        while True:
+            with closing(self._connect()) as db:
+                if after is None:
+                    rows = db.execute(
+                        "SELECT c.* FROM rescan_objects r JOIN candidates c USING(object_key) "
+                        "WHERE r.category=? AND c.status='IMPORTABLE' "
+                        "ORDER BY r.object_key LIMIT ?",
+                        (str(category), limit),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT c.* FROM rescan_objects r JOIN candidates c USING(object_key) "
+                        "WHERE r.category=? AND c.status='IMPORTABLE' AND r.object_key>? "
+                        "ORDER BY r.object_key LIMIT ?",
+                        (str(category), after, limit),
+                    ).fetchall()
+            if not rows:
+                return
+            after = rows[-1]['object_key']
+            yield from (dict(row) for row in rows)
+
+    def iter_category_keys(self, category, batch_size=500):
+        for row in self.iter_category_candidates(category, batch_size=batch_size):
+            yield str(row['object_key'])
+
     def mark_applied(self, rows):
         with self._transaction() as db:
             db.executemany('UPDATE rescan_objects SET applied=1 WHERE object_key=?',
                            ((r['object_key'],) for r in rows))
+
+    def annotation_source_evidence(self, keys, *, source_format: str):
+        """Return deterministic external annotation evidence per image object."""
+        keys = list(dict.fromkeys(str(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError('annotation evidence lookup is limited to 500 image keys')
+        if not keys:
+            return {}
+        normalized_format = str(source_format or '').strip().lower()
+        if normalized_format not in {'yolo', 'coco', 'voc'}:
+            raise ValueError('unsupported annotation evidence source format')
+        placeholders = ','.join('?' for _ in keys)
+        with closing(self._connect()) as db:
+            manifests = {
+                row['object_key']: dict(row)
+                for row in db.execute(
+                    f"SELECT * FROM dataset_manifest WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
+            classes = [
+                {'class_id': int(row['class_id']), 'name': str(row['name'])}
+                for row in db.execute('SELECT class_id,name FROM label_mapping ORDER BY class_id')
+            ]
+            ref_keys = sorted({
+                str(value)
+                for row in manifests.values()
+                for value in (row.get('label_key'), row.get('yaml_key'))
+                if str(value or '').strip()
+            })
+            refs = {}
+            for offset in range(0, len(ref_keys), 500):
+                chunk = ref_keys[offset:offset + 500]
+                marks = ','.join('?' for _ in chunk)
+                for row in db.execute(
+                    f"SELECT object_key,size_bytes,etag,sha256 FROM dataset_objects "
+                    f"WHERE object_key IN ({marks})",
+                    chunk,
+                ):
+                    refs[row['object_key']] = {
+                        'size_bytes': int(row['size_bytes'] or 0),
+                        'etag': str(row['etag'] or ''),
+                        'sha256': str(row['sha256'] or '').lower(),
+                    }
+            boxes_by_key = {key: [] for key in keys}
+            for row in db.execute(
+                f"SELECT object_key,line_number,class_id,cx,cy,w,h,clipped "
+                f"FROM candidate_annotations WHERE object_key IN ({placeholders}) "
+                "ORDER BY object_key,line_number",
+                keys,
+            ):
+                boxes_by_key.setdefault(row['object_key'], []).append({
+                    'line_number': int(row['line_number']),
+                    'class_id': int(row['class_id']),
+                    'cx': float(row['cx']),
+                    'cy': float(row['cy']),
+                    'w': float(row['w']),
+                    'h': float(row['h']),
+                    'clipped': bool(row['clipped']),
+                })
+        result = {}
+        for key in keys:
+            manifest = manifests.get(key) or {
+                'object_key': key,
+                'split': '',
+                'label_key': None,
+                'annotation_status': 'unannotated',
+                'box_count': 0,
+                'yaml_key': '',
+            }
+            label_key = str(manifest.get('label_key') or '')
+            dataset_key = str(manifest.get('yaml_key') or '')
+            result[key] = build_canonical_annotation_evidence(
+                source_format=normalized_format,
+                object_key=key,
+                split=str(manifest.get('split') or ''),
+                annotation_status=str(manifest.get('annotation_status') or 'unannotated'),
+                label_key=label_key or None,
+                label_object=refs.get(label_key) if label_key else None,
+                dataset_key=dataset_key or None,
+                dataset_object=refs.get(dataset_key) if dataset_key else None,
+                classes=classes,
+                boxes=boxes_by_key.get(key, []),
+            )
+        return result
+
+    def restart_annotation_review(self):
+        """Clear derived external annotation evidence before a full local rescan retry."""
+        with self._transaction() as db:
+            db.execute('DELETE FROM candidate_annotations')
+            db.execute('DELETE FROM annotation_issues')
+            db.execute('DELETE FROM dataset_manifest')
+            db.execute('DELETE FROM dataset_objects')
+            db.execute('DELETE FROM label_mapping')
+            db.execute('DELETE FROM rescan_annotation_deltas')
+
+    def restart_annotation_deltas(self):
+        with self._transaction() as db:
+            db.execute('DELETE FROM rescan_annotation_deltas')
+
+    def annotation_delta_batch(self, rows):
+        with self._transaction() as db:
+            db.executemany(
+                'INSERT OR REPLACE INTO rescan_annotation_deltas(object_key,category,payload,applied) '
+                'VALUES(?,?,?,COALESCE((SELECT applied FROM rescan_annotation_deltas WHERE object_key=?),0))',
+                ((r['object_key'], r['category'], json.dumps(r), r['object_key']) for r in rows),
+            )
+
+    def annotation_summary(self):
+        categories = (
+            'ANNOTATION_NEW', 'ANNOTATION_CHANGED', 'ANNOTATION_REMOVED',
+            'ANNOTATION_UNCHANGED', 'ANNOTATION_CONFLICT', 'ANNOTATION_INVALID',
+        )
+        with closing(self._connect()) as db:
+            counts = dict(db.execute(
+                'SELECT category,COUNT(*) FROM rescan_annotation_deltas GROUP BY category'
+            ))
+            examples = {
+                category: [row[0] for row in db.execute(
+                    'SELECT object_key FROM rescan_annotation_deltas WHERE category=? '
+                    'ORDER BY object_key LIMIT 20', (category,),
+                )]
+                for category in categories
+            }
+            return {
+                'counts': counts,
+                'examples': examples,
+                'applied': int(db.execute(
+                    'SELECT COUNT(*) FROM rescan_annotation_deltas WHERE applied=1'
+                ).fetchone()[0]),
+            }
+
+    def pending_annotation_deltas(self, categories, limit=500):
+        if not categories:
+            return []
+        with closing(self._connect()) as db:
+            return [
+                dict(json.loads(row['payload']), category=row['category'])
+                for row in db.execute(
+                    'SELECT payload,category FROM rescan_annotation_deltas '
+                    'WHERE applied=0 AND category IN (' + ','.join('?' for _ in categories)
+                    + ') ORDER BY object_key LIMIT ?',
+                    (*categories, min(500, max(1, int(limit)))),
+                )
+            ]
+
+    def mark_annotation_applied(self, rows):
+        with self._transaction() as db:
+            db.executemany(
+                'UPDATE rescan_annotation_deltas SET applied=1 WHERE object_key=?',
+                ((r['object_key'],) for r in rows),
+            )
+

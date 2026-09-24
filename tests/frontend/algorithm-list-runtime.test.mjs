@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installAlgorithmListRuntime} from '../../static/modules/algorithm-list-runtime.js';
+import {
+  algorithmCategoryColumns,
+  algorithmCategorySearch,
+  algorithmListSearchMatch,
+  algorithmVersionMap50,
+  installAlgorithmListRuntime,
+} from '../../static/modules/algorithm-list-runtime.js';
 
 function response(body) {
   return {
@@ -25,11 +31,9 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
     jobs: [],
     alg428Expanded: {},
   };
-  let renders = 0;
   let requests = 0;
   globalThis.window = {
     fetch: async () => { requests += 1; return response({items: []}); },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -40,12 +44,10 @@ test('algorithm expand/collapse is local-only and never fetches the algorithm li
   assert.equal(window.toggleAlgorithm412('a1'), true);
   assert.equal(state.alg428Expanded.a1, true);
   assert.equal(requests, 0);
-  assert.equal(renders, 1);
 
   assert.equal(window.toggleAlgorithm428('a1'), false);
   assert.equal(state.alg428Expanded.a1, false);
   assert.equal(requests, 0);
-  assert.equal(renders, 2);
 
   runtime.destroy();
   cleanup();
@@ -60,7 +62,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
     alg428Expanded: {},
   };
   const urls = [];
-  let renders = 0;
   globalThis.window = {
     async fetch(url) {
       urls.push(url);
@@ -68,7 +69,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
       if (url.endsWith('/jobs')) return response([{id: 'j2', status: 'running'}]);
       throw new Error(`unexpected URL: ${url}`);
     },
-    renderAlg412: () => { renders += 1; },
   };
 
   const runtime = installAlgorithmListRuntime({
@@ -85,7 +85,6 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);
   assert.equal(result.cached, false);
   assert.equal(result.stale, false);
-  assert.equal(renders, 1);
 
   runtime.destroy();
   cleanup();
@@ -210,4 +209,205 @@ test('focused refresh uses raw fetch but discards results after navigation and a
 
   runtime.destroy();
   cleanup();
+});
+
+test('algorithm runtime exposes no DOM decorator layer', () => {
+  const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [], jobs: [], alg428Expanded: {}};
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  assert.equal(runtime.registerDecorator, undefined);
+  assert.equal(runtime.runDecorators, undefined);
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('algorithm runtime owns unified list filters and searches provider identifiers', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    algorithms: [],
+    jobs: [],
+    alg428Expanded: {},
+  };
+  globalThis.window = {
+    fetch: async () => response({items: []}),
+    renderAlg412: () => {},
+  };
+  const runtime = installAlgorithmListRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+
+  assert.deepEqual(runtime.filterState(), {
+    query: '',
+    selectedCategoryIds: [],
+    source: 'all',
+    status: 'all',
+  });
+
+  const next = runtime.setFilters({
+    query: ' PROD-42 ',
+    selectedCategoryIds: ['root-a', 'root-a', '', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  }, {render: false});
+  assert.deepEqual(next, {
+    query: 'PROD-42',
+    selectedCategoryIds: ['root-a', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  });
+
+  assert.equal(runtime.matchesSearch({
+    name: '抽烟检测',
+    external_product_id: 'prod-42',
+  }), true);
+  assert.equal(algorithmListSearchMatch({algorithm_code: 'helmet-v2'}, 'HELMET'), true);
+  assert.equal(algorithmListSearchMatch({productCode: 'safe-prod'}, 'SAFE-PROD'), true);
+  assert.equal(algorithmListSearchMatch({name: '烟火检测'}, 'helmet'), false);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('category filtering uses only real external_category_id and separates draft from applied state', () => {
+  const state = {
+    page: '算法列表', project: {id: 'p1'}, jobs: [], alg428Expanded: {},
+    algorithms: [
+      {id: 'local', name: '本地车辆算法', source_type: 'LOCAL', industry: '车辆', versions: []},
+      {id: 'external-match', name: '外部算法', source_type: 'EXTERNAL', external_category_id: 'leaf', versions: []},
+      {id: 'external-other', name: '车辆相关外部算法', source_type: 'EXTERNAL', external_category_id: 'other', versions: []},
+    ],
+  };
+  const categories = [
+    {categoryId: 'root', categoryName: '车辆相关', parentId: ''},
+    {categoryId: 'leaf', categoryName: '机动车检测', parentId: 'root'},
+    {categoryId: 'other', categoryName: '人脸识别', parentId: ''},
+  ];
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({
+      categories,
+      externalMode: true,
+      categoryRows: [
+        {id: 'root', name: '车辆相关', parentId: '', ancestorIds: [], path: '车辆相关', hasChildren: true},
+        {id: 'leaf', name: '机动车检测', parentId: 'root', ancestorIds: ['root'], path: '车辆相关 / 机动车检测', hasChildren: false},
+        {id: 'other', name: '人脸识别', parentId: '', ancestorIds: [], path: '人脸识别', hasChildren: false},
+      ],
+    }),
+    matches: (algorithm, filters) => {
+      if (!filters.selectedCategoryIds.length) return true;
+      return filters.selectedCategoryIds.includes(String(algorithm.external_category_id || ''));
+    },
+  });
+
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('root');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['local', 'external-match', 'external-other']);
+  runtime.cancelCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, []);
+  runtime.openCategoryPicker();
+  runtime.toggleDraftCategory('leaf');
+  runtime.confirmCategoryPicker();
+  assert.deepEqual(runtime.filterState().selectedCategoryIds, ['leaf']);
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id), ['external-match']);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('trainable filter matches the real training affordance for local and external algorithms', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    jobs: [],
+    alg428Expanded: {},
+    algorithms: [
+      {id: 'local-yolo', name: '本地 YOLO', source_type: 'LOCAL', algorithm_type: 'yolo_ultralytics', versions: []},
+      {id: 'local-opencv', name: 'OpenCV', source_type: 'LOCAL', algorithm_type: 'opencv', versions: []},
+      {id: 'external-ready', name: '畅联可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+      {id: 'external-blocked', name: '畅联不可训练', source_type: 'EXTERNAL', provider_type: 'CHANG_LIAN', versions: []},
+    ],
+  };
+  globalThis.window = {fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.setExternalProvider({
+    snapshot: () => ({categories: [], categoryRows: [], externalMode: true}),
+    matches: () => true,
+    meta: algorithm => ({
+      external: String(algorithm.source_type || '').toUpperCase() === 'EXTERNAL',
+      sourceLabel: '测试',
+      readiness: {ready: algorithm.id !== 'external-blocked', message: ''},
+    }),
+  });
+  runtime.setFilters({status: 'trainable'}, {render: false});
+  assert.deepEqual(runtime.visibleAlgorithms().map(row => row.id).sort(), ['external-ready', 'local-yolo']);
+  runtime.destroy();
+  cleanup();
+});
+
+test('algorithm registry source keeps card-wide expansion and explicit trainable quick filter', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /class="algorithm-card-grid"/);
+  assert.match(source, /class="algorithm-card-overview"/);
+  assert.match(source, /class="algorithm-card-primary"/);
+  assert.match(source, /class="algorithm-card-side"/);
+  assert.match(source, /data-algorithm-card="1"/);
+  assert.match(source, /data-algorithm-trainable-only/);
+  assert.match(source, /仅看可训练/);
+  assert.match(source, /!event\.target\.closest\('button,a,input,select,textarea,label,details,summary'\)/);
+  assert.match(source, /scheduleTrainingWarmup\(rows\)/);
+  assert.match(source, /COMMON_TRAINING_WARMUP_TTL_MS = 5 \* 60 \* 1000/);
+  assert.match(source, /commonTrainingWarmupProjectId === currentProjectId/);
+});
+
+test('category presentation supports real arbitrary depth in three visible panes and full-path search', () => {
+  const rows = [
+    {id: 'root', name: '安全治理', parentId: '', depth: 0, ancestorIds: [], path: '安全治理', hasChildren: true},
+    {id: 'vehicle', name: '车辆', parentId: 'root', depth: 1, ancestorIds: ['root'], path: '安全治理 / 车辆', hasChildren: true},
+    {id: 'parking', name: '违停', parentId: 'vehicle', depth: 2, ancestorIds: ['root', 'vehicle'], path: '安全治理 / 车辆 / 违停', hasChildren: true},
+    {id: 'night', name: '夜间违停', parentId: 'parking', depth: 3, ancestorIds: ['root', 'vehicle', 'parking'], path: '安全治理 / 车辆 / 违停 / 夜间违停', hasChildren: false},
+  ];
+  const columns = algorithmCategoryColumns(rows, ['root', 'vehicle', 'parking']);
+  assert.equal(columns.length, 3);
+  assert.deepEqual(columns.map(column => column.parentId), ['root', 'vehicle', 'parking']);
+  assert.deepEqual(algorithmCategorySearch(rows, '夜间').map(row => row.path), ['安全治理 / 车辆 / 违停 / 夜间违停']);
+});
+
+
+test('algorithm list has exactly one canonical page and card renderer owner', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.equal((source.match(/function renderPage\(/g) || []).length, 1);
+  assert.equal((source.match(/<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">/g) || []).length, 1);
+  assert.equal((main.match(/registerPageOwner\('算法列表'/g) || []).length, 1);
+});
+
+test('current mAP50 never falls back to generic accuracy', () => {
+  assert.equal(algorithmVersionMap50({accuracy: 0.91}), null);
+  assert.ok(Math.abs(algorithmVersionMap50({map50: 0.926}) - 92.6) < 1e-9);
+  assert.equal(algorithmVersionMap50({metrics: {mAP50: 0.8}}), 80);
+});
+
+
+test('category picker rows are whole-row interactive for drill-down and leaf selection', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /function activateCategoryRow\(id\)/);
+  assert.match(source, /data-category-row="\$\{esc\(row\.id\)\}"/);
+  assert.match(source, /const categoryRow = event\.target\.closest\('\[data-category-row\]'\)/);
+  assert.match(source, /if \(categoryRow\) return activateCategoryRow\(categoryRow\.dataset\.categoryRow\)/);
+  assert.match(source, /viewState\.categoryPath = \[\.\.\.\(row\.ancestorIds \|\| \[\]\)/);
+  assert.match(source, /return toggleDraftCategory\(row\.id\)/);
+  assert.match(source, /event\.target === categoryRow && \['Enter', ' '\]\.includes\(event\.key\)/);
 });

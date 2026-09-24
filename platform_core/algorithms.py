@@ -1,11 +1,10 @@
-import json
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from filelock import FileLock
 
-from .annotations import atomic_write_json
+from .algorithm_sql_store import AlgorithmSqlStore
 from .errors import PlatformError
 
 
@@ -236,31 +235,23 @@ def choose_algorithm_iteration_base(
 
 
 def list_algorithms(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise PlatformError(
-            code="ALGORITHM_STORE_INVALID",
-            message="算法资产文件无法读取",
-            detail=str(error),
-            solution="请恢复 algorithms.json 备份，或检查文件是否为有效 JSON。",
-            status_code=500,
-        ) from error
-    if not isinstance(value, list):
-        raise PlatformError(
-            code="ALGORITHM_STORE_INVALID",
-            message="算法资产文件格式不正确",
-            detail="algorithms.json 的根节点必须是数组。",
-            solution="请恢复有效的算法资产文件。",
-            status_code=500,
-        )
-    return value
+    """Return algorithms in the legacy API shape, backed by SQL storage.
+
+    The first read migrates an existing algorithms.json into algorithms.sqlite3
+    without changing algorithm/version IDs. The JSON file is retained as a
+    read-only migration source and backed up before SQL becomes authoritative.
+    """
+    return AlgorithmSqlStore(Path(path)).read_all()
 
 
 def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
-    atomic_write_json(path, list(algorithms))
+    """Persist the full algorithm graph transactionally in SQL."""
+    AlgorithmSqlStore(Path(path)).replace_all(algorithms)
+
+
+def algorithm_store_status(path: Path) -> dict[str, Any]:
+    """Expose migration/storage diagnostics without changing frontend payloads."""
+    return AlgorithmSqlStore(Path(path)).migration_status()
 
 
 def create_algorithm(
@@ -271,102 +262,42 @@ def create_algorithm(
 ) -> dict:
     name = str(payload.get("name") or "").strip()
     if not name:
-        raise PlatformError(
-            code="ALGORITHM_NAME_REQUIRED",
-            message="算法名称不能为空",
-            detail="创建算法时必须填写名称。",
-            solution="请输入一个能够区分业务用途的算法名称。",
-        )
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        if any(str(item.get("name") or "").strip().casefold() == name.casefold() for item in algorithms):
-            raise PlatformError(
-                code="ALGORITHM_NAME_EXISTS",
-                message="算法名称已存在",
-                detail=f"当前项目中已经存在名为“{name}”的算法。",
-                solution="请使用不同名称，或编辑已有算法。",
-                status_code=409,
-            )
-        item = {
-            "id": algorithm_id or uuid.uuid4().hex[:12],
-            "name": name,
-            "remark": str(payload.get("remark") or ""),
-            "industry": str(payload.get("industry") or "").strip(),
-            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-            "current_version_id": None,
-            "version_operations": [],
-            "versions": [],
-            "created_at": now,
-            "updated_at": now,
-        }
-        algorithms.insert(0, item)
-        save_algorithms(path, algorithms)
-    return item
-
+        raise PlatformError(code="ALGORITHM_NAME_REQUIRED", message="算法名称不能为空", detail="创建算法时必须填写名称。", solution="请输入一个能够区分业务用途的算法名称。")
+    item = {
+        "id": algorithm_id or uuid.uuid4().hex[:12],
+        "name": name,
+        "remark": str(payload.get("remark") or ""),
+        "industry": str(payload.get("industry") or "").strip(),
+        "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
+        "current_version_id": None,
+        "version_operations": [],
+        "versions": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+    return AlgorithmSqlStore(Path(path)).create_algorithm(item)
 
 def update_algorithm(path: Path, algorithm_id: str, payload: Mapping[str, Any], now: str) -> dict:
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
-        if item is None:
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        proposed_name = str(payload.get("name") or item.get("name") or "").strip()
-        if any(
-            str(row.get("id")) != str(algorithm_id)
-            and str(row.get("name") or "").strip().casefold() == proposed_name.casefold()
-            for row in algorithms
-        ):
-            raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"算法名称“{proposed_name}”已被使用。", "请使用不同名称。", 409)
-        item.update({
-            "name": proposed_name,
-            "remark": str(payload.get("remark") or ""),
-            "industry": str(payload.get("industry") or "").strip(),
-            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-            "updated_at": now,
-        })
-        if "current_version_id" not in item:
-            item["current_version_id"] = resolve_current_version_id(item)
-        item.setdefault("version_operations", [])
-        save_algorithms(path, algorithms)
-    return item
-
+    store = AlgorithmSqlStore(Path(path))
+    existing = store.read_one(str(algorithm_id))
+    if existing is None:
+        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+    patch = {
+        "name": str(payload.get("name") or existing.get("name") or "").strip(),
+        "remark": str(payload.get("remark") or ""),
+        "industry": str(payload.get("industry") or "").strip(),
+        "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
+        "updated_at": now,
+    }
+    if "current_version_id" not in existing:
+        patch["current_version_id"] = resolve_current_version_id(existing)
+    return store.patch_algorithm(str(algorithm_id), patch)
 
 def delete_algorithm(path: Path, algorithm_id: str) -> None:
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        remaining = [row for row in algorithms if str(row.get("id")) != str(algorithm_id)]
-        if len(remaining) == len(algorithms):
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        save_algorithms(path, remaining)
-
+    AlgorithmSqlStore(Path(path)).delete_algorithm(str(algorithm_id))
 
 def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
-        if item is None:
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        versions = list(item.get("versions") or [])
-        task_id = str(version.get("task_id") or version.get("job_id") or "").strip()
-        if task_id:
-            existing = next(
-                (
-                    row for row in versions
-                    if str(row.get("task_id") or row.get("job_id") or "").strip() == task_id
-                ),
-                None,
-            )
-            if existing is not None:
-                return dict(existing)
-        versions.append(dict(version))
-        versions.sort(key=_version_sort_key, reverse=True)
-        item["versions"] = versions
-        item["current_version_id"] = str(version.get("id") or "").strip() or None
-        item.setdefault("version_operations", [])
-        item["updated_at"] = str(version.get("finished_at") or version.get("created_at") or item.get("updated_at") or "")
-        save_algorithms(path, algorithms)
-    return dict(version)
-
+    return AlgorithmSqlStore(Path(path)).attach_version(str(algorithm_id), version)
 
 def update_algorithm_version(
     path: Path,
@@ -376,29 +307,9 @@ def update_algorithm_version(
     *,
     now: str,
 ) -> dict:
-    """Patch one version inside the same atomic algorithm metadata boundary."""
     protected = {"id", "version_id", "base_version_id", "parent_version_id"}
     values = {key: value for key, value in patch.items() if key not in protected}
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        algorithm = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-        if algorithm is None:
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        version = next(
-            (row for row in algorithm.get("versions") or [] if str(row.get("id") or "") == str(version_id)),
-            None,
-        )
-        if version is None:
-            raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
-        version.update(values)
-        version["updated_at"] = now
-        algorithm["updated_at"] = now
-        if "current_version_id" not in algorithm:
-            algorithm["current_version_id"] = resolve_current_version_id(algorithm)
-        algorithm.setdefault("version_operations", [])
-        save_algorithms(path, algorithms)
-        return dict(version)
-
+    return AlgorithmSqlStore(Path(path)).patch_version(str(algorithm_id), str(version_id), values, now=now)
 
 def rollback_algorithm_version(
     path: Path,
@@ -406,130 +317,101 @@ def rollback_algorithm_version(
     target_version_id: str,
     *,
     now: str,
-    delete_current_version: bool = False,
+    delete_current_version: bool = True,
     operator: str = "local_user",
     expected_current_version_id: str | None = None,
     dependency_check: Callable[[Mapping[str, Any], Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+    remote_delete: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict:
-    """Atomically switch the current pointer, optionally removing the old version.
-
-    Dependency checks run before the metadata transaction commits. Physical file
-    cleanup deliberately runs after the trusted pointer/version metadata write;
-    its independently persisted status never rolls the pointer back.
-    """
+    # Product invariant: rollback means deleting the current version.
+    # Keep the legacy parameter for call compatibility, but never allow a
+    # pointer-only rollback to bypass the deletion contract.
+    delete_current_version = True
     operation_id = uuid.uuid4().hex[:12]
-    removed_version: dict | None = None
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        algorithm = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-        if algorithm is None:
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        versions = list(algorithm.get("versions") or [])
-        current_id = resolve_current_version_id(algorithm)
-        if not current_id:
-            raise PlatformError(
-                "ALGORITHM_CURRENT_VERSION_MISSING", "算法没有可回退的当前版本",
-                "当前算法没有成功且产物已校验的版本。", "请先完成一次有效训练。", 409,
-            )
-        if expected_current_version_id is not None and str(expected_current_version_id) != current_id:
-            raise PlatformError(
-                "ALGORITHM_VERSION_CONFLICT", "算法当前版本已经发生变化",
-                f"请求基于 {expected_current_version_id}，当前实际版本为 {current_id}。",
-                "请刷新算法版本列表后重新确认。", 409,
-            )
-        if str(target_version_id) == current_id:
-            raise PlatformError(
-                "ALGORITHM_VERSION_ALREADY_CURRENT", "目标版本已经是当前版本",
-                f"版本 {target_version_id} 无需再次回退。", "请选择其他历史版本。", 409,
-            )
-        target = next((row for row in versions if str(row.get("id") or "") == str(target_version_id)), None)
-        if target is None:
-            raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {target_version_id}。", "请刷新版本列表后重试。", 404)
-        target_framework = str(target.get("framework") or "ultralytics")
-        choose_iteration_base(
-            [target], "", target_framework,
-            strict_latest=True,
-            artifact_validator=lambda candidate: candidate.is_file() and candidate.stat().st_size > 0,
+    store = AlgorithmSqlStore(Path(path))
+    algorithm = store.read_one(str(algorithm_id))
+    if algorithm is None:
+        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+    versions = list(algorithm.get("versions") or [])
+    current_id = resolve_current_version_id(algorithm)
+    if not current_id:
+        raise PlatformError("ALGORITHM_CURRENT_VERSION_MISSING", "算法没有可回退的当前版本", "当前算法没有成功且产物已校验的版本。", "请先完成一次有效训练。", 409)
+    if expected_current_version_id is not None and str(expected_current_version_id) != current_id:
+        raise PlatformError("ALGORITHM_VERSION_CONFLICT", "算法当前版本已经发生变化", f"请求基于 {expected_current_version_id}，当前实际版本为 {current_id}。", "请刷新算法版本列表后重新确认。", 409)
+    if str(target_version_id) == current_id:
+        raise PlatformError("ALGORITHM_VERSION_ALREADY_CURRENT", "目标版本已经是当前版本", f"版本 {target_version_id} 无需再次回退。", "请选择其他历史版本。", 409)
+    target = next((row for row in versions if str(row.get("id") or "") == str(target_version_id)), None)
+    if target is None:
+        raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {target_version_id}。", "请刷新版本列表后重试。", 404)
+    target_framework = str(target.get("framework") or "ultralytics")
+    choose_iteration_base([target], "", target_framework, strict_latest=True, artifact_validator=lambda candidate: candidate.is_file() and candidate.stat().st_size > 0)
+    current = next(row for row in versions if str(row.get("id") or "") == current_id)
+    remote_result: Mapping[str, Any] = {}
+    dependencies = list((dependency_check or (lambda _algorithm, _version: []))(algorithm, current) or [])
+    if dependencies:
+        reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
+        raise PlatformError("ALGORITHM_VERSION_IN_USE", "当前版本仍被活动业务引用，不能删除", "；".join(reasons), "请先结束相关任务或停止对应业务，再重新执行回退并删除。", 409)
+    if remote_delete is not None:
+        remote_result = dict(remote_delete(dict(algorithm), dict(current)) or {})
+    operation = {
+        "id": operation_id,
+        "algorithm_id": str(algorithm_id),
+        "from_version_id": current_id,
+        "to_version_id": str(target_version_id),
+        "deleted_version_id": current_id,
+        "action": "rollback_and_delete",
+        "operator": str(operator or "local_user"),
+        "created_at": now,
+        "cleanup_status": "cleanup_pending",
+        "cleanup_targets": [],
+        "cleanup_errors": [],
+    }
+    try:
+        removed_version = store.rollback_version(
+            str(algorithm_id),
+            str(target_version_id),
+            expected_current_version_id=current_id,
+            operation=operation,
+            now=now,
+            delete_current_version=True,
         )
-        current = next(row for row in versions if str(row.get("id") or "") == current_id)
-        dependencies: list[Mapping[str, Any]] = []
-        if delete_current_version:
-            dependencies = list((dependency_check or (lambda _algorithm, _version: []))(algorithm, current) or [])
-            if dependencies:
-                reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
-                raise PlatformError(
-                    "ALGORITHM_VERSION_IN_USE", "当前版本仍被活动业务引用，不能删除",
-                    "；".join(reasons), "请先结束相关任务或停止对应业务，再重新执行回退并删除。", 409,
-                )
-
-        action = "rollback_and_delete" if delete_current_version else "rollback"
-        operation = {
-            "id": operation_id,
-            "algorithm_id": str(algorithm_id),
-            "from_version_id": current_id,
-            "to_version_id": str(target_version_id),
-            "deleted_version_id": current_id if delete_current_version else None,
-            "action": action,
-            "operator": str(operator or "local_user"),
-            "created_at": now,
-            "cleanup_status": "cleanup_pending" if delete_current_version else "not_required",
-            "cleanup_targets": [],
-            "cleanup_errors": [],
-        }
-        algorithm["current_version_id"] = str(target_version_id)
-        algorithm.setdefault("version_operations", []).append(operation)
-        if delete_current_version:
-            removed_version = dict(current)
-            algorithm["versions"] = [row for row in versions if str(row.get("id") or "") != current_id]
-        algorithm["updated_at"] = now
-        save_algorithms(path, algorithms)
-
+    except Exception as error:
+        if str(remote_result.get("status") or "") == "deleted":
+            raise PlatformError(
+                "ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE",
+                "新畅联版本已删除，但本地回退事务未完成",
+                str(error),
+                "请保留当前页面并联系运维执行本地版本一致性修复；不要重新创建或再次删除该远端版本。",
+                500,
+            ) from error
+        raise
     cleanup_result: Mapping[str, Any] = {}
-    cleanup_status = "not_required"
-    if delete_current_version and removed_version is not None:
+    cleanup_status = "cleanup_pending"
+    if removed_version is not None:
         try:
-            cleanup_result = dict((cleanup or (lambda _algorithm, _version: {"status": "cleanup_pending"}))(
-                dict(algorithm), removed_version,
-            ) or {})
-        except Exception as error:  # cleanup must never roll back the trusted pointer
+            cleanup_result = dict((cleanup or (lambda _algorithm, _version: {"status": "cleanup_pending"}))(dict(algorithm), removed_version) or {})
+        except Exception as error:
             cleanup_result = {"status": "cleanup_failed", "targets": [], "errors": [str(error)]}
-        status = str(cleanup_result.get("status") or "cleanup_failed")
-        if status not in {"cleanup_completed", "cleanup_pending", "cleanup_failed"}:
-            status = "cleanup_failed"
-        cleanup_status = status
-        with _update_lock(path):
-            algorithms = list_algorithms(path)
-            persisted = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-            if persisted is None:
-                raise PlatformError(
-                    "ALGORITHM_CLEANUP_STATE_LOST", "版本已回退，但清理状态无法保存",
-                    f"算法 {algorithm_id} 在清理期间被删除。", "请检查版本操作审计和文件清理结果。", 500,
-                )
-            operation = next(
-                (row for row in persisted.get("version_operations") or [] if str(row.get("id") or "") == operation_id),
-                None,
-            )
-            if operation is None:
-                raise PlatformError(
-                    "ALGORITHM_CLEANUP_STATE_LOST", "版本已回退，但清理审计不存在",
-                    f"找不到操作记录 {operation_id}。", "请检查 algorithms.json 一致性。", 500,
-                )
-            operation["cleanup_status"] = status
-            operation["cleanup_targets"] = [str(item) for item in cleanup_result.get("targets") or []]
-            operation["cleanup_errors"] = [str(item) for item in cleanup_result.get("errors") or []]
-            save_algorithms(path, algorithms)
-
+        cleanup_status = str(cleanup_result.get("status") or "cleanup_failed")
+        if cleanup_status not in {"cleanup_completed", "cleanup_pending", "cleanup_failed"}:
+            cleanup_status = "cleanup_failed"
+        store.update_version_operation(str(algorithm_id), operation_id, {
+            "cleanup_status": cleanup_status,
+            "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
+            "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+        })
     return {
         "algorithm_id": str(algorithm_id),
         "previous_current_version_id": current_id,
         "current_version_id": str(target_version_id),
-        "deleted_version_id": current_id if delete_current_version else None,
-        "action": "rollback_and_delete" if delete_current_version else "rollback",
+        "deleted_version_id": current_id,
+        "action": "rollback_and_delete",
         "operation_id": operation_id,
         "cleanup_status": cleanup_status,
         "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
         "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+        "remote_delete": dict(remote_result),
     }
 
 
@@ -541,77 +423,71 @@ def delete_algorithm_version(
     now: str,
     operator: str = "local_user",
     dependency_check: Callable[[Mapping[str, Any], Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+    remote_delete: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict:
-    """Delete a non-current historical version with audit and deferred cleanup."""
     operation_id = uuid.uuid4().hex[:12]
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        algorithm = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-        if algorithm is None:
-            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        versions = list(algorithm.get("versions") or [])
-        target = next((row for row in versions if str(row.get("id") or "") == str(version_id)), None)
-        if target is None:
-            raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
-        current_id = resolve_current_version_id(algorithm)
-        if str(version_id) == str(current_id or ""):
-            raise PlatformError(
-                "ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN", "不能直接删除当前版本",
-                f"版本 {version_id} 当前正在作为算法默认版本。",
-                "请先回退到另一个有效版本，再删除该版本。", 409,
-            )
-        dependencies = list((dependency_check or (lambda _algorithm, _version: []))(algorithm, target) or [])
-        if dependencies:
-            reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
-            raise PlatformError(
-                "ALGORITHM_VERSION_IN_USE", "算法版本仍被活动业务引用，不能删除",
-                "；".join(reasons), "请先结束相关任务或停止对应业务，再重新删除。", 409,
-            )
-        operation = {
-            "id": operation_id,
-            "algorithm_id": str(algorithm_id),
-            "from_version_id": current_id,
-            "to_version_id": current_id,
-            "deleted_version_id": str(version_id),
-            "action": "delete_version",
-            "operator": str(operator or "local_user"),
-            "created_at": now,
-            "cleanup_status": "cleanup_pending",
-            "cleanup_targets": [],
-            "cleanup_errors": [],
-        }
-        algorithm["current_version_id"] = current_id
-        algorithm["versions"] = [row for row in versions if str(row.get("id") or "") != str(version_id)]
-        algorithm.setdefault("version_operations", []).append(operation)
-        algorithm["updated_at"] = now
-        save_algorithms(path, algorithms)
-
+    store = AlgorithmSqlStore(Path(path))
+    algorithm = store.read_one(str(algorithm_id))
+    if algorithm is None:
+        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+    versions = list(algorithm.get("versions") or [])
+    target = next((row for row in versions if str(row.get("id") or "") == str(version_id)), None)
+    if target is None:
+        raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
+    current_id = resolve_current_version_id(algorithm)
+    if str(version_id) == str(current_id or ""):
+        raise PlatformError("ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN", "不能直接删除当前版本", f"版本 {version_id} 当前正在作为算法默认版本。", "请先回退到另一个有效版本，再删除该版本。", 409)
+    dependencies = list((dependency_check or (lambda _algorithm, _version: []))(algorithm, target) or [])
+    if dependencies:
+        reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
+        raise PlatformError("ALGORITHM_VERSION_IN_USE", "算法版本仍被活动业务引用，不能删除", "；".join(reasons), "请先结束相关任务或停止对应业务，再重新删除。", 409)
+    remote_result: Mapping[str, Any] = {}
+    if remote_delete is not None:
+        remote_result = dict(remote_delete(dict(algorithm), dict(target)) or {})
+    operation = {
+        "id": operation_id,
+        "algorithm_id": str(algorithm_id),
+        "from_version_id": current_id,
+        "to_version_id": current_id,
+        "deleted_version_id": str(version_id),
+        "action": "delete_version",
+        "operator": str(operator or "local_user"),
+        "created_at": now,
+        "cleanup_status": "cleanup_pending",
+        "cleanup_targets": [],
+        "cleanup_errors": [],
+    }
     try:
-        cleanup_result = dict((cleanup or (lambda _algorithm, _version: {"status": "cleanup_pending"}))(
-            dict(algorithm), dict(target),
-        ) or {})
+        removed = store.delete_version_with_operation(
+            str(algorithm_id),
+            str(version_id),
+            expected_current_version_id=current_id,
+            operation=operation,
+            now=now,
+        )
+    except Exception as error:
+        if str(remote_result.get("status") or "") == "deleted":
+            raise PlatformError(
+                "ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE",
+                "新畅联版本已删除，但本地删除事务未完成",
+                str(error),
+                "请联系运维执行本地版本一致性修复；不要重新创建或再次删除该远端版本。",
+                500,
+            ) from error
+        raise
+    try:
+        cleanup_result = dict((cleanup or (lambda _algorithm, _version: {"status": "cleanup_pending"}))(dict(algorithm), dict(removed)) or {})
     except Exception as error:
         cleanup_result = {"status": "cleanup_failed", "targets": [], "errors": [str(error)]}
     status = str(cleanup_result.get("status") or "cleanup_failed")
     if status not in {"cleanup_completed", "cleanup_pending", "cleanup_failed"}:
         status = "cleanup_failed"
-    with _update_lock(path):
-        algorithms = list_algorithms(path)
-        persisted = next((row for row in algorithms if str(row.get("id") or "") == str(algorithm_id)), None)
-        operation = next(
-            (row for row in (persisted or {}).get("version_operations") or [] if str(row.get("id") or "") == operation_id),
-            None,
-        )
-        if operation is None:
-            raise PlatformError(
-                "ALGORITHM_CLEANUP_STATE_LOST", "版本已删除，但清理状态无法保存",
-                f"找不到操作记录 {operation_id}。", "请检查 algorithms.json 一致性。", 500,
-            )
-        operation["cleanup_status"] = status
-        operation["cleanup_targets"] = [str(item) for item in cleanup_result.get("targets") or []]
-        operation["cleanup_errors"] = [str(item) for item in cleanup_result.get("errors") or []]
-        save_algorithms(path, algorithms)
+    store.update_version_operation(str(algorithm_id), operation_id, {
+        "cleanup_status": status,
+        "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
+        "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+    })
     return {
         "algorithm_id": str(algorithm_id),
         "previous_current_version_id": current_id,
@@ -622,4 +498,6 @@ def delete_algorithm_version(
         "cleanup_status": status,
         "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
         "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+        "remote_delete": dict(remote_result),
     }
+

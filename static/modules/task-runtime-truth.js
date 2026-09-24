@@ -4,6 +4,7 @@ const STATUS_ALIASES = Object.freeze({
   DONE: 'SUCCEEDED',
   FINISHED: 'SUCCEEDED',
   COMPLETED: 'SUCCEEDED',
+  SUCCESS: 'SUCCEEDED',
   STOPPED: 'CANCELLED',
   CANCELED: 'CANCELLED',
   CANCELLING: 'CANCEL_REQUESTED',
@@ -11,7 +12,7 @@ const STATUS_ALIASES = Object.freeze({
 
 const ACTIVE = new Set([
   'ACCEPTED', 'QUEUED', 'WAITING_RESOURCE', 'PREPARING', 'RUNNING',
-  'PAUSING', 'PAUSED', 'RESUMING', 'CANCEL_REQUESTED', 'RETRYING',
+  'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING', 'CANCEL_REQUESTED', 'RETRYING',
 ]);
 
 const TERMINAL = new Set([
@@ -67,8 +68,12 @@ export function trainingDisplayStatus(task = {}) {
   const status = canonicalTaskStatus(task);
   if (status === 'WAITING_RESOURCE') return 'waiting';
   if (['ACCEPTED', 'QUEUED', 'PREPARING', 'RETRYING'].includes(status)) return 'queued';
-  if (['RUNNING', 'PAUSING', 'RESUMING', 'CANCEL_REQUESTED'].includes(status)) return 'running';
+  if (status === 'RUNNING') return 'running';
+  if (status === 'PAUSING') return 'pausing';
   if (status === 'PAUSED') return 'paused';
+  if (status === 'RESUMING') return 'resuming';
+  if (status === 'STOPPING') return 'stopping';
+  if (status === 'CANCEL_REQUESTED') return 'cancel_requested';
   if (status === 'SUCCEEDED' || status === 'PARTIAL_SUCCESS') return 'completed';
   if (status === 'CANCELLED') return 'cancelled';
   if (['FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'].includes(status)) return 'failed';

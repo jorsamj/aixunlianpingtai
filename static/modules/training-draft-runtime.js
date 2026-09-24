@@ -46,6 +46,7 @@ export function installTrainingDraftRuntime({
     const validation = numericInput('trV3Validation');
     const priority = numericInput('tr429Priority');
     const strategy = inputValue('trV3ResourceStrategy');
+    const profile = inputValue('trV3ResourceProfile');
     const device = inputValue('trV3Device');
     const gpuPolicy = inputValue('trV3GpuPolicy');
 
@@ -57,6 +58,7 @@ export function installTrainingDraftRuntime({
       resource: {
         ...draft.resource,
         strategy: strategy ?? draft.resource?.strategy,
+        profile: profile ?? draft.resource?.profile,
         device: device ?? draft.resource?.device,
         gpuPolicy: gpuPolicy ?? draft.resource?.gpuPolicy,
       },
@@ -178,7 +180,7 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422516',
+    build: 'training-draft-runtime-422517',
     sync,
     update,
     subscribe,

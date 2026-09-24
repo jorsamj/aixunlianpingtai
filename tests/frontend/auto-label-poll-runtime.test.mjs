@@ -6,6 +6,7 @@ import {annotationTaskView} from '../../static/modules/annotation-task-view.js';
 import {
   hasActiveAutoLabelTask,
   installAutoLabelPollRuntime,
+  patchAutoLabelTaskRows,
   renderAutoLabelTaskRows,
 } from '../../static/modules/auto-label-poll-runtime.js';
 
@@ -116,24 +117,22 @@ test('runtime leaves renderer untouched and owns polling only through PollRegist
   };
 
   const originalRenderOps = async () => 'app-owned-render';
+  let loaderCalls = 0;
+  const doneTasks = [{
+    id: 'done-1', name: '完成任务', status: 'SUCCEEDED', requested_labels: ['fire'],
+    created_at: '2026-09-11T00:00:00Z', updated_at: '2026-09-11T00:00:05Z',
+    summary: {total: 10, completed: 10, boxes: 12},
+  }];
   globalThis.window = {
     renderOps427: originalRenderOps,
-    fetch: async () => ({
-      ok: true,
-      async json() {
-        return {items: [{
-          id: 'done-1', name: '完成任务', status: 'SUCCEEDED', requested_labels: ['fire'],
-          created_at: '2026-09-11T00:00:00Z', updated_at: '2026-09-11T00:00:05Z',
-          summary: {total: 10, completed: 10, boxes: 12},
-        }]};
-      },
-    }),
+    fetch: async () => { throw new Error('raw polling fetch must not run when canonical loader is injected'); },
   };
 
   const runtime = installAutoLabelPollRuntime({
     getState: () => state,
     pollRegistry,
     annotationTaskView: taskView,
+    loadTasks: async () => { loaderCalls += 1; return doneTasks; },
     pollDelay: 1800,
   });
 
@@ -147,6 +146,7 @@ test('runtime leaves renderer untouched and owns polling only through PollRegist
   const currentView = document.getElementById('view');
   await managed.callback();
 
+  assert.equal(loaderCalls, 1, 'polling must share the canonical task loader instead of issuing a parallel raw fetch');
   assert.equal(document.getElementById('view'), currentView, 'polling must not replace the page root');
   assert.match(tbody.innerHTML, /完成任务/);
   assert.match(tbody.innerHTML, /已完成/);
@@ -180,5 +180,27 @@ test('AutoLabelPollRuntime stays wrapper-free and timer-free', () => {
   }
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'auto-label-poll-422501'/);
+  assert.match(source, /const taskLoader = typeof loadTasks === 'function' \? loadTasks : requestTasks/);
+  assert.match(source, /const tasks = await taskLoader\(projectId\)/);
+  assert.match(source, /build: 'auto-label-poll-422502'/);
+});
+
+
+test('row patch fallback keeps canonical rendering when DOM patch primitives are unavailable', () => {
+  const body = {innerHTML: ''};
+  const changed = patchAutoLabelTaskRows(body, [{
+    id: 'task-patch',
+    name: '增量标注',
+    status: 'RUNNING',
+    requested_labels: ['fire'],
+    summary: {total: 10, completed: 4, boxes: 8},
+  }], {
+    state: {labels: [{code: 'fire', display_name: '明火'}]},
+    annotationTaskView: taskView,
+  });
+
+  assert.equal(changed, true);
+  assert.match(body.innerHTML, /增量标注/);
+  assert.match(body.innerHTML, /40\.0%/);
+  assert.match(body.innerHTML, /scaleX\(0\.4000\)/);
 });

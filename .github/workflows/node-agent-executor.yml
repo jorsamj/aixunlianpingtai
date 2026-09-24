@@ -1,0 +1,253 @@
+name: Node Agent Executor
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/node_agent_cleaning_runtime.py'
+      - 'platform_core/remote_cleaning.py'
+      - 'platform_core/remote_material_import.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/model_artifacts.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
+      - 'predict_ultralytics_runner.py'
+      - 'platform_core/service_nodes.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'app.py'
+      - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
+      - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_node_agent_cleaning_runtime.py'
+      - 'tests/unit/test_remote_cleaning.py'
+      - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_model_artifacts.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/api/test_agent_executor_api.py'
+      - 'tests/api/test_agent_result_upload_api.py'
+      - 'tests/api/test_runtime_router_app_mount.py'
+      - '.github/workflows/node-agent-executor.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/node_agent_cleaning_runtime.py'
+      - 'platform_core/remote_cleaning.py'
+      - 'platform_core/remote_material_import.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/model_artifacts.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
+      - 'predict_ultralytics_runner.py'
+      - 'platform_core/service_nodes.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'app.py'
+      - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
+      - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_node_agent_cleaning_runtime.py'
+      - 'tests/unit/test_remote_cleaning.py'
+      - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_model_artifacts.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/api/test_agent_executor_api.py'
+      - 'tests/api/test_agent_result_upload_api.py'
+      - 'tests/api/test_runtime_router_app_mount.py'
+      - '.github/workflows/node-agent-executor.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic
+      - name: Python syntax check
+        run: >-
+          python -m py_compile
+          platform_core/agent_execution.py
+          platform_core/remote_execution_transport.py
+          platform_core/node_agent_executor_runtime.py
+          platform_core/node_agent_deployment_runtime.py
+          platform_core/node_agent_training_runtime.py
+          platform_core/node_agent_conversion_runtime.py
+          platform_core/node_agent_material_runtime.py
+          platform_core/node_agent_cleaning_runtime.py
+          platform_core/remote_cleaning.py
+          platform_core/remote_material_import.py
+          platform_core/remote_training_results.py
+          platform_core/model_artifacts.py
+          platform_core/node_agent_executor_loop.py
+          node_agent.py
+          predict_ultralytics_runner.py
+          platform_core/service_nodes.py
+          platform_core/task_node_assignments.py
+          platform_core/training_recovery_api.py
+          app.py
+          tests/unit/test_agent_execution.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_node_agent_conversion_runtime.py
+          tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_node_agent_cleaning_runtime.py
+          tests/unit/test_remote_cleaning.py
+          tests/unit/test_remote_material_import.py
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_model_artifacts.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+      - name: Agent execution contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_agent_execution.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_node_agent_conversion_runtime.py
+          tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_node_agent_cleaning_runtime.py
+          tests/unit/test_remote_cleaning.py
+          tests/unit/test_remote_material_import.py
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_model_artifacts.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_service_nodes.py
+          tests/unit/test_task_node_assignments.py
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic
+      - name: Agent executor API contract
+        run: >-
+          python -m pytest -q --confcutdir=tests/api
+          tests/api/test_agent_executor_api.py
+          tests/api/test_agent_result_upload_api.py
+          tests/api/test_service_node_api.py
+          tests/api/test_central_scheduler_api.py
+          tests/api/test_runtime_router_app_mount.py
+      - name: Permanent Agent executor guards
+        shell: bash
+        run: |
+          grep -Fq 'verify_service_node_token' platform_core/service_nodes.py
+          grep -Fq 'hmac.compare_digest' platform_core/service_nodes.py
+          grep -Fq 'BEGIN IMMEDIATE' platform_core/agent_execution.py
+          grep -Fq 'token_hash FROM service_nodes' platform_core/agent_execution.py
+          grep -Fq 'attempt=attempt+1' platform_core/agent_execution.py
+          grep -Fq "release_reason='execution_started'" platform_core/agent_execution.py
+          grep -Fq 'assert_execution' platform_core/agent_execution.py
+          grep -Fq 'execution_generation=int(execution_generation)' platform_core/agent_execution.py
+          grep -Fq '"shared_sqlite_required": False' platform_core/agent_execution.py
+          grep -Fq '"shared_nfs_required": False' platform_core/agent_execution.py
+          grep -Fq 'execution_payload_resolver=agent_execution_payload_resolver' platform_core/training_recovery_api.py
+          grep -Fq 'agent_execution_payload_resolver=_resolve_agent_execution_payload' app.py
+          grep -Fq 'REMOTE_TRANSFER_TTL_SECONDS = 900' platform_core/remote_execution_transport.py
+          grep -Fq 'StorageType.OSS, StorageType.S3' platform_core/remote_execution_transport.py
+          grep -Fq 'REMOTE_UPLOAD_NOT_PROTECTED' platform_core/remote_execution_transport.py
+          grep -Fq 'result-upload/prepare' platform_core/agent_execution.py
+          grep -Fq 'result-upload/confirm' platform_core/agent_execution.py
+          grep -Fq 'REMOTE_RESULT_NOT_CONFIRMED' platform_core/agent_execution.py
+          grep -Fq 'remote-results/{int(execution_generation)}/result.json' platform_core/agent_execution.py
+          grep -Fq 'from platform_core.training_recovery_api import training_recovery_router' app.py
+          grep -Fq 'app.include_router(training_recovery_router(' app.py
+          ! grep -Fq 'import sqlite3' platform_core/node_agent_executor_runtime.py
+          ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_executor_runtime.py
+          ! grep -Fq 'task_runtime.repository' platform_core/node_agent_executor_runtime.py
+          grep -Fq 'shared_sqlite_required' tests/unit/test_node_agent_executor_runtime.py
+          grep -Fq 'ExecutionLeaseMonitor' platform_core/node_agent_executor_runtime.py
+          grep -Fq 'class AgentDeploymentRunner' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'ProcessController' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq 'class AgentConversionRunner' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
+          grep -Fq 'class AgentCleaningRunner' platform_core/node_agent_cleaning_runtime.py
+          grep -Fq 'commit_remote_cleaning_review' platform_core/remote_cleaning.py
+          grep -Fq 'metric_issues(metrics, options, image_id, index)' platform_core/remote_cleaning.py
+          grep -Fq 'DurableHashIndex' platform_core/remote_cleaning.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_cleaning_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_cleaning_runtime.py
+          grep -Fq 'build_material_review_archive' platform_core/node_agent_material_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
+          grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
+          grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
+          grep -Fq 'training-models/prepare' platform_core/agent_execution.py
+          grep -Fq 'training-models/confirm' platform_core/agent_execution.py
+          grep -Fq 'REMOTE_TRAINING_MODELS_NOT_CONFIRMED' platform_core/agent_execution.py
+          grep -Fq 'register_verified_remote_artifact' platform_core/model_artifacts.py
+          grep -Fq 'confirm_training_model_uploads' platform_core/remote_execution_transport.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_training_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
+          grep -Fq '"cleaning",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_BATCH",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_BATCH": "cleaning"' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT": "material-import"' platform_core/node_agent_executor_loop.py
+          grep -Fq 'NodeAgentExecutorLoop' node_agent.py
+          grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
+          grep -Fq 'executor.start()' node_agent.py
+          grep -Fq 'executor.stop(timeout=10.0)' node_agent.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_executor_loop.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check

@@ -56,3 +56,22 @@ test('annotation recovery execution is surfaced from durable attempt truth', () 
   assert.equal(recovery.percent, 48);
   assert.equal(recovery.canCancel, true);
 });
+
+test('review commit stages are explicit and remain active', () => {
+  const queued = annotationTaskView({
+    status: 'QUEUED', stage: 'review_queued', progress: 70,
+    completed_count: 20, total_count: 20,
+  });
+  assert.equal(queued.statusText, '等待标注入库');
+  assert.equal(queued.canReview, false);
+  assert.equal(queued.active, true);
+
+  const applying = annotationTaskView({
+    status: 'RUNNING', phase: 'APPLYING_REVIEW', progress: 84,
+    current_item: '正在统一标签并写入正式标注 12/20',
+    completed_count: 20, total_count: 20,
+  });
+  assert.equal(applying.statusText, '统一标签并入库');
+  assert.match(applying.runtimeText, /12\/20/);
+  assert.equal(applying.percent, 84);
+});

@@ -76,7 +76,7 @@ test('canonical draft ignores stale retired mirror-shaped fields without mutatin
 test('live controls update only canonical draft and do not backfill compatibility mirrors', () => {
   setupDom({
     tr429Priority: '7', trV3Experiment: '35', trV3Validation: '18',
-    trV3ResourceStrategy: 'manual', trV3Device: '0', trV3GpuPolicy: 'exclusive',
+    trV3ResourceStrategy: 'manual', trV3ResourceProfile: 'performance', trV3Device: '0', trV3GpuPolicy: 'exclusive',
   });
   const state = {
     train428AlgorithmId: 'legacy-alg',
@@ -99,7 +99,7 @@ test('live controls update only canonical draft and do not backfill compatibilit
   assert.equal(draft.validationPercent, 18);
   assert.equal(draft.priority, 7);
   assert.deepEqual(draft.resource, {
-    strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false,
+    strategy: 'manual', profile: 'performance', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false,
   });
   assert.equal(state.train428Config.resource_strategy, 'auto');
   assert.equal(state.train428Config.device, 'cpu');

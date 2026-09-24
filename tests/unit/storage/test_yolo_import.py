@@ -1,4 +1,5 @@
 """Focused detection quality, source boundary and disk-backed discovery cases."""
+import hashlib
 import io
 from types import SimpleNamespace
 
@@ -75,6 +76,16 @@ def test_discovery_labels_and_bounded_summary(tmp_path):
     assert quality["issues"]["NONFINITE_BOX"] == 1
     assert len(store.quality_summary(1)["examples"]) == 1
     assert "candidates" not in quality
+    identities = store.inventory_for_keys(
+        ["data.yaml", "labels/train/a.txt", "labels/train/b.txt"]
+    )
+    assert identities["data.yaml"]["sha256"] == hashlib.sha256(
+        provider.files["data.yaml"]
+    ).hexdigest()
+    assert identities["labels/train/a.txt"]["sha256"] == hashlib.sha256(
+        provider.files["labels/train/a.txt"]
+    ).hexdigest()
+    assert identities["labels/train/b.txt"]["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
 def test_yaml_and_label_ambiguity(tmp_path):

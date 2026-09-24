@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -28,13 +28,37 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /fetchpriority="\$\{priority\}"/);
 });
 
-test('training picker keeps TrainingDraftRuntime as the selection truth owner', () => {
-  assert.match(source, /const legacyConfirm = window\.confirmTrainMaterialPickerV3/);
-  assert.match(source, /legacyConfirm\.apply/);
+test('training picker keeps TrainingDraftRuntime as the selection truth owner without a legacy confirm wrapper', () => {
+  assert.doesNotMatch(source, /legacyConfirm/);
+  assert.doesNotMatch(source, /\.apply\(this, arguments\)/);
   assert.doesNotMatch(source, /state\(\)\.trainingDraft\s*=/);
+  assert.match(source, /trainingDraftRuntime\.update\(patch\)/);
+  assert.match(source, /window\.refreshTrainingMaterialSelectionUiV3\?\.\(\)/);
+  assert.match(source, /window\.confirmTrainMaterialPickerV3 = function confirmPicker/);
   assert.match(main, /installTrainingMaterialPickerRuntime/);
   assert.match(main, /trainingDraftRuntime,/);
   assert.match(main, /PlatformCore\.runtime\.trainingMaterialPickerRuntime/);
+});
+
+test('canonical picker confirmation preserves train and independent-test mutual exclusion', () => {
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'train',
+    selectedIds: ['m1', 'm2'],
+    materialIds: ['old'],
+    testMaterialIds: ['m2', 'm3'],
+  }), {
+    materialIds: ['m1', 'm2'],
+    testMaterialIds: ['m3'],
+  });
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'test',
+    selectedIds: ['m2', 'm4'],
+    materialIds: ['m1', 'm2', 'm3'],
+    testMaterialIds: ['old-test'],
+  }), {
+    materialIds: ['m1', 'm3'],
+    testMaterialIds: ['m2', 'm4'],
+  });
 });
 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
@@ -67,4 +91,28 @@ test('large bulk selection has a single server owner', () => {
   assert.match(source, /method: 'POST'/);
   assert.match(source, /bulkSelectionOwner: 'server'/);
   assert.doesNotMatch(source, /do \{[\s\S]*\/training-materials\/ids/);
+});
+
+test('annotated preview uses source coordinates as the SVG viewBox', () => {
+  const html = renderTrainingMaterialPreview({
+    id: 'm1', filename: 'm1.jpg', width: 400, height: 200,
+    thumbnail_url: '/thumb/m1.jpg', content_url: '/full/m1.jpg',
+    annotation_state: 'annotated',
+    boxes: [{label: 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
+  }, {loading: 'eager', priority: 'high'});
+
+  assert.match(html, /viewBox="0 0 400 200"/);
+  assert.match(html, /preserveAspectRatio="xMidYMid meet"/);
+  assert.match(html, /<rect[^>]*x="40"[^>]*y="20"[^>]*width="160"[^>]*height="80"/);
+  assert.match(html, /data-label="smoke"/);
+  assert.match(html, /已标注 · 1 框/);
+});
+
+test('empty boxes preserve confirmed-empty and unannotated as distinct states', () => {
+  const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
+  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'unannotated', boxes: []});
+  assert.match(confirmed, /已确认无目标/);
+  assert.match(unannotated, /未标注/);
+  assert.doesNotMatch(confirmed, /<svg/);
+  assert.doesNotMatch(unannotated, /<svg/);
 });

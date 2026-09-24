@@ -1,64 +1,102 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
 
-test('completed conversion becomes visible in deployment artifacts without manual refresh', async ({page, request}) => {
+test('completed conversion becomes visible in canonical version dialog without manual refresh', async ({page, request}) => {
   const project = await (await request.post('/api/projects', {data: {
-    name: `部署产物联动-${Date.now()}`,
-    labels: [{code: 'fire', display_name: '明火'}]
+    name: `版本转换产物联动-${Date.now()}`,
+    labels: [{code: 'fire', display_name: '明火'}],
   }})).json();
+  const algorithmId = 'artifact-visible-algorithm';
+  const versionId = 'artifact-visible-version';
+  let complete = false;
+  let historyCalls = 0;
+  let retiredArtifactCalls = 0;
 
-  const job = {
-    id: 'deploy-artifact-job',
-    source_name: 'best.pt',
-    target: 'onnx',
-    resource: {name: 'Ultralytics'},
-    params: {precision: 'fp16', input_size: 640},
-    status: 'running',
-    stage: '导出 ONNX',
-    progress: 42,
-    created_at: '2026-09-13 00:00:00'
-  };
-  const artifact = {
-    job_id: job.id,
-    name: 'converted.onnx',
-    source_name: 'best.pt',
-    target: 'onnx',
-    params: {precision: 'fp16', input_size: 640},
-    size_mb: 1.25,
-    created_at: '2026-09-13 00:01:00',
-    download_url: '/download/converted.onnx'
-  };
+  await page.route(
+    `**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`,
+    route => {
+      historyCalls += 1;
+      const item = {
+        id: 'deploy-artifact-job',
+        source_name: 'best.pt',
+        target: 'onnx',
+        target_name: '通用 ONNX',
+        resource_name: 'Ultralytics',
+        params: {precision: 'fp16', input_size: 640},
+        status: complete ? 'done' : 'running',
+        stage: complete ? '转换完成' : '导出 ONNX',
+        message: complete ? '转换完成' : '导出 ONNX',
+        progress: complete ? 100 : 42,
+        created_at: '2026-09-24 00:00:00',
+        finished_at: complete ? '2026-09-24 00:01:00' : null,
+        outputs: complete ? [{
+          name: 'converted.onnx',
+          size_mb: 1.25,
+          exists: true,
+          download_url: '/download/converted.onnx',
+        }] : [],
+        package_url: complete ? '/download/deploy-package.zip' : '',
+      };
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          algorithm: {id: algorithmId, name: '转换产物算法'},
+          version: {
+            id: versionId,
+            version_name: '20260924000100',
+            model_name: 'best.pt',
+            stored_path: '/models/best.pt',
+          },
+          items: [item],
+        }),
+      });
+    },
+  );
 
-  let jobsCalls = 0;
-  let artifactCalls = 0;
-  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs`, route => {
-    jobsCalls += 1;
-    route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      ok: true,
-      items: [{...job, status: 'done', stage: '转换完成', progress: 100, finished_at: '2026-09-13 00:01:00'}]
-    })});
-  });
   await page.route(`**/api/v39/projects/${project.id}/deploy/artifacts`, route => {
-    artifactCalls += 1;
-    route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      ok: true,
-      items: jobsCalls > 0 ? [artifact] : []
-    })});
+    retiredArtifactCalls += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: []}),
+    });
   });
 
-  await page.addInitScript(({projectId, cachedJob}) => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '工作台'}));
-    localStorage.setItem(`cl_algo_deploy_cache_${projectId}`, JSON.stringify({
-      ts: Date.now(), resources: [], sources: [], jobs: [cachedJob], artifacts: []
-    }));
-  }, {projectId: project.id, cachedJob: job});
-
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
   await page.goto('/');
-  await page.evaluate(() => window.setPage('部署转换'));
-  await expect.poll(() => jobsCalls, {timeout: 10_000}).toBeGreaterThan(0);
-  await expect.poll(() => artifactCalls, {timeout: 10_000}).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => page.evaluate(() => (
+    typeof window.openVersionConvert428 === 'function'
+    && typeof state !== 'undefined'
+    && state.uiReady === true
+    && Boolean(state.project?.id)
+  ))).toBe(true);
 
-  await page.evaluate(() => window.setPage('部署产物'));
-  await expect(page.getByText('converted.onnx', {exact: true})).toBeVisible();
-  await expect(page.getByRole('link', {name: '下载'})).toHaveAttribute('href', '/download/converted.onnx');
+  await page.evaluate(([aid, vid]) => {
+    const projectId = state.project.id;
+    localStorage.removeItem(`cl_train_v428_verdeploy_${projectId}_${aid}_${vid}`);
+    window.openVersionConvert428(aid, vid);
+  }, [algorithmId, versionId]);
+
+  const dialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(dialog).toBeVisible();
+  const job = dialog.locator('[data-conversion-job-id="deploy-artifact-job"]');
+  await expect(job.locator('[data-conversion-progress]')).toHaveAttribute('data-progress', '42.00');
+  await expect(job.getByText('converted.onnx', {exact: true})).toHaveCount(0);
+
+  complete = true;
+  await expect.poll(() => historyCalls, {timeout: 8_000}).toBeGreaterThanOrEqual(2);
+  await expect(job.getByText('converted.onnx', {exact: true}), {timeout: 8_000}).toBeVisible();
+  await expect(job.getByRole('link', {name: '下载', exact: true})).toHaveAttribute('href', '/download/converted.onnx');
+  expect(retiredArtifactCalls).toBe(0);
 });

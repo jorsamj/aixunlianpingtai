@@ -11,6 +11,7 @@ test('control patch maps train-v3 inputs to canonical draft fields', () => {
   assert.deepEqual(trainingDraftControlPatch({id: 'trV3Validation', value: '18'}), {validationPercent: 18});
   assert.deepEqual(trainingDraftControlPatch({id: 'tr429Priority', value: '7'}), {priority: 7});
   assert.deepEqual(trainingDraftControlPatch({id: 'trV3ResourceStrategy', value: 'manual'}), {resource: {strategy: 'manual'}});
+  assert.deepEqual(trainingDraftControlPatch({id: 'trV3ResourceProfile', value: 'performance'}), {resource: {profile: 'performance'}});
   assert.deepEqual(trainingDraftControlPatch({id: 'trV3Device', value: '0'}), {resource: {device: '0'}});
   assert.deepEqual(trainingDraftControlPatch({id: 'trV3GpuPolicy', value: 'exclusive'}), {resource: {gpuPolicy: 'exclusive'}});
   assert.equal(trainingDraftControlPatch({id: 'unrelated', value: 'x'}), null);
@@ -33,14 +34,16 @@ test('installed controls update canonical runtime synchronously on input/change'
 
   listeners.get('input')({target: {id: 'trV3Experiment', value: '31'}});
   listeners.get('change')({target: {id: 'trV3ResourceStrategy', value: 'manual'}});
+  listeners.get('change')({target: {id: 'trV3ResourceProfile', value: 'performance'}});
   listeners.get('change')({target: {id: 'trV3GpuPolicy', value: 'shared'}});
 
   assert.deepEqual(patches, [
     {experimentPercent: 31},
     {resource: {strategy: 'manual'}},
+    {resource: {profile: 'performance'}},
     {resource: {gpuPolicy: 'shared'}},
   ]);
-  assert.equal(runtime.state().directWrites, 3);
+  assert.equal(runtime.state().directWrites, 4);
 
   runtime.destroy();
   assert.equal(window.__trainingDraftControlsInstalled, false);

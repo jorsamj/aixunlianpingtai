@@ -103,7 +103,7 @@ jobs:
           grep -Fq 'overwrite_protected' platform_core/storage/s3.py
           grep -Fq 'test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers' tests/unit/storage/test_object_store_immutability.py
           grep -Fq 'test_oss_real_sdk_presign_accepts_conditional_signed_headers_without_network' tests/unit/storage/test_object_store_immutability.py
-          grep -Fq 'storage-cache-runtime.js?v=422527' static/index.html
+          grep -Fq 'storage-cache-runtime.js?v=422540' static/index.html
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq 'Worker 节点素材缓存' static/modules/storage-cache-runtime.js
           test "$(tr -d '\r\n' < VERSION.txt)" = '42.24.0'

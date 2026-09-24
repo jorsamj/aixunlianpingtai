@@ -81,10 +81,14 @@ export function createTrainingDraft(values = {}) {
     newLabelCodes,
     effectiveLabelCodes: unique([...inheritedLabelCodes, ...newLabelCodes]),
     inheritancePending: Boolean(values.inheritancePending),
+    benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
       strategy: String(values.resource?.strategy || 'auto'),
+      profile: String(values.resource?.profile || 'balanced'),
       device: String(values.resource?.device || 'auto'),
-      gpuPolicy: String(values.resource?.gpuPolicy || 'auto'),
+      gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'auto'))
+        ? String(values.resource?.gpuPolicy || 'auto')
+        : 'auto',
       batch: values.resource?.batch ?? null,
       workers: values.resource?.workers ?? null,
       cache: values.resource?.cache ?? null,
@@ -127,6 +131,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     validation_percent: normalized.validationPercent,
     train_labels: normalized.newLabelCodes,
     resource_strategy: normalized.resource.strategy,
+    resource_profile: normalized.resource.profile,
     device: normalized.resource.device,
     gpu_policy: normalized.resource.gpuPolicy,
     queue_priority: normalized.priority,

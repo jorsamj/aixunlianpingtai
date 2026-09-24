@@ -56,7 +56,7 @@ def _checkpoint_state(failure: Mapping[str, Any], *, verify_hash: bool = False) 
 
 
 def _failure_reason(task, failure: Mapping[str, Any]) -> str:
-    for key in ("recovery_error", "completion_error", "last_job_message"):
+    for key in ("last_job_message", "recovery_error", "completion_error"):
         value = str(failure.get(key) or "").strip()
         if value:
             return value
@@ -104,6 +104,11 @@ def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = F
         "declared_recovery_action": declared_action,
         "failure_stage": failure_stage,
         "failure_reason": _failure_reason(task, failure),
+        "completion_handshake": str(
+            failure.get("completion_handshake")
+            or failure.get("completion_error")
+            or ""
+        ).strip() or None,
         "process_returncode": failure.get("process_returncode"),
         "process_signal": failure.get("process_signal"),
         "training_loop_completed": failure.get("training_loop_completed") is True,
@@ -133,7 +138,21 @@ def request_training_recovery(repository, artifacts, project_id: str, task_id: s
     return retried, truth
 
 
-def training_recovery_router(get_project, task_repository, task_artifacts):
+def training_recovery_router(
+    get_project,
+    task_repository,
+    task_artifacts,
+    agent_execution_payload_resolver=None,
+    agent_result_upload_preparer=None,
+    agent_result_upload_confirmer=None,
+    agent_result_commit_handler=None,
+    agent_training_model_upload_preparer=None,
+    agent_training_model_upload_confirmer=None,
+    agent_material_scan_page_provider=None,
+    agent_material_scan_read_provider=None,
+    agent_clean_selection_page_provider=None,
+    agent_clean_selection_read_provider=None,
+):
     from fastapi import APIRouter, Body, HTTPException
 
     recovery_router = APIRouter(prefix="/api/v62/projects/{project_id}/training-tasks")
@@ -199,15 +218,34 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             "recovery_action": before["recovery_action"],
         }
 
-    # app.py intentionally owns a single additive runtime-router mount.  Keep
-    # recovery URLs unchanged and compose the independent training picker at
-    # that same integration point instead of creating route side effects.
+    # app.py intentionally owns a single additive runtime-router mount. Keep all
+    # independent v62/v63 runtime APIs composed at that integration point rather
+    # than adding import-time route side effects or a second scheduler surface.
     from .training_material_picker_api import training_material_picker_router
+    from .service_nodes import service_node_router
+    from .task_node_assignments import central_scheduler_router
+    from .agent_execution import agent_executor_router
 
     root = APIRouter()
     root.include_router(recovery_router)
     root.include_router(training_material_picker_router(
         get_project,
         lambda: task_artifacts().root.parent.parent,
+    ))
+    root.include_router(service_node_router(task_repository))
+    root.include_router(central_scheduler_router(task_repository, task_artifacts))
+    root.include_router(agent_executor_router(
+        task_repository,
+        task_artifacts,
+        execution_payload_resolver=agent_execution_payload_resolver,
+        result_upload_preparer=agent_result_upload_preparer,
+        result_upload_confirmer=agent_result_upload_confirmer,
+        result_commit_handler=agent_result_commit_handler,
+        training_model_upload_preparer=agent_training_model_upload_preparer,
+        training_model_upload_confirmer=agent_training_model_upload_confirmer,
+        material_scan_page_provider=agent_material_scan_page_provider,
+        material_scan_read_provider=agent_material_scan_read_provider,
+        clean_selection_page_provider=agent_clean_selection_page_provider,
+        clean_selection_read_provider=agent_clean_selection_read_provider,
     ))
     return root

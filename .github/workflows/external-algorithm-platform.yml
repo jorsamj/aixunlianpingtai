@@ -1,0 +1,366 @@
+name: External Algorithm Platform
+
+on:
+  pull_request:
+    paths:
+      - app.py
+      - requirements.txt
+      - platform_core/secrets.py
+      - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_auto_sync.py
+      - task_worker.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
+      - static/main.mjs
+      - static/app.js
+      - static/index.html
+      - static/modules/external-algorithm-platform.js
+      - static/modules/changlian-data-browser.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_external_algorithm_auto_sync.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_integration_audit.py
+      - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/changlian-data-browser.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/browser/changlian-data-browser.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
+      - docs/CHANGLIAN_CORE_INTEGRATION.md
+      - docs/CHANGLIAN_APIFOX_API_CATALOG.md
+      - .github/workflows/external-algorithm-platform.yml
+  push:
+    branches:
+      - feature/external-algorithm-platform
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - requirements.txt
+      - platform_core/secrets.py
+      - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_auto_sync.py
+      - task_worker.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
+      - static/main.mjs
+      - static/app.js
+      - static/index.html
+      - static/modules/external-algorithm-platform.js
+      - static/modules/changlian-data-browser.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_external_algorithm_auto_sync.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_integration_audit.py
+      - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/changlian-data-browser.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/browser/changlian-data-browser.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
+      - docs/CHANGLIAN_CORE_INTEGRATION.md
+      - docs/CHANGLIAN_APIFOX_API_CATALOG.md
+      - .github/workflows/external-algorithm-platform.yml
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused Python dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring cryptography
+      - name: Backend external-platform contracts
+        run: |
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit \
+            tests/unit/test_secrets.py \
+            tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_external_algorithm_auto_sync.py \
+            tests/unit/test_algorithm_sql_store.py \
+            tests/unit/test_integration_audit.py \
+            tests/unit/test_changlian_audit_client.py \
+            tests/unit/storage/test_source_repository.py
+      - name: Frontend external-platform contracts
+        run: |
+          node --test \
+            tests/frontend/external-algorithm-platform.test.mjs \
+            tests/frontend/changlian-data-browser.test.mjs \
+            tests/frontend/model-artifact-runtime.test.mjs \
+            tests/frontend/algorithm-list-runtime.test.mjs \
+            tests/frontend/startup-render-owner.test.mjs
+      - name: Syntax and wiring guards
+        run: |
+          python -m py_compile app.py task_worker.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_auto_sync.py platform_core/integration_audit.py platform_core/storage/source_repository.py
+          node --check static/modules/external-algorithm-platform.js
+          node --check static/modules/changlian-data-browser.js
+          node --check static/modules/model-artifact-runtime.js
+          node --check static/modules/algorithm-list-runtime.js
+          node --check static/modules/training-submit.js
+          grep -q "external_algorithm_platform_router" app.py
+          grep -Fq 'def training_preflight(' platform_core/external_algorithm_platform.py
+          grep -Fq 'def _refresh_external_training_algorithm' app.py
+          test "$(grep -Fc '_refresh_external_training_algorithm(project_id, asset_algorithm)' app.py)" = "3"
+          grep -Fq 'test_all_backend_training_create_owners_recheck_external_truth_before_local_gate' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_REQUIRED' platform_core/external_algorithm_platform.py
+          grep -Fq 'client.product_info(product_id)' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_training_preflight_rechecks_changlian_and_blocks_non_visual_change' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync' tests/unit/test_external_algorithm_platform.py
+          grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
+          grep -q "installModelArtifactRuntime" static/main.mjs
+          grep -Fq 'AUTO_SYNC_SCHEDULE_LOCAL_TIMES = ("08:00", "12:00", "15:00")' platform_core/external_algorithm_platform.py
+          grep -Fq 'AUTO_SYNC_TIMEZONE_NAME = "Asia/Shanghai"' platform_core/external_algorithm_platform.py
+          grep -Fq 'ExternalAlgorithmAutoSyncReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(external_sync_reporter.report)' task_worker.py
+          grep -Fq 'name="external-algorithm-platform-auto-sync"' platform_core/external_algorithm_auto_sync.py
+          if grep -Fq 'threading.Thread(' platform_core/external_algorithm_platform.py; then echo "external auto-sync must not be owned by the Web/API router" >&2; exit 1; fi
+          grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
+          grep -q "externalAlgorithmTrainingReadiness" static/modules/external-algorithm-platform.js
+          grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
+          grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
+          grep -Fq 'externalCategoryTreeRows' static/modules/external-algorithm-platform.js
+          grep -Fq 'const filters = {' static/modules/algorithm-list-runtime.js
+          grep -Fq 'selectedCategoryIds: []' static/modules/algorithm-list-runtime.js
+          grep -Fq "source: 'all'" static/modules/algorithm-list-runtime.js
+          grep -Fq "status: 'all'" static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryOpen: false' static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryQuery:' static/modules/algorithm-list-runtime.js
+          grep -Fq 'categoryPath: []' static/modules/algorithm-list-runtime.js
+          grep -Fq 'draftCategoryIds: new Set()' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-algorithm-source-filter' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-algorithm-training-status-filter' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-picker-toggle' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-search' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-check' static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-category-confirm' static/modules/algorithm-list-runtime.js
+          grep -Fq "'外部平台' : '本平台'" static/modules/algorithm-list-runtime.js
+          grep -Fq 'data-external-list-sync' static/modules/external-algorithm-platform.js
+          grep -Fq '自动同步已启用' static/modules/external-algorithm-platform.js
+          grep -Fq '每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据' static/modules/external-algorithm-platform.js
+          if grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js; then echo "ChangLian UI must not own an interval-based sync setting" >&2; exit 1; fi
+          grep -Fq 'latest_due_slot' platform_core/external_algorithm_platform.py
+          grep -Fq 'if str(item.get("sync_type") or "") == "auto"' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_legacy_v12_training_entry_enforces_external_analysis_gate' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_sync_uses_analysis_get_info_as_authoritative_training_truth' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_sync_can_train_when_get_info_proves_enabled_visual_analysis' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_sync_fails_closed_when_analysis_get_info_omits_status' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_readiness_blocks_training_when_all_synced_analyses_are_non_trainable' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"key": "trainable_analyses"' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_connection_fails_when_analysis_detail_contract_is_incomplete' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"analysis_detail"' platform_core/external_algorithm_platform.py
+          grep -Fq 'def _analysis_detail_truth' platform_core/external_algorithm_platform.py
+          grep -Fq 'client.analysis_info(analysis_id)' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
+          grep -Fq '"external_analysis_id": external_analysis_id' app.py
+          if grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py; then echo "Web/API auto-sync timer must stay retired" >&2; exit 1; fi
+          grep -Fq '后台 Worker heartbeat hook 负责触发固定时段到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
+          grep -Fq 'test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer' tests/unit/test_external_algorithm_auto_sync.py
+          grep -Fq '外部模式下自动同步和自动发布由服务端强制启用' docs/CHANGLIAN_CORE_INTEGRATION.md
+          if grep -Fq '自动同步 / 自动发布放在高级设置' docs/CHANGLIAN_CORE_INTEGRATION.md; then echo "ChangLian core handoff drifted back to optional auto sync/publish" >&2; exit 1; fi
+          grep -Fq '复用同一 algoVersionId 追加转换权重' docs/CHANGLIAN_CORE_INTEGRATION.md
+          ! grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
+          grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
+          grep -Fq 'algorithmListSearchMatch' static/modules/algorithm-list-runtime.js
+          grep -Fq 'selectedCategoryIds: []' static/modules/algorithm-list-runtime.js
+          grep -Fq 'algorithmListRuntime?.setExternalProvider?.(algorithmListProvider)' static/modules/external-algorithm-platform.js
+          grep -Fq 'matches: (algorithm, filters = {}) =>' static/modules/external-algorithm-platform.js
+          ! grep -Fq "let selectedSource = 'all'" static/modules/external-algorithm-platform.js
+          ! grep -Fq "let selectedTrainingStatus = 'all'" static/modules/external-algorithm-platform.js
+          ! grep -Fq 'const selectedCategoryIds = new Set();' static/modules/external-algorithm-platform.js
+          grep -Fq 'external_product_id' static/modules/algorithm-list-runtime.js
+          grep -Fq 'algorithm runtime owns unified list filters and searches provider identifiers' tests/frontend/algorithm-list-runtime.test.mjs
+          grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
+          grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
+          grep -Fq 'if current_mode != "wal":' platform_core/storage/source_repository.py
+          grep -Fq "test_existing_wal_connection_does_not_reapply_journal_mode" tests/unit/storage/test_source_repository.py
+          grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
+          grep -q "def _validated_external_items" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_PRODUCT_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_ANALYSIS_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -Fq 'return status_value is not None and str(status_value).strip() == "1"' platform_core/external_algorithm_platform.py
+          grep -Fq 'return str(_value_from(row, "analysisType", "analysis_type") or "").strip() == "1"' platform_core/external_algorithm_platform.py
+          ! grep -Fq 'status not in {"0", "false", "disabled"}' platform_core/external_algorithm_platform.py
+          ! grep -Fq 'return "视觉" in text or "vision" in text or "video" in text' platform_core/external_algorithm_platform.py
+          grep -Fq "row.type === '1' && row.status === '1'" static/modules/external-algorithm-platform.js
+          ! grep -Fq 'external_analysis_ids || []' static/modules/external-algorithm-platform.js
+          grep -Fq 'EXTERNAL_ANALYSIS_NOT_VISUAL' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_MISSING' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_analysis_enabled_requires_exact_status_one' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_analysis_visual_requires_exact_analysis_type_one' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_external_sync_fails_closed_when_status_or_analysis_type_is_missing' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_external_sync_only_exposes_enabled_visual_analyses_for_training' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_external_training_rejects_non_visual_or_disabled_analysis' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_analysis_summary_preserves_numeric_zero_status' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'status_value = _value_from(row, "status")' platform_core/external_algorithm_platform.py
+          if grep -Fq 'str(_value_from(row, "status") or "")' platform_core/external_algorithm_platform.py; then echo "analysis status must preserve numeric zero" >&2; exit 1; fi
+          grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_missing_external_product_is_deleted_with_versions' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_remote_status_two_is_retained_as_inactive_not_deleted' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
+          grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
+          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py
+          if grep -Fq 'current["external_active"] = False' platform_core/algorithm_sql_store.py; then echo "missing ChangLian products must be hard-deleted, not tombstoned inactive" >&2; exit 1; fi
+          grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'category_tree: str = "/internal/base/category/tree"' platform_core/external_algorithm_platform.py
+          grep -Fq 'product_list: str = "/internal/algorithm/product-ai/listAll"' platform_core/external_algorithm_platform.py
+          grep -Fq 'analysis_by_product: str = "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
+          grep -Fq 'compute_platform_list: str = "/internal/base/compute-platform/listAll"' platform_core/external_algorithm_platform.py
+          grep -Fq 'version_create: str = "/internal/algorithm/algorithm-version/add"' platform_core/external_algorithm_platform.py
+          grep -Fq 'weight_create: str = "/internal/algorithm/algorithm-weight/add"' platform_core/external_algorithm_platform.py
+          grep -q "test_version_create_allows_optional_version_name_and_version_no" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_weight_create_requires_only_algo_version_id_at_official_client_layer" tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'Official API only requires the new Version to bind exactly one of' platform_core/external_algorithm_platform.py
+          grep -Fq 'Official API marks only algoVersionId as required for add' platform_core/external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_product_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_analysis_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_compute_platform_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_cache_write_failure_does_not_mutate_algorithm_mirror" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_mirror_failure_restores_previous_master_data_cache" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_rejects_concurrent_project_sync_without_mutating_state" tests/unit/test_external_algorithm_platform.py
+          grep -q "EXTERNAL_PLATFORM_SYNC_BUSY" platform_core/external_algorithm_platform.py
+          grep -q "def _sync_lock" platform_core/external_algorithm_platform.py
+          grep -q "def master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "external_master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_MASTER_DATA_STALE" platform_core/external_algorithm_platform.py
+          grep -q "test_sync_binds_algorithm_mirror_to_master_data_digest" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_readiness_and_training_guard_reject_stale_project_master_data" tests/unit/test_external_algorithm_platform.py
+          grep -q "previous_cache = self.repository.cache()" platform_core/external_algorithm_platform.py
+          grep -q "def flatten_category_tree" platform_core/external_algorithm_platform.py
+          grep -q "test_connection_and_diagnostics_count_full_category_tree" tests/unit/test_external_algorithm_platform.py
+          grep -q '"access_key": self.access_key' platform_core/external_algorithm_platform.py
+          grep -q '"access_secret": self.access_secret' platform_core/external_algorithm_platform.py
+          grep -q '_request("POST", self.endpoints.test_sign, params=params)' platform_core/external_algorithm_platform.py
+          grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
+          if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
+          grep -q "resolve_external_training_analysis" app.py
+          if grep -Fq "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js; then echo "external platform must not own algorithm-list rendering decorators" >&2; exit 1; fi
+          grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
+          grep -q "def readiness(self" platform_core/external_algorithm_platform.py
+          grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
+          grep -q '"human_login_required": False' platform_core/external_algorithm_platform.py
+          grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
+          grep -Fq 'headers["Authorization"] = f"{token_type} {token}".strip()' platform_core/external_algorithm_platform.py
+          if grep -Fq 'headers["Access-Token"] = token' platform_core/external_algorithm_platform.py; then echo "ChangLian business APIs must use official Authorization Bearer contract" >&2; exit 1; fi
+          grep -Fq '"/internal/base/algorithm-category/tree": "/internal/base/category/tree"' platform_core/external_algorithm_platform.py
+          grep -Fq '"/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
+          grep -Fq '"/internal/algorithm/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll"' platform_core/external_algorithm_platform.py
+          grep -Fq 'assert kwargs["headers"]["Authorization"] == "Bearer token-1"' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'assert "Access-Token" not in kwargs["headers"]' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'test_changlian_full_version_and_weight_contract_uses_bearer_and_official_paths' tests/unit/test_changlian_audit_client.py
+          grep -Fq '@router.post("/provider/versions")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.put("/provider/versions/{algo_version_id}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.delete("/provider/versions/{algo_version_ids}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.post("/provider/weights")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.put("/provider/weights/{weight_id}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.delete("/provider/weights/{weight_ids}")' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_REMOTE_DELETE_CONFIRMATION_REQUIRED' platform_core/external_algorithm_platform.py
+          grep -Fq 'confirm=true' platform_core/external_algorithm_platform.py
+          grep -Fq 'def _business_code(body: Any) -> str:' platform_core/external_algorithm_platform.py
+          grep -Fq 'business_code = _business_code(body)' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_changlian_business_failure_is_not_hidden_by_http_200' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'test_changlian_product_list_uses_official_path_and_bearer_header' tests/unit/test_changlian_audit_client.py
+          grep -Fq '"versions", "算法版本"' platform_core/external_algorithm_platform.py
+          grep -Fq '"weights", "算法权重"' platform_core/external_algorithm_platform.py
+          grep -Fq 'business_auth_mode": "authorization_bearer"' platform_core/external_algorithm_platform.py
+          grep -Fq 'def _repair_legacy_zero_code_rows(self) -> int:' platform_core/integration_audit.py
+          grep -Fq 'test_interaction_audit_repairs_only_legacy_http_200_code_zero_false_failures' tests/unit/test_integration_audit.py
+          grep -Fq 'CHANG_LIAN_API_DOCUMENTS' platform_core/external_algorithm_platform.py
+          grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
+          grep -Fq '31 个接口条目全部登记' docs/CHANGLIAN_APIFOX_API_CATALOG.md
+          grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
+          grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
+          grep -Fq "除人员登录参考外，内部算法接口均已进入 Provider contract" static/modules/external-algorithm-platform.js
+          grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
+          grep -q "interaction-logs" platform_core/external_algorithm_platform.py
+          grep -q "IntegrationAuditRepository" platform_core/external_algorithm_platform.py
+          grep -q "复制诊断信息" static/modules/model-artifact-runtime.js
+          grep -q "id=\"externalConnectionResult\"" static/modules/external-algorithm-platform.js
+          grep -q "id=\"externalSecretToggle\"" static/modules/external-algorithm-platform.js
+          grep -q "credentialBackendText" static/modules/external-algorithm-platform.js
+          grep -q "MC_SECRET_MASTER_KEY" static/modules/external-algorithm-platform.js
+          grep -q "EncryptedFileSecretStore" platform_core/secrets.py
+          grep -q "MC_CHANGLIAN_ACCESS_KEY" platform_core/secrets.py
+          grep -q "cryptography>=" requirements.txt
+          grep -q "CLOSED — Headless Linux Secret 持久化" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED — Multipart session TTL / GC" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED-04 — Headless Linux 新畅联 Secret 安全持久化" docs/BUG_AUDIT_2026-09-17.md
+          grep -q "CLOSED-05 — Multipart session TTL / GC" docs/BUG_AUDIT_2026-09-17.md
+          grep -q "const payload = collectForm();" static/modules/external-algorithm-platform.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
+          if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
+          test ! -e tools/_one_shot_model_asset_integration.py
+          test ! -e .github/workflows/_one_shot_model_asset_integration.yml
+          test ! -e tools/finalize_external_platform_credentials_ui.py
+          test ! -e tools/fix_external_platform_connectivity_result.py
+          test ! -e .github/workflows/external-platform-credentials-one-shot.yml
+          test ! -e tools/_one_shot_secret_gc_ui.py
+          test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
+          test ! -e tools/_one_shot_secret_gc_docs.py
+          test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
+          test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian manual connectivity flow
+        run: npx playwright test tests/browser/external-algorithm-platform.spec.mjs tests/browser/changlian-data-browser.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "changlian data page never auto-loads and manual refresh shows remote products versions weights and download links" tests/browser/changlian-data-browser.spec.mjs
+          grep -Fq "build: 'changlian-data-browser-63001'" static/modules/changlian-data-browser.js
+          grep -Fq "provider/products?status=1" static/modules/changlian-data-browser.js
+          grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
+          grep -Fq '已核对 31 个官方 OpenAPI 接口' tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'external-master-data-stale' static/modules/external-algorithm-platform.js
+          grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
+          grep -Fq "本次训练分析方式" static/modules/external-algorithm-platform.js
+          if grep -Fq 'data-external-endpoint=' static/modules/external-algorithm-platform.js; then echo "ChangLian canonical provider paths must not be user-editable" >&2; exit 1; fi
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

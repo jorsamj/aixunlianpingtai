@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from filelock import FileLock
+
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -170,17 +174,53 @@ class MaterialRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "materials.sqlite3"
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
+        self._initialize()
         self._migrate_legacy_json()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
         database.execute("PRAGMA busy_timeout=30000")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"material repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"material repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(_SCHEMA)
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
@@ -254,15 +294,21 @@ class MaterialRepository:
         legacy = self.project_path / "images.json"
         if not legacy.is_file():
             return
-        stat = legacy.stat()
-        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
+        # Fast-path the common steady state before touching a potentially large
+        # legacy JSON file. The same predicates are rechecked inside the writer
+        # transaction below, so this optimization cannot reintroduce the race.
         with closing(self._connect()) as database:
             migrated = database.execute(
                 "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
             ).fetchone()
-            existing = int(database.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+            existing = int(
+                database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+            )
         if migrated or existing:
             return
+
+        stat = legacy.stat()
+        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
         value = json.loads(legacy.read_text(encoding="utf-8"))
         rows = value.get("items", []) if isinstance(value, dict) else value
         if not isinstance(rows, list):
@@ -270,6 +316,18 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
+                # Recheck after acquiring the writer transaction. Concurrent
+                # process startup may have completed the migration after this
+                # process read the legacy JSON but before BEGIN IMMEDIATE won.
+                migrated = database.execute(
+                    "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
+                ).fetchone()
+                existing = int(
+                    database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+                )
+                if migrated or existing:
+                    database.execute("ROLLBACK")
+                    return
                 for source in rows:
                     self._write_row(database, source)
                 if rows:
@@ -280,7 +338,8 @@ class MaterialRepository:
                 )
                 database.execute("COMMIT")
             except Exception:
-                database.execute("ROLLBACK")
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
                 raise
 
     def read(self) -> MaterialSnapshot:
@@ -292,6 +351,21 @@ class MaterialRepository:
     def get(self, image_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
+        return self._row_payload(row) if row else None
+
+    def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
+        content_sha256 = str(content_sha256 or "").strip().lower()
+        if (
+            len(content_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in content_sha256)
+        ):
+            return None
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT payload_json FROM materials "
+                "WHERE lower(trim(content_sha256))=? ORDER BY created_at,id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
         return self._row_payload(row) if row else None
 
     def get_many(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
@@ -541,6 +615,27 @@ class MaterialRepository:
     def list_ids(self, **kwargs: Any) -> MaterialIdPage:
         page = self.list_page(**kwargs)
         return MaterialIdPage([str(row["id"]) for row in page.items], page.next_cursor, page.total)
+
+    def label_usage(self) -> dict[str, dict[str, int]]:
+        """Aggregate persisted annotation summaries without reopening annotation files."""
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT CAST(labels.key AS TEXT) AS label,
+                       COUNT(DISTINCT materials.id) AS images,
+                       SUM(CAST(labels.value AS INTEGER)) AS boxes
+                  FROM materials
+                  JOIN json_each(materials.payload_json, '$.label_counts') AS labels
+                 WHERE labels.key IS NOT NULL
+                   AND CAST(labels.value AS INTEGER) > 0
+                 GROUP BY labels.key
+                 ORDER BY labels.key
+                """
+            ).fetchall()
+        return {
+            str(row["label"]): {"images": int(row["images"] or 0), "boxes": int(row["boxes"] or 0)}
+            for row in rows
+        }
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")
