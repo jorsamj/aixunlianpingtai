@@ -688,7 +688,7 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422526',
+    build: 'training-task-visibility-422527',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,
@@ -732,9 +732,7 @@ export function installTrainingTaskVisibilityRuntime({
 
   if (String(state().page || '') === TRAINING_PAGE) {
     renderOwned();
-    void refreshOwned({render: true, force: true, source: 'install'}).catch(error => {
-      notify?.(error?.message || error);
-    });
+    pollRegistry?.replaceTrainingJobTimer?.();
   }
 
   return visibilityRuntime;

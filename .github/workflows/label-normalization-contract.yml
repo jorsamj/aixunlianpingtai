@@ -137,6 +137,7 @@ jobs:
       - name: Permanent source guards
         shell: python
         run: |
+          import re
           from pathlib import Path
 
           app = Path('app.py').read_text(encoding='utf-8')
@@ -266,8 +267,6 @@ jobs:
                   '平台标签已创建并选中；仍需确认后才会正式入库',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.214',
-                  '/static/main.mjs?v=42.25.210',
                   '/static/zip-import-bootstrap.mjs?v=422542',
               ),
               'static/main.mjs': (
@@ -301,6 +300,10 @@ jobs:
               for name, tokens in required.items()
               if any(token not in bodies[name] for token in tokens)
           }
+          if not re.search(r'/static/app\.js\?v=\d+(?:\.\d+)*', index_html):
+              missing.setdefault('static/index.html', []).append('cache-busted app.js entrypoint')
+          if not re.search(r'/static/main\.mjs\?v=\d+(?:\.\d+)*', index_html):
+              missing.setdefault('static/index.html', []).append('cache-busted main.mjs entrypoint')
           if app.count('_reject_legacy_annotated_import(project_id)') != 5:
               missing.setdefault('app.py', []).append(
                   'exactly five legacy annotated import guards'

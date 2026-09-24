@@ -95,6 +95,8 @@ test('service node page shows live resources and creates Agent credentials', asy
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  const advanced = page.getByRole('button', {name: '展开高级功能', exact: true});
+  if (await advanced.count()) await advanced.click();
   const nav = page.getByRole('button', {name: /服务节点/});
   await expect(nav).toBeVisible({timeout: 10_000});
   await nav.click();

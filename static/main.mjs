@@ -8,7 +8,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=42
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422562';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422563';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63020';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64005';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65008';
@@ -346,8 +346,8 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
   const age = Date.now() - loadedAt;
   if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
   if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
-  const loadTask = page === '训练资源' && trainingCreateHydrationRuntime?.hydrate
-    ? trainingCreateHydrationRuntime.hydrate({force})
+  const loadTask = page === '训练资源' && typeof window.refreshTrainingResourceTruthV3 === 'function'
+    ? window.refreshTrainingResourceTruthV3()
     : window.loadPageExtras413(page);
   const task = Promise.resolve(loadTask).then(() => {
     pageExtrasLoadedAt.set(page, Date.now());
@@ -408,15 +408,17 @@ const navigationStabilityRuntime = installNavigationStability({
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();
+    let renderResult;
     if (navigationStabilityRuntime.hasPageOwner(page)) {
-      renderCanonicalOwner(page, {source: 'navigation'});
+      renderResult = renderCanonicalOwner(page, {source: 'navigation'});
     } else if (navigationStabilityRuntime.isKnownPage(page)) {
-      render();
+      renderResult = render();
     } else {
-      renderUnknownPage(page);
+      renderResult = renderUnknownPage(page);
     }
     window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);
     refreshCurrentPageOwner(page);
+    return renderResult;
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;

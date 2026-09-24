@@ -381,8 +381,8 @@ test('quality-center detection keeps multi-image and folder pickers after page r
   await expect(page.locator('#benchFiles64')).toHaveAttribute('multiple', '');
   await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
   const detectionShell = page.locator('[data-quality-detection-shell="1"]');
-  await expect(detectionShell.getByRole('button', {name: '选择图片'})).toBeVisible();
-  await expect(detectionShell.getByRole('button', {name: '选择文件夹'})).toBeVisible();
+  await expect(detectionShell.getByRole('button', {name: '选择图片', exact: true})).toBeVisible();
+  await expect(detectionShell.getByRole('button', {name: '选择文件夹', exact: true})).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });

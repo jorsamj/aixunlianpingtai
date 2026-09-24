@@ -193,7 +193,7 @@ test('service node mutations invalidate dependent training and deployment plugin
 
 test('service node navigation has one render owner and no duplicate main refresh call', () => {
   const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
-  assert.match(source, /registerPageOwner\?\.\(PAGE,[\s\S]*?return render\(\)/);
+  assert.match(source, /registerPageOwner\?\.\(PAGE,\s*\(\)\s*=>\s*render\(\)\)/);
   const refreshStart = mainSource.indexOf('function refreshCurrentPageOwner(page)');
   const refreshEnd = mainSource.indexOf('const navigationStabilityRuntime', refreshStart);
   assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);

@@ -641,16 +641,18 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       event.preventDefault();
       toggle(card.dataset.algorithmId);
     });
-    const prewarmCard = event => {
-      const card = event.target.closest?.('[data-algorithm-card]');
+    const prewarmTrainingAction = event => {
+      const button = event.target.closest?.('[data-algorithm-train]');
+      if (!button) return;
+      const card = button.closest?.('[data-algorithm-card]');
       if (!card) return;
       const algorithm = (state().algorithms || []).find(row => String(row.id) === String(card.dataset.algorithmId || ''));
       if (!algorithm || !algorithmTrainability(algorithm).ready) return;
       void warmTrainingInputs(algorithm.id, {includePreflight: true});
     };
-    root.addEventListener('pointerover', prewarmCard, {passive: true});
-    root.addEventListener('focusin', prewarmCard);
-    root.addEventListener('touchstart', prewarmCard, {passive: true});
+    root.addEventListener('pointerover', prewarmTrainingAction, {passive: true});
+    root.addEventListener('focusin', prewarmTrainingAction);
+    root.addEventListener('touchstart', prewarmTrainingAction, {passive: true});
   }
 
   function toggle(id) {
@@ -736,7 +738,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422562',
+    build: 'algorithm-list-runtime-422563',
     toggle,
     refresh,
     render: renderPage,
