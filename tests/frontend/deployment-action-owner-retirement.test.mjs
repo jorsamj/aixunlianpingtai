@@ -43,3 +43,14 @@ test('retired deployment page is no longer a public action target', () => {
     true,
   );
 });
+
+
+test('retired deployment renderers and create action are not public owners', () => {
+  assert.equal(app.includes('window.renderDeployCenter='), false);
+  assert.equal(app.includes('window.renderDeployArtifacts='), false);
+  assert.equal(app.includes('window.createDeployJob='), false);
+  assert.equal(app.includes('window.createDeployJobM4='), false);
+  assert.equal(app.includes('window.createDeployJobLegacyV39='), false);
+  assert.equal(app.includes('window.__m4CreateDeployJob'), false);
+  assert.equal((app.match(/window\.submitConvert428=/g) || []).length, 1);
+});

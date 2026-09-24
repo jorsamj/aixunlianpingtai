@@ -34,6 +34,7 @@ on:
       - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
       - 'tests/frontend/deployment-artifact-refresh.test.mjs'
       - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/frontend/resource-deployment-public-owner.test.mjs'
       - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
   pull_request:
@@ -69,6 +70,7 @@ on:
       - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
       - 'tests/frontend/deployment-artifact-refresh.test.mjs'
       - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/frontend/resource-deployment-public-owner.test.mjs'
       - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
 
@@ -129,6 +131,7 @@ jobs:
           tests/frontend/deployment-action-owner-retirement.test.mjs
           tests/frontend/deployment-artifact-refresh.test.mjs
           tests/frontend/deployment-runtime-source.test.mjs
+          tests/frontend/resource-deployment-public-owner.test.mjs
 
   control-plane:
     runs-on: ubuntu-24.04
@@ -205,6 +208,7 @@ jobs:
           grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'completed conversion becomes visible in canonical version dialog without manual refresh' tests/browser/deployment-artifact-visibility.spec.mjs
           grep -Fq 'retired deployment page is no longer a public action target' tests/frontend/deployment-action-owner-retirement.test.mjs
+          grep -Fq 'retired deployment renderers and create action are not public owners' tests/frontend/deployment-action-owner-retirement.test.mjs
           grep -Fq 'test_version_deployment_projection_preserves_rknn_hardware_truth' tests/api/test_rknn_board_validation.py
           grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
