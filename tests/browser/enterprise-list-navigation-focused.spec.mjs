@@ -132,13 +132,36 @@ test('training list view state does not replace durable truth and create still r
     {id: 'fail-1', task_name: '人脸识别训练', asset_algorithm_name: '人脸识别', status: 'failed', queue_priority: 20, progress_percent: 58, current_epoch: 18, total_epochs: 30, failure_stage: 'training_process', started_at: '2026-09-22T12:03:21Z'},
     {id: 'stop-1', task_name: '图像分割训练', asset_algorithm_name: '图像分割', status: 'stopped', queue_priority: 40, progress_percent: 76, started_at: '2026-09-21T11:20:36Z'},
   ];
+  let trainingOptionsCalls = 0;
   await page.route('**/api/projects/*/jobs', route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(jobs)}));
+  await page.route('**/api/training_options**', route => {
+    trainingOptionsCalls += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        targets: [{
+          id: 'target-ui',
+          name: 'A800 训练资源',
+          status: 'ready',
+          type: 'local',
+          framework: 'ultralytics',
+          algorithms: [{key: 'yolo11', name: 'YOLO11', base_model: 'yolo11n.pt', default_epochs: 30, default_imgsz: 640, default_batch: 4}],
+          base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+        }],
+      }),
+    });
+  });
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cuda:0', batch: 4, workers: 0}),
+  }));
   await page.route('**/api/v62/training-devices', route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({options: [{id: 'cuda:0', label: 'GPU 0', available: true}], recommended: 'cuda:0'})}));
   await ready(page);
   await page.evaluate(input => {
     state.jobs = input;
     state.algorithms = [{id: 'algo-create-ui', name: '车辆检测', industry: '交通', algorithm_type: 'yolo_ultralytics', versions: []}];
-    state.targets = [{id: 'target-ui', name: 'A800 训练资源', status: 'ready', framework: 'ultralytics', algorithms: [{key: 'yolo11', name: 'YOLO11'}], base_models: []}];
     window.setPage('训练任务');
     window.TrainingTaskVisibilityRuntime.render();
   }, jobs);
@@ -168,9 +191,10 @@ test('training list view state does not replace durable truth and create still r
   await page.screenshot({path: join(screenshotDir, '04-training-task-running.png'), fullPage: true});
 
   await expect(navItem(page, '训练资源')).toHaveCount(0);
-  await page.evaluate(() => window.openTrainingCreateCanonical429('algo-create-ui'));
+  await page.getByRole('button', {name: '新建训练任务'}).click();
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#tr429Target')).toContainText('A800 训练资源');
+  expect(trainingOptionsCalls).toBeGreaterThan(0);
   await page.locator('#modal .modal-head .icon').click();
   expect(pageErrors).toEqual([]);
 });
