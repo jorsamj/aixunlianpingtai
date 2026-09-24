@@ -3806,7 +3806,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(created||(mode!=='draw'&&changed))markDirty();
       try{st.releasePointerCapture(pointerId)}catch(_){}
       mode='';start=null;temp=null;boxIndex=-1;orig=null;handle='';pointerId=null;changed=false;historyCaptured=false;
-      drawBoxes();renderAnnSide();e.preventDefault();
+      drawBoxes();renderAnnSide();
+      requestAnimationFrame(()=>{
+        const list=document.getElementById('annBoxes'),expected=state.ann?.boxes?.length||0;
+        const actual=list?.querySelectorAll?.('[data-ann-box-key]')?.length||0;
+        if(list&&actual!==expected){
+          list.dataset.empty='';
+          renderAnnSide();
+        }
+      });
+      e.preventDefault();
     };
     st.addEventListener('pointerup',finish,listenerOptions);
     st.addEventListener('pointercancel',finish,listenerOptions);

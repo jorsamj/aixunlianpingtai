@@ -970,7 +970,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-label-tools>summary{padding:10px 12px;color:#526780;font-size:10px;font-weight:800;cursor:pointer}
 .ai66-label-tools[open]>summary{border-bottom:1px solid #edf1f5}
 .ai66-label-tools>#ai60LabelMapping,.ai66-label-tools>.ai60-bulk-review{margin:10px 12px}
-.ai66-review-grid{flex:1;min-height:0;max-height:none!important;overflow:auto!important;display:grid!important;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important;align-content:start;gap:10px!important;padding:12px 20px 96px}
+.ai66-review-grid{flex:1;min-height:0;max-height:none!important;overflow:auto!important;display:grid!important;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important;align-content:start;gap:10px!important;padding:12px 20px}
 .ai66-candidate-card{display:flex;min-width:0;flex-direction:column;padding:0!important;border:1px solid #dfe6ef!important;border-radius:12px!important;background:#fff;box-shadow:0 3px 10px rgba(24,42,70,.035);overflow:hidden}
 .ai66-candidate-card.accepted{border-color:#aac7f5!important}
 .ai66-candidate-card.rejected{opacity:.72;border-color:#e5b8bc!important;background:#fffafa}
@@ -983,7 +983,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-candidate-card>footer{display:flex;align-items:center;gap:5px;margin-top:auto;padding:0 10px 10px}
 .ai66-candidate-card>footer .btn:last-child{margin-left:auto}
 .ai66-review-empty{grid-column:1/-1}
-.ai66-review-footer{position:absolute!important;left:20px;right:20px;bottom:14px;margin:0!important;padding:10px 12px!important;border:1px solid #dfe6ef;border-radius:12px;background:rgba(255,255,255,.96)!important;box-shadow:0 12px 32px rgba(25,42,70,.12);backdrop-filter:blur(10px)}
+.ai66-review-footer{position:relative!important;left:auto;right:auto;bottom:auto;flex:0 0 auto;margin:0 20px 14px!important;padding:10px 12px!important;border:1px solid #dfe6ef;border-radius:12px;background:rgba(255,255,255,.98)!important;box-shadow:0 10px 28px rgba(25,42,70,.09);backdrop-filter:blur(10px)}
 .ai66-review-footer #ai60ReviewPager{display:flex;align-items:center;gap:8px;color:#708099;font-size:10px}
 @media(max-width:900px){
   .ai-review-workbench-layer{padding:4px!important}
@@ -992,9 +992,9 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
   .ai66-review-kpis{grid-template-columns:repeat(2,minmax(0,1fr));padding:8px 12px}
   .ai66-review-tools{align-items:flex-start;flex-direction:column;padding:8px 12px}
   .ai66-review-filters{max-width:100%;overflow:auto}
-  .ai66-review-grid{padding:10px 12px 94px;grid-template-columns:repeat(auto-fill,minmax(190px,1fr))!important}
+  .ai66-review-grid{padding:10px 12px;grid-template-columns:repeat(auto-fill,minmax(190px,1fr))!important}
   .ai66-label-tools{margin:8px 12px 0}
-  .ai66-review-footer{left:12px;right:12px;bottom:8px;overflow:auto}
+  .ai66-review-footer{margin:0 12px 8px!important;overflow:auto}
   .ai66-review-footer>.row{flex-wrap:nowrap}
 }
 

@@ -13,6 +13,8 @@ on:
       - static/styles.css
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
+      - tests/browser/material-workflows.spec.mjs
+      - tests/browser/auto-label-polling.spec.mjs
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
       - tests/frontend/annotation-task-view.test.mjs
