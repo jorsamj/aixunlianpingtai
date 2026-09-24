@@ -460,6 +460,22 @@ def changlian_login_page(request: Request):
 
 @app.get("/api/auth/session")
 def changlian_auth_session(request: Request):
+    if _auth_test_bypass_enabled():
+        now = int(time.time())
+        return {
+            "authenticated": True,
+            "user": {"username": "isolated-test-runtime"},
+            "expires_at": now + 60 * 60,
+            "remaining_seconds": 60 * 60,
+            "absolute_expires_at": now + 60 * 60,
+            "absolute_remaining_seconds": 60 * 60,
+            "idle_ttl_seconds": 60 * 60,
+            "renew_window_seconds": 10 * 60,
+            "upstream_token_expires_at": None,
+            "upstream_token_expiry_source": "test_bypass",
+            "test_bypass": True,
+        }
+
     claims = _CHANGLIAN_AUTH_SESSIONS.verify(
         request.cookies.get(SESSION_COOKIE_NAME, "")
     )
