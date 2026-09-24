@@ -76,11 +76,11 @@ jobs:
           grep -Fq "stage:'等待前序 ZIP 导入任务'" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
           grep -Fq 'window.doUploadZip426=input=>upload(input)' static/modules/zip-import-runtime.js
-          grep -Fq 'zip-import-bootstrap.mjs?v=422542' static/index.html
+          grep -Fq 'zip-import-bootstrap.mjs?v=422543' static/index.html
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
-          grep -Fq "zip-import-runtime.js?v=422542" static/zip-import-bootstrap.mjs
+          grep -Fq "zip-import-runtime.js?v=422543" static/zip-import-bootstrap.mjs
           if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
           grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq "pollOwner" static/modules/upload-task-center.js
