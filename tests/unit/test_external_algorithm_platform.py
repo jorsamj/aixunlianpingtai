@@ -135,8 +135,14 @@ class NeverCalledSession:
         raise AssertionError("invalid mutation payload must fail before any HTTP request")
 
 
-@pytest.mark.parametrize("missing", ["versionName", "versionNo"])
-def test_version_create_requires_complete_version_identity(missing):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"versionName": "正式版本 V1"},
+        {"analysisId": 101, "productId": 201, "versionName": "正式版本 V1"},
+    ],
+)
+def test_version_create_requires_exactly_one_analysis_or_product(payload):
     session = NeverCalledSession()
     client = ChangLianClient(
         base_url="https://changlian.example",
@@ -145,25 +151,27 @@ def test_version_create_requires_complete_version_identity(missing):
         endpoints=ChangLianEndpoints(),
         session=session,
     )
-    payload = {
-        "analysisId": 101,
-        "versionName": "正式版本 V1",
-        "versionNo": "2026.09.21-001",
-    }
-    payload.pop(missing)
 
-    with pytest.raises(ValueError, match=missing):
+    with pytest.raises(ValueError, match="二选一"):
         client.version_create(payload)
 
     assert session.calls == []
 
 
-@pytest.mark.parametrize(
-    "missing",
-    ["algoVersionId", "computePlatformId", "chipCode", "fileName", "filePath"],
-)
-def test_weight_create_requires_all_official_publish_fields(missing):
-    session = NeverCalledSession()
+class MutationSession:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if url.endswith("/internal/algorithm/algorithm-version/add"):
+            return FakeResponse({"code": 200, "data": 501})
+        if url.endswith("/internal/algorithm/algorithm-weight/add"):
+            return FakeResponse({"code": 200, "data": 701})
+        raise AssertionError(url)
+
+
+def _authenticated_mutation_client(session):
     client = ChangLianClient(
         base_url="https://changlian.example",
         access_key="ak",
@@ -171,19 +179,56 @@ def test_weight_create_requires_all_official_publish_fields(missing):
         endpoints=ChangLianEndpoints(),
         session=session,
     )
-    payload = {
+    client._token = "token-1"
+    client._token_expires_at = 10**18
+    return client
+
+
+def test_version_create_allows_optional_version_name_and_version_no():
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+
+    body = client.version_create({"analysisId": 101})
+
+    assert body == {"code": 200, "data": 501}
+    _, url, kwargs = session.calls[-1]
+    assert url.endswith("/internal/algorithm/algorithm-version/add")
+    assert kwargs["json"] == {"analysisId": 101}
+    assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+
+
+def test_weight_create_requires_only_algo_version_id_at_official_client_layer():
+    missing = NeverCalledSession()
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=ChangLianEndpoints(),
+        session=missing,
+    )
+    with pytest.raises(ValueError, match="algoVersionId"):
+        client.weight_create({"fileName": "best.pt"})
+    assert missing.calls == []
+
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+    body = client.weight_create({
         "algoVersionId": 501,
         "computePlatformId": 91,
-        "chipCode": "RK3568",
-        "fileName": "model.rknn",
-        "filePath": "https://models.example/model.rknn",
+        "fileName": "best.pt",
+        "filePath": "https://models.example/best.pt",
+    })
+
+    assert body == {"code": 200, "data": 701}
+    _, url, kwargs = session.calls[-1]
+    assert url.endswith("/internal/algorithm/algorithm-weight/add")
+    assert kwargs["json"] == {
+        "algoVersionId": 501,
+        "computePlatformId": 91,
+        "fileName": "best.pt",
+        "filePath": "https://models.example/best.pt",
     }
-    payload.pop(missing)
-
-    with pytest.raises(ValueError, match=missing):
-        client.weight_create(payload)
-
-    assert session.calls == []
+    assert "chipCode" not in kwargs["json"]
 
 
 def test_changlian_auth_audit_redacts_credentials_before_callback():

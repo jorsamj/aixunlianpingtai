@@ -228,6 +228,10 @@ jobs:
           grep -Fq 'compute_platform_list: str = "/internal/base/compute-platform/listAll"' platform_core/external_algorithm_platform.py
           grep -Fq 'version_create: str = "/internal/algorithm/algorithm-version/add"' platform_core/external_algorithm_platform.py
           grep -Fq 'weight_create: str = "/internal/algorithm/algorithm-weight/add"' platform_core/external_algorithm_platform.py
+          grep -q "test_version_create_allows_optional_version_name_and_version_no" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_weight_create_requires_only_algo_version_id_at_official_client_layer" tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'Official API only requires the new Version to bind exactly one of' platform_core/external_algorithm_platform.py
+          grep -Fq 'Official API marks only algoVersionId as required for add' platform_core/external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_product_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_analysis_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_compute_platform_id_is_missing" tests/unit/test_external_algorithm_platform.py

@@ -796,9 +796,9 @@ class ChangLianClient:
         has_product = body.get("productId") not in (None, "")
         if has_analysis == has_product:
             raise ValueError("新增算法版本时 analysisId 与 productId 必须二选一")
-        for field in ("versionName", "versionNo"):
-            if not str(body.get(field) or "").strip():
-                raise ValueError(f"新增算法版本必须提供 {field}")
+        # Official API only requires the new Version to bind exactly one of
+        # analysisId/productId. versionName/versionNo are optional wire fields;
+        # higher-level publishing code may impose a stable local identity.
         return self._request("POST", self.endpoints.version_create, auth=True, json=body)
 
     def version_edit(self, payload: Mapping[str, Any]) -> Any:
@@ -832,9 +832,12 @@ class ChangLianClient:
 
     def weight_create(self, payload: Mapping[str, Any]) -> Any:
         body = _dump_weight_payload(payload)
-        for field in ("algoVersionId", "computePlatformId", "chipCode", "fileName", "filePath"):
-            if body.get(field) in (None, "") or (isinstance(body.get(field), str) and not str(body[field]).strip()):
-                raise ValueError(f"新增算法权重文件必须提供 {field}")
+        if body.get("algoVersionId") in (None, ""):
+            raise ValueError("新增算法权重文件必须提供 algoVersionId")
+        # Official API marks only algoVersionId as required for add. Provider
+        # fields such as chipCode are optional at the HTTP contract layer.
+        # The publish service separately enforces our delivery requirements for
+        # computePlatformId/fileName/filePath and chip-specific RKNN artifacts.
         return self._request("POST", self.endpoints.weight_create, auth=True, json=body)
 
     def weight_edit(self, payload: Mapping[str, Any]) -> Any:
