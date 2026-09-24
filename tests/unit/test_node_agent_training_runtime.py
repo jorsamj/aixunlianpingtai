@@ -88,10 +88,12 @@ class FakeControlClient:
         *,
         cancel_at_heartbeat=None,
         fence_at_heartbeat=None,
+        cancel_when=None,
     ):
         self.transfer = transfer
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
+        self.cancel_when = cancel_when
         self.heartbeat_calls = 0
         self.heartbeats = []
         self.logs = []
@@ -115,8 +117,14 @@ class FakeControlClient:
                 status_code=409,
             )
         cancelled = bool(
-            self.cancel_at_heartbeat
-            and self.heartbeat_calls >= self.cancel_at_heartbeat
+            (
+                self.cancel_at_heartbeat
+                and self.heartbeat_calls >= self.cancel_at_heartbeat
+            )
+            or (
+                callable(self.cancel_when)
+                and self.cancel_when()
+            )
         )
         return {
             "cancel_requested": cancelled,
@@ -791,16 +799,17 @@ def test_training_cleanup_failure_preserves_identity_and_never_publishes_termina
 ):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
-    client = FakeControlClient(
-        transfer,
-        cancel_at_heartbeat=6,
-    )
+    client = FakeControlClient(transfer)
     runner, runtime_root, workdirs = build_runner(
         tmp_path,
         client,
         transfer,
         sleep_seconds=30,
     )
+    # Trigger cancellation only after the subprocess itself has proven startup.
+    # Heartbeat-count cancellation races process initialization on Windows and
+    # can cancel before the fake worker has had a chance to write its marker.
+    client.cancel_when = lambda: (runtime_root / "started.marker").is_file()
     runner.controller = RefusingProcessController()
 
     started = time.monotonic()
