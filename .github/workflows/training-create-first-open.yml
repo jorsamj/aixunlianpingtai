@@ -63,7 +63,9 @@ jobs:
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
           grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
           grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
-          grep -Fq 'refreshTrainRunCenter429' static/app.js
+          grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
+          grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js
+          grep -Fq 'recoveryRuntime: trainingRecoveryRuntime' static/main.mjs
           grep -Fq 'annPointerAbort' static/app.js
           grep -Fq 'window.saveAnnotationCore420=async function(silent=false,options={})' static/app.js
           grep -Fq 'window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={})' static/app.js

@@ -122,7 +122,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await row.getByRole('button', {name: '详情'}).click();
   const dialog = page.locator('[data-training-recovery-overlay]');
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('训练已完成 · 模型验证失败');
+  await expect(dialog).toContainText('训练主体已完成 · 模型验证失败');
   await expect(dialog).toContainText('100 / 100');
   await expect(dialog).toContainText('最终模型验证');
   await expect(dialog).toContainText('best.pt');
