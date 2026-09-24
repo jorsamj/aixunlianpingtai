@@ -344,6 +344,13 @@ test('task filters and pagination are pure view operations over the supplied sna
   assert.deepEqual(jobs, original);
 });
 
+test('training task create delegates exclusively to TrainingCreateHydrationRuntime.start', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /const createRuntime = window\.TrainingCreateHydrationRuntime/);
+  assert.match(source, /void createRuntime\.start\(algorithmId\)/);
+  assert.doesNotMatch(source, /openTrainingCreateCanonical429/);
+});
+
 test('visibility runtime source owns presentation only and does not fetch or copy task truth', () => {
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /fetch\s*\(|requestJson|setInterval\s*\(/);

@@ -10,6 +10,7 @@ on:
       - 'static/main.mjs'
       - 'static/app.js'
       - 'static/modules/training-create-hydration.js'
+      - 'static/modules/training-task-visibility-runtime.js'
       - 'static/modules/training-draft.js'
       - 'static/modules/training-submit.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
@@ -18,6 +19,7 @@ on:
       - 'tests/frontend/training-submit-validation.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
+      - 'tests/browser/navigation-stability.spec.mjs'
       - '.github/workflows/training-create-first-open.yml'
 
 jobs:
@@ -53,6 +55,13 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'installTrainingCreateHydrationRuntime' static/main.mjs
+          grep -Fq 'const createRuntime = window.TrainingCreateHydrationRuntime;' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'void createRuntime.start(algorithmId);' static/modules/training-task-visibility-runtime.js
+          if grep -Fq 'openTrainingCreateCanonical429' static/modules/training-task-visibility-runtime.js; then
+            echo 'training task create must stay behind TrainingCreateHydrationRuntime.start' >&2
+            exit 1
+          fi
+          grep -Fq 'training task create uses hydration truth even when training resource navigation is hidden' tests/browser/navigation-stability.spec.mjs
           grep -Fq "build: 'training-create-hydration-" static/modules/training-create-hydration.js
           grep -Fq 'const hydrateOptions = async' static/modules/training-create-hydration.js
           grep -Fq 'const hydrateRecommendation = async' static/modules/training-create-hydration.js

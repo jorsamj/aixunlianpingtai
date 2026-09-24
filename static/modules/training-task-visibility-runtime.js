@@ -361,7 +361,16 @@ export function installTrainingTaskVisibilityRuntime({
       }
       if (event.target.closest?.('[data-training-create]')) {
         const algorithmId = String(state().algorithms?.[0]?.id || '');
-        if (algorithmId) void window.openTrainingCreateCanonical429?.(algorithmId);
+        const createRuntime = window.TrainingCreateHydrationRuntime;
+        if (!algorithmId) {
+          notify?.('暂无可训练算法');
+          return;
+        }
+        if (typeof createRuntime?.start !== 'function') {
+          notify?.('训练创建模块尚未就绪，请刷新后重试');
+          return;
+        }
+        void createRuntime.start(algorithmId);
         return;
       }
       if (event.target.closest?.('[data-training-query-apply]')) {
@@ -674,7 +683,7 @@ export function installTrainingTaskVisibilityRuntime({
   };
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422530',
+    build: 'training-task-visibility-422531',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,

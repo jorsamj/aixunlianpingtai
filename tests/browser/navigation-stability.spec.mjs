@@ -63,6 +63,91 @@ async function mockDurableZipUpload(page, {
 }
 
 
+test('training task create uses hydration truth even when training resource navigation is hidden', async ({page, request}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  const project = await (await request.post('/api/projects', {data: {
+    name: `训练任务创建入口-${Date.now()}`,
+    labels: [{code: 'smoke', display_name: '烟雾'}],
+  }})).json();
+  const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
+    name: '训练任务入口回归',
+    industry: '测试',
+    algorithm_type: 'yolo_ultralytics',
+    remark: '',
+  }})).json();
+  const algorithmId = created.algorithm.id;
+
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', project.id);
+    await route.fallback({url: url.toString()});
+  });
+  let trainingOptionsCalls = 0;
+  await page.route('**/api/training_options**', async route => {
+    trainingOptionsCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id: 'task-create-ultralytics',
+        name: '任务页 Ultralytics',
+        type: 'local',
+        framework: 'ultralytics',
+        status: 'ready',
+        algorithms: [{
+          key: 'yolo_detect',
+          name: 'Ultralytics Detect',
+          base_model: 'yolo11n.pt',
+          default_epochs: 20,
+          default_imgsz: 640,
+          default_batch: 4,
+        }],
+        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      }]}),
+    });
+  });
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '训练任务'}));
+  });
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || ''))
+    .toMatch(/^training-create-hydration-/);
+  await page.evaluate(id => {
+    const algorithm = (state.algorithms || []).find(row => String(row.id || '') === String(id));
+    if (!algorithm) throw new Error('seeded algorithm missing from browser state');
+    state.targets = [];
+    state.rec = null;
+    for (const button of document.querySelectorAll('#nav button')) {
+      if (String(button.textContent || '').includes('训练资源')) button.hidden = true;
+    }
+  }, algorithmId);
+
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible();
+  await expect(page.getByRole('button', {name: /训练资源/})).toBeHidden();
+  await page.getByRole('button', {name: '＋ 新建训练任务', exact: true}).click();
+
+  const dialog = page.getByRole('dialog', {name: '训练 · 训练任务入口回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await expect(dialog.locator('#tr429Target')).toHaveValue('task-create-ultralytics');
+  await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
+  expect(trainingOptionsCalls).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test('delayed request from previous page cannot jump back over the current page', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));

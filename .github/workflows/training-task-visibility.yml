@@ -12,6 +12,7 @@ on:
       - static/app.js
       - static/main.mjs
       - static/modules/training-submit.js
+      - static/modules/training-create-hydration.js
       - static/modules/training-task-runtime.js
       - static/modules/training-progress-stream.js
       - static/modules/task-runtime-truth.js
@@ -108,6 +109,13 @@ jobs:
             echo 'visibility runtime must not recapture broad loadRelated ownership' >&2
             exit 1
           fi
+          grep -Fq 'const createRuntime = window.TrainingCreateHydrationRuntime;' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'void createRuntime.start(algorithmId);' static/modules/training-task-visibility-runtime.js
+          if grep -Fq 'openTrainingCreateCanonical429' static/modules/training-task-visibility-runtime.js; then
+            echo 'TrainingTaskVisibilityRuntime must not own the raw training form opener' >&2
+            exit 1
+          fi
+          grep -Fq 'training task create delegates exclusively to TrainingCreateHydrationRuntime.start' tests/frontend/training-task-visibility-runtime.test.mjs
           grep -Fq "'cancel_requested'" static/modules/poll-registry.js
           grep -Fq 'id="tr429TaskId"' static/app.js
           grep -Fq '<label>算法名称</label>' static/app.js
