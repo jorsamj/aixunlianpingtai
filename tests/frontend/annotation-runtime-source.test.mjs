@@ -216,3 +216,10 @@ test('annotation P1 interactions use shared motion tokens instead of local timin
   assert.match(block, /var\(--motion-ease/);
   assert.doesNotMatch(block, /\.12s ease/);
 });
+
+
+test('annotation inspector has one outer scroll owner with bounded label and object panes', () => {
+  assert.match(styles, /\.ann420-inspector\{display:flex!important;min-height:0;flex-direction:column;overflow:hidden!important\}/);
+  assert.match(styles, /\.ann420-label-panel #annLabels\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+  assert.match(styles, /\.ann420-object-panel #annBoxes\{[^}]*flex:1 1 auto[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+});
