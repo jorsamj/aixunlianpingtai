@@ -80,3 +80,20 @@ test('retired AI submit compatibility entrypoint delegates to the v60 owner', ()
   assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
   assert.match(finalLayer, /const task=await api\(taskApi\(\),/);
 });
+
+
+test('retired v47 AI review clients are absent from the production frontend', () => {
+  assert.doesNotMatch(source, /\/api\/v47\/projects\/\$\{pid\(\)\}\/ai-label-tasks/);
+  for (const token of [
+    'reviewAiLabelLegacy427',
+    'confirmAiLabelLegacy4271',
+    'submitAiLabelLegacy429_1',
+    'confirmAiLabelLegacy4272',
+    'reviewAiLabelM4',
+    '__m4ReviewCandidates',
+    'candidateBoxM4',
+  ]) assert.equal(source.includes(token), false, token);
+  assert.match(source, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
+  assert.match(source, /window\.reviewAiLabel427=async function\(id\)/);
+  assert.match(source, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
+});
