@@ -175,6 +175,11 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /loadMoreCleanAudit429/);
   assert.match(source, /related_image_id/);
   assert.match(source, /cleanImageIssueText429/);
+  assert.match(source, /CLEAN_IMAGE_REVIEW_BATCH_429=60/);
+  assert.match(source, /setCleanImageReviewFilter429/);
+  assert.match(source, /setCleanImageIssueFilter429/);
+  assert.match(source, /loadMoreCleanImageReview429/);
+  assert.match(source, /cleanImageReviewItems429/);
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
 });
@@ -189,7 +194,7 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
     /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
   assert.match(main, /cleaning\.js\?v=422566/);
-  assert.match(index, /styles\.css\?v=42\.24\.38/);
-  assert.match(index, /app\.js\?v=42\.25\.253/);
+  assert.match(index, /styles\.css\?v=42\.24\.39/);
+  assert.match(index, /app\.js\?v=42\.25\.254/);
   assert.match(index, /main\.mjs\?v=42\.25\.246/);
 });

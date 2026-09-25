@@ -281,7 +281,19 @@ test('cleaning detail progress stays in-place and hands off to review without ra
       body:JSON.stringify({
         task:{...current,status:'awaiting_confirmation',status_text:'待确认'},
         result:{
-          items:[],
+          items:Array.from({length:65},(_,index)=>({
+            image_id:\`clean-image-\${index+1}\`,
+            filename:\`clean-image-\${index+1}.jpg\`,
+            url:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMAAAAwBAQDJ/pLvAAAAAElFTkSuQmCC',
+            annotation_state:index%2===0?'annotated':'unannotated',
+            annotation_provenance:index%2===0?'manual':'unannotated',
+            status:index===64?'failed':'done',
+            item_state:index===64?'failed':'completed',
+            suggest_delete:index%3===0,
+            issues:index===64?[]:[index%2===0
+              ?{code:'exact_duplicate',name:'重复图',detail:'与另一张图片完全相同',related_image_id:'clean-image-1'}
+              :{code:'blur',name:'疑似模糊',detail:'清晰度偏低'}],
+          })),
           rules:{},
           annotation_audit:{
             enabled:true,
@@ -359,6 +371,19 @@ test('cleaning detail progress stays in-place and hands off to review without ra
   const review = page.getByRole('dialog',{name:'清洗任务详情'});
   await expect(review).toBeVisible({timeout:5000});
   await expect(review.getByRole('button',{name:'确认清洗结果'})).toBeVisible();
+  const imagePanel = review.locator('[data-clean-quality-panel="image"]');
+  const imageCards = imagePanel.locator('#cleanImageReviewItems429 .review427-card');
+  await expect(imageCards).toHaveCount(60);
+  await expect(imagePanel.locator('#cleanImageReviewCount429')).toHaveText('显示 60 / 65 · 全部 65');
+  await imagePanel.getByRole('button',{name:/加载更多 5 张/}).click();
+  await expect(imageCards).toHaveCount(65);
+  await imagePanel.getByRole('button',{name:/扫描失败/}).click();
+  await expect(imageCards).toHaveCount(1);
+  await expect(imagePanel.locator('#cleanImageReviewCount429')).toHaveText('显示 1 / 1 · 全部 65');
+  await imagePanel.getByRole('button',{name:/全部 65/}).click();
+  await imagePanel.locator('#cleanImageReviewIssue429').selectOption('exact_duplicate');
+  await expect(imageCards).toHaveCount(32);
+  await expect(imagePanel.locator('#cleanImageReviewCount429')).toHaveText('显示 32 / 32 · 全部 65');
   await expect(review.getByRole('button',{name:/标注质量/})).toBeVisible();
   await review.getByRole('button',{name:/标注质量/}).click();
   const annotationPanel = review.locator('[data-clean-quality-panel="annotation"]');
