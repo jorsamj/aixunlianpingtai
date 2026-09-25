@@ -173,6 +173,8 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /标注质量 · 逐图复核/);
   assert.match(source, /setCleanQualityTab429/);
   assert.match(source, /loadMoreCleanAudit429/);
+  assert.match(source, /related_image_id/);
+  assert.match(source, /cleanImageIssueText429/);
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
 });
@@ -188,6 +190,6 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
   );
   assert.match(main, /cleaning\.js\?v=422566/);
   assert.match(index, /styles\.css\?v=42\.24\.38/);
-  assert.match(index, /app\.js\?v=42\.25\.252/);
+  assert.match(index, /app\.js\?v=42\.25\.253/);
   assert.match(index, /main\.mjs\?v=42\.25\.246/);
 });
