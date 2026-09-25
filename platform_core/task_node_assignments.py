@@ -17,7 +17,7 @@ from .service_nodes import HEARTBEAT_TTL_SECONDS, ServiceNodeRepository
 from .training_devices import normalize_training_device
 from .task_runtime import TaskKind
 from .task_runtime.fenced_repository import FencedTaskRepository
-from .task_runtime.models import utc_now
+from .task_runtime.models import TaskStatus, utc_now
 from .task_runtime.repository import _from_row
 
 
