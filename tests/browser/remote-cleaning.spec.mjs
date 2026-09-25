@@ -282,8 +282,8 @@ test('cleaning detail progress stays in-place and hands off to review without ra
         task:{...current,status:'awaiting_confirmation',status_text:'待确认'},
         result:{
           items:Array.from({length:65},(_,index)=>({
-            image_id:\`clean-image-\${index+1}\`,
-            filename:\`clean-image-\${index+1}.jpg\`,
+            image_id:`clean-image-${index+1}`,
+            filename:`clean-image-${index+1}.jpg`,
             url:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMAAAAwBAQDJ/pLvAAAAAElFTkSuQmCC',
             annotation_state:index%2===0?'annotated':'unannotated',
             annotation_provenance:index%2===0?'manual':'unannotated',
