@@ -142,6 +142,10 @@ test('canonical manual inspector exposes per-box provenance without a second ann
   assert.match(source, /return '导入标注'/);
   assert.match(source, /return '人工标注'/);
   assert.match(source, /annotationBoxSourceLabel420\(b\)/);
+  assert.match(source, /state\.activeImage\?\.annotation_origin/);
+  assert.match(source, /origin==='ai_confirmed'.*'AI已确认'/s);
+  assert.match(source, /origin==='imported'.*'导入标注'/s);
+  assert.match(source, /origin==='mixed'.*'混合来源'/s);
 });
 
 test('v66 inspector polish targets the canonical ann414 label and object row classes', () => {
