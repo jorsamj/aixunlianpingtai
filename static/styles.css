@@ -928,6 +928,19 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .data426-meta .annotation-status-v66.ai-pending{background:#fff8e8;color:#94620a;border-color:#f3dfad}
 .data426-meta .annotation-status-v66.ai-committing{background:#eef4ff;color:#3567b8;border-color:#d6e3fa}
 .data426-meta .annotation-status-v66.error{background:#fff0f1;color:#a94851;border-color:#f3d2d5}
+/* v66 annotation motion polish */
+.annotation-workbench-modal,.ai-review-workbench-modal{animation:annotationWorkbenchEnter var(--motion-panel,.18s) cubic-bezier(.2,.8,.2,1)}
+@keyframes annotationWorkbenchEnter{from{opacity:0;transform:translateY(6px) scale(.995)}to{opacity:1;transform:translateY(0) scale(1)}}
+.data426-meta .annotation-status-v66{gap:5px;transition:background-color var(--motion-base,.16s) ease,border-color var(--motion-base,.16s) ease,color var(--motion-base,.16s) ease,box-shadow var(--motion-base,.16s) ease}
+.data426-meta .annotation-status-v66::before{content:"";width:5px;height:5px;flex:0 0 5px;border-radius:999px;background:currentColor;opacity:.68}
+.data426-meta .annotation-status-v66.ai-committing::before{animation:annotationStatusPulse 1.25s ease-in-out infinite}
+@keyframes annotationStatusPulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.18)}}
+.ann420-queue button{transition:background-color var(--motion-base,.16s) ease,border-color var(--motion-base,.16s) ease,box-shadow var(--motion-base,.16s) ease,transform var(--motion-fast,.14s) ease}
+.ann420-queue button:hover{transform:translateX(2px)}.ann420-queue button.active:hover{transform:none}
+.ann420-toolbar .btn,.ai-review-workbench-modal .btn{transition:transform var(--motion-fast,.14s) ease,box-shadow var(--motion-fast,.14s) ease,border-color var(--motion-fast,.14s) ease,background-color var(--motion-fast,.14s) ease}
+.ann420-toolbar .btn:not(:disabled):hover,.ai-review-workbench-modal .btn:not(:disabled):hover{transform:translateY(-1px)}
+.ai66-review-filters button{transition:background-color var(--motion-fast,.14s) ease,color var(--motion-fast,.14s) ease,box-shadow var(--motion-fast,.14s) ease}
+@media(prefers-reduced-motion:reduce){.annotation-workbench-modal,.ai-review-workbench-modal,.data426-meta .annotation-status-v66.ai-committing::before{animation:none!important}.ann420-queue button,.ann420-toolbar .btn,.ai-review-workbench-modal .btn,.ai66-review-filters button,.data426-meta .annotation-status-v66{transition:none!important}.ann420-queue button:hover,.ann420-toolbar .btn:not(:disabled):hover,.ai-review-workbench-modal .btn:not(:disabled):hover{transform:none!important}}
 /* v66 annotation workbench: dedicated near-fullscreen professional editor */
 .annotation-workbench-layer{padding:10px!important;background:rgba(8,15,29,.58)!important;backdrop-filter:blur(8px)}
 .annotation-workbench-modal{width:calc(100vw - 20px)!important;max-width:1920px!important;height:calc(100vh - 20px)!important;max-height:none!important;border:1px solid rgba(148,163,184,.28);border-radius:16px!important;background:#f7f9fc;box-shadow:0 30px 90px rgba(2,8,23,.34)}
