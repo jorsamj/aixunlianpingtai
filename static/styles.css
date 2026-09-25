@@ -970,7 +970,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-review-head h3{margin:4px 0;color:#172b4d;font-size:19px}
 .ai66-review-head p{margin:0;color:#64748b;font-size:12px}
 .ai66-review-summary{align-self:center;padding:7px 10px;border-radius:999px;background:#eef4ff;color:#44699f;font-size:11px;font-weight:700;white-space:nowrap}
-.ai66-review-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding:10px 20px;background:#fff;border-bottom:1px solid #e5eaf2}
+.ai66-review-kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;padding:10px 20px;background:#fff;border-bottom:1px solid #e5eaf2}
 .ai66-review-kpis>div{padding:9px 11px;border:1px solid #e5eaf2;border-radius:10px;background:#fafcff}
 .ai66-review-kpis span,.ai66-review-kpis b{display:block}
 .ai66-review-kpis span{color:#76869d;font-size:10px}
@@ -998,6 +998,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-review-empty{grid-column:1/-1}
 .ai66-review-footer{position:relative!important;left:auto;right:auto;bottom:auto;flex:0 0 auto;margin:0 20px 14px!important;padding:10px 12px!important;border:1px solid #dfe6ef;border-radius:12px;background:rgba(255,255,255,.98)!important;box-shadow:0 10px 28px rgba(25,42,70,.09);backdrop-filter:blur(10px)}
 .ai66-review-footer #ai60ReviewPager{display:flex;align-items:center;gap:8px;color:#667892;font-size:11px}
+@media(max-width:1180px){.ai66-review-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:900px){
   .ai-review-workbench-layer{padding:4px!important}
   .ai-review-workbench-modal{width:calc(100vw - 8px)!important;height:calc(100vh - 8px)!important}
