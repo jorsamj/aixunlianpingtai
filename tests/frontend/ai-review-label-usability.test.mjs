@@ -115,3 +115,15 @@ test('AI review keeps mapping bounded and candidate actions readable without sti
   assert.match(styles, /\.ai66-candidate-card>footer \.btn\{min-height:32px;font-size:12px\}/);
   assert.match(styles, /\.ai66-review-footer\{position:relative!important/);
 });
+
+test('AI review KPI separates total truth from current-page decisions', () => {
+  const source = reviewBlock();
+  assert.match(source, /id="ai66Total"/);
+  assert.match(source, /id="ai66Accepted"/);
+  assert.match(source, /id="ai66Rejected"/);
+  assert.match(source, /id="ai66Boxes"/);
+  assert.match(source, /本页无目标/);
+  assert.match(source, /本页失败/);
+  assert.match(source, /review\.decisions\.get\(String\(item\.image_id\)\)===false/);
+  assert.match(source, /reduce\(\(sum,item\)=>sum\+\(item\.status==='failed'\?0:\(item\.boxes\|\|\[\]\)\.length\),0\)/);
+});
