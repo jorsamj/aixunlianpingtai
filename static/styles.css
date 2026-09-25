@@ -941,6 +941,22 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ann420-toolbar .btn:not(:disabled):hover,.ai-review-workbench-modal .btn:not(:disabled):hover{transform:translateY(-1px)}
 .ai66-review-filters button{transition:background-color var(--motion-fast,.14s) var(--motion-ease,ease),color var(--motion-fast,.14s) var(--motion-ease,ease),box-shadow var(--motion-fast,.14s) var(--motion-ease,ease)}
 @media(prefers-reduced-motion:reduce){.annotation-workbench-modal,.ai-review-workbench-modal,.data426-meta .annotation-status-v66.ai-committing::before{animation:none!important}.ann420-queue button,.ann420-toolbar .btn,.ai-review-workbench-modal .btn,.ai66-review-filters button,.data426-meta .annotation-status-v66{transition:none!important}.ann420-queue button:hover,.ann420-toolbar .btn:not(:disabled):hover,.ai-review-workbench-modal .btn:not(:disabled):hover{transform:none!important}}
+/* v66 annotation queue truth chips */
+.ann420-origin-badge,.ann420-queue-status{display:inline-flex;align-items:center;width:max-content;max-width:100%;border:1px solid transparent;border-radius:999px;font-style:normal;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ann420-origin-badge{margin-left:6px;padding:2px 6px;font-size:9px;vertical-align:1px}
+.ann420-queue-status{margin-top:3px!important;padding:2px 6px;font-size:9px!important;line-height:1.2}
+.ann420-origin-badge.pending,.ann420-queue-status.pending{background:#f2f4f7;color:#667085;border-color:#e4e7ec}
+.ann420-origin-badge.manual,.ann420-queue-status.manual{background:#eef6ff;color:#315f9d;border-color:#d5e6fb}
+.ann420-origin-badge.ai-confirmed,.ann420-queue-status.ai-confirmed{background:#eefbf4;color:#287a50;border-color:#cdeedc}
+.ann420-origin-badge.mixed,.ann420-queue-status.mixed{background:#f5f1ff;color:#6847a8;border-color:#e1d7fb}
+.ann420-origin-badge.empty,.ann420-queue-status.empty{background:#eef9fb;color:#34717b;border-color:#d2edf1}
+.ann420-origin-badge.imported,.ann420-queue-status.imported{background:#f5f6f8;color:#59677a;border-color:#e2e6eb}
+.ann420-origin-badge.ai-pending,.ann420-queue-status.ai-pending{background:#fff8e8;color:#94620a;border-color:#f3dfad}
+.ann420-origin-badge.ai-committing,.ann420-queue-status.ai-committing{background:#eef4ff;color:#3567b8;border-color:#d6e3fa}
+.ann420-origin-badge.error,.ann420-queue-status.error{background:#fff0f1;color:#a94851;border-color:#f3d2d5}
+.ann420-origin-badge.ai-committing,.ann420-queue-status.ai-committing{animation:annotationTruthSoftPulse 1.35s ease-in-out infinite}
+@keyframes annotationTruthSoftPulse{0%,100%{box-shadow:0 0 0 0 rgba(53,103,184,0)}50%{box-shadow:0 0 0 3px rgba(53,103,184,.08)}}
+@media(prefers-reduced-motion:reduce){.ann420-origin-badge.ai-committing,.ann420-queue-status.ai-committing{animation:none!important}}
 /* v66 annotation workbench: dedicated near-fullscreen professional editor */
 .annotation-workbench-layer{padding:10px!important;background:rgba(8,15,29,.58)!important;backdrop-filter:blur(8px)}
 .annotation-workbench-modal{width:calc(100vw - 20px)!important;max-width:1920px!important;height:calc(100vh - 20px)!important;max-height:none!important;border:1px solid rgba(148,163,184,.28);border-radius:16px!important;background:#f7f9fc;box-shadow:0 30px 90px rgba(2,8,23,.34)}
