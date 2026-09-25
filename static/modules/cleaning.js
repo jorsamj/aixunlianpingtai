@@ -220,8 +220,11 @@ export function cleanSchedulingRequest(
   const node = nodes.find(item => String(item?.node_id || '') === target);
   if (!node) throw new Error('请选择当前在线且已启用 cleaning 服务的节点');
   if (!['normal', 'front', 'preempt'].includes(policy)) throw new Error('未知节点队列策略');
+  if (policy === 'preempt' && node.idle === true) {
+    return {scheduling_mode: 'node', target_node_id: target, queue_policy: 'normal'};
+  }
   if (policy === 'preempt' && node.idle === false && node.preemptible !== true) {
-    throw new Error('该节点当前任务不支持安全抢占，请选择“下一位”或其他节点');
+    throw new Error('该节点当前任务不支持安全抢占，请选择“队首等待”或其他节点');
   }
   return {scheduling_mode: 'node', target_node_id: target, queue_policy: policy};
 }

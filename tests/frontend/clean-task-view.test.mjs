@@ -140,6 +140,12 @@ test('clean scheduling keeps capability-filtered node affinity and safe preempti
     }, runtime),
     {scheduling_mode: 'node', target_node_id: 'busy-clean', queue_policy: 'preempt'},
   );
+  assert.deepEqual(
+    cleaning.cleanSchedulingRequest({
+      executionMode: 'agent', schedulingMode: 'node', nodeId: 'idle-clean', queuePolicy: 'preempt',
+    }, runtime),
+    {scheduling_mode: 'node', target_node_id: 'idle-clean', queue_policy: 'normal'},
+  );
   assert.throws(
     () => cleaning.cleanSchedulingRequest({
       executionMode: 'agent', schedulingMode: 'node', nodeId: 'busy-unsafe', queuePolicy: 'preempt',
@@ -239,8 +245,8 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
     main,
     /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
-  assert.match(main, /cleaning\.js\?v=422567/);
+  assert.match(main, /cleaning\.js\?v=422568/);
   assert.match(index, /styles\.css\?v=42\.24\.41/);
   assert.match(index, /app\.js\?v=42\.25\.257/);
-  assert.match(index, /main\.mjs\?v=42\.25\.247/);
+  assert.match(index, /main\.mjs\?v=42\.25\.248/);
 });
