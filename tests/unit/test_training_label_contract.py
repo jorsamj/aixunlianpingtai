@@ -126,6 +126,11 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     assert contract["effective_label_codes"] == ["fire", "smoke", "cigarette"]
     assert [item["class_id"] for item in contract["effective_label_schema"]] == [0, 1, 2]
     assert contract["base_version_id"] == "v1"
+    assert contract["label_schema_changed"] is True
+    assert contract["label_schema_change_reasons"] == ["added_labels"]
+    assert contract["base_training_mode"] == "previous_weights_init"
+    assert contract["strict_resume"] is False
+    assert contract["optimizer_state_resumed"] is False
 
 
 def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(tmp_path: Path):
@@ -153,6 +158,8 @@ def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(
         algorithm,
     )
     assert contract["effective_label_codes"] == ["fire", "smoke"]
+    assert contract["label_schema_changed"] is False
+    assert contract["dropped_inherited_label_codes"] == []
 
 
 def test_legacy_iteration_recovers_schema_from_previous_snapshot(tmp_path: Path):
@@ -348,3 +355,81 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     label = bundle / "dataset" / "labels" / "train" / "a.txt"
     assert label.is_file()
     assert label.read_text(encoding="utf-8") == ""
+
+
+def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    AnnotationRepository(project).upsert(
+        "a", [_box("external_only")], annotation_state="annotated"
+    )
+    with pytest.raises(ValueError, match="未映射、已删除或已停用"):
+        resolve_training_label_contract(
+            data_dir,
+            project,
+            {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": ["fire"]},
+            {"id": "alg", "versions": []},
+        )
+
+
+def test_training_preflight_rejects_temp_class_even_if_catalog_contains_it(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    meta["label_meta"].append(
+        {"code": "class_0", "display_name_zh": "临时类", "class_id": 5, "active": True}
+    )
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    AnnotationRepository(project).upsert(
+        "a", [_box("class_0")], annotation_state="annotated"
+    )
+    with pytest.raises(ValueError, match="临时/未知标签"):
+        selected_material_label_codes(project, {"train_image_ids": ["a"]})
+
+
+def test_iteration_schema_change_drops_inactive_previous_label_and_reindexes(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    for row in meta["label_meta"]:
+        if row["code"] == "smoke":
+            row["active"] = False
+            row["status"] = "inactive"
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    AnnotationRepository(project).upsert(
+        "a", [_box("fire")], annotation_state="annotated"
+    )
+    model = project / "previous.pt"
+    model.write_bytes(b"model")
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "created_at": "2026-09-10T01:01:01+00:00",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": [
+                {"code": "fire", "class_id": 0},
+                {"code": "smoke", "class_id": 1},
+            ],
+        }],
+    }
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
+        algorithm,
+    )
+    assert contract["inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["retained_inherited_label_codes"] == ["fire"]
+    assert contract["dropped_inherited_label_codes"] == ["smoke"]
+    assert contract["effective_label_codes"] == ["fire"]
+    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0]
+    assert contract["label_schema_changed"] is True
+    assert contract["label_schema_change_reasons"] == ["removed_or_inactive_labels"]
+    assert contract["base_training_mode"] == "previous_weights_init"
+    assert contract["strict_resume"] is False

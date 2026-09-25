@@ -176,3 +176,32 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
   assert.ok(last425OpenCall >= 0 && last425OpenCall < finalTaskRenderer);
   assert.ok(last425CountCall >= 0 && last425CountCall < finalTaskRenderer);
 });
+
+
+test('inactive previous labels are dropped and mark schema changed', () => {
+  const algorithm = {
+    versions: [successfulVersion({
+      label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
+    })],
+  };
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire']}],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: [],
+  });
+  assert.deepEqual(view.inherited, ['fire']);
+  assert.deepEqual(view.droppedInherited, ['legacy_smoke']);
+  assert.deepEqual(view.effectivePreview, ['fire']);
+  assert.equal(view.labelSchemaChanged, true);
+  assert.equal(view.strictResume, false);
+  assert.equal(view.baseTrainingMode, 'previous_weights_init');
+});
+
+test('non-canonical material labels are surfaced but never selectable', () => {
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire', 'class_0']}],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm: {versions: []}, requestedCodes: ['class_0'],
+  });
+  assert.deepEqual(view.invalidAvailable, ['class_0']);
+  assert.equal(view.selectable.includes('class_0'), false);
+  assert.equal(view.effectivePreview.includes('class_0'), false);
+});
