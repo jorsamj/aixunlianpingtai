@@ -154,13 +154,20 @@ test('v66 inspector polish targets the canonical ann414 label and object row cla
   assert.match(styles, /grid-template-columns:minmax\(0,1fr\) 126px/);
 });
 
-test('material cards color only derived annotation truth states and keep incremental patch parity', () => {
-  assert.match(source, /window\.materialAnnotationStatusClassV66=function\(row\)/);
-  assert.match(source, /return 'ai-pending'/);
-  assert.match(source, /return 'ai-committing'/);
-  assert.match(source, /return 'ai-confirmed'/);
-  assert.match(source, /return 'mixed'/);
-  assert.match(source, /return 'manual'/);
+test('one annotation truth view owns text color and provenance with formal truth priority', () => {
+  const start = source.indexOf('window.annotationTruthViewV66=function(row)');
+  const end = source.indexOf('window.annotationUpdatedTextV66=function(row)', start);
+  const truth = source.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.ok(truth.indexOf('if(formal)') < truth.indexOf('const transient='));
+  assert.match(truth, /className:'ai-pending'/);
+  assert.match(truth, /className:'ai-committing'/);
+  assert.match(truth, /className:'ai-confirmed'/);
+  assert.match(truth, /className:'mixed'/);
+  assert.match(truth, /className:'manual'/);
+  assert.match(truth, /window\.materialAnnotationStatusV66=row=>window\.annotationTruthViewV66\(row\)\.statusText/);
+  assert.match(truth, /window\.materialAnnotationStatusClassV66=row=>window\.annotationTruthViewV66\(row\)\.className/);
+  assert.match(truth, /window\.annotationOriginLabelV66=row=>window\.annotationTruthViewV66\(row\)\.originText/);
   assert.match(source, /annotation-status-v66/);
   assert.match(source, /meta\[1\]\.className=`annotation-status-v66/);
   assert.match(styles, /\.annotation-status-v66\.ai-pending/);
