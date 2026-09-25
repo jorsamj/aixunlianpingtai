@@ -182,6 +182,7 @@ test('annotation motion stays outside the pointer hot path and respects reduced 
   assert.match(styles, /\.annotation-status-v66\.ai-committing::before,\.ann420-origin-badge\.ai-committing::before,\.ann420-queue-status\.ai-committing::before\{animation:annotationStatusPulse/);
   assert.doesNotMatch(styles, /annotationTruthSoftPulse/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\).*annotation-workbench-modal.*animation:none!important/s);
+  assert.match(styles, /prefers-reduced-motion:reduce[^}]*\.ann420-inspector \.ann414-label[^}]*\.ai66-candidate-card\{transition:none!important/s);
 
   const start = source.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
   const end = source.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', start);
