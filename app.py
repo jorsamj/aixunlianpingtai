@@ -2688,6 +2688,19 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
+def _annotation_box_source_fallback(material: Optional[Dict[str, Any]] = None) -> str:
+    row = material or {}
+    origin = str(row.get("annotation_origin") or "").strip().lower()
+    if origin == "ai_confirmed":
+        return "ai_candidate_confirmed"
+    if origin == "imported":
+        return "imported"
+    if origin == "manual":
+        return "manual"
+    if str(row.get("source_type") or "").strip().lower().startswith("imported_"):
+        return "imported"
+    return "manual"
+
 def _annotation_summary_for_material_index(
     boxes: List[Dict[str, Any]],
     annotation_state: Optional[str],
@@ -4660,7 +4673,7 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
         )
         clean_boxes = restore_box_provenance(
             clean_boxes, existing_boxes,
-            existing_source_fallback="imported" if str(img.get("source_type") or "").startswith("imported_") else "manual",
+            existing_source_fallback=_annotation_box_source_fallback(img),
             new_source="manual",
         )
     except KeyError as error:
