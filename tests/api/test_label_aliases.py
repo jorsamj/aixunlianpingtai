@@ -178,7 +178,7 @@ def test_storage_rescan_review_keeps_alias_as_fact_without_suggestion(
     assert "target_label_code" not in public["external_classes"][0]
 
 
-def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project):
+def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seeded_project):
     project_id, image = seeded_project
     updated = client.put(
         f"/api/v12/projects/{project_id}/labels/0",
@@ -190,7 +190,7 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
     )
     assert updated.status_code == 200, updated.text
 
-    created = client.post(
+    rejected = client.post(
         f"/api/v60/projects/{project_id}/annotation-tasks",
         json={
             "image_ids": [image["id"]],
@@ -199,13 +199,25 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
             "task_name": "alias input test",
         },
     )
+    assert rejected.status_code == 400
+    assert "不会根据中文名、别名或历史映射自动选择标签" in rejected.text
+
+    created = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks",
+        json={
+            "image_ids": [image["id"]],
+            "labels_text": "fire",
+            "provider_id": "alias-test-provider",
+            "task_name": "canonical input test",
+        },
+    )
     assert created.status_code == 202, created.text
     task_id = created.json()["id"]
     request = app_module.shared_task_artifacts().read_json(
         task_id, "request.json", default={}
     )
     assert request["labels"] == ["fire"]
-    assert request["labels_text"] == "huomiao1"
+    assert request["labels_text"] == "fire"
 
 
 def test_pending_storage_import_does_not_restore_alias_suggestions(

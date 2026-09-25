@@ -35,7 +35,7 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import (
     IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
     confirm_import,
-    mapping_suggestions,
+    external_label_facts,
     public_quality,
     resolve_external_label_mapping,
 )
@@ -78,7 +78,6 @@ from platform_core.labels import (
     confirmed_alias_updates,
     label_identity_values,
     normalize_label_aliases,
-    suggest_label_code,
 )
 from platform_core.material_store import MaterialStore
 from platform_core.model_artifacts import ModelArtifactService
@@ -1781,10 +1780,7 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         import_format = str(request.get("import_format") or result.get("import_format") or "images")
         external_classes = list(result.get("external_classes") or [])
         if import_format in {"yolo", "coco", "voc"} and external_classes:
-            result["external_classes"] = mapping_suggestions(
-                external_classes,
-                project_label_items(get_project(task.project_id)),
-            )
+            result["external_classes"] = external_label_facts(external_classes)
     if isinstance(checkpoint, dict):
         zip_import = checkpoint.get("zip_import")
         if isinstance(zip_import, dict):
@@ -1883,10 +1879,7 @@ def _public_storage_rescan(task):
     external_classes = quality_view.get('external_classes', [])
     import_format = str(request.get('import_format') or summary.get('import_format') or 'images')
     if import_format in {'yolo', 'coco', 'voc'} and external_classes:
-        external_classes = mapping_suggestions(
-            external_classes,
-            project_label_items(get_project(task.project_id)),
-        )
+        external_classes = external_label_facts(external_classes)
     return {
         'task_id': task.task_id,
         'project_id': task.project_id,
@@ -12084,9 +12077,7 @@ def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
     prepared = dict(scan or {})
     classes = list(prepared.get("external_classes") or [])
     if classes:
-        prepared["external_classes"] = mapping_suggestions(
-            classes, project_label_items(get_project(project_id)),
-        )
+        prepared["external_classes"] = external_label_facts(classes)
         prepared["label_confirmation_required"] = True
     else:
         prepared["external_classes"] = []
@@ -18443,18 +18434,29 @@ def _v47_parse_label_text(
     catalog: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     import re
-    values = [
+    values = list(dict.fromkeys(
         str(x or '').strip()
         for x in re.split(r'[、,，;；\n\t]+', text or '')
         if str(x or '').strip()
-    ]
-    resolved = []
-    for value in values:
-        suggested = suggest_label_code(value, catalog or [])
-        normalized = suggested or normalize_label(value)
-        if normalized and normalized not in resolved:
-            resolved.append(normalized)
-    return resolved
+    ))
+    if catalog is None:
+        return [normalize_label(value) for value in values if normalize_label(value)]
+    active_codes = {
+        str(item.get('code') or '').strip()
+        for item in catalog
+        if str(item.get('code') or '').strip()
+    }
+    unknown = [value for value in values if value not in active_codes]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "AI 标注标签必须显式使用当前标签库中的英文编码；"
+                "系统不会根据中文名、别名或历史映射自动选择标签："
+                + "、".join(unknown[:20])
+            ),
+        )
+    return values
 
 
 def _v47_default_annotation_model() -> Dict[str, Any]:

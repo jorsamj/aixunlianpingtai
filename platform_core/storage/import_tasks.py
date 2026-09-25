@@ -22,7 +22,7 @@ from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 from .errors import redact_storage_error
 from .factory import StorageProviderFactory
 from .import_candidates import ImportCandidateStore
-from .import_confirmation import mapping_suggestions
+from .import_confirmation import external_label_facts
 from .models import StorageType
 from .source_repository import StorageSourceRepository
 from .yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
@@ -350,7 +350,7 @@ class StorageImportHandler:
             meta = json.loads(meta_path.read_text(encoding='utf-8'))
             labels = [{**(meta.get('label_meta', [])[i] if i < len(meta.get('label_meta', [])) else {}), 'code': code}
                       for i, code in enumerate(meta.get('labels') or [])]
-            result['external_classes'] = mapping_suggestions(store.external_classes(), labels)
+            result['external_classes'] = external_label_facts(store.external_classes())
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,

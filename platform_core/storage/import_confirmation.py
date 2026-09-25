@@ -9,14 +9,8 @@ def _digest(value):
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
-def mapping_suggestions(classes, labels):
-    """Return external label facts without choosing a canonical target.
-
-    The name is retained for compatibility with existing callers. Product
-    policy requires every external class to remain unselected until the user
-    explicitly confirms a mapping, even when an exact code/name/alias exists.
-    """
-    del labels
+def external_label_facts(classes):
+    """Return external label facts without choosing a canonical target."""
     return [dict(item) for item in classes]
 
 
@@ -119,7 +113,7 @@ def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping
     return confirmation
 
 def public_quality(value, sanitize):
-    """Whitelist bounded examples/class suggestions without exposing provider data."""
+    """Whitelist bounded quality examples and external class facts."""
     result = {}
     quality = value.get('quality')
     if isinstance(quality, dict):
@@ -130,6 +124,6 @@ def public_quality(value, sanitize):
             for key in ('object_key', 'line_number', 'code', 'severity') if key in row}
             for row in (quality.get('examples') or [])[:100] if isinstance(row, dict)]
     result['external_classes'] = [{key: sanitize(str(row[key])) if row[key] is not None else None
-        for key in ('class_id', 'name', 'target_label_code') if key in row}
+        for key in ('class_id', 'name') if key in row}
         for row in (value.get('external_classes') or [])[:10000] if isinstance(row, dict)]
     return result

@@ -31,32 +31,6 @@ def label_identity_values(item: Mapping) -> set[str]:
     }
 
 
-def suggest_label_code(name: str, labels: Sequence[Mapping]) -> str | None:
-    source = str(name or "").strip()
-    if not source:
-        return None
-    active = [
-        item
-        for item in labels
-        if str(item.get("status") or "active") == "active"
-    ]
-    direct = {
-        str(item.get("code"))
-        for item in active
-        if source in label_identity_values(item)
-    }
-    if len(direct) == 1:
-        return next(iter(direct))
-    if direct:
-        return None
-    alias_matches = {
-        str(item.get("code"))
-        for item in active
-        if source in set(normalize_label_aliases(item.get("aliases") or []))
-    }
-    return next(iter(alias_matches)) if len(alias_matches) == 1 else None
-
-
 def confirmed_alias_updates(
     classes: Sequence[Mapping],
     mapping: Mapping[str, str],
