@@ -10,8 +10,13 @@ def _digest(value):
 
 
 def external_label_facts(classes):
-    """Return external label facts without choosing a canonical target."""
-    return [dict(item) for item in classes]
+    """Return source-side facts only; never expose a canonical target decision."""
+    allowed = ("class_id", "name", "image_count", "box_count")
+    return [
+        {key: item.get(key) for key in allowed if key in item}
+        for item in classes
+        if isinstance(item, dict)
+    ]
 
 
 IMPORT_LABEL_CREATION_BLOCKED_DETAIL = (

@@ -269,11 +269,17 @@ def test_pending_storage_import_does_not_restore_alias_suggestions(
 
     public = app_module._public_storage_import_task(task)
     assert public["status"] == "AWAITING_CONFIRMATION"
-    assert "target_label_code" not in public["result"]["external_classes"][0]
+    assert public["result"]["external_classes"][0] == {
+        "class_id": "0",
+        "name": "toukui1",
+    }
 
     task.accepted = True
     frozen = app_module._public_storage_import_task(task)
-    assert frozen["result"]["external_classes"][0].get("target_label_code") is None
+    assert frozen["result"]["external_classes"][0] == {
+        "class_id": "0",
+        "name": "toukui1",
+    }
 
 
 def test_project_creation_rejects_overlong_alias_with_400(client):
