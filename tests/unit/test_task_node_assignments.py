@@ -503,7 +503,7 @@ def test_clean_auto_scheduling_prefers_idle_agent_over_stronger_busy_agent(tmp_p
         "clean-busy-b",
         ["cleaning"],
         connection_mode="agent",
-        resources={"memory": {"available_bytes": 64 * 1024**3}, "disk": {"free_bytes": 500 * 1024**3}},
+        resources={"memory": {"available_bytes": 512 * 1024**3}, "disk": {"free_bytes": 100 * 1024**4}},
     )
     create_task(
         repository,

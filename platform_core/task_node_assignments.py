@@ -884,7 +884,12 @@ class CentralTaskAllocator:
                     ranked.append((score, node_id, node, selected_gpu, active))
                 if not ranked:
                     continue
-                ranked.sort(key=lambda item: (-item[0], item[1]))
+                if capability == "cleaning":
+                    # Cleaning is background CPU work: an idle eligible node is
+                    # always preferred over a busy node, regardless of raw host size.
+                    ranked.sort(key=lambda item: (int(item[4]) > 0, -item[0], item[1]))
+                else:
+                    ranked.sort(key=lambda item: (-item[0], item[1]))
                 selected = (task, capability, ranked[0][2], remote_contract, ranked[0][3], ranked[0][4])
                 break
             if selected is None:
