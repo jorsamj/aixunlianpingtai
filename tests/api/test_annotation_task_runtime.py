@@ -300,3 +300,11 @@ def test_retired_v47_annotation_routes_fail_closed(client, seeded_project):
     assert confirmed.status_code == 410
 
     assert not hasattr(app_module, "_v47_run_ai_label_task")
+
+
+
+def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
+    assert hasattr(app_module, "_annotation_label_catalog")
+    assert hasattr(app_module, "_annotation_runtime_provider")
+    assert not hasattr(app_module, "_v47_label_catalog")
+    assert not hasattr(app_module, "_v47_runtime_provider")
