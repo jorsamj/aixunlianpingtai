@@ -17460,25 +17460,36 @@ def _v47_clean_agent_preflight(
             'eligible_nodes': [],
         }
 
+    def scheduling_task_row(task: TaskRecord) -> Dict[str, Any]:
+        request = artifacts.read_json(task.task_id, task.payload_ref, default={}) or {}
+        operation = str(request.get('operation') or '').strip().upper() if isinstance(request, dict) else ''
+        return {
+            'task_id': task.task_id,
+            'kind': task.kind.value,
+            'operation': operation,
+            'status': task.status.value,
+            'stage': task.stage,
+            'progress': float(task.progress or 0),
+            'preemptible': task.status is not TaskStatus.RUNNING or task_preemptible(task, artifacts),
+        }
+
     eligible_nodes = []
     for node in nodes:
         node_id = str(node.get('node_id') or '')
-        task_rows = []
-        can_preempt = True
+        tasks_by_id: Dict[str, Dict[str, Any]] = {}
+        for durable in node.get('durable_tasks') or []:
+            task = repository.get(str(durable.get('task_id') or ''))
+            if task is not None:
+                tasks_by_id[task.task_id] = scheduling_task_row(task)
         for assignment in assignments_by_node.get(node_id, []):
             task = repository.get(str(assignment.get('task_id') or ''))
-            if task is None:
-                continue
-            if task.status is TaskStatus.RUNNING and not task_preemptible(task, artifacts):
-                can_preempt = False
-            task_rows.append({
-                'task_id': task.task_id,
-                'kind': task.kind.value,
-                'status': task.status.value,
-                'stage': task.stage,
-                'progress': float(task.progress or 0),
-                'preemptible': task.status is not TaskStatus.RUNNING or task_preemptible(task, artifacts),
-            })
+            if task is not None:
+                tasks_by_id.setdefault(task.task_id, scheduling_task_row(task))
+        task_rows = list(tasks_by_id.values())
+        can_preempt = all(
+            row.get('status') != TaskStatus.RUNNING.value or bool(row.get('preemptible'))
+            for row in task_rows
+        )
         resources = dict(node.get('resources') or {})
         eligible_nodes.append({
             'node_id': node_id,

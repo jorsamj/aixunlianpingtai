@@ -389,9 +389,12 @@ def task_requested_node_id(task, artifacts) -> str:
 
 
 def task_preemptible(task, artifacts) -> bool:
-    """Only checkpoint/recoverable work may be displaced by an operator preemption."""
-    if task.kind is TaskKind.TRAINING:
-        return True
+    """Only work with a proven stop-and-resume contract may be displaced.
+
+    Remote TRAINING is intentionally excluded here. The current Agent control
+    protocol observes cancellation but does not expose a pause-and-release
+    handshake, so cancelling a training task would be a restart, not a pause.
+    """
     if task.kind is TaskKind.MATERIAL_BATCH:
         try:
             payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
@@ -648,6 +651,17 @@ class CentralTaskAllocator:
                     409,
                 )
 
+            # Execution start releases the assignment row, so active
+            # ASSIGNED/CLAIMED rows alone are not running-task truth.
+            running_rows = database.execute(
+                """
+                SELECT * FROM tasks
+                 WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND task_id<>?
+                 ORDER BY updated_at,task_id
+                """,
+                (f"agent:{target}", incoming.task_id),
+            ).fetchall()
             assignment_rows = database.execute(
                 """
                 SELECT * FROM task_node_assignments
@@ -657,7 +671,11 @@ class CentralTaskAllocator:
                 """,
                 (target, incoming.task_id),
             ).fetchall()
-            victims = []
+
+            victims: dict[str, dict[str, Any]] = {}
+            for task_row in running_rows:
+                victim = _from_row(task_row)
+                victims[victim.task_id] = {"task": victim, "assignment": None}
             for assignment in assignment_rows:
                 task_row = database.execute(
                     "SELECT * FROM tasks WHERE task_id=?",
@@ -666,6 +684,12 @@ class CentralTaskAllocator:
                 if task_row is None:
                     continue
                 victim = _from_row(task_row)
+                entry = victims.setdefault(victim.task_id, {"task": victim, "assignment": None})
+                entry["task"] = victim
+                entry["assignment"] = assignment
+
+            for entry in victims.values():
+                victim = entry["task"]
                 if victim.status is TaskStatus.RUNNING and not task_preemptible(victim, self.artifacts):
                     database.rollback()
                     raise NodeAssignmentError(
@@ -673,10 +697,11 @@ class CentralTaskAllocator:
                         f"node is running non-preemptible task {victim.task_id} ({victim.kind.value})",
                         409,
                     )
-                victims.append((assignment, victim))
 
             preempted, released = [], []
-            for assignment, victim in victims:
+            for entry in victims.values():
+                victim = entry["task"]
+                assignment = entry["assignment"]
                 if victim.status is TaskStatus.RUNNING:
                     changed = database.execute(
                         """
@@ -686,7 +711,7 @@ class CentralTaskAllocator:
                          WHERE task_id=? AND status='RUNNING'
                         """,
                         (
-                            f"被高优先级清洗任务 {incoming.task_id} 抢占，正在安全暂停并准备自动恢复",
+                            f"被高优先级清洗任务 {incoming.task_id} 抢占，正在保存清洗进度并让出节点",
                             now,
                             victim.task_id,
                         ),
@@ -712,30 +737,28 @@ class CentralTaskAllocator:
                             victim.task_id,
                             target,
                             now,
-                            f"preempted {victim.kind.value} and will automatically retry after incoming task",
+                            f"preempted recoverable {victim.kind.value} and will resume after incoming task",
                         ),
                     )
                     preempted.append(victim.task_id)
 
-                # A QUEUED assignment may already have been claimed by the Agent
-                # but not started. Releasing it fences the stale assignment token
-                # and puts the incoming task at the front without cancelling work.
-                database.execute(
-                    """
-                    UPDATE task_node_assignments
-                       SET state='RELEASED',updated_at=?,released_at=?,
-                           release_reason=?,lease_token=NULL,lease_expires_at=NULL
-                     WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
-                    """,
-                    (
-                        now,
-                        now,
-                        f"preempted_by:{incoming.task_id}",
-                        victim.task_id,
-                        int(assignment["generation"]),
-                    ),
-                )
-                released.append(victim.task_id)
+                if assignment is not None and victim.status is not TaskStatus.RUNNING:
+                    database.execute(
+                        """
+                        UPDATE task_node_assignments
+                           SET state='RELEASED',updated_at=?,released_at=?,
+                               release_reason=?,lease_token=NULL,lease_expires_at=NULL
+                         WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
+                        """,
+                        (
+                            now,
+                            now,
+                            f"preempted_by:{incoming.task_id}",
+                            victim.task_id,
+                            int(assignment["generation"]),
+                        ),
+                    )
+                    released.append(victim.task_id)
             database.commit()
         return {
             "mode": "preempt",
