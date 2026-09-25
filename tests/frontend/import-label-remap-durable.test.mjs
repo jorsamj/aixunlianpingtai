@@ -12,7 +12,7 @@ test('post-import label remap is a durable material batch with real backend prog
   assert.match(source,/total/);
   assert.match(source,/正在批量统一标签/);
   assert.match(source,/PollRegistryRuntime\?\.startTimeout/);
-  assert.match(source,/import-label-remap/);
+  assert.match(source,/annotation-label-remap/);
   assert.match(source,/getElementById\('importRemapStage414'\)/);
   assert.match(source,/marker\?\.closest\('\.modal-body'\)/);
 });
@@ -31,4 +31,13 @@ test('remap UI does not claim synchronous completion after task creation',()=>{
 test('legacy remap entry delegates to the single durable remap owner',()=>{
   assert.match(source,/window\.remapImport412=\(source,inputId\)=>window\.remapImport414\(source,inputId\)/);
   assert.doesNotMatch(source,/window\.remapImport412=async/);
+});
+
+
+test('label management whole-label unify reuses the same durable remap owner',()=>{
+  assert.match(source,/openLabelUnify414/);
+  assert.match(source,/\/api\/v54\/projects\/\$\{pid\(\)\}\/labels\/\$\{Number\(classId\)\}\/unify/);
+  assert.match(source,/annotationRemapOrigin414='label-schema'/);
+  assert.match(source,/\['数据集','标签管理'\]/);
+  assert.match(source,/系统不会自动选择目标标签/);
 });

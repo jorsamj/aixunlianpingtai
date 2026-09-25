@@ -4420,8 +4420,30 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   function drawLabel414(){
     const box=document.getElementById('label414Table');if(!box)return;
     const rows=(state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[];
-    box.innerHTML=`<div class="label414-row head"><span>英文标签</span><span>中文名称</span><span>颜色</span><span>快捷键</span><span>使用图片</span><span>标注框</span><span>操作</span></div>${rows.map(l=>`<div class="label414-row"><span><b class="label414-code">${esc(l.code)}</b></span><span>${esc(l.display_name||'-')}${(l.aliases||[]).length?`<small class="muted-line">别名：${(l.aliases||[]).map(esc).join('、')}</small>`:''}</span><span><i class="label414-color" style="background:${esc(l.color||'#64748b')}"></i>${esc(l.color||'')}</span><span>${esc(l.hotkey||'-')}</span><span>${Number(l.usage_images||0)}</span><span>${Number(l.usage_boxes||0)}</span><span class="row"><button class="btn mini" onclick="openLabel414(${Number(l.class_id)})">编辑</button><button class="btn mini danger" onclick="deleteLabel414(${Number(l.class_id)},'${esc(l.code)}')">删除</button></span></div>`).join('')||'<div class="empty">暂无标签。请先创建英文标签，例如 fire / smoke / person。</div>'}`;
+    box.innerHTML=`<div class="label414-row head"><span>英文标签</span><span>中文名称</span><span>颜色</span><span>快捷键</span><span>正样本图片</span><span>负样本范围</span><span>标注框</span><span>操作</span></div>${rows.map(l=>{const affected=Number(l.affected_images||0);return `<div class="label414-row"><span><b class="label414-code">${esc(l.code)}</b></span><span>${esc(l.display_name||'-')}${(l.aliases||[]).length?`<small class="muted-line">别名：${(l.aliases||[]).map(esc).join('、')}</small>`:''}</span><span><i class="label414-color" style="background:${esc(l.color||'#64748b')}"></i>${esc(l.color||'')}</span><span>${esc(l.hotkey||'-')}</span><span>${Number(l.usage_images||0)}</span><span>${Number(l.scope_images||0)}</span><span>${Number(l.usage_boxes||0)}</span><span class="row"><button class="btn mini" onclick="openLabel414(${Number(l.class_id)})">编辑</button><button class="btn mini" onclick="openLabelUnify414(${Number(l.class_id)})" ${affected?'':'disabled'}>统一标签</button><button class="btn mini danger" onclick="deleteLabel414(${Number(l.class_id)},'${esc(l.code)}')">删除</button></span></div>`}).join('')||'<div class="empty">暂无标签。请先创建英文标签，例如 fire / smoke / person。</div>'}`;
   }
+  window.openLabelUnify414=function(classId){
+    const source=((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[]).find(item=>Number(item.class_id)===Number(classId));
+    if(!source)return toast('标签信息已变化，请刷新后重试');
+    const targets=(state.labels||[]).filter(item=>item?.code&&String(item.code)!==String(source.code)&&item.status!=='disabled'&&item.status!=='inactive');
+    if(!targets.length)return toast('请先创建另一个目标标签');
+    modal('统一历史标签',`<div class="label414-unify"><div class="label414-unify-hero"><div><span>原标签</span><b>${esc(source.code)}</b><em>${esc(source.display_name||source.code)}</em></div><i>→</i><div><span>目标标签</span><select id="label414UnifyTarget" class="select"><option value="">由你选择目标标签</option>${targets.map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select></div></div><div class="report429-kpis"><div><span>正样本图片</span><b>${Number(source.usage_images||0)}</b></div><div><span>负样本范围</span><b>${Number(source.scope_images||0)}</b></div><div><span>标注框</span><b>${Number(source.usage_boxes||0)}</b></div><div><span>受影响素材</span><b>${Number(source.affected_images||0)}</b></div></div><div class="alert warn"><b>系统不会自动选择目标标签</b><span>确认后由后台任务分批修改 Annotation Ground Truth；窗口可以关闭，任务不会取消。若期间发生人工标注修改，冲突素材会失败关闭，避免覆盖新标注。</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button id="label414UnifySubmit" class="btn primary" onclick="startLabelUnify414(${Number(classId)})">开始后台统一</button></div></div>`,false);
+  };
+  window.startLabelUnify414=async function(classId){
+    const target=(document.getElementById('label414UnifyTarget')?.value||'').trim();
+    if(!target)return toast('请选择目标标签');
+    const source=((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[]).find(item=>Number(item.class_id)===Number(classId));
+    if(!source)return toast('标签信息已变化，请刷新后重试');
+    const button=document.getElementById('label414UnifySubmit');
+    if(button){button.disabled=true;button.textContent='正在创建后台任务…'}
+    try{
+      const task=await api(`/api/v54/projects/${pid()}/labels/${Number(classId)}/unify`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_label:target})});
+      state.import412RemapTask=task;state.import412RemapSource=String(source.code);state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
+      modal('批量统一标签',importRemapProgress414(task,String(source.code),target),false);
+      await pollImportRemap414(task.task_id,String(source.code),target);
+    }catch(e){toast(e.message||e);if(button?.isConnected){button.disabled=false;button.textContent='开始后台统一'}}
+  };
+
   window.openLabel414=function(classId=null){
     const l=classId===null?null:(state.labels||[]).find(x=>Number(x.class_id)===Number(classId));
     modal(l?'编辑标签':'新建标签',`<div class="label414-form"><div class="field"><label>英文标签 <em>*</em></label><input id="label414Code" class="input" value="${esc(l?.code||'')}" placeholder="例如 fire / smoke / helmet"><small>用于训练类别、模型输出、YOLO/COCO 导入导出；只允许英文、数字、_、-，且必须以英文字母开头。</small></div><div class="field"><label>中文名称</label><input id="label414Cn" class="input" value="${esc(l?.display_name||'')}" placeholder="例如 明火 / 烟雾 / 安全帽"></div><div class="field"><label>标签别名</label><input id="label414Aliases" class="input" value="${esc((l?.aliases||[]).join('、'))}" placeholder="例如 toukui1、toukui2、helmet_old"><small>用于搜索、历史来源展示和审计；不会用于导入时自动选择或推荐平台标签。</small></div><div class="form two"><div class="field"><label>显示颜色</label><input id="label414Color" class="input color414" type="color" value="${esc(l?.color||'#ef4444')}"></div><div class="field"><label>快捷键</label><input id="label414Hotkey" class="input" maxlength="1" value="${esc(l?.hotkey||'')}" placeholder="1-9"></div></div><div class="label414-preview"><span style="background:${esc(l?.color||'#ef4444')}"></span><b>${esc(l?.code||'fire')}</b><em>${esc(l?.display_name||'明火')}</em></div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveLabel414(${classId===null?'null':Number(classId)})">保存</button></div>`,false);
@@ -4613,11 +4635,21 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     return `<div class="zip411"><div class="zip411-main"><div class="zip411-progress"><div><span id="importRemapStage414">${esc(stage)}</span><b id="importRemapPct414">${Math.round(pct)}%</b></div><i><em id="importRemapBar414" style="width:${pct}%"></em></i><p id="importRemapMsg414">${esc(detail)}</p></div><div class="report429-kpis"><div><span>待处理</span><b>${Math.max(0,total-processed)}</b></div><div><span>已处理</span><b>${processed}</b></div><div><span>成功</span><b>${Number(task?.succeeded||0)}</b></div><div><span>失败</span><b>${Number(task?.failed||0)}</b></div></div>${active?'<div class="row end"><button class="btn danger" onclick="cancelImportRemap414()">取消任务</button><button class="btn" onclick="closeModal()">后台运行</button></div>':'<div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>'}</div></div>`;
   }
   function armImportRemap414(taskId,source,target){
-    const key='import-label-remap';
+    const key='annotation-label-remap';
     const run=()=>pollImportRemap414(taskId,source,target);
-    if(window.PollRegistryRuntime?.startTimeout)return window.PollRegistryRuntime.startTimeout(key,['数据集'],run,850);
-    return setTimeout(()=>{if(state.page==='数据集')run()},850);
+    if(window.PollRegistryRuntime?.startTimeout)return window.PollRegistryRuntime.startTimeout(key,['数据集','标签管理'],run,850);
+    return setTimeout(()=>{if(['数据集','标签管理'].includes(state.page))run()},850);
   }
+  async function refreshLabelSchemaAfterRemap414(task,source,target){
+    await refreshLabels414(true);
+    const progressVisible=!!document.getElementById('importRemapStage414');
+    if(progressVisible)closeModal();
+    if(state.page==='标签管理')drawLabel414();
+    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),scopeChanged=Number(task?.result?.changed_scope_images??0),failed=Number(task?.failed||0);
+    toast(failed?`标签统一完成：${changed} 个框、${scopeChanged} 个负样本范围已更新，${failed} 张需复核`:`标签统一完成：${source} → ${target} · ${changed} 个框 · ${scopeChanged} 个负样本范围`);
+    state.annotationRemapOrigin414='';
+  }
+
   async function refreshImportReviewAfterRemap414(task,source,target){
     await Promise.all([window.loadCore412(),refreshLabels414(false)]);
     const jobId=state.import412?.job_id;
@@ -4642,11 +4674,12 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       if(body)window.ModalContentRuntime.replace(body,importRemapProgress414(task,source,target));
       const status=String(task.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
-        window.PollRegistryRuntime?.clear?.('import-label-remap');
+        window.PollRegistryRuntime?.clear?.('annotation-label-remap');
+        if(state.annotationRemapOrigin414==='label-schema')return refreshLabelSchemaAfterRemap414(task,source,target);
         return refreshImportReviewAfterRemap414(task,source,target);
       }
       if(['FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)){
-        window.PollRegistryRuntime?.clear?.('import-label-remap');
+        window.PollRegistryRuntime?.clear?.('annotation-label-remap');
         return toast(task?.error_examples?.[0]?.error||'标签统一任务未完成，请查看任务状态');
       }
       armImportRemap414(taskId,source,target);
@@ -4663,7 +4696,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(state.import412RemapSubmitting)return;
     const target=document.getElementById(selectId)?.value||'';if(!target)return toast('请选择标签库中的标准标签');
     const ids=[...state.import412Selected];if(!ids.length)return toast('请选择本次导入素材');
-    state.import412RemapSubmitting=true;
+    state.import412RemapSubmitting=true;state.annotationRemapOrigin414='import-review';
     try{
       const task=await api(`/api/v52/projects/${pid()}/labels/remap`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids,source_label:source,target_label:target})});
       if(!task?.task_id){toast(`无需变更：${source} → ${target}`);return}
