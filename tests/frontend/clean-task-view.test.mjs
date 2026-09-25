@@ -129,3 +129,41 @@ test('remote clean task view maps Agent stages without inventing progress', () =
   assert.equal(view.percent, 55);
   assert.equal(view.runtimeText, '正在远程分析图片 · 当前 img-6');
 });
+
+
+test('clean scope choices use formal annotation states and selected IDs explicitly', () => {
+  const choices = cleaning.cleanScopeChoices({selectedCount: 2});
+  assert.deepEqual(
+    choices.map(item => item.value),
+    ['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'],
+  );
+  assert.equal(choices.find(item => item.value === 'selected').available, true);
+  assert.deepEqual(
+    cleaning.cleanScopeRequest('annotated', ['should-not-leak']),
+    {clean_scope: 'annotated', image_ids: []},
+  );
+  assert.deepEqual(
+    cleaning.cleanScopeRequest('selected', ['a', 'a', 'b']),
+    {clean_scope: 'selected', image_ids: ['a', 'b']},
+  );
+  assert.throws(() => cleaning.cleanScopeRequest('selected', []), /没有选中的图片/);
+
+  const forced = cleaning.cleanScopeChoices({selectedCount: 1, forcedSelected: true});
+  assert.equal(forced.find(item => item.value === 'selected').available, true);
+  assert.equal(forced.find(item => item.value === 'all').available, false);
+  assert.throws(
+    () => cleaning.cleanScopeRequest('all', ['a'], {forcedSelected: true}),
+    /锁定为当前选中图片/,
+  );
+});
+
+test('cleaning UI keeps scope preflight and result review on canonical owners', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.equal((source.match(/window\.createClean427=/g) || []).length, 1);
+  assert.equal((source.match(/window\.reviewClean427=/g) || []).length, 1);
+  assert.match(source, /cleanScopeRequest427/);
+  assert.match(source, /clean_scope/);
+  assert.match(source, /annotation_provenance/);
+  assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
+  assert.doesNotMatch(source, /window\.reviewClean427=async function/);
+});

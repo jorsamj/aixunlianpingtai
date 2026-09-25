@@ -94,6 +94,108 @@ def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
     _assert_durable_clean_task(project_id, task_id, [image_id])
 
 
+def test_clean_scope_filters_use_formal_annotation_state_not_box_count(client):
+    project_id = _create_project(client, "clean-scope-formal-state")
+    uploaded = _upload(
+        client, project_id,
+        "annotated.png", "unannotated.png", "confirmed-empty.png",
+    )
+    annotated_id, unannotated_id, empty_id = [
+        item["id"] for item in uploaded["uploaded"]
+    ]
+    app_module.write_annotation(
+        project_id,
+        annotated_id,
+        [{"class_id": 0, "label": "target", "x1": 5, "y1": 5, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+    app_module.write_annotation(
+        project_id, empty_id, [],
+        annotation_state="confirmed_empty",
+        annotation_origin="manual",
+    )
+    # Deliberately make box_count/annotated inconsistent. The explicit
+    # annotation_state remains authoritative for cleaning scope selection.
+    app_module.material_store(project_id).patch({
+        unannotated_id: {"box_count": 99, "annotated": True},
+    })
+
+    expected = {
+        "annotated": [annotated_id],
+        "unannotated": [unannotated_id],
+        "confirmed_empty": [empty_id],
+    }
+    for scope, expected_ids in expected.items():
+        payload = app_module.V47CleanReq(
+            clean_scope=scope,
+            task_name=f"scope-{scope}",
+        )
+        batch_payload = app_module._v47_material_batch_payload(project_id, payload)
+        assert batch_payload["selection_spec"]["scope"] == "FILTERED"
+        assert batch_payload["selection_spec"]["filters"]["annotation_state"] == scope
+        task_id = f"scope_{scope}_{uuid.uuid4().hex[:8]}"
+        app_module.prepare_material_batch(
+            project_id,
+            app_module.material_store(project_id),
+            app_module.shared_task_artifacts(),
+            batch_payload,
+            task_id=task_id,
+        )
+        assert sorted(app_module._v47_frozen_clean_selection_ids(task_id)) == sorted(expected_ids)
+
+
+def test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance(client):
+    project_id = _create_project(client, "clean-confirm-frozen-scope")
+    uploaded = _upload(client, project_id, "annotated-only.png", "outside-unannotated.png")
+    annotated_id, outside_id = [item["id"] for item in uploaded["uploaded"]]
+    app_module.write_annotation(
+        project_id,
+        annotated_id,
+        [{"class_id": 0, "label": "target", "x1": 10, "y1": 10, "x2": 120, "y2": 120}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"clean_scope": "annotated", "task_name": "annotated-only-clean"},
+    )
+    response.raise_for_status()
+    task_id = response.json()["id"]
+    assert app_module._v47_frozen_clean_selection_ids(task_id) == [annotated_id]
+
+    scheduler, _repository, _artifacts = _materials_scheduler(project_id)
+    for _ in range(10):
+        current = app_module.shared_task_repository().get(task_id)
+        assert current is not None
+        if current.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS}:
+            break
+        assert scheduler.run_once() is True
+    current = app_module.shared_task_repository().get(task_id)
+    assert current is not None
+    assert current.status is TaskStatus.SUCCEEDED, current.error
+
+    result = client.get(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/result"
+    )
+    result.raise_for_status()
+    item = result.json()["result"]["items"][0]
+    assert item["image_id"] == annotated_id
+    assert item["annotation_state"] == "annotated"
+    assert item["annotation_provenance"] == "manual"
+    assert item["url"].endswith(f"/materials/{annotated_id}/content")
+
+    confirmed = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm",
+        json={"delete_ids": []},
+    )
+    confirmed.raise_for_status()
+    assert confirmed.json()["processed_ids"] == [annotated_id]
+    assert app_module.material_store(project_id).get(annotated_id)["clean_task_id"] == task_id
+    assert not app_module.material_store(project_id).get(outside_id).get("clean_task_id")
+
+
 
 def test_clean_agent_preflight_rejects_local_material_and_create_does_not_fallback(client):
     project_id = _create_project(client, "clean-agent-local-rejected")

@@ -17136,6 +17136,7 @@ from platform_core.cleaning import (
 
 class V47CleanReq(BaseModel):
     image_ids: Optional[List[str]] = None
+    clean_scope: Literal['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'] = 'all'
     execution_mode: str = 'local'
     exact_duplicate: bool = True
     near_duplicate: bool = True
@@ -17159,6 +17160,7 @@ class V47CleanConfirmReq(BaseModel):
 
 class V47CleanRuntimeReq(BaseModel):
     image_ids: Optional[List[str]] = None
+    clean_scope: Literal['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'] = 'all'
 
 
 def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
@@ -17282,11 +17284,51 @@ def _v47_clean_required_capabilities(request: Dict[str, Any]) -> Tuple[str, ...]
     return ('materials.batch',)
 
 
-def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-    get_project(project_id)
+_V47_CLEAN_SCOPE_STATES = {
+    'all': None,
+    'annotated': 'annotated',
+    'unannotated': 'unannotated',
+    'confirmed_empty': 'confirmed_empty',
+}
+
+
+def _v47_clean_selection_spec(
+    clean_scope: str = 'all',
+    image_ids: Optional[List[str]] = None,
+) -> Tuple[Dict[str, Any], str]:
     selected = list(dict.fromkeys(
         str(value).strip() for value in (image_ids or []) if str(value).strip()
     ))
+    scope = str(clean_scope or 'all').strip().lower()
+    if selected:
+        if scope not in {'all', 'selected'}:
+            raise ValueError('当前选中图片不能同时叠加标注状态清洗范围')
+        return {'scope': 'SELECTED', 'image_ids': selected}, 'selected'
+    if scope == 'selected':
+        raise ValueError('当前没有选中的图片')
+    if scope not in _V47_CLEAN_SCOPE_STATES:
+        raise ValueError('未知清洗范围')
+    annotation_state = _V47_CLEAN_SCOPE_STATES[scope]
+    filters = {'annotation_state': annotation_state} if annotation_state else {}
+    return {'scope': 'FILTERED', 'filters': filters}, scope
+
+
+def _v47_clean_agent_preflight(
+    project_id: str,
+    image_ids: Optional[List[str]] = None,
+    clean_scope: str = 'all',
+) -> Dict[str, Any]:
+    get_project(project_id)
+    try:
+        selection, normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
+    except ValueError as error:
+        return {
+            'agent_available': False,
+            'reason': str(error),
+            'selected_count': 0,
+            'eligible_nodes': [],
+        }
+    selected = list(selection.get('image_ids') or [])
     if len(selected) > 500:
         return {
             'agent_available': False,
@@ -17296,11 +17338,11 @@ def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] =
         }
 
     materials = material_store(project_id)
-    clauses: List[str] = []
-    params: List[Any] = []
-    if selected:
-        clauses.append('m.id IN (' + ','.join('?' for _ in selected) + ')')
-        params.extend(selected)
+    if str(selection.get('scope') or '') == 'FILTERED':
+        clauses, params = materials._filters(selection.get('filters') or {})
+    else:
+        clauses = ['m.id IN (' + ','.join('?' for _ in selected) + ')']
+        params = list(selected)
     where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with closing(materials._connect()) as database:
         row = database.execute(
@@ -17329,8 +17371,9 @@ def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] =
     if total <= 0:
         return {
             'agent_available': False,
-            'reason': '没有可清洗的素材',
+            'reason': '当前清洗范围没有可处理素材',
             'selected_count': 0,
+            'clean_scope': normalized_scope,
             'eligible_nodes': [],
         }
     if incomplete:
@@ -17338,6 +17381,7 @@ def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] =
             'agent_available': False,
             'reason': f'有 {incomplete} 张素材缺少对象存储大小或 SHA256 证据',
             'selected_count': total,
+            'clean_scope': normalized_scope,
             'eligible_nodes': [],
         }
 
@@ -17419,7 +17463,7 @@ def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] =
 
 @app.post('/api/v47/projects/{project_id}/clean-runtime/preflight')
 def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
-    truth = _v47_clean_agent_preflight(project_id, payload.image_ids)
+    truth = _v47_clean_agent_preflight(project_id, payload.image_ids, payload.clean_scope)
     return {
         'local_available': True,
         'default_execution_mode': 'local',
@@ -17430,12 +17474,9 @@ def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
 def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
     data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
     image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
+    clean_scope = str(data.pop('clean_scope', 'all') or 'all')
     execution_mode = _v47_clean_execution_mode(data.pop('execution_mode', 'local'))
-    selection: Dict[str, Any]
-    if image_ids:
-        selection = {'scope': 'SELECTED', 'image_ids': image_ids}
-    else:
-        selection = {'scope': 'FILTERED', 'filters': {}}
+    selection, _normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
     draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
     draft['selection_spec'] = estimate['selection_spec']
@@ -17455,7 +17496,18 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
     request = _v47_material_batch_request(task.task_id)
     options = dict(request.get('options') or {})
     selection = dict(request.get('selection_spec') or {})
-    request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
+    selection_scope = str(selection.get('scope') or '').upper()
+    selection_filters = dict(selection.get('filters') or {})
+    clean_scope = (
+        'selected'
+        if selection_scope != 'FILTERED'
+        else str(selection_filters.get('annotation_state') or 'all').lower()
+    )
+    request_payload = {
+        **options,
+        'image_ids': list(selection.get('image_ids') or []),
+        'clean_scope': clean_scope,
+    }
     confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
     public_status = str(body.get('status') or task.status.value)
     execution_mode = str(request.get('execution_mode') or 'local').lower()
@@ -17500,6 +17552,7 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'current_item': body.get('current_item'),
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
         'execution_mode': execution_mode,
+        'clean_scope': clean_scope,
     }
 
 
@@ -17529,7 +17582,7 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
 
     batch_payload = _v47_material_batch_payload(project_id, payload)
     if str(batch_payload.get('execution_mode') or 'local') == 'agent':
-        preflight = _v47_clean_agent_preflight(project_id, payload.image_ids)
+        preflight = _v47_clean_agent_preflight(project_id, payload.image_ids, payload.clean_scope)
         if not preflight.get('agent_available'):
             raise ValueError(str(preflight.get('reason') or '远程清洗当前不可用'))
         batch_payload['remote_execution'] = (
@@ -17589,7 +17642,10 @@ def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
     return _v47_clean_compat_task(published)
 
 
-def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
+def _v47_durable_clean_results(
+    task_id: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
     artifacts = shared_task_artifacts()
     path = artifacts.artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
     if not path.is_file():
@@ -17601,7 +17657,56 @@ def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
             'SELECT r.result_json,s.state,s.error FROM clean_results r '
             'JOIN selection s ON s.image_id=r.image_id ORDER BY r.image_id'
         ).fetchall()
-    return {'items': [{**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]} for row in rows]}
+    items = [
+        {**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]}
+        for row in rows
+    ]
+    if project_id and items:
+        indexed = {
+            str(row.get('id')): public_material(project_id, row)
+            for row in material_store(project_id).get_many(
+                [str(item.get('image_id')) for item in items]
+            )
+        }
+        for item in items:
+            material = indexed.get(str(item.get('image_id'))) or {}
+            annotation_state = str(
+                material.get('annotation_state')
+                or material.get('annotation_status')
+                or ('annotated' if material.get('annotated') else 'unannotated')
+            ).strip().lower()
+            annotation_origin = str(material.get('annotation_origin') or '').strip().lower()
+            annotation_provenance = (
+                'confirmed_empty'
+                if annotation_state == 'confirmed_empty'
+                else annotation_origin or ('unannotated' if annotation_state == 'unannotated' else 'unknown')
+            )
+            item.update({
+                'url': material.get('url') or '',
+                'annotation_state': annotation_state,
+                'annotation_provenance': annotation_provenance,
+                'annotation_origin': annotation_origin,
+                'box_count': int(material.get('box_count') or 0),
+                'labels': list(material.get('labels') or []),
+            })
+    return {'items': items}
+
+
+def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
+    path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return []
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        if database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='selection'"
+        ).fetchone() is None:
+            return []
+        return [
+            str(row[0])
+            for row in database.execute(
+                'SELECT image_id FROM selection ORDER BY image_id'
+            ).fetchall()
+        ]
 
 _V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
 
@@ -18010,7 +18115,7 @@ def v47_clean_result(project_id: str, task_id: str):
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    return {'task': task, 'result': _v47_durable_clean_results(task_id)}
+    return {'task': task, 'result': _v47_durable_clean_results(task_id, project_id)}
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm')
@@ -18028,15 +18133,17 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         deleted = int(res.get('deleted') or 0)
         deleted_images = list(res.get('deleted_images') or [])
         failed_items = list(res.get('failed_items') or [])
-    # 清洗确认后，本次扫描范围内未删除的图片全部进入“已处理”。
-    req = task.get('request_payload') or {}
-    wanted = {str(x) for x in (req.get('image_ids') or []) if str(x)}
+    # 清洗确认严格绑定创建时已经冻结的 selection.sqlite3。
+    # FILTERED 范围不能因为兼容层 image_ids 为空而扩大到整个素材库。
+    wanted = set(_v47_frozen_clean_selection_ids(task_id))
+    if not wanted:
+        raise HTTPException(status_code=409, detail='清洗冻结范围不存在，请重新创建任务')
     cleaned_at = now_iso()
     def mark_confirmed(rows):
         processed_ids = []
         for img in rows:
             iid = str(img.get('id'))
-            if wanted and iid not in wanted:
+            if iid not in wanted:
                 continue
             img['processing_status'] = 'processed'
             img['cleaned_at'] = cleaned_at

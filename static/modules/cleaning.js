@@ -92,6 +92,72 @@ export function applyCleanConfirmation(materials, result) {
 }
 
 
+const CLEAN_SCOPE_DEFINITIONS = Object.freeze({
+  all: Object.freeze({
+    value: 'all',
+    label: '全部图片',
+    detail: '扫描全部正式素材状态，仅给出质量建议，不自动删除。',
+  }),
+  annotated: Object.freeze({
+    value: 'annotated',
+    label: '已标注',
+    detail: '仅 annotation_state=annotated；图片质量与正式标注分层处理。',
+  }),
+  unannotated: Object.freeze({
+    value: 'unannotated',
+    label: '未标注',
+    detail: '只检查图片质量；没有标注框不是坏图，也不会被当作异常。',
+  }),
+  confirmed_empty: Object.freeze({
+    value: 'confirmed_empty',
+    label: '已确认无目标',
+    detail: '合法负样本；图片质量通过后继续保留用于训练。',
+  }),
+  selected: Object.freeze({
+    value: 'selected',
+    label: '当前选中图片',
+    detail: '只处理当前明确选择的图片，不扩大到其他素材。',
+  }),
+});
+
+const CLEAN_SCOPE_ORDER = Object.freeze([
+  'all', 'annotated', 'unannotated', 'confirmed_empty', 'selected',
+]);
+
+function normalizeCleanScope(value) {
+  const scope = String(value || 'all').trim().toLowerCase();
+  if (!Object.hasOwn(CLEAN_SCOPE_DEFINITIONS, scope)) {
+    throw new Error('未知清洗范围，请重新选择');
+  }
+  return scope;
+}
+
+function uniqueCleanIds(values = []) {
+  return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+export function cleanScopeChoices({selectedCount = 0, forcedSelected = false} = {}) {
+  const count = Math.max(0, Number(selectedCount || 0));
+  return CLEAN_SCOPE_ORDER.map(value => ({
+    ...CLEAN_SCOPE_DEFINITIONS[value],
+    available: forcedSelected ? value === 'selected' : value !== 'selected' || count > 0,
+    selectedCount: value === 'selected' ? count : null,
+  }));
+}
+
+export function cleanScopeRequest(value = 'all', selectedIds = [], {forcedSelected = false} = {}) {
+  const scope = normalizeCleanScope(value);
+  const ids = uniqueCleanIds(selectedIds);
+  if (forcedSelected && scope !== 'selected') {
+    throw new Error('本次入口已锁定为当前选中图片');
+  }
+  if (scope === 'selected') {
+    if (!ids.length) throw new Error('当前没有选中的图片');
+    return {clean_scope: 'selected', image_ids: ids};
+  }
+  return {clean_scope: scope, image_ids: []};
+}
+
 export function cleanExecutionChoices(preflight = {}) {
   const nodes = Array.isArray(preflight.eligible_nodes) ? preflight.eligible_nodes : [];
   const agentAvailable = preflight.agent_available === true;

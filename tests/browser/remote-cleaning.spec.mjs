@@ -110,6 +110,71 @@ test('cleaning execution picker disables Agent for local material and submits ex
 });
 
 
+test('cleaning range switches preflight and submission by formal annotation_state', async ({page, request}) => {
+  const project = await createProject(request);
+  await selectProject(page, project.id);
+
+  const preflights = [];
+  let submitted = null;
+  await page.route(`**/api/v47/projects/${project.id}/clean-runtime/preflight`, async route => {
+    preflights.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        local_available: true,
+        default_execution_mode: 'local',
+        agent_available: false,
+        reason: '测试仅使用中央 Worker',
+        selected_count: 0,
+        eligible_nodes: [],
+      }),
+    });
+  });
+  await page.route(`**/api/v47/projects/${project.id}/clean-tasks`, async route => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'scope-clean-ui',
+          status: 'queued',
+          status_text: '排队中',
+          execution_mode: 'local',
+          clean_scope: 'annotated',
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await waitForCleanRuntime(page);
+  await page.evaluate(() => window.createClean427());
+
+  const dialog = page.getByRole('dialog', {name: '创建自动清洗任务'});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('input[name="cl427Scope"][value="all"]')).toBeChecked();
+  await expect(dialog.locator('input[name="cl427Scope"][value="annotated"]')).toBeEnabled();
+  await expect(dialog.locator('input[name="cl427Scope"][value="unannotated"]')).toBeEnabled();
+  await expect(dialog.locator('input[name="cl427Scope"][value="confirmed_empty"]')).toBeEnabled();
+  await expect(dialog.locator('input[name="cl427Scope"][value="selected"]')).toBeDisabled();
+
+  await dialog.locator('input[name="cl427Scope"][value="annotated"]').check();
+  await expect.poll(() => preflights.at(-1)?.clean_scope).toBe('annotated');
+  expect(preflights.at(-1)?.image_ids).toEqual([]);
+  await expect(dialog.getByRole('button', {name: '开始清洗'})).toBeEnabled();
+  await dialog.getByRole('button', {name: '开始清洗'}).click();
+
+  await expect.poll(() => submitted).not.toBeNull();
+  expect(submitted.clean_scope).toBe('annotated');
+  expect(submitted.image_ids).toEqual([]);
+  expect(submitted.execution_mode).toBe('local');
+});
+
+
 test('cleaning progress refresh preserves task row and progress bar nodes', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
