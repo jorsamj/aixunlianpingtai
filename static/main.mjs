@@ -1,7 +1,7 @@
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
-import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422501';
+import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422517';
