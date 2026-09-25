@@ -17437,6 +17437,23 @@ def _v47_clean_agent_preflight(
     assignments_by_node: Dict[str, List[Dict[str, Any]]] = {}
     for assignment in active_assignments:
         assignments_by_node.setdefault(str(assignment.get('node_id') or ''), []).append(assignment)
+    executions_by_node: Dict[str, List[str]] = {}
+    with repository._connect() as database:
+        rows = database.execute(
+            """
+            SELECT task_id,worker_id FROM tasks
+             WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+               AND worker_id LIKE 'agent:%'
+               AND (lease_expires_at IS NULL OR lease_expires_at>?)
+             ORDER BY updated_at,task_id
+            """,
+            (now_iso(),),
+        ).fetchall()
+    for row in rows:
+        worker_id = str(row['worker_id'] or '')
+        node_id = worker_id.removeprefix('agent:')
+        if node_id and worker_id.startswith('agent:'):
+            executions_by_node.setdefault(node_id, []).append(str(row['task_id']))
     if not nodes:
         return {
             'agent_available': False,
@@ -17477,8 +17494,8 @@ def _v47_clean_agent_preflight(
     for node in nodes:
         node_id = str(node.get('node_id') or '')
         tasks_by_id: Dict[str, Dict[str, Any]] = {}
-        for durable in node.get('durable_tasks') or []:
-            task = repository.get(str(durable.get('task_id') or ''))
+        for task_id in executions_by_node.get(node_id, []):
+            task = repository.get(task_id)
             if task is not None:
                 tasks_by_id[task.task_id] = scheduling_task_row(task)
         for assignment in assignments_by_node.get(node_id, []):

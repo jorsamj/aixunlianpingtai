@@ -335,6 +335,30 @@ def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client)
     assert request["remote_execution"]["transport"] == "object-storage-v1"
     assert request["scheduling"] == {"mode": "auto", "node_id": "", "queue_policy": "normal"}
 
+    # Once Agent execution starts its assignment row is released. Preflight must
+    # still report the node busy from durable execution ownership.
+    with app_module.shared_task_repository()._connect() as database:
+        database.execute(
+            """
+            UPDATE tasks
+               SET status='RUNNING',stage='REMOTE_CLEANING_ANALYZING',
+                   progress=42,worker_id=?,lease_expires_at='2999-01-01T00:00:00+00:00'
+             WHERE task_id=?
+            """,
+            (f"agent:{node_id}", task.task_id),
+        )
+    busy = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    busy.raise_for_status()
+    node_truth = next(row for row in busy.json()["eligible_nodes"] if row["node_id"] == node_id)
+    assert node_truth["idle"] is False
+    assert node_truth["active_count"] == 1
+    assert node_truth["active_tasks"][0]["task_id"] == task.task_id
+    assert node_truth["active_tasks"][0]["operation"] == "CLEAN"
+    assert node_truth["active_tasks"][0]["preemptible"] is True
+
 
 def test_upload_batch_clean_association_points_to_same_durable_task(client):
     project_id = _create_project(client, "upload-clean-unified-truth")
