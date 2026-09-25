@@ -2688,6 +2688,36 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
+def _annotation_summary_for_material_index(
+    boxes: List[Dict[str, Any]],
+    annotation_state: Optional[str],
+    material: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Rebuild material annotation summary without erasing durable provenance.
+
+    Box-level provenance is authoritative when present. Legacy annotations may
+    predate box provenance, so index migration may fall back to the material's
+    durable origin or structured-import source type only when every box lacks
+    an explicit source.
+    """
+    summary = annotation_summary(boxes, annotation_state)
+    if summary.get("annotation_state") not in {"annotated", "confirmed_empty"}:
+        return summary
+    explicit_sources = [
+        str(box.get("source") or "").strip().lower()
+        for box in boxes
+        if str(box.get("source") or "").strip()
+    ]
+    if explicit_sources:
+        return summary
+    row = material or {}
+    durable_origin = str(row.get("annotation_origin") or "").strip().lower()
+    if durable_origin in {"manual", "ai_confirmed", "mixed", "imported"}:
+        summary["annotation_origin"] = durable_origin
+    elif str(row.get("source_type") or "").strip().lower().startswith("imported_"):
+        summary["annotation_origin"] = "imported"
+    return summary
+
 def _v50_material_annotation_patch(
     saved: Dict[str, Any], annotation_origin: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -4106,15 +4136,9 @@ def _v52_annotation_index_worker(project_id: str):
             image_id = str(img.get("id"))
             anns = read_annotation(project_id, image_id)
             boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
-            summary = annotation_summary(boxes, anns.get('annotation_state'))
-            # Empty GT has no box-level provenance. Preserve the durable material
-            # projection written by an AI-reviewed empty commit when rebuilding
-            # an annotation index; annotated rows can reconstruct provenance from boxes.
-            if (
-                summary.get("annotation_state") == "confirmed_empty"
-                and str(img.get("annotation_origin") or "") == "ai_confirmed"
-            ):
-                summary["annotation_origin"] = "ai_confirmed"
+            summary = _annotation_summary_for_material_index(
+                boxes, anns.get('annotation_state'), img,
+            )
             patch = {
                 **summary,
                 "annotation_summary_at": anns.get("updated_at") or now_iso(),
@@ -19419,11 +19443,11 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
-        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state')
+        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state'),img
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated,annotation_state=fut.result(); patch={**annotation_summary(boxes,annotation_state),"annotation_summary_at":updated}
+            iid,boxes,updated,annotation_state,img=fut.result(); patch={**_annotation_summary_for_material_index(boxes,annotation_state,img),"annotation_summary_at":updated}
             if boxes:patch["processing_status"]="processed"
             patches[iid]=patch
             done+=1
