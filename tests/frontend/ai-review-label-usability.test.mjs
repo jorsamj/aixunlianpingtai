@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 
 function reviewBlock() {
   const start = app.indexOf('function ensureReviewShell()');
@@ -107,4 +108,10 @@ test('AI review exposes low-confidence filtering', () => {
   const source = reviewBlock();
   assert.match(source, /data-ai66-filter="low"/);
   assert.match(source, /Number\(box\.confidence\)<\.6/);
+});
+
+test('AI review keeps mapping bounded and candidate actions readable without sticky overlays', () => {
+  assert.match(styles, /\.ai66-label-tools\{[^}]*max-height:min\(34vh,320px\)[^}]*overflow:auto/s);
+  assert.match(styles, /\.ai66-candidate-card>footer \.btn\{min-height:32px;font-size:12px\}/);
+  assert.match(styles, /\.ai66-review-footer\{position:relative!important/);
 });
