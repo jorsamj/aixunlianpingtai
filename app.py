@@ -17444,10 +17444,8 @@ def _v47_clean_agent_preflight(
             SELECT task_id,worker_id FROM tasks
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
                AND worker_id LIKE 'agent:%'
-               AND (lease_expires_at IS NULL OR lease_expires_at>?)
              ORDER BY updated_at,task_id
-            """,
-            (now_iso(),),
+            """
         ).fetchall()
     for row in rows:
         worker_id = str(row['worker_id'] or '')
