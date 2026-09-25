@@ -972,6 +972,13 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 @media(prefers-reduced-motion:reduce){.annotation-workbench-modal *{scroll-behavior:auto!important;transition:none!important}}
 
 
+/* v66 annotation inspector scroll ownership */
+.ann420-inspector{display:flex!important;min-height:0;flex-direction:column;overflow:hidden!important}
+.ann420-label-panel{flex:0 0 auto;min-height:0}
+.ann420-object-panel{display:flex;min-height:0;flex:1 1 auto;flex-direction:column;margin-bottom:10px!important}
+.ann420-label-panel #annLabels{max-height:min(28vh,240px);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.ann420-object-panel #annBoxes{min-height:0;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding-right:2px}
+.ann420-shortcuts{flex:0 0 auto;margin-top:0!important}
 /* v66 annotation workbench P1: canonical inspector polish */
 .ann420-inspector #annLabels .ann414-label{min-height:42px;margin:0;padding:8px 9px;border-color:#e1e7ef;border-radius:9px;background:#fbfcfe;transition:border-color var(--motion-fast,.14s) var(--motion-ease,ease),background var(--motion-fast,.14s) var(--motion-ease,ease),box-shadow var(--motion-fast,.14s) var(--motion-ease,ease)}
 .ann420-inspector #annLabels .ann414-label:hover{border-color:#b9c9df;background:#f5f8fc}
