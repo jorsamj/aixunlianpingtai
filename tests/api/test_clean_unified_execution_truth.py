@@ -185,6 +185,18 @@ def test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_p
     assert item["annotation_state"] == "annotated"
     assert item["annotation_provenance"] == "manual"
     assert item["url"].endswith(f"/materials/{annotated_id}/content")
+    audit = result.json()["result"]["annotation_audit"]
+    assert audit["enabled"] is True
+    assert audit["audited_images"] == 1
+    assert audit["state_counts"]["annotated"] == 1
+    assert audit["review_images"] == 0
+
+    audit_page = client.get(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit"
+    )
+    audit_page.raise_for_status()
+    assert audit_page.json()["audited_images"] == 1
+    assert audit_page.json()["items"] == []
 
     confirmed = client.post(
         f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm",

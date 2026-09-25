@@ -13,6 +13,7 @@ from pathlib import Path
 from filelock import FileLock
 
 from .annotation_repository import AnnotationRepository
+from .annotation_quality import audit_cleaning_annotations
 from .cleaning import DurableHashIndex, clean_options
 from .cleaning_batches import clean_batch
 from .material_repository import MaterialRepository
@@ -572,11 +573,25 @@ class MaterialBatchHandler:
             checkpoint = manifest.summary()
             context.save_checkpoint(checkpoint)
             append_task_log(context, "checkpoint", f"processed={checkpoint['processed']} succeeded={checkpoint['succeeded']} failed={checkpoint['failed']}")
+        audit_summary = None
+        if operation is BatchOperation.CLEAN:
+            audit_summary = audit_cleaning_annotations(
+                project_path,
+                manifest.database,
+                materials,
+                enabled=bool(options.get("annotation_audit", True)),
+            )
         summary = manifest.summary()
         if operation is BatchOperation.CLEAN:
-            summary.update({"clean_results_ref": SELECTION_REF,
-                            "review_required": bool(summary["flagged"]),
-                            "scan_only": True})
+            summary.update({
+                "clean_results_ref": SELECTION_REF,
+                "annotation_audit": audit_summary,
+                "review_required": bool(
+                    summary["flagged"]
+                    or (audit_summary or {}).get("review_images")
+                ),
+                "scan_only": True,
+            })
         context.save_checkpoint(summary)
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
         if annotation is not None:

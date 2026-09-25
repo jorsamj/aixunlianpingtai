@@ -17689,7 +17689,40 @@ def _v47_durable_clean_results(
                 'box_count': int(material.get('box_count') or 0),
                 'labels': list(material.get('labels') or []),
             })
-    return {'items': items}
+    return {
+        'items': items,
+        'annotation_audit': _v47_durable_annotation_audit(task_id, project_id),
+    }
+
+
+def _v47_durable_annotation_audit(
+    task_id: str,
+    project_id: Optional[str] = None,
+    *,
+    cursor: str = '',
+    limit: int = 100,
+) -> Dict[str, Any]:
+    path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return {
+            'enabled': False, 'audited_images': 0, 'review_images': 0,
+            'warning_count': 0, 'items': [], 'next_cursor': None,
+        }
+    from platform_core.annotation_quality import read_annotation_audit
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        page = read_annotation_audit(database, cursor=cursor, limit=limit)
+    items = list(page.get('items') or [])
+    if project_id and items:
+        indexed = {
+            str(row.get('id')): public_material(project_id, row)
+            for row in material_store(project_id).get_many(
+                [str(item.get('image_id')) for item in items]
+            )
+        }
+        for item in items:
+            material = indexed.get(str(item.get('image_id'))) or {}
+            item['url'] = material.get('url') or ''
+    return {**page, 'items': items}
 
 
 def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
@@ -18116,6 +18149,22 @@ def v47_clean_result(project_id: str, task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
     return {'task': task, 'result': _v47_durable_clean_results(task_id, project_id)}
+
+
+@app.get('/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit')
+def v47_clean_annotation_audit(
+    project_id: str,
+    task_id: str,
+    cursor: str = '',
+    limit: int = 100,
+):
+    task = _v33_get_task(project_id, 'clean_tasks', task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail='清洗任务不存在')
+    return _v47_durable_annotation_audit(
+        task_id, project_id, cursor=cursor,
+        limit=max(1, min(200, int(limit or 100))),
+    )
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm')

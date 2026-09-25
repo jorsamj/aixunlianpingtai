@@ -8,6 +8,7 @@ on:
     paths:
       - 'platform_core/cleaning.py'
       - 'platform_core/cleaning_analysis_runtime.py'
+      - 'platform_core/annotation_quality.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/remote_cleaning.py'
       - 'platform_core/remote_execution_transport.py'
@@ -20,6 +21,7 @@ on:
       - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'
+      - 'tests/unit/test_annotation_quality.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
@@ -43,6 +45,7 @@ on:
     paths:
       - 'platform_core/cleaning.py'
       - 'platform_core/cleaning_analysis_runtime.py'
+      - 'platform_core/annotation_quality.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/remote_cleaning.py'
       - 'platform_core/remote_execution_transport.py'
@@ -55,6 +58,7 @@ on:
       - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'
+      - 'tests/unit/test_annotation_quality.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
@@ -97,6 +101,7 @@ jobs:
           python -m py_compile
           platform_core/cleaning.py
           platform_core/cleaning_analysis_runtime.py
+          platform_core/annotation_quality.py
           platform_core/material_batches.py
           platform_core/remote_cleaning.py
           platform_core/remote_execution_transport.py
@@ -107,6 +112,7 @@ jobs:
           platform_core/task_node_assignments.py
           node_agent.py
           tests/unit/test_remote_cleaning.py
+          tests/unit/test_annotation_quality.py
           tests/unit/test_node_agent_cleaning_runtime.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
@@ -117,6 +123,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_cleaning.py
+          tests/unit/test_annotation_quality.py
           tests/unit/test_node_agent_cleaning_runtime.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
@@ -143,6 +150,8 @@ jobs:
           grep -Fq 'data-progress=' static/app.js
           grep -Fq 'REMOTE_CLEANING_ANALYZING' static/modules/cleaning.js
           grep -Fq 'commit_remote_cleaning_review' platform_core/remote_cleaning.py
+          grep -Fq 'audit_cleaning_annotations' platform_core/material_batches.py
+          grep -Fq 'audit_cleaning_annotations' platform_core/remote_cleaning.py
           grep -Fq 'metric_issues(metrics, options, image_id, index)' platform_core/remote_cleaning.py
           grep -Fq 'DurableHashIndex' platform_core/remote_cleaning.py
           grep -Fq 'REMOTE_CLEANING_IMAGE_NOT_SELECTED' platform_core/remote_execution_transport.py
