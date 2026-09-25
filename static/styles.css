@@ -973,11 +973,11 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 
 
 /* v66 annotation workbench P1: canonical inspector polish */
-.ann420-inspector #annLabels .ann414-label{min-height:42px;margin:0;padding:8px 9px;border-color:#e1e7ef;border-radius:9px;background:#fbfcfe;transition:border-color .12s ease,background .12s ease,box-shadow .12s ease}
+.ann420-inspector #annLabels .ann414-label{min-height:42px;margin:0;padding:8px 9px;border-color:#e1e7ef;border-radius:9px;background:#fbfcfe;transition:border-color var(--motion-fast,.14s) var(--motion-ease,ease),background var(--motion-fast,.14s) var(--motion-ease,ease),box-shadow var(--motion-fast,.14s) var(--motion-ease,ease)}
 .ann420-inspector #annLabels .ann414-label:hover{border-color:#b9c9df;background:#f5f8fc}
 .ann420-inspector #annLabels .ann414-label.active{border-color:#7ba3e8;background:#eef4ff;box-shadow:0 0 0 2px rgba(37,99,235,.07)}
 .ann420-inspector #annLabels .ann414-label b{font-size:12px;color:#263b5b}.ann420-inspector #annLabels .ann414-label em{font-size:10px;color:#7b899d}
-.ann420-inspector #annBoxes .ann414-boxrow{grid-template-columns:minmax(0,1fr) 126px;min-height:46px;margin:0;padding:7px 8px;border-color:#e1e7ef;border-radius:9px;background:#fbfcfe;transition:border-color .12s ease,background .12s ease,box-shadow .12s ease}
+.ann420-inspector #annBoxes .ann414-boxrow{grid-template-columns:minmax(0,1fr) 126px;min-height:46px;margin:0;padding:7px 8px;border-color:#e1e7ef;border-radius:9px;background:#fbfcfe;transition:border-color var(--motion-fast,.14s) var(--motion-ease,ease),background var(--motion-fast,.14s) var(--motion-ease,ease),box-shadow var(--motion-fast,.14s) var(--motion-ease,ease)}
 .ann420-inspector #annBoxes .ann414-boxrow:hover{border-color:#b9c9df;background:#f7f9fc}.ann420-inspector #annBoxes .ann414-boxrow.active{border-color:#7ba3e8;background:#eef4ff;box-shadow:0 0 0 2px rgba(37,99,235,.07)}
 .ann420-inspector #annBoxes .ann414-boxrow>span b{overflow:hidden;color:#263b5b;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.ann420-inspector #annBoxes .ann414-boxrow>span em{overflow:hidden;color:#718096;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 .ann420-inspector #annBoxes .ann414-boxrow .select{width:126px;height:30px;border-color:#dfe5ee;background:#fff;font-size:10px}
@@ -1041,7 +1041,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 
 /* v66 AI review P1: denser but more readable production review */
 .ai66-review-filters button{font-size:12px}.ai66-label-tools>summary{font-size:12px}.ai66-review-kpis span{font-size:11px}.ai66-review-kpis b{font-size:20px}
-.ai66-candidate-card{transition:border-color .12s ease,box-shadow .12s ease,transform .12s ease}.ai66-candidate-card:hover{border-color:#c5d2e3!important;box-shadow:0 7px 20px rgba(24,42,70,.07)}
+.ai66-candidate-card{transition:border-color var(--motion-fast,.14s) var(--motion-ease,ease),box-shadow var(--motion-fast,.14s) var(--motion-ease,ease),transform var(--motion-fast,.14s) var(--motion-ease,ease)}.ai66-candidate-card:hover{border-color:#c5d2e3!important;box-shadow:0 7px 20px rgba(24,42,70,.07)}
 .ai66-candidate-card.accepted{box-shadow:inset 3px 0 0 #4f83d8,0 3px 10px rgba(24,42,70,.035)}.ai66-candidate-card.rejected{opacity:.88;box-shadow:inset 3px 0 0 #c86a72}
 .ai66-candidate-body{padding:10px 11px 8px}.ai66-candidate-body b{font-size:13px}.ai66-candidate-body span{font-size:11px;line-height:1.45}.ai66-candidate-body>em{font-size:10px}
 .ai66-candidate-card>footer{padding:3px 11px 11px}.ai66-candidate-card>footer .btn{min-height:32px;font-size:12px}.ai66-review-footer .btn{min-height:32px}
