@@ -1,11 +1,46 @@
 # v42.25 技术债关闭总账
 
-> **状态：PAUSED / 非阻断技术债清理按用户要求暂停**
-> **分支：`refactor/frontend-runtime-stabilization`**  
+> **状态：ACTIVE / 标签导入、Ground Truth 与训练 schema 技术债收口中**
+> **当前分支：`feature/external-algorithm-publishing`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`1c3fa7f2b5cb826c0998f249637241a59134f053`**
-> **最新正式门：Release Regression `34794630826` PASS；Navigation Action Fencing `34794630808` PASS（Real Chrome）；Frontend Runtime Stabilization `34794630837` PASS（unit + full Real Chrome）。Resource Discovery SQLite 永久跨平台 run `34700900542` 仍保持 Ubuntu + Windows 全绿。**
-> **更新日期：2026-09-14**
+> **本轮文档基线 HEAD：`60e31539454300f466b90924f4c15a7a3d3bd218`**
+> **当前 CI：最新 HEAD checks 尚在 queued；不得把排队态表述为通过。下方历史 PASS 只证明对应历史 HEAD。**
+> **更新日期：2026-09-26**
+
+
+## 2026-09-26 — Label import / Ground Truth / training schema closure — IMPLEMENTED, CI PENDING
+
+本批次没有新建第二套导入、清洗、标签统一或训练 runtime，而是在现有 durable owner 上收口。
+
+### 已关闭的技术债
+
+- **自动标签映射决策退休**：ZIP、storage import、rescan、AI annotation 均不再根据同名、中文名、alias、历史映射自动选择 canonical 标签。外部类只暴露事实，映射必须人工确认。
+- **标签统一同步阻塞退休**：已使用标签不再通过同步 HTTP 全库扫描修改。全库统一复用 `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS`，后端按标签索引冻结选择，Worker 分批执行，浏览器只显示任务进度。
+- **confirmed_empty scope 漏写修复**：scope-only remap 会真正写入 AnnotationRepository。新增 `material_annotation_scopes` 索引，只索引 confirmed-empty 范围，避免与 annotated 正样本双计。
+- **Annotation remap N-connection 热点**：同一 Worker batch 改为 `get_many` 预加载，不再对每张图单独打开查询连接。
+- **导入来源不可追溯**：正式 box 现在持久化 external source class/name/import batch/source format/manual mapping provenance。
+- **训练脏 schema 进入 YOLO**：训练 preflight 阻断 unmapped / deleted / inactive / temp / unknown 类别；标签读取按 500 条批量查询。
+- **迭代 schema 变化不显式**：训练合同现在记录 retained/dropped labels、`label_schema_changed`、原因、`base_training_mode`，并明确 `strict_resume=false` / `optimizer_state_resumed=false`。
+
+### 性能与 UI 合同
+
+- 大量标签统一使用 durable task，显示真实 processed/total/succeeded/failed/progress；关闭弹窗不取消任务。
+- ZIP/服务器/对象存储导入继续使用既有 durable background pipeline；确认动作不在 HTTP 请求里同步写万级素材。
+- 普通浏览器上传继续分块提交；只有已经送达服务端的数据才能在页面关闭后继续处理，未上传完的本地文件字节不能由后台接管。
+- 标签管理页只展示聚合统计，不为了统一标签把几万张素材 ID 注入 DOM。
+- 任何新 UI 都必须复用现有 PollRegistry / material batch owner，不得再加递归 timer 或第二个 task state machine。
+
+### 尚未关闭
+
+- 大量 external classes 的映射审查 UI 仍需 search + pagination/virtualization + bulk mapping + final summary。
+- 每个 external label 的 6–12 个真实样本 bbox crop / full-image lazy viewer 尚未补齐。
+- Canonical label 删除仍应单独设计为 soft-disable 或 durable schema mutation；不得恢复同步全库 class-id rewrite。
+- 最新 HEAD CI 尚未完成。只有全部必要 checks completed success 后，才可把本节状态从 CI PENDING 改成 CLOSED。
+
+### 本批次提交
+
+`7c356f2d` → `1aa2f995` → `fbca3349` → `68dd8319` → `27a4806e` → `029d15fe` → `60e31539`
+
 
 ## Product closure — Deployment-test durable queue/progress truth CLOSED
 

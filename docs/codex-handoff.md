@@ -1,6 +1,83 @@
 # Codex / 人工接管交接记录
 
-## 当前状态
+## 2026-09-26 当前接管状态（以下内容覆盖后续历史状态段）
+
+- 当前工作分支：`feature/external-algorithm-publishing`
+- 本轮文档基线 HEAD：`60e31539454300f466b90924f4c15a7a3d3bd218`
+- 正式版本：`VERSION.txt = 42.24.0`，本轮未修改版本、未 merge `main`、未 tag、未 release、未 force push。
+- 当前主题：**大批量素材导入、外部标签人工映射、历史标签统一、Annotation Ground Truth、训练标签 preflight 与相关性能/技术债收口。**
+- 重要产品规则：系统只提供外部标签事实和操作工具，**不自动推荐、不自动预选、不根据同名/中文名/alias/历史映射替用户决定 canonical 标签**。
+- 当前 CI 状态（文档写入时）：最新 HEAD checks 仍在排队；较早 `27a4806e...` 已有部分 checks success，但不能代表当前 HEAD 全绿。只有 completed failure 出现后才根据真实 job log 修复。
+
+### 本轮已实现
+
+1. **导入标签映射改为人工决定**
+   - ZIP、服务器素材导入、存储源重扫均默认“未选择”。
+   - 后端确认不再用 exact name / alias / `target_label_code` 兜底。
+   - 文件标签合法也不会隐式创建平台标签；新 canonical 标签必须由用户显式创建后再映射。
+   - 已退休 `mapping_suggestions` / `suggest_label_code` 自动决策路径；外部类别只通过 `external_label_facts` 暴露事实。
+   - AI 自动标注标签输入也只接受当前标签库里的明确 canonical 英文编码，不根据中文名、别名或历史映射自动解析。
+
+2. **历史标签统一改为 durable 后台任务**
+   - 正式 owner 仍是既有 `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS`，没有新建第二套 scheduler/runtime。
+   - 新接口：`POST /api/v54/projects/{project_id}/labels/{class_id}/unify`。
+   - 后端按索引直接冻结“所有引用该标签的素材”，浏览器不再提交几万条 image_id。
+   - 标签管理页增加“统一标签”，目标标签默认空白，由用户选择。
+   - UI 展示正样本图片、confirmed_empty 负样本范围、标注框、受影响素材；任务有真实进度，窗口可关闭，后台继续执行。
+   - 与导入后标签统一复用同一个 `annotation-label-remap` polling owner，避免第二套轮询技术债。
+
+3. **confirmed_empty / Ground Truth 边界修复**
+   - 修复旧 durable remap 只在 changed_boxes > 0 时写 AnnotationRepository，导致 confirmed_empty scope-only 变化不落库的问题。
+   - MaterialRepository schema 升至 2，增加 `material_annotation_scopes` 索引；只索引 `confirmed_empty` 负样本 scope，不与正样本重复计数。
+   - scope migration 和后续写入均保持索引一致。
+   - 并发人工标注变化继续由 digest fencing 阻断，后台统一不会覆盖更新后的人工 Ground Truth。
+
+4. **标签编辑 O(N) 同步扫描技术债关闭**
+   - 已使用 canonical 标签不再允许在 HTTP 请求里同步遍历全部素材/标注改编码。
+   - 使用中的标签如需合并/统一，必须走 durable “统一标签”后台任务。
+   - `AnnotationRepository.remap_labels_if_digests` 预加载改成批量 `get_many`，减少重复 SQLite 连接。
+
+5. **导入来源溯源补齐**
+   - 正式导入框保留：`import_batch_id`、`source_format`、`source_class_id`、`source_label_name`、`canonical_label_id`、`canonical_project_class_id`、`mapping_method=manual`、`confirmed_at`。
+   - `source_class_id` 只表示外部数据集来源类别，绝不当训练 class_id。
+   - 训练导出仍根据本次有效 canonical schema 重新生成连续 `0..N-1`。
+
+6. **Training Label Schema Preflight**
+   - 所选正式素材存在未映射、已删除、已停用标签时直接拒绝训练。
+   - `class_0 / cls0 / unknown / unmapped / temp_*` 等临时/未知标签即使误入标签库也禁止正式训练。
+   - 训练前标签读取按 500 条批量读取 AnnotationRepository，不再逐图片开 SQLite 连接。
+   - 上一版本中已删除/停用标签会从本次 schema 剔除并重新连续编号。
+   - 合同明确记录 `label_schema_changed`、原因、retained/dropped inherited labels、`base_training_mode`。
+   - 当前训练架构是“上一版本权重初始化”，不是 optimizer/trainer state strict resume；合同固定 `strict_resume=false`、`optimizer_state_resumed=false`。
+
+### 本轮关键提交
+
+- `7c356f2dab057eec432e130c3dbeae1039915de1` — require manual import label mapping
+- `1aa2f995a068fbc918ceb2f61faf64008d2bf810` — durable whole-label unification
+- `fbca33498a1eba1064dcbec6f0fa8f4eaf2ad587` — label-unification progress UI
+- `68dd831969f32612b265d679dc22905d38dc89f4` — import label provenance
+- `27a4806ed49caeb23fa389c93b69bbdf4e80311b` — canonical training label preflight
+- `029d15fe69e8d594b8598b642a75dcfa0c2e50d1` — retire automatic label suggestion paths
+- `60e31539454300f466b90924f4c15a7a3d3bd218` — confirmed-empty scope index correctness
+
+### 大批量性能现状
+
+- 浏览器普通多图上传：已有分块上传与批量 repository commit；不做每图片 DB commit / 上传后再次 SHA256。
+- ZIP：已有 multipart + durable background job + 10k contract，关闭页面后**已上传到服务器的数据**继续处理；浏览器尚未上传完的本地文件字节无法在页面关闭后继续，这是浏览器安全模型边界。
+- 服务器/对象存储导入：扫描、解析、确认后 indexing 均为 durable Worker 后台任务，HTTP 确认不承担万级正式写入。
+- 标签统一：按 SQLite 标签索引冻结范围，Worker 分批修改；页面显示真实 loading/progress，可后台运行。
+- 训练标签 preflight：AnnotationRepository 每批最多 500 条读取，避免 N 次连接。
+- 不得把“代码支持 10k”写成“真实 20k/生产环境已验收”；真实 20k、OSS/S3、NVIDIA/A800 仍需实机验收。
+
+### 仍需继续收口（不要重复造 runtime）
+
+- 导入确认页的**外部标签审查 UI**仍需进一步规模化：标签搜索、分页/虚拟列表、批量将多个外部标签映射到一个 canonical、提交前映射汇总。
+- 代表样本查看器仍缺：每个外部标签建议只加载 6–12 个真实 bbox crop / 原图，lazy-load；它是证据查看器，不是推荐器。
+- Canonical 标签“删除”仍是结构性高风险操作，旧删除路径还会检查/重排 class_id；后续应单独做 soft-disable 或 durable schema mutation，不能和普通 label edit 混在一个同步 HTTP 路径里。
+- CI 最新 HEAD 尚未跑完。任何 completed failure 必须看真实 log 后再修；queued/in_progress 不算通过。
+
+## 历史状态（以下为早期记录，仅保留审计，不代表当前分支）
+
 
 - 工作分支：`feat/windows-p0`
 - 稳定主分支：`main`
