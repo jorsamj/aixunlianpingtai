@@ -4230,6 +4230,12 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     modal('图片标注',`<div class="ann-layout pro ann414"><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" class="btn primary small" onclick="saveAnn(false)">保存标注</button><button class="btn small" onclick="prevImage()" ${idx<=0?'disabled':''}>上一张</button><button class="btn small" onclick="nextImage()" ${idx<0||idx>=state.images.length-1?'disabled':''}>下一张</button><button class="btn small" onclick="undoAnn()">撤销</button><button class="btn small" onclick="redoAnn()">重做</button><button class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state">${esc(img.filename)} · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div>${hasLabels?'':`<div class="ann414-emptylabel"><b>标签库为空，暂时不能画框</b><span>请先到“配置中心 → 标签管理”创建英文标签。</span><button class="btn primary" onclick="closeModal();setPage('标签管理')">去标签管理</button></div>`}<div class="ann-canvas-wrap"><div id="annStage" class="ann-stage ${hasLabels?'':'disabled'}" style="transform:scale(${state.annZoom});transform-origin:top center"><img id="annImg" src="${img.url}"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">当前标签</div><div class="ann414-schema-note">标签来自配置中心，标注窗口只负责选择和使用。</div><div id="annLabels"></div></div><div class="side-section"><div class="side-title">标注框 <span>${state.ann.boxes.length}</span></div><div id="annBoxes"></div></div><div class="hint-card">拖拽空白处新建框；拖动框可移动；拖动四角可缩放；数字键切换标签；Ctrl+S 保存。</div></aside></div>`,true);
     const im=document.getElementById('annImg'),ready=()=>{drawBoxes();if(hasLabels)bindAnnotationEvents();renderAnnSide()};if(im?.complete)ready();else if(im)im.onload=ready;
   };
+  function annotationBoxSourceLabel420(box){
+    const source=String(box?.source||'').trim().toLowerCase();
+    if(source.startsWith('ai_')||source==='auto'||source==='semi-auto')return 'AI已确认';
+    if(source.includes('import'))return '导入标注';
+    return '人工标注';
+  }
   renderAnnSide=function(){
     const labels=state.labels||[],a=document.getElementById('annLabels'),bb=document.getElementById('annBoxes');
     if(a){
@@ -4262,7 +4268,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
           const dot=row.querySelector('span i'),title=row.querySelector('span b'),subtitle=row.querySelector('span em'),select=row.querySelector('select');
           if(dot)dot.style.background=l?.color||'#64748b';
           if(title)title.textContent=`${i+1}. ${l?.code||b.label||'unknown'}`;
-          if(subtitle)subtitle.textContent=l?.display_name||'';
+          if(subtitle)subtitle.textContent=[annotationBoxSourceLabel420(b),l?.display_name||''].filter(Boolean).join(' · ');
           if(select){
             const optionSignature=labels.map(x=>`${x.class_id}:${x.code}:${x.display_name||''}`).join('|');
             if(select.dataset.signature!==optionSignature){select.dataset.signature=optionSignature;select.innerHTML=labels.map(x=>`<option value="${Number(x.class_id)}">${esc(x.code)}${x.display_name&&x.display_name!==x.code?' · '+esc(x.display_name):''}</option>`).join('')}
