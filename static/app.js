@@ -3101,10 +3101,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const rows=Array.isArray(node?.active_tasks)?node.active_tasks:[];
     if(!rows.length)return '当前空闲，可立即接收清洗任务';
     const names={TRAINING:'训练',MATERIAL_BATCH:'素材批处理',MODEL_CONVERSION:'模型转换',AI_ANNOTATION:'AI标注'};
-    return rows.slice(0,2).map(row=>`${names[row.kind]||row.kind||'任务'} ${Math.round(Number(row.progress||0))}%`).join(' · ');
+    return rows.slice(0,2).map(row=>{
+      const name=row.kind==='MATERIAL_BATCH'&&String(row.operation||'').toUpperCase()==='CLEAN'?'清洗':(names[row.kind]||row.kind||'任务');
+      return `${name} ${Math.round(Number(row.progress||0))}%`;
+    }).join(' · ');
   }
   function cleanQueuePolicyText427(value){
-    return ({normal:'正常排队',front:'排到下一位',preempt:'抢占后优先执行'})[String(value||'normal')]||'正常排队';
+    return ({normal:'正常排队',front:'队首等待',preempt:'安全抢占'})[String(value||'normal')]||'正常排队';
   }
   function cleanSchedulingHtml427(runtime){
     const nodes=Array.isArray(runtime?.eligible_nodes)?runtime.eligible_nodes:[],mode=state.v427CleanSchedulingMode||'auto',target=state.v427CleanTargetNode||'';
@@ -3113,8 +3116,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const id=String(node.node_id||''),on=mode==='node'&&id===String(target),busy=!node.idle;
       return `<label class="clean427-node-card ${on?'on':''}"><input type="radio" name="cl427Node" value="${esc(id)}" ${on?'checked':''} onchange="cleanTargetNodeChanged427('${esc(id)}')"><div class="clean427-node-head"><div><b>${esc(node.display_name||id)}</b><span>${esc(id)}</span></div><em class="${busy?'busy':'idle'}">${busy?`忙碌 · ${Number(node.active_count||0)} 项`:'空闲'}</em></div><p>${esc(cleanNodeResourceText427(node))}</p><small>${esc(cleanNodeTaskText427(node))}</small>${busy&&!node.preemptible?'<i>当前任务不可安全抢占，只能排队等待</i>':''}</label>`;
     }).join('');
-    const preemptDisabled=!!selected&&!selected.idle&&selected.preemptible!==true;
-    const policyHtml=mode==='node'&&selected?`<div class="clean427-queue-policies"><label><input type="radio" name="cl427QueuePolicy" value="normal" ${policy==='normal'?'checked':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>正常排队</b><span>固定在该节点，按现有队列顺序执行</span></div></label><label><input type="radio" name="cl427QueuePolicy" value="front" ${policy==='front'?'checked':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>排到下一位</b><span>不打断当前任务；当前任务结束后优先执行</span></div></label><label class="${preemptDisabled?'disabled':''}"><input type="radio" name="cl427QueuePolicy" value="preempt" ${policy==='preempt'?'checked':''} ${preemptDisabled?'disabled':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>抢占并优先执行</b><span>${preemptDisabled?'当前任务没有安全恢复合同，禁止抢占':'安全暂停可恢复任务，本次清洗结束后自动恢复原任务'}</span></div></label></div>`:'';
+    const preemptDisabled=!!selected&&(selected.idle||selected.preemptible!==true);
+    const preemptDetail=selected?.idle?'节点当前空闲，无需抢占':(selected?.preemptible===true?'暂停当前可恢复清洗任务；本次任务结束后从已完成进度继续':'当前任务不支持安全让出节点，请选择“队首等待”');
+    const policyHtml=mode==='node'&&selected?`<div class="clean427-queue-policies"><label><input type="radio" name="cl427QueuePolicy" value="normal" ${policy==='normal'?'checked':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>正常排队</b><span>固定在该节点，按现有队列顺序执行</span></div></label><label><input type="radio" name="cl427QueuePolicy" value="front" ${policy==='front'?'checked':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>队首等待</b><span>不打断当前任务；插入该节点等待队列第一位</span></div></label><label class="${preemptDisabled?'disabled':''}"><input type="radio" name="cl427QueuePolicy" value="preempt" ${policy==='preempt'?'checked':''} ${preemptDisabled?'disabled':''} onchange="cleanQueuePolicyChanged427(this.value)"><div><b>安全抢占</b><span>${preemptDetail}</span></div></label></div>`:'';
     return `<div class="clean427-schedule-summary"><div><b>可调度节点</b><span>${nodes.length} 个</span></div><div><b>当前空闲</b><span>${Number(runtime?.idle_nodes??nodes.filter(node=>node.idle).length)} 个</span></div><div><b>正在忙碌</b><span>${Number(runtime?.busy_nodes??nodes.filter(node=>!node.idle).length)} 个</span></div></div><div class="clean427-schedule-modes"><label class="${mode==='auto'?'on':''}"><input type="radio" name="cl427SchedulingMode" value="auto" ${mode==='auto'?'checked':''} onchange="cleanSchedulingModeChanged427(this.value)"><div><b>自动调度 · 推荐</b><span>系统按节点能力、在线状态、CPU / 内存 / 磁盘和当前任务数选择负载更低的节点</span></div></label><label class="${mode==='node'?'on':''}"><input type="radio" name="cl427SchedulingMode" value="node" ${mode==='node'?'checked':''} onchange="cleanSchedulingModeChanged427(this.value)"><div><b>指定节点</b><span>只在你选的 cleaning 节点执行；节点忙时可以排队、插到下一位或安全抢占</span></div></label></div>${mode==='node'?`<div class="clean427-node-grid">${nodeCards||'<div class="empty">当前没有在线且启用 cleaning 服务的节点</div>'}</div>${policyHtml}`:''}`;
   }
   function renderCleanScheduling427(){
