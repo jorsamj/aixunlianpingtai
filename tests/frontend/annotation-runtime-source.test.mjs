@@ -204,3 +204,14 @@ test('annotation queue cache signature includes provenance and transient AI stat
   assert.match(styles, /\.ann420-origin-badge\.mixed/);
   assert.match(styles, /\.ann420-queue-status\.ai-pending/);
 });
+
+
+test('annotation P1 interactions use shared motion tokens instead of local timing literals', () => {
+  const start = styles.indexOf('/* v66 annotation truth badges + low-cost motion */');
+  const end = styles.indexOf('/* v66 visual AI candidate box editor */', start);
+  const block = styles.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.match(block, /var\(--motion-fast/);
+  assert.match(block, /var\(--motion-ease/);
+  assert.doesNotMatch(block, /\.12s ease/);
+});
