@@ -5547,7 +5547,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status))toast('AI审核结果已写入正式标注');
       else toast(terminal?.error||'AI审核写入未成功，请查看任务详情');
     }catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
-  };  window.confirmAiLabel427=id=>completeAiReview60('partial');
+  };
+  // Retired UI entrypoints remain only as compatibility aliases. They must
+  // never recreate the legacy v47 annotation task/confirm flow.
+  window.submitAiLabel427=(ids=[])=>window.submitAiLabel429(ids);
+  window.confirmAiLabel427=id=>completeAiReview60('partial');
 })();
 
 /* Explicit canonical-label creation used by import/rescan/ZIP/AI confirmation.
