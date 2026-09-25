@@ -48,6 +48,7 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
     train428Tab: 'active',
   };
   const dom = fakeRoot();
+  const listeners = {};
   globalThis.document = {
     querySelector(selector) {
       return ['.train428-page', '.train428-page[data-training-task-shell="canonical"]'].includes(selector)
@@ -55,6 +56,10 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
         : null;
     },
     getElementById() { return null; },
+    addEventListener(type, handler) { listeners[type] = handler; },
+    removeEventListener(type, handler) {
+      if (listeners[type] === handler) delete listeners[type];
+    },
   };
   const calls = [];
   let pollRearms = 0;
@@ -88,7 +93,7 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
     loadRelated: async () => undefined,
     renderTraining423() {},
   };
-  return {state, dom, runtime, calls, pollRearms: () => pollRearms};
+  return {state, dom, runtime, calls, listeners, pollRearms: () => pollRearms};
 }
 
 test('visibility leaves broad loadRelated ownership untouched', async () => {
@@ -132,6 +137,37 @@ test('training-page related refresh routes explicitly through the canonical task
   assert.equal(fixture.calls[0].force, true);
   assert.equal(fixture.calls[0].source, 'related');
   assert.deepEqual(fixture.state.jobs, [{id: 'run-1', status: 'running'}]);
+
+  visibility.destroy();
+  cleanup();
+});
+
+test('manual refresh is never dropped while a previous refresh is still in flight', async () => {
+  const fixture = installFixture();
+  fixture.runtime.state = () => ({inflight: true});
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+  fixture.calls.length = 0;
+  const button = {
+    disabled: false,
+    textContent: '刷新',
+    isConnected: true,
+    closest(selector) { return selector === '#refreshBtn' ? this : null; },
+  };
+  fixture.listeners.click({
+    target: button,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.calls[0].source, 'manual');
+  assert.equal(fixture.calls[0].force, true);
+  assert.equal(button.disabled, false);
 
   visibility.destroy();
   cleanup();

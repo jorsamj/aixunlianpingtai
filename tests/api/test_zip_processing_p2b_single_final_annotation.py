@@ -59,7 +59,7 @@ def test_add_image_record_can_persist_final_annotation_before_return(client, tmp
         assert repository.exists(record["id"])
         annotation = repository.get(record["id"])
         assert annotation["annotation_state"] == "annotated"
-        assert annotation["boxes"] == [_box()]
+        assert annotation["boxes"] == [{**_box(), "source": "imported"}]
         assert annotation["version"] == 1
         assert calls == 1
         app_module._v50_end_image_batch(save=True)
@@ -71,6 +71,7 @@ def test_add_image_record_can_persist_final_annotation_before_return(client, tmp
     material = app_module.material_store(project_id).get(record["id"])
     assert material["box_count"] == 1
     assert material["annotated"] is True
+    assert material["annotation_origin"] == "imported"
 
 
 def test_final_empty_annotation_keeps_confirmed_empty_semantics(client, tmp_path):

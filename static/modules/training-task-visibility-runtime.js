@@ -641,12 +641,12 @@ export function installTrainingTaskVisibilityRuntime({
     if (!button || destroyed || String(state().page || '') !== TRAINING_PAGE) return;
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
-    if (button.disabled || runtime.state?.().inflight) return;
+    if (button.disabled) return;
     pollRegistry?.clear?.('training-jobs');
     button.disabled = true;
     const previousText = button.textContent;
     button.textContent = '刷新中';
-    void runtime.refresh({render: true, source: 'manual'}).then(
+    void runtime.refresh({render: true, force: true, source: 'manual'}).then(
       result => { if (!result?.stale) notify?.('训练任务已刷新'); },
       error => notify?.(error?.message || error),
     ).finally(() => {

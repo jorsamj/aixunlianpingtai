@@ -109,10 +109,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   });
 
   await page.locator('#refreshBtn').click();
-  await page.evaluate(() => {
-    state.train428Tab = 'history';
-    window.TrainingTaskRuntime?.patch?.();
-  });
+  await page.evaluate(() => window.setTrainTab428?.('history'));
   const row = page.locator('[data-job-id="job-recovery-1"]');
   await expect(row).toBeVisible();
   await expect(row).toContainText('最终验证恢复测试');
@@ -131,10 +128,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await dialog.getByRole('button', {name: '重新验证 Checkpoint'}).click();
   await expect(dialog).toBeHidden();
   await expect.poll(() => retried).toBe(true);
-  await page.evaluate(() => {
-    state.train428Tab = 'active';
-    window.TrainingTaskRuntime?.patch?.();
-  });
+  await page.evaluate(() => window.setTrainTab428?.('active'));
   await expect(row).toBeVisible();
   await expect(row).toContainText('排队中');
 
@@ -199,10 +193,7 @@ test('successful training detail never presents completion text as an error', as
   }));
 
   await page.locator('#refreshBtn').click();
-  await page.evaluate(() => {
-    state.train428Tab = 'history';
-    window.TrainingTaskRuntime?.patch?.();
-  });
+  await page.evaluate(() => window.setTrainTab428?.('history'));
 
   const row = page.locator('[data-job-id="job-success-detail-1"]');
   await expect(row).toBeVisible();
