@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
 
-from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
+from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import (
     IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
@@ -1430,6 +1430,14 @@ def public_material(project_id: str, value: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(value)
     row.setdefault("storage_source_id", "default_local")
     row.setdefault("storage_type", "local")
+    source_type = str(row.get("source_type") or "").strip().lower()
+    annotation_state = str(row.get("annotation_state") or row.get("annotation_status") or "").strip().lower()
+    if (
+        source_type.startswith("imported_")
+        and annotation_state in {"annotated", "confirmed_empty"}
+        and not str(row.get("annotation_origin") or "").strip()
+    ):
+        row["annotation_origin"] = "imported"
     if not row.get("object_key") and row.get("stored_name"):
         row["object_key"] = f"uploads/{Path(str(row['stored_name'])).name}"
     row["url"] = material_content_url(project_id, str(row.get("id") or ""))
@@ -2828,8 +2836,14 @@ def add_image_record(
     batch = None
     try:
         prepared_annotation_boxes = None
+        structured_import = bool(annotation_builder is not None and str(source_type).startswith("imported_"))
         if annotation_builder is not None:
             prepared_annotation_boxes = list(annotation_builder(dict(record)) or [])
+            if structured_import:
+                prepared_annotation_boxes = restore_box_provenance(
+                    prepared_annotation_boxes, [],
+                    existing_source_fallback="imported", new_source="imported",
+                )
         with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
             batch = _v50_active_image_batch(project_id)
@@ -2845,7 +2859,10 @@ def add_image_record(
             if prepared_annotation_boxes is not None:
                 # Structured import paths already know the final GT. Persist it once
                 # before returning instead of durable unannotated -> final double writes.
-                write_annotation(project_id, img_id, prepared_annotation_boxes)
+                write_annotation(
+                    project_id, img_id, prepared_annotation_boxes,
+                    annotation_origin="imported" if structured_import else None,
+                )
             elif batch and defer_unannotated_annotation:
                 batch["deferred_annotations"][str(img_id)] = {
                     "image_id": str(img_id),
@@ -4609,12 +4626,18 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
         str(item["code"]): int(item["class_id"])
         for item in active_label_options(project_label_items(project))
     }
+    existing_boxes = list(read_annotation(project_id, image_id).get("boxes") or [])
     try:
         clean_boxes = normalize_boxes(
             payload.boxes,
             int(img.get("width") or 0),
             int(img.get("height") or 0),
             label_ids,
+        )
+        clean_boxes = restore_box_provenance(
+            clean_boxes, existing_boxes,
+            existing_source_fallback="imported" if str(img.get("source_type") or "").startswith("imported_") else "manual",
+            new_source="manual",
         )
     except KeyError as error:
         missing_label = str(error.args[0] or "")
