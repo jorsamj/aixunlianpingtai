@@ -105,3 +105,40 @@ def test_manual_save_preserves_ai_provenance_and_derives_mixed_origin(client, se
     assert boxes["ai-box-1"]["candidate_id"] == "candidate-1"
     assert boxes["manual-box-1"]["source"] == "manual"
     assert body["image"]["annotation_origin"] == "mixed"
+
+
+
+def test_annotation_reindex_preserves_legacy_material_provenance():
+    import inspect
+    import app as app_module
+
+    imported = app_module._annotation_summary_for_material_index(
+        [{"id": "legacy", "label": "fire", "class_id": 0,
+          "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
+        "annotated",
+        {"source_type": "imported_yolo"},
+    )
+    assert imported["annotation_origin"] == "imported"
+
+    ai_empty = app_module._annotation_summary_for_material_index(
+        [],
+        "confirmed_empty",
+        {"annotation_origin": "ai_confirmed"},
+    )
+    assert ai_empty["annotation_origin"] == "ai_confirmed"
+
+    explicit_ai = app_module._annotation_summary_for_material_index(
+        [{"id": "ai", "label": "fire", "class_id": 0,
+          "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+          "source": "ai_candidate_confirmed"}],
+        "annotated",
+        {"annotation_origin": "manual", "source_type": "imported_yolo"},
+    )
+    assert explicit_ai["annotation_origin"] == "ai_confirmed"
+
+    assert "_annotation_summary_for_material_index" in inspect.getsource(
+        app_module._v52_annotation_index_worker
+    )
+    assert "_annotation_summary_for_material_index" in inspect.getsource(
+        app_module._v53_index_annotations_sync
+    )
