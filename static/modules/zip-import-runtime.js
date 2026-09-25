@@ -1,3 +1,5 @@
+import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './label-mapping-review.js?v=422570';
+
 export const ACTIVE_ZIP_STATUSES = new Set(['uploading','merging','validating','selecting','queued','waiting','running']);
 export const IMPORT_QUEUE_ZIP_STATUSES = new Set(['selecting','queued','waiting','running']);
 export const TERMINAL_ZIP_STATUSES = new Set(['done','failed','cancelled','canceled']);
@@ -187,7 +189,7 @@ export function isZipBootstrapReconcile(reason='') {
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null;
-  const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set();
+  const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),labelReviews=new Map();
   const pid=()=>String(projectId?.()||'');
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
   const readIntent=(p,id)=>{try{return localStorage.getItem(intentKey(p,id))||''}catch(_){return''}};
@@ -203,15 +205,24 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     for(const row of [...normalized,...fromProject])if(!byCode.has(String(row.code)))byCode.set(String(row.code),row);
     return [...byCode.values()];
   }
+  function mappingReview(job){
+    const id=String(job?.id||''),classes=job?.external_classes||[];
+    const existing=labelReviews.get(id);
+    const review=existing?reconcileLabelMappingReview(existing,classes):createLabelMappingReview(classes);
+    labelReviews.set(id,review);
+    return review;
+  }
   function labelMappingMarkup(job){
     if(!zipNeedsLabelConfirmation(job))return '';
-    const labels=labelItems(),classes=job.external_classes||[];
-    const options=()=>['<option value="">选择平台标签</option>',...labels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}">${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
-    const rows=classes.map(row=>{
-      const source=String(row.name||''),badge='<span class="pill warn">待选择</span>';
-      return `<div class="storage61-mapping-row" data-zip-class="${esc(row.class_id)}" data-source-name="${esc(source)}"><span><b>${esc(source||`类别 ${row.class_id}`)}</b><small>${Number(row.image_count||0)} 张 · ${Number(row.box_count||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target>${options()}</select><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`;
+    const id=String(job.id||''),review=mappingReview(job),page=labelMappingReviewPage(review),summary=labelMappingReviewSummary(review),labels=labelItems();
+    const keepCodes=page.rows.map(row=>row.code).filter(Boolean),visibleLabels=filterCanonicalLabels(labels,review.targetQuery,keepCodes);
+    const options=selected=>['<option value="">选择平台标签</option>',...visibleLabels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}" ${String(selected||'')===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
+    const rows=page.rows.map(row=>{
+      const source=String(row.name||''),badge=row.code?'<span class="pill ok">已人工映射</span>':'<span class="pill warn">待选择</span>';
+      return `<div class="storage61-mapping-row label-mapping-review-row" data-zip-class="${esc(row.classId)}" data-source-name="${esc(source)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow('${esc(id)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(source||`类别 ${row.classId}`)}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping('${esc(id)}','${esc(row.classId)}',this.value)">${options(row.code)}</select><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`;
     }).join('');
-    return `<div class="storage61-import-mapping zip-label-confirm" data-zip-label-mapping><div class="row between"><div><b>标注入库确认</b><div class="item-sub">系统只展示外部标签事实，不自动选择、推荐或新增平台标签；每个外部标签都需要人工确认。</div></div><span class="pill warn">${classes.length} 个外部标签</span></div>${rows}<div class="item-sub" data-zip-confirm-status>确认后会先完成必要的标签创建，再启动后台导入；不会把未确认的外部标签直接写入正式标注。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button onclick="window.ZipImportRuntime?.confirmLabels('${esc(job.id)}')">确认标签并开始导入</button></div></div>`;
+    const bulkOptions=['<option value="">批量映射到…</option>',...filterCanonicalLabels(labels,review.targetQuery).map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
+    return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">系统只展示外部标签事实，不自动选择；搜索、分页和批量映射都只记录你的人工决定。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签名称 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span></div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="row between label-mapping-review-pager"><button class="btn mini" ${page.page<=1?'disabled':''} onclick="window.ZipImportRuntime?.setReviewPage('${esc(id)}',${page.page-1})">上一页</button><span>${page.page} / ${page.pageCount}</span><button class="btn mini" ${page.page>=page.pageCount?'disabled':''} onclick="window.ZipImportRuntime?.setReviewPage('${esc(id)}',${page.page+1})">下一页</button></div><div class="item-sub" data-zip-confirm-status>${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未映射。':'全部外部标签已人工映射，可提交。'}确认后才会启动后台导入。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button ${summary.unmapped?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">确认标签并开始导入</button></div></div>`;
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
@@ -280,21 +291,31 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     await window.refreshLabels414?.(false);
     return labelCode;
   }
+  function reviewJob(jobId){const id=String(jobId||'');return jobs.find(row=>String(row?.id||'')===id)||knownJobs.get(id)}
+  function rerenderLabelMapping(jobId){
+    const id=String(jobId||''),job=reviewJob(id),node=document.querySelector('.zip-label-confirm[data-review-key]');
+    if(!job||!node||String(node.getAttribute('data-review-key')||'')!==id)return false;
+    node.outerHTML=labelMappingMarkup(job);
+    return true;
+  }
+  function setReviewSearch(jobId,value){const review=mappingReview(reviewJob(jobId));setLabelMappingReviewSearch(review,value);rerenderLabelMapping(jobId)}
+  function setTargetSearch(jobId,value){const review=mappingReview(reviewJob(jobId));setLabelMappingTargetSearch(review,value);rerenderLabelMapping(jobId)}
+  function setReviewPage(jobId,page){const review=mappingReview(reviewJob(jobId));setLabelMappingReviewPage(review,page);rerenderLabelMapping(jobId)}
+  function toggleLabelRow(jobId,classId,selected){const review=mappingReview(reviewJob(jobId));setLabelMappingSelected(review,classId,selected)}
+  function setReviewLabelMapping(jobId,classId,code){const review=mappingReview(reviewJob(jobId));setLabelMapping(review,classId,code);rerenderLabelMapping(jobId)}
+  function bulkMapLabels(jobId){try{const id=String(jobId||''),review=mappingReview(reviewJob(id)),code=String(document.querySelector('.zip-label-confirm [data-zip-bulk-target]')?.value||'').trim();bulkSetLabelMapping(review,code);rerenderLabelMapping(id)}catch(error){notify?.(error?.message||error)}}
+
   async function confirmLabels(jobId){
     const project=pid(),id=String(jobId||''),job=jobs.find(row=>String(row?.id||'')===id)||knownJobs.get(id);
     if(!project||!job||!zipNeedsLabelConfirmation(job))return null;
-    const rows=[...document.querySelectorAll('.zip-label-confirm [data-zip-class]')],button=document.querySelector('.zip-label-confirm [data-zip-confirm-button]'),statusNode=document.querySelector('.zip-label-confirm [data-zip-confirm-status]');
-    if(!rows.length)throw new Error('标签确认界面已失效，请重新打开该导入任务');
-    const label_mapping={},existing=new Set(labelItems().map(row=>String(row.code)));
+    const button=document.querySelector('.zip-label-confirm [data-zip-confirm-button]'),statusNode=document.querySelector('.zip-label-confirm [data-zip-confirm-status]'),review=mappingReview(job);
+    const existing=new Set(labelItems().map(row=>String(row.code)));
     if(button){button.disabled=true;button.textContent='正在确认…'}
-    rows.forEach(row=>{const select=row.querySelector('[data-zip-target]');if(select)select.disabled=true});
+    document.querySelectorAll('.zip-label-confirm select,.zip-label-confirm input').forEach(input=>{input.disabled=true});
     try{
-      for(const row of rows){
-        const externalId=String(row.getAttribute('data-zip-class')||''),sourceName=String(row.getAttribute('data-source-name')||'').trim();
-        let code=String(row.querySelector('[data-zip-target]')?.value||'').trim();
-        if(!externalId||!code)throw new Error('请为每个外部标签选择平台标签');
-        if(!existing.has(code)&&!(getState()?.labels||[]).some(item=>String(item?.code||item)===code))throw new Error(`平台标签 ${code} 不存在，请重新选择`);
-        label_mapping[externalId]=code;
+      const label_mapping=buildManualLabelMapping(review);
+      for(const code of Object.values(label_mapping)){
+        if(!existing.has(String(code))&&!(getState()?.labels||[]).some(item=>String(item?.code||item)===String(code)))throw new Error(`平台标签 ${code} 不存在，请重新选择`);
       }
       if(statusNode)statusNode.textContent='标签已确认，正在启动后台导入…';
       started.add(id);writeIntent(project,id,'submitting');
@@ -304,7 +325,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     }catch(error){
       started.delete(id);writeIntent(project,id,'');
       if(button){button.disabled=false;button.textContent='确认标签并开始导入'}
-      rows.forEach(row=>{const select=row.querySelector('[data-zip-target]');if(select)select.disabled=false});
+      document.querySelectorAll('.zip-label-confirm select,.zip-label-confirm input').forEach(input=>{input.disabled=false});
       if(statusNode)statusNode.textContent=String(error?.message||error);
       notify?.(error?.message||error);throw error;
     }
@@ -366,7 +387,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     current=job;patchState(job);open();return job;
   }
 
-  const runtime={upload,reconcile,open,openTask,confirmLabels,forgetTerminal,snapshot:()=>({jobs:[...jobs],current}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,reconcile,open,openTask,confirmLabels,forgetTerminal,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>upload(input).catch(()=>{});
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};

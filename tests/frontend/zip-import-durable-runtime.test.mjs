@@ -136,5 +136,8 @@ test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=
   assert.match(source,/button\.textContent='正在确认…'/);
   assert.match(source,/async function openTask\(taskId\)/);
   assert.match(source,/openTask,confirmLabels/);
+  assert.match(source,/labelMappingReviewPage/);
+  assert.match(source,/buildManualLabelMapping/);
+  assert.match(source,/bulkMapLabels/);
   assert.doesNotMatch(source,/create_labels/);
 });
