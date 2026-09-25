@@ -82,9 +82,10 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
     assert remembered.status_code == 200, remembered.text
     remembered_job = remembered.json()
     assert remembered_job["label_confirmation_required"] is True
-    assert [row["target_label_code"] for row in remembered_job["external_classes"]] == [
-        "helmet", "helmet",
+    assert [(row["class_id"], row["name"]) for row in remembered_job["external_classes"]] == [
+        ("0", "toukui1"), ("1", "toukui2"),
     ]
+    assert all("target_label_code" not in row for row in remembered_job["external_classes"])
 
     review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review").json()
     assert len(review["image_ids"]) == 2

@@ -11,14 +11,7 @@ export const PLATFORM_LABEL_CODE_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 export function zipLabelChoice(externalClass, labels = []) {
   const source = String(externalClass?.name || '').trim();
-  const rows = (Array.isArray(labels) ? labels : [])
-    .map(row => typeof row === 'string' ? {code:row, status:'active'} : row)
-    .filter(row => row?.code && String(row.status || 'active').toLowerCase() === 'active');
-  const byCode = new Map(rows.map(row => [String(row.code), row]));
-  const suggested = String(externalClass?.target_label_code || '').trim();
-  if (suggested && byCode.has(suggested)) return {mode:'existing', code:suggested, source};
-  if (source && byCode.has(source)) return {mode:'existing', code:source, source};
-  if (source && PLATFORM_LABEL_CODE_RE.test(source)) return {mode:'create', code:source, source};
+  void labels;
   return {mode:'unresolved', code:'', source};
 }
 
@@ -213,17 +206,12 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   function labelMappingMarkup(job){
     if(!zipNeedsLabelConfirmation(job))return '';
     const labels=labelItems(),classes=job.external_classes||[];
-    const options=(choice,source)=>{
-      const rows=['<option value="">选择平台标签</option>'];
-      for(const label of labels){const code=String(label.code);rows.push(`<option value="${esc(code)}" ${choice.mode==='existing'&&choice.code===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`)}
-      if(choice.mode==='create')rows.push(`<option value="__create__" selected>＋ 使用文件标签“${esc(source)}”并新增</option>`);
-      return rows.join('');
-    };
+    const options=()=>['<option value="">选择平台标签</option>',...labels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}">${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
     const rows=classes.map(row=>{
-      const choice=zipLabelChoice(row,labels),source=String(row.name||''),badge=choice.mode==='existing'?'<span class="pill ok">自动匹配</span>':choice.mode==='create'?'<span class="pill blue">将新增</span>':'<span class="pill warn">待选择</span>';
-      return `<div class="storage61-mapping-row" data-zip-class="${esc(row.class_id)}" data-source-name="${esc(source)}"><span><b>${esc(source||`类别 ${row.class_id}`)}</b><small>${Number(row.image_count||0)} 张 · ${Number(row.box_count||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target>${options(choice,source)}</select><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`;
+      const source=String(row.name||''),badge='<span class="pill warn">待选择</span>';
+      return `<div class="storage61-mapping-row" data-zip-class="${esc(row.class_id)}" data-source-name="${esc(source)}"><span><b>${esc(source||`类别 ${row.class_id}`)}</b><small>${Number(row.image_count||0)} 张 · ${Number(row.box_count||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target>${options()}</select><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`;
     }).join('');
-    return `<div class="storage61-import-mapping zip-label-confirm" data-zip-label-mapping><div class="row between"><div><b>标注入库确认</b><div class="item-sub">英文编码与标签库完全一致时自动复用；不存在且文件标签是合法英文编码时，可直接新增后再入库。</div></div><span class="pill warn">${classes.length} 个外部标签</span></div>${rows}<div class="item-sub" data-zip-confirm-status>确认后会先完成必要的标签创建，再启动后台导入；不会把未确认的外部标签直接写入正式标注。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button onclick="window.ZipImportRuntime?.confirmLabels('${esc(job.id)}')">确认标签并开始导入</button></div></div>`;
+    return `<div class="storage61-import-mapping zip-label-confirm" data-zip-label-mapping><div class="row between"><div><b>标注入库确认</b><div class="item-sub">系统只展示外部标签事实，不自动选择、推荐或新增平台标签；每个外部标签都需要人工确认。</div></div><span class="pill warn">${classes.length} 个外部标签</span></div>${rows}<div class="item-sub" data-zip-confirm-status>确认后会先完成必要的标签创建，再启动后台导入；不会把未确认的外部标签直接写入正式标注。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button onclick="window.ZipImportRuntime?.confirmLabels('${esc(job.id)}')">确认标签并开始导入</button></div></div>`;
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
@@ -305,12 +293,6 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         const externalId=String(row.getAttribute('data-zip-class')||''),sourceName=String(row.getAttribute('data-source-name')||'').trim();
         let code=String(row.querySelector('[data-zip-target]')?.value||'').trim();
         if(!externalId||!code)throw new Error('请为每个外部标签选择平台标签');
-        if(code==='__create__'){
-          if(!PLATFORM_LABEL_CODE_RE.test(sourceName))throw new Error(`文件标签“${sourceName||externalId}”不是合法英文编码，请点击“新建平台标签”后再确认`);
-          if(statusNode)statusNode.textContent=`正在创建平台标签 ${sourceName}…`;
-          if(!existing.has(sourceName)){await createPlatformLabel(sourceName,sourceName);existing.add(sourceName)}
-          code=sourceName;
-        }
         if(!existing.has(code)&&!(getState()?.labels||[]).some(item=>String(item?.code||item)===code))throw new Error(`平台标签 ${code} 不存在，请重新选择`);
         label_mapping[externalId]=code;
       }

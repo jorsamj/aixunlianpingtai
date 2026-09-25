@@ -4,19 +4,20 @@ from __future__ import annotations
 import hashlib
 import json
 
-from platform_core.labels import suggest_label_code
-
-
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def mapping_suggestions(classes, labels):
-    return [
-        {**item, 'target_label_code': suggest_label_code(item.get('name'), labels)}
-        for item in classes
-    ]
+    """Return external label facts without choosing a canonical target.
+
+    The name is retained for compatibility with existing callers. Product
+    policy requires every external class to remain unselected until the user
+    explicitly confirms a mapping, even when an exact code/name/alias exists.
+    """
+    del labels
+    return [dict(item) for item in classes]
 
 
 IMPORT_LABEL_CREATION_BLOCKED_DETAIL = (
@@ -37,12 +38,12 @@ def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels
         if label.get('status', 'active') == 'active'
     }
     resolved = {}
-    for item in mapping_suggestions(classes, labels):
+    for item in classes:
         external_id, name = str(item['class_id']), item['name']
         by_name, by_id = mapping.get(name), mapping.get(external_id)
         if by_name and by_id and by_name != by_id:
             raise ValueError(f'conflicting mapping for external class {external_id}')
-        code = by_name or by_id or item['target_label_code']
+        code = by_name or by_id
         if not code or code not in active:
             raise ValueError(
                 f'外部类别 {external_id} 未映射到当前有效标签；'

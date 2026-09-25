@@ -116,20 +116,22 @@ test('ZIP bootstrap recovery follows canonical startup readiness instead of a fi
 });
 
 
-test('ZIP label confirmation reuses exact platform codes and offers explicit file-label creation',()=>{
+test('ZIP label confirmation never preselects, recommends, or implicitly creates labels',()=>{
   const labels=[
     {code:'helmet',display_name:'安全帽',status:'active'},
     {code:'person',display_name:'人员',status:'active'},
   ];
-  assert.deepEqual(zipLabelChoice({class_id:'0',name:'helmet'},labels),{mode:'existing',code:'helmet',source:'helmet'});
-  assert.deepEqual(zipLabelChoice({class_id:'1',name:'smoke'},labels),{mode:'create',code:'smoke',source:'smoke'});
+  assert.deepEqual(zipLabelChoice({class_id:'0',name:'helmet'},labels),{mode:'unresolved',code:'',source:'helmet'});
+  assert.deepEqual(zipLabelChoice({class_id:'1',name:'smoke'},labels),{mode:'unresolved',code:'',source:'smoke'});
   assert.deepEqual(zipLabelChoice({class_id:'2',name:'安全帽'},labels),{mode:'unresolved',code:'',source:'安全帽'});
-  assert.deepEqual(zipLabelChoice({class_id:'3',name:'old_helmet',target_label_code:'helmet'},labels),{mode:'existing',code:'helmet',source:'old_helmet'});
+  assert.deepEqual(zipLabelChoice({class_id:'3',name:'old_helmet',target_label_code:'helmet'},labels),{mode:'unresolved',code:'',source:'old_helmet'});
 });
 
 test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
-  assert.match(source,/使用文件标签/);
+  assert.match(source,/不自动选择、推荐或新增平台标签/);
+  assert.doesNotMatch(source,/自动匹配/);
+  assert.doesNotMatch(source,/__create__/);
   assert.match(source,/data-zip-confirm-button/);
   assert.match(source,/button\.textContent='正在确认…'/);
   assert.match(source,/async function openTask\(taskId\)/);

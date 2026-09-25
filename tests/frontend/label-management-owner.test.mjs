@@ -19,7 +19,8 @@ test('label management has one canonical browser owner', () => {
   assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
   assert.doesNotMatch(app, /state\.page==='标签管理'.*renderLabelManagement414/);
   assert.ok(app.includes('id="label414Aliases"'));
-  assert.ok(app.includes('自动预选后仍需人工确认才会正式入库'));
+  assert.ok(app.includes('不会用于导入时自动选择或推荐平台标签'));
+  assert.doesNotMatch(app, /target_label_code\|\|''\)\?'selected'/);
   assert.match(app, /window\.openInlineLabelCreate414=function/);
   assert.match(app, /window\.submitInlineLabelCreate414=async function/);
   assert.match(app, /平台标签已创建并选中；仍需确认后才会正式入库/);
