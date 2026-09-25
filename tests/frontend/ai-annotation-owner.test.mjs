@@ -70,3 +70,13 @@ test('AI review can explicitly create a canonical label but Ground Truth still c
   assert.match(source, /候选结果不会自动写入正式标注/);
 });
 
+
+
+test('retired AI submit compatibility entrypoint delegates to the v60 owner', () => {
+  const marker = source.lastIndexOf('Persistent v60 AI annotation UI');
+  const end = source.indexOf('/* Explicit canonical-label creation used by import/rescan/ZIP/AI confirmation.', marker);
+  const finalLayer = source.slice(marker, end);
+  assert.match(finalLayer, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
+  assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
+  assert.match(finalLayer, /const task=await api\(taskApi\(\),/);
+});
