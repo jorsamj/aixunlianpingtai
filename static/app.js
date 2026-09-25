@@ -4228,11 +4228,10 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     if(source.startsWith('ai_')||source==='auto'||source==='semi-auto')return 'AI已确认';
     if(source.includes('import'))return '导入标注';
     if(!source){
-      const origin=String(state.activeImage?.annotation_origin||'').trim().toLowerCase();
-      const sourceType=String(state.activeImage?.source_type||'').trim().toLowerCase();
-      if(origin==='ai_confirmed')return 'AI已确认';
-      if(origin==='imported'||sourceType.startsWith('imported_'))return '导入标注';
-      if(origin==='mixed')return '混合来源';
+      const truth=window.annotationTruthViewV66?.(state.activeImage)||{};
+      if(truth.className==='ai-confirmed')return 'AI已确认';
+      if(truth.className==='imported')return '导入标注';
+      if(truth.className==='mixed')return '混合来源';
     }
     return '人工标注';
   }
