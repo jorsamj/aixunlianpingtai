@@ -149,3 +149,16 @@ test('v66 inspector polish targets the canonical ann414 label and object row cla
   assert.match(styles, /\.ann420-inspector #annBoxes \.ann414-boxrow/);
   assert.match(styles, /grid-template-columns:minmax\(0,1fr\) 126px/);
 });
+
+test('material cards color only derived annotation truth states and keep incremental patch parity', () => {
+  assert.match(source, /window\.materialAnnotationStatusClassV66=function\(row\)/);
+  assert.match(source, /return 'ai-pending'/);
+  assert.match(source, /return 'ai-committing'/);
+  assert.match(source, /return 'ai-confirmed'/);
+  assert.match(source, /return 'mixed'/);
+  assert.match(source, /return 'manual'/);
+  assert.match(source, /annotation-status-v66/);
+  assert.match(source, /meta\[1\]\.className=`annotation-status-v66/);
+  assert.match(styles, /\.annotation-status-v66\.ai-pending/);
+  assert.match(styles, /\.annotation-status-v66\.mixed/);
+});
