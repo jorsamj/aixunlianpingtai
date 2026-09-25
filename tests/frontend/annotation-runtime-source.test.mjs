@@ -181,3 +181,18 @@ test('annotation motion stays outside the pointer hot path and respects reduced 
   assert.doesNotMatch(pointerOwner, /classList\.add\([^)]*anim/i);
   assert.doesNotMatch(pointerOwner, /style\.transition/);
 });
+
+
+test('annotation queue cache signature includes provenance and transient AI state', () => {
+  const marker = source.lastIndexOf('Stable single-instance manual/batch annotation workbench');
+  const end = source.indexOf('Persistent v60 AI annotation UI', marker);
+  const stable = source.slice(marker, end);
+  assert.match(stable, /row\.annotation_state\|\|row\.annotation_status/);
+  assert.match(stable, /row\.annotation_origin/);
+  assert.match(stable, /state\.aiMaterialStates60\?\.\[String\(id\)\]\?\.state/);
+  assert.match(stable, /ann420-queue-status/);
+  assert.match(stable, /id="ann420OriginBadge"/);
+  assert.match(stable, /materialAnnotationStatusClassV66\?\.\(image\)/);
+  assert.match(styles, /\.ann420-origin-badge\.mixed/);
+  assert.match(styles, /\.ann420-queue-status\.ai-pending/);
+});
