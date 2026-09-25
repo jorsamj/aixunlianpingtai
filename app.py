@@ -18185,192 +18185,29 @@ def _v47_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]
     return auto_label_core.provider_factory(runtime_cfg), cfg
 
 
-def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any]):
-    try:
-        _v33_update_task(project_id, 'prelabel_tasks', task_id, status='running', status_text='AI标注中', started_at=now_iso())
-        provider, cfg = _v47_runtime_provider(payload)
-        labels = list(payload.get('labels') or [])
-        project = get_project(project_id)
-        catalog = _v47_label_catalog(project)
-        selected_catalog = [item for item in catalog if item.get('code') in labels]
-        label_ids = {str(item['code']): int(item['class_id']) for item in selected_catalog}
-        if set(labels) != set(label_ids):
-            missing = sorted(set(labels) - set(label_ids))
-            raise RuntimeError('任务包含标签库之外或已停用的标签：' + '、'.join(missing))
-        prompt_template = dict(payload.get('prompt_template_snapshot') or {}).get('prompt') or ''
-        ids = set(payload.get('image_ids') or [])
-        images = [x for x in load_images(project_id) if x.get('id') in ids]
-        preview_count = max(0, int(payload.get('preview_count') or 0))
-        if preview_count:
-            images = images[:preview_count]
-        if not images:
-            raise RuntimeError('没有可自动标注的图片')
-        total = len(images); started = time.time(); candidates: Dict[str, Any] = {}; box_count = 0; errors = []
-        for idx, img in enumerate(images, 1):
-            cur = _v33_get_task(project_id, 'prelabel_tasks', task_id) or {}
-            if cur.get('stop_requested'):
-                _v33_update_task(project_id, 'prelabel_tasks', task_id, status='stopped', status_text='已停止', finished_at=now_iso()); return
-            try:
-                path = resolve_material_path(project_id, img)
-                prompt = _v47_build_annotation_prompt(
-                    cfg,
-                    selected_catalog,
-                    width=int(img['width']),
-                    height=int(img['height']),
-                    business_instruction=str(payload.get('business_instruction') or ''),
-                    template=prompt_template,
-                )
-                response = provider.annotate(
-                    image_bytes=path.read_bytes(),
-                    prompt=prompt,
-                    output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
-                )
-                text = str(response.get('text') or '')
-                parsed = auto_label_core.parse_candidate_response(
-                    text,
-                    width=int(img['width']),
-                    height=int(img['height']),
-                    label_ids=label_ids,
-                    label_aliases={
-                        str(item['code']): list(dict.fromkeys(
-                            value
-                            for value in [
-                                str(item.get('display_name_zh') or '').strip(),
-                                *[str(alias).strip() for alias in item.get('aliases') or []],
-                            ]
-                            if value
-                        ))
-                        for item in selected_catalog
-                    },
-                )
-                threshold = float(payload.get('threshold') if payload.get('threshold') is not None else .45)
-                parsed = [box for box in parsed if float(box.get('confidence') or 0) >= threshold]
-                boxes = auto_label_core.nms_candidates(parsed, iou_threshold=0.5)
-                for box in boxes:
-                    box.update({
-                        'id': uuid.uuid4().hex[:10],
-                        'source': 'ai_candidate',
-                        'model_config_id': cfg.get('id'),
-                        'prompt_template_id': payload.get('prompt_template_id') or '',
-                        'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
-                    })
-                candidates[str(img['id'])] = {
-                    'image_id': img['id'],
-                    'filename': img.get('filename'),
-                    'url': img.get('url'),
-                    'status': 'success' if boxes else 'empty',
-                    'boxes': boxes,
-                    'raw_response_hash': auto_label_core.raw_response_hash(text),
-                    'request_id': str(response.get('request_id') or ''),
-                    'latency_ms': int(response.get('latency_ms') or 0),
-                    'provider': str(response.get('provider') or ''),
-                    'model': str(response.get('model') or cfg.get('model_name') or ''),
-                }
-                box_count += len(boxes)
-            except Exception as e:
-                error_item = {'image_id': img.get('id'), 'image':img.get('filename'),'error':str(e)}
-                errors.append(error_item)
-                candidates[str(img['id'])] = {
-                    'image_id': img.get('id'), 'filename': img.get('filename'), 'url': img.get('url'),
-                    'status': 'failed', 'boxes': [], 'error': str(e),
-                }
-            if idx % 2 == 0 or idx == total:
-                elapsed=max(.001,time.time()-started);eta=int(max(0,elapsed/idx*(total-idx)))
-                _v33_update_task(project_id,'prelabel_tasks',task_id,processed_images=idx,total_images=total,boxes_added=box_count,progress=int(idx/total*100),elapsed_seconds=int(elapsed),eta_seconds=eta,errors=errors[-20:])
-        result_path = _v47_file_for(project_id, 'prelabel_candidates', task_id)
-        write_json(result_path, {
-            'task_id': task_id, 'labels': labels, 'model_name': cfg.get('name'),
-            'prompt_template_id': payload.get('prompt_template_id') or '',
-            'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
-            'items': list(candidates.values()), 'generated_at': now_iso(),
-        })
-        if errors and len(errors) >= total and box_count == 0:
-            raise RuntimeError(errors[0]['error'])
-        _v33_update_task(project_id,'prelabel_tasks',task_id,status='awaiting_confirmation',status_text='待确认',progress=100,processed_images=total,total_images=total,boxes_added=box_count,candidate_file=str(result_path),model_name=cfg.get('name'),requested_labels=labels,finished_scan_at=now_iso(),errors=errors[-20:])
-    except Exception as e:
-        _v33_update_task(project_id,'prelabel_tasks',task_id,status='failed',status_text='失败',error=str(e),finished_at=now_iso())
+def _retired_v47_annotation_api() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "旧版 v47 AI 标注接口已退役；请使用 /api/v60/projects/{project_id}/annotation-tasks。"
+            "AI 候选结果必须通过 durable review/decisions 流程确认后才能写入正式标注。"
+        ),
+    )
 
 
-@app.post('/api/v47/projects/{project_id}/ai-label-tasks')
+@app.post('/api/v47/projects/{project_id}/ai-label-tasks', deprecated=True)
 def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
-    project = get_project(project_id)
-    labels = _v47_parse_label_text(
-        payload.labels_text or '',
-        _v47_label_catalog(project),
-    )
-    ref_ids = set(payload.reference_image_ids or [])
-    if ref_ids:
-        for iid in ref_ids:
-            for b in read_annotation(project_id, iid).get('boxes', []):
-                lbl = normalize_label(str(b.get('label') or ''))
-                if lbl and lbl not in labels: labels.append(lbl)
-    if not labels:
-        raise HTTPException(status_code=400, detail='请输入标签，或选择至少一张已有标注的参考图片')
-    available = {str(item.get('code')) for item in _v47_label_catalog(project)}
-    unknown = sorted(set(labels) - available)
-    if unknown:
-        raise HTTPException(status_code=400, detail='以下标签不在标签库或已停用：' + '、'.join(unknown))
-    cfg = next(
-        (x for x in _v35_model_items() if x.get('id') in {payload.model_config_id, payload.provider_id}),
-        None,
-    )
-    if not cfg and not payload.provider_id:
-        cfg = _v47_default_annotation_model()
-    task_id=uuid.uuid4().hex[:12]
-    data=payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
-    data['labels']=labels
-    if cfg:
-        data['model_config_id']=cfg.get('id')
-    template = {}
-    if payload.prompt_template_id and payload.prompt_template_id != 'default':
-        template = next((x for x in _v35_prompt_items() if x.get('id') == payload.prompt_template_id), None) or {}
-        if not template:
-            raise HTTPException(status_code=400, detail='提示词模板不存在')
-        data['prompt_template_snapshot'] = template
-        data['prompt_template_version_id'] = template.get('version_id') or ''
-    total = min(len(payload.image_ids), payload.preview_count) if payload.preview_count > 0 else len(payload.image_ids)
-    task={'id':task_id,'name':payload.task_name or 'AI自动标注任务','model_name':(cfg or {}).get('name') or payload.provider_id,'requested_labels':labels,'status':'queued','status_text':'排队中','progress':0,'processed_images':0,'total_images':total,'boxes_added':0,'created_at':now_iso(),'request_payload':data,'stop_requested':False,'workflow':'v47_staged_ai','prompt_template_id':template.get('id') or 'default','prompt_template_version_id':template.get('version_id') or ''}
-    tasks=_v33_load_tasks(project_id,'prelabel_tasks');tasks.insert(0,task);_v33_save_tasks(project_id,'prelabel_tasks',tasks[:100])
-    threading.Thread(target=_v47_run_ai_label_task,args=(project_id,task_id,data),daemon=True).start()
-    return task
+    _retired_v47_annotation_api()
 
 
-@app.get('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/result')
+@app.get('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/result', deprecated=True)
 def v47_ai_label_result(project_id: str, task_id: str):
-    task=_v33_get_task(project_id,'prelabel_tasks',task_id)
-    if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
-    return {'status': task.get('status'), 'task':task,'result':read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})}
+    _retired_v47_annotation_api()
 
 
-@app.post('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/confirm')
+@app.post('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/confirm', deprecated=True)
 def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelConfirmReq):
-    task=_v33_get_task(project_id,'prelabel_tasks',task_id)
-    if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
-    if task.get('status') != 'awaiting_confirmation':
-        raise HTTPException(status_code=409, detail='只有待确认的候选标注任务可以写入')
-    data=read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})
-    allowed = {str(x.get('image_id')) for x in data.get('items',[]) if x.get('status') in {'success', 'empty'}}
-    chosen=set(payload.image_ids or allowed)
-    if not chosen.issubset(allowed):
-        raise HTTPException(status_code=400, detail='确认范围包含不存在或处理失败的图片')
-    overwrite=bool((task.get('request_payload') or {}).get('overwrite'))
-    applied=0;boxes=0
-    for item in data.get('items',[]):
-        iid=str(item.get('image_id'))
-        if iid not in chosen: continue
-        new=[]
-        for candidate in item.get('boxes') or []:
-            confirmed = dict(candidate)
-            confirmed['source'] = 'ai_candidate_confirmed'
-            new.append(confirmed)
-        old=read_annotation(project_id,iid).get('boxes',[])
-        if overwrite:
-            cids={x.get('class_id') for x in new};merged=[x for x in old if x.get('class_id') not in cids]+new
-        else: merged=old+new
-        write_annotation(project_id,iid,merged);applied+=1;boxes+=len(new)
-    _v33_update_task(project_id,'prelabel_tasks',task_id,status='done',status_text='已确认',confirmed_images=applied,confirmed_boxes=boxes,confirmed_at=now_iso(),finished_at=now_iso())
-    return {'ok':True,'applied_images':applied,'applied_image_ids':sorted(chosen),'boxes_added':boxes,'labels':get_project(project_id).get('labels',[])}
-
+    _retired_v47_annotation_api()
 
 def public_annotation_task(
     task: TaskRecord,
