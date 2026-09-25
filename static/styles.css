@@ -1054,6 +1054,8 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-candidate-card>footer{padding:3px 11px 11px}.ai66-candidate-card>footer .btn{min-height:32px;font-size:12px}.ai66-review-footer .btn{min-height:32px}
 .ai66-review-grid,.ai66-label-tools{scrollbar-width:thin;scrollbar-color:#c6d0dd transparent}.ai66-review-grid::-webkit-scrollbar,.ai66-label-tools::-webkit-scrollbar{width:7px;height:7px}.ai66-review-grid::-webkit-scrollbar-thumb,.ai66-label-tools::-webkit-scrollbar-thumb{border-radius:999px;background:#c6d0dd}
 .ai66-candidate-card .btn:focus-visible,.ai66-review-filters button:focus-visible{outline:2px solid #5b8def;outline-offset:2px}
+/* v66 AI candidate overlay label readability */
+.ai66-candidate-card .data412-box em{left:2px;top:2px;z-index:2;max-width:180px;height:19px;line-height:19px;padding:0 5px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;font-size:10px;white-space:nowrap}
 /* v66 visual AI candidate box editor */
 .ai-candidate-editor-layer{padding:12px!important;background:rgba(8,15,29,.6)!important;backdrop-filter:blur(8px)}
 .ai-candidate-editor-modal{width:min(1540px,calc(100vw - 24px))!important;height:calc(100vh - 24px)!important;max-height:none!important;border-radius:16px!important;background:#f5f8fc}
