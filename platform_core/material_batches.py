@@ -133,6 +133,28 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
     }
     execution_mode = str(payload.get("execution_mode") or "").strip().lower()
     remote_execution = payload.get("remote_execution")
+    scheduling = payload.get("scheduling")
+    if scheduling is not None:
+        if operation is not BatchOperation.CLEAN or not isinstance(scheduling, dict):
+            raise BatchRequestError(
+                "BATCH_SCHEDULING_INVALID",
+                "node scheduling is supported only for CLEAN material batches",
+                422,
+            )
+        scheduling_mode = str(scheduling.get("mode") or "auto").strip().lower()
+        scheduling_node = str(scheduling.get("node_id") or "").strip()
+        queue_policy = str(scheduling.get("queue_policy") or "normal").strip().lower()
+        if scheduling_mode not in {"auto", "node"}:
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "cleaning scheduling mode must be auto or node", 422)
+        if scheduling_mode == "auto" and (scheduling_node or queue_policy != "normal"):
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "automatic cleaning scheduling cannot pin a node or queue policy", 422)
+        if scheduling_mode == "node" and (not scheduling_node or queue_policy not in {"normal", "front", "preempt"}):
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "manual cleaning scheduling requires node_id and a valid queue policy", 422)
+        request_payload["scheduling"] = {
+            "mode": scheduling_mode,
+            "node_id": scheduling_node,
+            "queue_policy": queue_policy,
+        }
     if execution_mode or remote_execution is not None:
         if operation is not BatchOperation.CLEAN:
             raise BatchRequestError(

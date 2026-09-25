@@ -475,3 +475,11 @@ def test_clean_retry_contract_resets_interrupted_running_rows_for_preemption_rec
     from platform_core.material_batches import MaterialBatchHandler
     source = inspect.getsource(MaterialBatchHandler._run)
     assert 'retry_states = ("failed", "running") if operation is BatchOperation.CLEAN else ("failed",)' in source
+
+
+def test_clean_prepare_contract_persists_node_scheduling():
+    import inspect
+    from platform_core import material_batches
+    source = inspect.getsource(material_batches.prepare_batch)
+    assert 'request_payload["scheduling"]' in source
+    assert '"queue_policy": queue_policy' in source
