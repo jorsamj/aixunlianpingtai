@@ -20,6 +20,7 @@ on:
       - tests/api/test_storage_source_repository_connection_lifecycle.py
       - tests/api/test_material_selection_atomicity.py
       - tests/api/test_annotation_flow.py
+      - tests/api/test_legacy_annotated_import_guard.py
       - tests/unit/test_annotations.py
       - tests/api/test_v19_import_scalability.py
       - tests/api/test_v19_import_failure_rollback.py
@@ -76,6 +77,7 @@ jobs:
           python -m pytest -q
           tests/unit/test_annotations.py
           tests/api/test_annotation_flow.py
+          tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v19_import_scalability.py
           tests/api/test_storage_sources.py
           tests/api/test_storage_upload.py
