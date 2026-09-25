@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {applyAnnotationResult} from '../../static/modules/annotation.js';
+import {ANNOTATION_PREVIEW_LIMIT, applyAnnotationResult} from '../../static/modules/annotation.js';
 import {applyCleanConfirmation} from '../../static/modules/cleaning.js';
 import {activeLabelOptions} from '../../static/modules/labels.js';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from '../../static/modules/materials.js';
@@ -79,7 +79,8 @@ test('annotation response preserves the true count above the preview limit', () 
     boxes,
   );
   assert.equal(result[0].box_count, 80);
-  assert.equal(result[0].annotation_preview.length, 64);
+  assert.equal(ANNOTATION_PREVIEW_LIMIT, 32);
+  assert.equal(result[0].annotation_preview.length, ANNOTATION_PREVIEW_LIMIT);
 });
 
 test('upload response exposes one decision batch for single or multiple files', () => {
