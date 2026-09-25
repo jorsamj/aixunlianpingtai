@@ -1,3 +1,10 @@
+<!-- CURRENT_STATE_ANNOTATION_CLEANING_2026_09_25 -->
+> ## 2026-09-25 标注与数据清洗当前状态
+>
+> 最新详细交接已转到 docs/CODEX_HANDOFF_2026-09-25_ANNOTATION_CLEANING.md。文档写入前 cutoff c1e9dc2d...，VERSION.txt=42.24.0；34 workflows 中 31 success / 3 failure。标注/清洗关键 workflow 均 success；Label Normalization 两个红灯为 source guard exact literal，Training Task Visibility Real Chrome 需另行 focused reproduce。
+>
+> 标注 durable v60 / provenance / legacy v47 retirement / UI owner 已收口。新的产品优先级是复用现有 MATERIAL_BATCH/CLEAN + OpenCV/Pillow/hash runtime，区分已标注、未标注、已确认无目标，并把图片质量与标注质量分层；默认中央 Worker，远程 Agent 仅在 cleaning capability + portable storage preflight 通过时提供。
+>
 <!-- CURRENT_STATE_TRAINING_DETAIL_CI_FOLLOWUP_2026_09_24 -->
 > ## 2026-09-24 训练详情收口后的 CI 红灯分类
 >

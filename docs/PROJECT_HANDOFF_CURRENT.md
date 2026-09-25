@@ -1,3 +1,14 @@
+<!-- LIVE_HANDOFF_2026_09_25_ANNOTATION_CLEANING -->
+> ## 2026-09-25 标注 / 数据清洗最新接手入口（最高优先级）
+>
+> 文档写入前代码/CI cutoff：c1e9dc2dbae57c0c36c251e95f918a0ffac8ec3e；VERSION.txt=42.24.0。该 cutoff 34 workflows：31 success / 3 failure。Frontend Runtime Stabilization、AI Annotation Recovery、Remote Cleaning Runtime、Remote Material Import、ZIP Import Durable Runtime、Task Runtime Truth 均 success；两个 Label Normalization Contract 为旧 source literal guard 红灯，Training Task Visibility Real Chrome 仍需 focused reproduce。
+>
+> 标注主线已收口到 durable v60 Candidate -> 人工审核 -> Commit -> Ground Truth；legacy v47 直接写入链已退役，provenance 由后端拥有并覆盖 manual / ai_confirmed / mixed / imported / confirmed_empty。UI/动画已做专业化且 reduced-motion / pointer hot-path guard 完整。
+>
+> 新优先级是上传后数据清洗：继续复用现有 OpenCV/Pillow/SHA256+dHash 的 MATERIAL_BATCH/CLEAN runtime；默认中央 Materials Worker，可选具备 cleaning 能力的远程 Agent。清洗 UI/结果必须区分 全部 / 已标注 / 未标注 / 已确认无目标，并把 图片质量 与 标注质量 分层，不能把无框图片直接视为坏数据。
+>
+> 完整说明：docs/CODEX_HANDOFF_2026-09-25_ANNOTATION_CLEANING.md；新会话指令：docs/CODEX_TAKEOVER_PROMPT_2026-09-25.md。
+>
 <!-- LIVE_HANDOFF_2026_09_24_CURRENT_CUTOFF -->
 > ## 2026-09-24 当前接手入口（最高优先级）
 >
