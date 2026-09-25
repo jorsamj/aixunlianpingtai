@@ -271,3 +271,32 @@ def test_material_state_projection_ignores_non_ai_material_batches(
     )
     assert response.status_code == 200, response.text
     assert response.json()["items"] == []
+
+
+
+def test_retired_v47_annotation_routes_fail_closed(client, seeded_project):
+    project_id, image = seeded_project
+
+    created = client.post(
+        f"/api/v47/projects/{project_id}/ai-label-tasks",
+        json={
+            "image_ids": [image["id"]],
+            "labels_text": "fire",
+            "provider_id": "fake-provider",
+        },
+    )
+    assert created.status_code == 410
+    assert "/api/v60/projects/{project_id}/annotation-tasks" in created.json()["detail"]
+
+    result = client.get(
+        f"/api/v47/projects/{project_id}/ai-label-tasks/legacy-task/result"
+    )
+    assert result.status_code == 410
+
+    confirmed = client.post(
+        f"/api/v47/projects/{project_id}/ai-label-tasks/legacy-task/confirm",
+        json={"image_ids": [image["id"]]},
+    )
+    assert confirmed.status_code == 410
+
+    assert not hasattr(app_module, "_v47_run_ai_label_task")
