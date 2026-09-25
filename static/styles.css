@@ -916,6 +916,18 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 @media(prefers-reduced-motion:reduce){.cldb-product>summary>i{transition:none}}
 
 
+
+/* v66 material annotation truth badges */
+.data426-meta .annotation-status-v66{display:inline-flex;align-items:center;min-height:20px;padding:2px 7px;border:1px solid transparent;border-radius:999px;font-size:10px;font-weight:750;line-height:1.2}
+.data426-meta .annotation-status-v66.pending{background:#f2f4f7;color:#667085;border-color:#e4e7ec}
+.data426-meta .annotation-status-v66.manual{background:#eef6ff;color:#315f9d;border-color:#d5e6fb}
+.data426-meta .annotation-status-v66.ai-confirmed{background:#eefbf4;color:#287a50;border-color:#cdeedc}
+.data426-meta .annotation-status-v66.mixed{background:#f5f1ff;color:#6847a8;border-color:#e1d7fb}
+.data426-meta .annotation-status-v66.empty{background:#eef9fb;color:#34717b;border-color:#d2edf1}
+.data426-meta .annotation-status-v66.imported{background:#f5f6f8;color:#59677a;border-color:#e2e6eb}
+.data426-meta .annotation-status-v66.ai-pending{background:#fff8e8;color:#94620a;border-color:#f3dfad}
+.data426-meta .annotation-status-v66.ai-committing{background:#eef4ff;color:#3567b8;border-color:#d6e3fa}
+.data426-meta .annotation-status-v66.error{background:#fff0f1;color:#a94851;border-color:#f3d2d5}
 /* v66 annotation workbench: dedicated near-fullscreen professional editor */
 .annotation-workbench-layer{padding:10px!important;background:rgba(8,15,29,.58)!important;backdrop-filter:blur(8px)}
 .annotation-workbench-modal{width:calc(100vw - 20px)!important;max-width:1920px!important;height:calc(100vh - 20px)!important;max-height:none!important;border:1px solid rgba(148,163,184,.28);border-radius:16px!important;background:#f7f9fc;box-shadow:0 30px 90px rgba(2,8,23,.34)}
