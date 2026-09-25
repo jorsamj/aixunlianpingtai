@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 
 test('the final AI annotation override uses the persistent v60 task API', () => {
   const marker = source.lastIndexOf('Persistent v60 AI annotation UI');
@@ -132,4 +133,19 @@ test('pending AI material exposes direct review action and locks duplicate commi
   assert.match(source, /reviewAiLabel427/);
   assert.match(source, /showAiTask60/);
   assert.match(source, /aiMaterialStates60\?\.\[String\(x\.id\)\]\?\.state/);
+});
+
+test('canonical manual inspector exposes per-box provenance without a second annotation store', () => {
+  assert.match(source, /function annotationBoxSourceLabel420\(box\)/);
+  assert.match(source, /source\.startsWith\('ai_'\)/);
+  assert.match(source, /return 'AI已确认'/);
+  assert.match(source, /return '导入标注'/);
+  assert.match(source, /return '人工标注'/);
+  assert.match(source, /annotationBoxSourceLabel420\(b\)/);
+});
+
+test('v66 inspector polish targets the canonical ann414 label and object row classes', () => {
+  assert.match(styles, /\.ann420-inspector #annLabels \.ann414-label/);
+  assert.match(styles, /\.ann420-inspector #annBoxes \.ann414-boxrow/);
+  assert.match(styles, /grid-template-columns:minmax\(0,1fr\) 126px/);
 });
