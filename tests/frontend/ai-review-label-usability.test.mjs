@@ -127,3 +127,8 @@ test('AI review KPI separates total truth from current-page decisions', () => {
   assert.match(source, /review\.decisions\.get\(String\(item\.image_id\)\)===false/);
   assert.match(source, /reduce\(\(sum,item\)=>sum\+\(item\.status==='failed'\?0:\(item\.boxes\|\|\[\]\)\.length\),0\)/);
 });
+
+
+test('AI candidate overlay labels stay inside the visible image stage', () => {
+  assert.match(styles, /\.ai66-candidate-card \.data412-box em\{[^}]*left:2px;top:2px[^}]*max-width:180px[^}]*text-overflow:ellipsis/s);
+});
