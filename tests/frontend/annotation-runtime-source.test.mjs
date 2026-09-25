@@ -167,6 +167,7 @@ test('material cards color only derived annotation truth states and keep increme
 test('annotation motion stays outside the pointer hot path and respects reduced motion', () => {
   assert.match(styles, /@keyframes annotationWorkbenchEnter/);
   assert.match(styles, /\.annotation-workbench-modal,.ai-review-workbench-modal\{animation:annotationWorkbenchEnter/);
+  assert.match(styles, /animation:annotationWorkbenchEnter[^}]*var\(--motion-ease/);
   assert.match(styles, /\.annotation-status-v66\.ai-committing::before\{animation:annotationStatusPulse/);
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\).*annotation-workbench-modal.*animation:none!important/s);
 
