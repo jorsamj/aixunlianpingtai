@@ -167,3 +167,17 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
 });
+
+
+test('canonical main runtime exposes cleaning scope helpers with fresh module cache keys', () => {
+  const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  const index = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  assert.match(main, /cleanScopeChoices, cleanScopeRequest, cleanTaskView/);
+  assert.match(
+    main,
+    /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanScopeChoices, cleanScopeRequest, cleanTaskView, isActiveCleanTask\}/,
+  );
+  assert.match(main, /cleaning\.js\?v=422565/);
+  assert.match(index, /app\.js\?v=42\.25\.251/);
+  assert.match(index, /main\.mjs\?v=42\.25\.245/);
+});
