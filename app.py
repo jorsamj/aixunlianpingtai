@@ -18117,7 +18117,7 @@ def _v47_default_annotation_model() -> Dict[str, Any]:
     return next((x for x in items if x.get('default_for_annotation')), items[0])
 
 
-def _v47_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _annotation_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
     meta_by_code = {
         str(item.get('code')): item
         for item in project.get('label_meta', [])
@@ -18167,7 +18167,7 @@ def _v47_build_annotation_prompt(
     return template.replace('{labels}', '、'.join(str(item.get('code')) for item in labels))
 
 
-def _v47_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+def _annotation_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
     config_id = str(payload.get('model_config_id') or '')
     provider_id = str(payload.get('provider_id') or '')
     cfg = next((x for x in _v35_model_items() if x.get('id') == config_id or x.get('id') == provider_id), None)
@@ -18289,7 +18289,7 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     project = get_project(project_id)
     labels = _v47_parse_label_text(
         payload.labels_text,
-        _v47_label_catalog(project),
+        _annotation_label_catalog(project),
     )
     for image_id in payload.reference_image_ids or []:
         for box in read_annotation(project_id, image_id).get("boxes", []):
@@ -18298,7 +18298,7 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
                 labels.append(label)
     if not labels:
         raise HTTPException(status_code=400, detail="请输入标签，或选择至少一张已有标注的参考图片")
-    available = {str(item.get("code")) for item in _v47_label_catalog(project)}
+    available = {str(item.get("code")) for item in _annotation_label_catalog(project)}
     unknown = sorted(set(labels) - available)
     if unknown:
         raise HTTPException(status_code=400, detail="以下标签不在标签库或已停用：" + "、".join(unknown))
@@ -18519,7 +18519,7 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
     }
     if any(not source or not target for source, target in mapping.items()):
         raise HTTPException(status_code=400, detail="标签统一映射不能包含空标签")
-    catalog = _v47_label_catalog(get_project(project_id))
+    catalog = _annotation_label_catalog(get_project(project_id))
     label_ids = {str(item["code"]): int(item["class_id"]) for item in catalog}
     source_labels = {str(item["label"]) for item in store.label_summary()}
     unknown_sources = sorted(set(mapping) - source_labels)
