@@ -4851,47 +4851,32 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     boxes:(image?.annotation_preview||[]).map(box=>({...box})),
   });
 
-  window.materialAnnotationStatusV66=function(row){
-    const annotationState=String(row?.annotation_state||row?.annotation_status||'');
-    const origin=String(row?.annotation_origin||'');
+  window.annotationTruthViewV66=function(row){
     const boxes=Number(row?.box_count||0);
-    if(annotationState==='confirmed_empty')return origin==='ai_confirmed'?'AI已确认 · 无目标':'已确认无目标';
-    if(annotationState==='annotated'||row?.annotated){
-      if(origin==='mixed')return `混合标注 · ${boxes}框`;
-      if(origin==='ai_confirmed')return `AI已确认 · ${boxes}框`;
-      if(origin==='imported')return `导入标注 · ${boxes}框`;
-      return `人工标注 · ${boxes}框`;
+    const rawState=String(row?.annotation_state||row?.annotation_status||'').trim().toLowerCase();
+    const annotationState=rawState||(row?.annotated?(boxes>0?'annotated':'confirmed_empty'):'');
+    const origin=String(row?.annotation_origin||'').trim().toLowerCase();
+    const formal=annotationState==='annotated'||annotationState==='confirmed_empty';
+    if(formal){
+      if(annotationState==='confirmed_empty'){
+        if(origin==='ai_confirmed')return {statusText:'AI已确认 · 无目标',className:'empty',originText:'AI审核确认'};
+        if(origin==='imported')return {statusText:'已确认无目标',className:'empty',originText:'导入标注'};
+        return {statusText:'已确认无目标',className:'empty',originText:origin==='mixed'?'AI审核确认 + 人工编辑':'人工标注'};
+      }
+      if(origin==='mixed')return {statusText:`混合标注 · ${boxes}框`,className:'mixed',originText:'AI审核确认 + 人工编辑'};
+      if(origin==='ai_confirmed')return {statusText:`AI已确认 · ${boxes}框`,className:'ai-confirmed',originText:'AI审核确认'};
+      if(origin==='imported')return {statusText:`导入标注 · ${boxes}框`,className:'imported',originText:'导入标注'};
+      return {statusText:`人工标注 · ${boxes}框`,className:'manual',originText:'人工标注'};
     }
-    const transient=state.aiMaterialStates60?.[String(row?.id)]?.state||'';
-    if(transient==='committing')return 'AI正在入库';
-    if(transient==='awaiting_confirmation')return 'AI待审核';
-    if(transient==='candidate_failed')return 'AI候选失败';
-    return '待标注';
+    const transient=String(state.aiMaterialStates60?.[String(row?.id)]?.state||'');
+    if(transient==='committing')return {statusText:'AI正在入库',className:'ai-committing',originText:'AI候选 · 已人工确认，正在入库'};
+    if(transient==='awaiting_confirmation')return {statusText:'AI待审核',className:'ai-pending',originText:'AI候选 · 待人工审核'};
+    if(transient==='candidate_failed')return {statusText:'AI候选失败',className:'error',originText:'AI候选 · 生成失败'};
+    return {statusText:'待标注',className:'pending',originText:'—'};
   };
-  window.materialAnnotationStatusClassV66=function(row){
-    const annotationState=String(row?.annotation_state||row?.annotation_status||''),origin=String(row?.annotation_origin||'').toLowerCase(),transient=state.aiMaterialStates60?.[String(row?.id)]?.state||'';
-    if(transient==='committing')return 'ai-committing';
-    if(transient==='awaiting_confirmation')return 'ai-pending';
-    if(transient==='candidate_failed')return 'error';
-    if(annotationState==='confirmed_empty')return 'empty';
-    if(annotationState==='annotated'||row?.annotated){if(origin==='mixed')return 'mixed';if(origin==='ai_confirmed')return 'ai-confirmed';if(origin==='imported')return 'imported';return 'manual';}
-    return 'pending';
-  };
-  window.annotationOriginLabelV66=function(row){
-    const stateValue=String(row?.annotation_state||row?.annotation_status||'');
-    const origin=String(row?.annotation_origin||'').toLowerCase();
-    const transient=state.aiMaterialStates60?.[String(row?.id)]||null;
-    if(!['annotated','confirmed_empty'].includes(stateValue)&&!row?.annotated){
-      if(transient?.state==='committing')return 'AI候选 · 已人工确认，正在入库';
-      if(transient?.state==='awaiting_confirmation')return 'AI候选 · 待人工审核';
-      if(transient?.state==='candidate_failed')return 'AI候选 · 生成失败';
-      return '—';
-    }
-    if(origin==='mixed')return 'AI审核确认 + 人工编辑';
-    if(origin==='ai_confirmed')return 'AI审核确认';
-    if(origin==='imported')return '导入标注';
-    return '人工标注';
-  };
+  window.materialAnnotationStatusV66=row=>window.annotationTruthViewV66(row).statusText;
+  window.materialAnnotationStatusClassV66=row=>window.annotationTruthViewV66(row).className;
+  window.annotationOriginLabelV66=row=>window.annotationTruthViewV66(row).originText;
   window.annotationUpdatedTextV66=function(row){
     const raw=String(row?.annotation_summary_at||row?.annotated_at||'').trim();
     if(!raw)return '—';
