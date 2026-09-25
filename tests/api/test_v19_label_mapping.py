@@ -97,6 +97,7 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
         assert boxes[0]["source"] == "imported"
         assert boxes[0]["import_batch_id"] == job["id"]
         assert boxes[0]["source_format"] == "yolo"
+        assert boxes[0]["source_task_id"] == job["id"]
         assert boxes[0]["source_class_id"] in {"0", "1"}
         assert boxes[0]["source_label_name"] in {"toukui1", "toukui2"}
         assert boxes[0]["canonical_label_id"] == "helmet"

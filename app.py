@@ -11453,6 +11453,31 @@ def _v18_resolve_import_label_id(
     return labels.index(target)
 
 
+def _v19_import_box_provenance(
+    import_context: Optional[Dict[str, Any]],
+    *,
+    source_format: str,
+    source_class_id: Any,
+    source_label_name: str,
+    canonical_label: str,
+    canonical_project_class_id: int,
+) -> Dict[str, Any]:
+    if not import_context:
+        return {}
+    return {
+        "source": "imported",
+        "source_task_id": str(import_context.get("source_task_id") or import_context.get("import_batch_id") or ""),
+        "import_batch_id": str(import_context.get("import_batch_id") or ""),
+        "source_format": str(source_format or "").lower(),
+        "source_class_id": str(source_class_id),
+        "source_label_name": str(source_label_name or ""),
+        "canonical_label_id": str(canonical_label or ""),
+        "canonical_project_class_id": int(canonical_project_class_id),
+        "mapping_method": "manual",
+        "confirmed_at": str(import_context.get("confirmed_at") or ""),
+    }
+
+
 def _v18_import_coco(
     project_id: str,
     root: Path,
@@ -11460,6 +11485,7 @@ def _v18_import_coco(
     report: Dict[str, Any],
     progress_cb=None,
     label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
 ) -> bool:
     json_files = []
     for jp in root.rglob('*.json'):
@@ -11479,9 +11505,11 @@ def _v18_import_coco(
         split = _v18_split_from_path(ann_json)
         cats = sorted(coco.get('categories', []), key=lambda c: int(c.get('id', 0)))
         cat_to_class = {}
+        cat_source_names = {}
         for c in cats:
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
+            cat_source_names[cid] = label
             cat_to_class[cid] = _v18_resolve_import_label_id(
                 project, str(cid), label, label_mapping,
             )
@@ -11515,7 +11543,24 @@ def _v18_import_coco(
                         report['invalid_boxes'] += 1
                         continue
                     cls = cat_to_class[cid]
-                    boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(record['width'],x+w),2), 'y2':round(min(record['height'],y+h),2)})
+                    canonical = project['labels'][cls]
+                    boxes.append({
+                        'id': uuid.uuid4().hex[:10],
+                        'class_id': cls,
+                        'label': canonical,
+                        'x1': round(max(0, x), 2),
+                        'y1': round(max(0, y), 2),
+                        'x2': round(min(record['width'], x + w), 2),
+                        'y2': round(min(record['height'], y + h), 2),
+                        **_v19_import_box_provenance(
+                            import_context,
+                            source_format='coco',
+                            source_class_id=cid,
+                            source_label_name=cat_source_names.get(cid, ''),
+                            canonical_label=canonical,
+                            canonical_project_class_id=cls,
+                        ),
+                    })
                 return boxes
 
             rec = add_image_record(
@@ -11550,6 +11595,7 @@ def _v18_import_voc(
     report: Dict[str, Any],
     progress_cb=None,
     label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
 ) -> bool:
     import xml.etree.ElementTree as ET
     xml_files = list(root.rglob('*.xml'))
@@ -11590,7 +11636,24 @@ def _v18_import_voc(
                 if x2-x1<2 or y2-y1<2:
                     report['invalid_boxes'] += 1
                     continue
-                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(record['width'],x2),2), 'y2':round(min(record['height'],y2),2)})
+                canonical = project['labels'][cls]
+                boxes.append({
+                    'id': uuid.uuid4().hex[:10],
+                    'class_id': cls,
+                    'label': canonical,
+                    'x1': round(max(0, x1), 2),
+                    'y1': round(max(0, y1), 2),
+                    'x2': round(min(record['width'], x2), 2),
+                    'y2': round(min(record['height'], y2), 2),
+                    **_v19_import_box_provenance(
+                        import_context,
+                        source_format='voc',
+                        source_class_id=label,
+                        source_label_name=label,
+                        canonical_label=canonical,
+                        canonical_project_class_id=cls,
+                    ),
+                })
             return boxes
 
         rec = add_image_record(
@@ -11626,6 +11689,7 @@ def _v18_import_yolo(
     report: Dict[str, Any],
     progress_cb=None,
     label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
 ) -> bool:
     label_files = [x for x in root.rglob('*.txt') if x.name.lower() not in {'classes.txt','obj.names','_darknet.labels','train.txt','val.txt','test.txt'}]
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
@@ -11687,9 +11751,18 @@ def _v18_import_yolo(
                     else:
                         report['skipped_labels'] += 1
                         continue
+                    canonical = project['labels'][new_cls]
                     box['class_id'] = new_cls
-                    box['label'] = project['labels'][new_cls]
+                    box['label'] = canonical
                     box['id'] = uuid.uuid4().hex[:10]
+                    box.update(_v19_import_box_provenance(
+                        import_context,
+                        source_format='yolo',
+                        source_class_id=old_cls,
+                        source_label_name=source_label,
+                        canonical_label=canonical,
+                        canonical_project_class_id=new_cls,
+                    ))
                     boxes.append(box)
             else:
                 report['unmatched_labels'] += 1
@@ -12167,6 +12240,11 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
                 frozen_mapping = dict(job.get("label_mapping") or {}) or None
+                import_context = {
+                    "import_batch_id": job_id,
+                    "source_task_id": job_id,
+                    "confirmed_at": str(job.get("label_confirmed_at") or ""),
+                }
                 last_import_emit = 0.0
                 def import_progress(done,total,msg):
                     nonlocal last_import_emit
@@ -12190,18 +12268,21 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 imported = _v18_import_coco(
                     project_id, parse_root, dataset_id, report, import_progress,
                     label_mapping=frozen_mapping,
+                    import_context=import_context,
                 )
                 if not imported:
                     v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=44, processed=0)
                     imported = _v18_import_voc(
                         project_id, parse_root, dataset_id, report, import_progress,
                         label_mapping=frozen_mapping,
+                        import_context=import_context,
                     )
                 if not imported:
                     v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=44, processed=0)
                     imported = _v18_import_yolo(
                         project_id, parse_root, dataset_id, report, import_progress,
                         label_mapping=frozen_mapping,
+                        import_context=import_context,
                     )
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")

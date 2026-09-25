@@ -29,7 +29,7 @@ from .storage.detection_import import (
 )
 from .storage.import_candidates import ImportCandidateStore
 from .storage.local import LocalStorageProvider
-from .storage.import_confirmation import mapping_suggestions
+from .storage.import_confirmation import external_label_facts
 from .storage.yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
 from .storage.import_tasks import MANIFEST_REF, SCAN_RESULT_REF, IMAGE_EXTENSIONS
 from .storage.zip_import import (
@@ -2735,10 +2735,7 @@ def commit_material_review_archive(
                 meta=meta,
                 expected_prefix=expected_prefix,
             )
-            external_classes = mapping_suggestions(
-                candidate_store.external_classes(),
-                list(platform_labels or ()),
-            )
+            external_classes = external_label_facts(candidate_store.external_classes())
         elif normalized_format in {"coco", "voc"}:
             annotation_member = str(meta.get("annotation_member") or "")
             if annotation_member != REVIEW_DETECTION_ANNOTATIONS_MEMBER:
@@ -2756,10 +2753,7 @@ def commit_material_review_archive(
                 annotations_member=annotation_member,
                 manifest_identity=annotation_member,
             )
-            external_classes = mapping_suggestions(
-                candidate_store.external_classes(),
-                list(platform_labels or ()),
-            )
+            external_classes = external_label_facts(candidate_store.external_classes())
         staging_store = RemoteMaterialStagingStore(
             artifacts.artifact_path(task_id, REMOTE_MATERIAL_STAGING_REF)
         )
