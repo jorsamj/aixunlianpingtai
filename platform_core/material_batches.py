@@ -518,7 +518,11 @@ class MaterialBatchHandler:
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
         if context.task.retry_of:
-            while batch := manifest.rows(("failed",)):
+            # A CLEAN task may be safely preempted between the durable
+            # selection transition to "running" and result persistence. Reset
+            # only incomplete rows; succeeded rows remain immutable.
+            retry_states = ("failed", "running") if operation is BatchOperation.CLEAN else ("failed",)
+            while batch := manifest.rows(retry_states):
                 _check_active(context)
                 manifest.transition([row["image_id"] for row in batch], "pending")
         append_task_log(context, "processing", f"operation={operation.value} total={manifest.summary()['total']}")

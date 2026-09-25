@@ -52,6 +52,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_node_assignment_active
     WHERE state IN ('ASSIGNED','CLAIMED');
 CREATE INDEX IF NOT EXISTS idx_task_node_assignment_node
     ON task_node_assignments(node_id,state,assigned_at,task_id);
+CREATE TABLE IF NOT EXISTS task_preemptions (
+    incoming_task_id TEXT NOT NULL,
+    victim_task_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('WAITING_CANCEL','RESUMED','ABANDONED')),
+    created_at TEXT NOT NULL,
+    resumed_at TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(incoming_task_id,victim_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_preemptions_state
+    ON task_preemptions(state,incoming_task_id,victim_task_id);
 """
 
 
@@ -359,6 +371,110 @@ def _assigned_gpu_ids(database, node_id: str) -> set[str]:
     return assigned
 
 
+
+def task_scheduling(task, artifacts) -> dict[str, Any]:
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return {}
+    scheduling = payload.get("scheduling") if isinstance(payload, Mapping) else None
+    return dict(scheduling) if isinstance(scheduling, Mapping) else {}
+
+
+def task_requested_node_id(task, artifacts) -> str:
+    scheduling = task_scheduling(task, artifacts)
+    if str(scheduling.get("mode") or "auto").strip().lower() != "node":
+        return ""
+    return str(scheduling.get("node_id") or "").strip()
+
+
+def task_preemptible(task, artifacts) -> bool:
+    """Only checkpoint/recoverable work may be displaced by an operator preemption."""
+    if task.kind is TaskKind.TRAINING:
+        return True
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(payload, Mapping)
+            and str(payload.get("operation") or "").strip().upper() == "CLEAN"
+        )
+    return False
+
+
+def _resume_ready_preemptions_in(database, now: str) -> int:
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_preemptions'"
+    ).fetchone()
+    if table is None:
+        return 0
+    terminal = {
+        TaskStatus.PARTIAL_SUCCESS.value,
+        TaskStatus.SUCCEEDED.value,
+        TaskStatus.CANCELLED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.BLOCKED_BY_ENVIRONMENT.value,
+        TaskStatus.BLOCKED_BY_HARDWARE.value,
+    }
+    rows = database.execute(
+        """
+        SELECT p.incoming_task_id,p.victim_task_id,
+               incoming.status AS incoming_status,
+               victim.status AS victim_status
+          FROM task_preemptions p
+          JOIN tasks incoming ON incoming.task_id=p.incoming_task_id
+          JOIN tasks victim ON victim.task_id=p.victim_task_id
+         WHERE p.state='WAITING_CANCEL'
+         ORDER BY p.created_at,p.incoming_task_id,p.victim_task_id
+        """
+    ).fetchall()
+    resumed = 0
+    for row in rows:
+        if str(row["incoming_status"]) not in terminal:
+            continue
+        victim_status = str(row["victim_status"])
+        if victim_status == TaskStatus.CANCELLED.value:
+            changed = database.execute(
+                """
+                UPDATE tasks
+                   SET status='QUEUED',stage='queued',progress=0,current_item=NULL,
+                       retry_of=task_id,error=NULL,accepted=NULL,result_ref=NULL,
+                       worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                       process_pid=NULL,process_create_time=NULL,process_command_hash=NULL,
+                       finished_at=NULL,updated_at=?
+                 WHERE task_id=? AND status='CANCELLED'
+                """,
+                (now, str(row["victim_task_id"])),
+            ).rowcount
+            if changed == 1:
+                database.execute(
+                    """
+                    UPDATE task_preemptions
+                       SET state='RESUMED',resumed_at=?,detail='automatically requeued after preemptor finished'
+                     WHERE incoming_task_id=? AND victim_task_id=? AND state='WAITING_CANCEL'
+                    """,
+                    (now, str(row["incoming_task_id"]), str(row["victim_task_id"])),
+                )
+                resumed += 1
+        elif victim_status in terminal:
+            database.execute(
+                """
+                UPDATE task_preemptions
+                   SET state='ABANDONED',resumed_at=?,detail=?
+                 WHERE incoming_task_id=? AND victim_task_id=? AND state='WAITING_CANCEL'
+                """,
+                (
+                    now,
+                    f"victim finished as {victim_status}; automatic retry suppressed",
+                    str(row["incoming_task_id"]),
+                    str(row["victim_task_id"]),
+                ),
+            )
+    return resumed
+
+
 def _requested_training_device(task, artifacts) -> str:
     try:
         payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
@@ -453,11 +569,189 @@ class CentralTaskAllocator:
             ).fetchone()
         return _public(row) if row is not None else None
 
+    def list_preemptions(self, *, incoming_task_id: str | None = None) -> list[dict[str, Any]]:
+        clauses, values = [], []
+        if incoming_task_id is not None:
+            clauses.append("incoming_task_id=?")
+            values.append(str(incoming_task_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                f"SELECT * FROM task_preemptions{where} ORDER BY created_at DESC,incoming_task_id,victim_task_id",
+                values,
+            ).fetchall()
+        return [
+            {
+                "incoming_task_id": str(row["incoming_task_id"]),
+                "victim_task_id": str(row["victim_task_id"]),
+                "node_id": str(row["node_id"]),
+                "state": str(row["state"]),
+                "created_at": str(row["created_at"]),
+                "resumed_at": row["resumed_at"],
+                "detail": str(row["detail"] or ""),
+            }
+            for row in rows
+        ]
+
+    def preempt_for(self, incoming_task_id: str, node_id: str) -> dict[str, Any]:
+        """Safely displace resumable work on one explicit node.
+
+        The running victim is asked to cancel through the existing durable task
+        state machine. It is automatically requeued after the incoming task
+        finishes. We never kill an arbitrary process or preempt a task type that
+        does not already have a recovery contract.
+        """
+        incoming = self.repository.get(str(incoming_task_id))
+        if incoming is None:
+            raise NodeAssignmentError("NODE_PREEMPT_TASK_NOT_FOUND", "incoming task does not exist", 404)
+        if incoming.status is not TaskStatus.QUEUED:
+            raise NodeAssignmentError("NODE_PREEMPT_NOT_QUEUED", "incoming task must still be queued", 409)
+        target = str(node_id or "").strip()
+        if not target or task_requested_node_id(incoming, self.artifacts) != target:
+            raise NodeAssignmentError(
+                "NODE_PREEMPT_AFFINITY_REQUIRED",
+                "preemption requires a queued task with strict affinity to the selected node",
+                409,
+            )
+        capability = task_node_capability(incoming, self.artifacts)
+        remote_contract = task_remote_execution_contract(incoming, self.artifacts)
+        required_mode = task_node_connection_mode(incoming, self.artifacts)
+        current = datetime.now(timezone.utc)
+        now = current.isoformat()
+
+        # Queue-front is part of preemption semantics even if the node becomes
+        # idle between preflight and submit.
+        try:
+            self.repository.promote(incoming.task_id)
+        except ValueError as error:
+            raise NodeAssignmentError("NODE_PREEMPT_PROMOTE_FAILED", str(error), 409) from error
+
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            candidates = _online_nodes(
+                database,
+                str(capability or ""),
+                now=current,
+                ttl_seconds=self.heartbeat_ttl_seconds,
+                remote_contract=remote_contract,
+                required_connection_mode=required_mode,
+            )
+            selected_node = next(
+                (row for row in candidates if str(row["node_id"]) == target),
+                None,
+            )
+            if selected_node is None:
+                database.rollback()
+                raise NodeAssignmentError(
+                    "NODE_PREEMPT_NODE_UNAVAILABLE",
+                    "selected node is no longer online with the required capability",
+                    409,
+                )
+
+            assignment_rows = database.execute(
+                """
+                SELECT * FROM task_node_assignments
+                 WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')
+                   AND task_id<>?
+                 ORDER BY assigned_at,task_id,generation
+                """,
+                (target, incoming.task_id),
+            ).fetchall()
+            victims = []
+            for assignment in assignment_rows:
+                task_row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (str(assignment["task_id"]),),
+                ).fetchone()
+                if task_row is None:
+                    continue
+                victim = _from_row(task_row)
+                if victim.status is TaskStatus.RUNNING and not task_preemptible(victim, self.artifacts):
+                    database.rollback()
+                    raise NodeAssignmentError(
+                        "NODE_PREEMPT_UNSUPPORTED_VICTIM",
+                        f"node is running non-preemptible task {victim.task_id} ({victim.kind.value})",
+                        409,
+                    )
+                victims.append((assignment, victim))
+
+            preempted, released = [], []
+            for assignment, victim in victims:
+                if victim.status is TaskStatus.RUNNING:
+                    changed = database.execute(
+                        """
+                        UPDATE tasks
+                           SET status='CANCEL_REQUESTED',stage='preempting',
+                               current_item=?,updated_at=?
+                         WHERE task_id=? AND status='RUNNING'
+                        """,
+                        (
+                            f"被高优先级清洗任务 {incoming.task_id} 抢占，正在安全暂停并准备自动恢复",
+                            now,
+                            victim.task_id,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        database.rollback()
+                        raise NodeAssignmentError(
+                            "NODE_PREEMPT_RACE",
+                            f"task {victim.task_id} changed state during preemption",
+                            409,
+                        )
+                    database.execute(
+                        """
+                        INSERT INTO task_preemptions
+                            (incoming_task_id,victim_task_id,node_id,state,created_at,detail)
+                        VALUES (?,?,?,'WAITING_CANCEL',?,?)
+                        ON CONFLICT(incoming_task_id,victim_task_id) DO UPDATE SET
+                            node_id=excluded.node_id,state='WAITING_CANCEL',
+                            created_at=excluded.created_at,resumed_at=NULL,detail=excluded.detail
+                        """,
+                        (
+                            incoming.task_id,
+                            victim.task_id,
+                            target,
+                            now,
+                            f"preempted {victim.kind.value} and will automatically retry after incoming task",
+                        ),
+                    )
+                    preempted.append(victim.task_id)
+
+                # A QUEUED assignment may already have been claimed by the Agent
+                # but not started. Releasing it fences the stale assignment token
+                # and puts the incoming task at the front without cancelling work.
+                database.execute(
+                    """
+                    UPDATE task_node_assignments
+                       SET state='RELEASED',updated_at=?,released_at=?,
+                           release_reason=?,lease_token=NULL,lease_expires_at=NULL
+                     WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
+                    """,
+                    (
+                        now,
+                        now,
+                        f"preempted_by:{incoming.task_id}",
+                        victim.task_id,
+                        int(assignment["generation"]),
+                    ),
+                )
+                released.append(victim.task_id)
+            database.commit()
+        return {
+            "mode": "preempt",
+            "node_id": target,
+            "incoming_task_id": incoming.task_id,
+            "preempted_task_ids": preempted,
+            "released_assignment_task_ids": released,
+            "created_at": now,
+        }
+
     def assign_next(self) -> dict[str, Any] | None:
         current = datetime.now(timezone.utc)
         now = current.isoformat()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
+            _resume_ready_preemptions_in(database, now)
             task_rows = database.execute(
                 """
                 SELECT task.* FROM tasks task
@@ -488,6 +782,17 @@ class CentralTaskAllocator:
                 )
                 if not nodes:
                     continue
+                requested_node_id = task_requested_node_id(task, self.artifacts)
+                if requested_node_id:
+                    nodes = [
+                        node for node in nodes
+                        if str(node["node_id"]) == requested_node_id
+                    ]
+                    if not nodes:
+                        # Manual node selection is strict affinity. Never spill a
+                        # requested task onto another machine when that node is
+                        # offline, busy with incompatible work, or loses capability.
+                        continue
                 if capability == "training":
                     gpu_nodes = []
                     for candidate in nodes:
@@ -618,6 +923,7 @@ class CentralTaskAllocator:
         token = secrets.token_urlsafe(24)
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
+            _resume_ready_preemptions_in(database, now)
             database.execute(
                 """
                 UPDATE task_node_assignments
@@ -730,5 +1036,7 @@ __all__ = [
     "ensure_task_node_assignment_schema",
     "task_node_capability",
     "task_node_connection_mode",
+    "task_preemptible",
+    "task_requested_node_id",
     "task_remote_execution_contract",
 ]

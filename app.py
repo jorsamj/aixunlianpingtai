@@ -102,6 +102,11 @@ from platform_core.resource_discovery.tasks import (
 )
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
 from platform_core.service_nodes import ServiceNodeRepository
+from platform_core.task_node_assignments import (
+    CentralTaskAllocator,
+    NodeAssignmentError,
+    task_preemptible,
+)
 from platform_core.storage import (
     StorageError,
     StorageManager,
@@ -17137,7 +17142,10 @@ from platform_core.cleaning import (
 class V47CleanReq(BaseModel):
     image_ids: Optional[List[str]] = None
     clean_scope: Literal['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'] = 'all'
-    execution_mode: str = 'local'
+    execution_mode: Literal['local', 'agent'] = 'local'
+    scheduling_mode: Literal['auto', 'node'] = 'auto'
+    target_node_id: str = Field(default='', max_length=128)
+    queue_policy: Literal['normal', 'front', 'preempt'] = 'normal'
     exact_duplicate: bool = True
     near_duplicate: bool = True
     near_duplicate_hamming: int = 5
@@ -17416,12 +17424,19 @@ def _v47_clean_agent_preflight(
             'eligible_nodes': [],
         }
 
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    allocator = CentralTaskAllocator(repository, artifacts)
     nodes = [
-        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        node for node in ServiceNodeRepository(repository).list_public()
         if str(node.get('connection_mode') or '') == 'agent'
         and bool(node.get('online'))
         and 'cleaning' in set(node.get('effective_capabilities') or [])
     ]
+    active_assignments = allocator.list(active_only=True)
+    assignments_by_node: Dict[str, List[Dict[str, Any]]] = {}
+    for assignment in active_assignments:
+        assignments_by_node.setdefault(str(assignment.get('node_id') or ''), []).append(assignment)
     if not nodes:
         return {
             'agent_available': False,
@@ -17445,19 +17460,50 @@ def _v47_clean_agent_preflight(
             'eligible_nodes': [],
         }
 
+    eligible_nodes = []
+    for node in nodes:
+        node_id = str(node.get('node_id') or '')
+        task_rows = []
+        can_preempt = True
+        for assignment in assignments_by_node.get(node_id, []):
+            task = repository.get(str(assignment.get('task_id') or ''))
+            if task is None:
+                continue
+            if task.status is TaskStatus.RUNNING and not task_preemptible(task, artifacts):
+                can_preempt = False
+            task_rows.append({
+                'task_id': task.task_id,
+                'kind': task.kind.value,
+                'status': task.status.value,
+                'stage': task.stage,
+                'progress': float(task.progress or 0),
+                'preemptible': task.status is not TaskStatus.RUNNING or task_preemptible(task, artifacts),
+            })
+        resources = dict(node.get('resources') or {})
+        eligible_nodes.append({
+            'node_id': node_id,
+            'display_name': str(node.get('display_name') or node_id),
+            'build_id': str(node.get('build_id') or ''),
+            'status': str(node.get('status') or ''),
+            'idle': not task_rows,
+            'active_count': len(task_rows),
+            'active_tasks': task_rows[:6],
+            'preemptible': bool(task_rows) and can_preempt,
+            'resources': {
+                'cpu': dict(resources.get('cpu') or {}),
+                'memory': dict(resources.get('memory') or {}),
+                'disk': dict(resources.get('disk') or {}),
+            },
+        })
+    eligible_nodes.sort(key=lambda row: (not bool(row['idle']), int(row['active_count']), row['display_name'].lower()))
     return {
         'agent_available': True,
         'reason': '',
         'selected_count': total,
         'sources': source_truth,
-        'eligible_nodes': [
-            {
-                'node_id': str(node.get('node_id') or ''),
-                'display_name': str(node.get('display_name') or node.get('node_id') or ''),
-                'build_id': str(node.get('build_id') or ''),
-            }
-            for node in nodes
-        ],
+        'eligible_nodes': eligible_nodes,
+        'idle_nodes': sum(1 for row in eligible_nodes if row['idle']),
+        'busy_nodes': sum(1 for row in eligible_nodes if not row['idle']),
     }
 
 
@@ -17471,13 +17517,43 @@ def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
     }
 
 
+def _v47_clean_scheduling(
+    execution_mode: str,
+    scheduling_mode: str,
+    target_node_id: str,
+    queue_policy: str,
+) -> Dict[str, str]:
+    mode = str(scheduling_mode or 'auto').strip().lower()
+    node_id = str(target_node_id or '').strip()
+    policy = str(queue_policy or 'normal').strip().lower()
+    if execution_mode != 'agent':
+        if mode != 'auto' or node_id or policy != 'normal':
+            raise ValueError('指定节点、插队或抢占仅适用于远程 Agent 清洗')
+        return {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'}
+    if mode == 'auto':
+        if node_id or policy != 'normal':
+            raise ValueError('自动调度不能同时指定节点或插队策略')
+        return {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'}
+    if mode != 'node' or not node_id:
+        raise ValueError('指定节点清洗必须选择一个 cleaning Agent')
+    if policy not in {'normal', 'front', 'preempt'}:
+        raise ValueError('未知清洗队列策略')
+    return {'mode': 'node', 'node_id': node_id, 'queue_policy': policy}
+
+
 def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
     data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
     image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
     clean_scope = str(data.pop('clean_scope', 'all') or 'all')
     execution_mode = _v47_clean_execution_mode(data.pop('execution_mode', 'local'))
+    scheduling = _v47_clean_scheduling(
+        execution_mode,
+        data.pop('scheduling_mode', 'auto'),
+        data.pop('target_node_id', ''),
+        data.pop('queue_policy', 'normal'),
+    )
     selection, _normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
-    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
+    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data, 'scheduling': scheduling}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
     draft['selection_spec'] = estimate['selection_spec']
     if execution_mode == 'agent':
@@ -17503,11 +17579,14 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         if selection_scope != 'FILTERED'
         else str(selection_filters.get('annotation_state') or 'all').lower()
     )
+    scheduling = dict(request.get('scheduling') or {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'})
     request_payload = {
         **options,
         'image_ids': list(selection.get('image_ids') or []),
         'clean_scope': clean_scope,
+        'scheduling': scheduling,
     }
+    scheduling_event = artifacts.read_json(task.task_id, 'scheduling.json', default={}) or {}
     confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
     public_status = str(body.get('status') or task.status.value)
     execution_mode = str(request.get('execution_mode') or 'local').lower()
@@ -17553,6 +17632,8 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
         'execution_mode': execution_mode,
         'clean_scope': clean_scope,
+        'scheduling': scheduling,
+        'scheduling_event': scheduling_event,
     }
 
 
@@ -17585,6 +17666,14 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
         preflight = _v47_clean_agent_preflight(project_id, payload.image_ids, payload.clean_scope)
         if not preflight.get('agent_available'):
             raise ValueError(str(preflight.get('reason') or '远程清洗当前不可用'))
+        scheduling = dict(batch_payload.get('scheduling') or {})
+        if str(scheduling.get('mode') or 'auto') == 'node':
+            eligible = {
+                str(node.get('node_id') or '')
+                for node in preflight.get('eligible_nodes') or []
+            }
+            if str(scheduling.get('node_id') or '') not in eligible:
+                raise ValueError('指定节点当前不在线、未启用 cleaning 服务或不满足远程清洗条件')
         batch_payload['remote_execution'] = (
             _remote_execution_transport_service().build_cleaning_remote_contract(
                 project_id,
@@ -17602,6 +17691,7 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
                 'selection_spec': selection,
                 'options': dict(value.get('options') or {}),
                 'execution_mode': str(value.get('execution_mode') or 'local'),
+                'scheduling': dict(value.get('scheduling') or {}),
             }
 
         if semantic_request(prepared_request) != semantic_request(batch_payload):
@@ -17892,12 +17982,66 @@ def _v47_create_clean_task_record(
     return _v47_start_clean_task_record(project_id, str(task.get('id')))
 
 
+def _v47_apply_clean_scheduling(task_id: str) -> Dict[str, Any]:
+    request = _v47_material_batch_request(task_id)
+    scheduling = dict(request.get('scheduling') or {})
+    mode = str(scheduling.get('mode') or 'auto')
+    policy = str(scheduling.get('queue_policy') or 'normal')
+    node_id = str(scheduling.get('node_id') or '')
+    if mode != 'node':
+        return {'mode': 'auto', 'queue_policy': 'normal'}
+    repository = shared_task_repository()
+    allocator = CentralTaskAllocator(repository, shared_task_artifacts())
+    if policy == 'front':
+        promoted = repository.promote(task_id)
+        event = {
+            'mode': 'node',
+            'queue_policy': 'front',
+            'node_id': node_id,
+            'incoming_task_id': task_id,
+            'priority': promoted.priority,
+            'queue_rank': promoted.queue_rank,
+            'created_at': now_iso(),
+        }
+    elif policy == 'preempt':
+        event = allocator.preempt_for(task_id, node_id)
+        event['queue_policy'] = 'preempt'
+    else:
+        event = {
+            'mode': 'node',
+            'queue_policy': 'normal',
+            'node_id': node_id,
+            'incoming_task_id': task_id,
+            'created_at': now_iso(),
+        }
+    shared_task_artifacts().atomic_write_json(task_id, 'scheduling.json', event)
+    return event
+
+
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
+    task_id = ''
     try:
         task, _ = _v62_prepare_clean_compat(project_id, payload)
-        return _v62_publish_clean_compat(project_id, str(task['id']))
+        task_id = str(task['id'])
+        _v62_publish_clean_compat(project_id, task_id)
+        _v47_apply_clean_scheduling(task_id)
+        durable = shared_task_repository().get(task_id)
+        if durable is None:
+            raise ValueError('清洗任务发布后未找到持久化任务')
+        return _v47_clean_compat_task(durable)
+    except NodeAssignmentError as error:
+        current = shared_task_repository().get(task_id) if task_id else None
+        if current is not None and current.status is TaskStatus.QUEUED:
+            shared_task_repository().request_cancel(task_id)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={'code': error.code, 'message': str(error)},
+        ) from error
     except ValueError as error:
+        current = shared_task_repository().get(task_id) if task_id else None
+        if current is not None and current.status is TaskStatus.QUEUED:
+            shared_task_repository().request_cancel(task_id)
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
@@ -17987,6 +18131,26 @@ def v55_apply_upload_batch_decisions(
         if bool(clean_task_id) != bool(associated_clean_ids):
             raise HTTPException(status_code=400, detail='上传批次清洗任务关联不完整')
         associated_clean_set = set(associated_clean_ids)
+        if clean_ids:
+            indexed = {
+                str(row.get('id')): row
+                for row in material_store(project_id).get_many(sorted(clean_ids))
+            }
+            not_unannotated = []
+            for image_id in sorted(clean_ids):
+                row = indexed.get(image_id) or {}
+                annotation_state = str(
+                    row.get('annotation_state')
+                    or row.get('annotation_status')
+                    or ('annotated' if row.get('annotated') else 'unannotated')
+                ).strip().lower()
+                if annotation_state != 'unannotated':
+                    not_unannotated.append(image_id)
+            if not_unannotated:
+                raise HTTPException(
+                    status_code=409,
+                    detail='批量上传入口只允许把未标注素材送入图片质量清洗；带标注素材请使用标注质量审计',
+                )
         if clean_task_id and clean_ids - associated_clean_set:
             raise HTTPException(
                 status_code=400,

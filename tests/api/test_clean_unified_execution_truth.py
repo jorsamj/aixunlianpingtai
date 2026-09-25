@@ -306,6 +306,9 @@ def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client)
     assert truth["agent_available"] is True
     assert truth["selected_count"] == 1
     assert truth["eligible_nodes"][0]["node_id"] == node_id
+    assert truth["eligible_nodes"][0]["idle"] is True
+    assert truth["eligible_nodes"][0]["active_count"] == 0
+    assert truth["eligible_nodes"][0]["resources"]["memory"]["available_bytes"] == 8 * 1024**3
 
     response = client.post(
         f"/api/v47/projects/{project_id}/clean-tasks",
@@ -330,6 +333,7 @@ def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client)
     assert request["execution_mode"] == "agent"
     assert request["remote_execution"]["task_kind"] == "MATERIAL_BATCH"
     assert request["remote_execution"]["transport"] == "object-storage-v1"
+    assert request["scheduling"] == {"mode": "auto", "node_id": "", "queue_policy": "normal"}
 
 
 def test_upload_batch_clean_association_points_to_same_durable_task(client):
@@ -354,6 +358,25 @@ def test_upload_batch_clean_association_points_to_same_durable_task(client):
     repeated.raise_for_status()
     assert repeated.json()["clean_task_id"] == task_id
     assert app_module.shared_task_repository().get(task_id).task_id == task_id
+
+
+def test_upload_batch_clean_rejects_material_that_became_formally_annotated(client):
+    project_id = _create_project(client, "upload-clean-unannotated-only")
+    uploaded = _upload(client, project_id, "later-annotated.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    app_module.write_annotation(
+        project_id,
+        image_id,
+        [{"class_id": 0, "label": "target", "x1": 10, "y1": 10, "x2": 50, "y2": 50}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+    response = client.post(
+        f"/api/v55/projects/{project_id}/upload-batches/{uploaded['batch_id']}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
+    )
+    assert response.status_code == 409
+    assert "只允许把未标注素材" in str(response.json())
 
 
 def test_clean_executes_through_real_fenced_material_worker(client):
@@ -445,3 +468,10 @@ def test_clean_analysis_timeout_fails_one_image_and_continues_next(client, monke
     completed_states = [state for state in states if state != "failed"]
     assert len(completed_states) == 1
     assert completed_states[0] in {"passed", "needs_review"}
+
+
+def test_clean_retry_contract_resets_interrupted_running_rows_for_preemption_recovery():
+    import inspect
+    from platform_core.material_batches import MaterialBatchHandler
+    source = inspect.getsource(MaterialBatchHandler._run)
+    assert 'retry_states = ("failed", "running") if operation is BatchOperation.CLEAN else ("failed",)' in source

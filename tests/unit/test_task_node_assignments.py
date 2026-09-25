@@ -449,6 +449,171 @@ def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     assert task_node_capability(default, artifacts) == "material-import"
 
 
+def test_clean_manual_node_affinity_never_spills_to_another_eligible_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "batch-clean-pinned",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-agent-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "clean-agent-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 64 * 1024**3}, "disk": {"free_bytes": 500 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-agent-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "clean-agent-b"
+
+
+def test_clean_preemption_cancels_recoverable_victim_then_requeues_it_after_preemptor_finishes(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "clean-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 16 * 1024**3}, "disk": {"free_bytes": 100 * 1024**3}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-victim",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "clean-victim"
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id='agent-clean-victim' WHERE task_id='clean-victim'"
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-preemptor",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    event = allocator.preempt_for("clean-preemptor", node_id)
+    assert event["preempted_task_ids"] == ["clean-victim"]
+    assert repository.get("clean-victim").status is TaskStatus.CANCEL_REQUESTED
+
+    # Simulate the fenced Agent acknowledging cancellation, then the incoming
+    # clean finishing. The allocator owns the durable auto-resume transition.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED',stage='cancelled',finished_at=updated_at WHERE task_id='clean-victim'"
+        )
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED',stage='succeeded',finished_at=updated_at WHERE task_id='clean-preemptor'"
+        )
+    allocator.assign_next()
+    resumed = repository.get("clean-victim")
+    assert resumed is not None
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.retry_of == "clean-victim"
+    lineage = allocator.list_preemptions(incoming_task_id="clean-preemptor")
+    assert lineage[0]["state"] == "RESUMED"
+
+
+def test_clean_preemption_fails_closed_for_nonrecoverable_running_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "mixed-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning", "conversion"],
+        connection_mode="agent",
+    )
+    create_task(
+        repository,
+        artifacts,
+        "conversion-victim",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=10,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "conversion-victim"
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='converting',worker_id='agent-conversion' WHERE task_id='conversion-victim'"
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-cannot-preempt",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    with pytest.raises(Exception, match="non-preemptible task"):
+        allocator.preempt_for("clean-cannot-preempt", node_id)
+    assert repository.get("conversion-victim").status is TaskStatus.RUNNING
+
+
 def test_portable_clean_material_batch_selects_only_agent_node(tmp_path):
     repository, artifacts = runtime(tmp_path)
     task = create_task(
