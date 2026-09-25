@@ -45,3 +45,63 @@ def test_empty_annotation_requires_explicit_no_target_confirmation(client, seede
     assert body["saved_boxes"] == 0
     assert body["annotation"]["boxes"] == []
     assert body["annotation"]["annotation_state"] == "confirmed_empty"
+
+
+
+def test_manual_save_preserves_ai_provenance_and_derives_mixed_origin(client, seeded_project):
+    import app as app_module
+
+    pid, image = seeded_project
+    ai_box = {
+        "id": "ai-box-1",
+        "class_id": 0,
+        "label": "fire",
+        "x1": 10,
+        "y1": 10,
+        "x2": 50,
+        "y2": 50,
+        "source": "ai_candidate_confirmed",
+        "source_task_id": "ai-task-1",
+        "candidate_id": "candidate-1",
+        "confidence": 0.93,
+    }
+    app_module.write_annotation(
+        pid, image["id"], [ai_box],
+        annotation_state="annotated",
+        annotation_origin="ai_confirmed",
+    )
+
+    saved = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [
+                {
+                    "id": "ai-box-1",
+                    "label": "fire",
+                    "x1": 12,
+                    "y1": 12,
+                    "x2": 52,
+                    "y2": 52,
+                    "source": "manual",
+                },
+                {
+                    "id": "manual-box-1",
+                    "label": "fire",
+                    "x1": 60,
+                    "y1": 20,
+                    "x2": 90,
+                    "y2": 70,
+                    "source": "ai_candidate_confirmed",
+                },
+            ]
+        },
+    )
+
+    assert saved.status_code == 200
+    body = saved.json()
+    boxes = {box["id"]: box for box in body["annotation"]["boxes"]}
+    assert boxes["ai-box-1"]["source"] == "ai_candidate_confirmed"
+    assert boxes["ai-box-1"]["source_task_id"] == "ai-task-1"
+    assert boxes["ai-box-1"]["candidate_id"] == "candidate-1"
+    assert boxes["manual-box-1"]["source"] == "manual"
+    assert body["image"]["annotation_origin"] == "mixed"
