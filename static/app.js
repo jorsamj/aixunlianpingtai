@@ -5258,8 +5258,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       <section class="ai66-review-kpis">
         <div><span>候选图片</span><b id="ai66Total">0</b></div>
         <div><span>本页采用</span><b id="ai66Accepted">0</b></div>
-        <div><span>无目标</span><b id="ai66Empty">0</b></div>
-        <div><span>处理失败</span><b id="ai66Failed">0</b></div>
+        <div><span>本页拒绝</span><b id="ai66Rejected">0</b></div>
+        <div><span>本页候选框</span><b id="ai66Boxes">0</b></div>
+        <div><span>本页无目标</span><b id="ai66Empty">0</b></div>
+        <div><span>本页失败</span><b id="ai66Failed">0</b></div>
         <div><span>人工修改</span><b id="ai66Edited">0</b></div>
       </section>
       <div class="ai66-review-tools">
@@ -5383,10 +5385,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function renderReviewPage(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
     const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;
-    const empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length,failed=review.items.filter(item=>item.status==='failed').length;
+    const rejected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===false).length,boxes=review.items.reduce((sum,item)=>sum+(item.status==='failed'?0:(item.boxes||[]).length),0),empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length,failed=review.items.filter(item=>item.status==='failed').length;
     const summary=document.getElementById('ai60ReviewSummary');if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选择 ${selected}/${selectable}`;
     const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=String(value)};
-    set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
+    set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Rejected',rejected);set('ai66Boxes',boxes);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
     document.querySelectorAll('[data-ai66-filter]').forEach(button=>button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all')));
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
