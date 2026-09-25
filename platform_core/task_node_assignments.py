@@ -349,6 +349,30 @@ def _gpu_is_training_candidate(item: Mapping[str, Any]) -> bool:
     return True
 
 
+def _node_active_work_count(database, node_id: str) -> int:
+    """Count both queued reservations and executions already running on a node."""
+    node = str(node_id)
+    assigned = int(database.execute(
+        "SELECT COUNT(*) FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
+        (node,),
+    ).fetchone()[0])
+    running = int(database.execute(
+        """
+        SELECT COUNT(DISTINCT task.task_id)
+          FROM tasks task
+         WHERE task.status IN ('RUNNING','CANCEL_REQUESTED')
+           AND (
+                task.worker_id=?
+                OR task.worker_id IN (
+                    SELECT worker_id FROM worker_instances WHERE node_id=?
+                )
+           )
+        """,
+        (f"agent:{node}", node),
+    ).fetchone()[0])
+    return assigned + running
+
+
 def _assigned_gpu_ids(database, node_id: str) -> set[str]:
     rows = database.execute(
         """
@@ -837,10 +861,7 @@ class CentralTaskAllocator:
                 )
                 ranked = []
                 for node in nodes:
-                    active = int(database.execute(
-                        "SELECT COUNT(*) FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
-                        (str(node["node_id"]),),
-                    ).fetchone()[0])
+                    active = _node_active_work_count(database, str(node["node_id"]))
                     selected_gpu = None
                     if capability == "training":
                         assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))

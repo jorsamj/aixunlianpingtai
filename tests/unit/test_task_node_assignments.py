@@ -488,6 +488,72 @@ def test_clean_manual_node_affinity_never_spills_to_another_eligible_agent(tmp_p
     assert assignment["node_id"] == "clean-agent-b"
 
 
+
+def test_clean_auto_scheduling_prefers_idle_agent_over_stronger_busy_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_online_node(
+        repository,
+        "clean-idle-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-busy-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 64 * 1024**3}, "disk": {"free_bytes": 500 * 1024**3}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-running-on-b",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-busy-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    reserved = allocator.assign_next()
+    assert reserved and reserved["node_id"] == "clean-busy-b"
+    allocator.release("clean-running-on-b", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id='agent:clean-busy-b' "
+            "WHERE task_id='clean-running-on-b'"
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-auto-next",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "auto", "node_id": "", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    assert assignment["task_id"] == "clean-auto-next"
+    assert assignment["node_id"] == "clean-idle-a"
+
+
+
 def test_clean_preemption_cancels_recoverable_victim_then_requeues_it_after_preemptor_finishes(tmp_path):
     repository, artifacts = runtime(tmp_path)
     node_id = "clean-preempt-agent"
