@@ -1,5 +1,7 @@
 import {replaceMaterial} from './materials.js';
 
+export const ANNOTATION_PREVIEW_LIMIT = 32;
+
 export function formalAnnotationState(response, boxes) {
   const allBoxes = boxes || [];
   const state = String(
@@ -11,7 +13,7 @@ export function formalAnnotationState(response, boxes) {
   return state;
 }
 
-export function annotationPreviewFromBoxes(boxes, limit = 64) {
+export function annotationPreviewFromBoxes(boxes, limit = ANNOTATION_PREVIEW_LIMIT) {
   return (boxes || []).slice(0, limit).map(box => {
     const preview = {
       class_id: box.class_id,
