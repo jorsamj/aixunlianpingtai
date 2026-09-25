@@ -132,3 +132,20 @@ test('AI review KPI separates total truth from current-page decisions', () => {
 test('AI candidate overlay labels stay inside the visible image stage', () => {
   assert.match(styles, /\.ai66-candidate-card \.data412-box em\{[^}]*left:2px;top:2px[^}]*max-width:180px[^}]*text-overflow:ellipsis/s);
 });
+
+
+test('single AI review decisions patch one card instead of rebuilding the page', () => {
+  const source = reviewBlock();
+  assert.match(source, /function renderReviewMetrics60\(review\)/);
+  assert.match(source, /function patchAiDecisionCard60\(id\)/);
+  assert.match(source, /data-ai66-image-id=/);
+  assert.match(source, /data-ai66-decision="accept"/);
+  assert.match(source, /window\.toggleAiDecision60=\(id,accepted\)=>window\.setAiDecision60\(id,accepted\)/);
+
+  const start = source.indexOf('window.setAiDecision60=(id,accepted)=>');
+  const end = source.indexOf('function renderReviewPage()', start);
+  const decision = source.slice(start, end);
+  assert.match(decision, /if\(String\(review\.filter\|\|'all'\)==='rejected'\)return renderReviewPage\(\)/);
+  assert.match(decision, /renderReviewMetrics60\(review\);patchAiDecisionCard60\(key\)/);
+  assert.doesNotMatch(decision, /grid\.innerHTML/);
+});
