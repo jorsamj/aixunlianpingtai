@@ -3957,7 +3957,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
     return `<button class="btn mini primary" onclick="openAnnotation('${esc(String(x?.id||''))}')">标注</button>`;
   };
-  function card412(x){const sel=state.data412Selected.has(x.id),raw=state.data412Tab==='unprocessed';return `<article class="data426-card data412-card ${sel?'selected':''}" data-material-id="${esc(x.id)}" onclick="${state.data412DeleteMode?`toggleData412('${x.id}')`:`previewData429('${x.id}')`}"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${Math.max(.3,Math.min(3,(x.width||16)/(x.height||9)))}"><img src="${x.url}" loading="lazy" decoding="async">${raw?'':ov412(x)}</div><span class="data429-process ${raw?'':'ok'}">${raw?'未处理':'已处理'}</span>${state.data412DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="setData412('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title">${esc(x.filename)}</div><div class="data426-meta"><span>${typeof fmtSize424==='function'?fmtSize424(x.size_bytes):''}</span><span>${raw?'尚未完成清洗决策':(window.materialAnnotationStatusV66?.(x)||(x.annotated?`已标注 · ${x.box_count||0}框`:'待标注'))}</span></div>${raw?'':`<div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(displayLabel412(l))}</span>`).join('')||'<em>暂无标签</em>'}</div>`}<div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="previewData429('${x.id}')">详情</button>${raw?`<button class="btn mini" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn mini primary" onclick="createClean427({image_ids:['${x.id}']})">清洗</button>`:window.annotationMaterialActionV66(x)}</div></div></article>`}
+  function card412(x){const sel=state.data412Selected.has(x.id),raw=state.data412Tab==='unprocessed',statusClass=raw?'':(window.materialAnnotationStatusClassV66?.(x)||'pending');return `<article class="data426-card data412-card ${sel?'selected':''}" data-material-id="${esc(x.id)}" onclick="${state.data412DeleteMode?`toggleData412('${x.id}')`:`previewData429('${x.id}')`}"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${Math.max(.3,Math.min(3,(x.width||16)/(x.height||9)))}"><img src="${x.url}" loading="lazy" decoding="async">${raw?'':ov412(x)}</div><span class="data429-process ${raw?'':'ok'}">${raw?'未处理':'已处理'}</span>${state.data412DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="setData412('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title">${esc(x.filename)}</div><div class="data426-meta"><span>${typeof fmtSize424==='function'?fmtSize424(x.size_bytes):''}</span><span class="${raw?'':`annotation-status-v66 ${statusClass}`}">${raw?'尚未完成清洗决策':(window.materialAnnotationStatusV66?.(x)||(x.annotated?`已标注 · ${x.box_count||0}框`:'待标注'))}</span></div>${raw?'':`<div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(displayLabel412(l))}</span>`).join('')||'<em>暂无标签</em>'}</div>`}<div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="previewData429('${x.id}')">详情</button>${raw?`<button class="btn mini" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn mini primary" onclick="createClean427({image_ids:['${x.id}']})">清洗</button>`:window.annotationMaterialActionV66(x)}</div></div></article>`}
   function dataCardSignature412(x){
     return JSON.stringify([
       x.id,x.filename,x.url,x.width,x.height,x.size_bytes,x.annotated,x.box_count,x.processing_status,x.cleaned_at,x.clean_skipped,
@@ -4868,6 +4868,15 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(transient==='candidate_failed')return 'AI候选失败';
     return '待标注';
   };
+  window.materialAnnotationStatusClassV66=function(row){
+    const annotationState=String(row?.annotation_state||row?.annotation_status||''),origin=String(row?.annotation_origin||'').toLowerCase(),transient=state.aiMaterialStates60?.[String(row?.id)]?.state||'';
+    if(transient==='committing')return 'ai-committing';
+    if(transient==='awaiting_confirmation')return 'ai-pending';
+    if(transient==='candidate_failed')return 'error';
+    if(annotationState==='confirmed_empty')return 'empty';
+    if(annotationState==='annotated'||row?.annotated){if(origin==='mixed')return 'mixed';if(origin==='ai_confirmed')return 'ai-confirmed';if(origin==='imported')return 'imported';return 'manual';}
+    return 'pending';
+  };
   window.annotationOriginLabelV66=function(row){
     const stateValue=String(row?.annotation_state||row?.annotation_status||'');
     const origin=String(row?.annotation_origin||'').toLowerCase();
@@ -5072,7 +5081,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const materialId=String(image.id||''),byId=materialId?document.querySelector(`.data412-card[data-material-id="${CSS.escape(materialId)}"]`):null;
     const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=byId||cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));
     if(!card)return;
-    const meta=card.querySelectorAll('.data426-meta span');if(meta[1])meta[1].textContent=window.materialAnnotationStatusV66?.(image)||materialAnnotationStatus420(image);
+    const meta=card.querySelectorAll('.data426-meta span');if(meta[1]){meta[1].textContent=window.materialAnnotationStatusV66?.(image)||materialAnnotationStatus420(image);meta[1].className=`annotation-status-v66 ${window.materialAnnotationStatusClassV66?.(image)||'pending'}`;}
     const tags=card.querySelector('.data426-tags');if(tags)tags.innerHTML=(image.labels||[]).map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<em>暂无标签</em>';
     const actions=card.querySelector('.data426-actions');if(actions&&window.annotationMaterialActionV66)actions.innerHTML=`<button class="btn mini" onclick="previewData429('${esc(String(image.id||''))}')">详情</button>${window.annotationMaterialActionV66(image)}`;
     card.dataset.renderSignature=typeof dataCardSignature412==='function'?dataCardSignature412(image):(card.dataset.renderSignature||'');
