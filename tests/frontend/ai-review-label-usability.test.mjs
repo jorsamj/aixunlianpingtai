@@ -140,7 +140,7 @@ test('single AI review decisions patch one card instead of rebuilding the page',
   assert.match(source, /function patchAiDecisionCard60\(id\)/);
   assert.match(source, /data-ai66-image-id=/);
   assert.match(source, /data-ai66-decision="accept"/);
-  assert.match(source, /window\.toggleAiDecision60=\(id,accepted\)=>window\.setAiDecision60\(id,accepted\)/);
+  assert.doesNotMatch(source, /window\.toggleAiDecision60=/);
 
   const start = source.indexOf('window.setAiDecision60=(id,accepted)=>');
   const end = source.indexOf('function renderReviewPage()', start);
