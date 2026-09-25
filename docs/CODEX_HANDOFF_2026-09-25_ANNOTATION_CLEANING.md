@@ -337,3 +337,158 @@ F. Only then implement cleaning UX split:
    4) review cards and safe confirmation
 G. Reuse current platform_core/cleaning.py, MATERIAL_BATCH/CLEAN, CleaningAnalysisRuntime, Remote Cleaning and Agent runtime. No parallel cleaning service.
 H. Keep VERSION 42.24.0; no merge/tag/release/force push.
+
+
+## 14. Live handoff refresh after documentation commit
+
+Latest observed live remote HEAD after the original documentation commit:
+
+- HEAD: 25cde516c14eb777c48c1ab65b8e6fccf80ad337
+- commit: docs: hand off annotation and cleaning state
+- VERSION.txt: 42.24.0
+
+The branch moved after earlier runtime validation, so a new session must still re-read the live remote HEAD before modifying code.
+
+Current workflow truth observed on 25cde516...:
+
+- 23 workflow runs total
+- 21 completed success
+- 2 completed failure
+- 0 queued
+- 0 in progress
+
+Important completed-success workflows:
+
+- Frontend Runtime Stabilization
+- AI Annotation Recovery
+- Remote Cleaning Runtime
+- Remote Material Import
+- ZIP Import Durable Runtime
+- Task Runtime Truth
+
+Frontend Runtime Stabilization on the latest validated runtime line remains healthy:
+
+- frontend: 741 / 741 passed
+- browser-navigation / Real Chrome: 76 / 76 passed
+
+The two current completed failures are:
+
+### 14.1 Label Normalization Contract
+
+Real test groups are green:
+
+- Python API tests: 53 passed
+- frontend Node tests: 36 passed / 0 failed
+
+The job fails only in the final source-string guard because it still requires this old exact app.py literal:
+
+`*[str(alias).strip() for alias in item.get('aliases') or []]`
+
+Treat this as stale/mis-scoped source-guard debt. Fix the workflow guard to assert the current semantic owner instead of restoring old implementation text.
+
+### 14.2 Node Agent Executor / Windows
+
+- API job: success
+- ubuntu-24.04 contract job: success
+- windows-latest contract job: failure
+- Windows result: 275 passed / 1 failed
+
+Failing test:
+
+`tests/unit/test_node_agent_training_runtime.py::test_training_fencing_kills_worker_without_stale_terminal_write`
+
+The failed assertion is real and Windows-specific at this observation point. Do not weaken the test. Reproduce/focus the worker fencing + process termination path on Windows and verify stale terminal writes remain impossible.
+
+## 15. Final cleaning architecture decision for the next session
+
+### 15.1 Base cleaning engine
+
+Keep the existing implementation. Do not introduce another cleaning service.
+
+Use:
+
+- OpenCV for blur / grayscale / histogram-derived image metrics
+- Pillow for real image decode/verify and corruption detection
+- SHA256 for exact duplicate identity
+- dHash + Hamming + durable four-band LSH for near-duplicate discovery
+- MaterialBatch durable task truth for execution and progress
+- CleaningAnalysisRuntime child-process timeout isolation for pathological images
+
+Current deterministic image-quality cleaning is CPU work. GPU is not required.
+
+### 15.2 Server capability contract
+
+Default mode:
+
+- execution_mode = local
+- TaskKind = MATERIAL_BATCH
+- operation = CLEAN
+- durable required capability = materials.batch
+- use the central Materials Worker
+
+Optional remote mode:
+
+- execution_mode = agent
+- product/node capability = cleaning
+- durable assignment capability = agent.remote
+- remote runtime must have Pillow, OpenCV and NumPy
+- material bytes must be portable through OSS/S3-compatible object storage
+- frozen selection, object_key, size and SHA256 evidence must all pass preflight
+
+Do not create an `opencv` node capability. `cleaning` is the product capability; OpenCV is an implementation dependency.
+
+Prefer a CPU cleaning Agent near object storage for very large datasets. Do not consume expensive training GPU capacity for deterministic blur/duplicate checks.
+
+### 15.3 Required annotated/unannotated split
+
+The next cleaning UX must expose:
+
+- 全部
+- 已标注
+- 未标注
+- 已确认无目标
+- selected images
+
+Never derive this only from box_count. Use formal annotation_state/provenance truth.
+
+Image-quality checks apply to all scopes.
+
+For 已标注 materials, add a separate annotation-quality audit category:
+
+- invalid/inactive label identity
+- out-of-bounds / zero-area boxes
+- tiny/huge box warnings
+- exact/near-identical duplicate boxes
+- suspicious same-class high-IoU duplicates
+- unusual object-count / annotation-density outliers
+- dataset class-balance and spatial-distribution summaries
+
+These are review warnings. Do not auto-delete Ground Truth.
+
+For 未标注 materials:
+
+- run only deterministic image-quality cleaning
+- do not treat “no box” as bad data
+- route remaining usable images to manual/AI annotation
+
+For 已确认无目标:
+
+- treat as valid negative Ground Truth when image quality passes
+- never downgrade it to unannotated
+
+Future model-assisted missing-label/wrong-label detection must be a separate semantic-quality audit. It may use inference/GPU capability, but its output is suspicion/candidates only and still requires human review before formal Ground Truth changes.
+
+### 15.4 Recommended next implementation order
+
+After clearing current CI red lights:
+
+1. Add cleaning scope filter by formal annotation state.
+2. Keep current deterministic CLEAN runtime unchanged.
+3. Add separate 图片质量 / 标注质量 result categories.
+4. Show local vs Agent execution preflight clearly in the creation dialog.
+5. Preserve safe confirmation before deletion or other destructive action.
+6. Add annotation-quality rules as review-only checks.
+7. Add permanent frontend/backend/source guards for the scope split.
+8. Run Remote Cleaning Runtime + Frontend Runtime Stabilization + relevant API/unit/browser tests.
+
+Do not build a second cleaning database, second Worker, second poller, or second review modal owner.
