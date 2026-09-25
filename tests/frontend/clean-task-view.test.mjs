@@ -222,7 +222,9 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /cleanSchedulingModeChanged427/);
   assert.match(source, /cleanTargetNodeChanged427/);
   assert.match(source, /cleanQueuePolicyChanged427/);
-  assert.match(source, /抢占并优先执行/);
+  assert.match(source, /队首等待/);
+  assert.match(source, /安全抢占/);
+  assert.match(source, /当前任务不支持安全让出节点/);
   assert.match(source, /审计结果/);
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
@@ -238,7 +240,7 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
     /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
   assert.match(main, /cleaning\.js\?v=422567/);
-  assert.match(index, /styles\.css\?v=42\.24\.40/);
-  assert.match(index, /app\.js\?v=42\.25\.256/);
+  assert.match(index, /styles\.css\?v=42\.24\.41/);
+  assert.match(index, /app\.js\?v=42\.25\.257/);
   assert.match(index, /main\.mjs\?v=42\.25\.247/);
 });

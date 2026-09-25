@@ -83,7 +83,7 @@ test('cleaning execution picker disables Agent for local material and submits ex
           {
             node_id: 'clean-agent-b', display_name: '清洗节点 B', build_id: 'build-b',
             idle: false, active_count: 1, preemptible: true,
-            active_tasks: [{task_id:'train-1',kind:'TRAINING',status:'RUNNING',stage:'training',progress:42,preemptible:true}],
+            active_tasks: [{task_id:'clean-running-1',kind:'MATERIAL_BATCH',operation:'CLEAN',status:'RUNNING',stage:'analyzing',progress:42,preemptible:true}],
             resources: {cpu: {logical_cores: 32}, memory: {available_bytes: 34359738368}, disk: {}},
           },
         ],
@@ -117,7 +117,7 @@ test('cleaning execution picker disables Agent for local material and submits ex
   await expect(dialog.getByText('当前空闲')).toBeVisible();
   await dialog.locator('input[name="cl427SchedulingMode"][value="node"]').check();
   await dialog.locator('input[name="cl427Node"][value="clean-agent-b"]').check();
-  await expect(dialog.getByText('训练 42%')).toBeVisible();
+  await expect(dialog.getByText('清洗 42%')).toBeVisible();
   await dialog.locator('input[name="cl427QueuePolicy"][value="preempt"]').check();
   await dialog.getByRole('button', {name: '开始清洗'}).click();
 
