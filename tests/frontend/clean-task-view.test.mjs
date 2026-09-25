@@ -146,6 +146,11 @@ test('clean scope choices use formal annotation states and selected IDs explicit
     cleaning.cleanScopeRequest('selected', ['a', 'a', 'b']),
     {clean_scope: 'selected', image_ids: ['a', 'b']},
   );
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('all'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('annotated'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('selected'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('unannotated'), false);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('confirmed_empty'), false);
   assert.throws(() => cleaning.cleanScopeRequest('selected', []), /没有选中的图片/);
 
   const forced = cleaning.cleanScopeChoices({selectedCount: 1, forcedSelected: true});
@@ -164,6 +169,10 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /cleanScopeRequest427/);
   assert.match(source, /clean_scope/);
   assert.match(source, /annotation_provenance/);
+  assert.match(source, /annotation_audit/);
+  assert.match(source, /标注质量 · 逐图复核/);
+  assert.match(source, /setCleanQualityTab429/);
+  assert.match(source, /loadMoreCleanAudit429/);
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
 });
@@ -172,12 +181,13 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
 test('canonical main runtime exposes cleaning scope helpers with fresh module cache keys', () => {
   const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const index = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(main, /cleanScopeChoices, cleanScopeRequest, cleanTaskView/);
+  assert.match(main, /cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView/);
   assert.match(
     main,
-    /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanScopeChoices, cleanScopeRequest, cleanTaskView, isActiveCleanTask\}/,
+    /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
-  assert.match(main, /cleaning\.js\?v=422565/);
-  assert.match(index, /app\.js\?v=42\.25\.251/);
-  assert.match(index, /main\.mjs\?v=42\.25\.245/);
+  assert.match(main, /cleaning\.js\?v=422566/);
+  assert.match(index, /styles\.css\?v=42\.24\.38/);
+  assert.match(index, /app\.js\?v=42\.25\.252/);
+  assert.match(index, /main\.mjs\?v=42\.25\.246/);
 });

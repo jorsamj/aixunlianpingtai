@@ -161,6 +161,12 @@ test('cleaning range switches preflight and submission by formal annotation_stat
   await expect(dialog.locator('input[name="cl427Scope"][value="unannotated"]')).toBeEnabled();
   await expect(dialog.locator('input[name="cl427Scope"][value="confirmed_empty"]')).toBeEnabled();
   await expect(dialog.locator('input[name="cl427Scope"][value="selected"]')).toBeDisabled();
+  await expect(dialog.locator('#cl427AnnotationAuditSection')).toBeVisible();
+  await expect(dialog.locator('#cl427AnnotationAudit')).toBeChecked();
+
+  await dialog.locator('input[name="cl427Scope"][value="unannotated"]').check();
+  await expect(dialog.locator('#cl427AnnotationAuditSection')).toBeHidden();
+  await expect.poll(() => preflights.at(-1)?.clean_scope).toBe('unannotated');
 
   await dialog.locator('input[name="cl427Scope"][value="annotated"]').check();
   await expect.poll(() => preflights.at(-1)?.clean_scope).toBe('annotated');
@@ -172,6 +178,7 @@ test('cleaning range switches preflight and submission by formal annotation_stat
   expect(submitted.clean_scope).toBe('annotated');
   expect(submitted.image_ids).toEqual([]);
   expect(submitted.execution_mode).toBe('local');
+  expect(submitted.annotation_audit).toBe(true);
 });
 
 
@@ -273,7 +280,35 @@ test('cleaning detail progress stays in-place and hands off to review without ra
       contentType:'application/json',
       body:JSON.stringify({
         task:{...current,status:'awaiting_confirmation',status_text:'待确认'},
-        result:{items:[],rules:{}},
+        result:{
+          items:[],
+          rules:{},
+          annotation_audit:{
+            enabled:true,
+            audited_images:1,
+            review_images:1,
+            warning_count:2,
+            state_counts:{annotated:1,unannotated:0,confirmed_empty:0},
+            provenance_counts:{manual:1},
+            issue_counts:{box_tiny:1,box_duplicate_exact:1},
+            class_balance:[{label:'smoke',count:2,share:1}],
+            heatmap:{grid:5,cells:[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]},
+            items:[{
+              image_id:'ann-1',
+              filename:'annotated.jpg',
+              url:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMAAAAwBAQDJ/pLvAAAAAElFTkSuQmCC',
+              annotation_state:'annotated',
+              annotation_provenance:'manual',
+              box_count:2,
+              labels:['smoke'],
+              issues:[
+                {code:'box_tiny',name:'疑似极小框',detail:'面积占比过小'},
+                {code:'box_duplicate_exact',name:'完全重复框',detail:'两个框完全重复'},
+              ],
+            }],
+            next_cursor:null,
+          },
+        },
       }),
     });
   });
@@ -324,6 +359,15 @@ test('cleaning detail progress stays in-place and hands off to review without ra
   const review = page.getByRole('dialog',{name:'清洗任务详情'});
   await expect(review).toBeVisible({timeout:5000});
   await expect(review.getByRole('button',{name:'确认清洗结果'})).toBeVisible();
+  await expect(review.getByRole('button',{name:/标注质量/})).toBeVisible();
+  await review.getByRole('button',{name:/标注质量/}).click();
+  await expect(review.getByText('正式已标注')).toBeVisible();
+  await expect(review.getByText('人工标注')).toBeVisible();
+  await expect(review.getByText('Class Balance')).toBeVisible();
+  await expect(review.getByText('smoke')).toBeVisible();
+  await expect(review.getByText('疑似极小框')).toBeVisible();
+  await expect(review.getByText('完全重复框')).toBeVisible();
+  await expect(review.getByText('不会在此处自动删除、移动或改写 Ground Truth。')).toBeVisible();
   await expect.poll(async () => page.evaluate(() =>
     window.PollRegistryRuntime?.snapshot?.().some(entry => entry.key === 'clean-task-progress:clean-modal-1') || false
   )).toBe(false);

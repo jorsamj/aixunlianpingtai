@@ -145,6 +145,11 @@ export function cleanScopeChoices({selectedCount = 0, forcedSelected = false} = 
   }));
 }
 
+export function cleanScopeSupportsAnnotationAudit(value = 'all') {
+  const scope = normalizeCleanScope(value);
+  return scope === 'all' || scope === 'annotated' || scope === 'selected';
+}
+
 export function cleanScopeRequest(value = 'all', selectedIds = [], {forcedSelected = false} = {}) {
   const scope = normalizeCleanScope(value);
   const ids = uniqueCleanIds(selectedIds);
