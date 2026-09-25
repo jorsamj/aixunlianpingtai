@@ -320,3 +320,49 @@ def test_used_label_code_edit_fails_fast_instead_of_scanning_annotations(
     )
     assert response.status_code == 409
     assert "统一标签" in response.text
+
+
+def test_unused_label_delete_is_soft_and_preserves_other_class_ids(
+    client, seeded_project, monkeypatch
+):
+    project_id, image = seeded_project
+    project = app_module.get_project(project_id)
+    app_module.add_label(
+        project_id,
+        app_module.AddLabelReq(label="person", display_name="人员"),
+    )
+    app_module.write_annotation(
+        project_id,
+        image["id"],
+        [{
+            "id": "person-box",
+            "class_id": 2,
+            "label": "person",
+            "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+        }],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("soft label delete must not scan all materials")
+        ),
+    )
+
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert deleted.status_code == 200, deleted.text
+    assert [row["code"] for row in deleted.json()["items"]] == ["fire", "person"]
+
+    stored = app_module.get_project(project_id)
+    assert stored["labels"] == ["fire", "smoke", "person"]
+    assert stored["label_meta"][1]["status"] == "inactive"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["class_id"] == 2
+
+    recreated = client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "smoke", "display_name": "烟雾"},
+    )
+    assert recreated.status_code == 200, recreated.text
+    assert recreated.json()["class_id"] == 1
+    active = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    assert [row["code"] for row in active] == ["fire", "smoke", "person"]

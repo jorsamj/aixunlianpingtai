@@ -4461,8 +4461,8 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     }catch(e){toast(e.message||e)}
   };
   window.deleteLabel414=async function(classId,code){
-    if(!confirm(`确认删除标签 ${code}？已被标注框使用的标签不能删除。`))return;
-    try{await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'DELETE'});await refreshLabels414(true);drawLabel414();toast('标签已删除')}catch(e){toast(e.message||e)}
+    if(!confirm(`确认停用标签 ${code}？仍被正式标注或负样本范围引用的标签不能停用，请先统一标签。`))return;
+    try{await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'DELETE'});await refreshLabels414(true);drawLabel414();toast('标签已停用，原 class_id 已保留')}catch(e){toast(e.message||e)}
   };
 
   // ---------- annotation: schema only, no label management inside image ----------

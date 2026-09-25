@@ -4042,6 +4042,11 @@ def add_label(project_id: str, payload: AddLabelReq):
         code = project["labels"][len(meta)]
         meta.append({"code": code, "display_name": code, "color": default_label_color(len(meta)), "type": "bbox", "hotkey": str(len(meta)+1) if len(meta) < 9 else ""})
     if idx < len(meta):
+        # Explicit creation of a previously soft-deleted canonical label
+        # reactivates the same project class id instead of allocating a new one.
+        meta[idx]["status"] = "active"
+        meta[idx]["active"] = True
+        meta[idx].pop("deleted_at", None)
         if payload.display_name:
             meta[idx]["display_name"] = payload.display_name
         if payload.color:
@@ -8469,33 +8474,34 @@ def v12_delete_label(project_id: str, class_id: int):
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
         raise HTTPException(status_code=404, detail="标签不存在")
-    # 已被框使用时不允许删除；若删除的是未使用标签，后续 class_id 必须整体前移，避免类别错位。
-    image_anns = []
-    for img in load_images(project_id):
-        ann = read_annotation(project_id, img["id"])
-        boxes = ann.get("boxes", [])
-        if any(int(b.get("class_id", -1)) == class_id for b in boxes):
-            raise HTTPException(status_code=400, detail="该标签已被标注框使用，不能直接删除")
-        image_anns.append((img["id"], boxes))
-    labels.pop(class_id)
-    meta = project.get("label_meta", [])
-    if class_id < len(meta):
-        meta.pop(class_id)
-    # First persist the new schema, then rewrite boxes whose class index shifted.
+    code = str(labels[class_id])
+    references = material_store(project_id).label_reference_usage().get(code, {})
+    if int(references.get("affected_images") or 0) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="该标签仍被正式标注或 confirmed_empty 范围引用，请先统一标签后再删除",
+        )
+    meta = project.setdefault("label_meta", [])
+    while len(meta) < len(labels):
+        index = len(meta)
+        meta.append({
+            "code": labels[index],
+            "display_name": labels[index],
+            "color": default_label_color(index),
+            "type": "bbox",
+            "hotkey": str(index + 1) if index < 9 else "",
+            "aliases": [],
+        })
+    item = meta[class_id]
+    if str(item.get("status") or "active").lower() != "active":
+        return {"ok": True, "items": active_label_options(project_label_items(project))}
+    # Soft delete preserves project class ids. Physical compaction would require
+    # rewriting every higher class id and is deliberately not part of this HTTP path.
+    item["status"] = "inactive"
+    item["active"] = False
+    item["deleted_at"] = now_iso()
     save_project(project)
-    for image_id, boxes in image_anns:
-        changed = False
-        for b in boxes:
-            try:
-                cid = int(b.get("class_id", -1))
-            except Exception:
-                cid = -1
-            if cid > class_id:
-                b["class_id"] = cid - 1
-                changed = True
-        if changed:
-            write_annotation(project_id, image_id, boxes)
-    return {"ok": True, "items": project_label_items(get_project(project_id))}
+    return {"ok": True, "items": active_label_options(project_label_items(project))}
 
 
 @app.patch("/api/v12/projects/{project_id}/images/{image_id}")
