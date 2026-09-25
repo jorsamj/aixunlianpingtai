@@ -101,3 +101,34 @@ test('clean confirmation removes only backend-confirmed deletions and marks the 
     {id: 'three'}
   ]);
 });
+
+
+test('annotation response keeps formal box provenance in the gallery preview', () => {
+  const result = applyAnnotationResult(
+    [{id: 'one', annotated: false, labels: [], box_count: 0}],
+    {image: {id: 'one', annotation_origin: 'ai_confirmed', box_count: 1}},
+    [{
+      class_id: 0,
+      label: 'fire',
+      x1: 1,
+      y1: 2,
+      x2: 10,
+      y2: 20,
+      source: 'ai_candidate_confirmed',
+      source_task_id: 'task-1',
+      confidence: 0.91,
+    }],
+  );
+  assert.deepEqual(result[0].annotation_preview, [{
+    class_id: 0,
+    label: 'fire',
+    x1: 1,
+    y1: 2,
+    x2: 10,
+    y2: 20,
+    source: 'ai_candidate_confirmed',
+    source_task_id: 'task-1',
+    confidence: 0.91,
+  }]);
+  assert.equal(result[0].annotation_origin, 'ai_confirmed');
+});
