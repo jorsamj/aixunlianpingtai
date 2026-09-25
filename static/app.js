@@ -5376,21 +5376,46 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       return true;
     });
   }
-  window.setAiReviewFilter60=filter=>{const review=state.ai60Review;if(!review)return;review.filter=String(filter||'all');renderReviewPage()};
-  window.setAiDecision60=(id,accepted)=>{state.ai60Review?.decisions.set(String(id),!!accepted);renderReviewPage()};
-  function renderReviewPage(){
-    const review=state.ai60Review;if(!review)return;ensureReviewShell();
-    const selectable=review.items.filter(item=>item.status!=='failed').length,selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;
-    const rejected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===false).length,boxes=review.items.reduce((sum,item)=>sum+(item.status==='failed'?0:(item.boxes||[]).length),0),empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length,failed=review.items.filter(item=>item.status==='failed').length;
-    const summary=document.getElementById('ai60ReviewSummary');if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选择 ${selected}/${selectable}`;
+  function renderReviewMetrics60(review){
+    if(!review)return;
+    const selectable=review.items.filter(item=>item.status!=='failed').length;
+    const selected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===true).length;
+    const rejected=review.items.filter(item=>item.status!=='failed'&&review.decisions.get(String(item.image_id))===false).length;
+    const boxes=review.items.reduce((sum,item)=>sum+(item.status==='failed'?0:(item.boxes||[]).length),0);
+    const empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length;
+    const failed=review.items.filter(item=>item.status==='failed').length;
+    const summary=document.getElementById('ai60ReviewSummary');
+    if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选择 ${selected}/${selectable}`;
     const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=String(value)};
     set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Rejected',rejected);set('ai66Boxes',boxes);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
     document.querySelectorAll('[data-ai66-filter]').forEach(button=>button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all')));
+  }
+  function patchAiDecisionCard60(id){
+    const review=state.ai60Review;if(!review)return false;
+    const key=String(id),card=document.querySelector(`.ai66-candidate-card[data-ai66-image-id="${CSS.escape(key)}"]`);
+    if(!card)return false;
+    const accepted=review.decisions.get(key)!==false;
+    card.classList.toggle('accepted',accepted);card.classList.toggle('rejected',!accepted);
+    card.querySelector('[data-ai66-decision="accept"]')?.classList.toggle('primary',accepted);
+    card.querySelector('[data-ai66-decision="reject"]')?.classList.toggle('danger',!accepted);
+    return true;
+  }
+  window.setAiReviewFilter60=filter=>{const review=state.ai60Review;if(!review)return;review.filter=String(filter||'all');renderReviewPage()};
+  window.setAiDecision60=(id,accepted)=>{
+    const review=state.ai60Review;if(!review)return;
+    const key=String(id);review.decisions.set(key,!!accepted);
+    if(String(review.filter||'all')==='rejected')return renderReviewPage();
+    renderReviewMetrics60(review);patchAiDecisionCard60(key);
+  };
+  function renderReviewPage(){
+    const review=state.ai60Review;if(!review)return;ensureReviewShell();
+    renderReviewMetrics60(review);
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
-    if(grid)grid.innerHTML=rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:'AI判断无目标'}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
+    if(grid)grid.innerHTML=rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:'AI判断无目标'}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
     const pager=document.getElementById('ai60ReviewPager');if(pager)pager.innerHTML=`<button class="btn mini" ${review.offset<=0?'disabled':''} onclick="aiReviewPage60(-1)">上一页</button><span>${Math.floor(review.offset/review.limit)+1} / ${Math.max(1,Math.ceil(review.total/review.limit))}</span><button class="btn mini" ${review.offset+review.items.length>=review.total?'disabled':''} onclick="aiReviewPage60(1)">下一页</button>`;
-  }  async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(review.items.some(item=>!item.url)){try{await window.MaterialPaginationRuntime61?.ensureFullPool?.()}catch(_){}}if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
+  }
+  async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(review.items.some(item=>!item.url)){try{await window.MaterialPaginationRuntime61?.ensureFullPool?.()}catch(_){}}if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
   window.reviewAiLabel427=async function(id){try{state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗')};await loadReviewPage(0)}catch(error){toast(error.message||error)}};
   window.aiReviewPage60=async direction=>{const review=state.ai60Review;if(!review||review.closed)return;try{await loadReviewPage(review.offset+direction*review.limit)}catch(error){toast(error.message||error)}};
   window.closeAiReview60=()=>{
@@ -5399,8 +5424,14 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     state.ai60Edit=null;
     closeModal();
   };
-  window.toggleAiDecision60=(id,accepted)=>{state.ai60Review?.decisions.set(String(id),!!accepted);renderReviewPage()};
-  window.reviewPageSelect60=accepted=>{const review=state.ai60Review;if(!review)return;for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);renderReviewPage()};
+  window.toggleAiDecision60=(id,accepted)=>window.setAiDecision60(id,accepted);
+  window.reviewPageSelect60=accepted=>{
+    const review=state.ai60Review;if(!review)return;
+    for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);
+    if(String(review.filter||'all')==='rejected')return renderReviewPage();
+    renderReviewMetrics60(review);
+    for(const item of review.items)if(item.status!=='failed')patchAiDecisionCard60(item.image_id);
+  };
   function aiCandidateEditImage60(){
     const edit=state.ai60Edit,review=state.ai60Review,item=review?.seen.get(edit?.id);
     return imageById(edit?.id)||item||{};
