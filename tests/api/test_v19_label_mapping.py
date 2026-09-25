@@ -94,6 +94,15 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
         assert len(boxes) == 1
         assert boxes[0]["label"] == "helmet"
         assert boxes[0]["class_id"] == 0
+        assert boxes[0]["source"] == "imported"
+        assert boxes[0]["import_batch_id"] == job["id"]
+        assert boxes[0]["source_format"] == "yolo"
+        assert boxes[0]["source_class_id"] in {"0", "1"}
+        assert boxes[0]["source_label_name"] in {"toukui1", "toukui2"}
+        assert boxes[0]["canonical_label_id"] == "helmet"
+        assert boxes[0]["canonical_project_class_id"] == 0
+        assert boxes[0]["mapping_method"] == "manual"
+        assert boxes[0]["confirmed_at"]
 
 
 def _broken_yolo_zip():

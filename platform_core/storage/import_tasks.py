@@ -775,6 +775,19 @@ class StorageImportHandler:
         label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
                      if i >= len(project_meta.get('label_meta') or [])
                      or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
+        external_label_names = {
+            str(item.get('class_id')): str(item.get('name') or '')
+            for item in confirmation.get('external_classes') or []
+            if isinstance(item, dict)
+        }
+        scan_result = context.artifacts.read_json(
+            context.task.task_id, SCAN_RESULT_REF, default={},
+        )
+        source_format = str(
+            (scan_result or {}).get('import_format')
+            or request.get('import_format')
+            or 'images'
+        ).strip().lower()
         checkpoint = context.load_checkpoint()
         newly_imported = max(0, int(checkpoint.get("newly_imported", 0) or 0))
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
@@ -852,12 +865,29 @@ class StorageImportHandler:
                         if code not in label_ids:
                             raise ValueError('confirmed platform label is no longer active; resolve the label before retrying')
                         width, height = float(row['width']), float(row['height'])
-                        boxes.append({'id': f"{row['image_id']}-{box['line_number']}",
-                            'label': code, 'class_id': label_ids[code],
+                        source_class_id = str(box['class_id'])
+                        boxes.append({
+                            'id': f"{row['image_id']}-{box['line_number']}",
+                            'label': code,
+                            'class_id': label_ids[code],
                             'x1': max(0.0, (box['cx']-box['w']/2)*width),
                             'y1': max(0.0, (box['cy']-box['h']/2)*height),
                             'x2': min(width, (box['cx']+box['w']/2)*width),
-                            'y2': min(height, (box['cy']+box['h']/2)*height)})
+                            'y2': min(height, (box['cy']+box['h']/2)*height),
+                            # Keep source taxonomy separate from canonical/project
+                            # class ids. Training export will build its own
+                            # contiguous 0..N-1 mapping from canonical labels.
+                            'source': 'imported',
+                            'source_task_id': context.task.task_id,
+                            'import_batch_id': context.task.task_id,
+                            'source_format': source_format,
+                            'source_class_id': source_class_id,
+                            'source_label_name': external_label_names.get(source_class_id, ''),
+                            'canonical_label_id': code,
+                            'canonical_project_class_id': label_ids[code],
+                            'mapping_method': 'manual',
+                            'confirmed_at': confirmation.get('confirmed_at'),
+                        })
                     state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
                     # A missing/invalid sidecar cannot erase an existing annotation.
                     if boxes or state == 'confirmed_empty' or not current:
