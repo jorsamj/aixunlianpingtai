@@ -195,3 +195,33 @@ export function cleanExecutionMode(value, preflight = {}) {
   if (!choices.agent.available) throw new Error(choices.agent.detail);
   return 'agent';
 }
+
+
+export function cleanSchedulingRequest(
+  {executionMode = 'local', schedulingMode = 'auto', nodeId = '', queuePolicy = 'normal'} = {},
+  preflight = {},
+) {
+  const execution = String(executionMode || 'local').trim().toLowerCase();
+  if (execution === 'local') {
+    return {scheduling_mode: 'auto', target_node_id: '', queue_policy: 'normal'};
+  }
+  if (execution !== 'agent') throw new Error('不支持的清洗执行方式');
+  if (preflight.agent_available !== true) {
+    throw new Error(String(preflight.reason || '当前没有可用的远程清洗节点'));
+  }
+  const mode = String(schedulingMode || 'auto').trim().toLowerCase();
+  const policy = String(queuePolicy || 'normal').trim().toLowerCase();
+  const target = String(nodeId || '').trim();
+  if (mode === 'auto') {
+    return {scheduling_mode: 'auto', target_node_id: '', queue_policy: 'normal'};
+  }
+  if (mode !== 'node') throw new Error('未知清洗调度方式');
+  const nodes = Array.isArray(preflight.eligible_nodes) ? preflight.eligible_nodes : [];
+  const node = nodes.find(item => String(item?.node_id || '') === target);
+  if (!node) throw new Error('请选择当前在线且已启用 cleaning 服务的节点');
+  if (!['normal', 'front', 'preempt'].includes(policy)) throw new Error('未知节点队列策略');
+  if (policy === 'preempt' && node.idle === false && node.preemptible !== true) {
+    throw new Error('该节点当前任务不支持安全抢占，请选择“下一位”或其他节点');
+  }
+  return {scheduling_mode: 'node', target_node_id: target, queue_policy: policy};
+}

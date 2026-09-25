@@ -115,6 +115,45 @@ test('clean execution choices are backend-preflight driven and fail closed', () 
   assert.equal(cleaning.cleanExecutionMode('agent', remote), 'agent');
 });
 
+test('clean scheduling keeps capability-filtered node affinity and safe preemption explicit', () => {
+  const runtime = {
+    agent_available: true,
+    eligible_nodes: [
+      {node_id: 'idle-clean', idle: true, preemptible: false},
+      {node_id: 'busy-clean', idle: false, preemptible: true},
+      {node_id: 'busy-unsafe', idle: false, preemptible: false},
+    ],
+  };
+  assert.deepEqual(
+    cleaning.cleanSchedulingRequest({executionMode: 'agent', schedulingMode: 'auto'}, runtime),
+    {scheduling_mode: 'auto', target_node_id: '', queue_policy: 'normal'},
+  );
+  assert.deepEqual(
+    cleaning.cleanSchedulingRequest({
+      executionMode: 'agent', schedulingMode: 'node', nodeId: 'busy-clean', queuePolicy: 'front',
+    }, runtime),
+    {scheduling_mode: 'node', target_node_id: 'busy-clean', queue_policy: 'front'},
+  );
+  assert.deepEqual(
+    cleaning.cleanSchedulingRequest({
+      executionMode: 'agent', schedulingMode: 'node', nodeId: 'busy-clean', queuePolicy: 'preempt',
+    }, runtime),
+    {scheduling_mode: 'node', target_node_id: 'busy-clean', queue_policy: 'preempt'},
+  );
+  assert.throws(
+    () => cleaning.cleanSchedulingRequest({
+      executionMode: 'agent', schedulingMode: 'node', nodeId: 'busy-unsafe', queuePolicy: 'preempt',
+    }, runtime),
+    /不支持安全抢占/,
+  );
+  assert.throws(
+    () => cleaning.cleanSchedulingRequest({
+      executionMode: 'agent', schedulingMode: 'node', nodeId: 'not-clean-capable', queuePolicy: 'normal',
+    }, runtime),
+    /请选择当前在线/,
+  );
+});
+
 test('remote clean task view maps Agent stages without inventing progress', () => {
   const view = cleaning.cleanTaskView({
     status: 'running',
@@ -180,6 +219,11 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /setCleanImageIssueFilter429/);
   assert.match(source, /loadMoreCleanImageReview429/);
   assert.match(source, /cleanImageReviewItems429/);
+  assert.match(source, /cleanSchedulingModeChanged427/);
+  assert.match(source, /cleanTargetNodeChanged427/);
+  assert.match(source, /cleanQueuePolicyChanged427/);
+  assert.match(source, /抢占并优先执行/);
+  assert.match(source, /审计结果/);
   assert.match(source, /window\.reviewClean427=id=>window\.cleanDetail429/);
   assert.doesNotMatch(source, /window\.reviewClean427=async function/);
 });
@@ -188,13 +232,13 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
 test('canonical main runtime exposes cleaning scope helpers with fresh module cache keys', () => {
   const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const index = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-  assert.match(main, /cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView/);
+  assert.match(main, /cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView/);
   assert.match(
     main,
-    /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
+    /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
-  assert.match(main, /cleaning\.js\?v=422566/);
-  assert.match(index, /styles\.css\?v=42\.24\.39/);
-  assert.match(index, /app\.js\?v=42\.25\.255/);
-  assert.match(index, /main\.mjs\?v=42\.25\.246/);
+  assert.match(main, /cleaning\.js\?v=422567/);
+  assert.match(index, /styles\.css\?v=42\.24\.40/);
+  assert.match(index, /app\.js\?v=42\.25\.256/);
+  assert.match(index, /main\.mjs\?v=42\.25\.247/);
 });

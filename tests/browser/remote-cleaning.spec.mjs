@@ -72,9 +72,20 @@ test('cleaning execution picker disables Agent for local material and submits ex
         agent_available: true,
         reason: '',
         selected_count: 1,
+        idle_nodes: 1,
+        busy_nodes: 1,
         eligible_nodes: [
-          {node_id: 'clean-agent-a', display_name: '清洗节点 A', build_id: 'build-a'},
-          {node_id: 'clean-agent-b', display_name: '清洗节点 B', build_id: 'build-b'},
+          {
+            node_id: 'clean-agent-a', display_name: '清洗节点 A', build_id: 'build-a',
+            idle: true, active_count: 0, active_tasks: [], preemptible: false,
+            resources: {cpu: {logical_cores: 16}, memory: {available_bytes: 17179869184}, disk: {}},
+          },
+          {
+            node_id: 'clean-agent-b', display_name: '清洗节点 B', build_id: 'build-b',
+            idle: false, active_count: 1, preemptible: true,
+            active_tasks: [{task_id:'train-1',kind:'TRAINING',status:'RUNNING',stage:'training',progress:42,preemptible:true}],
+            resources: {cpu: {logical_cores: 32}, memory: {available_bytes: 34359738368}, disk: {}},
+          },
         ],
       }),
     });
@@ -102,10 +113,19 @@ test('cleaning execution picker disables Agent for local material and submits ex
   await expect(dialog.locator('input[name="cl427Execution"][value="agent"]')).toBeEnabled();
   await expect(dialog.getByText('已检测到 2 个可用节点')).toBeVisible();
   await dialog.locator('input[name="cl427Execution"][value="agent"]').check();
+  await expect(dialog.locator('#cl427SchedulingSection')).toBeVisible();
+  await expect(dialog.getByText('当前空闲')).toBeVisible();
+  await dialog.locator('input[name="cl427SchedulingMode"][value="node"]').check();
+  await dialog.locator('input[name="cl427Node"][value="clean-agent-b"]').check();
+  await expect(dialog.getByText('训练 42%')).toBeVisible();
+  await dialog.locator('input[name="cl427QueuePolicy"][value="preempt"]').check();
   await dialog.getByRole('button', {name: '开始清洗'}).click();
 
   await expect.poll(() => submitted).not.toBeNull();
   expect(submitted.execution_mode).toBe('agent');
+  expect(submitted.scheduling_mode).toBe('node');
+  expect(submitted.target_node_id).toBe('clean-agent-b');
+  expect(submitted.queue_policy).toBe('preempt');
   expect(submitted.image_ids).toEqual([image.id]);
 });
 
