@@ -142,3 +142,64 @@ def test_annotation_reindex_preserves_legacy_material_provenance():
     assert "_annotation_summary_for_material_index" in inspect.getsource(
         app_module._v53_index_annotations_sync
     )
+
+
+
+def test_manual_save_recovers_legacy_ai_origin_without_box_source(client, seeded_project):
+    import app as app_module
+
+    pid, image = seeded_project
+    app_module.write_annotation(
+        pid,
+        image["id"],
+        [{
+            "id": "legacy-ai-box",
+            "class_id": 0,
+            "label": "fire",
+            "x1": 10,
+            "y1": 10,
+            "x2": 50,
+            "y2": 50,
+        }],
+        annotation_state="annotated",
+        annotation_origin="ai_confirmed",
+    )
+
+    saved = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [
+                {
+                    "id": "legacy-ai-box",
+                    "label": "fire",
+                    "x1": 12,
+                    "y1": 12,
+                    "x2": 52,
+                    "y2": 52,
+                },
+                {
+                    "id": "new-manual-box",
+                    "label": "fire",
+                    "x1": 60,
+                    "y1": 20,
+                    "x2": 90,
+                    "y2": 70,
+                },
+            ]
+        },
+    )
+
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    boxes = {box["id"]: box for box in body["annotation"]["boxes"]}
+    assert boxes["legacy-ai-box"]["source"] == "ai_candidate_confirmed"
+    assert boxes["new-manual-box"]["source"] == "manual"
+    assert body["image"]["annotation_origin"] == "mixed"
+
+    assert app_module._annotation_box_source_fallback({
+        "annotation_origin": "manual",
+        "source_type": "imported_yolo",
+    }) == "manual"
+    assert app_module._annotation_box_source_fallback({
+        "source_type": "imported_coco",
+    }) == "imported"
