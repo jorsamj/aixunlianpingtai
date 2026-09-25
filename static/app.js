@@ -4952,7 +4952,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       </div>
       <aside class="side-panel ann-side ann420-inspector">
         <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div></section>
-        <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象</span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
+        <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象 <em id="ann420OriginBadge" class="ann420-origin-badge pending">待标注</em></span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
         <div class="hint-card ann420-shortcuts"><b>快捷操作</b><span>拖拽空白处新建框 · 拖动框移动 · 四角缩放 · 滚轮缩放 · Delete 删除 · Ctrl/⌘ + S 保存</span></div>
       </aside>
     </div>`,true);
@@ -4970,7 +4970,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const loading=!!state.annotationHydrating420,error=String(state.annotationLoadError420||''),locked=loading||!!error;
     const ids=queueIds(),at=Math.max(0,ids.indexOf(String(image.id))),visible=workbenchApi()?.queueWindow(ids,String(image.id),9)||ids;
     const queue=document.getElementById('ann420Queue');
-    if(queue){const signature=visible.map(id=>{const row=imageById(id);return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${esc(queueAnnotationStatus420(row))}</em></span></button>`:''}).join('')}}
+    if(queue){const signature=visible.map(id=>{const row=imageById(id),transient=state.aiMaterialStates60?.[String(id)]?.state||'';return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${row.annotation_state||row.annotation_status||''}:${row.annotation_origin||''}:${transient}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);if(!row)return '';const statusClass=window.materialAnnotationStatusClassV66?.(row)||'pending';return `<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em class="ann420-queue-status ${statusClass}">${esc(queueAnnotationStatus420(row))}</em></span></button>`}).join('')}}
     const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
     const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
     const select=document.getElementById('ann420Label');if(select){const labels=state.labels||[],signature=labels.map(label=>`${label.class_id}:${label.code}:${label.display_name||''}`).join('|');if(select.dataset.signature!==signature){select.dataset.signature=signature;select.innerHTML=labels.map(label=>`<option value="${Number(label.class_id)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}if(state.activeLabel!=null)select.value=String(state.activeLabel);select.disabled=locked||!labels.length}
@@ -4978,6 +4978,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
     if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
     const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(state.ann?.boxes?.length||0);
+    const originBadge=document.getElementById('ann420OriginBadge');if(originBadge){
+      const status=String(window.materialAnnotationStatusV66?.(image)||'待标注'),statusClass=window.materialAnnotationStatusClassV66?.(image)||'pending';
+      originBadge.textContent=status.split(' · ')[0];originBadge.className=`ann420-origin-badge ${statusClass}`;
+    }
     const labelCount=document.getElementById('ann420LabelCount');if(labelCount)labelCount.textContent=String((state.labels||[]).length);
     const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=locked||(state.ann?.boxes?.length||0)>0;
     const saveButton=document.getElementById('ann414Save');if(saveButton){saveButton.disabled=locked;saveButton.textContent=loading?'读取中…':'保存并继续'}
