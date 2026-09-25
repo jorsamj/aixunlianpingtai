@@ -162,3 +162,17 @@ test('material cards color only derived annotation truth states and keep increme
   assert.match(styles, /\.annotation-status-v66\.ai-pending/);
   assert.match(styles, /\.annotation-status-v66\.mixed/);
 });
+
+
+test('annotation motion stays outside the pointer hot path and respects reduced motion', () => {
+  assert.match(styles, /@keyframes annotationWorkbenchEnter/);
+  assert.match(styles, /\.annotation-workbench-modal,.ai-review-workbench-modal\{animation:annotationWorkbenchEnter/);
+  assert.match(styles, /\.annotation-status-v66\.ai-committing::before\{animation:annotationStatusPulse/);
+  assert.match(styles, /@media\(prefers-reduced-motion:reduce\).*annotation-workbench-modal.*animation:none!important/s);
+
+  const start = source.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
+  const end = source.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', start);
+  const pointerOwner = source.slice(start, end);
+  assert.doesNotMatch(pointerOwner, /classList\.add\([^)]*anim/i);
+  assert.doesNotMatch(pointerOwner, /style\.transition/);
+});
