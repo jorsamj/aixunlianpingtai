@@ -232,11 +232,11 @@ def run_ai_annotation(
 
 
 def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    from app import _v47_label_catalog, _v47_runtime_provider, get_project
+    from app import _annotation_label_catalog, _annotation_runtime_provider, get_project
 
-    provider, config = _v47_runtime_provider(request)
+    provider, config = _annotation_runtime_provider(request)
     labels = [str(value) for value in request.get("labels") or []]
-    catalog = _v47_label_catalog(get_project(project_id))
+    catalog = _annotation_label_catalog(get_project(project_id))
     selected = [item for item in catalog if str(item.get("code")) in labels]
     label_ids = {str(item["code"]): int(item["class_id"]) for item in selected}
     missing = sorted(set(labels) - set(label_ids))
@@ -398,10 +398,10 @@ def commit_confirmed_review(context):
     # Human confirmation freezes intent, not stale class indexes. Revalidate
     # every candidate against the current active platform label catalog before
     # writing Ground Truth, and repair class_id if the catalog order changed.
-    from app import _v47_label_catalog, get_project
+    from app import _annotation_label_catalog, get_project
     label_ids = {
         str(item["code"]): int(item["class_id"])
-        for item in _v47_label_catalog(get_project(context.task.project_id))
+        for item in _annotation_label_catalog(get_project(context.task.project_id))
     }
     try:
         store.remap_labels(dict(confirmation.get("label_mapping") or {}), label_ids)
