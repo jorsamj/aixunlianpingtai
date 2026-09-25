@@ -350,7 +350,7 @@ class BatchSelection:
                 "selection_frozen": self.frozen()}
 
     def remap_result(self):
-        changed_images = changed_boxes = 0
+        changed_images = changed_boxes = changed_scope_images = 0
         for row in self.database.execute(
             "SELECT tombstone_json FROM selection "
             "WHERE state='succeeded' AND tombstone_json IS NOT NULL"
@@ -362,12 +362,112 @@ class BatchSelection:
             if plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value:
                 continue
             boxes = max(0, int(plan.get("changed_boxes") or 0))
+            scope_changed = int(bool(plan.get("changed_scope")))
             changed_boxes += boxes
-            changed_images += int(boxes > 0)
+            changed_scope_images += scope_changed
+            changed_images += int(boxes > 0 or scope_changed)
         return {
             "changed_images": changed_images,
             "changed_boxes": changed_boxes,
+            "changed_scope_images": changed_scope_images,
         }
+
+
+def create_annotation_remap_by_label(
+    project_id, materials, repository, artifacts, source_label, target_label,
+):
+    """Freeze all indexed Ground Truth references for one canonical label."""
+    source = str(source_label or "").strip()
+    target = str(target_label or "").strip()
+    if not source or not target:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_LABEL_REQUIRED",
+            "原标签和目标标签不能为空",
+            400,
+        )
+    if source == target:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_INVALID",
+            "原标签和目标标签不能相同",
+            400,
+        )
+    task_id = uuid.uuid4().hex
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    request_payload = {
+        "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
+        "options": {"source_label": source, "target_label": target},
+        "selection_spec": {"scope": "LABEL_REFERENCE", "source_label": source},
+    }
+    try:
+        with closing(BatchSelection(selection_path)):
+            pass
+        with closing(materials._connect()) as database:
+            database.execute(
+                "ATTACH DATABASE ? AS batch_selection", (str(selection_path),)
+            )
+            database.execute("PRAGMA batch_selection.synchronous=FULL")
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                revision = materials._revision(database)
+                database.execute(
+                    "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
+                    "SELECT material_id FROM main.material_labels WHERE label_code=?",
+                    (source,),
+                )
+                database.execute(
+                    "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
+                    "SELECT material_id FROM main.material_annotation_scopes "
+                    "WHERE label_code=?",
+                    (source,),
+                )
+                total = int(database.execute(
+                    "SELECT COUNT(*) FROM batch_selection.selection"
+                ).fetchone()[0])
+                if total <= 0:
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_SOURCE_UNUSED",
+                        "当前没有素材引用该原标签",
+                        409,
+                    )
+                if total > MAX_REMAP_SELECTION:
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_SELECTION_TOO_LARGE",
+                        f"一次标签变换最多支持 {MAX_REMAP_SELECTION} 张素材",
+                        422,
+                    )
+                database.executemany(
+                    "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
+                    (
+                        ("frozen", utc_now()),
+                        ("repository_revision", str(revision)),
+                        ("selection_kind", "annotation_label_reference"),
+                        ("source_label", source),
+                        ("target_label", target),
+                    ),
+                )
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+        artifacts.atomic_write_json(task_id, "request.json", request_payload)
+        with closing(BatchSelection(selection_path)) as manifest:
+            artifacts.atomic_write_json(
+                task_id, CHECKPOINT_REF, manifest.summary()
+            )
+        task = TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}",
+            required_capabilities=("materials.batch",),
+        )
+        return repository.create(task, artifacts=artifacts)
+    except BatchRequestError:
+        raise
+    except Exception as error:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_CREATION_FAILED",
+            f"标签统一任务创建失败：{redact_storage_error(error)}",
+            500,
+        ) from error
 
 
 def create_annotation_remap_batch(
@@ -743,6 +843,7 @@ class MaterialBatchHandler:
                         "source_digest": current_digest,
                         "result_digest": preview["content_digest"],
                         "changed_boxes": int(preview["changed_boxes"]),
+                        "changed_scope": int(preview.get("changed_scope") or 0),
                         "target_class_id": int(current_target_id),
                         "planned_at": utc_now(),
                     }
@@ -774,6 +875,7 @@ class MaterialBatchHandler:
                     plan.update({
                         "result_digest": preview["content_digest"],
                         "changed_boxes": int(preview["changed_boxes"]),
+                        "changed_scope": int(preview.get("changed_scope") or 0),
                         "target_class_id": int(current_target_id),
                         "replanned_at": utc_now(),
                     })

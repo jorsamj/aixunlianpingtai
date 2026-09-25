@@ -4,7 +4,7 @@ import app as app_module
 from platform_core.material_repository import MaterialRepository
 
 
-def _material(image_id, label_counts):
+def _material(image_id, label_counts, annotation_scope=None):
     return {
         "id": image_id,
         "filename": f"{image_id}.jpg",
@@ -15,6 +15,7 @@ def _material(image_id, label_counts):
         "annotated": bool(label_counts),
         "labels": list(label_counts),
         "label_counts": label_counts,
+        "annotation_scope": list(annotation_scope or []),
     }
 
 
@@ -29,6 +30,14 @@ def test_material_repository_aggregates_existing_label_usage(tmp_path):
     assert repository.label_usage() == {
         "fire": {"images": 1, "boxes": 4},
         "smoke": {"images": 2, "boxes": 3},
+    }
+    repository.upsert_many([
+        _material("n1", {}, ["smoke"]),
+        _material("n2", {}, ["smoke", "fire"]),
+    ])
+    assert repository.label_reference_usage() == {
+        "fire": {"positive_images": 1, "scope_images": 1, "affected_images": 2},
+        "smoke": {"positive_images": 2, "scope_images": 2, "affected_images": 4},
     }
 
 
@@ -61,3 +70,5 @@ def test_label_schema_get_uses_existing_material_index_without_annotation_io(tmp
     smoke = next(item for item in result["items"] if item["code"] == "smoke")
     assert smoke["usage_images"] == 2
     assert smoke["usage_boxes"] == 3
+    assert smoke["scope_images"] == 0
+    assert smoke["affected_images"] == 2

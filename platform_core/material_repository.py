@@ -16,7 +16,7 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS material_labels (
     PRIMARY KEY(material_id, label_code)
 );
 CREATE INDEX IF NOT EXISTS ix_material_labels_code ON material_labels(label_code, material_id);
+CREATE TABLE IF NOT EXISTS material_annotation_scopes (
+    material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    label_code TEXT NOT NULL,
+    PRIMARY KEY(material_id, label_code)
+);
+CREATE INDEX IF NOT EXISTS ix_material_annotation_scopes_code
+    ON material_annotation_scopes(label_code, material_id);
 CREATE TABLE IF NOT EXISTS material_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -220,6 +227,15 @@ class MaterialRepository:
                         f"material repository requires WAL mode, got {mode}"
                     )
                 database.executescript(_SCHEMA)
+                if version < 2:
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO material_annotation_scopes(material_id, label_code)
+                        SELECT m.id, CAST(scope.value AS TEXT)
+                          FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
+                         WHERE trim(CAST(scope.value AS TEXT)) <> ''
+                        """
+                    )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
@@ -287,6 +303,19 @@ class MaterialRepository:
         database.executemany(
             "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)",
             ((row["id"], label) for label in row["labels"]),
+        )
+        scopes = sorted({
+            str(label).strip()
+            for label in row.get("annotation_scope") or []
+            if str(label).strip()
+        })
+        database.execute(
+            "DELETE FROM material_annotation_scopes WHERE material_id = ?",
+            (row["id"],),
+        )
+        database.executemany(
+            "INSERT INTO material_annotation_scopes(material_id, label_code) VALUES (?, ?)",
+            ((row["id"], label) for label in scopes),
         )
         return row
 
@@ -635,6 +664,33 @@ class MaterialRepository:
         return {
             str(row["label"]): {"images": int(row["images"] or 0), "boxes": int(row["boxes"] or 0)}
             for row in rows
+        }
+
+    def label_reference_usage(self) -> dict[str, dict[str, int]]:
+        """Count positive and confirmed-empty references from normalized indexes."""
+        with closing(self._connect()) as database:
+            positive = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_labels GROUP BY label_code"
+                ).fetchall()
+            }
+            scoped = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_annotation_scopes "
+                    "WHERE label_code <> '*' GROUP BY label_code"
+                ).fetchall()
+            }
+        return {
+            code: {
+                "positive_images": positive.get(code, 0),
+                "scope_images": scoped.get(code, 0),
+                "affected_images": positive.get(code, 0) + scoped.get(code, 0),
+            }
+            for code in sorted(set(positive) | set(scoped))
         }
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:

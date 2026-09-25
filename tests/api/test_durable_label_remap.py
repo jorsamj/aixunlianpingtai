@@ -262,3 +262,60 @@ def test_specialized_remap_selection_can_freeze_more_than_generic_explicit_limit
     assert checkpoint["selection_frozen"] is True
     assert checkpoint["total"] == 1501
     assert repository.get(task.task_id).status.value == "QUEUED"
+
+
+def test_label_schema_unify_includes_confirmed_empty_scope(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        image["id"],
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["fire"],
+    )
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    schema = client.get(f"/api/v54/projects/{project_id}/label-schema").json()
+    fire = next(row for row in schema["items"] if row["code"] == "fire")
+    assert fire["scope_images"] == 1
+    assert fire["affected_images"] == 1
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 1
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 1
+    assert final["changed_boxes"] == 0
+    assert final["result"]["changed_scope_images"] == 1
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert formal["annotation_state"] == "confirmed_empty"
+    assert formal["annotation_scope"] == ["smoke"]
+
+
+def test_used_label_code_edit_fails_fast_instead_of_scanning_annotations(
+    client, seeded_project, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("used label edit must not scan all materials")
+        ),
+    )
+    response = client.put(
+        f"/api/v12/projects/{project_id}/labels/0",
+        json={"code": "fire_renamed"},
+    )
+    assert response.status_code == 409
+    assert "统一标签" in response.text

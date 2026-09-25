@@ -286,6 +286,7 @@ class AnnotationRepository:
                 box['class_id'] = int(target_class_id)
                 changed += 1
             boxes.append(box)
+        original_scope = _normalize_scope(record.get('annotation_scope'))
         scope = [
             target if str(value).strip() == source else str(value).strip()
             for value in (record.get('annotation_scope') or [])
@@ -296,7 +297,11 @@ class AnnotationRepository:
             record.get('annotation_state'),
             scope,
         )
-        return {**prepared, 'changed_boxes': changed}
+        return {
+            **prepared,
+            'changed_boxes': changed,
+            'changed_scope': int(prepared['annotation_scope'] != original_scope),
+        }
 
     def remap_labels_if_digests(
         self, requests, *, source_label: str, target_label: str,
@@ -310,7 +315,7 @@ class AnnotationRepository:
         ids = [self._id(item.get('image_id')) for item in requests]
         if len(set(ids)) != len(ids):
             raise ValueError('annotation remap image ids must be unique')
-        preloaded = {image_id: self.get(image_id) for image_id in ids}
+        preloaded = self.get_many(ids)
         results, projections = [], {}
         now = datetime.now(timezone.utc).isoformat()
         with closing(self._connect()) as db:
@@ -340,7 +345,8 @@ class AnnotationRepository:
                         target_label=target_label,
                         target_class_id=target_class_id,
                     )
-                    if planned['changed_boxes']:
+                    changed_content = planned['content_digest'] != current_digest
+                    if changed_content:
                         if row is not None:
                             changed = db.execute(
                                 """UPDATE annotations SET
@@ -398,10 +404,9 @@ class AnnotationRepository:
                     }
                     results.append({
                         'image_id': image_id,
-                        'status': (
-                            'applied' if planned['changed_boxes'] else 'unchanged'
-                        ),
+                        'status': 'applied' if changed_content else 'unchanged',
                         'changed_boxes': int(planned['changed_boxes']),
+                        'changed_scope': int(planned.get('changed_scope') or 0),
                         'content_digest': planned['content_digest'],
                     })
                 db.execute('COMMIT')

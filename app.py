@@ -154,6 +154,7 @@ from platform_core.material_batches import (
     BatchRequestError as MaterialBatchRequestError,
     SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
     create_annotation_remap_batch,
+    create_annotation_remap_by_label,
     estimate_batch as estimate_material_batch,
     prepare_batch as prepare_material_batch,
     publish_prepared_batch as publish_prepared_material_batch,
@@ -8438,16 +8439,16 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
             raise HTTPException(status_code=400, detail="标签编码不能为空")
         if code != labels[class_id] and code in labels:
             raise HTTPException(status_code=400, detail="标签编码已存在")
+        if code != labels[class_id]:
+            references = material_store(project_id).label_reference_usage().get(
+                str(labels[class_id]), {}
+            )
+            if int(references.get("affected_images") or 0) > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该标签已被正式标注引用，不能同步改编码；请使用“统一标签”后台任务",
+                )
         labels[class_id] = code
-        # 同步已有标注中的 label 字段，不改 class_id
-        for img in load_images(project_id):
-            ann = read_annotation(project_id, img["id"])
-            changed = False
-            for b in ann.get("boxes", []):
-                if int(b.get("class_id", -1)) == class_id:
-                    b["label"] = code; changed = True
-            if changed:
-                write_annotation(project_id, img["id"], ann.get("boxes", []))
     meta = project.setdefault("label_meta", [])
     while len(meta) < len(labels):
         idx = len(meta)
@@ -19753,15 +19754,64 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=F
 # ============================================================
 # v42.14 — label schema management / annotation stability
 # ============================================================
+class V54LabelUnifyReq(BaseModel):
+    target_label: str
+
+
 @app.get('/api/v54/projects/{project_id}/label-schema')
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
     items = active_label_options(project_label_items(project))
-    usage = material_store(project_id).label_usage()
+    store = material_store(project_id)
+    usage = store.label_usage()
+    references = store.label_reference_usage()
     for x in items:
-        x['usage_images'] = usage.get(str(x.get('code')), {}).get('images', 0)
-        x['usage_boxes'] = usage.get(str(x.get('code')), {}).get('boxes', 0)
+        code = str(x.get('code'))
+        ref = references.get(code, {})
+        x['usage_images'] = int(ref.get('positive_images') or usage.get(code, {}).get('images', 0))
+        x['usage_boxes'] = int(usage.get(code, {}).get('boxes', 0))
+        x['scope_images'] = int(ref.get('scope_images') or 0)
+        x['affected_images'] = int(ref.get('affected_images') or x['usage_images'] + x['scope_images'])
     return {'ok': True, 'items': items}
+
+
+@app.post('/api/v54/projects/{project_id}/labels/{class_id}/unify')
+def v54_unify_label(project_id: str, class_id: int, payload: V54LabelUnifyReq):
+    project = get_project(project_id)
+    catalog = active_label_options(project_label_items(project))
+    source_item = next(
+        (item for item in catalog if int(item.get('class_id', -1)) == int(class_id)),
+        None,
+    )
+    if source_item is None:
+        raise HTTPException(status_code=404, detail='原标签不存在或已停用')
+    source = str(source_item.get('code') or '').strip()
+    target = normalize_label(payload.target_label)
+    active_targets = {str(item.get('code')) for item in catalog}
+    if target not in active_targets:
+        raise HTTPException(
+            status_code=409,
+            detail='目标标签必须来自当前有效标签库；如需新标签，请先显式创建',
+        )
+    if target == source:
+        raise HTTPException(status_code=400, detail='原标签和目标标签不能相同')
+    try:
+        task = create_annotation_remap_by_label(
+            project_id,
+            material_store(project_id),
+            shared_task_repository(),
+            shared_task_artifacts(),
+            source,
+            target,
+        )
+    except MaterialBatchRequestError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return JSONResponse(
+        status_code=202,
+        content=public_material_batch(
+            task, shared_task_artifacts(), shared_task_repository()
+        ),
+    )
 
 @app.get('/api/v54/projects/{project_id}/algorithms/{algorithm_id}/iteration-base')
 def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str = 'ultralytics'):

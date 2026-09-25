@@ -118,7 +118,7 @@ def test_project_initialization_preserves_aliases_and_prunes_canonical_conflicts
     assert helmet["aliases"] == ["toukui1"]
 
 
-def test_storage_rescan_review_uses_confirmed_alias_suggestions(
+def test_storage_rescan_review_keeps_alias_as_fact_without_suggestion(
     client, tmp_path, monkeypatch
 ):
     project = client.post("/api/projects", json={
@@ -175,7 +175,7 @@ def test_storage_rescan_review_uses_confirmed_alias_suggestions(
     assert public["status"] == "AWAITING_CONFIRMATION"
     assert public["accepted"] is False
     assert public["external_classes"][0]["name"] == "toukui1"
-    assert public["external_classes"][0]["target_label_code"] == "helmet"
+    assert "target_label_code" not in public["external_classes"][0]
 
 
 def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project):
@@ -208,7 +208,7 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
     assert request["labels_text"] == "huomiao1"
 
 
-def test_pending_storage_import_refreshes_alias_suggestions(
+def test_pending_storage_import_does_not_restore_alias_suggestions(
     client, tmp_path, monkeypatch
 ):
     project = client.post("/api/projects", json={
@@ -257,11 +257,11 @@ def test_pending_storage_import_refreshes_alias_suggestions(
 
     public = app_module._public_storage_import_task(task)
     assert public["status"] == "AWAITING_CONFIRMATION"
-    assert public["result"]["external_classes"][0]["target_label_code"] == "helmet"
+    assert "target_label_code" not in public["result"]["external_classes"][0]
 
     task.accepted = True
     frozen = app_module._public_storage_import_task(task)
-    assert frozen["result"]["external_classes"][0]["target_label_code"] is None
+    assert frozen["result"]["external_classes"][0].get("target_label_code") is None
 
 
 def test_project_creation_rejects_overlong_alias_with_400(client):
