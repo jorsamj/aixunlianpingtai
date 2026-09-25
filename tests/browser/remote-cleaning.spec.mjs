@@ -361,13 +361,14 @@ test('cleaning detail progress stays in-place and hands off to review without ra
   await expect(review.getByRole('button',{name:'确认清洗结果'})).toBeVisible();
   await expect(review.getByRole('button',{name:/标注质量/})).toBeVisible();
   await review.getByRole('button',{name:/标注质量/}).click();
-  await expect(review.getByText('正式已标注')).toBeVisible();
-  await expect(review.getByText('人工标注')).toBeVisible();
-  await expect(review.getByText('Class Balance')).toBeVisible();
-  await expect(review.getByText('smoke')).toBeVisible();
-  await expect(review.getByText('疑似极小框')).toBeVisible();
-  await expect(review.getByText('完全重复框')).toBeVisible();
-  await expect(review.getByText('不会在此处自动删除、移动或改写 Ground Truth。')).toBeVisible();
+  const annotationPanel = review.locator('[data-clean-quality-panel="annotation"]');
+  await expect(annotationPanel.getByText('正式已标注')).toBeVisible();
+  await expect(annotationPanel.locator('.clean429-audit-tags').getByText('人工标注')).toBeVisible();
+  await expect(annotationPanel.getByText('Class Balance')).toBeVisible();
+  await expect(annotationPanel.locator('.clean429-audit-bars').getByText('smoke')).toBeVisible();
+  await expect(annotationPanel.locator('.clean429-audit-issues').getByText('疑似极小框')).toBeVisible();
+  await expect(annotationPanel.locator('.clean429-audit-issues').getByText('完全重复框')).toBeVisible();
+  await expect(annotationPanel.getByText('不会在此处自动删除、移动或改写 Ground Truth。')).toBeVisible();
   await expect.poll(async () => page.evaluate(() =>
     window.PollRegistryRuntime?.snapshot?.().some(entry => entry.key === 'clean-task-progress:clean-modal-1') || false
   )).toBe(false);
