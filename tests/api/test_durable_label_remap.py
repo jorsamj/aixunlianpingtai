@@ -71,6 +71,7 @@ def test_v52_label_remap_is_durable_and_mutates_only_in_worker(
     assert task["processed"] == 1
     assert task["changed_images"] == 1
     assert task["changed_boxes"] == 1
+    assert task["result"]["changed_scope_images"] == 0
     assert task["progress_percent"] == 100
 
     formal = app_module.read_annotation(project_id, image["id"])

@@ -300,7 +300,10 @@ class AnnotationRepository:
         return {
             **prepared,
             'changed_boxes': changed,
-            'changed_scope': int(prepared['annotation_scope'] != original_scope),
+            'changed_scope': int(
+                str(record.get('annotation_state') or '') == 'confirmed_empty'
+                and prepared['annotation_scope'] != original_scope
+            ),
         }
 
     def remap_labels_if_digests(

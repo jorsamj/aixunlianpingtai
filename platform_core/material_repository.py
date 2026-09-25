@@ -234,6 +234,11 @@ class MaterialRepository:
                         SELECT m.id, CAST(scope.value AS TEXT)
                           FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
                          WHERE trim(CAST(scope.value AS TEXT)) <> ''
+                           AND COALESCE(
+                               json_extract(m.payload_json, '$.annotation_state'),
+                               json_extract(m.payload_json, '$.annotation_status'),
+                               ''
+                           ) = 'confirmed_empty'
                         """
                     )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
@@ -304,11 +309,15 @@ class MaterialRepository:
             "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)",
             ((row["id"], label) for label in row["labels"]),
         )
-        scopes = sorted({
-            str(label).strip()
-            for label in row.get("annotation_scope") or []
-            if str(label).strip()
-        })
+        scopes = (
+            sorted({
+                str(label).strip()
+                for label in row.get("annotation_scope") or []
+                if str(label).strip()
+            })
+            if str(row.get("annotation_state") or "") == "confirmed_empty"
+            else []
+        )
         database.execute(
             "DELETE FROM material_annotation_scopes WHERE material_id = ?",
             (row["id"],),
