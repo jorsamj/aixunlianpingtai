@@ -5424,7 +5424,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     state.ai60Edit=null;
     closeModal();
   };
-  window.toggleAiDecision60=(id,accepted)=>window.setAiDecision60(id,accepted);
   window.reviewPageSelect60=accepted=>{
     const review=state.ai60Review;if(!review)return;
     for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);
