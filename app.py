@@ -12568,6 +12568,107 @@ async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number
     return {"ok": True, **result}
 
 
+_V19_UPLOAD_FINALIZE_GUARD = threading.Lock()
+_V19_UPLOAD_FINALIZE_ACTIVE: set[Tuple[str, str]] = set()
+
+
+def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
+    key = (str(project_id), str(upload_id))
+    try:
+        repository = _v19_multipart_repository(project_id)
+        session = repository.get(upload_id)
+        job = v19_read_job(project_id, upload_id)
+        jd = v19_job_dir(project_id, upload_id)
+        jd.mkdir(parents=True, exist_ok=True)
+        zip_path = jd / "source.zip"
+
+        v19_update_job(
+            project_id, upload_id,
+            status="merging", stage="正在合并 ZIP 分片", progress=0,
+            upload_progress=100,
+            message="文件已上传，服务器正在后台合并 ZIP；页面可以关闭",
+        )
+        if not (
+            str(session.get("status") or "") == "completed"
+            and zip_path.is_file()
+        ):
+            repository.assemble(upload_id, zip_path)
+            session = repository.get(upload_id)
+
+        v19_update_job(
+            project_id, upload_id,
+            status="validating", stage="正在校验 ZIP", progress=0,
+            upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
+            message="ZIP 合并完成，服务器正在后台扫描目录、图片和外部标签",
+        )
+        scan_started = time.time()
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
+        scan_seconds = round(max(0.0, time.time() - scan_started), 2)
+        if scan.get("image_count", 0) == 0:
+            raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+        scan_images = list(scan.pop("images", []) or [])
+        v19_write_scan_images(project_id, upload_id, scan_images)
+        latest = v19_read_job(project_id, upload_id)
+        finished = {
+            **latest, **scan,
+            "id": upload_id, "project_id": project_id,
+            "dataset_id": latest.get("dataset_id") or session.get("dataset_id") or "default",
+            "batch_id": upload_id,
+            "file_name": latest.get("file_name") or session.get("file_name") or "dataset.zip",
+            "file_size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
+            "uploaded_bytes": zip_path.stat().st_size,
+            "upload_progress": 100,
+            "scan_seconds": scan_seconds,
+            "status": "selecting",
+            "stage": "上传与校验完成",
+            "progress": 0,
+            "message": "后台扫描完成，等待确认标签并开始正式导入",
+            "scan_images_ref": "scan-images.json",
+            "uploaded_at": latest.get("uploaded_at") or now_iso(),
+            "updated_at": now_iso(),
+        }
+        v19_write_job(project_id, finished)
+    except zipfile.BadZipFile:
+        v19_update_job(
+            project_id, upload_id,
+            status="failed", stage="ZIP 校验失败", progress=0,
+            upload_progress=100,
+            error="压缩包已损坏、格式不正确或不是有效 ZIP。",
+            message="ZIP 校验失败", finished_at=now_iso(),
+        )
+    except Exception as error:
+        v19_update_job(
+            project_id, upload_id,
+            status="failed", stage="ZIP 处理失败", progress=0,
+            upload_progress=100, error=str(error), message=str(error),
+            finished_at=now_iso(),
+        )
+    finally:
+        with _V19_UPLOAD_FINALIZE_GUARD:
+            _V19_UPLOAD_FINALIZE_ACTIVE.discard(key)
+
+
+def _v19_schedule_multipart_finalize(project_id: str, upload_id: str) -> bool:
+    key = (str(project_id), str(upload_id))
+    with _V19_UPLOAD_FINALIZE_GUARD:
+        if key in _V19_UPLOAD_FINALIZE_ACTIVE:
+            return False
+        _V19_UPLOAD_FINALIZE_ACTIVE.add(key)
+    thread = threading.Thread(
+        target=_v19_finalize_multipart_upload,
+        args=(str(project_id), str(upload_id)),
+        daemon=True,
+        name=f"zip-finalize-{str(upload_id)[:12]}",
+    )
+    thread.start()
+    return True
+
+
+def _v19_recover_multipart_finalize(project_id: str, job: Mapping[str, Any]) -> None:
+    if str(job.get("status") or "").strip().lower() in {"merging", "validating"}:
+        _v19_schedule_multipart_finalize(project_id, str(job.get("id") or ""))
+
+
 @app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
 def v19_complete_multipart_upload(project_id: str, upload_id: str):
     get_project(project_id)
@@ -12576,49 +12677,32 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
         session = repository.get(upload_id)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
-    job = read_json(v19_job_file(project_id, upload_id), {})
-    if not isinstance(job, dict) or not job:
-        raise HTTPException(status_code=404, detail="ZIP 导入任务不存在")
-    jd = v19_job_dir(project_id, upload_id)
-    jd.mkdir(parents=True, exist_ok=True)
-    zip_path = jd / "source.zip"
-    try:
-        v19_update_job(project_id, upload_id, status="merging", stage="正在合并 ZIP 分片", progress=0,
-                       upload_progress=100, message="文件上传完成，正在服务器合并分片")
-        if not (str(session.get("status") or "") == "completed" and zip_path.is_file()):
-            repository.assemble(upload_id, zip_path)
-        v19_update_job(project_id, upload_id, status="validating", stage="正在校验 ZIP", progress=0,
-                       upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
-                       message="分片合并完成，正在检查 ZIP 目录结构")
-        scan_started = time.time()
-        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
-        scan_seconds = round(max(0.0, time.time() - scan_started), 2)
-        if scan.get("image_count", 0) == 0:
-            raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
-        scan_images = list(scan.pop("images", []) or [])
-        v19_write_scan_images(project_id, upload_id, scan_images)
-        finished = {
-            **job, **scan,
-            "id": upload_id, "project_id": project_id,
-            "dataset_id": job.get("dataset_id") or session.get("dataset_id") or "default",
-            "batch_id": upload_id, "file_name": job.get("file_name") or session.get("file_name") or "dataset.zip",
-            "file_size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
-            "uploaded_bytes": zip_path.stat().st_size, "upload_progress": 100,
-            "scan_seconds": scan_seconds, "status": "selecting", "stage": "上传与校验完成", "progress": 0,
-            "message": "上传与 ZIP 校验完成，等待开始后台导入",
-            "scan_images_ref": "scan-images.json", "uploaded_at": now_iso(), "updated_at": now_iso(),
-        }
-        v19_write_job(project_id, finished)
-        return v19_public_job(project_id, finished, image_limit=500)
-    except zipfile.BadZipFile as error:
-        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 校验失败", progress=0,
-                       upload_progress=100, error="压缩包已损坏、格式不正确或不是有效 ZIP。",
-                       message="ZIP 校验失败", finished_at=now_iso())
-        raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。") from error
-    except Exception as error:
-        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 处理失败", progress=0,
-                       upload_progress=100, error=str(error), message=str(error), finished_at=now_iso())
-        raise HTTPException(status_code=400, detail=f"ZIP 处理失败：{error}") from error
+    job = v19_read_job(project_id, upload_id)
+    status = str(job.get("status") or "").strip().lower()
+
+    if status in {"selecting", "running", "done"}:
+        return v19_public_job(project_id, job, image_limit=500 if status == "selecting" else 0)
+    if status not in {"merging", "validating"}:
+        completed = len(session.get("completed_parts") or [])
+        total = int(session.get("total_parts") or 0)
+        if str(session.get("status") or "") != "completed" and completed != total:
+            raise HTTPException(
+                status_code=409,
+                detail=f"ZIP 分片尚未全部上传：{completed}/{total}",
+            )
+        v19_update_job(
+            project_id, upload_id,
+            status="merging", stage="正在合并 ZIP 分片", progress=0,
+            upload_progress=100,
+            message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
+        )
+
+    _v19_schedule_multipart_finalize(project_id, upload_id)
+    current = v19_read_job(project_id, upload_id)
+    return JSONResponse(
+        status_code=202,
+        content=v19_public_job(project_id, current, image_limit=0),
+    )
 
 
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
@@ -12783,6 +12867,7 @@ def v19_list_import_jobs(project_id: str):
     for jf in d.glob("*/job.json"):
         job = read_json(jf, {})
         if job:
+            _v19_recover_multipart_finalize(project_id, job)
             # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
             preview = 300 if job.get("status") == "selecting" else 0
             jobs.append(v19_public_job(project_id, job, image_limit=preview))
@@ -12793,6 +12878,7 @@ def v19_list_import_jobs(project_id: str):
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
     job = v19_read_job(project_id, job_id)
+    _v19_recover_multipart_finalize(project_id, job)
     return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
 
 

@@ -186,13 +186,18 @@ class ZipMultipartRepository:
 
     def _public(self, meta: dict[str, Any]) -> dict[str, Any]:
         upload_id = str(meta['upload_id'])
-        completed: list[int] = []
-        received = 0
-        for index in range(int(meta['total_parts'])):
-            path = self._part_path(upload_id, index)
-            if path.is_file():
-                completed.append(index)
-                received += path.stat().st_size
+        total_parts = int(meta['total_parts'])
+        if str(meta.get('status') or '') == 'completed':
+            completed = list(range(total_parts))
+            received = int(meta['file_size'])
+        else:
+            completed = []
+            received = 0
+            for index in range(total_parts):
+                path = self._part_path(upload_id, index)
+                if path.is_file():
+                    completed.append(index)
+                    received += path.stat().st_size
         return {
             **meta,
             'completed_parts': completed,

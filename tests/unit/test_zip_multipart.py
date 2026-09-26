@@ -35,6 +35,9 @@ def test_multipart_parts_resume_and_assemble(tmp_path: Path):
     assert completed['status'] == 'completed'
     assert completed['expires_at'] is None
     assert completed['completed_at']
+    assert completed['completed_parts'] == [0, 1]
+    assert completed['received_bytes'] == len(payload)
+    assert completed['upload_progress'] == 100.0
 
 
 def test_multipart_rejects_wrong_part_size(tmp_path: Path):
