@@ -120,3 +120,94 @@ def test_candidate_get_many_is_bounded_and_preserves_review_truth(tmp_path: Path
     assert rows["two"]["accepted"] is True
     with pytest.raises(ValueError, match="limited to 200"):
         store.get_many([f"image-{index}" for index in range(201)])
+
+def test_large_review_decisions_batch_candidate_reads_and_fail_closed(tmp_path: Path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="large-review", page_size=50)
+    total = 1001
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items([
+        {
+            "image_id": f"image-{index:04d}",
+            "status": "success",
+            "boxes": [{"label": "fire", "class_id": 0}],
+        }
+        for index in range(total)
+    ])
+
+    original_connect = store._connect
+    candidate_selects: list[str] = []
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            normalized = " ".join(str(sql).split())
+            if "SELECT * FROM candidates WHERE image_id IN (" in normalized:
+                candidate_selects.append(normalized)
+            if "SELECT * FROM candidates WHERE image_id=?" in normalized:
+                raise AssertionError("large review decisions must not issue one SELECT per image")
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(store, "_connect", lambda: CountingConnection(original_connect()))
+    store.apply_decisions(
+        [
+            CandidateDecision(image_id=f"image-{index:04d}", accepted=True)
+            for index in range(total)
+        ],
+        allowed_statuses={"success", "empty"},
+    )
+    assert len(candidate_selects) == 6
+
+    with pytest.raises(ValueError, match="missing or unavailable"):
+        store.apply_decisions(
+            [
+                CandidateDecision(image_id="image-0000", accepted=False),
+                CandidateDecision(image_id="missing-image", accepted=True),
+            ],
+            allowed_statuses={"success", "empty"},
+        )
+
+    # The invalid second decision rolls back the whole transaction.
+    assert store.get("image-0000")["accepted"] is True
+
+
+def test_label_revalidation_pages_large_candidate_store(tmp_path: Path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="large-remap", page_size=50)
+    total = 1001
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items([
+        {
+            "image_id": f"image-{index:04d}",
+            "status": "success",
+            "boxes": [{"label": "fire", "class_id": 0}],
+        }
+        for index in range(total)
+    ])
+
+    original_connect = store._connect
+    page_reads: list[str] = []
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            normalized = " ".join(str(sql).split())
+            if (
+                "WHERE status IN ('success','empty') AND ordinal>?" in normalized
+                and "LIMIT 200" in normalized
+            ):
+                page_reads.append(normalized)
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(store, "_connect", lambda: CountingConnection(original_connect()))
+    store.remap_labels({}, {"fire": 0})
+    assert len(page_reads) == 6
+

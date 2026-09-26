@@ -297,18 +297,70 @@ class CandidateStore:
                 db.rollback()
                 raise
 
-    def apply_decisions(self, decisions: Iterable[CandidateDecision]) -> None:
+    def apply_decisions(
+        self,
+        decisions: Iterable[CandidateDecision],
+        *,
+        allowed_statuses: Iterable[str] | None = None,
+    ) -> None:
+        """Apply review decisions with bounded candidate reads in one transaction.
+
+        Review payloads can span many paginated candidate pages. Keep SQLite
+        lookups bounded to 200 ids instead of issuing one SELECT per image.
+        When allowed_statuses is provided, missing/failed candidates fail closed
+        before the transaction commits so the API cannot partially apply an
+        invalid review batch.
+        """
+        pending = list(decisions)
+        allowed = (
+            {str(value) for value in allowed_statuses}
+            if allowed_statuses is not None
+            else None
+        )
         self._ready()
-        with closing(self._connect()) as db, db:
-            for decision in decisions:
-                row = db.execute("SELECT * FROM candidates WHERE image_id=?", (str(decision.image_id),)).fetchone()
-                if not row:
-                    continue
-                item = self._decode(row)
-                item["accepted"] = bool(decision.accepted)
-                if decision.boxes is not None:
-                    item["boxes"] = decision.boxes
-                self._put(db, item, normalize=False)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, len(pending), 200):
+                    batch = pending[offset:offset + 200]
+                    image_ids = list(dict.fromkeys(str(item.image_id) for item in batch))
+                    if not image_ids:
+                        continue
+                    placeholders = ",".join("?" for _ in image_ids)
+                    rows = db.execute(
+                        f"SELECT * FROM candidates WHERE image_id IN ({placeholders})",
+                        image_ids,
+                    ).fetchall()
+                    items = {
+                        str(row["image_id"]): self._decode(row)
+                        for row in rows
+                    }
+                    if allowed is not None:
+                        invalid = [
+                            image_id
+                            for image_id in image_ids
+                            if image_id not in items
+                            or str(items[image_id].get("status") or "") not in allowed
+                        ]
+                        if invalid:
+                            raise ValueError(
+                                "candidate decisions contain missing or unavailable review items"
+                            )
+                    for decision in batch:
+                        image_id = str(decision.image_id)
+                        item = items.get(image_id)
+                        if item is None:
+                            continue
+                        item = dict(item)
+                        item["accepted"] = bool(decision.accepted)
+                        if decision.boxes is not None:
+                            item["boxes"] = decision.boxes
+                        self._put(db, item, normalize=False)
+                        items[image_id] = item
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
     def decide_unmentioned(self, accepted, *, exclude=()):
         self._ready()
@@ -335,36 +387,44 @@ class CandidateStore:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                rows = db.execute(
-                    "SELECT * FROM candidates WHERE status IN ('success','empty') ORDER BY ordinal"
-                ).fetchall()
-                for row in rows:
-                    item = self._decode(row)
-                    changed = False
-                    boxes = []
-                    for box in item.get("boxes") or []:
-                        current = dict(box)
-                        source = str(current.get("label") or "").strip()
-                        if not source:
-                            raise ValueError("annotation candidate label is required")
-                        if source not in normalized and source not in label_ids:
-                            raise ValueError(
-                                f"annotation candidate label is unavailable: {source}"
-                            )
-                        target = normalized.get(source, source)
-                        target_id = int(label_ids[target])
-                        try:
-                            current_id = int(current.get("class_id"))
-                        except (TypeError, ValueError, OverflowError):
-                            current_id = None
-                        if source != target or current_id != target_id:
-                            current["label"] = target
-                            current["class_id"] = target_id
-                            changed = True
-                        boxes.append(current)
-                    if changed:
-                        item["boxes"] = boxes
-                        self._put(db, item, normalize=False)
+                after_ordinal = 0
+                while True:
+                    rows = db.execute(
+                        "SELECT * FROM candidates "
+                        "WHERE status IN ('success','empty') AND ordinal>? "
+                        "ORDER BY ordinal LIMIT 200",
+                        (after_ordinal,),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        item = self._decode(row)
+                        changed = False
+                        boxes = []
+                        for box in item.get("boxes") or []:
+                            current = dict(box)
+                            source = str(current.get("label") or "").strip()
+                            if not source:
+                                raise ValueError("annotation candidate label is required")
+                            if source not in normalized and source not in label_ids:
+                                raise ValueError(
+                                    f"annotation candidate label is unavailable: {source}"
+                                )
+                            target = normalized.get(source, source)
+                            target_id = int(label_ids[target])
+                            try:
+                                current_id = int(current.get("class_id"))
+                            except (TypeError, ValueError, OverflowError):
+                                current_id = None
+                            if source != target or current_id != target_id:
+                                current["label"] = target
+                                current["class_id"] = target_id
+                                changed = True
+                            boxes.append(current)
+                        if changed:
+                            item["boxes"] = boxes
+                            self._put(db, item, normalize=False)
+                    after_ordinal = int(rows[-1]["ordinal"])
                 db.commit()
             except Exception:
                 db.rollback()

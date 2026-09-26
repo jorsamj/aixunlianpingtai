@@ -19346,8 +19346,6 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         for item in payload.decisions
     ]
     decided_ids = {item.image_id for item in decisions}
-    if any((store.get(image_id) or {}).get("status") not in {"success", "empty"} for image_id in decided_ids):
-        raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
 
@@ -19376,7 +19374,16 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
                     detail=f"候选框标签不在当前有效标签库：{source or '(empty)'}",
                 )
 
-    store.apply_decisions(decisions)
+    try:
+        store.apply_decisions(
+            decisions,
+            allowed_statuses={"success", "empty"},
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="审核范围包含不存在或生成失败的素材",
+        ) from error
     try:
         store.remap_labels(mapping, label_ids)
     except ValueError as error:
