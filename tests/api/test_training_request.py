@@ -1145,3 +1145,17 @@ def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(monkeypatc
     assert "RK3568" in result["errors"][0]["message"]
     assert "RK3576" in result["errors"][0]["message"]
     assert "RK3588" not in result["errors"][0]["message"]
+
+
+def test_training_truth_validation_keeps_material_reads_batched():
+    import inspect
+    import app as app_module
+
+    for function in (
+        app_module._training_reusable_benchmark,
+        app_module._training_supplement_candidate_set,
+    ):
+        source = inspect.getsource(function)
+        assert "materials.get_many(" in source
+        assert "materials.get(" not in source
+        assert "AnnotationRepository(project_dir(project_id)).get_many(" in source

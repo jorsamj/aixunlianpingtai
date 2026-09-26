@@ -6862,10 +6862,16 @@ def _training_reusable_benchmark(
         if isinstance(row, dict) and str(row.get("image_id") or "")
     }
     materials = MaterialRepository(project_dir(project_id))
+    material_rows = materials.get_many(test_ids)
+    material_by_id = {
+        str(row.get("id") or ""): row
+        for row in material_rows
+        if str(row.get("id") or "")
+    }
     annotations = AnnotationRepository(project_dir(project_id)).get_many(test_ids)
     for image_id in test_ids:
         frozen = records.get(image_id)
-        material = materials.get(image_id)
+        material = material_by_id.get(image_id)
         annotation = annotations.get(image_id) or {}
         if frozen is None or material is None:
             raise HTTPException(
@@ -7007,10 +7013,16 @@ def _training_supplement_candidate_set(
         )
 
     materials = MaterialRepository(project_dir(project_id))
+    material_rows = materials.get_many(adopted_ids)
+    material_by_id = {
+        str(row.get("id") or ""): row
+        for row in material_rows
+        if str(row.get("id") or "")
+    }
     annotations = AnnotationRepository(project_dir(project_id)).get_many(adopted_ids)
     truth_rows = []
     for material_id in adopted_ids:
-        material = materials.get(material_id)
+        material = material_by_id.get(material_id)
         if material is None:
             raise HTTPException(status_code=409, detail=f"补数据素材 {material_id} 已不存在")
         annotation = annotations.get(material_id) or {}
