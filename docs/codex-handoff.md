@@ -2,7 +2,7 @@
 
 ## 2026-09-26 晚间最终性能审计进度（最新，覆盖下方同日旧状态）
 
-- 当前真实远端 HEAD：`1eaa0afbf16a972c8106b0f57f787eadd58e7d37`。
+- 当前真实远端 HEAD：`684c7653f00cb5781015c26bf288dcb4df030e85`。
 - `VERSION.txt = 42.24.0`，仍未修改。
 - 未 merge main、未 tag、未 release、未 force push。
 - 当前 HEAD 的 20 个主要 Actions 在本节写入时仍全部 queued，**不能把当前 HEAD 写成全绿**。
@@ -67,6 +67,14 @@
    - 新：明确 image_ids / snapshot 时只 indexed 读取指定素材；Annotation <=500/批；质量检查复用已加载 project_state，不再每框重复 get_project。
    - 1201 张结构测试验证 Material 500/500/201、Annotation 500/500/201、project truth 只读一次。
    - 提交：`1eaa0afbf16a972c8106b0f57f787eadd58e7d37`。
+
+
+4. **清洗确认阶段**
+   - 正式清洗 owner 已是 MATERIAL_BATCH durable task，selection 在创建时冻结。
+   - 旧确认路径仍用 MaterialRepository.mutate() 全表扫描，只为更新冻结 selection 的 processed/cleaned_at/clean_task_id。
+   - 新：冻结 ID 500/批 indexed get_many，确认仍存在后使用 patch_many(batch_size=500)；被删除/已不存在素材不进入 processed_ids。
+   - 1201 条合同验证 500/500/201，并永久禁止 full-table mutate。
+   - 提交：`684c7653f00cb5781015c26bf288dcb4df030e85`。
 
 ### 手工标注最终 hot-path 结论
 
