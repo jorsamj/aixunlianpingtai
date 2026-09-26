@@ -1,5 +1,27 @@
 # v42.25 技术债关闭总账
 
+## 2026-09-26 标签治理闭环增量（覆盖下方较早同日 pending 清单）
+
+状态：**IMPLEMENTED / CI PENDING**。当前基线 HEAD：`6d2b8916edaaac35d1f47093d26792032cc7fc7c`，`VERSION.txt = 42.24.0`。
+
+已进一步关闭：
+
+- external-class review 的 search / 50-row pagination / cross-page state / bulk many-to-one mapping / final summary。
+- external-label 真实样例证据：默认 8、最大 12，bbox overlay，短期 presign + class-fenced fallback。
+- 多来源 canonical merge：最多 50 个 source labels 的 indexed union selection，仍复用 `REMAP_ANNOTATION_LABELS` durable owner。
+- merge 仅在全成功时将 source labels 标记 `merged`；partial/failed 不退役，避免半合并 schema。
+- canonical label 删除已改 soft-disable，不再重排其他 project class ids。
+- AI candidate alias 自动解析已退休，只接受本次任务明确 canonical code。
+- imported provenance 在 merge 后保持 source_* 不变，同时更新 canonical_label_id / canonical_project_class_id。
+- 项目元数据保存与 merge finalization 使用一致 FileLock / atomic write 边界，避免并发损坏。
+
+当前仅剩：
+
+- 最新 HEAD 完整 CI 结果仍在等待；queued/in_progress 不能记 PASS。
+- 真实 20k + OSS/S3 + NVIDIA 生产环境性能验收未做，现有 10k 自动化合同不能替代生产验收。
+- 普通浏览器本地字节未上传完时关闭页面不能继续传输，这是浏览器安全模型边界。
+
+
 > **状态：ACTIVE / 标签导入、Ground Truth 与训练 schema 技术债收口中**
 > **当前分支：`feature/external-algorithm-publishing`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  

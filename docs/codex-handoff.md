@@ -1,5 +1,69 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 最新标签治理收口状态（本节覆盖下方同日旧记录）
+
+- 当前远端 HEAD：`6d2b8916edaaac35d1f47093d26792032cc7fc7c`；正式 `VERSION.txt` 仍为 `42.24.0`。
+- 未 merge `main`、未 tag、未 release、未 force push。
+- 当前 Actions 仍主要处于 queued；queued/in_progress 不算 PASS。上一轮真实 completed failure 是旧测试继续 import 已退休的 `suggest_label_code`，已由 `19621913...` 按新规则修复；`6d2b8916...` 另补齐多标签 merge 所需 `FileLock` import。
+
+### 已完成且不得重复造第二套 runtime
+
+1. **外部标签永远由用户决定**
+   - ZIP、服务器导入、对象存储导入、storage rescan 默认全部未选择。
+   - exact name / 中文名 / alias / 历史映射 / AI 语义均不得自动选择 canonical 标签。
+   - AI annotation 的任务标签输入和模型 candidate 返回都只接受明确 canonical code；alias 仅用于搜索、历史来源和审计。
+
+2. **大规模 external-label 审核 UI 已完成**
+   - 共享 `label-mapping-review` owner；10k external classes 采用 50 条分页，不一次渲染 10k DOM。
+   - 支持外部标签搜索、canonical 标签搜索、跨页保留人工映射、勾选多个 external labels 后批量映射到一个 canonical。
+   - 提交前保留 mapped / unmapped / 图片数 / 框数 / target 汇总；任一外部标签未人工映射都不能正式提交。
+
+3. **真实样例证据查看器已完成**
+   - 每个 external class 默认 8、最多 12 个真实样例，显示真实 bbox overlay。
+   - 对象存储优先 5 分钟短期 preview URL，失败时走同源且 class-fenced 的 content route。
+   - 样例只提供证据，不做推荐。
+
+4. **历史素材标签支持多来源一次统一**
+   - 正式 owner 仍是 `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS`，没有第二套 scheduler。
+   - `POST /api/v54/projects/{project_id}/labels/unify/preview` 通过 SQLite 标签索引计算去重影响范围。
+   - `POST /api/v54/projects/{project_id}/labels/unify` 一次最多 50 个来源标签统一到一个 canonical target；例如 `smoke + smoking + 吸烟 -> 抽烟`。
+   - 前端提供来源多选、搜索、真实影响 loading、人工目标选择；任务创建后窗口可关闭，后台继续。
+   - 全任务成功后来源标签才标记 `merged`，记录 `merged_into / merged_at` 并退出 active label；PARTIAL_SUCCESS / FAILED 不退役来源标签。
+
+5. **Ground Truth / provenance 一致性**
+   - confirmed_empty scope-only remap 已能真实落库，并有 `material_annotation_scopes` 索引。
+   - remap 使用批量 `get_many` + digest fencing，不覆盖并发人工标注。
+   - imported box 保留不可变的 `source_class_id / source_label_name / import_batch_id / source_format`。
+   - 历史 merge 后会更新当前 `canonical_label_id / canonical_project_class_id`，来源 provenance 不改。
+
+6. **训练前 canonical schema 防线已完成**
+   - 未映射、deleted/inactive、`class_x / unknown / temp_*` 等标签直接阻断训练。
+   - 训练导出只按最终 canonical schema 重新生成连续 `0..N-1`，source_class_id 永不作为 training class_id。
+   - schema 结构变化记录 `label_schema_changed`；当前架构使用上一版本权重初始化，`strict_resume=false`、`optimizer_state_resumed=false`。
+
+7. **已关闭的性能/技术债**
+   - 已使用标签改编码不再同步 O(N) 扫全库，统一必须走 durable batch。
+   - 未使用 canonical 标签删除改为 soft-disable，保留原 project class_id；不会重排其他标签。
+   - 多标签 merge 的项目元数据写入使用文件锁 + 原子写，避免 worker 与前端元数据写入互相踩坏文件。
+   - 普通上传维持分块 + 批量 repository commit；ZIP / server / object-storage 处理维持后台 durable pipeline。
+
+### 仍未宣称完成的只有真实环境验收
+
+- 当前 HEAD 的完整 CI 仍需等 completed 结果；出现红灯必须先读真实 job log。
+- 10k 有自动化合同，但**真实 20k 素材、真实 OSS/S3 网络、NVIDIA 生产节点**的吞吐、峰值内存、WAL contention、对象存储 RTT 尚需部署环境验收。
+- 浏览器尚未上传到服务器的本地文件字节，在页面关闭后无法继续传输；这是浏览器安全边界，不得为此另造假后台。
+
+### 本轮新增关键提交
+
+- `530f0d64` — align remote/v19 label audit contracts
+- `fb48bb65` — strip stale label target hints
+- `a8b2b910` → `954493b9` → `4e64400a` — scalable shared label review + state preservation
+- `608b3991` → `c6d534db` — bounded real sample evidence + UI
+- `3334385c` → `429e6dcd` — durable multi-source historical label merge + review UI
+- `19621913` — exact canonical AI candidate truth + canonical provenance update
+- `6d2b8916` — import project metadata FileLock required by merge finalization
+
+
 ## 2026-09-26 当前接管状态（以下内容覆盖后续历史状态段）
 
 - 当前工作分支：`feature/external-algorithm-publishing`
