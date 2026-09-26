@@ -25,24 +25,29 @@ class WorkerOutcome:
 def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str, Any]]:
     # Imported only while executing a claimed task. Worker registration and
     # health checks stay independent from the web application module.
-    from app import load_images, storage_manager
+    from app import material_store, storage_manager
 
-    ordered_ids = [str(value) for value in image_ids]
-    wanted = set(ordered_ids)
-    order = {image_id: index for index, image_id in enumerate(ordered_ids)}
+    ordered_ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
+    if not ordered_ids:
+        return []
+    materials = material_store(project_id)
     manager = storage_manager(project_id)
+    by_id: dict[str, dict[str, Any]] = {}
+    # Keep SQLite variable counts bounded and fetch only the immutable task
+    # selection. Never scan the whole project just to resolve a small AI task.
+    for offset in range(0, len(ordered_ids), 500):
+        for image in materials.get_many(ordered_ids[offset:offset + 500]):
+            image_id = str(image.get("id") or "")
+            if image_id:
+                by_id[image_id] = image
+    missing = [image_id for image_id in ordered_ids if image_id not in by_id]
+    if missing:
+        raise FileNotFoundError("annotation images no longer exist: " + ", ".join(sorted(missing)))
     rows = []
-    for image in load_images(project_id):
-        image_id = str(image.get("id") or "")
-        if image_id not in wanted:
-            continue
-        row = dict(image)
+    for image_id in ordered_ids:
+        row = dict(by_id[image_id])
         row["path"] = str(manager.materialize(row).path)
         rows.append(row)
-    rows.sort(key=lambda image: order[str(image["id"])])
-    if len(rows) != len(wanted):
-        missing = wanted - {str(image.get("id")) for image in rows}
-        raise FileNotFoundError("annotation images no longer exist: " + ", ".join(sorted(missing)))
     return rows
 
 

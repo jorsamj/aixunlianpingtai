@@ -4520,11 +4520,16 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       return task;
     }catch(e){
       const box=document.getElementById('label414RemapBanner');
-      if(box&&state.page==='标签管理'){box.hidden=false;box.innerHTML=`<div class="label414-remap-banner error"><div class="label414-remap-copy"><b>后台任务状态读取失败</b><span>${esc(e.message||e)}</span></div><button class="btn mini" onclick="renderLabelManagement414({force:true})">重试</button></div>`}
+      if(box&&state.page==='标签管理'){box.hidden=false;box.innerHTML=`<div class="label414-remap-banner error"><div class="label414-remap-copy"><b>后台任务状态读取失败</b><span>${esc(e.message||e)}</span></div><button class="btn mini" onclick="retryLabelManagement414()">重试</button></div>`}
       return null;
     }
   }
   window.resumeLabelUnify414=resumeLabelUnify414;
+
+  window.retryLabelManagement414=async function(){
+    try{await refreshLabels414(true);drawLabel414();void resumeLabelUnify414()}
+    catch(e){toast(e.message||e)}
+  };
 
   window.renderLabelManagement414=async function({force=false}={}){
     const view=document.getElementById('view');if(!view)return;

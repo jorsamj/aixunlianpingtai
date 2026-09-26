@@ -1,10 +1,11 @@
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
-from platform_core.annotation_task_service import _public_error, commit_candidate_decisions, run_ai_annotation
+from platform_core.annotation_task_service import _public_error, commit_candidate_decisions, load_task_images, run_ai_annotation
 from platform_core.task_runtime import ArtifactStore, ExecutionFencedError, TaskKind, TaskRecord, TaskStatus
 
 
@@ -246,3 +247,38 @@ def test_public_worker_error_redacts_common_secret_shapes():
     assert "very-secret" not in public
     assert "sk-12345678901234567890" not in public
     assert "[REDACTED]" in public
+
+
+def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeypatch):
+    image_ids = [f"image-{index:04d}" for index in range(1201)]
+
+    class FakeMaterials:
+        def __init__(self):
+            self.calls = []
+
+        def get_many(self, ids):
+            batch = list(ids)
+            self.calls.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg", "width": 64, "height": 64}
+                for image_id in batch
+            ]
+
+    class FakeManager:
+        def materialize(self, row):
+            return SimpleNamespace(path=tmp_path / f"{row['id']}.jpg")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr("app.material_store", lambda _project_id: materials)
+    monkeypatch.setattr("app.storage_manager", lambda _project_id: FakeManager())
+    monkeypatch.setattr(
+        "app.load_images",
+        lambda *_args, **_kwargs: pytest.fail("AI task image resolution must not scan the whole material library"),
+    )
+
+    rows = load_task_images("project-1", image_ids)
+
+    assert [len(batch) for batch in materials.calls] == [500, 500, 201]
+    assert [row["id"] for row in rows] == image_ids
+    assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)

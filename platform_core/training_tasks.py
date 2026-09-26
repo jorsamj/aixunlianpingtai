@@ -824,10 +824,13 @@ def _selected_project_images(
     by_id = {str(row.get("id")): row for row in rows}
     result = []
     annotations = AnnotationRepository(project)
+    annotation_by_id: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(wanted), 500):
+        annotation_by_id.update(annotations.get_many(wanted[offset:offset + 500]))
     for image_id in wanted:
         row = dict(by_id[image_id])
         image_id = str(row.get("id") or "")
-        annotation = annotations.get(image_id)
+        annotation = annotation_by_id[image_id]
         row['annotation_state'] = annotation['annotation_state']
         row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
         row['annotation_hash'] = str(
