@@ -538,6 +538,44 @@ window.__resourceDiscoveryDependencies={
     }
   };
 
+  const labelMappingReviewStates61=window.__labelMappingReviewStates61||(window.__labelMappingReviewStates61=new Map());
+  const labelReviewApi61=()=>window.PlatformCore?.labelMappingReview;
+  const labelReviewStateKey61=(kind,key)=>`${String(pid()||'default')}:${String(kind||'')}:${String(key||'')}`;
+  function getLabelReview61(kind,key,classes=[]){
+    const api=labelReviewApi61();if(!api)throw new Error('标签映射审查模块尚未加载，请刷新页面后重试');
+    const stateKey=labelReviewStateKey61(kind,key),existing=labelMappingReviewStates61.get(stateKey);
+    const review=existing?api.reconcileLabelMappingReview(existing,classes):api.createLabelMappingReview(classes);
+    labelMappingReviewStates61.set(stateKey,review);
+    return review;
+  }
+  function labelReviewMarkup61(kind,key,classes=[]){
+    const api=labelReviewApi61(),review=getLabelReview61(kind,key,classes),page=api.labelMappingReviewPage(review),summary=api.labelMappingReviewSummary(review),labels=window.mappingLabelItems414?.()||[];
+    const keep=page.rows.map(row=>row.code).filter(Boolean),visibleLabels=api.filterCanonicalLabels(labels,review.targetQuery,keep);
+    const optionHtml=selected=>['<option value="">选择平台标签</option>',...visibleLabels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}" ${String(selected||'')===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
+    const rowAttr=kind==='rescan'?'data-rescan-class':'data-import-class';
+    const rows=page.rows.map(row=>`<div class="storage61-mapping-row label-mapping-review-row" ${rowAttr}="${esc(row.classId)}" data-source-name="${esc(row.name)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="labelReviewToggle61('${kind}','${esc(key)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(row.name||('类别 '+row.classId))}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${row.code?'<span class="pill ok">已人工映射</span>':'<span class="pill warn">待选择</span>'}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name||row.classId)}的平台标签" onchange="labelReviewSet61('${kind}','${esc(key)}','${esc(row.classId)}',this.value)">${optionHtml(row.code)}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('${kind}','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`).join('');
+    const bulkLabels=api.filterCanonicalLabels(labels,review.targetQuery),bulkOptions=['<option value="">批量映射到…</option>',...bulkLabels.map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
+    const targets=Object.entries(summary.targetCounts||{}),targetSummary=targets.length?targets.slice(0,8).map(([code,count])=>`${esc(code)} ← ${Number(count)} 个外部标签`).join(' · ')+(targets.length>8?` · 另 ${targets.length-8} 个目标`:''):'尚未建立任何映射';
+    return `<div class="storage61-import-mapping label-mapping-review" data-label-review-kind="${esc(kind)}" data-label-review-key="${esc(key)}"><div class="row between"><div><b>外部类别 → 平台标签</b><div class="item-sub">只记录人工决定；不会自动推荐或预选。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签 / class_id" onchange="labelReviewSearch61('${kind}','${esc(key)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="labelReviewTargetSearch61('${kind}','${esc(key)}',this.value)"><select class="select" data-review-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="labelReviewBulk61('${kind}','${esc(key)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span><span>已勾选 <b>${summary.selected}</b></span></div><div class="item-sub label-mapping-review-targets">${targetSummary}</div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="row between label-mapping-review-pager"><button class="btn mini" ${page.page<=1?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page-1})">上一页</button><span>${page.page} / ${page.pageCount}</span><button class="btn mini" ${page.page>=page.pageCount?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page+1})">下一页</button></div><div class="item-sub">${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未人工映射。':'全部外部标签已人工映射，可提交。'}</div><div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`;
+  }
+  function refreshLabelReview61(kind,key){
+    const nodes=[...document.querySelectorAll('[data-label-review-kind][data-label-review-key]')],node=nodes.find(item=>item.dataset.labelReviewKind===String(kind)&&item.dataset.labelReviewKey===String(key));
+    if(!node)return false;
+    const review=labelMappingReviewStates61.get(labelReviewStateKey61(kind,key));if(!review)return false;
+    node.outerHTML=labelReviewMarkup61(kind,key,review.rows);
+    window.refreshStorageImportConfirm61?.();
+    window.refreshStorageRescanConfirm61?.();
+    return true;
+  }
+  window.labelReviewSet61=function(kind,key,classId,code){labelReviewApi61().setLabelMapping(getLabelReview61(kind,key),classId,code);refreshLabelReview61(kind,key)};
+  window.labelReviewToggle61=function(kind,key,classId,selected){labelReviewApi61().setLabelMappingSelected(getLabelReview61(kind,key),classId,selected);window.refreshStorageImportConfirm61?.();window.refreshStorageRescanConfirm61?.()};
+  window.labelReviewSearch61=function(kind,key,value){labelReviewApi61().setLabelMappingReviewSearch(getLabelReview61(kind,key),value);refreshLabelReview61(kind,key)};
+  window.labelReviewTargetSearch61=function(kind,key,value){labelReviewApi61().setLabelMappingTargetSearch(getLabelReview61(kind,key),value);refreshLabelReview61(kind,key)};
+  window.labelReviewPage61=function(kind,key,page){labelReviewApi61().setLabelMappingReviewPage(getLabelReview61(kind,key),page);refreshLabelReview61(kind,key)};
+  window.labelReviewBulk61=function(kind,key){try{const review=getLabelReview61(kind,key),nodes=[...document.querySelectorAll('[data-label-review-kind][data-label-review-key]')],root=nodes.find(item=>item.dataset.labelReviewKind===String(kind)&&item.dataset.labelReviewKey===String(key)),code=String(root?.querySelector('[data-review-bulk-target]')?.value||'').trim();labelReviewApi61().bulkSetLabelMapping(review,code);refreshLabelReview61(kind,key)}catch(error){toast(error.message||error)}};
+  function buildLabelReviewMapping61(kind,key,classes=[]){return labelReviewApi61().buildManualLabelMapping(getLabelReview61(kind,key,classes))}
+  function labelReviewSummary61(kind,key,classes=[]){return labelReviewApi61().labelMappingReviewSummary(getLabelReview61(kind,key,classes))}
+
   window.openStorageRescan61=async function(sourceId){
     const project=String(pid()||'');if(!project){toast('请先选择项目');return}
     const base=`/api/v61/projects/${encodeURIComponent(project)}`;
@@ -561,9 +599,15 @@ window.__resourceDiscoveryDependencies={
       annotationPolicy.hidden=false;
       const quality=task.quality||{},issues=quality.issues||{},issueCount=Object.values(issues).reduce((sum,value)=>sum+Number(value||0),0);
       qualityBox.innerHTML=`<p><b>标注数据质量</b> · 有效框 ${Number(quality.boxes||0)} · 异常 ${issueCount}</p>${Object.keys(issues).length?`<p>${Object.entries(issues).map(([code,count])=>`${esc(code)}：${Number(count||0)}`).join(' · ')}</p><label><input id="sr61AcceptQuality" type="checkbox"> 已确认标注质量报告</label>`:''}`;
-      const labels=window.mappingLabelItems414?.()||[];
       const classes=Array.isArray(task.external_classes)?task.external_classes:[];
-      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}" data-source-name="${esc(row.name)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(label=>`<option value="${esc(label.code)}" >${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('rescan','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
+      mappingBox.innerHTML=classes.length?labelReviewMarkup61('rescan',String(task.task_id||taskId),classes):'';
+      window.refreshStorageRescanConfirm61=()=>{
+        const button=document.getElementById('sr61Confirm');if(!button)return;
+        const summary=classes.length?labelReviewSummary61('rescan',String(task.task_id||taskId),classes):{unmapped:0};
+        button.disabled=summary.unmapped>0||(Object.keys(issues).length>0&&!document.getElementById('sr61AcceptQuality')?.checked);
+      };
+      document.getElementById('sr61AcceptQuality')?.addEventListener('input',window.refreshStorageRescanConfirm61);
+      window.refreshStorageRescanConfirm61();
     }
     async function loadPreflight(){
       try{
@@ -624,9 +668,7 @@ window.__resourceDiscoveryDependencies={
       try{
         const body={new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore',annotation_changed:document.getElementById('sr61AnnotationChanged').checked?'update':'ignore',annotation_removed:document.getElementById('sr61AnnotationRemoved').checked?'clear':'keep',annotation_conflicts:document.getElementById('sr61AnnotationConflicts').checked?'overwrite':'keep'};
         if(['yolo','coco','voc'].includes(lastTask?.import_format)){
-          const rows=[...document.querySelectorAll('[data-rescan-class]')].map(row=>({classId:row.dataset.rescanClass,code:String(row.querySelector('[data-label-code]')?.value||'').trim()}));
-          if(rows.some(row=>!row.code))throw new Error('请完成所有外部类别的平台标签映射');
-          body.label_mapping=Object.fromEntries(rows.map(row=>[row.classId,row.code]));
+          body.label_mapping=buildLabelReviewMapping61('rescan',String(lastTask.task_id||taskId),lastTask.external_classes||[]);
           body.accept_quality_report=!!document.getElementById('sr61AcceptQuality')?.checked;
           if(Object.keys(lastTask.quality?.issues||{}).length&&!body.accept_quality_report)throw new Error('请先确认标注数据质量报告');
         }
@@ -685,13 +727,13 @@ window.__resourceDiscoveryDependencies={
       const summary=(view.canConfirm||view.terminal)?`<div class="storage61-import-summary"><span>已扫描 <b>${scanned}</b></span><span>可导入 <b>${importable}</b></span><span>重复 <b>${duplicates}</b></span><span>失败 <b>${failed}</b></span></div>`:'';
       const quality=result.quality,classes=result.external_classes||[];
       const qualityHtml=quality?`<div class="storage61-import-quality"><b>标注数据质量</b><p>有效框 ${safeCount(quality.boxes)} · 已标注 ${safeCount(quality.annotation_status?.annotated)} · 确认空标注 ${safeCount(quality.annotation_status?.confirmed_empty)} · 缺失标注 ${safeCount(quality.annotation_status?.unannotated)} · 无效标注 ${safeCount(quality.annotation_status?.invalid)}</p><p>${Object.entries(quality.issues||{}).map(([code,n])=>`${esc(code)}：${safeCount(n)}`).join(' · ')||'未发现质量问题'}</p>${(quality.examples||[]).length?`<details><summary>查看问题示例</summary>${quality.examples.map(row=>`<p>${esc(row.object_key)} · 第 ${safeCount(row.line_number)} 行 · ${esc(row.code)}</p>`).join('')}</details>`:''}</div>`:'';
-      const labels=window.mappingLabelItems414?.()||[],mappingHtml=view.canConfirm&&classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签编码</b>${classes.map(row=>`<div class="storage61-mapping-row" data-import-class="${esc(row.class_id)}" data-source-name="${esc(row.name)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(label=>`<option value="${esc(label.code)}" >${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('storage-import','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
+      const mappingHtml=view.canConfirm&&classes.length?labelReviewMarkup61('storage-import',taskId,classes):'';
       const acceptance=view.canConfirm&&quality?'<label class="field check"><input id="si61AcceptQuality" type="checkbox"> 已查看并接受质量报告（无效标注行将跳过）</label>':'';
       const confirm=view.canConfirm?`<button id="si61Confirm" class="btn mini primary" onclick="confirmStorageImport61('${taskId}')">确认建立索引</button>`:'';
       const error=(view.status==='FAILED'||view.status==='CANCELLED'||view.status==='BLOCKED_BY_ENVIRONMENT')?`<div class="alert err">${esc(task?.error||result?.error?.message||view.text||'导入失败')}</div>`:'';
       status.innerHTML=`<div class="storage61-task-head"><b>${esc(view.text||task?.status||'处理中')}</b><small>${esc(task?.status||'')} ${task?.stage?`· ${esc(task.stage)}`:''}</small></div>${summary}${qualityHtml}${mappingHtml}${acceptance}${error}${confirm?`<div class="row end">${confirm}</div>`:''}`;
-      const updateConfirm=()=>{const button=document.getElementById('si61Confirm');if(button)button.disabled=[...status.querySelectorAll('[data-label-code]')].some(input=>!input.value.trim())||(Object.keys(quality?.issues||{}).length>0&&!document.getElementById('si61AcceptQuality')?.checked)};
-      status.querySelectorAll('input,select').forEach(input=>input.addEventListener('input',updateConfirm));updateConfirm();
+      window.refreshStorageImportConfirm61=()=>{const button=document.getElementById('si61Confirm');if(!button)return;const reviewSummary=classes.length?labelReviewSummary61('storage-import',taskId,classes):{unmapped:0};button.disabled=reviewSummary.unmapped>0||(Object.keys(quality?.issues||{}).length>0&&!document.getElementById('si61AcceptQuality')?.checked)};
+      document.getElementById('si61AcceptQuality')?.addEventListener('input',window.refreshStorageImportConfirm61);window.refreshStorageImportConfirm61();
     }
 
     window.renderStorageImportTask61=renderImportTask;
@@ -802,7 +844,9 @@ window.__resourceDiscoveryDependencies={
     window.confirmStorageImport61=async function(taskId){
       const button=document.getElementById('si61Confirm');if(button)button.disabled=true;
       try{
-        const rows=[...document.querySelectorAll('[data-import-class]')].map(row=>({classId:row.dataset.importClass,code:row.querySelector('[data-label-code]')?.value}));
+        const review=labelMappingReviewStates61.get(labelReviewStateKey61('storage-import',taskId));
+        const mapping=review?labelReviewApi61().buildManualLabelMapping(review):{};
+        const rows=Object.entries(mapping).map(([classId,code])=>({classId,code}));
         const body=serverApi().buildImportConfirmation(rows,document.getElementById('si61AcceptQuality')?.checked);
         const task=await importRequest(`${taskUrl(taskId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});saveTask(taskId);const completed=await pollTask(taskId,task);
         if(completed?.status==='SUCCEEDED'){if(state.page==='数据集')await window.reloadMaterialPage61?.();toast(`素材索引已建立：${safeCount(completed.result?.imported)} 条`)}

@@ -583,3 +583,16 @@ test('Pascal VOC rescan shares the same frontend delta, mapping and confirmation
   expect(confirmation.annotation_changed).toBe('update');
   expect(confirmation.annotation_conflicts).toBe('keep');
 });
+
+
+test('storage mapping review exposes bounded shared controls without automatic choice', async ({page}) => {
+  await page.goto('/');
+  const source = await page.evaluate(() => ({
+    hasSharedReview: Boolean(window.PlatformCore?.labelMappingReview),
+    pageSize: window.PlatformCore?.labelMappingReview?.createLabelMappingReview?.(
+      Array.from({length:120},(_,i)=>({class_id:String(i),name:'c'+i}))
+    )?.pageSize,
+  }));
+  expect(source.hasSharedReview).toBe(true);
+  expect(source.pageSize).toBe(50);
+});
