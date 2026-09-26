@@ -287,6 +287,12 @@ def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
     return read_annotation(project_id, image_id)
 
 
+def read_formal_annotations(project_id: str, image_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    from app import read_annotations_many
+
+    return read_annotations_many(project_id, image_ids)
+
+
 def write_formal_annotation(
     project_id: str, image_id: str, boxes: list[dict[str, Any]],
     *, annotation_origin: str | None = None,
@@ -296,6 +302,12 @@ def write_formal_annotation(
     write_annotation(
         project_id, image_id, boxes, annotation_origin=annotation_origin,
     )
+
+
+def write_formal_annotations(project_id: str, rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    from app import write_annotations_many
+
+    return write_annotations_many(project_id, rows)
 
 
 def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
@@ -321,69 +333,129 @@ def commit_candidate_decisions(
     applied_count = boxes_added = 0
     accepted_total = max(0, int(store.summary().get("accepted") or 0))
     processed = 0
-    for item in store.iter_items():
-        if item.get("accepted") is not True or item.get("status") not in {"success", "empty"}:
-            continue
+
+    def assert_not_cancelled() -> None:
         if cancelled is not None and cancelled():
             raise InterruptedError("AI annotation review commit cancelled")
-        image_id = str(item["image_id"])
-        applied_count += 1
-        if len(applied_images) < 100:
-            applied_images.append(image_id)
-        with closing(store._connect()) as db:
-            committed = db.execute("SELECT summary_json FROM commits WHERE image_id=?", (image_id,)).fetchone()
-        if committed:
-            if len(image_summaries) < 100:
-                image_summaries.append(json.loads(committed[0]))
-            continue
-        previous = list(read_formal_annotation(project_id, image_id).get("boxes") or [])
-        existing = {(str(box.get("source_task_id") or ""), str(box.get("candidate_id") or "")) for box in previous}
-        incoming = []
-        for box in item.get("boxes") or []:
-            candidate_id = _candidate_id(image_id, dict(box))
-            if (task_id, candidate_id) in existing:
+
+    def commit_guard() -> None:
+        assert_not_cancelled()
+
+    def apply_batch(items: list[dict[str, Any]]) -> None:
+        nonlocal applied_count, boxes_added, processed
+        if not items:
+            return
+        assert_not_cancelled()
+        image_ids = [str(item["image_id"]) for item in items]
+        applied_count += len(image_ids)
+        for image_id in image_ids:
+            if len(applied_images) < 100:
+                applied_images.append(image_id)
+
+        committed = store.get_commit_summaries(image_ids)
+        pending_ids = [image_id for image_id in image_ids if image_id not in committed]
+        previous_by_id = read_formal_annotations(project_id, pending_ids) if pending_ids else {}
+        to_write = []
+        to_journal = []
+        batch_summaries: dict[str, dict[str, Any]] = dict(committed)
+        batch_boxes_added = 0
+
+        for item in items:
+            assert_not_cancelled()
+            image_id = str(item["image_id"])
+            if image_id in committed:
                 continue
-            incoming.append({**box, "candidate_id": candidate_id, "source_task_id": task_id,
-                             "source": "ai_candidate_confirmed"})
-        if overwrite and incoming:
-            replaced_classes = {box.get("class_id") for box in incoming}
-            previous = [box for box in previous if box.get("class_id") not in replaced_classes]
-        final_boxes = previous + incoming
-        source_values = [str(box.get("source") or "").strip().lower() for box in final_boxes]
-        is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
-        has_ai = any(is_ai_source(source) for source in source_values)
-        has_non_ai = any(not is_ai_source(source) for source in source_values)
-        annotation_origin = (
-            "mixed" if has_ai and has_non_ai
-            else "ai_confirmed" if incoming or has_ai or not final_boxes
-            else "manual"
-        )
-        annotation_state = "annotated" if final_boxes else "confirmed_empty"
-        if incoming or not final_boxes:
-            write_formal_annotation(
-                project_id, image_id, final_boxes,
-                annotation_origin=annotation_origin,
+            previous = list((previous_by_id.get(image_id) or {}).get("boxes") or [])
+            existing = {
+                (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
+                for box in previous
+            }
+            incoming = []
+            for box in item.get("boxes") or []:
+                candidate_id = _candidate_id(image_id, dict(box))
+                if (task_id, candidate_id) in existing:
+                    continue
+                incoming.append({
+                    **box,
+                    "candidate_id": candidate_id,
+                    "source_task_id": task_id,
+                    "source": "ai_candidate_confirmed",
+                })
+            if overwrite and incoming:
+                replaced_classes = {box.get("class_id") for box in incoming}
+                previous = [box for box in previous if box.get("class_id") not in replaced_classes]
+            final_boxes = previous + incoming
+            source_values = [str(box.get("source") or "").strip().lower() for box in final_boxes]
+            is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
+            has_ai = any(is_ai_source(source) for source in source_values)
+            has_non_ai = any(not is_ai_source(source) for source in source_values)
+            annotation_origin = (
+                "mixed" if has_ai and has_non_ai
+                else "ai_confirmed" if incoming or has_ai or not final_boxes
+                else "manual"
             )
-            boxes_added += len(incoming)
-        summary = {
-            "image_id": image_id,
-            "box_count": len(final_boxes),
-            "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
-            "annotation_state": annotation_state,
-            "annotation_origin": annotation_origin,
-        }
-        with closing(store._connect()) as db, db:
-            db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
-        if len(image_summaries) < 100:
-            image_summaries.append(summary)
-        processed += 1
+            annotation_state = "annotated" if final_boxes else "confirmed_empty"
+            task_boxes_present = any(
+                str(box.get("source_task_id") or "") == task_id for box in final_boxes
+            )
+            # Re-write an idempotent task-owned projection after a crash between
+            # formal GT commit and CandidateStore journaling. AnnotationRepository
+            # will keep the same content digest, while MaterialRepository projection
+            # is repaired in the same batch helper.
+            if incoming or not final_boxes or task_boxes_present:
+                to_write.append({
+                    "image_id": image_id,
+                    "boxes": final_boxes,
+                    "annotation_state": annotation_state,
+                    "annotation_origin": annotation_origin,
+                })
+                batch_boxes_added += len(incoming)
+            summary = {
+                "image_id": image_id,
+                "box_count": len(final_boxes),
+                "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
+                "annotation_state": annotation_state,
+                "annotation_origin": annotation_origin,
+            }
+            to_journal.append(summary)
+            batch_summaries[image_id] = summary
+
+        assert_not_cancelled()
+        if to_write:
+            write_formal_annotations(project_id, to_write)
+        # Formal GT and CandidateStore are intentionally separate durable owners.
+        # Once a bounded formal batch is durable, journal it before observing the
+        # next cancellation boundary so replay can prove exactly what completed.
+        if to_journal:
+            store.record_commit_summaries(to_journal, commit_guard=commit_guard)
+        boxes_added += batch_boxes_added
+
+        for image_id in image_ids:
+            summary = batch_summaries.get(image_id)
+            if summary is not None and len(image_summaries) < 100:
+                image_summaries.append(summary)
+        processed += len(image_ids)
         if progress is not None:
-            progress(processed, accepted_total, image_id)
-    result = {"applied_images": applied_count, "applied_image_ids": applied_images,
-              "boxes_added": boxes_added, "review": store.summary(),
-              "completed_image_ids": applied_images, "image_summaries": image_summaries,
-              "image_summaries_truncated": applied_count > len(image_summaries),
-              "commit_journal_ref": "candidates/items.sqlite3"}
+            progress(processed, accepted_total, image_ids[-1])
+
+    batch: list[dict[str, Any]] = []
+    for item in store.iter_accepted_items():
+        batch.append(item)
+        if len(batch) == 200:
+            apply_batch(batch)
+            batch = []
+    apply_batch(batch)
+
+    result = {
+        "applied_images": applied_count,
+        "applied_image_ids": applied_images,
+        "boxes_added": boxes_added,
+        "review": store.summary(),
+        "completed_image_ids": applied_images,
+        "image_summaries": image_summaries,
+        "image_summaries_truncated": applied_count > len(image_summaries),
+        "commit_journal_ref": "candidates/items.sqlite3",
+    }
     store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result
 

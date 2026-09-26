@@ -95,6 +95,11 @@ jobs:
               'store.generation_prefix',
               'commit_guard=lambda: _assert_generation_commit(context)',
               'context.heartbeat(',
+              'store.iter_accepted_items()',
+              'store.get_commit_summaries(image_ids)',
+              'store.record_commit_summaries(to_journal, commit_guard=commit_guard)',
+              'read_formal_annotations(project_id, pending_ids)',
+              'write_formal_annotations(project_id, to_write)',
           )
           missing = [token for token in required_service if token not in service]
           if missing:

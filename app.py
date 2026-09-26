@@ -2921,6 +2921,59 @@ def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
     return _v50_annotation_repository(project_id).get(image_id)
 
 
+def read_annotations_many(project_id: str, image_ids) -> Dict[str, Dict[str, Any]]:
+    """Bounded formal Ground Truth read through the canonical repository owner."""
+    ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
+    if len(ids) > 500:
+        raise ValueError("annotation batch lookup is limited to 500 image ids")
+    return _v50_annotation_repository(project_id).get_many(ids)
+
+
+def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
+    """Persist a bounded formal-GT batch and update material projections once.
+
+    AnnotationRepository remains the only Ground Truth owner. MaterialRepository
+    receives only the derived searchable projection, matching write_annotation().
+    """
+    incoming = [dict(row) for row in rows or []]
+    if len(incoming) > 500:
+        raise ValueError("annotation batch write is limited to 500 image ids")
+    if not incoming:
+        return []
+    seen = set()
+    origins = {}
+    prepared = []
+    batch = _v50_active_image_batch(project_id)
+    for row in incoming:
+        image_id = str(row.get("image_id") or "")
+        if not image_id or image_id in seen:
+            raise ValueError("annotation batch image ids must be present and unique")
+        seen.add(image_id)
+        if batch is not None:
+            batch.get("deferred_annotations", {}).pop(image_id, None)
+        origins[image_id] = str(row.get("annotation_origin") or "").strip() or None
+        prepared.append({
+            "image_id": image_id,
+            "boxes": list(row.get("boxes") or []),
+            "annotation_state": row.get("annotation_state"),
+            "annotation_scope": row.get("annotation_scope"),
+        })
+    saved_rows = _v50_annotation_repository(project_id).upsert_many(
+        prepared,
+        project_material=False,
+        return_rows=True,
+    )
+    pending_patches = {}
+    for saved in saved_rows:
+        image_id = str(saved.get("image_id") or "")
+        patch = _v50_material_annotation_patch(saved, origins.get(image_id))
+        if not _v50_queue_image_patch(project_id, image_id, patch):
+            pending_patches[image_id] = patch
+    if pending_patches:
+        material_store(project_id).patch(pending_patches)
+    return saved_rows
+
+
 class _NonClosingImageStream:
     """Let Pillow inspect a caller-owned stream without closing it."""
     def __init__(self, stream):

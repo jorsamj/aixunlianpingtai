@@ -230,6 +230,73 @@ class CandidateStore:
                 yield self._decode(row)
             ordinal = rows[-1]["ordinal"]
 
+    def iter_accepted_items(self):
+        """Stream only accepted review rows in bounded ordinal pages."""
+        self._ready()
+        ordinal = 0
+        while True:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    "SELECT * FROM candidates WHERE ordinal>? AND accepted=1 "
+                    "AND status IN ('success','empty') ORDER BY ordinal LIMIT 200",
+                    (ordinal,),
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                yield self._decode(row)
+            ordinal = rows[-1]["ordinal"]
+
+    def get_commit_summaries(self, image_ids) -> dict[str, dict[str, Any]]:
+        ids = list(dict.fromkeys(str(value) for value in image_ids or [] if str(value)))
+        if len(ids) > 200:
+            raise ValueError("candidate commit batch lookup is limited to 200 image ids")
+        if not ids:
+            return {}
+        self._ready()
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT image_id,summary_json FROM commits WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {
+            str(row["image_id"]): json.loads(row["summary_json"])
+            for row in rows
+        }
+
+    def record_commit_summaries(
+        self,
+        summaries: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        rows = [dict(summary) for summary in summaries or []]
+        if len(rows) > 200:
+            raise ValueError("candidate commit journal batch is limited to 200 image ids")
+        if not rows:
+            return
+        image_ids = [str(row.get("image_id") or "") for row in rows]
+        if any(not image_id for image_id in image_ids) or len(set(image_ids)) != len(image_ids):
+            raise ValueError("candidate commit journal image ids must be present and unique")
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.executemany(
+                    "INSERT OR REPLACE INTO commits(image_id,summary_json) VALUES (?,?)",
+                    (
+                        (str(row["image_id"]), json.dumps(row, ensure_ascii=False))
+                        for row in rows
+                    ),
+                )
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
     def apply_decisions(self, decisions: Iterable[CandidateDecision]) -> None:
         self._ready()
         with closing(self._connect()) as db, db:

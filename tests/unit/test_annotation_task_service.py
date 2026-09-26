@@ -199,12 +199,19 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
     written = []
     monkeypatch.setattr(
-        "platform_core.annotation_task_service.read_formal_annotation",
-        lambda _project, _image: {"boxes": list(written)},
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {"boxes": list(written)} for image_id in image_ids
+        },
     )
+    def write_many(_project, rows):
+        rows = list(rows)
+        assert len(rows) == 1
+        written[:] = list(rows[0].get("boxes") or [])
+        return rows
     monkeypatch.setattr(
-        "platform_core.annotation_task_service.write_formal_annotation",
-        lambda _project, _image, boxes, **_kwargs: written.__setitem__(slice(None), boxes),
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
     )
     first = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     second = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
@@ -282,3 +289,95 @@ def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeyp
     assert [len(batch) for batch in materials.calls] == [500, 500, 201]
     assert [row["id"] for row in rows] == image_ids
     assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)
+
+
+def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-scale", page_size=50)
+    total = 1001
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items([
+        {
+            "image_id": f"image-{index:05d}",
+            "status": "success",
+            "boxes": [{
+                "id": f"candidate-{index:05d}",
+                "class_id": 0,
+                "label": "fire",
+                "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+            }],
+        }
+        for index in range(total)
+    ])
+    store.decide_unmentioned(True)
+
+    formal = {}
+    formal_reads = []
+    formal_writes = []
+    journal_reads = []
+    journal_writes = []
+
+    def read_many(_project, image_ids):
+        ids = list(image_ids)
+        formal_reads.append(ids)
+        assert len(ids) <= 200
+        return {image_id: {"boxes": list(formal.get(image_id, []))} for image_id in ids}
+
+    def write_many(_project, rows):
+        batch = [dict(row) for row in rows]
+        formal_writes.append(batch)
+        assert len(batch) <= 200
+        for row in batch:
+            formal[str(row["image_id"])] = list(row.get("boxes") or [])
+        return batch
+
+    real_get_commits = store.get_commit_summaries
+    real_record_commits = store.record_commit_summaries
+
+    def get_commits(ids):
+        batch = list(ids)
+        journal_reads.append(batch)
+        assert len(batch) <= 200
+        return real_get_commits(batch)
+
+    def record_commits(rows, **kwargs):
+        batch = [dict(row) for row in rows]
+        journal_writes.append(batch)
+        assert len(batch) <= 200
+        return real_record_commits(batch, **kwargs)
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations", read_many,
+    )
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations", write_many,
+    )
+    monkeypatch.setattr(store, "get_commit_summaries", get_commits)
+    monkeypatch.setattr(store, "record_commit_summaries", record_commits)
+
+    result = commit_candidate_decisions(
+        "project-1", "commit-scale", store, overwrite=False,
+    )
+
+    expected = [200, 200, 200, 200, 200, 1]
+    assert [len(batch) for batch in journal_reads] == expected
+    assert [len(batch) for batch in formal_reads] == expected
+    assert [len(batch) for batch in formal_writes] == expected
+    assert [len(batch) for batch in journal_writes] == expected
+    assert result["applied_images"] == total
+    assert result["boxes_added"] == total
+    assert len(result["image_summaries"]) == 100
+
+    formal_reads.clear()
+    formal_writes.clear()
+    journal_reads.clear()
+    journal_writes.clear()
+    replay = commit_candidate_decisions(
+        "project-1", "commit-scale", store, overwrite=False,
+    )
+    assert [len(batch) for batch in journal_reads] == expected
+    assert formal_reads == []
+    assert formal_writes == []
+    assert journal_writes == []
+    assert replay["applied_images"] == total
+    assert replay["boxes_added"] == 0
