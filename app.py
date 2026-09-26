@@ -19961,12 +19961,18 @@ def v52_mark_ready(project_id: str, payload: V52ReadyReq):
 def v52_import_review(project_id: str, job_id: str):
     job = v19_read_job(project_id, job_id)
     report = v19_read_import_report(project_id, job_id, job)
-    ids = [str(x) for x in (report.get('imported_image_ids') or [])]
-    wanted = set(ids)
-    images = [x for x in load_images(project_id) if str(x.get('id')) in wanted]
+    ids = list(dict.fromkeys(
+        str(value).strip()
+        for value in (report.get('imported_image_ids') or [])
+        if str(value).strip()
+    ))
+    images = material_store(project_id).get_many(ids)
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(ids), 500):
+        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
     counts: Dict[str, int] = {}
     for img in images:
-        ann = read_annotation(project_id, str(img.get('id')))
+        ann = annotations.get(str(img.get('id'))) or {}
         for b in ann.get('boxes', []):
             label = str(b.get('label') or '').strip()
             if label:

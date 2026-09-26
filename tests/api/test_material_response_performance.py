@@ -203,3 +203,61 @@ def test_mark_ready_uses_bounded_indexed_patch_without_full_table_mutate(monkeyp
     assert patch["processing_status"] == "processed"
     assert patch["clean_skipped"] is True
     assert patch["clean_decision"] == "skipped"
+
+
+def test_import_review_reads_only_imported_materials_and_batches_annotations(monkeypatch):
+    ids = [f"image-{index:04d}" for index in range(1201)]
+    material_calls = []
+    annotation_batches = []
+
+    class FakeMaterials:
+        def get_many(self, image_ids):
+            batch = list(image_ids)
+            material_calls.append(batch)
+            return [{"id": image_id, "filename": f"{image_id}.jpg"} for image_id in batch]
+
+    monkeypatch.setattr(app_module, "v19_read_job", lambda _project_id, _job_id: {"id": "job-1", "status": "done"})
+    monkeypatch.setattr(
+        app_module,
+        "v19_read_import_report",
+        lambda *_args, **_kwargs: {
+            "imported_image_ids": ids,
+            "detected_format": "YOLO",
+        },
+    )
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        annotation_batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": [{"label": "smoke"}],
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("import review must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("import review must not issue per-image annotation reads")
+        ),
+    )
+
+    body = app_module.v52_import_review("project-1", "job-1")
+
+    assert material_calls == [ids]
+    assert [len(batch) for batch in annotation_batches] == [500, 500, 201]
+    assert [row["id"] for row in body["images"]] == ids
+    assert body["label_box_counts"] == {"smoke": 1201}
