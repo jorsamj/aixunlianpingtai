@@ -164,3 +164,42 @@ def test_selected_batch_split_uses_indexed_patch_without_full_table_mutate(monke
     filtered = source[source.index('if scope == "filtered"'):]
     assert "read_annotation(project_id" not in filtered
     assert "annotations.get_many(batch_ids)" in filtered
+
+
+def test_mark_ready_uses_bounded_indexed_patch_without_full_table_mutate(monkeypatch):
+    class FakeMaterials:
+        def __init__(self):
+            self.patch_calls = []
+
+        def get_many(self, image_ids):
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg", "processing_status": "pending_decision"}
+                for image_id in image_ids
+                if image_id != "missing"
+            ]
+
+        def patch_many(self, image_ids, patch, batch_size=0):
+            self.patch_calls.append((list(image_ids), dict(patch), batch_size))
+            return len(list(image_ids))
+
+        def mutate(self, _callback):
+            raise AssertionError("mark-ready must never scan/mutate the full material table")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+
+    result = app_module.v52_mark_ready(
+        "project-1",
+        app_module.V52ReadyReq(image_ids=["a", "b", "missing", "a"]),
+    )
+
+    assert result["changed"] == 2
+    assert result["image_ids"] == ["a", "b"]
+    assert len(materials.patch_calls) == 1
+    ids, patch, batch_size = materials.patch_calls[0]
+    assert ids == ["a", "b"]
+    assert batch_size == 500
+    assert patch["processing_status"] == "processed"
+    assert patch["clean_skipped"] is True
+    assert patch["clean_decision"] == "skipped"

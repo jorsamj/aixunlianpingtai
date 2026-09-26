@@ -32,6 +32,7 @@ from .task_runtime.task_logs import append_task_log
 BATCH_SIZE = 500
 REMAP_BATCH_SIZE = 100
 MAX_REMAP_SELECTION = 100000
+MAX_LARGE_EXPLICIT_SELECTION = 100000
 SELECTION_REF = "selection.sqlite3"
 CHECKPOINT_REF = "checkpoints/worker.json"
 RESULT_REF = "result.json"
@@ -62,8 +63,15 @@ def parse_request(payload):
         raise ValueError("material batch request must be an object")
     operation = BatchOperation(str(payload.get("operation") or "").upper())
     selection = MaterialSelectionSpec.from_mapping(payload.get("selection_spec"))
-    if len(selection.image_ids) > BATCH_SIZE:
-        raise ValueError("explicit selection is limited to 500 IDs; use FILTERED for larger selections")
+    explicit_limit = (
+        MAX_LARGE_EXPLICIT_SELECTION
+        if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED}
+        else BATCH_SIZE
+    )
+    if len(selection.image_ids) > explicit_limit:
+        if explicit_limit == BATCH_SIZE:
+            raise ValueError("explicit selection is limited to 500 IDs; use FILTERED for larger selections")
+        raise ValueError(f"explicit selection is limited to {explicit_limit} IDs")
     if len(selection.filters.labels) > BATCH_SIZE or len(selection.filters.storage_source_ids) > BATCH_SIZE:
         raise ValueError("filter arrays are limited to 500 values")
     options = payload.get("options", {})
@@ -90,6 +98,22 @@ def _predicate(materials, selection):
     return ["m.id IN (" + ",".join("?" for _ in selection.image_ids) + ")"], list(selection.image_ids)
 
 
+def _explicit_selection_count(database, image_ids):
+    database.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS material_batch_explicit_selection ("
+        "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+    )
+    database.execute("DELETE FROM material_batch_explicit_selection")
+    database.executemany(
+        "INSERT INTO material_batch_explicit_selection(image_id) VALUES (?)",
+        ((str(image_id),) for image_id in image_ids),
+    )
+    return int(database.execute(
+        "SELECT COUNT(*) FROM materials m "
+        "JOIN material_batch_explicit_selection s ON s.image_id=m.id"
+    ).fetchone()[0])
+
+
 def _confirmation_token(project_id, operation, selection, options):
     body = [project_id, operation.value, selection.as_dict(),
             {key: value for key, value in options.items() if key != "confirmation_token"}]
@@ -99,12 +123,15 @@ def _confirmation_token(project_id, operation, selection, options):
 
 def estimate_batch(project_id, materials, payload):
     operation, selection, options = parse_request(payload)
-    clauses, params = _predicate(materials, selection)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with closing(materials._connect()) as database:
         database.execute("BEGIN")
         revision = materials._revision(database)
-        count = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        if selection.scope is SelectionScope.FILTERED:
+            clauses, params = _predicate(materials, selection)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            count = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        else:
+            count = _explicit_selection_count(database, selection.image_ids)
     confirmed_selection = replace(selection, repository_revision=revision)
     result = {"operation": operation.value, "count": count, "total": count,
               "repository_revision": revision, "revision": revision,
@@ -204,20 +231,30 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
     try:
         with closing(BatchSelection(selection_path)):
             pass
-        clauses, params = _predicate(materials, selection)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(materials._connect()) as database:
             database.execute("ATTACH DATABASE ? AS batch_selection", (str(selection_path),))
             database.execute("PRAGMA batch_selection.synchronous=FULL")
             database.execute("BEGIN IMMEDIATE")
             if materials._revision(database) != selection.repository_revision:
                 raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
-            inserted = database.execute(
-                "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
-                params,
-            ).rowcount
-            if selection.scope is not SelectionScope.FILTERED and inserted != len(selection.image_ids):
-                raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
+            if selection.scope is SelectionScope.FILTERED:
+                clauses, params = _predicate(materials, selection)
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                inserted = database.execute(
+                    "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
+                    params,
+                ).rowcount
+            else:
+                database.executemany(
+                    "INSERT INTO batch_selection.selection(image_id) VALUES (?)",
+                    ((str(image_id),) for image_id in selection.image_ids),
+                )
+                inserted = int(database.execute(
+                    "SELECT COUNT(*) FROM batch_selection.selection s "
+                    "JOIN main.materials m ON m.id=s.image_id"
+                ).fetchone()[0])
+                if inserted != len(selection.image_ids):
+                    raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
             database.executemany(
                 "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),

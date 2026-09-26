@@ -17749,34 +17749,34 @@ def _v47_clean_agent_preflight(
             'eligible_nodes': [],
         }
     selected = list(selection.get('image_ids') or [])
-    if len(selected) > 500:
-        return {
-            'agent_available': False,
-            'reason': '显式选择超过 500 张，请改用筛选范围后再创建清洗任务',
-            'selected_count': len(selected),
-            'eligible_nodes': [],
-        }
-
     materials = material_store(project_id)
-    if str(selection.get('scope') or '') == 'FILTERED':
-        clauses, params = materials._filters(selection.get('filters') or {})
-    else:
-        clauses = ['m.id IN (' + ','.join('?' for _ in selected) + ')']
-        params = list(selected)
+    filtered = str(selection.get('scope') or '') == 'FILTERED'
+    clauses, params = materials._filters(selection.get('filters') or {}) if filtered else ([], [])
     where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
     with closing(materials._connect()) as database:
+        join = ''
+        if selected:
+            database.execute(
+                "CREATE TEMP TABLE clean_preflight_selection ("
+                "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            database.executemany(
+                "INSERT INTO clean_preflight_selection(image_id) VALUES (?)",
+                ((image_id,) for image_id in selected),
+            )
+            join = " JOIN clean_preflight_selection s ON s.image_id=m.id"
         row = database.execute(
             "SELECT COUNT(*) AS total, "
             "COALESCE(SUM(CASE WHEN trim(object_key)='' OR length(trim(content_sha256))<>64 "
             "OR size_bytes<=0 THEN 1 ELSE 0 END),0) AS incomplete "
-            "FROM materials m" + where,
+            "FROM materials m" + join + where,
             params,
         ).fetchone()
         total = int(row['total'] or 0)
         incomplete = int(row['incomplete'] or 0)
         sources = database.execute(
             "SELECT storage_source_id,storage_type,COUNT(*) AS total "
-            "FROM materials m" + where + " GROUP BY storage_source_id,storage_type "
+            "FROM materials m" + join + where + " GROUP BY storage_source_id,storage_type "
             "ORDER BY storage_source_id",
             params,
         ).fetchall()
@@ -19932,20 +19932,30 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
 @app.post('/api/v52/projects/{project_id}/images/mark-ready')
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):
     get_project(project_id)
-    ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in (payload.image_ids or []) if str(value).strip()
+    ))
+    if not ids:
+        return {'ok': True, 'changed': 0, 'image_ids': [], 'images': []}
     now = now_iso()
-    def apply_ready(rows):
-        changed_images = []
-        for index, img in enumerate(rows):
-            if str(img.get('id')) not in ids:
-                continue
-            updated = mark_ready(img, now)
-            rows[index] = updated
-            changed_images.append(dict(updated))
-        return changed_images
-    changed_images = material_store(project_id).mutate(apply_ready)
-    changed = [str(img.get('id')) for img in changed_images]
-    return {'ok': True, 'changed': len(changed), 'image_ids': changed, 'images': changed_images}
+    materials = material_store(project_id)
+    current = materials.get_many(ids)
+    existing_ids = [str(row.get('id')) for row in current if str(row.get('id') or '')]
+    patch = {
+        'processing_status': 'processed',
+        'clean_skipped': True,
+        'clean_decision': 'skipped',
+        'clean_decision_at': now,
+        'updated_at': now,
+    }
+    materials.patch_many(existing_ids, patch, batch_size=500)
+    changed_images = [mark_ready(row, now) for row in current]
+    return {
+        'ok': True,
+        'changed': len(existing_ids),
+        'image_ids': existing_ids,
+        'images': changed_images,
+    }
 
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
