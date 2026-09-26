@@ -1317,7 +1317,6 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         statuses = (
             [
                 TaskStatus.QUEUED,
-                TaskStatus.WAITING_RESOURCE,
                 TaskStatus.RUNNING,
                 TaskStatus.CANCEL_REQUESTED,
             ]
