@@ -27,6 +27,7 @@ on:
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
       - 'tests/api/test_durable_label_remap.py'
+      - 'tests/api/test_bootstrap_label_snapshot_truth.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/api/test_annotation_flow.py'
@@ -62,6 +63,7 @@ on:
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
       - 'tests/api/test_durable_label_remap.py'
+      - 'tests/api/test_bootstrap_label_snapshot_truth.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/api/test_annotation_flow.py'
@@ -121,6 +123,7 @@ jobs:
           tests/api/test_v19_label_mapping.py
           tests/api/test_label_aliases.py
           tests/api/test_durable_label_remap.py
+          tests/api/test_bootstrap_label_snapshot_truth.py
           tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v36_source_import_guard.py
           tests/api/test_annotation_flow.py

@@ -1375,6 +1375,34 @@ def save_project(project: Dict[str, Any]):
                 projects.append(project)
             atomic_write_json(PROJECTS_FILE, projects)
 
+    # Keep the ready startup snapshot coherent with authoritative project
+    # metadata. Label creation/disable/merge is a project mutation, and a
+    # browser refresh must never resurrect labels from an older bootstrap
+    # snapshot. Publish a replacement snapshot atomically instead of mutating
+    # the shared object field by field.
+    snapshot = globals().get("_V53_BOOTSTRAP_SNAPSHOT")
+    if (
+        isinstance(snapshot, dict)
+        and str((snapshot.get("project") or {}).get("id") or "")
+        == str(project.get("id") or "")
+    ):
+        refreshed = dict(snapshot)
+        refreshed["project"] = dict(project)
+        refreshed["labels"] = project_label_items(project)
+        if isinstance(snapshot.get("projects"), list):
+            refreshed_projects = []
+            for item in snapshot["projects"]:
+                if str((item or {}).get("id") or "") != str(project.get("id") or ""):
+                    refreshed_projects.append(item)
+                    continue
+                replacement = dict(project)
+                if isinstance(item, dict) and "bootstrap_counts" in item:
+                    replacement["bootstrap_counts"] = item["bootstrap_counts"]
+                refreshed_projects.append(replacement)
+            refreshed["projects"] = refreshed_projects
+        refreshed["generated_at"] = now_iso()
+        globals()["_V53_BOOTSTRAP_SNAPSHOT"] = refreshed
+
 
 def safe_filename(filename: str) -> str:
     name = Path(filename).name.replace(" ", "_")
