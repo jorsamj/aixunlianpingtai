@@ -89,11 +89,13 @@ class FakeControlClient:
         cancel_at_heartbeat=None,
         fence_at_heartbeat=None,
         cancel_when=None,
+        fence_when=None,
     ):
         self.transfer = transfer
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
         self.cancel_when = cancel_when
+        self.fence_when = fence_when
         self.heartbeat_calls = 0
         self.heartbeats = []
         self.logs = []
@@ -108,8 +110,14 @@ class FakeControlClient:
         self.heartbeat_calls += 1
         self.heartbeats.append(dict(kwargs))
         if (
-            self.fence_at_heartbeat
-            and self.heartbeat_calls >= self.fence_at_heartbeat
+            (
+                self.fence_at_heartbeat
+                and self.heartbeat_calls >= self.fence_at_heartbeat
+            )
+            or (
+                callable(self.fence_when)
+                and self.fence_when()
+            )
         ):
             raise NodeExecutorHTTPError(
                 "EXECUTION_FENCED",
@@ -766,16 +774,18 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
 def test_training_fencing_kills_worker_without_stale_terminal_write(tmp_path):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
-    client = FakeControlClient(
-        transfer,
-        fence_at_heartbeat=6,
-    )
+    client = FakeControlClient(transfer)
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
         client,
         transfer,
         sleep_seconds=10,
     )
+    # Fence only after the worker has proven process startup. Heartbeat-count
+    # fencing races Python process initialization on Windows and can otherwise
+    # turn this into a pre-start fencing test instead of the intended
+    # in-flight process termination contract.
+    client.fence_when = lambda: (runtime_root / "started.marker").is_file()
 
     started = time.monotonic()
     with pytest.raises(RemoteExecutionFenced):
