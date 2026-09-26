@@ -802,3 +802,122 @@ def test_storage_rescan_root_voc_carries_verified_xml_source_evidence(tmp_path):
     ]
     assert truth["label_key"] == xml_key
     assert truth["yaml_key"] == xml_key
+
+
+def test_large_storage_scan_review_streams_verified_rows(tmp_path, monkeypatch):
+    total = 10_001
+    rows_file = tmp_path / "large-review.jsonl"
+    with rows_file.open("w", encoding="utf-8", newline="\n") as stream:
+        for index in range(total):
+            stream.write(json.dumps({
+                "object_key": f"incoming/image-{index:05d}.jpg",
+                "filename": f"image-{index:05d}.jpg",
+                "storage_source_id": "s3-source",
+                "storage_type": "s3",
+                "content_sha256": f"{index % 16:x}" * 64,
+                "size_bytes": 128,
+                "etag": f'"etag-{index}"',
+                "width": 64,
+                "height": 48,
+                "status": "IMPORTABLE",
+                "error": "",
+                "duplicate": False,
+            }, sort_keys=True, separators=(",", ":")) + "\n")
+
+    archive = tmp_path / "large-review.zip"
+    meta = {
+        "schema_version": 1,
+        "task_id": "large-stream-review",
+        "project_id": "project-large",
+        "execution_generation": 1,
+        "mode": "storage_scan",
+        "payload_mode": "source_reference",
+        "import_format": "images",
+        "storage_source_id": "s3-source",
+        "storage_type": "s3",
+        "target_prefix": "incoming",
+        "intent": "",
+        "candidate_count": total,
+        "counts": {"IMPORTABLE": total},
+    }
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as review:
+        review.write(rows_file, arcname="review.jsonl")
+        review.writestr(
+            "meta.json",
+            json.dumps(meta, sort_keys=True, separators=(",", ":")),
+        )
+
+    original_upsert = ImportCandidateStore.upsert_many
+    original_stage = RemoteMaterialStagingStore.replace_many
+    candidate_inputs = []
+    staging_inputs = []
+
+    def guarded_upsert(self, rows):
+        assert not isinstance(rows, (list, tuple))
+        candidate_inputs.append(type(rows).__name__)
+        return original_upsert(self, rows)
+
+    def guarded_stage(self, rows):
+        assert not isinstance(rows, (list, tuple))
+        staging_inputs.append(type(rows).__name__)
+        return original_stage(self, rows)
+
+    monkeypatch.setattr(ImportCandidateStore, "upsert_many", guarded_upsert)
+    monkeypatch.setattr(RemoteMaterialStagingStore, "replace_many", guarded_stage)
+
+    artifacts = ArtifactStore(tmp_path / "large-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="large-stream-review",
+        project_id="project-large",
+        execution_generation=1,
+        archive_path=archive,
+        archive_sha256=_sha(archive),
+        archive_size_bytes=archive.stat().st_size,
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="incoming",
+        expected_mode="storage_scan",
+        expected_import_format="images",
+    )
+
+    assert committed["material_candidates"] == total
+    assert committed["material_importable"] == total
+    assert candidate_inputs == ["generator"]
+    assert staging_inputs == ["generator"]
+    store = ImportCandidateStore(
+        artifacts.artifact_path("large-stream-review", MANIFEST_REF)
+    )
+    assert store.counts() == {"IMPORTABLE": total}
+
+
+def test_remote_material_staging_stream_rolls_back_late_invalid_row(tmp_path):
+    store = RemoteMaterialStagingStore(tmp_path / "staged.sqlite3")
+    digest = "a" * 64
+    store.replace_many([{
+        "object_key": "old.jpg",
+        "payload_member": "files/old.jpg",
+        "content_sha256": digest,
+        "size_bytes": 10,
+    }])
+
+    def replacement_rows():
+        yield {
+            "object_key": "new.jpg",
+            "payload_member": "files/new.jpg",
+            "content_sha256": digest,
+            "size_bytes": 20,
+        }
+        yield {
+            "object_key": "broken.jpg",
+            "payload_member": "",
+            "content_sha256": digest,
+            "size_bytes": 20,
+        }
+
+    with pytest.raises(RemoteMaterialImportError) as error:
+        store.replace_many(replacement_rows())
+    assert error.value.code == "REMOTE_MATERIAL_STAGING_INVALID"
+    assert "old.jpg" in store.get_many(["old.jpg"])
+    assert store.get_many(["new.jpg"]) == {}
+

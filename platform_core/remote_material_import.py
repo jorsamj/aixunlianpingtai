@@ -1643,29 +1643,38 @@ class RemoteMaterialStagingStore:
             database.commit()
 
     def replace_many(self, rows: Iterable[Mapping[str, Any]]) -> int:
-        values = []
-        for row in rows:
-            key = str(row.get("object_key") or "")
-            member = str(row.get("payload_member") or "")
-            digest = str(row.get("content_sha256") or "").lower()
-            size = int(row.get("size_bytes") or 0)
-            if not key or not member or len(digest) != 64 or size <= 0:
-                raise RemoteMaterialImportError(
-                    "REMOTE_MATERIAL_STAGING_INVALID",
-                    "material staging metadata is incomplete",
-                    422,
-                )
-            safe_member_path(member)
-            values.append((key, member, digest, size))
+        count = 0
+
+        def values():
+            nonlocal count
+            for row in rows:
+                key = str(row.get("object_key") or "")
+                member = str(row.get("payload_member") or "")
+                digest = str(row.get("content_sha256") or "").lower()
+                size = int(row.get("size_bytes") or 0)
+                if not key or not member or len(digest) != 64 or size <= 0:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_MATERIAL_STAGING_INVALID",
+                        "material staging metadata is incomplete",
+                        422,
+                    )
+                safe_member_path(member)
+                count += 1
+                yield (key, member, digest, size)
+
         with closing(sqlite3.connect(self.path)) as database:
             database.execute("BEGIN IMMEDIATE")
-            database.execute("DELETE FROM staged_objects")
-            database.executemany(
-                "INSERT INTO staged_objects VALUES (?,?,?,?)",
-                values,
-            )
-            database.commit()
-        return len(values)
+            try:
+                database.execute("DELETE FROM staged_objects")
+                database.executemany(
+                    "INSERT INTO staged_objects VALUES (?,?,?,?)",
+                    values(),
+                )
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return count
 
     def get_many(self, object_keys: Iterable[str]) -> dict[str, dict[str, Any]]:
         keys = [str(value) for value in object_keys]
@@ -1685,15 +1694,43 @@ class RemoteMaterialStagingStore:
             }
 
 
+def _iter_verified_review_rows(
+    spool_path: Path,
+    *,
+    staging_only: bool = False,
+) -> Iterator[dict[str, Any]]:
+    """Replay server-verified review rows without retaining the full review in memory."""
+    with spool_path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_INVALID",
+                    "verified review spool is unreadable",
+                    500,
+                ) from error
+            if not isinstance(row, dict):
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_INVALID",
+                    "verified review spool contains an invalid row",
+                    500,
+                )
+            if staging_only and not str(row.get("payload_member") or ""):
+                continue
+            yield row
+
+
 def _read_review_rows(
     review_root: Path,
     *,
     expected_source_id: str,
     expected_storage_type: str,
     expected_prefix: str,
+    spool_path: Path,
     require_payload: bool = True,
     allow_root: bool = False,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+) -> tuple[Path, set[str], dict[str, int], int]:
     rows_path = review_root / REVIEW_ROWS_MEMBER
     if not rows_path.is_file() or rows_path.is_symlink():
         raise RemoteMaterialImportError(
@@ -1701,11 +1738,29 @@ def _read_review_rows(
             "review candidate stream is missing",
             422,
         )
-    candidates: list[dict[str, Any]] = []
-    staged: list[dict[str, Any]] = []
+    prefix = (
+        safe_member_path(expected_prefix)
+        if str(expected_prefix or "").strip()
+        else PurePosixPath()
+        if allow_root
+        else None
+    )
+    if prefix is None:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_PREFIX_REQUIRED",
+            "review verification requires an explicit target prefix",
+            422,
+        )
+
+    spool_path.parent.mkdir(parents=True, exist_ok=True)
+    spool_path.unlink(missing_ok=True)
     counts: dict[str, int] = {}
     seen: set[str] = set()
-    with rows_path.open("r", encoding="utf-8") as stream:
+    row_count = 0
+    with (
+        rows_path.open("r", encoding="utf-8") as stream,
+        spool_path.open("x", encoding="utf-8", newline="\n") as verified_stream,
+    ):
         for line_number, line in enumerate(stream, start=1):
             if line_number > _MAX_REVIEW_ROWS:
                 raise RemoteMaterialImportError(
@@ -1736,19 +1791,6 @@ def _read_review_rows(
                 )
             seen.add(key)
             relative_key = safe_member_path(key)
-            prefix = (
-                safe_member_path(expected_prefix)
-                if str(expected_prefix or "").strip()
-                else PurePosixPath()
-                if allow_root
-                else None
-            )
-            if prefix is None:
-                raise RemoteMaterialImportError(
-                    "REMOTE_MATERIAL_PREFIX_REQUIRED",
-                    "review verification requires an explicit target prefix",
-                    422,
-                )
             if relative_key.parts[: len(prefix.parts)] != prefix.parts:
                 raise RemoteMaterialImportError(
                     "REMOTE_MATERIAL_TARGET_MISMATCH",
@@ -1836,14 +1878,20 @@ def _read_review_rows(
                         "review payload dimensions do not match candidate evidence",
                         409,
                     )
-                staged.append({
-                    **candidate,
-                    "payload_member": member.as_posix(),
-                })
-            counts[status] = counts.get(status, 0) + 1
-            candidates.append(candidate)
-    return candidates, staged, counts
+                candidate["payload_member"] = member.as_posix()
 
+            verified_stream.write(
+                json.dumps(
+                    candidate,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            counts[status] = counts.get(status, 0) + 1
+            row_count += 1
+    return spool_path, seen, counts, row_count
 
 
 def _commit_detection_review_annotations(
@@ -2705,15 +2753,16 @@ def commit_material_review_archive(
                     409,
                 )
 
-        candidates, staged, counts = _read_review_rows(
+        verified_rows_path, candidate_keys, counts, scanned = _read_review_rows(
             review_root,
             expected_source_id=expected_source_id,
             expected_storage_type=expected_storage_type,
             expected_prefix=expected_prefix,
+            spool_path=temporary_root / "verified-review.jsonl",
             require_payload=str(expected_mode or "zip_scan") != "storage_scan",
             allow_root=allow_root,
         )
-        if int(meta.get("candidate_count") or -1) != len(candidates):
+        if int(meta.get("candidate_count") or -1) != scanned:
             raise RemoteMaterialImportError(
                 "REMOTE_MATERIAL_REVIEW_INVALID",
                 "review candidate count does not reconcile",
@@ -2723,7 +2772,9 @@ def commit_material_review_archive(
         candidate_store = ImportCandidateStore(
             artifacts.artifact_path(task_id, MANIFEST_REF)
         )
-        candidate_store.upsert_many(candidates)
+        candidate_store.upsert_many(
+            _iter_verified_review_rows(verified_rows_path)
+        )
         quality = None
         external_classes = []
         normalized_format = str(expected_import_format or "images")
@@ -2731,7 +2782,7 @@ def commit_material_review_archive(
             quality = _commit_yolo_review_annotations(
                 review_root,
                 candidate_store,
-                candidate_keys={str(row["object_key"]) for row in candidates},
+                candidate_keys=candidate_keys,
                 meta=meta,
                 expected_prefix=expected_prefix,
             )
@@ -2747,17 +2798,23 @@ def commit_material_review_archive(
             quality = _commit_detection_review_annotations(
                 review_root,
                 candidate_store,
-                candidate_keys={str(row["object_key"]) for row in candidates},
+                candidate_keys=candidate_keys,
                 meta=meta,
                 expected_prefix=expected_prefix,
                 annotations_member=annotation_member,
                 manifest_identity=annotation_member,
             )
             external_classes = external_label_facts(candidate_store.external_classes())
+        candidate_keys.clear()
         staging_store = RemoteMaterialStagingStore(
             artifacts.artifact_path(task_id, REMOTE_MATERIAL_STAGING_REF)
         )
-        staging_store.replace_many(staged)
+        staging_store.replace_many(
+            _iter_verified_review_rows(
+                verified_rows_path,
+                staging_only=True,
+            )
+        )
 
         durable_archive_ref = (
             f"remote-material/generation-{int(execution_generation)}/review.zip"
@@ -2774,7 +2831,6 @@ def commit_material_review_archive(
             os.fsync(target.fileno())
         os.replace(temporary_archive, durable_archive)
 
-        scanned = len(candidates)
         result = {
             "stage": "awaiting_confirmation",
             "mode": (
