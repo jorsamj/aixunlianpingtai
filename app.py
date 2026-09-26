@@ -14,6 +14,8 @@ import uuid
 import zipfile
 import random
 import sqlite3
+import mimetypes
+from urllib.parse import quote
 from contextlib import closing, contextmanager
 from datetime import datetime
 from io import BytesIO
@@ -2286,6 +2288,123 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_import_task(updated)
+
+
+def _label_review_candidate_store(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail="标签审查任务不存在")
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    mode = str(request.get("mode") or "storage_scan")
+    if mode not in {"storage_scan", "directory_scan", "server_zip", "storage_rescan"}:
+        raise HTTPException(status_code=404, detail="标签审查任务不存在")
+    manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    if not manifest.is_file():
+        scan_result = artifacts.read_json(task_id, "scan/result.json", default={})
+        if isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list):
+            store = ImportCandidateStore(manifest)
+            load_legacy_candidates(artifacts, task_id, store)
+        else:
+            raise HTTPException(status_code=409, detail="标签审查候选清单尚未就绪")
+    return task, request, ImportCandidateStore(manifest)
+
+
+def _label_sample_content_type(filename: str) -> str:
+    detected = mimetypes.guess_type(str(filename or ""))[0] or "application/octet-stream"
+    return detected if detected.startswith("image/") else "application/octet-stream"
+
+
+@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/samples")
+def label_review_samples_v61(
+    project_id: str,
+    task_id: str,
+    class_id: str,
+    limit: int = Query(default=8, ge=1, le=12),
+):
+    _task, _request, store = _label_review_candidate_store(project_id, task_id)
+    samples = store.external_class_samples(class_id, limit=limit)
+    manager = storage_manager(project_id)
+    result = []
+    for sample in samples:
+        source_id = str(sample.get("storage_source_id") or "")
+        object_key = str(sample.get("object_key") or "")
+        preview_url = None
+        try:
+            provider = manager.provider_for(source_id)
+            preview_url = provider.generate_preview_url(object_key, expires_seconds=300)
+        except StorageError:
+            # A short-lived direct preview is an optimization. The guarded
+            # same-origin content route remains available when presigning is not.
+            preview_url = None
+        content_url = (
+            f"/api/v61/projects/{quote(project_id, safe='')}/label-review/"
+            f"{quote(task_id, safe='')}/classes/{quote(str(class_id), safe='')}/sample-content"
+            f"?object_key={quote(object_key, safe='')}"
+        )
+        result.append({
+            "object_key": object_key,
+            "filename": str(sample.get("filename") or Path(object_key).name),
+            "width": max(0, int(sample.get("width") or 0)),
+            "height": max(0, int(sample.get("height") or 0)),
+            "bbox": {
+                "cx": float(sample.get("cx") or 0),
+                "cy": float(sample.get("cy") or 0),
+                "w": float(sample.get("w") or 0),
+                "h": float(sample.get("h") or 0),
+                "clipped": bool(sample.get("clipped")),
+            },
+            "preview_url": str(preview_url or content_url),
+            "content_url": content_url,
+        })
+    return {
+        "task_id": task_id,
+        "class_id": str(class_id),
+        "count": len(result),
+        "samples": result,
+    }
+
+
+@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/sample-content")
+def label_review_sample_content_v61(
+    project_id: str,
+    task_id: str,
+    class_id: str,
+    object_key: str = Query(..., min_length=1, max_length=4096),
+):
+    _task, _request, store = _label_review_candidate_store(project_id, task_id)
+    sample = store.external_class_sample(class_id, object_key)
+    if sample is None:
+        raise HTTPException(status_code=404, detail="该对象不属于当前外部标签样本")
+    try:
+        provider = storage_manager(project_id).provider_for(
+            str(sample.get("storage_source_id") or "")
+        )
+        stream = provider.open_reader(str(sample["object_key"]))
+    except StorageError as error:
+        _raise_storage_error(
+            error,
+            status_code=404 if error.code == "STORAGE_OBJECT_NOT_FOUND" else 503,
+        )
+
+    def body():
+        try:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+
+    return StreamingResponse(
+        body(),
+        media_type=_label_sample_content_type(str(sample.get("filename") or "")),
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @app.get("/api/v61/projects/{project_id}/materials")
