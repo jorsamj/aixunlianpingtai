@@ -197,10 +197,11 @@ export function labelSampleOverlay(bbox) {
   const y1 = Math.max(0, Math.min(1, cy - h / 2));
   const x2 = Math.max(x1, Math.min(1, cx + w / 2));
   const y2 = Math.max(y1, Math.min(1, cy + h / 2));
+  const percent = value => Math.round(value * 1000000) / 10000;
   return {
-    left: x1 * 100,
-    top: y1 * 100,
-    width: (x2 - x1) * 100,
-    height: (y2 - y1) * 100,
+    left: percent(x1),
+    top: percent(y1),
+    width: percent(x2 - x1),
+    height: percent(y2 - y1),
   };
 }

@@ -92,6 +92,6 @@ test('sample overlay clamps normalized boxes to the visible image', () => {
     left:30, top:40, width:40, height:20,
   });
   assert.deepEqual(labelSampleOverlay({cx:0.05,cy:0.05,w:0.2,h:0.2}), {
-    left:0, top:0, width:15.000000000000002, height:15.000000000000002,
+    left:0, top:0, width:15, height:15,
   });
 });

@@ -42,7 +42,7 @@ test('label management whole-label unify reuses the same durable remap owner',()
   assert.match(source,/labels\/unify\/preview/);
   assert.match(source,/annotationRemapOrigin414='label-schema'/);
   assert.match(source,/\['数据集','标签管理'\]/);
-  assert.match(source,/系统不会自动选择目标标签/);
+  assert.match(source,/目标标签必须由你手工选择，系统不会自动推荐/);
 });
 
 

@@ -56,7 +56,7 @@ test('final label management page owner is the alias-aware schema manager', () =
   assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
   assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
   assert.match(source, /id="label414Aliases"/);
-  assert.match(source, /自动预选后仍需人工确认/);
+  assert.match(source, /不会用于导入时自动选择或推荐平台标签/);
 });
 test('AI review can explicitly create a canonical label but Ground Truth still commits through review mapping', () => {
   const reviewStart = source.lastIndexOf('function renderAiLabelMapping60()');
