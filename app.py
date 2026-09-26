@@ -8821,14 +8821,29 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
     scope = (payload.scope or "selected").lower()
     dataset_id = payload.dataset_id or None
     filt = (payload.filter or "all").lower()
+    updated = now_iso()
+    materials = material_store(project_id)
+
+    if scope == "selected":
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="请先选择要移动的素材")
+        changed_rows = materials.patch({
+            image_id: {"split": split, "updated_at": updated}
+            for image_id in target_ids
+        })
+        if not changed_rows:
+            raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
+        return {"ok": True, "changed": len(changed_rows), "split": split}
+
     annotation_box_counts = {}
     if scope == "filtered" and filt in {"marked", "unmarked"}:
-        for img in load_images(project_id):
-            image_id = str(img.get("id"))
-            annotation_box_counts[image_id] = len(
-                read_annotation(project_id, image_id).get("boxes", [])
-            )
-    updated = now_iso()
+        images = load_images(project_id)
+        image_ids = [str(img.get("id") or "") for img in images if str(img.get("id") or "")]
+        annotations = AnnotationRepository(project_dir(project_id))
+        for offset in range(0, len(image_ids), 500):
+            batch_ids = image_ids[offset:offset + 500]
+            for image_id, annotation in annotations.get_many(batch_ids).items():
+                annotation_box_counts[str(image_id)] = len(annotation.get("boxes", []))
 
     def match_latest(img: Dict[str, Any]) -> bool:
         if dataset_id and img.get("dataset_id", "default") != dataset_id:
@@ -8863,7 +8878,7 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
             raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
         return changed
 
-    changed = material_store(project_id).mutate(apply_split)
+    changed = materials.mutate(apply_split)
     return {"ok": True, "changed": changed, "split": split}
 
 

@@ -126,3 +126,41 @@ def test_annotation_summary_migration_batches_repository_reads_and_projection_wr
     assert [len(batch) for batch in patch_batches] == [500, 500, 201]
     assert app_module._ANNOTATION_INDEX_STATUS[project_id]["running"] is False
     assert app_module._ANNOTATION_INDEX_STATUS[project_id]["processed"] == 1201
+
+
+def test_selected_batch_split_uses_indexed_patch_without_full_table_mutate(monkeypatch):
+    import inspect
+    import app as app_module
+
+    class FakeMaterials:
+        def __init__(self):
+            self.patches = []
+
+        def patch(self, patches):
+            self.patches.append(dict(patches))
+            return [{"id": image_id, **dict(patch)} for image_id, patch in patches.items()]
+
+        def mutate(self, _callback):
+            raise AssertionError("selected batch split must not read/mutate the full material table")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+
+    result = app_module.v20_batch_image_split(
+        "project-1",
+        app_module.BatchImageSplitReq(
+            image_ids=["a", "b", "a"],
+            split="train",
+            scope="selected",
+        ),
+    )
+
+    assert result["changed"] == 2
+    assert set(materials.patches[0]) == {"a", "b"}
+    assert all(patch["split"] == "train" for patch in materials.patches[0].values())
+
+    source = inspect.getsource(app_module.v20_batch_image_split)
+    filtered = source[source.index('if scope == "filtered"'):]
+    assert "read_annotation(project_id" not in filtered
+    assert "annotations.get_many(batch_ids)" in filtered
