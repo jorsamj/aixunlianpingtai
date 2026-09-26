@@ -1,5 +1,42 @@
 # v42.25 技术债关闭总账
 
+## 2026-09-26 晚间标注 / AI / 训练 / 素材性能债总账（最新）
+
+状态：**IMPLEMENTED / LATEST CI PENDING**。
+
+- 本节写入前远端 HEAD：`704a8cc25c280a3480b146d65b8aef367de08fa0`（docs-only）。
+- 最新产品代码基线：`684c7653f00cb5781015c26bf288dcb4df030e85`。
+- `VERSION.txt = 42.24.0`，禁止改成 42.25.0。
+- 历史强绿基线：`07fef8c2c9f6d8a99e9c4632730e618bdc4947f7` 的 20/20 主要 workflows 已重新核实全部 completed success。
+- 最新 `704a8cc2...` 的 20 个主要 workflows 当前仍 queued；queued/in_progress 不能记 PASS。
+
+本轮已经关闭的核心性能债：
+
+- AI task image resolution：全库 `load_images` → MaterialRepository `get_many <=500`。
+- AI review commit：逐图 Candidate/Annotation I/O → 200/批 formal GT + commit journal，保留 fencing/cancel/idempotency/crash recovery。
+- Training selected annotation：逐图 `AnnotationRepository.get` → `get_many <=500`；1k/10k/20k 结构合同已固定复杂度。
+- Manual annotation GET/SAVE：单图操作不再全库扫描；保存后只 patch 当前素材卡与 preview，不全页刷新。
+- AI label decision：中文名/alias/历史 alias 不再自动转 canonical code；只能由用户明确输入 current canonical code。
+- AI detail/list polling：PollRegistry 单 owner；详情关闭清理，不再双 poll。
+- Label remap / AI / cleaning 高频进度：使用字段级 patch + `transform: scaleX()`，不再整块 modal 重建或 width 高频布局写。
+- Historical annotation summary migration：500/批 read + 500/批 projection patch。
+- Training scoped projection / benchmark reuse / supplement candidate set / quality reads：复用 frozen truth 或批量 indexed lookup，不再二次 N+1 / 全库扫描。
+- Selected batch split / single material edit / upload review / import review：改为 indexed/batched owner；不再为少量选择 full-table mutate / full-library load。
+- Cleaning confirmation：冻结 selection 后 500/批 get_many + 500/批 patch_many；禁止恢复 full-table mutate。
+- Training submit UX：提交期间显示真实 HTTP/create 阶段，durable task 创建后继续显示后端真实 phase/current_item；不伪造 snapshot/Ground Truth 阶段。
+
+永久原则继续保持：
+
+- AnnotationRepository 是唯一 formal Ground Truth owner；AI Candidate 与正式标注分离。
+- canonical label 必须由用户明确决定；alias 只能用于搜索/历史审计。
+- 不新增第二套 Upload / ZIP / Material Batch / Cleaning / Training / Poll runtime。
+- 普通浏览器未上传到服务端的本地 File 字节，页面关闭后不能继续读取；禁止假宣传。
+
+仍未关闭的只有：
+
+1. 最新 HEAD 自身 20 个 workflows 的 terminal 结果；任何 completed failure 必须先读真实 job log。
+2. 真实 20k/50k 图片、真实 OSS/S3 RTT、NVIDIA Linux、SQLite WAL contention、峰值内存与慢网络浏览器验收。现有自动化证明复杂度/owner/contract，不替代真实硬件吞吐验收。
+
 ## 2026-09-26 标签治理闭环增量（覆盖下方较早同日 pending 清单）
 
 状态：**IMPLEMENTED / CI PENDING**。当前基线 HEAD：`6d2b8916edaaac35d1f47093d26792032cc7fc7c`，`VERSION.txt = 42.24.0`。

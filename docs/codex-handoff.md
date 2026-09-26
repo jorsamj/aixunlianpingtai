@@ -2,10 +2,12 @@
 
 ## 2026-09-26 晚间最终性能审计进度（最新，覆盖下方同日旧状态）
 
-- 当前真实远端 HEAD：`684c7653f00cb5781015c26bf288dcb4df030e85`。
+- 本节写入前真实远端 HEAD：`704a8cc25c280a3480b146d65b8aef367de08fa0`（docs-only）。
+- 最新产品代码基线：`684c7653f00cb5781015c26bf288dcb4df030e85`（`perf: scope cleaning confirmation writes`）。
+- `704a8cc2...` 的父提交 `684c7653...` 已将清洗确认阶段改为冻结 selection 的 indexed get_many + patch_many；当前 handoff 不应再把该项列为待优化。
 - `VERSION.txt = 42.24.0`，仍未修改。
 - 未 merge main、未 tag、未 release、未 force push。
-- 当前 HEAD 的 20 个主要 Actions 在本节写入时仍全部 queued，**不能把当前 HEAD 写成全绿**。
+- 写入前 HEAD `704a8cc2...` 的 20 个主要 Actions 当前仍全部 queued，**不能把最新增量写成全绿**。
 - 已完整 terminal 的强基线：
   - `0a2ff10ab45ea0f011ed4f8090a042b610410755`：20/20 主要 workflows completed success。
   - `07fef8c2c9f6d8a99e9c4632730e618bdc4947f7`：20/20 主要 workflows completed success。
@@ -75,6 +77,14 @@
    - 新：冻结 ID 500/批 indexed get_many，确认仍存在后使用 patch_many(batch_size=500)；被删除/已不存在素材不进入 processed_ids。
    - 1201 条合同验证 500/500/201，并永久禁止 full-table mutate。
    - 提交：`684c7653f00cb5781015c26bf288dcb4df030e85`。
+
+### 并发会话晚间新增收口（已核对）
+
+- `dc97d56e...`：dataset listing 与 upload review 改为批量 Annotation/Material 读取。
+- `1eaa0afb...`：训练素材质量读取限制在明确 selection/snapshot，Material/Annotation <=500/批，并复用 project truth。
+- `684c7653...`：清洗确认不再 full-table mutate；冻结 ID 500/批 get_many 后 500/批 patch_many。
+- 手工标注最终保存 owner 已再次核对：保存后只 patch 当前 material card 与下层 preview overlay，不调用 loadAll / loadCore / reloadMaterialPage，不存在已确认的保存后全页刷新债。
+- 这些新增改动与本轮既有 owner/runtime 一致，没有新建第二套 Annotation / Cleaning / Training / Import owner。
 
 ### 手工标注最终 hot-path 结论
 
