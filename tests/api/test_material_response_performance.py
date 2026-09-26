@@ -450,3 +450,103 @@ def test_upload_batch_enrichment_reads_only_batch_materials(monkeypatch):
     assert len(enriched["items"]) == 1201
     assert enriched["items"][1000]["missing"] is True
     assert enriched["items"][999]["image"]["id"] == "image-0999"
+
+
+
+def test_selected_training_quality_uses_indexed_materials_batched_annotations_and_one_project_read(monkeypatch):
+    image_ids = [f"image-{index:05d}" for index in range(1201)]
+    material_batches = []
+    annotation_batches = []
+    project_reads = []
+    project = {
+        "id": "project-1",
+        "labels": ["fire"],
+    }
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_batches.append(batch)
+            assert len(batch) <= 500
+            return [
+                {
+                    "id": image_id,
+                    "width": 1280,
+                    "height": 720,
+                    "split": "train",
+                }
+                for image_id in batch
+            ]
+
+    def get_project(_project_id):
+        project_reads.append(_project_id)
+        return project
+
+    def read_many(_project_id, ids):
+        batch = list(ids)
+        annotation_batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": [{
+                    "id": f"box-{image_id}",
+                    "class_id": 0,
+                    "label": "fire",
+                    "x1": 10,
+                    "y1": 10,
+                    "x2": 100,
+                    "y2": 120,
+                }],
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "get_project", get_project)
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("selected training quality must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("selected training quality must not issue per-image annotation reads")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "resolve_material_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "compute_quality",
+        lambda rows, **_kwargs: {
+            "scores": {
+                "annotation_completeness": 100,
+                "box_validity": 100,
+                "label_balance": 100,
+                "duplicate_control": 100,
+                "resolution_quality": 100,
+                "split_coverage": 100,
+            },
+            "split_counts": {"train": len(rows)},
+        },
+    )
+
+    quality = app_module._v44_dataset_quality(
+        "project-1",
+        app_module.V44QualityReq(image_ids=image_ids),
+    )
+
+    assert [len(batch) for batch in material_batches] == [500, 500, 201]
+    assert [len(batch) for batch in annotation_batches] == [500, 500, 201]
+    assert project_reads == ["project-1"]
+    assert quality["label_images"]["fire"] == 1201
+    assert quality["split_counts"]["train"] == 1201

@@ -8551,11 +8551,18 @@ def remember_project_label_aliases(
     return remembered
 
 
-def normalize_box_for_project(project_id: str, img: Dict[str, Any], box: Dict[str, Any], create_label: bool = True) -> Optional[Dict[str, Any]]:
+def normalize_box_for_project(
+    project_id: str,
+    img: Dict[str, Any],
+    box: Dict[str, Any],
+    create_label: bool = True,
+    *,
+    project_state: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """把前端/导入的框统一清洗成可训练框。
     修复常见问题：class_id 缺失、class_id 字符串、只有 label、标签名与编码不一致、坐标反向/越界。
     """
-    project = get_project(project_id)
+    project = project_state if project_state is not None else get_project(project_id)
     labels = project.setdefault("labels", [])
     try:
         # 优先用 label 反查，避免前端 class_id 与后端标签顺序不一致导致跳过。
@@ -17304,24 +17311,35 @@ def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[st
 
 
 def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> Dict[str, Any]:
-    project=get_project(project_id);images=load_images(project_id);req=req or V44QualityReq()
-    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or [])}
+    project=get_project(project_id);req=req or V44QualityReq()
+    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or []) if str(x)}
     if req.snapshot_id:
         snapshot_file=project_dir(project_id)/"snapshots"/f"{req.snapshot_id}.json"
         if not snapshot_file.is_file():raise HTTPException(status_code=404,detail="训练 Snapshot 不存在")
         snapshot=read_json(snapshot_file,{})
-        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or [])}
+        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or []) if str(x)}
+    if wanted_ids:
+        images=[]
+        materials=material_store(project_id)
+        ordered_ids=sorted(wanted_ids)
+        for offset in range(0,len(ordered_ids),500):
+            images.extend(materials.get_many(ordered_ids[offset:offset+500]))
+    else:
+        images=load_images(project_id)
+    annotation_ids=[str(img.get("id") or "") for img in images if str(img.get("id") or "")]
+    annotations: Dict[str, Dict[str, Any]]={}
+    for offset in range(0,len(annotation_ids),500):
+        annotations.update(read_annotations_many(project_id,annotation_ids[offset:offset+500]))
     candidates=[]
     for img in sorted(images,key=lambda row:str(row.get("id") or "")):
         sp=(img.get("split") or "unassigned").lower();sp=sp if sp in {"unassigned","train","val","test"} else "unassigned"
-        ann=read_annotation(project_id,img["id"]);clean=[];invalid=0
+        ann=annotations.get(str(img.get("id") or "")) or {};clean=[];invalid=0
         for box in ann.get("boxes",[]):
-            normalized=normalize_box_for_project(project_id,img,box,create_label=False)
+            normalized=normalize_box_for_project(project_id,img,box,create_label=False,project_state=project)
             if normalized:clean.append(normalized)
             else:invalid+=1
         labels={box["label"] for box in clean}
         if split and sp!=split:continue
-        if wanted_ids and str(img.get("id")) not in wanted_ids:continue
         if wanted and not labels.intersection(wanted):continue
         candidates.append({**img,"split":sp,"boxes":clean,"valid_box_count":len(clean),"invalid_box_count":invalid})
     if req.max_samples and req.max_samples>0:candidates=candidates[:int(req.max_samples)]
