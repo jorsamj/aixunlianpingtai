@@ -4593,7 +4593,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       else await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,display_name:display||code,color,hotkey,aliases})});
       await refreshLabels414(true);closeModal();
       if(state.page==='标签管理')drawLabel414();
-      toast(classId===null?'标签已创建':'标签及已有标注已同步更新');
+      toast(classId===null?'标签已创建':'标签已更新');
     }catch(e){toast(e.message||e)}
   };
   window.deleteLabel414=async function(classId,code){
