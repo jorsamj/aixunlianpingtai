@@ -1,5 +1,84 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 20:xx 本轮最终状态封口（最新）
+
+- 写入前真实远端 HEAD：`c04c8961af8cc3810a20f1ea6399e6d1a296c390`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- 当前 HEAD 的 **20 个主要 GitHub Actions workflows 已全部 completed success**：
+  - success = 20
+  - failure = 0
+  - queued = 0
+  - in_progress = 0
+- 因此本轮可以把当前 HEAD 记为 **CI 真绿**；后续若远端继续有并发提交，下一会话仍必须重新读真实 HEAD 和 checks，不能沿用本段 SHA 假设未来状态。
+
+### Remote Cleaning Runtime 红灯已闭环
+
+上一轮 `f714e66e...` 唯一 completed failure 的真实 job log：
+
+`test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance`
+
+失败原因为：
+
+`ValueError: material fields are not mutable: clean_task_id`
+
+根因是正式 cleaning projection 已开始写 durable provenance，但 MaterialRepository 的 batch patch mutable-field guard 尚未允许这些正式字段。后续提交：
+
+- `83d660e073f98f00ae79606391c6e97b7e96d1ad` — allow durable cleaning projection fields；
+- `c04c8961af8cc3810a20f1ea6399e6d1a296c390` — record cleaning batch guard closure。
+
+只允许正式 cleaning projection 字段，未知字段仍 fail-closed，没有为了 CI 放宽为任意字段可写。当前 HEAD 的 Remote Cleaning Runtime 已 completed success。
+
+### 手工标注最终 owner 再确认
+
+最终 canonical `saveAnnotationCore420` 当前保存后：
+
+- 只更新当前 formal annotation / 当前 `state.images` 项；
+- 只 patch 当前素材卡片；
+- 如果从图片预览进入，只 patch 下层 preview overlay；
+- 不调用 `loadAll()`；
+- 不调用 `loadCore412()`；
+- 不调用 `reloadMaterialPage61()`；
+- 不重建整个数据集 gallery。
+
+因此“画框 → 保存 → 继续下一张”当前没有已确认的全页刷新性能债。后续不要重复重写这个 owner。
+
+### 本轮最终完成范围
+
+最初三个重点性能债均已 CLOSED：
+
+1. AI `load_task_images()`：全库扫描 → MaterialRepository indexed batch lookup，<=500/批。
+2. AI `commit_candidate_decisions()`：逐图 Candidate/Annotation DB I/O → 200/批 formal GT + commit journal，保留 fencing/cancel/idempotency/crash recovery。
+3. Training `_selected_project_images()`：逐图 AnnotationRepository.get → <=500/批 get_many，并有 1k/10k/20k 结构合同。
+
+后续同一轮还完成并验证：
+
+- AI canonical label 只能由用户明确选择 current code；display name / alias / 历史 alias 不自动映射。
+- AI task create 素材与 reference annotation 均批量 indexed lookup。
+- AI 详情 PollRegistry 单 owner，关闭 modal 会清理 polling；与列表 poll 不并行。
+- 标签统一 / AI / 自动清洗高频进度统一 transform 更新，避免高频 width/layout。
+- 标签统一完成后只刷新 label + 当前 material page + import review，不 broad bootstrap。
+- 手工标注 GET/SAVE 单图 Material indexed lookup。
+- 历史 Annotation 摘要迁移 500/批读写。
+- Training scoped label projection 复用 frozen truth，不二次 Annotation N+1。
+- Benchmark reuse / supplement Candidate Set Material+Annotation 批读。
+- selected batch split 只 patch 选中 ID，不 full-table mutate。
+- TrainingSubmitRuntime 显示真实创建阶段，并已推进模块 cache-bust key。
+- 并发提交继续补齐：大上传后续 UI 限量、大清洗 selection durable 冻结、bulk ready 走 Material Batch、post-import review 批读、训练报告复用 frozen label counts、单素材编辑 indexed、训练质量读取 bounded、clean confirmation scoped writes。
+
+### 现在剩余的不是代码结构债，而是环境验收
+
+仍需在生产/预生产环境做：
+
+- 真实 20k / 50k 图片内容；
+- 真实 OSS / S3 RTT；
+- NVIDIA Linux 节点；
+- SQLite WAL contention；
+- 峰值内存；
+- 慢网络浏览器；
+- 长时间任务恢复 / 浏览器刷新 / 断网恢复。
+
+这些不能由结构合同冒充真机结果。
+
 ## 2026-09-26 20:xx 清洗合同红灯修复与最终 owner 审计（最新）
 
 - 写入前真实远端 HEAD：`83d660e073f98f00ae79606391c6e97b7e96d1ad`。
