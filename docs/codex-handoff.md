@@ -1,5 +1,104 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 标注 / AI 审核 / 训练读取性能收口（最新，覆盖下方同日旧状态）
+
+- 本轮重新审计时真实远端 HEAD 为 `3b3b20dd4caee5b9c10eff68d8fb4da7d45e3385`，不是交接提示中的旧 SHA；正式 `VERSION.txt` 再次确认仍为 `42.24.0`。
+- 本节产品代码基线 HEAD：`1b11d808cd0bfa0d3d1c02fa809ea0371e4c9b04`。未 merge `main`、未 tag、未 release、未 force push。
+- 最新 HEAD Actions 在文档写入时仍有 queued/in_progress；**不得把未结束 checks 写成 PASS**。
+
+### 本轮真实故障与处理
+
+1. **Label Normalization Contract 真实红灯已处理**
+   - 起始 HEAD 的 completed failure 真实日志显示：标签管理后台任务状态读取失败时，错误 banner 的“重试”按钮直接调用 `renderLabelManagement414({force:true})`，触发唯一 page owner 永久 guard。
+   - 已改为 `retryLabelManagement414()`，只刷新标签数据、重画当前视图并恢复 durable unify task，不重新取得页面 render ownership。
+   - 后续该合同在 `4619b387...` 对应 run 中已 completed success。
+
+2. **AI Annotation Recovery 的 completed failure 已按真实日志处理**
+   - `4619b387...` 的 Ubuntu/Windows recovery-contract 都失败在新增性能测试，不是生产 Candidate/Commit API：focused worker 单测故意不安装 FastAPI，而测试用 `monkeypatch.setattr("app...")` 意外导入完整 `app.py`，报 `ModuleNotFoundError: fastapi`。
+   - `89e4262936a9f9c6689bc5a83e877bb52d8a9590` 改为向 `sys.modules` 注入轻量 fake `app` Module，只提供运行时 late-bound 的 `material_store/storage_manager`；没有为了 CI 给 focused worker job 增加 Web 依赖，也没有降低测试标准。
+   - 最新 AI Annotation Recovery 仍需等新 HEAD terminal 结果后才能宣称 GREEN。
+
+### 已关闭的真实性能债
+
+1. **AI 标注任务取图全库扫描 — CLOSED**
+   - 旧：`load_task_images()` 为选中的少量 image_id 调 `load_images(project_id)`，项目 100k 素材时仍可能全库扫描。
+   - 新：复用正式 `MaterialRepository` owner，按最多 500 ID 调 `get_many()`，只 materialize 本任务冻结选择，保持输入顺序并 fail-closed 检查缺失素材。
+   - 提交：`8b1e5e081c24ccb80ac507886cc0588e3796a3fd`。
+
+2. **训练创建逐图读取 AnnotationRepository — CLOSED**
+   - 旧：`training_tasks._selected_project_images()` 对每张素材单独 `annotations.get()`。
+   - 新：最多 500 ID/批 `AnnotationRepository.get_many()`，仍严格保持训练选择原始顺序和正式 Ground Truth。
+   - 永久测试显式禁止回退到 per-image `.get()`。
+   - 提交：`8b1e5e081c24ccb80ac507886cc0588e3796a3fd`。
+
+3. **AI 人工审核 Commit 的逐图 DB I/O — CLOSED**
+   - `commit_candidate_decisions()` 现在以 200 张为有界批次：
+     - Candidate commit journal 批量读；
+     - 正式 AnnotationRepository 批量读；
+     - 正式 Ground Truth 批量写；
+     - Candidate commit journal 单批事务写。
+   - CandidateStore 与 AnnotationRepository 仍是两个独立 durable owner；没有伪造跨 SQLite 原子事务。
+   - cancellation/fencing/idempotent replay/crash recovery 保留。若进程在 formal GT durable 后、journal durable 前退出，replay 通过 `source_task_id + candidate_id` 识别已落地任务框，幂等修复 projection 后再写 journal。
+   - 1001 张合同覆盖 200/200/200/200/200/1 批次以及 replay 不重复 formal write。
+   - 提交：`4619b3878f050c4dc62513e801872aac4c584f1a`。
+
+4. **历史 Annotation 摘要迁移 N 次连接 + 巨型 patch — CLOSED**
+   - 旧 `_v52_annotation_index_worker()` 对每张旧素材调用一次 `read_annotation()`，最后把全部 Material projection patch 一次性堆在内存。
+   - 新：500 张/批 `AnnotationRepository.get_many()` + 500 张/批 `MaterialRepository.patch()`，仍由原后台 migration owner 负责。
+   - 1201 张永久合同验证 500/500/201，且显式禁止 per-image `read_annotation()`。
+   - 提交：`17d48f066fa3802ca32700e2560f2fb5265379d2`。
+
+### 1k / 10k / 20k 结构性能合同
+
+`1b11d808cd0bfa0d3d1c02fa809ea0371e4c9b04` 把本轮两个关键 batch lookup 固定为 1,000 / 10,000 / 20,000 三档：
+
+- AI task image lookup：单批最多 500，总调用数必须为 `ceil(N/500)`，不能调用全库 `load_images()`。
+- Training selected annotation lookup：单批最多 500，总调用数必须为 `ceil(N/500)`，不能调用 per-image `AnnotationRepository.get()`。
+- 这是结构/复杂度合同，不用共享 CI runner 的偶然秒数做脆弱阈值。
+- 现有仓库另已有：
+  - 10k ZIP 实际 synthetic archive scan + bounded hot job state；
+  - 10k Training Material Picker Real Chrome/server pagination 合同；
+  - 可选 `RUN_MATERIAL_SCALE=1` 的 100k / 500k / 1M MaterialRepository scale acceptance。
+
+**边界声明**：这些自动化不能替代真实 20k 图片内容、真实 OSS/S3 RTT、真实 NVIDIA 生产节点的吞吐/内存/WAL contention 验收。
+
+### 手工标注 owner / UI hot path 审计
+
+本轮没有重写标注工作台，因为正式实现已经满足目标：
+
+- canonical interaction owner 是 `Pointer based annotation editing is the canonical interaction owner.` 对应 pointer runtime。
+- `pointermove` 只修改当前 active box 的 DOM 样式，并用 `requestAnimationFrame` 合帧；不 `drawBoxes()`、不 `markDirty()`、不刷新 inspector。
+- `pointerup` 才一次性提交 dirty/history/box diff/sidebar。
+- final `drawBoxes()` 是增量 DOM patch，不是删除后全量重建。
+- `AnnotationWorkbench` 已有 stale-request token、cache、inflight dedupe、prefetch、dirty save。
+- 旧 mouse 实现仍存在于历史 classic layer，但 final public owner/source guards 已证明它不是第二个公开 owner；**不得因为“旧函数还在文件里”就未经 owner 证明直接删除 compatibility layer**。
+
+现有永久保护包括：
+`annotation-action-owner-retirement.test.mjs`、`annotation-runtime-source.test.mjs`、`dataset-annotation-public-owner.test.mjs`、`annotation-workbench.test.mjs`。
+
+### 普通上传 / ZIP owner 审计
+
+- 普通图片正式前端：64 文件 / chunk、单 chunk <=128MiB、严格顺序提交、XHR transfer progress、服务器确认计数、Task Center；高频进度使用 rAF + `transform: scaleX()`。
+- 普通图片后端：一个 HTTP chunk 内复用 StorageManager，UploadFile stream 直接送最终存储，不先复制临时文件再二次拷贝；`_v50_begin_image_batch -> _v50_end_image_batch` 保持一次 batch repository truth，不回退到每图 SQLite transaction；SHA 在存储 copy 时计算，不做落盘后二次全文件 rehash。
+- ZIP 正式浏览器 owner：multipart session、默认 8MiB part、最大并发 4、retry=2、内容采样 fingerprint、resume、server merge/validate、durable job、PollRegistry 单 owner。
+- legacy direct v19 helper 仍为 compatibility surface；正式浏览器入口由 `ZipImportRuntime` 永久 guard 约束，不应另造第二套 runtime。
+- storage import `INDEX_BATCH_SIZE=50` 当前是正式持久合同且每批已经使用 repository batch API。本轮没有在缺少 profiler 证据时武断改成 500，避免无依据扩大 crash/rollback 粒度。
+
+### 本轮提交
+
+- `8b1e5e08` — batch AI task image lookup + training annotation lookup；修 label-management retry owner。
+- `4619b387` — batch AI review commit persistence。
+- `17d48f06` — batch historical annotation-summary migration。
+- `89e42629` — keep focused AI recovery performance test independent from FastAPI/web app imports。
+- `1b11d808` — 1k / 10k / 20k annotation batch-boundary contracts。
+
+### 仍需继续
+
+- 等最新 HEAD 所有 required Actions terminal；任何 completed failure 先读真实 job log再处理。
+- 真实 20k 图片、真实 OSS/S3、NVIDIA Linux 生产节点做吞吐/内存/WAL/RTT profiling；自动化结构合同不能冒充真机验收。
+- 继续审计 AI/label-remap/training 的用户可见 stage/count/success/failed，禁止只有转圈或高频全页 refresh。
+- 不新增第二套 Annotation/Candidate/Upload/ZIP/Training/Poll owner。
+
 ## 2026-09-26 最新标签治理收口状态（本节覆盖下方同日旧记录）
 
 - 当前远端 HEAD：`6d2b8916edaaac35d1f47093d26792032cc7fc7c`；正式 `VERSION.txt` 仍为 `42.24.0`。
