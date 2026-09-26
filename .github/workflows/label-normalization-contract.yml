@@ -252,7 +252,7 @@ jobs:
                   'LABEL_MAPPING_REVIEW_PAGE_SIZE = 50',
                   'bulkSetLabelMapping',
                   'buildManualLabelMapping',
-                  '还有 ' + summary.unmapped + ' 个外部标签未映射',
+                  '请全部人工确认后再提交',
               ),
               'static/modules/annotation-task-view.js': (
                   '等待标注入库',
