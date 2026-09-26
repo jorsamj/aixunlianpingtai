@@ -17516,8 +17516,9 @@ class V47ImageEditReq(BaseModel):
 @app.put('/api/v47/projects/{project_id}/images/{image_id}')
 def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
     get_project(project_id)
-    images = load_images(project_id)
-    target = next((x for x in images if str(x.get('id')) == image_id), None)
+    materials = material_store(project_id)
+    rows = materials.get_many([str(image_id)])
+    target = rows[0] if rows else None
     if not target:
         raise HTTPException(status_code=404, detail='图片不存在')
     name = (payload.name or '').strip()
@@ -17528,7 +17529,7 @@ def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
     if not name:
         raise HTTPException(status_code=400, detail='名称不能为空')
     # Only the business/display name is changed. The stored file name stays stable so annotations and snapshots remain traceable.
-    changed = material_store(project_id).patch({image_id: {'filename': name, 'updated_at': now_iso()}})
+    changed = materials.patch({image_id: {'filename': name, 'updated_at': now_iso()}})
     if not changed:
         raise HTTPException(status_code=404, detail='图片不存在')
     target = changed[0]

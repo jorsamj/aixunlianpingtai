@@ -324,3 +324,40 @@ def test_algorithm_report_legacy_fallback_batches_live_annotation_reads(monkeypa
 
     assert [len(batch) for batch in batches] == [500, 500, 201]
     assert counts == {"fire": 1201}
+
+
+def test_single_material_name_edit_uses_indexed_lookup(monkeypatch):
+    class FakeMaterials:
+        def __init__(self):
+            self.patches = []
+
+        def get_many(self, image_ids):
+            assert list(image_ids) == ["image-1"]
+            return [{"id": "image-1", "filename": "before.jpg"}]
+
+        def patch(self, patches):
+            self.patches.append(dict(patches))
+            return [{"id": "image-1", **patches["image-1"]}]
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("single material edit must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda _project_id, _image_id: {"image_id": "image-1", "boxes": []},
+    )
+
+    result = app_module.v47_edit_image(
+        "project-1", "image-1", app_module.V47ImageEditReq(name="新名称.jpg"),
+    )
+
+    assert result["image"]["filename"] == "新名称.jpg"
+    assert list(materials.patches[0]) == ["image-1"]
