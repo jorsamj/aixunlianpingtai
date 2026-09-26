@@ -51,6 +51,7 @@ test('entry bundles advance cache-bust markers without changing the formal relea
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-create-hydration\.js\?v=\d+/);
+  assert.equal(main.includes("./modules/training-submit.js?v=422563"), true);
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
   assert.match(index, /\/static\/modules\/training-task-visibility-runtime\.js\?v=\d+/);
   assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422214"), true);
