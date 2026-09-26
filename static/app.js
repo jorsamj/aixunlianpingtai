@@ -4783,7 +4783,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   window.batch414Page=delta=>{state.batch414Page=Math.max(1,Number(state.batch414Page||1)+Number(delta||0));renderBatch414()};
   window.toggleBatch414=(id,on,input)=>{on?state.batch414Selected.add(String(id)):state.batch414Selected.delete(String(id));input?.closest?.('.batch414-card')?.classList.toggle('selected',!!on);const count=document.getElementById('batch414SelectedCount');if(count)count.textContent=`已选 ${state.batch414Selected.size}`};
   window.selectBatch414=mode=>{const rows=Array.isArray(state.batch414Rows)?state.batch414Rows:[];if(mode==='invert'){const current=state.batch414Selected;state.batch414Selected=new Set(rows.map(row=>String(row.id)).filter(id=>!current.has(id)))}else state.batch414Selected=new Set(rows.map(row=>String(row.id)));renderBatch414()};
-  window.confirmBatch414=function(mode){const ids=[...state.batch414Selected];if(!ids.length)return toast('请选择素材');closeModal();if(mode==='clean')createClean427({image_ids:ids});else markReady412(ids)};
+  window.confirmBatch414=function(mode){const ids=[...state.batch414Selected];if(!ids.length)return toast('请选择素材');closeModal();if(mode==='clean')return createClean427({image_ids:ids});if(window.runMaterialBatch62)return window.runMaterialBatch62('MARK_CLEAN_SKIPPED',{scope:'SELECTED',imageIds:ids,skipConfirm:true});return markReady412(ids)};
 
   // ---------- stable algorithm CRUD ----------
   window.openNewAlgorithm423=function(){

@@ -45,7 +45,7 @@ import {buildServerImportRequest, buildImportConfirmation, serverImportView} fro
 import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
