@@ -4842,7 +4842,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
 
   async function refreshImportReviewAfterRemap414(task,source,target){
-    await Promise.all([window.loadCore412(),refreshLabels414(false)]);
+    await refreshLabels414(false);
+    if(state.page==='数据集')await window.reloadMaterialPage61?.();
     const jobId=state.import412?.job_id;
     if(jobId){
       const review=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);

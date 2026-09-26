@@ -23,6 +23,14 @@ test('durable ZIP completion keeps review ownership and refreshes only label/mat
   assert.equal((app.match(/window\.doUploadZip426=/g)||[]).length,0);
 });
 
+test('post-import label remap refresh stays label/material scoped', () => {
+  const owner=region(app,'async function refreshImportReviewAfterRemap414(task,source,target){','window.pollImportRemap414=async function');
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.match(owner,/reloadMaterialPage61\?\.\(\)/);
+  assert.match(owner,/\/import\/jobs\/\$\{jobId\}\/review/);
+  assert.doesNotMatch(owner,/loadCore412|loadAll\s*\(|loadRelated\s*\(/);
+});
+
 test('server storage import confirmation stays mapping-only and never broad-loads', () => {
   const owner=region(app,'window.confirmStorageImport61=async function(taskId){','window.beforeCloseStorageImport61=function()');
   assert.match(owner,/serverApi\(\)\.buildImportConfirmation\(rows/);
