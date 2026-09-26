@@ -1,5 +1,91 @@
 # Codex / 人工接管交接记录
 
+
+## 2026-09-26 21:xx AI 人工审核大批量决策性能收口（最新）
+
+- 写入前真实远端 HEAD：`e09e68d1bce4de9f3e115f7794e56b6ab404d5a2`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- `e09e68d...` 自身 20 个主要 GitHub Actions workflows 已全部 **completed success (20/20)**，没有 queued / in_progress / failure。
+- 本轮开始时真实远端为 `f669fcc7103d635f257d0003756aa2590f54f7c4`；从交接参考 `f714e66e...` 到该 HEAD 仅继续了 Remote Cleaning projection guard 与文档封口，没有并发代码覆盖上一轮 Annotation / Training / Import 性能收口。
+
+### 本次新关闭：AI 审核 decisions N+1
+
+正式 `/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions` 之前存在两层逐图读取：
+
+1. API 为每个 decision 调 `CandidateStore.get(image_id)` 校验 status；
+2. `CandidateStore.apply_decisions()` 再为每个 decision 执行一次 `SELECT ... WHERE image_id=?`。
+
+大批审核跨多页累计 decisions 时会形成 N 次/两层 SQLite 读取。
+
+提交：
+
+- `4bf3d64d411c33ca42b3dc8f19b24900a8410397` — `perf: batch AI review candidate decisions`
+- `e09e68d1bce4de9f3e115f7794e56b6ab404d5a2` — `test: tighten AI review batch contracts`
+
+现状：
+
+- decisions 按 **200/批** 一次 `IN (...)` 读取；
+- status 必须仍为 `success/empty` 的 fail-closed 校验进入同一个 `BEGIN IMMEDIATE` transaction；
+- 任意后续 batch 含 missing/failed candidate 时整批 rollback，不会部分应用；
+- 1001 条结构合同要求 **200/200/200/200/200/1 = 6 次** candidate read，永久禁止退回 scalar `SELECT ... image_id=?`；
+- 不改变 Candidate→人工审核→durable Commit 架构，不新增 CandidateStore / runtime / polling owner。
+
+### 标签重校验内存边界同步收口
+
+`CandidateStore.remap_labels()` 仍必须在正式 Ground Truth commit 前对 current active canonical label fail-closed 重校验，这个产品/数据真相不能删除。
+
+旧实现一次 `fetchall()` 全部 success/empty candidate；现在改为：
+
+- `ordinal > ? ORDER BY ordinal LIMIT 200` keyset pagination；
+- 1001 条为 6 个真实数据页；
+- 最后一页不足 200 时直接结束，不再额外做空页 SELECT；
+- 单 transaction 语义保持不变。
+
+### 真实 CI 红灯与修复记录
+
+`4bf3d64d...` 的 AI Annotation Recovery 曾出现真实 completed failure，已读取 Ubuntu/Windows job log，失败来自新加结构测试本身，而非生产语义回归：
+
+1. “禁止 scalar get”探针安装后，测试末尾自己又调用 `store.get()` 验证 rollback，被自己的 guard 拦截；
+2. keyset 1001/200 的循环原先还会做第 7 次空页探测，而测试要求严格 6 次。
+
+`e09e68d...` 修复为：
+
+- rollback 断言使用 `get_many([id])`，测试自身也遵守批读合同；
+- 最后一页 `len(rows) < 200` 直接 break。
+
+最终 `e09e68d...` 的 AI Annotation Recovery 及全部 20 个主要 workflows 均 completed success。
+
+### 本轮继续审出的剩余 P1（证据已确认，尚未修改）
+
+1. **AI 审核 reject/partial 的重复全候选扫描**
+   - `_decide_annotation_candidates()` 当前即使 `label_mapping={}` 也会先 `store.label_summary()` 全扫候选；
+   - 随后 `remap_labels()` 再扫 success/empty；
+   - 纯“拒绝全部”不会写任何 Ground Truth，却仍执行标签重校验全扫。
+   - 后续应只在确有 mapping 时读取 source label facts，并只对最终可能进入正式标注的候选做 canonical label revalidation；不能削弱 accept/commit 的 fail-closed 标签真相。
+
+2. **Remote Material review 250k 行峰值内存**
+   - `_MAX_REVIEW_ROWS = 250_000`；
+   - `_read_review_rows()` 当前同时持有 `candidates[]`、`staged[]`、`seen set`，调用方还构造完整 `candidate_keys set`；
+   - ImportCandidateStore 自身已经是 SQLite durable truth，当前整批 Python dict/list 会放大 20k~250k review 的峰值内存。
+   - 后续应复用现有 ImportCandidateStore / RemoteMaterialStagingStore 做流式/批量落库，不得新建第二套 import owner；同时保留完整 archive/payload/hash/annotation coverage fail-closed 验证。
+
+3. **训练 dataset materialization 本轮复核**
+   - 新文件复制已经通过 `_HashingReader` 在 copy pass 同步计算 source SHA256；
+   - 未发现“复制后再完整读取原图 hash 一遍”的退化；
+   - 只有截断 JPEG 被实际修复后才计算修复后的 training hash，属于必要训练输入真相，不应删除。
+
+### 验收边界仍保持诚实
+
+结构测试与 20/20 CI 只能证明 owner / transaction / 批量复杂度 / fail-closed 合同，没有替代：
+
+- 真实 20k / 50k 图片内容；
+- 真实 OSS/S3 RTT；
+- NVIDIA Linux；
+- SQLite WAL contention；
+- 峰值内存与真实磁盘 IOPS；
+- 慢网络浏览器与长时间恢复。
+
+
 ## 2026-09-26 20:xx 本轮最终状态封口（最新）
 
 - 写入前真实远端 HEAD：`c04c8961af8cc3810a20f1ea6399e6d1a296c390`。
