@@ -1,5 +1,53 @@
 # v42.25 技术债关闭总账
 
+## 2026-09-26 清洗 projection batch-guard 合同缺口 — IMPLEMENTED / CI PENDING
+
+最新产品代码 HEAD：`83d660e073f98f00ae79606391c6e97b7e96d1ad`。正式版本仍为 `42.24.0`。
+
+### 真实故障
+
+`f714e66e...` 的 Remote Cleaning Runtime 中：
+
+- Real Chrome：success
+- Windows contract：success
+- Ubuntu contract：success
+- API：failure
+
+唯一失败测试为：
+
+`test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance`
+
+失败原因：
+
+`MaterialRepository.patch_many()` 的 batch guard 拒绝正式 cleaning confirmation 需要写入的 `clean_task_id`。
+
+### 根因
+
+`platform_core/material_repository_batch.py` 的 `MUTABLE_MATERIAL_FIELDS` 已负责限制 set-based Material projection patch，但白名单没有包含正式 cleaning 流程长期使用的 provenance / decision 字段。
+
+正式业务已存在这些写入：
+
+- `mark_ready()`：`clean_skipped / clean_decision / clean_decision_at`
+- clean confirmation：`clean_task_id`
+- 同时更新 `processing_status / cleaned_at / updated_at`
+
+因此这是 **batch API 合同漏项**，不是应该删除 cleaning provenance，也不是应该绕开 repository guard。
+
+### 关闭方式
+
+`83d660e...` 只把以下既有 cleaning projection 字段纳入 set-based batch patch 白名单：
+
+- `clean_skipped`
+- `clean_decision`
+- `clean_decision_at`
+- `clean_task_id`
+
+未知字段依然 fail-closed，不允许任意 payload 字段通过 `patch_many()`。
+
+永久单测同时验证合法 cleaning projection 可写和未知字段仍拒绝。
+
+状态：**代码已实现；最新 HEAD 20 个 workflows 已重新触发，当前仍 queued，不能标记 CI CLOSED。**
+
 ## 2026-09-26 晚间标注 / AI / 训练 / 素材性能债总账（最新）
 
 状态：**IMPLEMENTED / LATEST CI PENDING**。

@@ -1,5 +1,76 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 20:xx 清洗合同红灯修复与最终 owner 审计（最新）
+
+- 写入前真实远端 HEAD：`83d660e073f98f00ae79606391c6e97b7e96d1ad`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- 上一 HEAD `f714e66e...` 的 20 个主要 workflows 中，已返回 **15 success / 4 pending / 1 completed failure**。
+- 唯一 completed failure 为 **Remote Cleaning Runtime / api**；同一 workflow 的 Real Chrome、Windows contract、Ubuntu contract 均 success。
+- 真实失败日志：
+  `test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance`
+  因 `MaterialRepository.patch_many()` 拒绝 `clean_task_id`，错误：
+  `ValueError: material fields are not mutable: clean_task_id`。
+- 根因不是 cleaning durable task / frozen selection / provenance 逻辑错误，而是 batch guard 的可写字段白名单没有跟上正式 cleaning projection 已使用的字段。
+
+### 本次修复
+
+提交：`83d660e073f98f00ae79606391c6e97b7e96d1ad`
+
+只补齐正式 cleaning projection 已存在的 4 个字段：
+
+- `clean_skipped`
+- `clean_decision`
+- `clean_decision_at`
+- `clean_task_id`
+
+继续保留 batch patch 的 fail-closed 边界：未知字段仍然必须抛出 `material fields are not mutable`，没有放宽为任意 Material payload 可写。
+
+新增永久单测验证：
+
+- 上述 cleaning projection 字段可以通过 `patch_many()` 持久化；
+- `clean_task_id` 与 skip/decision provenance 可读回；
+- 任意未知 projection field 仍被拒绝。
+
+新 HEAD 的 20 个 workflows 在写入时刚重新触发，Remote Cleaning Runtime 为 queued；**不能把 `83d660e...` 写成全绿，必须等待 terminal。**
+
+### 手工标注最终保存 hot path 再确认
+
+最终 canonical owner `saveAnnotationCore420` 已再次核对：
+
+- 保存 formal annotation 后只更新当前 `state.images` 单项；
+- 只 patch 当前 Material card；
+- 若从图片预览进入，仅 patch 下层 preview overlay；
+- 不调用 `loadAll()`；
+- 不调用 `loadCore412()`；
+- 不调用 `reloadMaterialPage61()`；
+- 不重建整页 dataset gallery。
+
+因此“画框 → 保存”当前没有已确认的全页刷新性能债，不要再重复重写标注保存 owner。
+
+### 并发会话最近继续补齐的同方向收口
+
+本轮继续工作期间远端新增并已核对的提交：
+
+- `805c6219...` — bound large upload follow-up UI。
+- `6bc168b2...` — freeze large clean selections durably。
+- `fdd49b00...` — route bulk ready through material batches。
+- `e4d9a3d9...` — batch post-import review reads。
+- `f671489e...` — use frozen training label counts in reports。
+- `5e37969a...` — index single material edits。
+- `1e52430e...` — keep import review batch-scoped。
+- `dc97d56e...` — batch dataset and upload review reads。
+- `1eaa0afb...` — bound selected training quality reads。
+- `684c7653...` — scope cleaning confirmation writes。
+- `704a8cc2...` / `f714e66e...` — documentation sync。
+
+这些均沿用既有 Annotation / Material Batch / Cleaning / Training owner，没有发现新建第二套 runtime 的冲突。
+
+### 当前剩余
+
+1. 等待 `83d660e...` 自身 20 个主要 workflows terminal；任何 completed failure 继续先读真实 job log。
+2. 真实 20k/50k 图片、OSS/S3 RTT、NVIDIA Linux、SQLite WAL contention、峰值内存和慢网络浏览器 profiling 仍属于生产/预生产验收。
+3. 不再对“仅存在但无正式调用证据”的 legacy compatibility 函数做泛化清理。
+
 ## 2026-09-26 晚间最终性能审计进度（最新，覆盖下方同日旧状态）
 
 - 本节写入前真实远端 HEAD：`704a8cc25c280a3480b146d65b8aef367de08fa0`（docs-only）。
