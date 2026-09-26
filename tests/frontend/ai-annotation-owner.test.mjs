@@ -133,5 +133,10 @@ test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
   assert.doesNotMatch(source, /state\.ai60Pollers/);
   assert.match(source, /beforeCloseAiTask60\?\.\(top\)/);
   assert.match(source, /ai60Bar" style="transform:scaleX\(0\)/);
-  assert.doesNotMatch(source, /bar\.style\.width=.*view\.percent/);
+  assert.doesNotMatch(block, /bar\.style\.width=.*view\.percent/);
+  const rowStart = source.indexOf('function taskRow(task)', end);
+  const rowEnd = source.indexOf('function renderAiTaskRows60', rowStart);
+  const rowBlock = source.slice(rowStart, rowEnd);
+  assert.match(rowBlock, /transform:scaleX/);
+  assert.doesNotMatch(rowBlock, /style="width:/);
 });

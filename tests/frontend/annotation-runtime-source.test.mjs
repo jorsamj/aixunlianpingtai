@@ -11,7 +11,9 @@ test('the final AI annotation override uses the persistent v60 task API', () => 
   const finalLayer = source.slice(marker);
   assert.match(finalLayer, /\/api\/v60\/projects\/\$\{pid\(\)\}\/annotation-tasks/);
   assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
-  assert.match(finalLayer, /createTaskPoller/);
+  assert.match(finalLayer, /waitForTaskTerminal/);
+  assert.match(finalLayer, /registry:window\.PollRegistryRuntime/);
+  assert.doesNotMatch(finalLayer, /createTaskPoller/);
   assert.match(finalLayer, /completeAiReview60/);
   assert.match(finalLayer, /editAiCandidate60/);
 });
