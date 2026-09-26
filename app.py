@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
+from filelock import FileLock
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
 from platform_core.annotation_repository import AnnotationRepository
