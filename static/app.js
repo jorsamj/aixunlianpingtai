@@ -4487,8 +4487,9 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
 
   window.renderLabelManagement414=async function({force=false}={}){
     const view=document.getElementById('view');if(!view)return;
-    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn" onclick="openLabelBulkUnify414()">批量统一标签</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
+    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn" onclick="openLabelBulkUnify414()">批量统一标签</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><div id="label414RemapBanner"></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
     drawLabel414();
+    void resumeLabelUnify414();
     const age=Date.now()-Number(state.label414UsageLoadedAt||0);
     if(!force&&state.label414UsageLoadedAt>0&&age>=0&&age<LABEL_SCHEMA_CACHE_TTL_MS)return;
     try{await refreshLabels414(true);if(state.page==='标签管理')drawLabel414()}
@@ -4806,16 +4807,19 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     try{
       const task=await api(`/api/v62/projects/${pid()}/material-batches/${taskId}`);
       state.import412RemapTask=task;
+      if(state.page==='标签管理')renderLabelRemapBanner414(task);
       const marker=document.getElementById('importRemapStage414'),body=marker?.closest('.modal-body');
       if(body)window.ModalContentRuntime.replace(body,importRemapProgress414(task,source,target));
       const status=String(task.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
+        renderLabelRemapBanner414(null);
         if(state.annotationRemapOrigin414==='label-schema')return refreshLabelSchemaAfterRemap414(task,source,target);
         return refreshImportReviewAfterRemap414(task,source,target);
       }
       if(['FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
+        renderLabelRemapBanner414(null);
         return toast(task?.error_examples?.[0]?.error||'标签统一任务未完成，请查看任务状态');
       }
       armImportRemap414(taskId,source,target);

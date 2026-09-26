@@ -506,3 +506,34 @@ def test_partial_multi_source_unify_does_not_retire_sources(
     stored = app_module.get_project(project_id)
     assert stored["label_meta"][0].get("status", "active") == "active"
     assert stored["label_meta"][1].get("status", "active") == "active"
+
+
+def test_active_material_batch_list_exposes_safe_remap_resume_truth(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, _scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    listed = client.get(
+        f"/api/v62/projects/{project_id}/material-batches",
+        params={"active_only": "true", "limit": 100},
+    )
+    assert listed.status_code == 200, listed.text
+    row = next(item for item in listed.json()["items"] if item["task_id"] == created.json()["task_id"])
+    assert row["operation"] == "REMAP_ANNOTATION_LABELS"
+    assert row["source_labels"] == ["fire"]
+    assert row["target_label"] == "smoke"
+    assert row["status"] == "QUEUED"
+    assert "options" not in row
+    assert "selection_spec" not in row

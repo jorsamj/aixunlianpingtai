@@ -54,3 +54,15 @@ test('historical label merge is multi-source, manually targeted and background-s
   assert.match(source,/button\.classList\.add\('is-loading'\)/);
   assert.match(source,/任务创建后可关闭窗口，后台仍会继续/);
 });
+
+
+test('label unify progress recovers after refresh from durable material-batch truth',()=>{
+  assert.match(source,/material-batches\?active_only=true&limit=100/);
+  assert.match(source,/resumeLabelUnify414/);
+  assert.match(source,/label414RemapBanner/);
+  assert.match(source,/reopenLabelRemap414/);
+  assert.match(source,/刷新或关闭页面不会取消任务/);
+  assert.match(source,/armImportRemap414\(task\.task_id,source,target\)/);
+  const keys=[...source.matchAll(/const key='([^']*label-remap[^']*)'/g)].map(match=>match[1]);
+  assert.deepEqual([...new Set(keys)],['annotation-label-remap']);
+});

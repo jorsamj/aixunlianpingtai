@@ -1231,6 +1231,18 @@ def public_batch(task, artifacts, repository=None):
     if task.error and not error_examples:
         error_examples = [{"error": redact_storage_error(task.error)}]
     available = artifacts.artifact_path(task.task_id, task.log_ref).is_file()
+    options = dict(request.get("options") or {})
+    remap_sources = []
+    remap_target = ""
+    retire_sources = False
+    if request.get("operation") == BatchOperation.REMAP_ANNOTATION_LABELS.value:
+        remap_sources = [
+            str(value).strip()
+            for value in (options.get("source_labels") or [options.get("source_label")])
+            if str(value or "").strip()
+        ]
+        remap_target = str(options.get("target_label") or "").strip()
+        retire_sources = bool(options.get("retire_sources_on_success"))
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
             "kind": task.kind.value, "operation": request.get("operation"),
             "status": truth["status"] if truth else task.status.value,
@@ -1258,6 +1270,9 @@ def public_batch(task, artifacts, repository=None):
                             if request.get("operation") == BatchOperation.CLEAN.value else None),
             "error_examples": error_examples, "selection_frozen": frozen,
             "result": result if result else None,
+            "source_labels": remap_sources,
+            "target_label": remap_target,
+            "retire_sources_on_success": retire_sources,
             "changed_images": result.get("changed_images"),
             "changed_boxes": result.get("changed_boxes"),
             "log_available": available, "log_ref": task.log_ref if available else None,
@@ -1295,6 +1310,36 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         get_project(project_id)
         task = invoke(create_batch, project_id, material_store(project_id), task_repository(), task_artifacts(), payload)
         return public_batch(task, task_artifacts(), task_repository())
+
+    @router.get("")
+    def list_batches(project_id: str, active_only: bool = False, limit: int = 50, cursor: str = ""):
+        get_project(project_id)
+        statuses = (
+            [
+                TaskStatus.QUEUED,
+                TaskStatus.WAITING_RESOURCE,
+                TaskStatus.RUNNING,
+                TaskStatus.CANCEL_REQUESTED,
+            ]
+            if active_only else None
+        )
+        try:
+            page = task_repository().list(
+                project_id=project_id,
+                kinds=[TaskKind.MATERIAL_BATCH],
+                statuses=statuses,
+                limit=limit,
+                cursor=cursor or None,
+            )
+        except ValueError as error:
+            raise HTTPException(422, detail=str(error)) from error
+        return {
+            "items": [
+                public_batch(task, task_artifacts(), task_repository())
+                for task in page.items
+            ],
+            "next_cursor": page.next_cursor,
+        }
 
     @router.get("/{task_id}")
     def get(project_id: str, task_id: str):
