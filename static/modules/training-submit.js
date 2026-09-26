@@ -257,13 +257,40 @@ export function installTrainingSubmitRuntime({
   let submitting = false;
   let lastStage = 'idle';
   let lastError = '';
+  const SUBMIT_STAGE_TEXT = Object.freeze({
+    idle: '开始训练',
+    'sync-draft': '正在读取训练配置…',
+    'validate-inheritance': '正在核验算法版本…',
+    'resolve-algorithm': '正在核验算法主数据…',
+    'resolve-target': '正在核验训练资源…',
+    'resolve-engine': '正在核验训练引擎…',
+    'validate-device': '正在核验训练设备…',
+    'build-payload': '正在整理训练素材与参数…',
+    posting: '服务端正在核验并创建持久任务…',
+    created: '训练任务已创建',
+  });
 
   function submitButton() {
     if (typeof document === 'undefined') return null;
     const primary = document.querySelector?.('.train429-create .train428-footer .btn.primary');
     if (primary) return primary;
     const buttons = [...(document.querySelectorAll?.('.train429-create button') || [])];
-    return buttons.find(button => /开始训练/.test(String(button.textContent || ''))) || null;
+    return buttons.find(button => /开始训练|正在.*训练|持久任务|训练任务已创建/.test(String(button.textContent || ''))) || null;
+  }
+
+  function setSubmitStage(stage) {
+    lastStage = String(stage || 'idle');
+    const button = submitButton();
+    if (!button) return lastStage;
+    if (!button.dataset.trainingSubmitIdleText) {
+      button.dataset.trainingSubmitIdleText = String(button.textContent || '开始训练');
+    }
+    button.dataset.trainingSubmitStage = lastStage;
+    button.textContent = submitting
+      ? (SUBMIT_STAGE_TEXT[lastStage] || '正在创建训练任务…')
+      : button.dataset.trainingSubmitIdleText;
+    if (typeof button.setAttribute === 'function') button.setAttribute('aria-busy', submitting ? 'true' : 'false');
+    return lastStage;
   }
 
   function updateReadiness() {
@@ -295,6 +322,7 @@ export function installTrainingSubmitRuntime({
       button.disabled = !readiness.ready;
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
+      if (!submitting) setSubmitStage('idle');
     }
     return readiness;
   }
@@ -307,20 +335,21 @@ export function installTrainingSubmitRuntime({
     }
     submitting = true;
     lastError = '';
-    lastStage = 'sync-draft';
+    setSubmitStage('sync-draft');
     updateReadiness();
+    setSubmitStage('sync-draft');
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
 
-      lastStage = 'validate-inheritance';
+      setSubmitStage('validate-inheritance');
       const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
       if (inheritance.blocked) {
         throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退母算法。');
       }
 
-      lastStage = 'resolve-algorithm';
+      setSubmitStage('resolve-algorithm');
       const asset = (state.algorithms || []).find(row => String(row?.id || '') === String(draft.algorithmId || ''));
       if (!asset) throw new Error('当前训练算法不存在，请刷新算法列表后重试');
       const externalReadiness = window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id);
@@ -329,20 +358,20 @@ export function installTrainingSubmitRuntime({
       }
       const benchmarkContext = benchmarkReuseContext({asset, draft, inheritance, benchmark: state.trainingBenchmarkReuse});
 
-      lastStage = 'resolve-target';
+      setSubmitStage('resolve-target');
       const targetId = document.getElementById('tr429Target')?.value || '';
       const target = (state.targets || []).find(row => String(row?.id || '') === String(targetId));
       if (!target) throw new Error('训练资源不可用，请重新打开训练窗口');
 
-      lastStage = 'resolve-engine';
+      setSubmitStage('resolve-engine');
       const algorithmKey = document.getElementById('tr429Alg')?.value || '';
       const algorithm = (target.algorithms || []).find(row => String(row?.key || '') === String(algorithmKey))
         || (target.algorithms || [])[0];
       if (!algorithm) throw new Error('训练算法不可用，请重新选择训练资源');
 
-      lastStage = 'validate-device';
+      setSubmitStage('validate-device');
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || [], target);
-      lastStage = 'build-payload';
+      setSubmitStage('build-payload');
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
       if (benchmarkContext) {
         if ((draft.testMaterialIds || []).length) throw new Error('复用固定评测基准时不能同时选择前端独立试验素材');
@@ -380,7 +409,7 @@ export function installTrainingSubmitRuntime({
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
-      lastStage = 'posting';
+      setSubmitStage('posting');
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -396,7 +425,7 @@ export function installTrainingSubmitRuntime({
       }
       const body = await response.json();
       const createdTask = validateTrainingCreatedResponse(body, payload.task_id);
-      lastStage = 'created';
+      setSubmitStage('created');
       if (payload.iteration_action && state.trainingIterationAction) {
         state.trainingIterationAction = null;
       }

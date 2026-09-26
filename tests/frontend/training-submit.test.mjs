@@ -331,6 +331,39 @@ test('stale changlian master data disables submit and blocks network POST', asyn
   cleanup(runtime);
 });
 
+test('submit button exposes truthful creation stages while the durable POST is pending', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      await pending;
+      return {ok: true, async json() { return durableTask(); }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftToRequest,
+  });
+
+  const request = window.submitTrain429();
+  assert.equal(runtime.state().lastStage, 'posting');
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
+  assert.equal(submitButton.textContent, '服务端正在核验并创建持久任务…');
+  assert.equal(submitButton.disabled, true);
+
+  release();
+  await request;
+  assert.equal(runtime.isSubmitting(), false);
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'idle');
+  assert.equal(submitButton.textContent, '开始训练');
+  cleanup(runtime);
+});
+
 test('double click cannot create two independent training tasks', async () => {
   const state = baseState();
   const {submitButton} = installDom();
