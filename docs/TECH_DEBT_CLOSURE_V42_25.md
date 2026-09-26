@@ -1554,3 +1554,46 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
 
+
+
+<!-- LABEL_GOVERNANCE_BATCH_IMPORT_CLOSURE_20260926 -->
+## 2026-09-26 — Manual label governance + background import performance closure
+
+Status: **PRODUCT CODE CLOSED / LATEST CI STILL VERIFYING** on `feature/external-algorithm-publishing`.
+
+### Product contracts now permanent
+
+- External labels are factual input only. No exact-name, alias, historical mapping, AI/semantic or LLM path may auto-select a canonical label.
+- Historical canonical labels can be merged many-to-one only after explicit user source selection and explicit target selection.
+- The merge runs through the existing durable `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS` owner, including `confirmed_empty` scope, digest fencing, retry/idempotency and source retirement only on complete success.
+- Formal import annotations preserve source taxonomy provenance separately from canonical/project/training class IDs.
+- Training preflight rejects non-current/non-canonical/temp/unmapped labels; schema changes are explicit and use previous weights as initialization, not strict optimizer-state resume.
+- Label usage/remap selection uses normalized SQLite indexes. Legacy full-library scan on label rename/delete has been retired from the hot path.
+- Formal multipart ZIP completion is now background merge/scan with durable `merging/validating` truth and read-triggered recovery after refresh/restart.
+- Label-management refresh rediscovers active schema-unify tasks from durable Material Batch truth and reuses the single `annotation-label-remap` PollRegistry owner.
+
+### Important commits in this closure window
+
+- `7c356f2d...` — manual import label mapping.
+- `1aa2f995...` / `3334385c...` — durable historical label unification foundation / multi-source unification.
+- `429e6dcd...` — multi-label merge review UI.
+- `68dd8319...` — import label provenance.
+- `27a4806e...` — canonical training label preflight / schema-change truth.
+- `029d15fe...` — retired automatic label suggestion paths.
+- `60e31539...` — confirmed-empty scope index correction.
+- `487f5bef...` / `2fd81dcd...` — permanent manual-choice / source guards.
+- `2f6ec3cf...` — background multipart ZIP finalization.
+- `041544f5...` / `7a8d2426...` / `0ab13ae4...` — durable label-unify refresh recovery and persisted/public task-state boundary fix.
+
+### Real failure evidence handled
+
+- A completed contract failure on `041544f5...` showed `TaskStatus.WAITING_RESOURCE` was incorrectly treated as a persisted enum. The durable enum has no such value; `WAITING_RESOURCE` is a public runtime projection. `0ab13ae4...` fixes the list query to use only persisted `QUEUED/RUNNING/CANCEL_REQUESTED` states and leaves public projection ownership unchanged.
+- Earlier completed failures around retired `mapping_suggestions`, stale browser auto-preselection expectations, and provenance assertions were fixed from their actual job logs; tests were updated to the new manual-choice product contract rather than weakening production behavior.
+
+### Verification boundary
+
+- `VERSION.txt` remains exactly `42.24.0`.
+- No main merge, tag or release.
+- At this documentation point, current-head Actions are not all terminal; **do not mark latest CI PASS until every required check is completed successfully**.
+- Genuine 20k production import/unification and real object-storage environment acceptance remain not verified.
+- The legacy direct non-multipart v19 upload endpoint still performs synchronous post-upload scan for compatibility. The formal browser owner does not use it. Treat it as a compatibility migration item, not as a second preferred import runtime.

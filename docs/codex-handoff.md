@@ -371,3 +371,38 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 7. 只修真实失败，不重新设计已稳定模块。
 8. 真实 MinIO/OSS环境没有配置时必须报告 `SKIPPED / NOT VERIFIED`。
 9. 全部完成后才讨论合并 `main`。
+
+
+## 2026-09-26 — 批量导入与标签治理闭环（当前分支）
+
+当前基线：`feature/external-algorithm-publishing`。本节只记录已经落到生产代码/永久测试的合同；GitHub Actions 的 queued/in_progress 不记为通过。正式版本仍保持 `VERSION.txt = 42.24.0`，未 merge main、未 tag、未 release。
+
+### 已完成
+
+- **导入标签完全由用户决定**：ZIP、存储源导入/重扫、Remote Agent review 均只返回外部 `class_id/name/image_count/box_count` 等事实；不再用 exact code、中文名、alias、历史映射或 `target_label_code` 自动预选。新建平台标签也必须由用户显式创建，创建后仍需手工选择并确认映射。
+- **统一的手工 mapping review**：外部标签按唯一类别展示，支持平台标签搜索、分页/过滤、批量将多个外部标签映射到一个 canonical label、真实样例证据查看；样例只帮助判断，不给推荐结论。
+- **已有历史素材可多标签统一**：标签管理支持一次选择多个来源标签（例如 `smoke/smoking/吸烟`）统一到用户手工选择的目标 canonical label；先用索引计算真实去重影响范围，再创建一个 durable `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS`，不在 HTTP 请求内同步遍历几万张素材。
+- **Ground Truth 边界完整**：remap 同时处理 bbox label 和 `confirmed_empty.annotation_scope`；并发人工修改使用 digest fencing，失败关闭而不是覆盖新标注。完整成功后来源 canonical label 标记为 `merged`，部分失败时不退役来源标签。
+- **标签索引/性能**：`material_labels` 与 `material_annotation_scopes` 支持正样本和负样本范围的 indexed selection/usage；已使用标签改编码/停用不再 `load_images()` 全库扫描。Annotation remap 批处理改为批量读取，避免每图重复开连接。
+- **来源审计保留**：正式导入框保留 `import_batch_id/source_task_id/source_format/source_class_id/source_label_name/canonical_label_id/canonical_project_class_id/mapping_method=manual/confirmed_at`。来源 class ID 与 canonical/project/training class ID 明确分离。
+- **训练标签 preflight**：训练只接受当前有效 canonical label；dangling/deleted/inactive/unmapped/`class_x`/`unknown`/`temp_*` 会阻断创建。所选 AnnotationRepository 以 500 条批读，避免大选择逐图连接。
+- **Schema change 真相**：canonical add/remove/merge 会记录 `label_schema_changed` 和原因；上一版本存在时使用 previous weights init，`strict_resume=false`、`optimizer_state_resumed=false`。仅外部名字手工归一到既有 canonical label 不属于 schema 变化。
+- **大 ZIP 正式 UI 链路后台化**：multipart 分片完成后，`/import/uploads/{upload_id}/complete` 立即以 202 返回 durable `merging/validating` 状态；服务器后台继续合并 ZIP、扫描图片/标注/外部类别。刷新/重新进入时 GET/list 会恢复中断的 finalize；前端复用原有 `merging/validating` loading/progress，不新增 UI owner。
+- **标签统一刷新恢复**：Material Batch 增加项目级只读 active list（底层复用 `TaskRepository.list` 索引）。标签管理刷新后只恢复 `retire_sources_on_success=true` 的历史 schema-unify 任务，显示轻量进度 banner，并继续复用唯一 `annotation-label-remap` PollRegistry owner；不会把导入审核 remap 串到标签管理。
+- **兼容/owner guard**：没有创建第二套 remap scheduler、AnnotationRepository 或 polling runtime；既有 durable Material Batch、TaskRepository、PollRegistry 仍是唯一正式 owner。
+
+### 本轮关闭的性能技术债
+
+1. 已使用标签改编码时同步全库遍历 annotations：**CLOSED**，改为索引判断并要求走 durable 统一。
+2. 标签停用/删除检查同步全库扫描：**CLOSED**，改为 normalized label/scope index。
+3. confirmed_empty 只有 scope 时历史 remap 不落 Ground Truth：**CLOSED**。
+4. annotation remap 每图单独 `get()`：**CLOSED**，改为 bounded `get_many()`。
+5. 正式 multipart ZIP 上传完成后 HTTP 同步 merge+scan：**CLOSED**，改为 restart-recoverable background finalize。
+6. 标签统一关闭窗口后虽后台继续、刷新却看不到进度：**CLOSED**，改为 durable task discovery + 同一 poll owner 恢复。
+
+### 已知兼容边界 / 仍需验证
+
+- 老的 direct `POST /api/v19/.../import/jobs`（非 multipart）仍是兼容入口：它在上传字节接收完成后同步扫描 ZIP。正式浏览器 runtime 已使用 multipart durable 链，不走该路径；如未来外部 API 客户端也要承载 20k+，应单独迁移/退役此兼容入口，不能再复制一套 worker。
+- 当前正式 multipart 后台化新增永久 API 测试，但本节写入时最新 HEAD 的 GitHub Actions 仍有 queued/in_progress；不得写成“全量 CI 已通过”。
+- 本轮没有真实跑 20,000 张生产数据、真实 OSS/S3 带标注 20k 导入，也没有 NVIDIA/A800 真机验收。已有 10k acceptance/合同测试不能替代这些真实环境验收。
+- 继续只修 completed failure 的真实 job log；queued/in_progress 不视为失败也不视为通过。
