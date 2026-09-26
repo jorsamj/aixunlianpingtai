@@ -361,3 +361,92 @@ def test_single_material_name_edit_uses_indexed_lookup(monkeypatch):
 
     assert result["image"]["filename"] == "新名称.jpg"
     assert list(materials.patches[0]) == ["image-1"]
+
+
+
+def test_dataset_listing_batches_annotation_truth_and_aggregates_in_one_pass(monkeypatch):
+    total = 1201
+    rows = [
+        {
+            "id": f"image-{index:04d}",
+            "dataset_id": ["default", "dataset-a", "dataset-b"][index % 3],
+        }
+        for index in range(total)
+    ]
+    batches = []
+
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(
+        app_module,
+        "ensure_default_datasets",
+        lambda _project_id: [
+            {"id": "default", "name": "默认"},
+            {"id": "dataset-a", "name": "A"},
+            {"id": "dataset-b", "name": "B"},
+        ],
+    )
+    monkeypatch.setattr(app_module, "load_images", lambda _project_id: rows)
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": ([{"label": "fire"}] if int(image_id.rsplit("-", 1)[-1]) % 2 == 0 else []),
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dataset listing must not issue per-image annotation reads")
+        ),
+    )
+
+    body = app_module.list_datasets("project-1")
+
+    assert [len(batch) for batch in batches] == [500, 500, 201]
+    assert sum(item["images"] for item in body["items"]) == total
+    assert sum(item["boxes"] for item in body["items"]) == 601
+    assert sum(item["annotated_images"] for item in body["items"]) == 601
+
+
+def test_upload_batch_enrichment_reads_only_batch_materials(monkeypatch):
+    image_ids = [f"image-{index:04d}" for index in range(1201)]
+    calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            calls.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg"}
+                for image_id in batch
+                if image_id != "image-1000"
+            ]
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("upload batch enrichment must not scan the whole material library")
+        ),
+    )
+    batch = {
+        "batch_id": "batch-1",
+        "items": [{"image_id": image_id, "decision": "pending"} for image_id in image_ids],
+    }
+
+    enriched = app_module._v55_enrich_upload_batch("project-1", batch)
+
+    assert [len(batch) for batch in calls] == [500, 500, 201]
+    assert len(enriched["items"]) == 1201
+    assert enriched["items"][1000]["missing"] is True
+    assert enriched["items"][999]["image"]["id"] == "image-0999"

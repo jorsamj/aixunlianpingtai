@@ -3230,19 +3230,41 @@ def list_datasets(project_id: str):
     get_project(project_id)
     datasets = ensure_default_datasets(project_id)
     images = load_images(project_id)
-    result = []
-    for ds in datasets:
-        dsid = ds.get("id") or "default"
-        imgs = [x for x in images if x.get("dataset_id", "default") == dsid]
-        annotated = 0; boxes = 0
-        for img in imgs:
-            ann = read_annotation(project_id, img["id"])
-            cnt = len(ann.get("boxes", []))
-            boxes += cnt
-            if cnt:
-                annotated += 1
-        result.append({**ds, "images": len(imgs), "annotated_images": annotated, "boxes": boxes})
-    return {"ok": True, "items": result}
+    image_ids = [
+        str(image.get("id") or "")
+        for image in images
+        if str(image.get("id") or "")
+    ]
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(image_ids), 500):
+        annotations.update(
+            read_annotations_many(project_id, image_ids[offset:offset + 500])
+        )
+    stats: Dict[str, Dict[str, int]] = {}
+    for image in images:
+        dataset_id = str(image.get("dataset_id") or "default")
+        row = stats.setdefault(
+            dataset_id, {"images": 0, "annotated_images": 0, "boxes": 0}
+        )
+        row["images"] += 1
+        annotation = annotations.get(str(image.get("id") or "")) or {}
+        count = len(annotation.get("boxes") or [])
+        row["boxes"] += count
+        if count:
+            row["annotated_images"] += 1
+    return {
+        "ok": True,
+        "items": [
+            {
+                **dataset,
+                **stats.get(
+                    str(dataset.get("id") or "default"),
+                    {"images": 0, "annotated_images": 0, "boxes": 0},
+                ),
+            }
+            for dataset in datasets
+        ],
+    }
 
 
 @app.post("/api/projects/{project_id}/datasets")
@@ -18502,10 +18524,18 @@ def _v55_read_upload_batch(
 
 
 def _v55_enrich_upload_batch(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
-    images = {
-        str(image.get('id')): dict(image)
-        for image in load_images(project_id)
-    }
+    image_ids = list(dict.fromkeys(
+        str(item.get('image_id') or '')
+        for item in (batch.get('items') or [])
+        if str(item.get('image_id') or '')
+    ))
+    images: Dict[str, Dict[str, Any]] = {}
+    materials = material_store(project_id)
+    for offset in range(0, len(image_ids), 500):
+        for image in materials.get_many(image_ids[offset:offset + 500]):
+            image_id = str(image.get('id') or '')
+            if image_id:
+                images[image_id] = dict(image)
     enriched = dict(batch)
     enriched['items'] = []
     for stored_item in batch.get('items', []):
