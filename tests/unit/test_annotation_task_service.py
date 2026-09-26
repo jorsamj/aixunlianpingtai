@@ -257,8 +257,9 @@ def test_public_worker_error_redacts_common_secret_shapes():
     assert "[REDACTED]" in public
 
 
-def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeypatch):
-    image_ids = [f"image-{index:04d}" for index in range(1201)]
+@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000])
+def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeypatch, image_count):
+    image_ids = [f"image-{index:05d}" for index in range(image_count)]
 
     class FakeMaterials:
         def __init__(self):
@@ -293,7 +294,9 @@ def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeyp
 
     rows = load_task_images("project-1", image_ids)
 
-    assert [len(batch) for batch in materials.calls] == [500, 500, 201]
+    assert len(materials.calls) == (image_count + 499) // 500
+    assert sum(len(batch) for batch in materials.calls) == image_count
+    assert all(1 <= len(batch) <= 500 for batch in materials.calls)
     assert [row["id"] for row in rows] == image_ids
     assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)
 

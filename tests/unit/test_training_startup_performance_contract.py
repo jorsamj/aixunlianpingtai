@@ -245,8 +245,9 @@ def test_startup_stage_contract_persists_first_batch_truth(tmp_path):
     assert job["current_item"] == "首个 Batch 已开始"
 
 
-def test_selected_project_images_batches_annotation_repository_reads(monkeypatch, tmp_path):
-    image_ids = [f"image-{index:05d}" for index in range(1201)]
+@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000])
+def test_selected_project_images_batches_annotation_repository_reads(monkeypatch, tmp_path, image_count):
+    image_ids = [f"image-{index:05d}" for index in range(image_count)]
 
     class FakeMaterials:
         def get_many(self, ids):
@@ -282,6 +283,8 @@ def test_selected_project_images_batches_annotation_repository_reads(monkeypatch
 
     rows = training_tasks._selected_project_images(FakeMaterials(), tmp_path, image_ids)
 
-    assert [len(batch) for batch in annotations.calls] == [500, 500, 201]
+    assert len(annotations.calls) == (image_count + 499) // 500
+    assert sum(len(batch) for batch in annotations.calls) == image_count
+    assert all(1 <= len(batch) <= 500 for batch in annotations.calls)
     assert [row["id"] for row in rows] == image_ids
     assert all(row["annotated"] is True for row in rows)
