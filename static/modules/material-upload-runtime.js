@@ -240,18 +240,23 @@ export function installMaterialUploadRuntime({
     const recent = new Map((state.recentUploadedMaterials61 || []).map(item => [String(item?.id), item]));
     for (const item of uploaded) recent.set(String(item?.id), item);
     state.recentUploadedMaterials61 = [...recent.values()];
-    state.images = [...uploaded, ...(state.images || []).filter(item => !uploadedIds.has(String(item?.id)))];
+    const pagedDataset = state.page === '数据集' && window.__materialPaging61?.mode === 'paged';
+    if (!pagedDataset) {
+      state.images = [...uploaded, ...(state.images || []).filter(item => !uploadedIds.has(String(item?.id)))];
+    }
   };
   const renderResult = (aggregate, elapsedSeconds) => {
     const out = document.getElementById('up411Result');
     if (!out) return;
     const uploaded = aggregate.uploaded || [];
     const failed = aggregate.failed || [];
-    const failedHtml = failed.map(item => `<div class="alert warn">${escapeHtml(item?.name || '文件')}：${escapeHtml(item?.reason || '处理失败')}</div>`).join('');
-    const ids = uploaded.map(row => String(row?.id || '')).filter(Boolean);
-    const idsJson = JSON.stringify(ids).replace(/'/g, '&#39;');
-    const decision = ids.length ? `<div class="upload414-decision"><div><b>本次上传 ${ids.length} 张素材</b><span>可以继续批量清洗或标记无需清洗。</span></div><div class="row"><button class="btn" onclick='closeModal();openBatch414("ready",${idsJson})'>批量无需清洗</button><button class="btn primary" onclick='closeModal();openBatch414("clean",${idsJson})'>批量清洗</button></div></div>` : '';
-    out.innerHTML = `<div class="alert ok">成功上传 ${uploaded.length} 张${failed.length ? `，失败 ${failed.length} 张` : ''} · 服务器已处理 ${aggregate.confirmedFiles}/${aggregate.totalFiles} · ${elapsedSeconds.toFixed(1)} 秒</div>${failedHtml}${decision}`;
+    const shownFailed = failed.slice(0, 100);
+    const failedHtml = shownFailed.map(item => `<div class="alert warn">${escapeHtml(item?.name || '文件')}：${escapeHtml(item?.reason || '处理失败')}</div>`).join('');
+    const failedOverflow = failed.length > shownFailed.length
+      ? `<div class="alert warn">另有 ${failed.length - shownFailed.length} 条失败记录未在弹窗中展开，可在任务记录中查看。</div>`
+      : '';
+    const decision = uploaded.length ? `<div class="upload414-decision"><div><b>本次上传 ${uploaded.length} 张素材</b><span>可以继续批量清洗或标记无需清洗；大批量素材会分页展示。</span></div><div class="row"><button class="btn" onclick='closeModal();openRecentUploadBatch414("ready")'>批量无需清洗</button><button class="btn primary" onclick='closeModal();openRecentUploadBatch414("clean")'>批量清洗</button></div></div>` : '';
+    out.innerHTML = `<div class="alert ok">成功上传 ${uploaded.length} 张${failed.length ? `，失败 ${failed.length} 张` : ''} · 服务器已处理 ${aggregate.confirmedFiles}/${aggregate.totalFiles} · ${elapsedSeconds.toFixed(1)} 秒</div>${failedHtml}${failedOverflow}${decision}`;
   };
 
   async function uploadFiles(files, {storageSourceId = 'default_local', datasetId = 'default', input = null} = {}) {
