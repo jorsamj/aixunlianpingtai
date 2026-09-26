@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -277,12 +278,18 @@ def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeyp
             return SimpleNamespace(path=tmp_path / f"{row['id']}.jpg")
 
     materials = FakeMaterials()
-    monkeypatch.setattr("app.material_store", lambda _project_id: materials)
-    monkeypatch.setattr("app.storage_manager", lambda _project_id: FakeManager())
-    monkeypatch.setattr(
-        "app.load_images",
-        lambda *_args, **_kwargs: pytest.fail("AI task image resolution must not scan the whole material library"),
+    fake_app = ModuleType("app")
+    fake_app.material_store = lambda _project_id: materials
+    fake_app.storage_manager = lambda _project_id: FakeManager()
+    fake_app.load_images = (
+        lambda *_args, **_kwargs: pytest.fail(
+            "AI task image resolution must not scan the whole material library"
+        )
     )
+    # The focused worker contract deliberately does not install FastAPI. Inject
+    # only the late-bound app dependencies used while executing a claimed task,
+    # so worker recovery tests stay independent from the web application stack.
+    monkeypatch.setitem(sys.modules, "app", fake_app)
 
     rows = load_task_images("project-1", image_ids)
 
