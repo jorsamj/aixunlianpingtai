@@ -1,6 +1,35 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-26 21:xx AI 审核拒绝路径重复全扫收口（最新）
+
+- 写入前真实远端 HEAD：`64015907bb115479b9297cdc1171a4fa54a1cdcd`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- `64015907...` 自身 20 个主要 GitHub Actions workflows 已全部 **completed success (20/20)**。
+
+### 本次关闭
+
+提交：`64015907bb115479b9297cdc1171a4fa54a1cdcd` — `perf: skip rejected AI label scans`
+
+正式 `_decide_annotation_candidates()` 之前即使没有任何 `label_mapping`，也会先调用一次 `CandidateStore.label_summary()` 全扫候选；随后 `remap_labels()` 又扫描全部 success/empty candidate。纯“拒绝全部”最终不会有任何 Candidate 进入正式 Ground Truth，但仍承担两次不必要的大候选扫描。
+
+现在：
+
+- `label_mapping={}` 时不再为了“验证不存在的 mapping source”预先调用 `label_summary()`；
+- 纯 `reject_unmentioned=true`、无 mapping、显式 decisions 也全部为 reject 时，不再调用 `remap_labels()`；
+- 1001 个候选的 reject-all 永久合同会把 `label_summary/remap_labels` 设为 forbidden，确保不会退回全扫；
+- accept / partial accept / 有 mapping 的路径继续保留 current active canonical label 的 fail-closed 重校验；
+- accept + 无 mapping 仍只在最终响应需要 `label_summary` 时读取一次，不再多一次 preflight 全扫；
+- Candidate→人工审核→durable Commit、fencing、正式 AnnotationRepository owner 均未改变。
+
+因此本项只移除“不可能进入 Ground Truth”的拒绝路径冗余读取，没有放宽标签真实性校验。
+
+### 当前下一项 P1
+
+Remote Material review 仍允许最多 `250,000` 行，当前 `_read_review_rows()` 同时保留 `candidates[] + staged[] + seen set`，YOLO/COCO/VOC 调用方还再构造完整 `candidate_keys set`。下一步只在现有 `ImportCandidateStore + RemoteMaterialStagingStore` owner 内把已验证 review truth 改为临时 JSONL + 流式 SQLite 消费；不新增 import runtime / scheduler / store owner，并保留 payload/hash/annotation coverage 的 fail-closed 验证。
+
+
+
 ## 2026-09-26 21:xx AI 人工审核大批量决策性能收口（最新）
 
 - 写入前真实远端 HEAD：`e09e68d1bce4de9f3e115f7794e56b6ab404d5a2`。
