@@ -66,3 +66,15 @@ test('label unify progress recovers after refresh from durable material-batch tr
   const keys=[...source.matchAll(/const key='([^']*label-remap[^']*)'/g)].map(match=>match[1]);
   assert.deepEqual([...new Set(keys)],['annotation-label-remap']);
 });
+
+
+test('label management refresh recovery is scoped to historical schema unification only',()=>{
+  const start=source.indexOf('function activeLabelRemap414(task)');
+  assert.ok(start>=0);
+  const block=source.slice(start,start+700);
+  assert.match(block,/REMAP_ANNOTATION_LABELS/);
+  assert.match(block,/retire_sources_on_success===true/);
+  assert.match(source,/async function resumeLabelUnify414\(\)/);
+  assert.match(source,/material-batches\?active_only=true&limit=100/);
+  assert.match(source,/刷新或关闭页面不会取消任务/);
+});

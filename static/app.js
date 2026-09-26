@@ -4485,6 +4485,47 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     document.getElementById('nav').innerHTML=`<div class="nav-project"><div class="nav-project-k">当前项目</div><div class="nav-project-v">${esc(state.project?.name||'默认空间')}</div></div>${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-footer"><span>Version</span><b>v${V414}</b></div>`;
   };
 
+  function activeLabelRemap414(task){
+    return String(task?.operation||'')==='REMAP_ANNOTATION_LABELS'
+      && task?.retire_sources_on_success===true
+      && ['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(String(task?.status||'').toUpperCase());
+  }
+  function labelRemapSourceText414(task){
+    const rows=(task?.source_labels||[]).map(String).filter(Boolean);
+    return rows.length<=3?rows.join('、'):`${rows.slice(0,3).join('、')} 等 ${rows.length} 个标签`;
+  }
+  function renderLabelRemapBanner414(task){
+    const box=document.getElementById('label414RemapBanner');if(!box)return;
+    if(!activeLabelRemap414(task)){box.innerHTML='';box.hidden=true;return}
+    const total=Math.max(0,Number(task.total||0)),processed=Math.max(0,Number(task.processed||0)),raw=Number(task.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0);
+    const source=labelRemapSourceText414(task)||'历史标签',target=String(task.target_label||'目标标签'),status=String(task.status||'').toUpperCase(),stage=['QUEUED','WAITING_RESOURCE'].includes(status)?'等待后台资源':status==='CANCEL_REQUESTED'?'正在取消':'后台统一中';
+    box.hidden=false;
+    box.innerHTML=`<div class="label414-remap-banner"><span class="label414-remap-spin" aria-hidden="true"></span><div class="label414-remap-copy"><b>${esc(stage)} · ${Math.round(pct)}%</b><span>${esc(source)} → ${esc(target)} · ${processed}/${total||'-'}；刷新或关闭页面不会取消任务。</span><i><em style="transform:scaleX(${Math.max(0,Math.min(1,pct/100))})"></em></i></div><button class="btn mini" onclick="reopenLabelRemap414()">查看进度</button></div>`;
+  }
+  window.reopenLabelRemap414=function(){
+    const task=state.import412RemapTask;if(!task)return toast('当前没有可恢复的标签统一任务');
+    const source=state.import412RemapSource||labelRemapSourceText414(task),target=state.import412RemapTarget||String(task.target_label||'');
+    modal('批量统一标签',importRemapProgress414(task,source,target),false);
+  };
+  async function resumeLabelUnify414(){
+    if(state.page!=='标签管理'||!pid())return null;
+    try{
+      const body=await api(`/api/v62/projects/${pid()}/material-batches?active_only=true&limit=100`);
+      const task=(body.items||[]).find(activeLabelRemap414)||null;
+      if(!task){renderLabelRemapBanner414(null);return null}
+      const source=labelRemapSourceText414(task),target=String(task.target_label||'');
+      state.import412RemapTask=task;state.import412RemapSource=source;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
+      renderLabelRemapBanner414(task);
+      armImportRemap414(task.task_id,source,target);
+      return task;
+    }catch(e){
+      const box=document.getElementById('label414RemapBanner');
+      if(box&&state.page==='标签管理'){box.hidden=false;box.innerHTML=`<div class="label414-remap-banner error"><div class="label414-remap-copy"><b>后台任务状态读取失败</b><span>${esc(e.message||e)}</span></div><button class="btn mini" onclick="renderLabelManagement414({force:true})">重试</button></div>`}
+      return null;
+    }
+  }
+  window.resumeLabelUnify414=resumeLabelUnify414;
+
   window.renderLabelManagement414=async function({force=false}={}){
     const view=document.getElementById('view');if(!view)return;
     view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn" onclick="openLabelBulkUnify414()">批量统一标签</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><div id="label414RemapBanner"></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
