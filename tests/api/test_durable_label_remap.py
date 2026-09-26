@@ -382,7 +382,7 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
         image["id"],
         [
             _box(label="fire", class_id=0),
-            _box(label="smoke", class_id=1, x1=30, x2=50),
+            _box(label="smoke", class_id=1, x1=30),
         ],
     )
     second_id = "negative-multi-source"

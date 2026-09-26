@@ -36,8 +36,21 @@ test('legacy remap entry delegates to the single durable remap owner',()=>{
 
 test('label management whole-label unify reuses the same durable remap owner',()=>{
   assert.match(source,/openLabelUnify414/);
-  assert.match(source,/\/api\/v54\/projects\/\$\{pid\(\)\}\/labels\/\$\{Number\(classId\)\}\/unify/);
+  assert.match(source,/\/api\/v54\/projects\/\$\{pid\(\)\}\/labels\/unify/);
+  assert.match(source,/source_class_ids:ids/);
+  assert.match(source,/openLabelBulkUnify414/);
+  assert.match(source,/labels\/unify\/preview/);
   assert.match(source,/annotationRemapOrigin414='label-schema'/);
   assert.match(source,/\['数据集','标签管理'\]/);
   assert.match(source,/系统不会自动选择目标标签/);
+});
+
+
+test('historical label merge is multi-source, manually targeted and background-safe',()=>{
+  assert.match(source,/批量统一标签/);
+  assert.match(source,/系统不会自动推荐/);
+  assert.match(source,/完整成功后，来源标签会标记为 merged/);
+  assert.match(source,/正在计算真实影响范围/);
+  assert.match(source,/button\.classList\.add\('is-loading'\)/);
+  assert.match(source,/任务创建后可关闭窗口，后台仍会继续/);
 });

@@ -26,6 +26,8 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /平台标签已创建并选中；仍需确认后才会正式入库/);
   assert.match(app, /\/api\/projects\/\$\{pid\(\)\}\/labels/);
   assert.match(app, /openLabelUnify414/);
+  assert.match(app, /openLabelBulkUnify414/);
+  assert.match(app, /批量统一标签/);
   assert.match(app, /系统不会自动选择目标标签/);
   const saveStart = app.indexOf('window.saveLabel414=async function(classId)');
   const saveEnd = app.indexOf('\n  window.deleteLabel414=', saveStart);

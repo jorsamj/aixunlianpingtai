@@ -4487,7 +4487,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
 
   window.renderLabelManagement414=async function({force=false}={}){
     const view=document.getElementById('view');if(!view)return;
-    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
+    view.innerHTML=`<section class="label414-shell"><div class="label414-head"><div><h2>标签管理</h2><p>标签英文编码用于训练、导入导出和模型结果；别名用于记住外部数据集或 AI 曾确认过的标签名称。</p></div><div class="row"><button class="btn" onclick="renderLabelManagement414({force:true})">刷新</button><button class="btn" onclick="openLabelBulkUnify414()">批量统一标签</button><button class="btn primary" onclick="openLabel414()">＋ 新建标签</button></div></div><section class="panel"><div class="label414-table" id="label414Table"></div></section></section>`;
     drawLabel414();
     const age=Date.now()-Number(state.label414UsageLoadedAt||0);
     if(!force&&state.label414UsageLoadedAt>0&&age>=0&&age<LABEL_SCHEMA_CACHE_TTL_MS)return;
@@ -4502,26 +4502,82 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const rows=(state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[];
     box.innerHTML=`<div class="label414-row head"><span>英文标签</span><span>中文名称</span><span>颜色</span><span>快捷键</span><span>正样本图片</span><span>负样本范围</span><span>标注框</span><span>操作</span></div>${rows.map(l=>{const affected=Number(l.affected_images||0);return `<div class="label414-row"><span><b class="label414-code">${esc(l.code)}</b></span><span>${esc(l.display_name||'-')}${(l.aliases||[]).length?`<small class="muted-line">别名：${(l.aliases||[]).map(esc).join('、')}</small>`:''}</span><span><i class="label414-color" style="background:${esc(l.color||'#64748b')}"></i>${esc(l.color||'')}</span><span>${esc(l.hotkey||'-')}</span><span>${Number(l.usage_images||0)}</span><span>${Number(l.scope_images||0)}</span><span>${Number(l.usage_boxes||0)}</span><span class="row"><button class="btn mini" onclick="openLabel414(${Number(l.class_id)})">编辑</button><button class="btn mini" onclick="openLabelUnify414(${Number(l.class_id)})" ${affected?'':'disabled'}>统一标签</button><button class="btn mini danger" onclick="deleteLabel414(${Number(l.class_id)},'${esc(l.code)}')">删除</button></span></div>`}).join('')||'<div class="empty">暂无标签。请先创建英文标签，例如 fire / smoke / person。</div>'}`;
   }
-  window.openLabelUnify414=function(classId){
-    const source=((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[]).find(item=>Number(item.class_id)===Number(classId));
-    if(!source)return toast('标签信息已变化，请刷新后重试');
-    const targets=(state.labels||[]).filter(item=>item?.code&&String(item.code)!==String(source.code)&&item.status!=='disabled'&&item.status!=='inactive');
-    if(!targets.length)return toast('请先创建另一个目标标签');
-    modal('统一历史标签',`<div class="label414-unify"><div class="label414-unify-hero"><div><span>原标签</span><b>${esc(source.code)}</b><em>${esc(source.display_name||source.code)}</em></div><i>→</i><div><span>目标标签</span><select id="label414UnifyTarget" class="select"><option value="">由你选择目标标签</option>${targets.map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select></div></div><div class="report429-kpis"><div><span>正样本图片</span><b>${Number(source.usage_images||0)}</b></div><div><span>负样本范围</span><b>${Number(source.scope_images||0)}</b></div><div><span>标注框</span><b>${Number(source.usage_boxes||0)}</b></div><div><span>受影响素材</span><b>${Number(source.affected_images||0)}</b></div></div><div class="alert warn"><b>系统不会自动选择目标标签</b><span>确认后由后台任务分批修改 Annotation Ground Truth；窗口可以关闭，任务不会取消。若期间发生人工标注修改，冲突素材会失败关闭，避免覆盖新标注。</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button id="label414UnifySubmit" class="btn primary" onclick="startLabelUnify414(${Number(classId)})">开始后台统一</button></div></div>`,false);
+  function labelUnifyRows414(){
+    return ((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[])
+      .filter(item=>item?.code&&item.status!=='disabled'&&item.status!=='inactive'&&item.status!=='merged');
+  }
+  function selectedLabelUnifyIds414(){
+    return [...document.querySelectorAll('[data-label-unify-source]:checked')]
+      .map(input=>Number(input.value))
+      .filter(Number.isFinite);
+  }
+  function selectedLabelUnifyRows414(){
+    const ids=new Set(selectedLabelUnifyIds414());
+    return labelUnifyRows414().filter(item=>ids.has(Number(item.class_id)));
+  }
+  window.filterLabelUnify414=function(){
+    const query=(document.getElementById('label414UnifySearch')?.value||'').trim().toLowerCase();
+    document.querySelectorAll('[data-label-unify-row]').forEach(row=>{
+      row.hidden=!!query&&!String(row.dataset.search||'').includes(query);
+    });
   };
-  window.startLabelUnify414=async function(classId){
-    const target=(document.getElementById('label414UnifyTarget')?.value||'').trim();
-    if(!target)return toast('请选择目标标签');
-    const source=((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[]).find(item=>Number(item.class_id)===Number(classId));
-    if(!source)return toast('标签信息已变化，请刷新后重试');
+  window.refreshLabelUnifyPreview414=async function(){
+    const ids=selectedLabelUnifyIds414(),target=document.getElementById('label414UnifyTarget')?.value||'';
+    const selectedCodes=new Set(selectedLabelUnifyRows414().map(item=>String(item.code)));
+    if(target&&selectedCodes.has(String(target))){
+      const select=document.getElementById('label414UnifyTarget');
+      if(select)select.value='';
+    }
+    const fields=['Positive','Scope','Boxes','Affected'];
+    fields.forEach(key=>{const node=document.getElementById('label414Unify'+key);if(node){node.textContent=ids.length?'…':'0';node.classList.toggle('loading',!!ids.length)}});
+    const note=document.getElementById('label414UnifyPreviewNote');
+    if(note)note.textContent=ids.length?'正在计算真实影响范围…':'请选择一个或多个来源标签';
     const button=document.getElementById('label414UnifySubmit');
-    if(button){button.disabled=true;button.textContent='正在创建后台任务…'}
+    if(button)button.disabled=!ids.length;
+    if(!ids.length)return;
+    const seq=(Number(state.labelUnifyPreviewSeq414||0)+1);state.labelUnifyPreviewSeq414=seq;
     try{
-      const task=await api(`/api/v54/projects/${pid()}/labels/${Number(classId)}/unify`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_label:target})});
-      state.import412RemapTask=task;state.import412RemapSource=String(source.code);state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
-      modal('批量统一标签',importRemapProgress414(task,String(source.code),target),false);
-      await pollImportRemap414(task.task_id,String(source.code),target);
-    }catch(e){toast(e.message||e);if(button?.isConnected){button.disabled=false;button.textContent='开始后台统一'}}
+      const preview=await api(`/api/v54/projects/${pid()}/labels/unify/preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_class_ids:ids})});
+      if(Number(state.labelUnifyPreviewSeq414)!==seq)return;
+      const values={Positive:preview.positive_images||0,Scope:preview.scope_images||0,Boxes:preview.boxes||0,Affected:preview.affected_images||0};
+      for(const [key,value] of Object.entries(values)){const node=document.getElementById('label414Unify'+key);if(node){node.textContent=Number(value);node.classList.remove('loading')}}
+      if(note)note.textContent=`已选 ${ids.length} 个来源标签 · 真实去重影响 ${Number(preview.affected_images||0)} 张素材`;
+    }catch(e){
+      if(Number(state.labelUnifyPreviewSeq414)!==seq)return;
+      fields.forEach(key=>{const node=document.getElementById('label414Unify'+key);if(node){node.textContent='-';node.classList.remove('loading')}});
+      if(note)note.textContent=`影响范围读取失败：${e.message||e}`;
+    }
+  };
+  window.openLabelBulkUnify414=function(preselected=[]){
+    const rows=labelUnifyRows414(),initial=new Set((preselected||[]).map(Number)),sources=rows.filter(item=>Number(item.affected_images||0)>0);
+    if(!sources.length)return toast('当前没有需要统一的历史标签');
+    const targets=rows;
+    modal('统一历史标签',`<div class="label414-unify"><div class="label414-unify-columns"><section class="label414-unify-source"><div class="label414-unify-title"><div><b>1. 选择来源标签</b><span>可以一次选择多个，例如 smoke / smoking / 吸烟</span></div><input id="label414UnifySearch" class="input" placeholder="搜索标签" oninput="filterLabelUnify414()"></div><div class="label414-unify-list">${sources.map(item=>`<label data-label-unify-row data-search="${esc((String(item.code)+' '+String(item.display_name||'')).toLowerCase())}"><input type="checkbox" data-label-unify-source value="${Number(item.class_id)}" ${initial.has(Number(item.class_id))?'checked':''} onchange="refreshLabelUnifyPreview414()"><span><b>${esc(item.code)}</b><em>${esc(item.display_name||item.code)}</em></span><small>${Number(item.usage_boxes||0)} 框 · ${Number(item.affected_images||0)} 素材</small></label>`).join('')}</div></section><i class="label414-unify-arrow">→</i><section class="label414-unify-target"><b>2. 选择统一后的标签</b><span>目标标签必须由你手工选择，系统不会自动推荐。</span><select id="label414UnifyTarget" class="select" onchange="refreshLabelUnifyPreview414()"><option value="">由你选择目标标签</option>${targets.map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select></section></div><div class="report429-kpis label414-unify-kpis"><div><span>正样本图片</span><b id="label414UnifyPositive">0</b></div><div><span>负样本范围</span><b id="label414UnifyScope">0</b></div><div><span>标注框</span><b id="label414UnifyBoxes">0</b></div><div><span>受影响素材</span><b id="label414UnifyAffected">0</b></div></div><div id="label414UnifyPreviewNote" class="label414-unify-note">请选择一个或多个来源标签</div><div class="alert warn"><b>这是后台 Ground Truth 统一任务</b><span>完整成功后，来源标签会标记为 merged 并从可选标签中退出；如果出现并发人工修改或部分失败，来源标签不会退役。任务创建后可关闭窗口，后台仍会继续。</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button id="label414UnifySubmit" class="btn primary" onclick="startLabelUnify414()" disabled>开始后台统一</button></div></div>`,false);
+    window.refreshLabelUnifyPreview414();
+  };
+  window.openLabelUnify414=function(classId){
+    window.openLabelBulkUnify414([Number(classId)]);
+  };
+  window.startLabelUnify414=async function(classId=null){
+    let ids=selectedLabelUnifyIds414();
+    if(!ids.length&&classId!==null&&Number.isFinite(Number(classId)))ids=[Number(classId)];
+    if(!ids.length)return toast('请选择至少一个来源标签');
+    const target=(document.getElementById('label414UnifyTarget')?.value||'').trim();
+    if(!target)return toast('请选择统一后的目标标签');
+    const selected=labelUnifyRows414().filter(item=>ids.includes(Number(item.class_id)));
+    if(selected.some(item=>String(item.code)===target))return toast('目标标签不能同时作为来源标签');
+    const sourceText=selected.length<=3?selected.map(item=>String(item.code)).join('、'):`${selected.slice(0,3).map(item=>String(item.code)).join('、')} 等 ${selected.length} 个标签`;
+    const button=document.getElementById('label414UnifySubmit');
+    if(button){button.disabled=true;button.classList.add('is-loading');button.textContent='正在创建后台任务…'}
+    try{
+      const task=await api(`/api/v54/projects/${pid()}/labels/unify`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_class_ids:ids,target_label:target})});
+      state.import412RemapTask=task;state.import412RemapSource=sourceText;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
+      modal('批量统一标签',importRemapProgress414(task,sourceText,target),false);
+      await pollImportRemap414(task.task_id,sourceText,target);
+    }catch(e){
+      toast(e.message||e);
+      if(button?.isConnected){button.disabled=false;button.classList.remove('is-loading');button.textContent='开始后台统一'}
+    }
   };
 
   window.openLabel414=function(classId=null){
@@ -4726,7 +4782,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(progressVisible)closeModal();
     if(state.page==='标签管理')drawLabel414();
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),scopeChanged=Number(task?.result?.changed_scope_images??0),failed=Number(task?.failed||0);
-    toast(failed?`标签统一完成：${changed} 个框、${scopeChanged} 个负样本范围已更新，${failed} 张需复核`:`标签统一完成：${source} → ${target} · ${changed} 个框 · ${scopeChanged} 个负样本范围`);
+    toast(failed?`标签统一完成：${changed} 个框、${scopeChanged} 个负样本范围已更新，${failed} 张需复核；来源标签未退役`:`标签统一完成：${source} → ${target} · ${changed} 个框 · ${scopeChanged} 个负样本范围 · 来源标签已退役`);
     state.annotationRemapOrigin414='';
   }
 
