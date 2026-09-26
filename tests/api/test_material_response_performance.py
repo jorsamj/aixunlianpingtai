@@ -550,3 +550,66 @@ def test_selected_training_quality_uses_indexed_materials_batched_annotations_an
     assert project_reads == ["project-1"]
     assert quality["label_images"]["fire"] == 1201
     assert quality["split_counts"]["train"] == 1201
+
+
+
+def test_clean_confirmation_updates_only_frozen_selection_without_full_table_mutate(monkeypatch):
+    image_ids = [f"image-{index:04d}" for index in range(1201)]
+    read_batches = []
+    patch_calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            read_batches.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id}
+                for image_id in batch
+                if image_id != "image-1000"
+            ]
+
+        def patch_many(self, ids, patch, batch_size=0):
+            patch_calls.append((list(ids), dict(patch), batch_size))
+            return len(list(ids))
+
+        def mutate(self, _callback):
+            raise AssertionError("clean confirmation must not scan/mutate the full material table")
+
+    class FakeArtifacts:
+        def atomic_write_json(self, _task_id, _name, _payload):
+            return None
+
+    monkeypatch.setattr(
+        app_module,
+        "_v33_get_task",
+        lambda _project_id, _kind, task_id: {"id": task_id, "status": "awaiting_confirmation"},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v47_durable_clean_results",
+        lambda *_args, **_kwargs: {"items": []},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v47_frozen_clean_selection_ids",
+        lambda _task_id: image_ids,
+    )
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "shared_task_artifacts", lambda: FakeArtifacts())
+
+    result = app_module.v47_confirm_clean(
+        "project-1",
+        "clean-1",
+        app_module.V47CleanConfirmReq(delete_ids=[]),
+    )
+
+    assert [len(batch) for batch in read_batches] == [500, 500, 201]
+    assert len(patch_calls) == 1
+    patched_ids, patch, batch_size = patch_calls[0]
+    assert len(patched_ids) == 1200
+    assert "image-1000" not in patched_ids
+    assert batch_size == 500
+    assert patch["processing_status"] == "processed"
+    assert patch["clean_task_id"] == "clean-1"
+    assert result["processed_ids"] == patched_ids

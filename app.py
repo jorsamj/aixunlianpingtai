@@ -18839,18 +18839,26 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     if not wanted:
         raise HTTPException(status_code=409, detail='清洗冻结范围不存在，请重新创建任务')
     cleaned_at = now_iso()
-    def mark_confirmed(rows):
-        processed_ids = []
-        for img in rows:
-            iid = str(img.get('id'))
-            if iid not in wanted:
-                continue
-            img['processing_status'] = 'processed'
-            img['cleaned_at'] = cleaned_at
-            img['clean_task_id'] = task_id
-            processed_ids.append(iid)
-        return processed_ids
-    processed_ids = material_store(project_id).mutate(mark_confirmed)
+    materials = material_store(project_id)
+    existing_ids = []
+    ordered_wanted = sorted(wanted)
+    for offset in range(0, len(ordered_wanted), 500):
+        existing_ids.extend(
+            str(row.get('id'))
+            for row in materials.get_many(ordered_wanted[offset:offset + 500])
+            if str(row.get('id') or '')
+        )
+    processed_ids = list(dict.fromkeys(existing_ids))
+    if processed_ids:
+        materials.patch_many(
+            processed_ids,
+            {
+                'processing_status': 'processed',
+                'cleaned_at': cleaned_at,
+                'clean_task_id': task_id,
+            },
+            batch_size=500,
+        )
     deleted_ids = [str(item.get('id')) for item in deleted_images]
     shared_task_artifacts().atomic_write_json(task_id, 'clean_confirmation.json', {
         'confirmed_at': now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
