@@ -261,3 +261,66 @@ def test_import_review_reads_only_imported_materials_and_batches_annotations(mon
     assert [len(batch) for batch in annotation_batches] == [500, 500, 201]
     assert [row["id"] for row in body["images"]] == ids
     assert body["label_box_counts"] == {"smoke": 1201}
+
+
+def test_algorithm_report_label_counts_prefer_frozen_snapshot_truth(tmp_path, monkeypatch):
+    snapshot_id = "a" * 64
+    project = tmp_path / "project"
+    snapshots = project / "snapshots"
+    snapshots.mkdir(parents=True)
+    (snapshots / f"{snapshot_id}.json").write_text(
+        json.dumps({
+            "snapshot_id": snapshot_id,
+            "label_counts": {"smoke": 17, "person": 3},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "project_dir", lambda _project_id: project)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotations_many",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("frozen snapshot label counts must avoid live annotation reads")
+        ),
+    )
+
+    counts = app_module._v49_job_label_counts(
+        "project-1",
+        {
+            "snapshot_id": snapshot_id,
+            "dataset_selected_ids": {"train": ["image-current"]},
+        },
+    )
+
+    assert counts == {"smoke": 17, "person": 3}
+
+
+def test_algorithm_report_legacy_fallback_batches_live_annotation_reads(monkeypatch):
+    ids = [f"image-{index:04d}" for index in range(1201)]
+    batches = []
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {"boxes": [{"label": "fire"}]}
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy report fallback must not issue per-image reads")
+        ),
+    )
+
+    counts = app_module._v49_job_label_counts(
+        "project-1",
+        {"dataset_selected_ids": {"train": ids}},
+    )
+
+    assert [len(batch) for batch in batches] == [500, 500, 201]
+    assert counts == {"fire": 1201}

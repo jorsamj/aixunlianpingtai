@@ -19999,13 +19999,42 @@ def _v49_metric_from_report(report: Dict[str, Any], *keys: str):
     return None
 
 def _v49_job_label_counts(project_id: str, job: Dict[str, Any]) -> Dict[str, int]:
+    snapshot_id = str(job.get('snapshot_id') or '').strip().lower()
+    if re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
+        snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
+        if (
+            isinstance(snapshot, dict)
+            and str(snapshot.get('snapshot_id') or '').strip().lower() == snapshot_id
+            and isinstance(snapshot.get('label_counts'), dict)
+        ):
+            counts: Dict[str, int] = {}
+            for label, value in snapshot['label_counts'].items():
+                code = str(label or '').strip()
+                try:
+                    count = int(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if code and count > 0:
+                    counts[code] = count
+            return counts
+
     selected = job.get('dataset_selected_ids') or {}
-    ids = list(selected.get('train') or selected.get('train_image_ids') or [])
-    if not ids:
-        ids = list((job.get('data_summary') or {}).get('selected_ids', {}).get('train') or [])
+    ids = list(dict.fromkeys(
+        str(value).strip()
+        for value in (
+            selected.get('train')
+            or selected.get('train_image_ids')
+            or (job.get('data_summary') or {}).get('selected_ids', {}).get('train')
+            or []
+        )
+        if str(value).strip()
+    ))
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(ids), 500):
+        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
     counts: Dict[str, int] = {}
-    for iid in ids:
-        ann = read_annotation(project_id, str(iid))
+    for image_id in ids:
+        ann = annotations.get(image_id) or {}
         for box in ann.get('boxes', []):
             label = str(box.get('label') or '').strip()
             if label:
