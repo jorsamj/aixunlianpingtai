@@ -308,3 +308,82 @@ def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
     assert hasattr(app_module, "_annotation_runtime_provider")
     assert not hasattr(app_module, "_v47_label_catalog")
     assert not hasattr(app_module, "_v47_runtime_provider")
+
+
+def test_annotation_create_payload_uses_bounded_material_and_reference_lookups(monkeypatch):
+    project = {
+        "id": "scale-project",
+        "labels": ["fire"],
+        "label_meta": [{"code": "fire", "display_name": "火焰", "status": "active"}],
+    }
+    image_ids = [f"image-{index:05d}" for index in range(1_200)]
+    reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
+    material_batches = []
+    annotation_batches = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_batches.append(batch)
+            assert len(batch) <= 500
+            return [{"id": image_id} for image_id in batch]
+
+    class FakeAnnotations:
+        def get_many(self, ids):
+            batch = list(ids)
+            annotation_batches.append(batch)
+            assert len(batch) <= 500
+            return {
+                image_id: {
+                    "image_id": image_id,
+                    "annotation_state": "annotated",
+                    "boxes": [{"label": "fire", "class_id": 0}],
+                }
+                for image_id in batch
+            }
+
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: project)
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "_v50_annotation_repository", lambda _project_id: FakeAnnotations())
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: pytest.fail("AI task creation must not scan the whole material library"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: pytest.fail("AI reference labels must use bounded AnnotationRepository.get_many"),
+    )
+
+    request, provider_key = app_module._annotation_create_payload(
+        "scale-project",
+        app_module.AnnotationTaskCreateReq(
+            image_ids=image_ids,
+            reference_image_ids=reference_ids,
+            labels_text="fire",
+            provider_id="fake-provider",
+        ),
+    )
+
+    assert [len(batch) for batch in material_batches] == [500, 500, 200]
+    assert [len(batch) for batch in annotation_batches] == [500, 500, 1]
+    assert request["image_ids"] == image_ids
+    assert request["labels"] == ["fire"]
+    assert provider_key == "fake-provider"
+
+
+def test_annotation_task_frontend_cannot_make_alias_valid_for_backend(client, seeded_project, isolated_task_runtime):
+    project_id, image = seeded_project
+    project = app_module.get_project(project_id)
+    project.setdefault("label_meta", [])[0]["aliases"] = ["flame", "火"]
+    app_module.save_project(project)
+
+    for value in ("flame", "火"):
+        response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+            "image_ids": [image["id"]],
+            "labels_text": value,
+            "provider_id": "fake-provider",
+        })
+        assert response.status_code == 400
+        assert "不会根据中文名、别名或历史映射自动选择标签" in response.json()["detail"]

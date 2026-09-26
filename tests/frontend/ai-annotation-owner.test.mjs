@@ -99,3 +99,20 @@ test('retired v47 AI review clients are absent from the production frontend', ()
   assert.match(source, /window\.reviewAiLabel427=async function\(id\)/);
   assert.match(source, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
 });
+
+
+test('AI task creation never resolves display names or aliases into canonical labels', () => {
+  const helperStart = source.lastIndexOf('function explicitCanonicalAiLabelText(value)');
+  const submitStart = source.lastIndexOf('window.submitAiLabel429=async function(ids=[])');
+  assert.ok(helperStart > 0 && submitStart > helperStart);
+  const helper = source.slice(helperStart, submitStart);
+  assert.match(helper, /label\?\.code/);
+  assert.match(helper, /const unknown=parts\.filter\(value=>!allowed\.has\(value\)\)/);
+  assert.doesNotMatch(helper, /display_name|aliases|alias/);
+  const submitEnd = source.indexOf('\n\n  function taskRow', submitStart);
+  const submit = source.slice(submitStart, submitEnd);
+  assert.match(submit, /labels_text:parsed\.text/);
+  assert.match(submit, /只接受当前有效的平台标签 code/);
+  assert.match(source, /中文名、别名、历史 alias 不会自动转换/);
+  assert.doesNotMatch(source, /function normalizedLabelText\(/);
+});

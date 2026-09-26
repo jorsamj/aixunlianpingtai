@@ -268,7 +268,8 @@ jobs:
                   '不会用于导入时自动选择或推荐平台标签',
                   '只记录人工决定；不会自动推荐或预选。',
                   'function labelReviewMarkup61(',
-                  'const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])',
+                  'function explicitCanonicalAiLabelText(value)',
+                  '中文名、别名、历史 alias 不会自动转换',
                   'window.submitAiLabel429=async function(ids=[])',
                   'const task=await api(taskApi(),',
                   '候选结果不会自动写入正式标注',
@@ -385,6 +386,8 @@ jobs:
               ),
               'static/app.js': (
                   '自动预选后仍需人工确认',
+                  'function normalizedLabelText(',
+                  'const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])',
               ),
           }
           for name, tokens in forbidden.items():

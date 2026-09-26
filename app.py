@@ -19031,11 +19031,17 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
         payload.labels_text,
         _annotation_label_catalog(project),
     )
-    for image_id in payload.reference_image_ids or []:
-        for box in read_annotation(project_id, image_id).get("boxes", []):
-            label = normalize_label(str(box.get("label") or ""))
-            if label and label not in labels:
-                labels.append(label)
+    reference_ids = list(dict.fromkeys(
+        str(value) for value in (payload.reference_image_ids or []) if str(value)
+    ))
+    annotations = _v50_annotation_repository(project_id)
+    for offset in range(0, len(reference_ids), 500):
+        reference_rows = annotations.get_many(reference_ids[offset:offset + 500])
+        for image_id in reference_ids[offset:offset + 500]:
+            for box in (reference_rows.get(image_id) or {}).get("boxes", []):
+                label = normalize_label(str(box.get("label") or ""))
+                if label and label not in labels:
+                    labels.append(label)
     if not labels:
         raise HTTPException(status_code=400, detail="请输入标签，或选择至少一张已有标注的参考图片")
     available = {str(item.get("code")) for item in _annotation_label_catalog(project)}
@@ -19043,12 +19049,19 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     if unknown:
         raise HTTPException(status_code=400, detail="以下标签不在标签库或已停用：" + "、".join(unknown))
     image_ids = list(dict.fromkeys(str(value) for value in payload.image_ids if str(value)))
-    existing = {str(image.get("id")) for image in load_images(project_id)}
+    if not image_ids:
+        raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
+    existing = set()
+    materials = material_store(project_id)
+    for offset in range(0, len(image_ids), 500):
+        existing.update(
+            str(image.get("id"))
+            for image in materials.get_many(image_ids[offset:offset + 500])
+            if str(image.get("id") or "")
+        )
     missing = sorted(set(image_ids) - existing)
     if missing:
         raise HTTPException(status_code=400, detail="以下素材不存在：" + "、".join(missing[:20]))
-    if not image_ids:
-        raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
     config = next(
         (item for item in _v35_model_items() if item.get("id") in {payload.model_config_id, payload.provider_id}),
         None,
