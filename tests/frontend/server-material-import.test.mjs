@@ -169,3 +169,13 @@ test('server import and rescan use the shared bounded manual label review model'
   assert.match(source, /labelMappingReviewSummary/);
   assert.doesNotMatch(source, /classes\.map\(row=>`<div class="storage61-mapping-row" data-import-class/);
 });
+
+
+test('shared label review loads bounded real samples lazily with bbox evidence', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /labelReviewSamples61/);
+  assert.match(source, /\/label-review\/\$\{encodeURIComponent\(key\)\}\/classes\/\$\{encodeURIComponent\(classId\)\}\/samples\?limit=8/);
+  assert.match(source, /loading="lazy"/);
+  assert.match(source, /label-mapping-sample-box/);
+  assert.match(source, /仅作为人工判断证据，不代表系统推荐/);
+});

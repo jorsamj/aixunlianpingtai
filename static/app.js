@@ -539,6 +539,7 @@ window.__resourceDiscoveryDependencies={
   };
 
   const labelMappingReviewStates61=window.__labelMappingReviewStates61||(window.__labelMappingReviewStates61=new Map());
+  const labelMappingSampleCache61=window.__labelMappingSampleCache61||(window.__labelMappingSampleCache61=new Map());
   const labelReviewApi61=()=>window.PlatformCore?.labelMappingReview;
   const labelReviewStateKey61=(kind,key)=>`${String(pid()||'default')}:${String(kind||'')}:${String(key||'')}`;
   function getLabelReview61(kind,key,classes=null){
@@ -555,10 +556,10 @@ window.__resourceDiscoveryDependencies={
     const keep=page.rows.map(row=>row.code).filter(Boolean),visibleLabels=api.filterCanonicalLabels(labels,review.targetQuery,keep);
     const optionHtml=selected=>['<option value="">选择平台标签</option>',...visibleLabels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}" ${String(selected||'')===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
     const rowAttr=kind==='rescan'?'data-rescan-class':'data-import-class';
-    const rows=page.rows.map(row=>`<div class="storage61-mapping-row label-mapping-review-row" ${rowAttr}="${esc(row.classId)}" data-source-name="${esc(row.name)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="labelReviewToggle61('${kind}','${esc(key)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(row.name||('类别 '+row.classId))}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${row.code?'<span class="pill ok">已人工映射</span>':'<span class="pill warn">待选择</span>'}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name||row.classId)}的平台标签" onchange="labelReviewSet61('${kind}','${esc(key)}','${esc(row.classId)}',this.value)">${optionHtml(row.code)}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('${kind}','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`).join('');
+    const rows=page.rows.map(row=>`<div class="storage61-mapping-row label-mapping-review-row" ${rowAttr}="${esc(row.classId)}" data-source-name="${esc(row.name)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="labelReviewToggle61('${kind}','${esc(key)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(row.name||('类别 '+row.classId))}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${row.code?'<span class="pill ok">已人工映射</span>':'<span class="pill warn">待选择</span>'}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name||row.classId)}的平台标签" onchange="labelReviewSet61('${kind}','${esc(key)}','${esc(row.classId)}',this.value)">${optionHtml(row.code)}</select><button type="button" class="btn mini" onclick="labelReviewSamples61('${kind}','${esc(key)}','${esc(row.classId)}','${encodeURIComponent(String(row.name||''))}')">查看样本</button><button type="button" class="btn mini" onclick="openInlineLabelCreate414('${kind}','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`).join('');
     const bulkLabels=api.filterCanonicalLabels(labels,review.targetQuery),bulkOptions=['<option value="">批量映射到…</option>',...bulkLabels.map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
     const targets=Object.entries(summary.targetCounts||{}),targetSummary=targets.length?targets.slice(0,8).map(([code,count])=>`${esc(code)} ← ${Number(count)} 个外部标签`).join(' · ')+(targets.length>8?` · 另 ${targets.length-8} 个目标`:''):'尚未建立任何映射';
-    return `<div class="storage61-import-mapping label-mapping-review" data-label-review-kind="${esc(kind)}" data-label-review-key="${esc(key)}"><div class="row between"><div><b>外部类别 → 平台标签</b><div class="item-sub">只记录人工决定；不会自动推荐或预选。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签 / class_id" onchange="labelReviewSearch61('${kind}','${esc(key)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="labelReviewTargetSearch61('${kind}','${esc(key)}',this.value)"><select class="select" data-review-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="labelReviewBulk61('${kind}','${esc(key)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span><span>已勾选 <b>${summary.selected}</b></span></div><div class="item-sub label-mapping-review-targets">${targetSummary}</div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="row between label-mapping-review-pager"><button class="btn mini" ${page.page<=1?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page-1})">上一页</button><span>${page.page} / ${page.pageCount}</span><button class="btn mini" ${page.page>=page.pageCount?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page+1})">下一页</button></div><div class="item-sub">${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未人工映射。':'全部外部标签已人工映射，可提交。'}</div><div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`;
+    return `<div class="storage61-import-mapping label-mapping-review" data-label-review-kind="${esc(kind)}" data-label-review-key="${esc(key)}"><div class="row between"><div><b>外部类别 → 平台标签</b><div class="item-sub">只记录人工决定；不会自动推荐或预选。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签 / class_id" onchange="labelReviewSearch61('${kind}','${esc(key)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="labelReviewTargetSearch61('${kind}','${esc(key)}',this.value)"><select class="select" data-review-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="labelReviewBulk61('${kind}','${esc(key)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span><span>已勾选 <b>${summary.selected}</b></span></div><div class="item-sub label-mapping-review-targets">${targetSummary}</div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="row between label-mapping-review-pager"><button class="btn mini" ${page.page<=1?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page-1})">上一页</button><span>${page.page} / ${page.pageCount}</span><button class="btn mini" ${page.page>=page.pageCount?'disabled':''} onclick="labelReviewPage61('${kind}','${esc(key)}',${page.page+1})">下一页</button></div><div class="label-mapping-sample-panel" data-label-review-samples hidden></div><div class="item-sub">${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未人工映射。':'全部外部标签已人工映射，可提交。'}</div><div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`;
   }
   function refreshLabelReview61(kind,key){
     const nodes=[...document.querySelectorAll('[data-label-review-kind][data-label-review-key]')],node=nodes.find(item=>item.dataset.labelReviewKind===String(kind)&&item.dataset.labelReviewKey===String(key));
@@ -569,6 +570,39 @@ window.__resourceDiscoveryDependencies={
     window.refreshStorageRescanConfirm61?.();
     return true;
   }
+  function labelReviewRoot61(kind,key){
+    return [...document.querySelectorAll('[data-label-review-kind][data-label-review-key]')]
+      .find(item=>item.dataset.labelReviewKind===String(kind)&&item.dataset.labelReviewKey===String(key))||null;
+  }
+  function labelReviewSampleHtml61(classId,name,samples){
+    const overlay=labelReviewApi61()?.labelSampleOverlay;
+    const cards=(samples||[]).map((sample,index)=>{
+      const box=overlay?.(sample.bbox||{})||{left:0,top:0,width:0,height:0};
+      const style=`left:${box.left.toFixed(3)}%;top:${box.top.toFixed(3)}%;width:${box.width.toFixed(3)}%;height:${box.height.toFixed(3)}%`;
+      const url=String(sample.preview_url||sample.content_url||'');
+      return `<article class="label-mapping-sample-card"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="查看整图"><span class="label-mapping-sample-image"><img loading="lazy" decoding="async" src="${esc(url)}" alt="${esc(name||('类别 '+classId))} 样本 ${index+1}"><i class="label-mapping-sample-box" style="${style}"></i></span></a><footer><b>${esc(sample.filename||sample.object_key||('样本 '+(index+1)))}</b><span>${Number(sample.width||0)}×${Number(sample.height||0)} · 点击查看整图</span></footer></article>`;
+    }).join('');
+    return `<div class="row between"><div><b>真实样本 · ${esc(name||('类别 '+classId))}</b><div class="item-sub">仅作为人工判断证据，不代表系统推荐。框来自导入候选标注。</div></div><button class="btn mini" onclick="this.closest('[data-label-review-samples]').hidden=true">收起</button></div><div class="label-mapping-sample-grid">${cards||'<div class="empty">当前类别没有可显示样本</div>'}</div>`;
+  }
+  window.labelReviewSamples61=async function(kind,key,classId,encodedName=''){
+    const root=labelReviewRoot61(kind,key),panel=root?.querySelector('[data-label-review-samples]');
+    if(!root||!panel)return;
+    const name=decodeURIComponent(String(encodedName||''));
+    panel.hidden=false;
+    panel.innerHTML='<div class="skeleton-shimmer label-mapping-sample-loading">正在读取真实样本…</div>';
+    const cacheKey=`${pid()}:${key}:${classId}`,cached=labelMappingSampleCache61.get(cacheKey);
+    try{
+      let payload=cached?.expiresAt>Date.now()?cached.payload:null;
+      if(!payload){
+        payload=await api(`/api/v61/projects/${encodeURIComponent(pid())}/label-review/${encodeURIComponent(key)}/classes/${encodeURIComponent(classId)}/samples?limit=8`);
+        labelMappingSampleCache61.set(cacheKey,{payload,expiresAt:Date.now()+240000});
+      }
+      if(panel.isConnected)panel.innerHTML=labelReviewSampleHtml61(classId,name,payload.samples||[]);
+    }catch(error){
+      if(panel.isConnected)panel.innerHTML=`<div class="alert err">样本读取失败：${esc(error.message||error)}</div>`;
+    }
+  };
+
   window.labelReviewSet61=function(kind,key,classId,code){labelReviewApi61().setLabelMapping(getLabelReview61(kind,key),classId,code);refreshLabelReview61(kind,key)};
   window.labelReviewToggle61=function(kind,key,classId,selected){labelReviewApi61().setLabelMappingSelected(getLabelReview61(kind,key),classId,selected);window.refreshStorageImportConfirm61?.();window.refreshStorageRescanConfirm61?.()};
   window.labelReviewSearch61=function(kind,key,value){labelReviewApi61().setLabelMappingReviewSearch(getLabelReview61(kind,key),value);refreshLabelReview61(kind,key)};

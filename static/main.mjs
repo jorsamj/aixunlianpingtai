@@ -42,7 +42,7 @@ import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMateri
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
-import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422570';
+import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422402';
@@ -117,7 +117,7 @@ window.PlatformCore = {
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
-  labelMappingReview: {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
+  labelMappingReview: {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
   runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime, trainingDraftControlsRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };

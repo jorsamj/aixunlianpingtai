@@ -8,6 +8,7 @@ import {
   filterCanonicalLabels,
   labelMappingReviewPage,
   labelMappingReviewSummary,
+  labelSampleOverlay,
   reconcileLabelMappingReview,
   setLabelMapping,
   setLabelMappingReviewPage,
@@ -83,4 +84,14 @@ test('canonical label search is factual filtering and keeps already selected cod
   assert.deepEqual(filterCanonicalLabels(labels, '烟').map(row => row.code), ['smoke']);
   assert.deepEqual(filterCanonicalLabels(labels, 'nomatch', ['helmet']).map(row => row.code), ['helmet']);
   assert.equal(filterCanonicalLabels(labels, '').some(row => row.code === 'old'), false);
+});
+
+
+test('sample overlay clamps normalized boxes to the visible image', () => {
+  assert.deepEqual(labelSampleOverlay({cx:0.5,cy:0.5,w:0.4,h:0.2}), {
+    left:30, top:40, width:40, height:20,
+  });
+  assert.deepEqual(labelSampleOverlay({cx:0.05,cy:0.05,w:0.2,h:0.2}), {
+    left:0, top:0, width:15.000000000000002, height:15.000000000000002,
+  });
 });
