@@ -19358,7 +19358,11 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         raise HTTPException(status_code=400, detail="标签统一映射不能包含空标签")
     catalog = _annotation_label_catalog(get_project(project_id))
     label_ids = {str(item["code"]): int(item["class_id"]) for item in catalog}
-    source_labels = {str(item["label"]) for item in store.label_summary()}
+    source_labels = (
+        {str(item["label"]) for item in store.label_summary()}
+        if mapping
+        else set()
+    )
     unknown_sources = sorted(set(mapping) - source_labels)
     unknown_targets = sorted(set(mapping.values()) - set(label_ids))
     if unknown_sources:
@@ -19384,10 +19388,17 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
             status_code=400,
             detail="审核范围包含不存在或生成失败的素材",
         ) from error
-    try:
-        store.remap_labels(mapping, label_ids)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    reject_all_without_mapping = (
+        bool(payload.reject_unmentioned)
+        and not bool(payload.accept_unmentioned)
+        and not mapping
+        and all(not decision.accepted for decision in decisions)
+    )
+    if not reject_all_without_mapping:
+        try:
+            store.remap_labels(mapping, label_ids)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.accept_unmentioned:
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:

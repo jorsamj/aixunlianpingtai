@@ -109,6 +109,57 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
     assert all(item["accepted"] is False for item in reloaded["items"])
 
 
+def test_reject_all_skips_candidate_label_full_scans(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1001, repository, artifacts)
+
+    def forbidden_scan(*_args, **_kwargs):
+        raise AssertionError("reject-all must not scan candidate labels that cannot reach Ground Truth")
+
+    monkeypatch.setattr(CandidateStore, "label_summary", forbidden_scan)
+    monkeypatch.setattr(CandidateStore, "remap_labels", forbidden_scan)
+
+    rejected = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={"decisions": [], "reject_unmentioned": True, "commit": True},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["review"]["accepted"] == 0
+    assert rejected.json()["review"]["rejected"] == 1001
+    assert rejected.json()["task"]["accepted"] is False
+
+
+def test_accept_without_mapping_only_reads_label_summary_for_response(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 55, repository, artifacts)
+    original = CandidateStore.label_summary
+    calls = []
+
+    def counted_summary(self):
+        calls.append(self.task_id)
+        return original(self)
+
+    monkeypatch.setattr(CandidateStore, "label_summary", counted_summary)
+    accepted = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={
+            "decisions": [],
+            "accept_unmentioned": True,
+            "reject_unmentioned": False,
+            "commit": True,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["queued_for_commit"] is True
+    assert calls == [task_id]
+
+
 def test_candidate_result_can_accept_every_page_without_sending_all_ids(client, seeded_project, isolated_task_runtime):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime
