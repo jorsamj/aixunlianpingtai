@@ -425,6 +425,8 @@ class CandidateStore:
                             item["boxes"] = boxes
                             self._put(db, item, normalize=False)
                     after_ordinal = int(rows[-1]["ordinal"])
+                    if len(rows) < 200:
+                        break
                 db.commit()
             except Exception:
                 db.rollback()

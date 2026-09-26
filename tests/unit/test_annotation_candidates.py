@@ -172,7 +172,7 @@ def test_large_review_decisions_batch_candidate_reads_and_fail_closed(tmp_path: 
         )
 
     # The invalid second decision rolls back the whole transaction.
-    assert store.get("image-0000")["accepted"] is True
+    assert store.get_many(["image-0000"])["image-0000"]["accepted"] is True
 
 
 def test_label_revalidation_pages_large_candidate_store(tmp_path: Path, monkeypatch):
