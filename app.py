@@ -4859,8 +4859,8 @@ async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_
 @app.get("/api/projects/{project_id}/annotations/{image_id}")
 def get_annotation(project_id: str, image_id: str):
     get_project(project_id)
-    images = load_images(project_id)
-    img = next((x for x in images if x["id"] == image_id), None)
+    rows = material_store(project_id).get_many([str(image_id)])
+    img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     ann = read_annotation(project_id, image_id)
@@ -4875,8 +4875,9 @@ class AnnotationSave(BaseModel):
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
 def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     project = get_project(project_id)
-    images = load_images(project_id)
-    img = next((x for x in images if x["id"] == image_id), None)
+    materials = material_store(project_id)
+    rows = materials.get_many([str(image_id)])
+    img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     label_ids = {
@@ -4923,7 +4924,8 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
         )
     annotation_state = "annotated" if clean_boxes else "confirmed_empty"
     write_annotation(project_id, image_id, clean_boxes, annotation_state)
-    fresh = next((x for x in load_images(project_id) if str(x.get("id")) == str(image_id)), img)
+    refreshed = materials.get_many([str(image_id)])
+    fresh = refreshed[0] if refreshed else img
     return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
 
 

@@ -433,3 +433,48 @@ def test_iteration_schema_change_drops_inactive_previous_label_and_reindexes(tmp
     assert contract["label_schema_change_reasons"] == ["removed_or_inactive_labels"]
     assert contract["base_training_mode"] == "previous_weights_init"
     assert contract["strict_resume"] is False
+
+
+def test_scoped_projection_reuses_frozen_rows_without_second_annotation_io(tmp_path: Path, monkeypatch):
+    _, project = _project(tmp_path)
+    total = 20_000
+    frozen_rows = [
+        {
+            "id": f"image-{index:05d}",
+            "width": 100,
+            "height": 100,
+            "annotation_state": "annotated",
+            "annotation_scope": ["fire", "person"],
+            "annotation_hash": f"digest-{index}",
+            "boxes": [_box("fire"), _box("person")],
+        }
+        for index in range(total)
+    ]
+    monkeypatch.setattr(
+        "platform_core.training_label_tasks._ORIGINAL_SELECTED_PROJECT_IMAGES",
+        lambda _materials, _project, _ids: frozen_rows,
+    )
+
+    class ForbiddenSecondRepository:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("training label projection must reuse already-frozen annotation rows")
+
+    monkeypatch.setattr(
+        "platform_core.training_label_tasks.AnnotationRepository",
+        ForbiddenSecondRepository,
+    )
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0}],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        projected = _scoped_selected_project_images(object(), project, [row["id"] for row in frozen_rows])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+
+    assert len(projected) == total
+    assert projected[0]["source_labels"] == ["fire", "person"]
+    assert projected[-1]["boxes"][0]["label"] == "fire"
+    assert all("annotation_hash" not in row for row in projected)

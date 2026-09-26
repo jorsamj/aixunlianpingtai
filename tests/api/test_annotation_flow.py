@@ -1,3 +1,5 @@
+import pytest
+
 def test_save_reload_and_thumbnail_summary_match(client, seeded_project):
     pid, image = seeded_project
     saved = client.post(
@@ -203,3 +205,28 @@ def test_manual_save_recovers_legacy_ai_origin_without_box_source(client, seeded
     assert app_module._annotation_box_source_fallback({
         "source_type": "imported_coco",
     }) == "imported"
+
+
+def test_manual_annotation_get_and_save_do_not_scan_full_material_library(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    pid, image = seeded_project
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: pytest.fail(
+            "single-image annotation GET/save must use indexed material lookup"
+        ),
+    )
+
+    loaded = client.get(f"/api/projects/{pid}/annotations/{image['id']}")
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["image"]["id"] == image["id"]
+
+    saved = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["image"]["id"] == image["id"]
+    assert saved.json()["image"]["box_count"] == 1

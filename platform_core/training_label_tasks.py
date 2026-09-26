@@ -312,15 +312,15 @@ def _scoped_selected_project_images(materials, project: Path, image_ids: Sequenc
     if contract is None:
         return rows
     allowed = set(contract["effective_label_codes"])
-    annotations = AnnotationRepository(project)
     projected: list[dict[str, Any]] = []
     for original in rows:
+        # _ORIGINAL_SELECTED_PROJECT_IMAGES already freezes the full formal
+        # AnnotationRepository truth for this exact selection. Reuse that row
+        # instead of issuing a second per-image annotation query here.
         row = dict(original)
-        image_id = str(row.get("id") or "")
-        annotation = annotations.get(image_id)
-        state = str(annotation.get("annotation_state") or "unannotated")
-        raw_scope = [str(value) for value in annotation.get("annotation_scope") or []]
-        boxes = list(annotation.get("boxes") or [])
+        state = str(row.get("annotation_state") or "unannotated")
+        raw_scope = [str(value) for value in row.get("annotation_scope") or []]
+        boxes = list(row.get("boxes") or [])
         selected_boxes = [
             dict(box) for box in boxes
             if str(box.get("label") or box.get("code") or "").strip() in allowed
