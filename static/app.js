@@ -3756,7 +3756,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function renderCleanProgress429(task,id){
     const view=window.PlatformCore.cleaning.cleanTaskView(task),root=cleanProgressRoot429(id);
     if(!root){
-      modal('自动清洗',`<div class="wait427" data-clean-progress-task="${esc(id)}"><div class="wait427-anim"><i></i><i></i><i></i><b data-clean-progress-status></b></div><div class="wait427-progress"><i data-clean-progress-bar></i></div><div class="wait427-stats"><span>进度 <b data-clean-progress-percent></b></span><span>已处理 <b data-clean-progress-counts></b></span><span>发现问题 <b data-clean-progress-flagged></b></span></div><div class="muted-line" data-clean-progress-runtime></div><div data-clean-progress-error></div><div class="row end" data-clean-progress-actions></div></div>`,false);
+      modal('自动清洗',`<div class="wait427" data-clean-progress-task="${esc(id)}"><div class="wait427-anim"><i></i><i></i><i></i><b data-clean-progress-status></b></div><div class="wait427-progress"><i data-clean-progress-bar style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>进度 <b data-clean-progress-percent></b></span><span>已处理 <b data-clean-progress-counts></b></span><span>发现问题 <b data-clean-progress-flagged></b></span></div><div class="muted-line" data-clean-progress-runtime></div><div data-clean-progress-error></div><div class="row end" data-clean-progress-actions></div></div>`,false);
     }
     const current=cleanProgressRoot429(id);if(!current)return false;
     const set=(selector,value)=>{const node=current.querySelector(selector);if(node)node.textContent=value};
@@ -3765,7 +3765,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     set('[data-clean-progress-counts]',view.progressText||`${Number(view.processed||0)}/${Number(view.total||0)}`);
     set('[data-clean-progress-flagged]',String(Number(view.flagged||0)));
     set('[data-clean-progress-runtime]',view.runtimeText||'');
-    const bar=current.querySelector('[data-clean-progress-bar]');if(bar)bar.style.width=`${Math.max(0,Math.min(100,Number(view.percent||0)))}%`;
+    const bar=current.querySelector('[data-clean-progress-bar]');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const error=current.querySelector('[data-clean-progress-error]');if(error)error.innerHTML=task?.error?`<div class="error-box422">${esc(task.error)}</div>`:'';
     const actions=current.querySelector('[data-clean-progress-actions]');if(actions)actions.innerHTML=`${view.active?`<button class="btn" onclick="minimizeTask427('clean','${esc(id)}')">最小化</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
     return true;

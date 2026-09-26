@@ -85,6 +85,9 @@ test('final clean tab consumes the clean task view and PollRegistry lifecycle', 
   assert.match(progress, /registry\.startTimeout\(key,ownerPage/);
   assert.match(progress, /data-clean-progress-task/);
   assert.match(progress, /renderCleanProgress429\(task,id\)/);
+  assert.match(progress, /data-clean-progress-bar style="transform:scaleX\(0\)/);
+  assert.match(progress, /bar\.style\.transform=.*scaleX/);
+  assert.doesNotMatch(progress, /bar\.style\.width/);
   assert.doesNotMatch(progress, /showTaskProgressCore427|setTimeout\(|setInterval\(/);
 });
 
