@@ -47,3 +47,14 @@ test('v36 source import polling remains page-scoped through PollRegistry', () =>
   assert.match(owner,/PollRegistryRuntime\?\.clear\?\.\(SOURCE_IMPORT_POLL_KEY_V36\)/);
   assert.doesNotMatch(owner,/__sourceImportTimerV36/);
 });
+
+
+test('post-import review reads the imported batch directly without broad bootstrap refresh', () => {
+  const owner=region(app,'function importRows414()','function importRemapProgress414');
+  assert.match(owner,/Array\.isArray\(r\.images\)\?r\.images/);
+  assert.match(owner,/images:rr\.images\|\|\[\]/);
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.doesNotMatch(owner,/showImportReview412=async function\(jobId\)\{await window\.loadCore412/);
+  assert.doesNotMatch(owner,/importRows414\(\).*state\.images/s);
+  assert.match(owner,/runMaterialBatch62\('MARK_CLEAN_SKIPPED',\{scope:'SELECTED',imageIds:ids,skipConfirm:true\}\)/);
+});

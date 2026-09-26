@@ -4814,12 +4814,12 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
 
 /* v42.14 import label normalization: map imported labels to the central label library. */
 (()=>{
-  function importRows414(){const ids=(state.import412?.image_ids||[]).map(String),set=new Set(ids);return (state.images||[]).filter(x=>set.has(String(x.id)))}
+  function importRows414(){const r=state.import412||{},ids=(r.image_ids||[]).map(String),set=new Set(ids),rows=Array.isArray(r.images)?r.images:[];return rows.filter(x=>set.has(String(x.id)))}
   function importReview414Html(){
     const r=state.import412||{},rows=importRows414(),counts=r.label_box_counts||{},sources=Object.entries(counts),library=(state.labels||[]).filter(x=>x?.code);
     return `<div class="import412"><section class="import412-head"><div><span>本次导入整理</span><h2>${esc(r.file_name||'导入素材')}</h2><p>${rows.length} 张图片 · ${rows.filter(x=>x.annotated).length} 张带标注</p></div><div class="row"><button class="btn" onclick="selectImportAll414()">全选</button><button class="btn" onclick="invertImport414()">反选</button></div></section>${sources.length?`<section class="import412-labels"><header><b>标签归一化</b><span>把 ZIP 中的 class_0 等原始标签映射到“配置中心 → 标签管理”的标准英文标签。</span></header>${sources.map(([src,n])=>`<div class="import412-labelrow"><div><b>${esc(src)}</b><span>${n} 个框</span></div><span>→</span><select id="map414_${encodeURIComponent(src)}" class="select"><option value="">选择标准标签</option>${library.map(l=>`<option value="${esc(l.code)}" ${l.code===src?'selected':''}>${esc(l.code)}${l.display_name&&l.display_name!==l.code?' · '+esc(l.display_name):''}</option>`).join('')}</select><button class="btn primary" onclick="remapImport414(decodeURIComponent('${encodeURIComponent(src)}'),'map414_${encodeURIComponent(src)}')">应用</button></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标准标签</button></div></section>`:''}<section class="import412-grid">${rows.slice(0,180).map(x=>`<label class="import412-card ${state.import412Selected?.has(String(x.id))?'on':''}"><input type="checkbox" ${state.import412Selected?.has(String(x.id))?'checked':''} onchange="toggleImport414('${x.id}',this.checked)"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${x.annotated?esc((x.labels||[]).join('、')||'已标注'):'待标注'}</span></label>`).join('')}</section><section class="import412-decision"><div><b>本批素材是否需要清洗？</b><span>可以全选/反选后批量决定；清洗确认删除时图片与对应标注一起处理。</span></div><div class="row"><button class="btn" onclick="importNoClean414()">批量无需清洗</button><button class="btn primary" onclick="importClean414()">批量清洗</button></div></section></div>`;
   }
-  window.showImportReview412=async function(jobId){await window.loadCore412();await refreshLabels414(false);const rr=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);state.import412={job_id:jobId,file_name:rr.job?.file_name||'',image_ids:rr.image_ids||[],label_box_counts:rr.label_box_counts||{}};state.import412Selected=new Set((rr.image_ids||[]).map(String));modal('本次导入素材',importReview414Html(),true)};
+  window.showImportReview412=async function(jobId){await refreshLabels414(false);const rr=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);state.import412={job_id:jobId,file_name:rr.job?.file_name||'',image_ids:rr.image_ids||[],images:rr.images||[],label_box_counts:rr.label_box_counts||{}};state.import412Selected=new Set((rr.image_ids||[]).map(String));modal('本次导入素材',importReview414Html(),true)};
   window.toggleImport414=(id,on)=>{on?state.import412Selected.add(String(id)):state.import412Selected.delete(String(id));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.selectImportAll414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.invertImport414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.has(String(id))?state.import412Selected.delete(String(id)):state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
@@ -4858,6 +4858,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(jobId){
       const review=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);
       state.import412.label_box_counts=review.label_box_counts||{};
+      state.import412.images=review.images||state.import412.images||[];
     }
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0),progressVisible=!!document.getElementById('importRemapStage414');
     if(progressVisible){
@@ -4910,7 +4911,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     }catch(e){toast(e.message||e)}
     finally{state.import412RemapSubmitting=false}
   };
-  window.importNoClean414=async()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');await markReady412(ids);closeModal();state.data412Tab='processed';if(state.page==='数据集')renderDatasets424()};
+  window.importNoClean414=async()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');closeModal();state.data412Tab='processed';if(window.runMaterialBatch62)return window.runMaterialBatch62('MARK_CLEAN_SKIPPED',{scope:'SELECTED',imageIds:ids,skipConfirm:true});return markReady412(ids)};
   window.importClean414=()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');closeModal();createClean427({image_ids:ids})};
 })();
 
