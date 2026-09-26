@@ -293,6 +293,10 @@ class AnnotationRepository:
                 if 'code' in box:
                     box['code'] = target
                 box['class_id'] = int(target_class_id)
+                if 'canonical_label_id' in box:
+                    box['canonical_label_id'] = target
+                if 'canonical_project_class_id' in box:
+                    box['canonical_project_class_id'] = int(target_class_id)
                 changed += 1
             boxes.append(box)
         original_scope = _normalize_scope(record.get('annotation_scope'))

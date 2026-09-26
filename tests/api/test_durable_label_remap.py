@@ -381,7 +381,14 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
         project_id,
         image["id"],
         [
-            _box(label="fire", class_id=0),
+            {
+                **_box(label="fire", class_id=0),
+                "source": "imported",
+                "source_class_id": "7",
+                "source_label_name": "external_fire",
+                "canonical_label_id": "fire",
+                "canonical_project_class_id": 0,
+            },
             _box(label="smoke", class_id=1, x1=30),
         ],
     )
@@ -439,6 +446,11 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     formal = app_module.read_annotation(project_id, image["id"])
     assert [box["label"] for box in formal["boxes"]] == ["person", "person"]
     assert {box["class_id"] for box in formal["boxes"]} == {2}
+    imported = formal["boxes"][0]
+    assert imported["source_class_id"] == "7"
+    assert imported["source_label_name"] == "external_fire"
+    assert imported["canonical_label_id"] == "person"
+    assert imported["canonical_project_class_id"] == 2
     negative = app_module.read_annotation(project_id, second_id)
     assert negative["annotation_scope"] == ["person"]
 
