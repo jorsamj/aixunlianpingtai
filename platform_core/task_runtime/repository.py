@@ -11,10 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from filelock import FileLock
+
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
 from ..gpu_resources import ensure_gpu_runtime_schema
 
+
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -153,40 +158,108 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
         raise ValueError("invalid task cursor") from error
 
 
+def _add_column_if_missing(
+    database: sqlite3.Connection,
+    table: str,
+    columns: set[str],
+    name: str,
+    definition: str,
+) -> None:
+    if name in columns:
+        return
+    try:
+        database.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    except sqlite3.OperationalError:
+        refreshed = {
+            str(row[1])
+            for row in database.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if name not in refreshed:
+            raise
+        columns.update(refreshed)
+        return
+    columns.add(name)
+
+
 class TaskRepository:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as database:
-            database.executescript(SCHEMA)
-            columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
-            if "queue_rank" not in columns:
-                database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
-            if "resource_wait_reason" not in columns:
-                database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
-            worker_columns = {
-                str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
-            }
-            additive_worker_columns = (
-                ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
-                ("hostname", "TEXT NOT NULL DEFAULT ''"),
-                ("build_id", "TEXT NOT NULL DEFAULT ''"),
-                ("roles", "TEXT NOT NULL DEFAULT '[]'"),
-                ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
-                ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
-            )
-            for name, definition in additive_worker_columns:
-                if name not in worker_columns:
-                    database.execute(f"ALTER TABLE worker_instances ADD COLUMN {name} {definition}")
-            ensure_gpu_runtime_schema(database)
+        self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA synchronous=FULL")
         database.execute("PRAGMA busy_timeout=5000")
+        database.execute("PRAGMA synchronous=FULL")
         return database
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"task repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"task repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(SCHEMA)
+                columns = {
+                    str(row[1])
+                    for row in database.execute("PRAGMA table_info(tasks)").fetchall()
+                }
+                _add_column_if_missing(
+                    database, "tasks", columns, "queue_rank", "INTEGER NOT NULL DEFAULT 0"
+                )
+                _add_column_if_missing(
+                    database, "tasks", columns, "resource_wait_reason", "TEXT"
+                )
+                worker_columns = {
+                    str(row[1])
+                    for row in database.execute(
+                        "PRAGMA table_info(worker_instances)"
+                    ).fetchall()
+                }
+                additive_worker_columns = (
+                    ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
+                    ("hostname", "TEXT NOT NULL DEFAULT ''"),
+                    ("build_id", "TEXT NOT NULL DEFAULT ''"),
+                    ("roles", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
+                )
+                for name, definition in additive_worker_columns:
+                    _add_column_if_missing(
+                        database, "worker_instances", worker_columns, name, definition
+                    )
+                ensure_gpu_runtime_schema(database)
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
@@ -337,6 +410,46 @@ class TaskRepository:
         ).rowcount
         database.execute("DELETE FROM gpu_reservations WHERE expires_at<=?", (now,))
         return count
+
+    def delete_terminal(
+        self,
+        task_id: str,
+        *,
+        project_id: str | None = None,
+        kind: TaskKind | str | None = None,
+    ) -> bool:
+        """Permanently delete one terminal durable task.
+
+        This is intentionally stricter than cancellation. Active/queued/review
+        tasks must never disappear from durable truth through a cleanup API.
+        """
+        expected_kind = kind.value if isinstance(kind, TaskKind) else (str(kind) if kind is not None else None)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT task_id,project_id,kind,status FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                return False
+            if project_id is not None and str(row["project_id"]) != str(project_id):
+                database.rollback()
+                raise ValueError("task project mismatch")
+            if expected_kind is not None and str(row["kind"]) != expected_kind:
+                database.rollback()
+                raise ValueError("task kind mismatch")
+            status = TaskStatus(str(row["status"]))
+            if status not in TERMINAL_STATUSES:
+                database.rollback()
+                raise ValueError("only terminal tasks can be deleted")
+            database.execute("DELETE FROM gpu_reservations WHERE task_id=?", (str(task_id),))
+            changed = database.execute(
+                "DELETE FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).rowcount
+            database.commit()
+        return changed == 1
 
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
@@ -639,6 +752,50 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
+    def fail_queued_precondition(
+        self,
+        task_id: str,
+        error: str,
+        *,
+        status: TaskStatus = TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        stage: str = "precondition_failed",
+    ) -> TaskRecord:
+        """Fail a task that never acquired an execution lease.
+
+        This is intentionally limited to QUEUED tasks so a preparation worker
+        cannot overwrite a RUNNING/CANCELLED execution owned elsewhere.
+        """
+        if status not in {
+            TaskStatus.FAILED,
+            TaskStatus.BLOCKED_BY_ENVIRONMENT,
+            TaskStatus.BLOCKED_BY_HARDWARE,
+        }:
+            raise ValueError("queued precondition failure requires a terminal failure status")
+        now = utc_now()
+        with closing(self._connect()) as database:
+            changed = database.execute(
+                """
+                UPDATE tasks
+                   SET status=?, stage=?, error=?, finished_at=?, updated_at=?,
+                       worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
+                 WHERE task_id=? AND status='QUEUED'
+                """,
+                (
+                    status.value,
+                    str(stage or "precondition_failed"),
+                    str(error or "")[:8000],
+                    now,
+                    now,
+                    str(task_id),
+                ),
+            ).rowcount
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        if changed != 1 and result.status is TaskStatus.QUEUED:
+            raise RuntimeError("queued task precondition state changed concurrently")
+        return result
+
     def finish(
         self,
         task_id: str,
@@ -663,6 +820,10 @@ class TaskRepository:
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
                     progress=CASE
+                        WHEN ?='AWAITING_CONFIRMATION' AND (
+                            kind='AI_ANNOTATION'
+                            OR (kind='MATERIAL_BATCH' AND stage='AI_ANNOTATION')
+                        ) THEN MAX(progress, 70.0)
                         WHEN ?='AWAITING_CONFIRMATION' AND kind='MATERIAL_IMPORT'
                             THEN MAX(progress, 50.0)
                         ELSE COALESCE(?, progress)
@@ -678,6 +839,7 @@ class TaskRepository:
                     error,
                     None if accepted is None else int(accepted),
                     stage,
+                    status.value,
                     status.value,
                     progress,
                     finished_at,
@@ -750,7 +912,12 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
-    def resume_after_confirmation(self, task_id: str) -> TaskRecord:
+    def resume_after_confirmation(
+        self,
+        task_id: str,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
+    ) -> TaskRecord:
         now = utc_now()
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
@@ -769,14 +936,28 @@ class TaskRepository:
                 database.rollback()
                 raise ValueError("task cannot resume after confirmation")
             if current.status is TaskStatus.AWAITING_CONFIRMATION:
+                capabilities_json = (
+                    json.dumps(
+                        list(required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    if required_capabilities is not None
+                    else json.dumps(
+                        list(current.required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
                 database.execute(
                     """
                     UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=MAX(progress, 50.0),
                         current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
-                        updated_at=?, worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
+                        required_capabilities=?, updated_at=?, worker_id=NULL,
+                        lease_token=NULL, lease_expires_at=NULL
                      WHERE task_id=? AND status='AWAITING_CONFIRMATION'
                     """,
-                    (now, str(task_id)),
+                    (capabilities_json, now, str(task_id)),
                 )
                 row = database.execute(
                     "SELECT * FROM tasks WHERE task_id=?",
@@ -789,10 +970,88 @@ class TaskRepository:
                 or (current.status is TaskStatus.RUNNING and current.stage == "indexing")
                 or current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}
             ):
+                if (
+                    required_capabilities is not None
+                    and current.status is TaskStatus.QUEUED
+                    and current.stage == "indexing_queued"
+                    and tuple(current.required_capabilities) != tuple(required_capabilities)
+                ):
+                    capabilities_json = json.dumps(
+                        list(required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    database.execute(
+                        """
+                        UPDATE tasks SET required_capabilities=?, updated_at=?
+                         WHERE task_id=? AND status='QUEUED' AND stage='indexing_queued'
+                        """,
+                        (capabilities_json, now, str(task_id)),
+                    )
+                    row = database.execute(
+                        "SELECT * FROM tasks WHERE task_id=?",
+                        (str(task_id),),
+                    ).fetchone()
+                    database.commit()
+                    return _from_row(row)
                 database.commit()
                 return current
             database.rollback()
             raise ValueError("task cannot resume after confirmation")
+
+    def resume_after_review_confirmation(
+        self,
+        task_id: str,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
+    ) -> TaskRecord:
+        now = utc_now()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.kind not in {TaskKind.AI_ANNOTATION, TaskKind.MATERIAL_BATCH}:
+                database.rollback()
+                raise ValueError("only AI annotation review tasks can resume after confirmation")
+            if current.accepted is False:
+                database.rollback()
+                raise ValueError("task cannot resume after rejected review")
+            capabilities = tuple(required_capabilities or current.required_capabilities)
+            capabilities_json = json.dumps(
+                list(capabilities), ensure_ascii=False, separators=(",", ":"),
+            )
+            if current.status is TaskStatus.AWAITING_CONFIRMATION:
+                database.execute(
+                    """
+                    UPDATE tasks SET status='QUEUED', stage='review_queued', progress=70,
+                        current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
+                        required_capabilities=?, updated_at=?, worker_id=NULL,
+                        lease_token=NULL, lease_expires_at=NULL
+                     WHERE task_id=? AND status='AWAITING_CONFIRMATION'
+                    """,
+                    (capabilities_json, now, str(task_id)),
+                )
+                row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                database.commit()
+                return _from_row(row)
+            if current.accepted is True and (
+                (current.status is TaskStatus.QUEUED and current.stage == "review_queued")
+                or (current.status is TaskStatus.RUNNING and current.stage == "APPLYING_REVIEW")
+                or current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}
+            ):
+                database.commit()
+                return current
+            database.rollback()
+            raise ValueError("task cannot resume after review confirmation")
 
     def retry(self, task_id: str) -> TaskRecord:
         now = utc_now()

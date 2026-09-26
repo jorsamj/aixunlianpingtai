@@ -34,7 +34,11 @@ def test_bootstrap_snapshot_is_pre_serialized_without_changing_json(monkeypatch)
     monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_STATUS", {"status": "ready"})
     monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_SNAPSHOT", snapshot)
     monkeypatch.setattr(app_module, "read_json", lambda *_args, **_kwargs: [{"id": "project-1"}])
-    monkeypatch.setattr(app_module, "_v53_project_counts", lambda _project: {"images": 1})
+    monkeypatch.setattr(
+        app_module,
+        "_v53_project_counts",
+        lambda _project: (_ for _ in ()).throw(AssertionError("cached snapshot must not recalculate project counts")),
+    )
     monkeypatch.setattr(app_module, "_v53_choose_project", lambda projects, _preferred: projects[0])
 
     response = app_module.v53_bootstrap_snapshot("")
@@ -45,3 +49,567 @@ def test_bootstrap_snapshot_is_pre_serialized_without_changing_json(monkeypatch)
     assert payload["bootstrap"] == {"status": "ready"}
     assert payload["project"] == snapshot["project"]
     assert payload["images"] == snapshot["images"]
+
+
+def test_refreshed_bootstrap_counts_each_project_once_and_replaces_cache(monkeypatch):
+    projects = [{"id": "p1"}, {"id": "p2"}, {"id": "p3"}]
+    calls = []
+    monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_STATUS", {"status": "ready"})
+    monkeypatch.setattr(app_module, "_V53_BOOTSTRAP_SNAPSHOT", {"project": {"id": "p1"}})
+    monkeypatch.setattr(app_module, "read_json", lambda *_args, **_kwargs: projects)
+    monkeypatch.setattr(
+        app_module,
+        "_v53_project_counts",
+        lambda project: calls.append(project["id"]) or {
+            "images": 1, "algorithms": 2, "versions": 3, "jobs": 4,
+        },
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v53_build_snapshot",
+        lambda project_id: {"project": {"id": project_id}, "generated_at": "fresh"},
+    )
+
+    response = app_module.v53_bootstrap_snapshot("p2", refresh=True)
+    payload = json.loads(response.body)
+
+    assert calls == ["p1", "p2", "p3"]
+    assert payload["project"]["id"] == "p2"
+    assert [row["bootstrap_counts"]["jobs"] for row in payload["projects"]] == [4, 4, 4]
+    assert app_module._V53_BOOTSTRAP_SNAPSHOT["project"]["id"] == "p2"
+
+
+def test_annotation_summary_migration_batches_repository_reads_and_projection_writes(monkeypatch):
+    project_id = "project-scale"
+    rows = [
+        {"id": f"image-{index:04d}", "filename": f"image-{index:04d}.jpg"}
+        for index in range(1201)
+    ]
+    read_batches = []
+    patch_batches = []
+
+    class FakeAnnotations:
+        def get_many(self, image_ids):
+            batch = list(image_ids)
+            read_batches.append(batch)
+            assert len(batch) <= app_module._ANNOTATION_INDEX_BATCH_SIZE
+            return {
+                image_id: {
+                    "image_id": image_id,
+                    "annotation_state": "annotated",
+                    "boxes": [{"label": "fire", "class_id": 0}],
+                    "updated_at": "2026-09-26T00:00:00Z",
+                }
+                for image_id in batch
+            }
+
+    class FakeMaterials:
+        def patch(self, patches):
+            patch_batches.append(dict(patches))
+            assert len(patches) <= app_module._ANNOTATION_INDEX_BATCH_SIZE
+            return list(patches.values())
+
+    monkeypatch.setattr(app_module, "load_images", lambda _project_id: rows)
+    monkeypatch.setattr(app_module, "_v50_annotation_repository", lambda _project_id: FakeAnnotations())
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("annotation summary migration must not issue per-image reads")
+        ),
+    )
+
+    app_module._v52_annotation_index_worker(project_id)
+
+    assert [len(batch) for batch in read_batches] == [500, 500, 201]
+    assert [len(batch) for batch in patch_batches] == [500, 500, 201]
+    assert app_module._ANNOTATION_INDEX_STATUS[project_id]["running"] is False
+    assert app_module._ANNOTATION_INDEX_STATUS[project_id]["processed"] == 1201
+
+
+def test_selected_batch_split_uses_indexed_patch_without_full_table_mutate(monkeypatch):
+    import inspect
+    import app as app_module
+
+    class FakeMaterials:
+        def __init__(self):
+            self.patches = []
+
+        def patch(self, patches):
+            self.patches.append(dict(patches))
+            return [{"id": image_id, **dict(patch)} for image_id, patch in patches.items()]
+
+        def mutate(self, _callback):
+            raise AssertionError("selected batch split must not read/mutate the full material table")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+
+    result = app_module.v20_batch_image_split(
+        "project-1",
+        app_module.BatchImageSplitReq(
+            image_ids=["a", "b", "a"],
+            split="train",
+            scope="selected",
+        ),
+    )
+
+    assert result["changed"] == 2
+    assert set(materials.patches[0]) == {"a", "b"}
+    assert all(patch["split"] == "train" for patch in materials.patches[0].values())
+
+    source = inspect.getsource(app_module.v20_batch_image_split)
+    filtered = source[source.index('if scope == "filtered"'):]
+    assert "read_annotation(project_id" not in filtered
+    assert "annotations.get_many(batch_ids)" in filtered
+
+
+def test_mark_ready_uses_bounded_indexed_patch_without_full_table_mutate(monkeypatch):
+    class FakeMaterials:
+        def __init__(self):
+            self.patch_calls = []
+
+        def get_many(self, image_ids):
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg", "processing_status": "pending_decision"}
+                for image_id in image_ids
+                if image_id != "missing"
+            ]
+
+        def patch_many(self, image_ids, patch, batch_size=0):
+            self.patch_calls.append((list(image_ids), dict(patch), batch_size))
+            return len(list(image_ids))
+
+        def mutate(self, _callback):
+            raise AssertionError("mark-ready must never scan/mutate the full material table")
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+
+    result = app_module.v52_mark_ready(
+        "project-1",
+        app_module.V52ReadyReq(image_ids=["a", "b", "missing", "a"]),
+    )
+
+    assert result["changed"] == 2
+    assert result["image_ids"] == ["a", "b"]
+    assert len(materials.patch_calls) == 1
+    ids, patch, batch_size = materials.patch_calls[0]
+    assert ids == ["a", "b"]
+    assert batch_size == 500
+    assert patch["processing_status"] == "processed"
+    assert patch["clean_skipped"] is True
+    assert patch["clean_decision"] == "skipped"
+
+
+def test_import_review_reads_only_imported_materials_and_batches_annotations(monkeypatch):
+    ids = [f"image-{index:04d}" for index in range(1201)]
+    material_calls = []
+    annotation_batches = []
+
+    class FakeMaterials:
+        def get_many(self, image_ids):
+            batch = list(image_ids)
+            material_calls.append(batch)
+            return [{"id": image_id, "filename": f"{image_id}.jpg"} for image_id in batch]
+
+    monkeypatch.setattr(app_module, "v19_read_job", lambda _project_id, _job_id: {"id": "job-1", "status": "done"})
+    monkeypatch.setattr(
+        app_module,
+        "v19_read_import_report",
+        lambda *_args, **_kwargs: {
+            "imported_image_ids": ids,
+            "detected_format": "YOLO",
+        },
+    )
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        annotation_batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": [{"label": "smoke"}],
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("import review must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("import review must not issue per-image annotation reads")
+        ),
+    )
+
+    body = app_module.v52_import_review("project-1", "job-1")
+
+    assert material_calls == [ids]
+    assert [len(batch) for batch in annotation_batches] == [500, 500, 201]
+    assert [row["id"] for row in body["images"]] == ids
+    assert body["label_box_counts"] == {"smoke": 1201}
+
+
+def test_algorithm_report_label_counts_prefer_frozen_snapshot_truth(tmp_path, monkeypatch):
+    snapshot_id = "a" * 64
+    project = tmp_path / "project"
+    snapshots = project / "snapshots"
+    snapshots.mkdir(parents=True)
+    (snapshots / f"{snapshot_id}.json").write_text(
+        json.dumps({
+            "snapshot_id": snapshot_id,
+            "label_counts": {"smoke": 17, "person": 3},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_module, "project_dir", lambda _project_id: project)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotations_many",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("frozen snapshot label counts must avoid live annotation reads")
+        ),
+    )
+
+    counts = app_module._v49_job_label_counts(
+        "project-1",
+        {
+            "snapshot_id": snapshot_id,
+            "dataset_selected_ids": {"train": ["image-current"]},
+        },
+    )
+
+    assert counts == {"smoke": 17, "person": 3}
+
+
+def test_algorithm_report_legacy_fallback_batches_live_annotation_reads(monkeypatch):
+    ids = [f"image-{index:04d}" for index in range(1201)]
+    batches = []
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {"boxes": [{"label": "fire"}]}
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy report fallback must not issue per-image reads")
+        ),
+    )
+
+    counts = app_module._v49_job_label_counts(
+        "project-1",
+        {"dataset_selected_ids": {"train": ids}},
+    )
+
+    assert [len(batch) for batch in batches] == [500, 500, 201]
+    assert counts == {"fire": 1201}
+
+
+def test_single_material_name_edit_uses_indexed_lookup(monkeypatch):
+    class FakeMaterials:
+        def __init__(self):
+            self.patches = []
+
+        def get_many(self, image_ids):
+            assert list(image_ids) == ["image-1"]
+            return [{"id": "image-1", "filename": "before.jpg"}]
+
+        def patch(self, patches):
+            self.patches.append(dict(patches))
+            return [{"id": "image-1", **patches["image-1"]}]
+
+    materials = FakeMaterials()
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: materials)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("single material edit must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda _project_id, _image_id: {"image_id": "image-1", "boxes": []},
+    )
+
+    result = app_module.v47_edit_image(
+        "project-1", "image-1", app_module.V47ImageEditReq(name="新名称.jpg"),
+    )
+
+    assert result["image"]["filename"] == "新名称.jpg"
+    assert list(materials.patches[0]) == ["image-1"]
+
+
+
+def test_dataset_listing_batches_annotation_truth_and_aggregates_in_one_pass(monkeypatch):
+    total = 1201
+    rows = [
+        {
+            "id": f"image-{index:04d}",
+            "dataset_id": ["default", "dataset-a", "dataset-b"][index % 3],
+        }
+        for index in range(total)
+    ]
+    batches = []
+
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "project-1"})
+    monkeypatch.setattr(
+        app_module,
+        "ensure_default_datasets",
+        lambda _project_id: [
+            {"id": "default", "name": "默认"},
+            {"id": "dataset-a", "name": "A"},
+            {"id": "dataset-b", "name": "B"},
+        ],
+    )
+    monkeypatch.setattr(app_module, "load_images", lambda _project_id: rows)
+
+    def read_many(_project_id, image_ids):
+        batch = list(image_ids)
+        batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": ([{"label": "fire"}] if int(image_id.rsplit("-", 1)[-1]) % 2 == 0 else []),
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dataset listing must not issue per-image annotation reads")
+        ),
+    )
+
+    body = app_module.list_datasets("project-1")
+
+    assert [len(batch) for batch in batches] == [500, 500, 201]
+    assert sum(item["images"] for item in body["items"]) == total
+    assert sum(item["boxes"] for item in body["items"]) == 601
+    assert sum(item["annotated_images"] for item in body["items"]) == 601
+
+
+def test_upload_batch_enrichment_reads_only_batch_materials(monkeypatch):
+    image_ids = [f"image-{index:04d}" for index in range(1201)]
+    calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            calls.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg"}
+                for image_id in batch
+                if image_id != "image-1000"
+            ]
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("upload batch enrichment must not scan the whole material library")
+        ),
+    )
+    batch = {
+        "batch_id": "batch-1",
+        "items": [{"image_id": image_id, "decision": "pending"} for image_id in image_ids],
+    }
+
+    enriched = app_module._v55_enrich_upload_batch("project-1", batch)
+
+    assert [len(batch) for batch in calls] == [500, 500, 201]
+    assert len(enriched["items"]) == 1201
+    assert enriched["items"][1000]["missing"] is True
+    assert enriched["items"][999]["image"]["id"] == "image-0999"
+
+
+
+def test_selected_training_quality_uses_indexed_materials_batched_annotations_and_one_project_read(monkeypatch):
+    image_ids = [f"image-{index:05d}" for index in range(1201)]
+    material_batches = []
+    annotation_batches = []
+    project_reads = []
+    project = {
+        "id": "project-1",
+        "labels": ["fire"],
+    }
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_batches.append(batch)
+            assert len(batch) <= 500
+            return [
+                {
+                    "id": image_id,
+                    "width": 1280,
+                    "height": 720,
+                    "split": "train",
+                }
+                for image_id in batch
+            ]
+
+    def get_project(_project_id):
+        project_reads.append(_project_id)
+        return project
+
+    def read_many(_project_id, ids):
+        batch = list(ids)
+        annotation_batches.append(batch)
+        assert len(batch) <= 500
+        return {
+            image_id: {
+                "image_id": image_id,
+                "boxes": [{
+                    "id": f"box-{image_id}",
+                    "class_id": 0,
+                    "label": "fire",
+                    "x1": 10,
+                    "y1": 10,
+                    "x2": 100,
+                    "y2": 120,
+                }],
+            }
+            for image_id in batch
+        }
+
+    monkeypatch.setattr(app_module, "get_project", get_project)
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "read_annotations_many", read_many)
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("selected training quality must not scan the full material library")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("selected training quality must not issue per-image annotation reads")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "resolve_material_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "compute_quality",
+        lambda rows, **_kwargs: {
+            "scores": {
+                "annotation_completeness": 100,
+                "box_validity": 100,
+                "label_balance": 100,
+                "duplicate_control": 100,
+                "resolution_quality": 100,
+                "split_coverage": 100,
+            },
+            "split_counts": {"train": len(rows)},
+        },
+    )
+
+    quality = app_module._v44_dataset_quality(
+        "project-1",
+        app_module.V44QualityReq(image_ids=image_ids),
+    )
+
+    assert [len(batch) for batch in material_batches] == [500, 500, 201]
+    assert [len(batch) for batch in annotation_batches] == [500, 500, 201]
+    assert project_reads == ["project-1"]
+    assert quality["label_images"]["fire"] == 1201
+    assert quality["split_counts"]["train"] == 1201
+
+
+
+def test_clean_confirmation_updates_only_frozen_selection_without_full_table_mutate(monkeypatch):
+    image_ids = [f"image-{index:04d}" for index in range(1201)]
+    read_batches = []
+    patch_calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            read_batches.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id}
+                for image_id in batch
+                if image_id != "image-1000"
+            ]
+
+        def patch_many(self, ids, patch, batch_size=0):
+            patch_calls.append((list(ids), dict(patch), batch_size))
+            return len(list(ids))
+
+        def mutate(self, _callback):
+            raise AssertionError("clean confirmation must not scan/mutate the full material table")
+
+    class FakeArtifacts:
+        def atomic_write_json(self, _task_id, _name, _payload):
+            return None
+
+    monkeypatch.setattr(
+        app_module,
+        "_v33_get_task",
+        lambda _project_id, _kind, task_id: {"id": task_id, "status": "awaiting_confirmation"},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v47_durable_clean_results",
+        lambda *_args, **_kwargs: {"items": []},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v47_frozen_clean_selection_ids",
+        lambda _task_id: image_ids,
+    )
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "shared_task_artifacts", lambda: FakeArtifacts())
+
+    result = app_module.v47_confirm_clean(
+        "project-1",
+        "clean-1",
+        app_module.V47CleanConfirmReq(delete_ids=[]),
+    )
+
+    assert [len(batch) for batch in read_batches] == [500, 500, 201]
+    assert len(patch_calls) == 1
+    patched_ids, patch, batch_size = patch_calls[0]
+    assert len(patched_ids) == 1200
+    assert "image-1000" not in patched_ids
+    assert batch_size == 500
+    assert patch["processing_status"] == "processed"
+    assert patch["clean_task_id"] == "clean-1"
+    assert result["processed_ids"] == patched_ids

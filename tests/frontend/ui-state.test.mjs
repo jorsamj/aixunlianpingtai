@@ -26,7 +26,6 @@ test('persistUiState writes current navigation state while preserving unrelated 
   const saved = persistUiState(state, {storage, now: () => 12345});
   assert.deepEqual(saved, {
     page: '数据集',
-    projectId: 'project-1',
     custom: 'keep',
     datasetId: 'dataset-1',
     imageFilter: 'annotated',
@@ -39,7 +38,7 @@ test('persistUiState recovers from malformed historical storage', () => {
   const storage = memoryStorage({[UI_STATE_STORAGE_KEY]: '{broken'});
   const saved = persistUiState({page: '训练任务'}, {storage, now: () => 7});
   assert.equal(saved.page, '训练任务');
-  assert.equal(saved.projectId, '');
+  assert.equal('projectId' in saved, false);
   assert.equal(saved.datasetId, '');
   assert.equal(saved.imageFilter, 'all');
   assert.equal(saved.ts, 7);

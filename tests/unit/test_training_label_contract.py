@@ -126,6 +126,11 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     assert contract["effective_label_codes"] == ["fire", "smoke", "cigarette"]
     assert [item["class_id"] for item in contract["effective_label_schema"]] == [0, 1, 2]
     assert contract["base_version_id"] == "v1"
+    assert contract["label_schema_changed"] is True
+    assert contract["label_schema_change_reasons"] == ["added_labels"]
+    assert contract["base_training_mode"] == "previous_weights_init"
+    assert contract["strict_resume"] is False
+    assert contract["optimizer_state_resumed"] is False
 
 
 def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(tmp_path: Path):
@@ -153,6 +158,8 @@ def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(
         algorithm,
     )
     assert contract["effective_label_codes"] == ["fire", "smoke"]
+    assert contract["label_schema_changed"] is False
+    assert contract["dropped_inherited_label_codes"] == []
 
 
 def test_legacy_iteration_recovers_schema_from_previous_snapshot(tmp_path: Path):
@@ -217,12 +224,16 @@ def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_pa
         _LABEL_CONTRACT.reset(token)
     assert [box["label"] for box in rows[0]["boxes"]] == ["fire"]
     assert rows[0]["annotation_scope"] == ["fire"]
+    assert rows[0]["source_annotation_state"] == "annotated"
+    assert rows[0]["source_labels"] == ["fire", "person"]
+    assert "negative_origin" not in rows[0]
     assert "annotation_hash" not in rows[0]
 
 
-def test_projection_rejects_positive_material_with_only_unselected_labels(tmp_path: Path):
+def test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source(tmp_path: Path):
     _, project = _project(tmp_path)
-    AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
+    annotations = AnnotationRepository(project)
+    annotations.upsert("a", [_box("person")], annotation_state="annotated")
 
     class Materials:
         def get_many(self, _ids):
@@ -235,10 +246,23 @@ def test_projection_rejects_positive_material_with_only_unselected_labels(tmp_pa
     }
     token = _LABEL_CONTRACT.set(contract)
     try:
-        with pytest.raises(ValueError, match="不能通过过滤其他标签制造负样本"):
-            _scoped_selected_project_images(Materials(), project, ["a"])
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
     finally:
         _LABEL_CONTRACT.reset(token)
+
+    projected = rows[0]
+    assert projected["annotation_state"] == "confirmed_empty"
+    assert projected["annotated"] is True
+    assert projected["boxes"] == []
+    assert projected["annotation_scope"] == ["fire"]
+    assert projected["negative_origin"] == "filtered_by_training_labels"
+    assert projected["source_annotation_state"] == "annotated"
+    assert projected["source_labels"] == ["person"]
+
+    # The task projection must never rewrite material-library Ground Truth.
+    source = annotations.get("a")
+    assert source["annotation_state"] == "annotated"
+    assert [box["label"] for box in source["boxes"]] == ["person"]
 
 
 def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
@@ -293,3 +317,164 @@ def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
     label_lines = (bundle / "dataset" / "labels" / "train" / "a.txt").read_text(encoding="utf-8").splitlines()
     assert {line.split()[0] for line in label_lines} == {"0", "1"}
     assert all("person" not in line for line in label_lines)
+
+
+def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path):
+    _, project = _project(tmp_path)
+    AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
+    image_file = tmp_path / "task-negative.jpg"
+    image_file.write_bytes(b"task-negative-source")
+    content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
+
+    class Materials:
+        def get_many(self, _ids):
+            return [{
+                "id": "a", "filename": image_file.name, "width": 100, "height": 100
+            }]
+
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0}],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+    rows[0]["content_sha256"] = content_hash
+    snapshot = {
+        "snapshot_id": "filtered-negative",
+        "label_schema": contract["effective_label_schema"],
+        "ids": {"train": ["a"], "validation": [], "test": []},
+        "images": [{"image_id": "a", "content_sha256": content_hash}],
+    }
+    bundle = materialize_portable_dataset(
+        tmp_path / "work-negative", snapshot, rows, lambda _row: image_file, safety_reserve_bytes=0
+    )
+    label = bundle / "dataset" / "labels" / "train" / "a.txt"
+    assert label.is_file()
+    assert label.read_text(encoding="utf-8") == ""
+
+
+def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    AnnotationRepository(project).upsert(
+        "a", [_box("external_only")], annotation_state="annotated"
+    )
+    with pytest.raises(ValueError, match="未映射、已删除或已停用"):
+        resolve_training_label_contract(
+            data_dir,
+            project,
+            {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": ["fire"]},
+            {"id": "alg", "versions": []},
+        )
+
+
+def test_training_preflight_rejects_temp_class_even_if_catalog_contains_it(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    meta["label_meta"].append(
+        {"code": "class_0", "display_name_zh": "临时类", "class_id": 5, "active": True}
+    )
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    AnnotationRepository(project).upsert(
+        "a", [_box("class_0")], annotation_state="annotated"
+    )
+    with pytest.raises(ValueError, match="临时/未知标签"):
+        selected_material_label_codes(project, {"train_image_ids": ["a"]})
+
+
+def test_iteration_schema_change_drops_inactive_previous_label_and_reindexes(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    for row in meta["label_meta"]:
+        if row["code"] == "smoke":
+            row["active"] = False
+            row["status"] = "inactive"
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    AnnotationRepository(project).upsert(
+        "a", [_box("fire")], annotation_state="annotated"
+    )
+    model = project / "previous.pt"
+    model.write_bytes(b"model")
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "created_at": "2026-09-10T01:01:01+00:00",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": [
+                {"code": "fire", "class_id": 0},
+                {"code": "smoke", "class_id": 1},
+            ],
+        }],
+    }
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
+        algorithm,
+    )
+    assert contract["inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["retained_inherited_label_codes"] == ["fire"]
+    assert contract["dropped_inherited_label_codes"] == ["smoke"]
+    assert contract["effective_label_codes"] == ["fire"]
+    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0]
+    assert contract["label_schema_changed"] is True
+    assert contract["label_schema_change_reasons"] == ["removed_or_inactive_labels"]
+    assert contract["base_training_mode"] == "previous_weights_init"
+    assert contract["strict_resume"] is False
+
+
+def test_scoped_projection_reuses_frozen_rows_without_second_annotation_io(tmp_path: Path, monkeypatch):
+    _, project = _project(tmp_path)
+    total = 20_000
+    frozen_rows = [
+        {
+            "id": f"image-{index:05d}",
+            "width": 100,
+            "height": 100,
+            "annotation_state": "annotated",
+            "annotation_scope": ["fire", "person"],
+            "annotation_hash": f"digest-{index}",
+            "boxes": [_box("fire"), _box("person")],
+        }
+        for index in range(total)
+    ]
+    monkeypatch.setattr(
+        "platform_core.training_label_tasks._ORIGINAL_SELECTED_PROJECT_IMAGES",
+        lambda _materials, _project, _ids: frozen_rows,
+    )
+
+    class ForbiddenSecondRepository:
+        def __init__(self, *_args, **_kwargs):
+            pytest.fail("training label projection must reuse already-frozen annotation rows")
+
+    monkeypatch.setattr(
+        "platform_core.training_label_tasks.AnnotationRepository",
+        ForbiddenSecondRepository,
+    )
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0}],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        projected = _scoped_selected_project_images(object(), project, [row["id"] for row in frozen_rows])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+
+    assert len(projected) == total
+    assert projected[0]["source_labels"] == ["fire", "person"]
+    assert projected[-1]["boxes"][0]["label"] == "fire"
+    assert all("annotation_hash" not in row for row in projected)

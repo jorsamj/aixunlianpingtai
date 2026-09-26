@@ -48,5 +48,5 @@ def worker_registration(data_dir: Path):
     _install_scoped_training_hooks()
     return {
         "handlers": {TaskKind.TRAINING: ProductionTrainingHandler(data_dir)},
-        "capabilities": {"training.ultralytics"},
+        "capabilities": {"training.ultralytics", "training.paddle"},
     }

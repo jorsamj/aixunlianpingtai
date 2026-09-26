@@ -93,20 +93,31 @@ export function resolveClientTrainingLabels({
   const available = availableCodes === null
     ? selectedMaterialLabelCodes(materials, selectedIds, labelCatalog)
     : sortedAvailableCodes(availableCodes, labelCatalog);
+  const catalogSet = new Set((labelCatalog || [])
+    .filter(item => item?.code && item?.status !== 'disabled' && item?.status !== 'inactive')
+    .map(item => String(item.code)));
   const inherited = latestVersionLabelInfo(algorithm);
-  const inheritedSet = new Set(inherited.codes);
-  const selectable = available.filter(code => !inheritedSet.has(code));
+  const droppedInherited = inherited.codes.filter(code => !catalogSet.has(code));
+  const retainedInherited = inherited.codes.filter(code => catalogSet.has(code));
+  const inheritedSet = new Set(retainedInherited);
+  const invalidAvailable = available.filter(code => !catalogSet.has(code));
+  const selectable = available.filter(code => catalogSet.has(code) && !inheritedSet.has(code));
   const requested = unique(requestedCodes).filter(code => selectable.includes(code));
   return {
     available,
     selectable,
     requested,
-    inherited: inherited.codes,
+    inherited: retainedInherited,
+    droppedInherited,
+    invalidAvailable,
+    labelSchemaChanged: Boolean(droppedInherited.length || requested.length),
+    strictResume: false,
+    baseTrainingMode: inherited.hasVersion ? 'previous_weights_init' : 'mother_model_init',
     hasPreviousVersion: inherited.hasVersion,
     hasAnyVersion: inherited.hasAnyVersion,
     previousVersionBlocked: inherited.blocked,
     legacyPreviousVersion: inherited.legacyUnknown,
-    effectivePreview: unique([...inherited.codes, ...requested]),
+    effectivePreview: unique([...retainedInherited, ...requested]),
   };
 }
 
@@ -194,7 +205,7 @@ function ensurePanelStyle() {
     .training-label-choice:has(input:checked){border-color:#6c8ee0;background:#edf3ff;color:#244fae}.training-label-choice input{margin:0}
     .training-label-choice span{display:flex;flex-direction:column;line-height:1.2}.training-label-choice b{font-size:10px}.training-label-choice small{font-size:8px;color:#8491a4;margin-top:2px}
     .training-label-inherited{display:inline-flex;align-items:center;padding:6px 8px;border-radius:9px;background:#ecfdf5;color:#15803d;font-size:9px;font-weight:800}
-    .training-label-empty{font-size:9px;color:#8a96a8}.training-label-warning{margin-top:8px;font-size:9px;color:#a16207;line-height:1.5}
+    .training-label-empty{font-size:9px;color:#8a96a8}.training-label-warning{margin-top:8px;font-size:9px;color:#a16207;line-height:1.5}.training-label-warning.error{color:#b42318}.training-label-schema-change{display:inline-flex;margin-top:8px;padding:5px 8px;border-radius:8px;background:#fff7ed;color:#9a3412;font-size:9px;font-weight:800}
   `;
   document.head.appendChild(style);
 }
@@ -292,11 +303,16 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
         : '<span class="training-label-empty">请先选择训练素材，素材带有的标签会在这里出现。</span>');
 
     const missingInherited = view.inherited.filter(code => !view.available.includes(code));
+    const droppedInherited = view.droppedInherited || [];
+    const invalidAvailable = view.invalidAvailable || [];
     panel.innerHTML = `
       <div class="training-label-contract-head"><div><b>本次训练标签</b><small>只显示当前已选素材实际携带的标签；项目标签库中的其他标签不会进入本次算法。</small></div><span class="training-label-contract-count">${view.effectivePreview.length || (view.legacyPreviousVersion ? '?' : 0)} 类</span></div>
       <div class="training-label-contract-block"><span class="training-label-contract-title">上一版本自动继承</span><div class="training-label-contract-list">${inheritedHtml}</div></div>
       <div class="training-label-contract-block"><span class="training-label-contract-title">本次素材标签（可选择）</span><div class="training-label-contract-list">${selectableHtml}</div></div>
-      ${missingInherited.length ? `<div class="training-label-warning">继承标签 ${missingInherited.map(code => esc(displayName(state, code))).join('、')} 在本次素材中没有正样本，但仍会保留原 class_id。</div>` : ''}
+      ${missingInherited.length ? `<div class="training-label-warning">继承标签 ${missingInherited.map(code => esc(displayName(state, code))).join('、')} 在本次素材中没有正样本，但仍会保留在本次 schema。</div>` : ''}
+      ${droppedInherited.length ? `<div class="training-label-warning">上一版本标签 ${droppedInherited.map(code => esc(code)).join('、')} 已不在当前有效标签库，本次会从 schema 剔除并重新连续编号。</div>` : ''}
+      ${invalidAvailable.length ? `<div class="training-label-warning error">已选素材包含非当前有效标签：${invalidAvailable.map(code => esc(code)).join('、')}。服务器会拒绝训练，请先统一标签。</div>` : ''}
+      ${view.labelSchemaChanged ? '<span class="training-label-schema-change">Label Schema Changed · 使用上一版本权重初始化，不做严格续训</span>' : ''}
     `;
 
     panel.querySelectorAll('[data-training-label-code]').forEach(input => {

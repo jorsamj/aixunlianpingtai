@@ -1,7 +1,11 @@
+import {trainingApiErrorMessage} from '../../static/modules/training-task-runtime.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {installTrainingTaskRuntime} from '../../static/modules/training-task-runtime.js';
+import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
+
+const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
 
 function response(body) {
   return {
@@ -16,6 +20,23 @@ function cleanup() {
   delete globalThis.window;
   delete globalThis.document;
 }
+
+
+test('training task runtime owns no DOM listeners or DOM inspection', () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  globalThis.document = new Proxy({}, {
+    get() { throw new Error('TrainingTaskRuntime must not inspect DOM'); },
+  });
+  globalThis.window = {fetch: async () => response([])};
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  assert.ok(runtime);
+  runtime.destroy();
+  cleanup();
+});
 
 test('focused training refresh fetches jobs only and patches the task table', async () => {
   const state = {page: '训练任务', project: {id: 'p 1'}, jobs: [], __navigationEpoch: 4};
@@ -35,6 +56,7 @@ test('focused training refresh fetches jobs only and patches the task table', as
     getState: () => state,
     projectId: () => state.project.id,
   });
+  runtime.setViewAdapter({render() { patches += 1; }});
   const result = await runtime.refresh();
 
   assert.deepEqual(urls, ['/api/projects/p%201/jobs']);
@@ -79,18 +101,27 @@ test('successive jobs responses replace status progress epoch and elapsed row tr
     getState: () => state,
     projectId: () => state.project.id,
   });
+  runtime.setViewAdapter({render() {
+    const tab = state.train428Tab || 'active';
+    body.innerHTML = filterTrainingTaskJobs(state.jobs, {tab}).map(trainingTaskRow).join('');
+    activeCount.textContent = String(filterTrainingTaskJobs(state.jobs, {tab: 'active'}).length);
+    historyCount.textContent = String(filterTrainingTaskJobs(state.jobs, {tab: 'history'}).length);
+  }});
   await runtime.refresh({source: 'poll'});
-  assert.match(body.innerHTML, /3\/100 · 3%/);
+  assert.match(body.innerHTML, /Epoch 3\/100/);
+  assert.match(body.innerHTML, /3%/);
   assert.match(body.innerHTML, />30s</);
 
   await runtime.refresh({source: 'poll'});
-  assert.match(body.innerHTML, /4\/100 · 4%/);
+  assert.match(body.innerHTML, /Epoch 4\/100/);
+  assert.match(body.innerHTML, /4%/);
   assert.match(body.innerHTML, />45s</);
 
   state.train428Tab = 'history';
   await runtime.refresh({source: 'poll'});
   assert.match(body.innerHTML, /已完成/);
-  assert.match(body.innerHTML, /100\/100 · 100%/);
+  assert.match(body.innerHTML, /Epoch 100\/100/);
+  assert.match(body.innerHTML, /100%/);
   assert.doesNotMatch(body.innerHTML, /训练中/);
   assert.equal(activeCount.textContent, '0');
   assert.equal(historyCount.textContent, '1');
@@ -121,6 +152,48 @@ test('concurrent training refreshes share one jobs request', async () => {
   release();
   await Promise.all([first, second]);
   assert.equal(requests, 1);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('forced refresh waits for an older inflight request then fetches fresh job truth', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  let requests = 0;
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  globalThis.window = {
+    async fetch() {
+      requests += 1;
+      if (requests === 1) {
+        await firstGate;
+        return response([]);
+      }
+      return response([{id: 'fresh-job', status: 'running'}]);
+    },
+    updateTrainingJobTable() {},
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const initial = runtime.refresh({source: 'poll'});
+  await Promise.resolve();
+  assert.equal(requests, 1);
+
+  const forced = runtime.refresh({force: true, source: 'manual'});
+  await Promise.resolve();
+  assert.equal(requests, 1, 'forced refresh must wait for the older request before starting a second one');
+
+  releaseFirst();
+  await initial;
+  const result = await forced;
+
+  assert.equal(requests, 2);
+  assert.equal(result.reused, undefined);
+  assert.deepEqual(state.jobs, [{id: 'fresh-job', status: 'running'}]);
+  assert.equal(runtime.state().inflight, false);
 
   runtime.destroy();
   cleanup();
@@ -308,7 +381,7 @@ test('training row prioritizes waiting-resource truth and suppresses an unproved
   const previousDocument = globalThis.document;
   // trainingTaskRow is pure and does not require runtime installation.
   cleanup();
-  return import('../../static/modules/training-task-runtime.js').then(({trainingTaskRow}) => {
+  return import('../../static/modules/training-task-visibility-runtime.js').then(({trainingTaskPresentationRow: trainingTaskRow}) => {
     const html = trainingTaskRow({
       id: 'wait-1', status: 'waiting', queue_priority: 1, priority_scheme: 'lower_number_first',
       resource_queue_position: 2, resource_wait_reason: 'GPU_MEMORY_BUSY',
@@ -317,19 +390,20 @@ test('training row prioritizes waiting-resource truth and suppresses an unproved
       framework: 'ultralytics', total_epochs: 30,
     });
     assert.match(html, /等待资源/);
-    assert.match(html, /优先级 1/);
+    assert.match(html, /train428-priority-number">1<\/span>/);
     assert.match(html, /GPU 自动/);
     assert.match(html, /GPU_MEMORY_BUSY/);
     assert.doesNotMatch(html, /队列第 2 位/);
     assert.match(html, /执行节点 a800-worker-01/);
-    assert.match(html, /18% · 准备训练环境/);
+    assert.match(html, />18%<\/b>/);
+    assert.match(html, /准备训练环境/);
     if (previousWindow !== undefined) globalThis.window = previousWindow;
     if (previousDocument !== undefined) globalThis.document = previousDocument;
   });
 });
 
 test('training row shows a numeric position only when the backend proves it exact', async () => {
-  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow} = await import('../../static/modules/training-task-visibility-runtime.js');
   const exact = trainingTaskRow({
     id: 'cpu-2', status: 'queued', resource_pool_label: 'CPU',
     resource_queue_position: 2, resource_queue_position_exact: true,
@@ -347,7 +421,7 @@ test('training row shows a numeric position only when the backend proves it exac
 });
 
 test('completed training below requested epochs is shown as early completion instead of stuck running', async () => {
-  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow} = await import('../../static/modules/training-task-visibility-runtime.js');
   const html = trainingTaskRow({
     id: 'done-180',
     status: 'done',
@@ -360,13 +434,15 @@ test('completed training below requested epochs is shown as early completion ins
   });
   assert.match(html, /已完成/);
   assert.match(html, /Early Stopping，提前完成/);
-  assert.match(html, /180\/300 · 100%/);
+  assert.match(html, /Epoch 180\/300/);
+  assert.match(html, /100%/);
   assert.doesNotMatch(html, /训练中/);
 });
 
 
 test('training list and row use canonical task_status over stale legacy status', async () => {
-  const {trainingTaskRow, visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const {trainingTaskPresentationRow: trainingTaskRow, filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
   const task = {
     id: 'truth-1',
     status: 'completed',
@@ -392,3 +468,319 @@ test('training list and row use canonical task_status over stale legacy status',
   assert.match(html, /12%/);
   assert.doesNotMatch(html, /队列第 4 位/);
 });
+
+
+test('visible training jobs match durable priority rank and FIFO order', async () => {
+  const {filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
+  const jobs = [
+    {id: 'fifo-new', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:02:00Z'},
+    {id: 'promoted', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 2, queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'highest', status: 'queued', queue_priority: 1, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:04:00Z'},
+    {id: 'fifo-old', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:01:00Z'},
+  ];
+  assert.deepEqual(
+    visibleTrainingJobs(jobs, 'active').map(job => job.id),
+    ['highest', 'promoted', 'fifo-old', 'fifo-new'],
+  );
+});
+
+
+test('visible training jobs prefer backend-proven queue positions within one resource', async () => {
+  const {filterTrainingTaskJobs} = await import('../../static/modules/training-task-visibility-runtime.js');
+  const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
+  const jobs = [
+    {id: 'later-array', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 3, resource_queue_position_exact: true, queued_at: '2026-08-30T10:01:00Z'},
+    {id: 'highest', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', resource_queue_position: 1, resource_queue_position_exact: true, queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'middle', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 2, resource_queue_position_exact: true, queued_at: '2026-08-30T10:02:00Z'},
+  ];
+  assert.deepEqual(visibleTrainingJobs(jobs, 'active').map(job => job.id), ['highest', 'middle', 'later-array']);
+});
+
+
+test('active training row exposes the 10 product-facing task fields without internal ids or framework noise', () => {
+  const html = trainingTaskRow({
+    id: 'train-11',
+    status: 'running',
+    asset_algorithm_id: 'alg-11',
+    asset_algorithm_name: '安全帽检测',
+    task_name: '第 3 次迭代',
+    queue_priority: 3,
+    priority_scheme: 'lower_number_first',
+    framework: 'ultralytics',
+    resource_pool_label: 'GPU 0',
+    progress_percent: 42,
+    current_epoch: 12,
+    total_epochs: 30,
+    elapsed_seconds: 90,
+    eta_seconds: 135,
+    phase: 'training',
+    current_item: 'Epoch 12/30',
+    started_at: '2026-09-20T10:00:00Z',
+  });
+  assert.equal((html.match(/<td/g) || []).length, 10);
+  assert.match(html, /安全帽检测/);
+  assert.match(html, /第 3 次迭代/);
+  assert.match(html, />3<\/span>/);
+  assert.match(html, /42%/);
+  assert.doesNotMatch(html, /<span[^>]*>alg-11<\/span>/);
+  assert.doesNotMatch(html, /<span[^>]*>train-11<\/span>/);
+  assert.doesNotMatch(html, /<b[^>]*>train-11<\/b>/);
+  assert.doesNotMatch(html, /Ultralytics \/ YOLO/);
+  assert.match(html, /详情/);
+  assert.match(html, /日志/);
+  assert.match(html, /暂停/);
+  assert.match(html, /停止/);
+  assert.match(html, /删除/);
+});
+
+test('partial-success training row is completed but explicitly labeled as partial', () => {
+  const html = trainingTaskRow({
+    id: 'train-partial',
+    status: 'done',
+    task_status: 'PARTIAL_SUCCESS',
+    asset_algorithm_name: '烟火检测',
+    task_name: '迭代 8',
+    progress_percent: 100,
+    current_epoch: 30,
+    total_epochs: 30,
+  });
+  assert.match(html, /部分完成/);
+  assert.match(html, /训练主体已完成 · 后处理或独立评测存在警告/);
+  assert.doesNotMatch(html, />失败</);
+});
+
+
+
+test('transitioning training task disables conflicting controls until backend truth settles', () => {
+  const html = trainingTaskRow({
+    id: 'train-pausing',
+    status: 'pausing',
+    task_status: 'PAUSING',
+    asset_algorithm_name: '烟火检测',
+    framework: 'ultralytics',
+    progress_percent: 36,
+  });
+  assert.match(html, /暂停中/);
+  assert.match(html, /状态切换中/);
+  assert.match(html, /日志/);
+  assert.doesNotMatch(html, /pauseTrain428/);
+  assert.doesNotMatch(html, /stopTrain428/);
+});
+
+test('durable create response is merged immediately without a confirmation request', () => {
+  const state = {page: '算法列表', jobs: [{id: 'older', status: 'done'}]};
+  let fetchCalls = 0;
+  globalThis.document = {
+    addEventListener() {}, removeEventListener() {}, querySelector() { return null; },
+  };
+  globalThis.window = {
+    fetch: async () => { fetchCalls += 1; throw new Error('must not fetch'); },
+  };
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+  });
+
+  const row = runtime.acceptCreatedTask({
+    task_id: 'train_aaaaaaaaaaaaaaaaaaaa',
+    kind: 'TRAINING',
+    task_type: 'TRAINING',
+    status: 'QUEUED',
+    persisted_status: 'QUEUED',
+    phase: 'queued',
+    progress_percent: 0,
+    created_at: '2026-09-21T00:00:00Z',
+  }, {algorithmId: 'alg-1', framework: 'ultralytics'});
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(row.id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.equal(state.jobs[0].id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.equal(state.jobs[0].asset_algorithm_id, 'alg-1');
+  assert.equal(state.jobs[0].status, 'queued');
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('batch mode adds selection inside the algorithm cell without adding a permanent checkbox column', () => {
+  const job = {
+    id:'batch-row-1', status:'running', asset_algorithm_name:'烟火检测',
+    task_name:'训练任务 A', queue_priority:2, progress_percent:25,
+  };
+  const normal = trainingTaskRow(job);
+  const batch = trainingTaskRow(job, {batchMode:true, selected:true});
+  assert.equal((normal.match(/<td/g) || []).length, 10);
+  assert.equal((batch.match(/<td/g) || []).length, 10);
+  assert.doesNotMatch(normal, /data-training-batch-select/);
+  assert.match(batch, /data-training-batch-select="batch-row-1"/);
+  assert.match(batch, /checked/);
+  assert.match(batch, /is-selected/);
+});
+
+test('batch pause uses only eligible real endpoints and performs one final jobs refresh', async () => {
+  const state = {
+    page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[
+      {id:'run-1', status:'running'},
+      {id:'pause-1', status:'paused'},
+    ],
+  };
+  const calls=[];
+  globalThis.window={
+    async fetch(url, init={}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (String(url).endsWith('/pause')) return response({ok:true});
+      if (String(url).endsWith('/jobs')) return response([
+        {id:'run-1', status:'paused'},
+        {id:'pause-1', status:'paused'},
+      ]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+  const runtime=installTrainingTaskRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+  });
+  const result=await runtime.batchAction('pause',['run-1','pause-1']);
+  assert.equal(result.succeeded,1);
+  assert.equal(result.skipped,1);
+  assert.deepEqual(calls,[
+    'POST /api/v48/projects/p1/jobs/run-1/pause',
+    'GET /api/projects/p1/jobs',
+  ]);
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('batch delete posts terminal records once and never stops active selected tasks', async () => {
+  const state = {
+    page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[
+      {id:'stopped-1', status:'stopped'},
+      {id:'failed-1', status:'failed'},
+      {id:'running-1', status:'running'},
+    ],
+  };
+  const calls=[];
+  let deleteBody=null;
+  const originalConfirm=globalThis.confirm;
+  globalThis.window={
+    confirm:()=>true,
+    async fetch(url, init={}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (String(url).endsWith('/jobs/batch-delete')) {
+        deleteBody=JSON.parse(String(init.body || '{}'));
+        return response({
+          ok:true, requested:2, deleted:2, deleted_ids:['stopped-1','failed-1'],
+          skipped_active:0, missing:0, failed:0, failures:[],
+        });
+      }
+      if (String(url).endsWith('/jobs')) return response([{id:'running-1',status:'running'}]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+  const runtime=installTrainingTaskRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+  });
+  const result=await runtime.batchAction('delete',['stopped-1','failed-1','running-1']);
+  assert.equal(result.succeeded,2);
+  assert.equal(result.skipped,1);
+  assert.deepEqual(deleteBody,{job_ids:['stopped-1','failed-1']});
+  assert.deepEqual(calls,[
+    'POST /api/v48/projects/p1/jobs/batch-delete',
+    'GET /api/projects/p1/jobs',
+  ]);
+  assert.equal(calls.some(row=>row.includes('/stop')),false);
+  runtime.destroy();
+  globalThis.confirm=originalConfirm;
+  cleanup();
+});
+
+
+test('training task runtime renders through an explicit view adapter while keeping refresh ownership stable', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  globalThis.window = {
+    fetch: async () => response([{id: 'adapter-1', status: 'running', progress_percent: 25}]),
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const originalRefresh = runtime.refresh;
+  let renders = 0;
+  let afterRefreshes = 0;
+  const detach = runtime.setViewAdapter({
+    render() { renders += 1; return true; },
+    afterRefresh(result, options) {
+      if (!result?.stale && options?.source === 'poll') afterRefreshes += 1;
+    },
+  });
+
+  const result = await runtime.refresh({render: true, source: 'poll'});
+  assert.equal(result.stale, false);
+  assert.equal(runtime.refresh, originalRefresh);
+  assert.equal(renders, 1);
+  assert.equal(afterRefreshes, 1);
+  assert.equal(runtime.state().viewAdapter, true);
+
+  detach();
+  assert.equal(runtime.state().viewAdapter, false);
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('page-owner refresh reuses a recent training snapshot and revalidates after the revisit window', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  let requests = 0;
+  const originalNow = Date.now;
+  let now = 10_000;
+  Date.now = () => now;
+  globalThis.window = {
+    async fetch() { requests += 1; return response([{id: 'j1', status: 'running'}]); },
+    updateTrainingJobTable() {},
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  await runtime.refresh({source: 'poll'});
+  now += 1000;
+  const reused = await runtime.refresh({source: 'page-owner'});
+  assert.equal(requests, 1);
+  assert.equal(reused.reused, true);
+
+  now += 5001;
+  const fresh = await runtime.refresh({source: 'page-owner'});
+  assert.equal(requests, 2);
+  assert.equal(fresh.reused, undefined);
+
+  runtime.destroy();
+  Date.now = originalNow;
+  cleanup();
+});
+
+test('training API error formatter keeps structured backend diagnostics', () => {
+  const message = trainingApiErrorMessage({
+    message: '训练启动失败',
+    detail: {
+      message: 'CUDA 资源不可用',
+      detail: 'cuda:1 显存不足',
+      solution: '等待空闲 GPU 后重试',
+      errors: [{message: '需要至少 4 GB 可用显存'}],
+    },
+  }, '操作失败', 409);
+
+  assert.match(message, /训练启动失败/);
+  assert.match(message, /CUDA 资源不可用/);
+  assert.match(message, /cuda:1 显存不足/);
+  assert.match(message, /至少 4 GB/);
+  assert.match(message, /建议：等待空闲 GPU 后重试/);
+  assert.doesNotMatch(message, /\[object Object\]/);
+});
+

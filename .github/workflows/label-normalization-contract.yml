@@ -1,0 +1,433 @@
+name: Label Normalization Contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'platform_core/labels.py'
+      - 'platform_core/storage/import_confirmation.py'
+      - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/auto_label.py'
+      - 'platform_core/annotation_task_service.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'static/app.js'
+      - 'static/modules/annotation-task-view.js'
+      - 'static/modules/zip-import-runtime.js'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/label-mapping-review.js'
+      - 'static/index.html'
+      - 'static/main.mjs'
+      - 'static/zip-import-bootstrap.mjs'
+      - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_durable_label_remap.py'
+      - 'tests/api/test_bootstrap_label_snapshot_truth.py'
+      - 'tests/api/test_legacy_annotated_import_guard.py'
+      - 'tests/api/test_v36_source_import_guard.py'
+      - 'tests/api/test_annotation_flow.py'
+      - 'tests/api/test_algorithm_flow.py'
+      - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/unit/test_label_aliases.py'
+      - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/ai-annotation-owner.test.mjs'
+      - 'tests/frontend/label-management-owner.test.mjs'
+      - 'tests/frontend/import-label-remap-durable.test.mjs'
+      - 'tests/frontend/zip-import-durable-runtime.test.mjs'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - '.github/workflows/label-normalization-contract.yml'
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'platform_core/labels.py'
+      - 'platform_core/storage/import_confirmation.py'
+      - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/auto_label.py'
+      - 'platform_core/annotation_task_service.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'static/app.js'
+      - 'static/modules/annotation-task-view.js'
+      - 'static/modules/zip-import-runtime.js'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/label-mapping-review.js'
+      - 'static/index.html'
+      - 'static/main.mjs'
+      - 'static/zip-import-bootstrap.mjs'
+      - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_durable_label_remap.py'
+      - 'tests/api/test_bootstrap_label_snapshot_truth.py'
+      - 'tests/api/test_legacy_annotated_import_guard.py'
+      - 'tests/api/test_v36_source_import_guard.py'
+      - 'tests/api/test_annotation_flow.py'
+      - 'tests/api/test_algorithm_flow.py'
+      - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/unit/test_label_aliases.py'
+      - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/ai-annotation-owner.test.mjs'
+      - 'tests/frontend/label-management-owner.test.mjs'
+      - 'tests/frontend/import-label-remap-durable.test.mjs'
+      - 'tests/frontend/zip-import-durable-runtime.test.mjs'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - '.github/workflows/label-normalization-contract.yml'
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install focused backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography
+          filelock boto3 oss2
+      - name: Syntax and release boundary
+        run: |
+          python -m py_compile \
+            app.py \
+            platform_core/labels.py \
+            platform_core/storage/import_confirmation.py \
+            platform_core/auto_label.py \
+            platform_core/annotation_candidates.py \
+            platform_core/annotation_repository.py \
+            platform_core/annotation_task_service.py \
+            platform_core/material_batches.py \
+            platform_core/task_runtime/repository.py
+          node --check static/app.js
+          node --check static/modules/annotation-task-view.js
+          node --check static/modules/zip-import-runtime.js
+          node --check static/modules/server-material-import.js
+          node --check static/modules/label-mapping-review.js
+          node --check static/main.mjs
+          node --check static/zip-import-bootstrap.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Backend label-normalization contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_v19_label_mapping.py
+          tests/api/test_label_aliases.py
+          tests/api/test_durable_label_remap.py
+          tests/api/test_bootstrap_label_snapshot_truth.py
+          tests/api/test_legacy_annotated_import_guard.py
+          tests/api/test_v36_source_import_guard.py
+          tests/api/test_annotation_flow.py
+          tests/api/test_algorithm_flow.py
+          tests/integration/test_persistent_ai_annotation_e2e.py
+          tests/unit/test_annotation_task_service.py
+          tests/unit/test_label_aliases.py
+      - name: Frontend label-normalization contracts
+        run: >-
+          node --test
+          tests/frontend/annotation-task-view.test.mjs
+          tests/frontend/ai-annotation-owner.test.mjs
+          tests/frontend/label-management-owner.test.mjs
+          tests/frontend/import-label-remap-durable.test.mjs
+          tests/frontend/zip-import-durable-runtime.test.mjs
+          tests/frontend/server-material-import.test.mjs
+      - name: Permanent source guards
+        shell: python
+        run: |
+          import re
+          from pathlib import Path
+
+          app = Path('app.py').read_text(encoding='utf-8')
+          labels = Path('platform_core/labels.py').read_text(encoding='utf-8')
+          import_confirmation = Path('platform_core/storage/import_confirmation.py').read_text(encoding='utf-8')
+          auto_label = Path('platform_core/auto_label.py').read_text(encoding='utf-8')
+          candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
+          annotation_repository = Path('platform_core/annotation_repository.py').read_text(encoding='utf-8')
+          service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
+          material_batches = Path('platform_core/material_batches.py').read_text(encoding='utf-8')
+          repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
+          zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
+          server_import = Path('static/modules/server-material-import.js').read_text(encoding='utf-8')
+          label_review = Path('static/modules/label-mapping-review.js').read_text(encoding='utf-8')
+          annotation_view = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
+          static_app = Path('static/app.js').read_text(encoding='utf-8')
+          index_html = Path('static/index.html').read_text(encoding='utf-8')
+          main_mjs = Path('static/main.mjs').read_text(encoding='utf-8')
+          zip_bootstrap = Path('static/zip-import-bootstrap.mjs').read_text(encoding='utf-8')
+
+          required = {
+              'platform_core/labels.py': (
+                  'def confirmed_alias_updates(',
+                  'ambiguous_sources = {',
+                  'def normalize_label_aliases(',
+                  'def label_identity_values(',
+              ),
+              'platform_core/storage/import_confirmation.py': (
+                  'def external_label_facts(classes):',
+                  'allowed = ("class_id", "name", "image_count", "box_count")',
+                  'IMPORT_LABEL_CREATION_BLOCKED_DETAIL',
+                  "return resolved, []",
+                  "previous.get('create_labels')",
+              ),
+              'app.py': (
+                  'label_confirmation_required',
+                  'resolve_external_label_mapping(',
+                  'label_mapping: Dict[str, str] = Field(default_factory=dict)',
+                  're.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code)',
+                  'resume_after_review_confirmation',
+                  'V36_ANNOTATED_IMPORT_BLOCKED_DETAIL',
+                  'def _v36_detect_annotated_formats(',
+                  'legacy_annotated_import_blocked',
+                  'def remember_project_label_aliases(',
+                  'def _prune_canonical_label_alias_conflicts(',
+                  'if _prune_canonical_label_alias_conflicts(project):',
+                  '"aliases": normalize_label_aliases(',
+                  'def _set_project_label_aliases(',
+                  'incoming = normalize_label_aliases(aliases)',
+                  'meta[target_idx]["aliases"] = normalize_label_aliases([*base, *incoming])',
+                  "external_classes = external_label_facts(",
+                  "task.status is TaskStatus.AWAITING_CONFIRMATION",
+                  "AI 标注标签必须显式使用当前标签库中的英文编码",
+                  "目标标签必须来自当前有效标签库",
+                  'IMPORT_LABEL_CREATION_BLOCKED_DETAIL',
+                  'if payload.create_labels:',
+                  'LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL',
+                  'def _reject_legacy_annotated_import(project_id: str)',
+                  'LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL',
+                  'def _reject_legacy_direct_prelabel(project_id: str)',
+              ),
+              'platform_core/auto_label.py': (
+                  'del label_aliases',
+                  'if label not in label_ids:',
+                  'exact canonical codes explicitly allowed by this task',
+              ),
+              'platform_core/annotation_candidates.py': (
+                  'def remap_labels(',
+                  'def label_summary(',
+              ),
+              'platform_core/annotation_repository.py': (
+                  'def plan_label_remap(',
+                  'def remap_labels_if_digests(',
+                  "'status': 'stale'",
+              ),
+              'platform_core/material_batches.py': (
+                  'REMAP_ANNOTATION_LABELS = "REMAP_ANNOTATION_LABELS"',
+                  'def create_annotation_remap_batch(',
+                  'def _run_annotation_remap(',
+                  'REMAPPING_ANNOTATION_LABELS',
+                  'ANNOTATION_CHANGED_DURING_REMAP',
+              ),
+              'platform_core/annotation_task_service.py': (
+                  'def commit_confirmed_review(',
+                  'stage="APPLYING_REVIEW"',
+                  'confirmed annotation label mapping is no longer valid',
+                  'label_alias_memory_warning',
+                  '正式标注已入库，但标签别名记忆未保存',
+              ),
+              'platform_core/task_runtime/repository.py': (
+                  'def resume_after_review_confirmation(',
+                  "stage='review_queued'",
+              ),
+              'static/modules/zip-import-runtime.js': (
+                  'zipNeedsLabelConfirmation',
+                  '标注入库确认',
+                  'confirmLabels',
+                  '选择平台标签',
+                  "setPage('标签管理')",
+                  "openInlineLabelCreate414?.('zip'",
+                  'window.doImportData=()=>',
+              ),
+              'static/modules/server-material-import.js': (
+                  'buildImportConfirmation',
+                  '标签创建必须先通过显式平台标签创建操作完成',
+                  'accept_quality_report',
+              ),
+              'static/modules/label-mapping-review.js': (
+                  'LABEL_MAPPING_REVIEW_PAGE_SIZE = 50',
+                  'bulkSetLabelMapping',
+                  'buildManualLabelMapping',
+                  '请全部人工确认后再提交',
+              ),
+              'static/modules/annotation-task-view.js': (
+                  '等待标注入库',
+                  '统一标签并入库',
+              ),
+              'static/app.js': (
+                  '地址读取仅导入未标注图片',
+                  'id="startSourceImportBtnV36"',
+                  'label414Aliases',
+                  '不会用于导入时自动选择或推荐平台标签',
+                  '只记录人工决定；不会自动推荐或预选。',
+                  'function labelReviewMarkup61(',
+                  'function explicitCanonicalAiLabelText(value)',
+                  '中文名、别名、历史 alias 不会自动转换',
+                  'window.submitAiLabel429=async function(ids=[])',
+                  'const task=await api(taskApi(),',
+                  '候选结果不会自动写入正式标注',
+                  "window.manageLabels=()=>{closeModal();setPage('标签管理')};",
+                  'window.ZipImportRuntime?.upload',
+                  '正在批量统一标签',
+                  'progress_percent',
+                  "PollRegistryRuntime?.startTimeout",
+                  '/material-batches/${taskId}',
+                  'window.openInlineLabelCreate414=function',
+                  'window.submitInlineLabelCreate414=async function',
+                  "openInlineLabelCreate414('${kind}'",
+                  "openInlineLabelCreate414('ai'",
+                  '平台标签已创建并选中；仍需确认后才会正式入库',
+              ),
+              'static/index.html': (
+                  '/static/zip-import-bootstrap.mjs?v=422543',
+              ),
+              'static/main.mjs': (
+                  'annotation-task-view.js?v=422002',
+                  'server-material-import.js?v=422526',
+              ),
+              'static/zip-import-bootstrap.mjs': (
+                  'zip-import-runtime.js?v=422543',
+              ),
+          }
+          bodies = {
+              'platform_core/labels.py': labels,
+              'platform_core/storage/import_confirmation.py': import_confirmation,
+              'app.py': app,
+              'platform_core/auto_label.py': auto_label,
+              'platform_core/annotation_candidates.py': candidates,
+              'platform_core/annotation_repository.py': annotation_repository,
+              'platform_core/annotation_task_service.py': service,
+              'platform_core/material_batches.py': material_batches,
+              'platform_core/task_runtime/repository.py': repository,
+              'static/modules/zip-import-runtime.js': zip_runtime,
+              'static/modules/server-material-import.js': server_import,
+              'static/modules/label-mapping-review.js': label_review,
+              'static/modules/annotation-task-view.js': annotation_view,
+              'static/app.js': static_app,
+              'static/index.html': index_html,
+              'static/main.mjs': main_mjs,
+              'static/zip-import-bootstrap.mjs': zip_bootstrap,
+          }
+          missing = {
+              name: [token for token in tokens if token not in bodies[name]]
+              for name, tokens in required.items()
+              if any(token not in bodies[name] for token in tokens)
+          }
+          if not re.search(r'/static/app\.js\?v=\d+(?:\.\d+)*', index_html):
+              missing.setdefault('static/index.html', []).append('cache-busted app.js entrypoint')
+          if not re.search(r'/static/main\.mjs\?v=\d+(?:\.\d+)*', index_html):
+              missing.setdefault('static/index.html', []).append('cache-busted main.mjs entrypoint')
+          if app.count('_reject_legacy_annotated_import(project_id)') != 5:
+              missing.setdefault('app.py', []).append(
+                  'exactly five legacy annotated import guards'
+              )
+          for route in (
+              '/api/projects/{project_id}/import/yolo_zip',
+              '/api/projects/{project_id}/import/labels',
+              '/api/projects/{project_id}/import/coco_zip',
+              '/api/projects/{project_id}/import/voc_zip',
+              '/api/v18/projects/{project_id}/datasets/{dataset_id}/import',
+          ):
+              if route not in app:
+                  missing.setdefault('app.py', []).append(route)
+
+          if 'data-zip-create' in zip_runtime or 'create_labels' in zip_runtime:
+              missing.setdefault('static/modules/zip-import-runtime.js', []).append(
+                  'ZIP confirmation must not submit implicit label-creation state'
+              )
+          if 'data-create-label' in static_app or 'body.create_labels' in static_app:
+              missing.setdefault('static/app.js', []).append(
+                  'review confirmation must keep explicit label creation separate from mapping payloads'
+              )
+          if 'create_labels' in server_import:
+              missing.setdefault('static/modules/server-material-import.js', []).append(
+                  'server import helper must not emit implicit create_labels'
+              )
+          if 'def create_import_label' in app or 'labels_to_create' in app:
+              missing.setdefault('app.py', []).append(
+                  'import confirmation must not silently mutate the canonical label catalog'
+              )
+          for token in (
+              "openInlineLabelCreate414('${kind}'",
+              "openInlineLabelCreate414('ai'",
+              'window.openInlineLabelCreate414=function',
+              'window.submitInlineLabelCreate414=async function',
+          ):
+              if token not in static_app:
+                  missing.setdefault('static/app.js', []).append(
+                      f'explicit canonical label creation contract: {token}'
+                  )
+          if "openInlineLabelCreate414?.('zip'" not in zip_runtime:
+              missing.setdefault('static/modules/zip-import-runtime.js', []).append(
+                  'ZIP review must expose explicit canonical label creation'
+              )
+
+          forbidden = {
+              'platform_core/labels.py': (
+                  'def suggest_label_code(',
+              ),
+              'platform_core/storage/import_confirmation.py': (
+                  'suggest_label_code(',
+                  'target_label_code',
+              ),
+              'app.py': (
+                  'mapping_suggestions(',
+                  'suggest_label_code(',
+              ),
+              'platform_core/auto_label.py': (
+                  'if any(alias and label == alias for alias in values):',
+              ),
+              'static/app.js': (
+                  '自动预选后仍需人工确认',
+                  'function normalizedLabelText(',
+                  'const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])',
+              ),
+          }
+          for name, tokens in forbidden.items():
+              for token in tokens:
+                  if token in bodies[name]:
+                      missing.setdefault(name, []).append(
+                          f'retired automatic label-decision path must stay absent: {token}'
+                      )
+
+          if '/api/v18/projects/' in static_app:
+              missing.setdefault('static/app.js', []).append(
+                  'retired v18 ZIP import path must not exist in browser code'
+              )
+
+          if app.count('if payload.create_labels:') < 3:
+              missing.setdefault('app.py', []).append(
+                  'all annotated import confirmation owners must reject create_labels'
+              )
+
+          if app.count('_reject_legacy_direct_prelabel(project_id)') != 3:
+              missing.setdefault('app.py', []).append(
+                  'exactly three legacy direct prelabel guards'
+              )
+          for route in (
+              '/api/projects/{project_id}/prelabel/run',
+              '/api/v33/projects/{project_id}/prelabel-tasks',
+              '/api/v35/projects/{project_id}/prelabel-tasks',
+          ):
+              if route not in app:
+                  missing.setdefault('app.py', []).append(route)
+          for token in (
+              'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
+              'annotation_state: Optional[Literal["annotated", "confirmed_empty"]]',
+              '@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")',
+              'train_completed_count',
+          ):
+              if token not in app:
+                  missing.setdefault('app.py', []).append(token)
+          for token in ('ann420ConfirmEmpty', 'confirmEmptyAnnotation420', '暂无已结束训练可统计'):
+              if token not in static_app:
+                  missing.setdefault('static/app.js', []).append(token)
+          if missing:
+              raise SystemExit(f'missing label-normalization contracts: {missing}')

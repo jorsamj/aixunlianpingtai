@@ -1,6 +1,7 @@
 """Read-only YOLO detection discovery with disk-backed manifests and quality rules."""
 from __future__ import annotations
 
+import hashlib
 import math
 from contextlib import closing
 from dataclasses import dataclass
@@ -240,6 +241,23 @@ class YoloImportScanner:
 
     def _inventory(self, prefix: str, recursive: bool):
         batch = []
+
+        def flush():
+            if not batch:
+                return
+            existing = self.store.inventory_for_keys(
+                row["object_key"] for row in batch
+            )
+            for row in batch:
+                if not str(row.get("sha256") or "").strip():
+                    verified = str(
+                        (existing.get(row["object_key"]) or {}).get("sha256") or ""
+                    ).strip().lower()
+                    if len(verified) == 64:
+                        row["sha256"] = verified
+            self.store.inventory_many(batch)
+            batch.clear()
+
         for item in self.iter_objects(self.provider, prefix, recursive):
             if self.cancelled():
                 raise YoloScanCancelled()
@@ -247,22 +265,46 @@ class YoloImportScanner:
             batch.append({"object_key": key, "size_bytes": item.size_bytes,
                           "etag": item.etag or "", "sha256": item.sha256 or ""})
             if len(batch) == BATCH_SIZE:
-                self.store.inventory_many(batch)
-                batch.clear()
+                flush()
                 self._tick(key)
-        if batch:
-            self.store.inventory_many(batch)
+        flush()
+
+    def _record_text_identity(self, key: str, sha256: str, size_bytes: int) -> None:
+        current = self.store.inventory_for_keys([key]).get(key)
+        if current is None:
+            raise YoloImportError(
+                "YOLO_SOURCE_CHANGED",
+                "YOLO text object disappeared during scan",
+            )
+        listed_size = int(current.get("size_bytes") or 0)
+        if listed_size and listed_size != int(size_bytes):
+            raise YoloImportError(
+                "YOLO_SOURCE_CHANGED",
+                "YOLO text object changed while being read",
+            )
+        self.store.inventory_many([{
+            "object_key": key,
+            "size_bytes": int(size_bytes),
+            "etag": str(current.get("etag") or ""),
+            "sha256": str(sha256 or "").lower(),
+        }])
 
     def _lines(self, key):
+        digest = hashlib.sha256()
+        size_bytes = 0
         with closing(self.provider.open_reader(key)) as stream:
             while True:
                 if self.cancelled():
                     raise YoloScanCancelled()
                 line = stream.readline(MAX_TEXT_LINE + 1)
                 if not line:
+                    self._record_text_identity(key, digest.hexdigest(), size_bytes)
                     return
                 if len(line) > MAX_TEXT_LINE:
                     raise YoloImportError("YOLO_TEXT_LINE_TOO_LONG", "Dataset text line exceeds the size limit")
+                raw = line if isinstance(line, bytes) else str(line).encode("utf-8")
+                digest.update(raw)
+                size_bytes += len(raw)
                 try:
                     yield line.decode("utf-8-sig").strip() if isinstance(line, bytes) else line.strip()
                 except UnicodeError as error:
@@ -309,6 +351,12 @@ class YoloImportScanner:
                 raw = stream.read(MAX_TEXT_LINE + 1)
             if len(raw) > MAX_TEXT_LINE:
                 raise YoloImportError("YOLO_YAML_TOO_LARGE", "Dataset YAML exceeds the size limit")
+            raw_bytes = raw if isinstance(raw, bytes) else str(raw).encode("utf-8")
+            self._record_text_identity(
+                self.yaml_key,
+                hashlib.sha256(raw_bytes).hexdigest(),
+                len(raw_bytes),
+            )
             document = yaml.safe_load(raw)
         except (yaml.YAMLError, UnicodeError, RecursionError) as error:
             raise YoloImportError("YOLO_INVALID_YAML", "Dataset YAML is invalid") from error

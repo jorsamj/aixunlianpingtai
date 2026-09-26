@@ -1,0 +1,320 @@
+name: Remote Material Import
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'static/app.js'
+      - 'static/main.mjs'
+      - 'static/index.html'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/storage-import-progress.js'
+      - 'static/modules/upload-task-center.js'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/browser/storage-source.spec.mjs'
+      - 'node_agent.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/external_publish_request.py'
+      - 'platform_core/remote_material_import.py'
+      - 'platform_core/storage/detection_import.py'
+      - 'platform_core/remote_material_lifecycle.py'
+      - 'task_worker.py'
+      - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/import_candidates.py'
+      - 'platform_core/storage/rescan_tasks.py'
+      - 'tests/unit/storage/test_rescan_tasks.py'
+      - 'tests/api/test_storage_sources.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/storage/test_detection_import.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/integration/test_storage_import_worker.py'
+      - 'tests/api/test_server_material_import.py'
+      - '.github/workflows/remote-material-import.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'app.py'
+      - 'static/app.js'
+      - 'static/main.mjs'
+      - 'static/index.html'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/storage-import-progress.js'
+      - 'static/modules/upload-task-center.js'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/browser/storage-source.spec.mjs'
+      - 'node_agent.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/external_publish_request.py'
+      - 'platform_core/remote_material_import.py'
+      - 'platform_core/remote_material_lifecycle.py'
+      - 'task_worker.py'
+      - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/import_candidates.py'
+      - 'platform_core/storage/rescan_tasks.py'
+      - 'tests/unit/storage/test_rescan_tasks.py'
+      - 'tests/api/test_storage_sources.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/storage/test_detection_import.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/integration/test_storage_import_worker.py'
+      - 'tests/api/test_server_material_import.py'
+      - '.github/workflows/remote-material-import.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install material runtime dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest pillow pyyaml requests psutil filelock keyring cryptography
+          pydantic opencv-python-headless
+      - name: Compile material runtime chain
+        run: >-
+          python -m py_compile
+          node_agent.py
+          platform_core/node_agent_executor_loop.py
+          platform_core/node_agent_material_runtime.py
+          platform_core/annotation_schema.py
+          platform_core/remote_execution_transport.py
+          platform_core/external_publish_request.py
+          platform_core/remote_material_import.py
+          platform_core/storage/detection_import.py
+          platform_core/remote_material_lifecycle.py
+          platform_core/storage/import_tasks.py
+          platform_core/storage/import_candidates.py
+          platform_core/storage/rescan_tasks.py
+          task_worker.py
+          tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_annotation_schema.py
+          tests/unit/test_remote_material_import.py
+          tests/unit/storage/test_detection_import.py
+          tests/unit/storage/test_yolo_import.py
+          tests/unit/test_remote_material_lifecycle.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/storage/test_rescan_tasks.py
+          tests/unit/storage/test_yolo_import.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+          tests/integration/test_storage_import_worker.py
+      - name: Lightweight external publish request dependency guard
+        run: >-
+          python -c "import platform_core.external_publish_request; import sys; assert 'fastapi' not in sys.modules"
+      - name: Agent material and transport contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_annotation_schema.py
+          tests/unit/test_remote_material_import.py
+          tests/unit/storage/test_detection_import.py
+          tests/unit/test_remote_material_lifecycle.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/storage/test_rescan_tasks.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+      - name: Agent review to local indexer integration
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_storage_import_worker.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Classic app syntax guard
+        run: >-
+          node --check static/app.js &&
+          node --check static/modules/upload-task-center.js &&
+          node --check tests/frontend/upload-task-center.test.mjs
+      - name: Storage import frontend contracts
+        run: >-
+          node --test
+          tests/frontend/server-material-import.test.mjs
+          tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/upload-task-center.test.mjs
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install material API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Compile production material API
+        run: >-
+          python -m py_compile
+          app.py
+          platform_core/annotation_schema.py
+          platform_core/remote_execution_transport.py
+          platform_core/external_publish_request.py
+          platform_core/remote_material_import.py
+          platform_core/storage/import_tasks.py
+          platform_core/storage/import_candidates.py
+          platform_core/storage/rescan_tasks.py
+      - name: Remote material import API contract
+        run: >-
+          python -m pytest -q
+          tests/api/test_server_material_import.py
+          tests/api/test_storage_sources.py
+      - name: Permanent remote material guards
+        shell: bash
+        run: |
+          grep -Fq 'execution_mode: Literal["local", "agent"] = "local"' app.py
+          grep -Fq 'clearCompletedUploadTasks' static/modules/upload-task-center.js
+          grep -Fq '清空已结束' static/modules/upload-task-center.js
+          grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
+          grep -Fq 'stage_material_import(' app.py
+          grep -Fq 'stage_material_storage_scan(' app.py
+          grep -Fq 'storage_rescan_preflight' app.py
+          grep -Fq "intent='storage_rescan'" app.py
+          grep -Fq 'prepare_remote_rescan_review' platform_core/storage/rescan_tasks.py
+          grep -Fq 'iter_category_candidates' platform_core/storage/import_candidates.py
+          grep -Fq 'task.accepted is True' platform_core/task_node_assignments.py
+          grep -Fq 'id="sr61Execution"' static/app.js
+          grep -Fq 'test_storage_rescan_agent_creation_freezes_baseline_and_uses_portable_contract' tests/api/test_storage_sources.py
+          grep -Fq "storage rescan uses backend preflight" tests/browser/storage-source.spec.mjs
+          grep -Fq "算法与转换结果存储" tests/browser/storage-source.spec.mjs
+          grep -Fq "modelArtifactPrefix" tests/browser/storage-source.spec.mjs
+          grep -Fq 'data-model-artifact-panel="1"' tests/browser/storage-source.spec.mjs
+          grep -Fq 'material_scan_page_provider' platform_core/agent_execution.py
+          grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'intent=intent' platform_core/node_agent_material_runtime.py
+          grep -Fq 'test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_identity' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_agent_voc_storage_rescan_uses_same_durable_owner_and_product_contract' tests/api/test_server_material_import.py
+          grep -Fq 'Pascal VOC rescan shares the same frontend delta' tests/browser/storage-source.spec.mjs
+          grep -Fq 'annotation_source_evidence' platform_core/storage/import_candidates.py
+          grep -Fq 'CANONICAL_ANNOTATION_SCHEMA_VERSION = 1' platform_core/annotation_schema.py
+          grep -Fq 'build_canonical_annotation_evidence' platform_core/storage/import_candidates.py
+          grep -Fq 'test_canonical_evidence_v1_preserves_legacy_digest_semantics' tests/unit/test_annotation_schema.py
+          grep -Fq 'validate_canonical_annotation_evidence' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_rescan_apply_rejects_tampered_canonical_annotation_evidence' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_rescan_apply_rejects_canonical_evidence_format_mismatch' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq '_record_text_identity' platform_core/storage/yolo_import.py
+          grep -Fq 'YOLO_SOURCE_EVIDENCE_MISSING' platform_core/remote_material_import.py
+          grep -Fq 'dataset_object' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'platform annotation changed after rescan review' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_yolo_rescan_rejects_platform_annotation_edit_after_review' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_yolo_rescan_new_material_records_imported_annotation_provenance' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq '_read_annotation_source' platform_core/storage/detection_import.py
+          grep -Fq 'test_coco_scan_hashes_real_annotation_json_bytes' tests/unit/storage/test_detection_import.py
+          grep -Fq 'VOC_IMAGE_AMBIGUOUS' platform_core/storage/detection_import.py
+          grep -Fq 'test_voc_scan_hashes_real_xml_bytes_and_rejects_ambiguous_image_sources' tests/unit/storage/test_detection_import.py
+          grep -Fq 'test_storage_rescan_root_voc_carries_verified_xml_source_evidence' tests/unit/test_remote_material_import.py
+          grep -Fq 'COCO_IMAGE_AMBIGUOUS' platform_core/storage/detection_import.py
+          grep -Fq 'test_coco_scan_rejects_same_image_from_multiple_annotation_documents' tests/unit/storage/test_detection_import.py
+          grep -Fq 'test_coco_scan_rejects_duplicate_image_object_inside_one_document' tests/unit/storage/test_detection_import.py
+          grep -Fq 'test_storage_rescan_root_coco_carries_verified_json_source_evidence' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_agent_coco_storage_rescan_uses_same_durable_owner_and_format_contract' tests/api/test_server_material_import.py
+          grep -Fq 'test_coco_annotation_delta_and_apply_share_generic_external_provenance' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_voc_annotation_delta_and_apply_share_generic_external_provenance' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_coco_annotation_delta_marks_removed_json_reference' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_coco_rescan_rejects_platform_annotation_edit_after_review' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq "option value=\"coco\">图片 + COCO 标注" static/app.js
+          grep -Fq '_build_annotation_deltas' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq '_verify_remote_review_object' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_remote_rescan_apply_uses_stat_identity_not_central_body_reads' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'data-import-mode="storage_scan"' static/app.js
+          grep -Fq "execution_mode: 'agent'" static/modules/server-material-import.js
+          grep -Fq 'required_capabilities=(' app.py
+          grep -Fq '"agent.remote",' app.py
+          grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
+          grep -Fq 'build_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'build_yolo_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'build_detection_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'def build_detection_material_review_archive' platform_core/remote_material_import.py
+          grep -Fq 'REVIEW_ANNOTATIONS_MEMBER = "yolo/annotations.jsonl"' platform_core/remote_material_import.py
+          grep -Fq 'def _commit_yolo_review_annotations' platform_core/remote_material_import.py
+          grep -Fq 'store.annotation_batch(states, boxes, issues)' platform_core/remote_material_import.py
+          grep -Fq "annotations = AnnotationRepository" platform_core/storage/import_tasks.py
+          grep -Fq "confirmation.get('label_mapping')" platform_core/storage/import_tasks.py
+          grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
+          grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py
+          grep -Fq 'test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository' tests/integration/test_storage_import_worker.py
+          grep -Fq 'test_agent_coco_server_zip_import_creates_portable_review_task' tests/api/test_server_material_import.py
+          grep -Fq 'id="si61ZipExecution"' static/app.js
+          grep -Fq 'id="si61ZipRemoteSource"' static/app.js
+          grep -Fq 'COCO / Pascal VOC 服务器 ZIP 仅支持远程 Agent' static/modules/server-material-import.js
+          grep -Fq '<option value="coco">COCO 检测标注</option>' static/app.js
+          grep -Fq '<option value="voc">Pascal VOC 检测标注</option>' static/app.js
+          grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py
+          grep -Fq 'material_staging_ref' platform_core/remote_material_import.py
+          grep -Fq '_remote_material_publisher' platform_core/storage/import_tasks.py
+          grep -Fq 'class RemoteMaterialStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'REMOTE_MATERIAL_STAGING_RETENTION_SECONDS' platform_core/remote_material_lifecycle.py
+          grep -Fq 'provider.delete(key)' platform_core/remote_material_lifecycle.py
+          grep -Fq 'RemoteMaterialStagingGCReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(material_gc_reporter.report)' task_worker.py
+          grep -Fq 'remote_staging_cleanup' platform_core/remote_execution_transport.py
+          ! grep -Fq 'list_objects(' platform_core/remote_material_lifecycle.py
+          ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome remote storage import flow
+        run: npx playwright test tests/browser/storage-source.spec.mjs

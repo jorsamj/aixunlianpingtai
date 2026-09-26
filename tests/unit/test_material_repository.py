@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
+import platform_core.material_repository as material_repository_module
 from platform_core.material_repository import MaterialRepository
 
 
@@ -21,6 +24,102 @@ def material(image_id: str, *, source: str = "default_local", labels=(), status=
         "box_count": len(labels),
         "created_at": f"2026-09-07T00:00:{int(image_id[-1], 16):02d}+00:00",
     }
+
+
+def test_ready_material_repository_bypasses_init_lock(tmp_path, monkeypatch):
+    MaterialRepository(tmp_path)
+
+    class ForbiddenInitLock:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("ready material repository must bypass init FileLock")
+
+    monkeypatch.setattr(material_repository_module, "FileLock", ForbiddenInitLock)
+
+    reopened = MaterialRepository(tmp_path)
+    assert reopened.journal_mode() == "wal"
+
+
+def test_material_regular_connection_does_not_negotiate_wal(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    real_connect = sqlite3.connect
+
+    class GuardedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        @property
+        def row_factory(self):
+            return self.connection.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self.connection.row_factory = value
+
+        def execute(self, sql, *args, **kwargs):
+            if "journal_mode" in str(sql).lower():
+                raise AssertionError("ordinary MaterialRepository._connect() must not touch journal_mode")
+            return self.connection.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        material_repository_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: GuardedConnection(real_connect(*args, **kwargs)),
+    )
+
+    connection = repository._connect()
+    try:
+        assert int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) == 30000
+    finally:
+        connection.close()
+
+
+def test_concurrent_legacy_material_migration_commits_once(tmp_path):
+    rows = [material(f"legacy-{index:x}") for index in range(8)]
+    (tmp_path / "images.json").write_text(
+        json.dumps(rows, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    barrier = Barrier(2)
+
+    def open_repository():
+        barrier.wait(timeout=2)
+        return MaterialRepository(tmp_path).count()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(open_repository) for _ in range(2)]
+        counts = [future.result(timeout=5) for future in futures]
+
+    repository = MaterialRepository(tmp_path)
+    assert counts == [8, 8]
+    assert repository.count() == 8
+    assert repository.current_revision() == 1
+    with repository._connect() as database:
+        migration_count = int(
+            database.execute(
+                "SELECT COUNT(*) FROM material_migrations WHERE source='images.json'"
+            ).fetchone()[0]
+        )
+    assert migration_count == 1
+
+
+def test_completed_legacy_material_migration_does_not_reread_json(tmp_path):
+    legacy = tmp_path / "images.json"
+    legacy.write_text(
+        json.dumps([material("legacy-a")], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert MaterialRepository(tmp_path).count() == 1
+
+    # Once SQLite owns the data, the retained legacy source is no longer read
+    # on every repository construction.
+    legacy.write_text("{malformed-after-migration", encoding="utf-8")
+
+    reopened = MaterialRepository(tmp_path)
+    assert reopened.count() == 1
+    assert reopened.get("legacy-a")["id"] == "legacy-a"
 
 
 def test_crud_and_revision_use_sqlite_rows(tmp_path):

@@ -43,7 +43,7 @@ jobs:
           grep -Fq "type: 'chunk-committed'" static/modules/material-upload-runtime.js
           grep -Fq 'window.doUploadImages426 = input =>' static/modules/material-upload-runtime.js
           grep -Fq 'window.uploadData424 = () =>' static/modules/material-upload-runtime.js
-          grep -Fq 'material-upload-bootstrap.mjs?v=422529' static/index.html
+          grep -Fq 'material-upload-bootstrap.mjs?v=422530' static/index.html
           grep -Fq 'materialUploadRuntime = runtime' static/material-upload-bootstrap.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

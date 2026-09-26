@@ -54,7 +54,15 @@ def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatc
     monkeypatch.setattr(app_module, "_v18_import_coco", lambda *args, **kwargs: False)
     monkeypatch.setattr(app_module, "_v18_import_voc", lambda *args, **kwargs: False)
 
-    def fail_after_durable_image(project_id_arg, root, dataset_id, report, progress_cb=None):
+    def fail_after_durable_image(
+        project_id_arg,
+        root,
+        dataset_id,
+        report,
+        progress_cb=None,
+        label_mapping=None,
+        import_context=None,
+    ):
         source = next(Path(root).rglob("image.png"))
 
         def final_annotation(record):

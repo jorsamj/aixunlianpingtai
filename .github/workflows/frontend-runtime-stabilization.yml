@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
   workflow_dispatch:
 
 jobs:
@@ -21,10 +22,26 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
+          node --check static/modules/negative-samples.js &&
+          node --check static/modules/service-node-runtime.js &&
+          node --check static/modules/resource-discovery.js &&
+          node --check static/modules/model-artifact-runtime.js &&
+          node --check static/modules/task-poller.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/algorithm-list-runtime.js &&
           node --check static/modules/training-task-runtime.js &&
+          node --check static/modules/training-task-visibility-runtime.js &&
+          node --check static/modules/training-progress-stream.js &&
+          node --check tests/browser/navigation-stability.spec.mjs &&
+          node --check tests/browser/material-pagination-performance.spec.mjs &&
+          node --check tests/browser/page-loading-performance.spec.mjs &&
+          node --check tests/browser/algorithm-list-performance.spec.mjs &&
+          node --check tests/browser/enterprise-list-navigation-focused.spec.mjs &&
+          node --check tests/browser/source-import-completion-scope.spec.mjs &&
+          node --check tests/browser/upload-task-center-performance.spec.mjs &&
+          node --check tests/browser/video-task-performance.spec.mjs &&
+          node --check tests/browser/component-scan-performance.spec.mjs &&
           node --check static/modules/material-pagination-runtime.js &&
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
@@ -32,6 +49,10 @@ jobs:
           node --check static/modules/training-draft-controls.js &&
           node --check static/modules/training-submit.js &&
           node --check static/modules/auto-label-poll-runtime.js &&
+          node --check static/modules/upload-task-center.js &&
+          node --check static/modules/material-upload-runtime.js &&
+          node --check static/modules/material-batches.js &&
+          node --check static/modules/zip-import-runtime.js &&
           node --check static/modules/ui-state.js &&
           node --check static/main.mjs
       - name: Retired training mirror guard
@@ -85,6 +106,22 @@ jobs:
               exit 1
             fi
           done
+      - name: Negative sample canonical owner guard
+        run: |
+          file=static/modules/negative-samples.js
+          for token in '__negativeWrapped' 'const original = window.' 'window.renderAnnotator =' 'window.saveAnn =' 'wrapNavigation' 'setTimeout('; do
+            if grep -F -n "$token" "$file"; then
+              echo "NegativeSampleRuntime must stay decorator-only; found $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq "document.getElementById?.('ann420ConfirmEmpty')" "$file"
+          grep -Fq 'window.NegativeSampleRuntime = runtime' "$file"
+          if [ "$(grep -F -o 'window.NegativeSampleRuntime?.decorate?.();' static/app.js | wc -l)" -lt 2 ]; then
+            echo 'canonical annotation shell/save must explicitly decorate negative sample UI' >&2
+            exit 1
+          fi
+          grep -Fq "window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420()" static/app.js
       - name: AutoLabel PollRegistry owner guard
         run: |
           if grep -n -E 'auto422Timer|ai60ListTimer' static/app.js; then
@@ -116,7 +153,9 @@ jobs:
           done
           grep -Fq 'classicWrapperOwner: false' "$file"
           grep -Fq 'timerOwner: false' "$file"
-          grep -Fq "build: 'auto-label-poll-422501'" "$file"
+          grep -Fq "build: 'auto-label-poll-422502'" "$file"
+          grep -Fq 'patchAutoLabelTaskRows' "$file"
+          grep -Fq 'data-progress=' "$file"
       - name: Retired legacy poll timer compatibility guard
         run: |
           for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
@@ -132,6 +171,30 @@ jobs:
             exit 1
           fi
           grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
+          grep -Fq "const COMPONENT_SCAN_POLL_KEY='component-scan-v40'" static/app.js
+          grep -Fq "PollRegistryRuntime?.startTimeout?.(COMPONENT_SCAN_POLL_KEY,'组件检测',callback,650)" static/app.js
+          grep -Fq 'function patchCompProgress()' static/app.js
+          grep -Fq "registerPageOwner('组件检测'" static/main.mjs
+          grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
+          grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
+          grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
+          grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
+          grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
+          if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
+          grep -Eq "build: 'model-artifacts-[0-9]+'" static/modules/model-artifact-runtime.js
+          grep -Fq 'registry.startTimeout(AUDIT_POLL_KEY, PLATFORM_PAGE' static/modules/model-artifact-runtime.js
+          grep -Fq 'function patchAuditRows(body)' static/modules/model-artifact-runtime.js
+          if grep -Fq 'window.setInterval(' static/modules/model-artifact-runtime.js; then echo 'model artifact audit polling must stay PollRegistry-owned' >&2; exit 1; fi
+          grep -Fq 'export function waitForTaskTerminal' static/modules/task-poller.js
+          grep -Fq 'waitForTaskTerminal({initialTask:task,registry:window.PollRegistryRuntime' static/app.js
+          grep -Fq 'function primeDeployRenderV39(page,renderer,firstLoadText)' static/app.js
+          if grep -Fq "正在读取部署资源..." static/app.js; then echo 'cached deployment pages must not flash a repeated loading state' >&2; exit 1; fi
+          if grep -Fq 'await new Promise(resolve=>setTimeout(resolve,900))' static/app.js; then echo 'active deployment task waits must use shared task poller' >&2; exit 1; fi
+          grep -Fq "build:'upload-task-center-3'" static/modules/upload-task-center.js
+          grep -Fq 'registry?.startTimeout(POLL_KEY, pollOwners' static/modules/upload-task-center.js
+          if grep -Fq 'setTimeout(' static/modules/upload-task-center.js; then echo 'upload task center durable polling must stay PollRegistry-owned' >&2; exit 1; fi
+          if grep -Fq 'setTimeout(' static/modules/resource-discovery.js; then echo 'resource discovery polling must stay PollRegistry-owned' >&2; exit 1; fi
+          if grep -Fq 'live.outerHTML =' static/modules/resource-discovery.js; then echo 'resource discovery progress must patch in place' >&2; exit 1; fi
       - name: Video PollRegistry direct owner guard
         run: |
           if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then
@@ -186,6 +249,13 @@ jobs:
             fi
           done
           grep -Fq 'replaceSourceTimer();' "$file"
+          grep -Fq "SOURCE_IMPORT_POLL_KEY_V36='source-import-v36'" static/app.js
+          grep -Fq 'window.PollRegistryRuntime?.startTimeout?.(' static/app.js
+          grep -Fq 'v36 source import polling remains page-scoped through PollRegistry' tests/frontend/import-refresh-owner.test.mjs
+          if grep -Fq '__sourceImportTimerV36' static/app.js; then
+            echo 'v36 source-import polling must stay PollRegistry-owned' >&2
+            exit 1
+          fi
       - name: Training PollRegistry direct owner guard
         run: |
           for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
@@ -240,6 +310,8 @@ jobs:
           retired_alias = "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}"
           if retired_alias in app:
               raise SystemExit('v42.7 direct alias owner was reintroduced')
+          if 'openVersionLineage429' not in app or '训练溯源' not in app:
+              raise SystemExit('algorithm version training lineage UI is missing')
           if 'setPageReady414' in app:
               raise SystemExit('classic startup readiness setPage owner was reintroduced')
           if 'baseSetPage417' in app:
@@ -250,23 +322,92 @@ jobs:
           navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
           if 'export function normalizeNavigationPage(page)' not in navigation:
               raise SystemExit('semantic navigation normalizer is missing')
-          if "requested === '自动标注' ? '自动标注及清洗' : requested" not in navigation:
-              raise SystemExit('legacy auto-label alias normalization is missing')
+          required_aliases = (
+              "if (requested === '自动标注') return '自动标注及清洗';",
+              "if (requested === '新建算法' || requested === '自动迭代') return '算法列表';",
+          )
+          for alias in required_aliases:
+              if alias not in navigation:
+                  raise SystemExit(f'legacy page alias normalization is missing: {alias}')
           for required in ('waitForNavigationReady', 'beforeInvokeNavigation', 'performNavigation'):
               if required not in navigation:
                   raise SystemExit(f'final navigation named owner is missing: {required}')
           main = Path('static/main.mjs').read_text(encoding='utf-8')
-          if 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' not in main:
+          readiness = (
+              'waitForNavigationReady: () => {' in main
+              and 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' in main
+              and 'return null;' in main
+          )
+          if not readiness:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
           if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
               raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
-          named_apply = """performNavigation: page => {
-              state.page = page;
-              render();
-            },"""
-          if named_apply not in main:
+          start = main.find('performNavigation: page => {')
+          end = main.find('\n  },', start)
+          if start < 0 or end <= start:
               raise SystemExit('named actual page mutation/render owner is missing from final navigation runtime')
+          owner = main[start:end]
+          required = (
+              'const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);',
+              'state.page = page;',
+              'uploadTaskCenterRuntime.switchProject?.();',
+              'render();',
+              'window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);',
+          )
+          positions = [owner.find(item) for item in required]
+          if any(position < 0 for position in positions) or positions != sorted(positions):
+              raise SystemExit('final navigation owner lost cache/task-center/render semantic ordering')
           PY
+      - name: Dataset cache-first navigation guard
+        run: |
+          grep -Fq 'function rememberDatasetPage61()' static/modules/material-pagination-runtime.js
+          grep -Fq 'function restoreDatasetPage61()' static/modules/material-pagination-runtime.js
+          grep -Fq 'function beforeNavigate61(page)' static/modules/material-pagination-runtime.js
+          grep -Fq 'function afterNavigate61(page, navigation)' static/modules/material-pagination-runtime.js
+          grep -Fq "assert.equal(requiresFullMaterialPool('训练任务'), false)" tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq "assert.equal(requiresFullMaterialPool('质量中心'), false)" tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq "assert.equal(requiresFullMaterialPool('自动标注及清洗'), false)" tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq 'const action = window.NavigationStability?.action?.(target)' static/modules/material-pagination-runtime.js
+          if grep -Fq 'await window.refreshCurrentPage413?.()' static/modules/material-pagination-runtime.js; then echo "material navigation must not launch broad stale project refreshes" >&2; exit 1; fi
+          if grep -Fq 'materialAwareSetPage' static/modules/material-pagination-runtime.js; then echo "material pagination must not own a second setPage wrapper" >&2; exit 1; fi
+          grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
+          grep -Fq "if (requested === '部署转换' || requested === '部署产物') return '算法列表';" static/modules/navigation-stability.js
+          grep -Fq "'deploy-jobs-v39','部署转换'" static/app.js
+          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';" static/main.mjs
+          grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
+          grep -Fq "registerPageOwner('平台对接'" static/main.mjs
+          grep -Fq "['标签管理', 'renderLabelManagement414']" static/main.mjs
+          grep -Fq "['存储配置', 'renderStorageSources61']" static/main.mjs
+          grep -Fq "['训练资源', 'renderResources']" static/main.mjs
+          grep -Fq "['总览', 'renderDashboardCanonical422']" static/main.mjs
+          grep -Fq 'refreshPageExtrasInBackground(page)' static/main.mjs
+          grep -Fq "source: 'background-data'" static/main.mjs
+          grep -Fq 'function renderCanonicalOwner(page' static/main.mjs
+          grep -Fq 'window.render = function canonicalRenderBridge()' static/main.mjs
+          grep -Fq 'window.__clStartupDeferredToCanonicalRouter=true;' static/app.js
+          grep -Fq 'const canonicalStartupPromise = window.__clInit?.();' static/main.mjs
+          grep -Fq "path === '/api/v53/bootstrap/snapshot'" static/modules/page-request-scope.js
+          grep -Fq '!isApplicationLifecycleRequest(input)' static/modules/page-request-scope.js
+          if grep -Fq 'queueMicrotask(()=>{if(window.__clInit)window.__clInit()});' static/app.js; then echo 'classic app must not start before canonical owners are installed' >&2; exit 1; fi
+          grep -Fq "source: 'startup-owner'" static/main.mjs
+          grep -Fq 'PostRenderNormalizationRuntime?.apply?.' static/main.mjs
+          if grep -E -n '(^|[^[:alnum:]_])render[[:space:]]*=[[:space:]]*function' static/app.js; then echo 'legacy render assignment wrapper was reintroduced' >&2; exit 1; fi
+          for token in oldRenderV39 oldRender42 render422Base renderBase424 renderBase427 renderBase428 oldRender412 render414Base finalRender; do
+            if grep -F -n "$token" static/app.js; then echo "legacy render-chain alias was reintroduced: $token" >&2; exit 1; fi
+          done
+          grep -Fq "['素材接入', 'renderSources422']" static/main.mjs
+          if grep -Fq "requestedPage === '测试发布'" static/main.mjs; then echo 'page navigation must not block on low-frequency extras' >&2; exit 1; fi
+          grep -Fq 'navigation: window.PlatformCore?.navigation || {}' static/main.mjs
+          grep -Fq 'externalAlgorithmPlatformRuntime?.render?.({reload: true})' static/main.mjs
+          grep -Fq 'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)' static/main.mjs
+          grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
+          grep -Fq 'pageLoadFlight && pageLoadFlightKey === flightKey' static/modules/material-pagination-runtime.js
+          grep -Fq 'identical material page loads are single-flight instead of issuing duplicate GETs' tests/frontend/material-pagination-runtime.test.mjs
+          grep -Fq "pollOwner = 'storage-import-progress'" static/modules/storage-import-progress.js
+          grep -Fq "stop({handoff: false})" static/modules/storage-import-progress.js
+          if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
+          grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
+          grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
@@ -296,6 +437,12 @@ jobs:
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/algorithm-list-performance.spec.mjs
+          tests/browser/enterprise-list-navigation-focused.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/page-loading-performance.spec.mjs
+          tests/browser/material-workflows.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs
+          tests/browser/upload-task-center-performance.spec.mjs
+          tests/browser/video-task-performance.spec.mjs
+          tests/browser/component-scan-performance.spec.mjs

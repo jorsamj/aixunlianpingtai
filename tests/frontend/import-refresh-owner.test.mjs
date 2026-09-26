@@ -1,40 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import {readFileSync} from 'node:fs';
 
-const app = fs.readFileSync('static/app.js', 'utf8');
+const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const zipRuntime = readFileSync(new URL('../../static/modules/zip-import-runtime.js', import.meta.url), 'utf8');
 
-const zipStartMarker = '  window.doUploadZip426=function(inp){';
-const zipStart = app.lastIndexOf(zipStartMarker);
-const zipEnd = app.indexOf('\n  // Run the one initial load only after every version override above has been installed.', zipStart);
-assert.ok(zipStart >= 0 && zipEnd > zipStart, 'final v42.11 ZIP owner must remain addressable');
-const zipOwner = app.slice(zipStart, zipEnd);
+function region(source,startToken,endToken) {
+  const start=source.indexOf(startToken);
+  const end=source.indexOf(endToken,start+startToken.length);
+  assert.ok(start>=0&&end>start,`missing region ${startToken}`);
+  return source.slice(start,end);
+}
 
-const storageStartMarker = '    window.confirmStorageImport61=async function(taskId){';
-const storageStart = app.indexOf(storageStartMarker);
-const storageEnd = app.indexOf('\n\n    const previousCloseImport=window.closeModal;', storageStart);
-assert.ok(storageStart >= 0 && storageEnd > storageStart, 'storage import confirmation owner must remain addressable');
-const storageOwner = app.slice(storageStart, storageEnd);
-
-test('final ZIP completion keeps review ownership and refreshes only label/material domains', () => {
-  assert.ok((app.match(/window\.doUploadZip426=function/g) || []).length >= 1);
-  assert.match(zipOwner, /completeZipImportReview412\?\.\(job\.id\)/);
-  assert.match(zipOwner, /refreshLabels414\?\.\(false\)/);
-  assert.match(zipOwner, /state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
-  assert.doesNotMatch(zipOwner, /related411\s*\(/);
-  assert.doesNotMatch(zipOwner, /loadRelated\s*\(/);
-  assert.doesNotMatch(zipOwner, /loadAll\s*\(/);
+test('durable ZIP completion keeps review ownership and refreshes only label/material domains', () => {
+  const owner=region(zipRuntime,'async function applyCompletion(job,reason)','function publishTaskCenterJob');
+  assert.match(owner,/completeZipImportReview412\?\.\(id\)/);
+  assert.match(owner,/refreshLabels414\?\.\(false\)/);
+  assert.match(owner,/reloadMaterialPage61\?\.\(\)/);
+  assert.doesNotMatch(owner,/loadRelated\s*\(/);
+  assert.doesNotMatch(owner,/loadAll\s*\(/);
+  assert.equal((zipRuntime.match(/window\.doUploadZip426=/g)||[]).length,1);
+  assert.equal((app.match(/window\.doUploadZip426=/g)||[]).length,0);
 });
 
-test('server storage import confirmation refreshes labels only when created and never broad-loads', () => {
-  assert.equal((app.match(/window\.confirmStorageImport61=async function/g) || []).length, 1);
-  assert.match(storageOwner, /rows\.some\(row=>row\.create\).*refreshLabels414\?\.\(false\)/);
-  assert.match(storageOwner, /state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
-  assert.doesNotMatch(storageOwner, /loadRelated\s*\(/);
-  assert.doesNotMatch(storageOwner, /loadAll\s*\(/);
+test('post-import label remap refresh stays label/material scoped', () => {
+  const owner=region(app,'async function refreshImportReviewAfterRemap414(task,source,target){','window.pollImportRemap414=async function');
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.match(owner,/reloadMaterialPage61\?\.\(\)/);
+  assert.match(owner,/\/import\/jobs\/\$\{jobId\}\/review/);
+  assert.doesNotMatch(owner,/loadCore412|loadAll\s*\(|loadRelated\s*\(/);
 });
 
-test('historical related411 alias may remain only outside the final ZIP mutation owner', () => {
-  assert.match(app, /const related411=loadRelated/);
-  assert.doesNotMatch(zipOwner, /related411\s*\(/);
+test('server storage import confirmation stays mapping-only and never broad-loads', () => {
+  const owner=region(app,'window.confirmStorageImport61=async function(taskId){','window.beforeCloseStorageImport61=function()');
+  assert.match(owner,/serverApi\(\)\.buildImportConfirmation\(rows/);
+  assert.doesNotMatch(owner,/refreshLabels414/);
+  assert.match(owner,/state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
+  assert.doesNotMatch(owner,/loadRelated\s*\(/);
+  assert.doesNotMatch(owner,/loadAll\s*\(/);
+});
+
+test('v36 source import polling remains page-scoped through PollRegistry', () => {
+  const owner=region(app,"const SOURCE_IMPORT_POLL_KEY_V36='source-import-v36';",'// Keep the existing dataset page clean;');
+  assert.match(owner,/PollRegistryRuntime\?\.startTimeout\?\.\(/);
+  assert.match(owner,/'数据集'/);
+  assert.match(owner,/PollRegistryRuntime\?\.clear\?\.\(SOURCE_IMPORT_POLL_KEY_V36\)/);
+  assert.doesNotMatch(owner,/__sourceImportTimerV36/);
+});
+
+
+test('post-import review reads the imported batch directly without broad bootstrap refresh', () => {
+  const owner=region(app,'function importRows414()','function importRemapProgress414');
+  assert.match(owner,/Array\.isArray\(r\.images\)\?r\.images/);
+  assert.match(owner,/images:rr\.images\|\|\[\]/);
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.doesNotMatch(owner,/showImportReview412=async function\(jobId\)\{await window\.loadCore412/);
+  assert.doesNotMatch(owner,/importRows414\(\).*state\.images/s);
+  assert.match(owner,/runMaterialBatch62\('MARK_CLEAN_SKIPPED',\{scope:'SELECTED',imageIds:ids,skipConfirm:true\}\)/);
 });

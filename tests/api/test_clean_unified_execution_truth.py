@@ -1,3 +1,4 @@
+import hashlib
 import io
 import uuid
 from pathlib import Path
@@ -5,6 +6,8 @@ from pathlib import Path
 from PIL import Image
 
 import app as app_module
+from platform_core.model_artifacts import ModelArtifactConfigPayload, ModelArtifactRepository
+from platform_core.service_nodes import ServiceNodeRepository
 import platform_core.cleaning_batches as cleaning_batches
 from platform_core.cleaning import image_metrics
 from platform_core.cleaning_analysis_runtime import CleaningAnalysisTimeout
@@ -91,6 +94,272 @@ def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
     _assert_durable_clean_task(project_id, task_id, [image_id])
 
 
+def test_clean_scope_filters_use_formal_annotation_state_not_box_count(client):
+    project_id = _create_project(client, "clean-scope-formal-state")
+    uploaded = _upload(
+        client, project_id,
+        "annotated.png", "unannotated.png", "confirmed-empty.png",
+    )
+    annotated_id, unannotated_id, empty_id = [
+        item["id"] for item in uploaded["uploaded"]
+    ]
+    app_module.write_annotation(
+        project_id,
+        annotated_id,
+        [{"class_id": 0, "label": "target", "x1": 5, "y1": 5, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+    app_module.write_annotation(
+        project_id, empty_id, [],
+        annotation_state="confirmed_empty",
+        annotation_origin="manual",
+    )
+    # Deliberately make box_count/annotated inconsistent. The explicit
+    # annotation_state remains authoritative for cleaning scope selection.
+    app_module.material_store(project_id).patch({
+        unannotated_id: {"box_count": 99, "annotated": True},
+    })
+
+    expected = {
+        "annotated": [annotated_id],
+        "unannotated": [unannotated_id],
+        "confirmed_empty": [empty_id],
+    }
+    for scope, expected_ids in expected.items():
+        payload = app_module.V47CleanReq(
+            clean_scope=scope,
+            task_name=f"scope-{scope}",
+        )
+        batch_payload = app_module._v47_material_batch_payload(project_id, payload)
+        assert batch_payload["selection_spec"]["scope"] == "FILTERED"
+        assert batch_payload["selection_spec"]["filters"]["annotation_state"] == scope
+        task_id = f"scope_{scope}_{uuid.uuid4().hex[:8]}"
+        app_module.prepare_material_batch(
+            project_id,
+            app_module.material_store(project_id),
+            app_module.shared_task_artifacts(),
+            batch_payload,
+            task_id=task_id,
+        )
+        assert sorted(app_module._v47_frozen_clean_selection_ids(task_id)) == sorted(expected_ids)
+
+
+def test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance(client):
+    project_id = _create_project(client, "clean-confirm-frozen-scope")
+    uploaded = _upload(client, project_id, "annotated-only.png", "outside-unannotated.png")
+    annotated_id, outside_id = [item["id"] for item in uploaded["uploaded"]]
+    app_module.write_annotation(
+        project_id,
+        annotated_id,
+        [{"class_id": 0, "label": "target", "x1": 10, "y1": 10, "x2": 120, "y2": 120}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"clean_scope": "annotated", "task_name": "annotated-only-clean"},
+    )
+    response.raise_for_status()
+    task_id = response.json()["id"]
+    assert app_module._v47_frozen_clean_selection_ids(task_id) == [annotated_id]
+
+    scheduler, _repository, _artifacts = _materials_scheduler(project_id)
+    for _ in range(10):
+        current = app_module.shared_task_repository().get(task_id)
+        assert current is not None
+        if current.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS}:
+            break
+        assert scheduler.run_once() is True
+    current = app_module.shared_task_repository().get(task_id)
+    assert current is not None
+    assert current.status is TaskStatus.SUCCEEDED, current.error
+
+    result = client.get(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/result"
+    )
+    result.raise_for_status()
+    item = result.json()["result"]["items"][0]
+    assert item["image_id"] == annotated_id
+    assert item["annotation_state"] == "annotated"
+    assert item["annotation_provenance"] == "manual"
+    assert item["url"].endswith(f"/materials/{annotated_id}/content")
+    audit = result.json()["result"]["annotation_audit"]
+    assert audit["enabled"] is True
+    assert audit["audited_images"] == 1
+    assert audit["state_counts"]["annotated"] == 1
+    assert audit["review_images"] == 0
+
+    audit_page = client.get(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit"
+    )
+    audit_page.raise_for_status()
+    assert audit_page.json()["audited_images"] == 1
+    assert audit_page.json()["items"] == []
+
+    confirmed = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm",
+        json={"delete_ids": []},
+    )
+    confirmed.raise_for_status()
+    assert confirmed.json()["processed_ids"] == [annotated_id]
+    assert app_module.material_store(project_id).get(annotated_id)["clean_task_id"] == task_id
+    assert not app_module.material_store(project_id).get(outside_id).get("clean_task_id")
+
+
+
+def test_clean_agent_preflight_rejects_local_material_and_create_does_not_fallback(client):
+    project_id = _create_project(client, "clean-agent-local-rejected")
+    uploaded = _upload(client, project_id, "local-only.png")
+    image_id = uploaded["uploaded"][0]["id"]
+
+    preflight = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    preflight.raise_for_status()
+    truth = preflight.json()
+    assert truth["local_available"] is True
+    assert truth["default_execution_mode"] == "local"
+    assert truth["agent_available"] is False
+    assert truth["selected_count"] == 1
+    assert truth["reason"]
+
+    rejected = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={
+            "image_ids": [image_id],
+            "task_name": "must not fall back local",
+            "execution_mode": "agent",
+        },
+    )
+    assert rejected.status_code == 409
+    assert not app_module.shared_task_repository().list(
+        project_id=project_id,
+        kinds={TaskKind.MATERIAL_BATCH},
+        limit=20,
+    ).items
+
+
+def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client):
+    project_id = _create_project(client, "clean-agent-portable")
+    uploaded = _upload(client, project_id, "portable.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    payload_bytes = _png_bytes()
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    source_id = f"clean-s3-{uuid.uuid4().hex[:8]}"
+    app_module.storage_source_repository().create({
+        "id": source_id,
+        "name": "cleaning test object storage",
+        "type": "s3",
+        "config": {"bucket": "test-bucket"},
+        "enabled": True,
+    })
+    materials = app_module.material_store(project_id)
+    row = materials.get(image_id)
+    assert row is not None
+    row.update({
+        "storage_source_id": source_id,
+        "storage_type": "s3",
+        "object_key": f"clean/{image_id}.png",
+        "content_sha256": digest,
+        "size_bytes": len(payload_bytes),
+        "etag": "etag-clean-test",
+    })
+    materials.upsert(row)
+
+    ModelArtifactRepository(app_module.DATA_DIR).save_config(
+        ModelArtifactConfigPayload(
+            storage_source_id=source_id,
+            object_prefix="remote-execution",
+            auto_upload_enabled=True,
+        )
+    )
+
+    nodes = ServiceNodeRepository(app_module.shared_task_repository())
+    node_id = f"clean-agent-{uuid.uuid4().hex[:8]}"
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": "agent",
+        "allowed_capabilities": ["cleaning"],
+    })
+    nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "reported_capabilities": ["cleaning"],
+        "resources": {
+            "memory": {"available_bytes": 8 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+        "runtime": {},
+    })
+
+    preflight = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    preflight.raise_for_status()
+    truth = preflight.json()
+    assert truth["agent_available"] is True
+    assert truth["selected_count"] == 1
+    assert truth["eligible_nodes"][0]["node_id"] == node_id
+    assert truth["eligible_nodes"][0]["idle"] is True
+    assert truth["eligible_nodes"][0]["active_count"] == 0
+    assert truth["eligible_nodes"][0]["resources"]["memory"]["available_bytes"] == 8 * 1024**3
+
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={
+            "image_ids": [image_id],
+            "task_name": "portable remote clean",
+            "execution_mode": "agent",
+        },
+    )
+    response.raise_for_status()
+    body = response.json()
+    assert body["execution_mode"] == "agent"
+
+    task = app_module.shared_task_repository().get(body["id"])
+    assert task is not None
+    assert task.kind is TaskKind.MATERIAL_BATCH
+    assert tuple(task.required_capabilities) == ("agent.remote",)
+    request = app_module.shared_task_artifacts().read_json(
+        task.task_id, task.payload_ref, default={}
+    )
+    assert request["operation"] == "CLEAN"
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["task_kind"] == "MATERIAL_BATCH"
+    assert request["remote_execution"]["transport"] == "object-storage-v1"
+    assert request["scheduling"] == {"mode": "auto", "node_id": "", "queue_policy": "normal"}
+
+    # Once Agent execution starts its assignment row is released. Preflight must
+    # still report the node busy from durable execution ownership.
+    with app_module.shared_task_repository()._connect() as database:
+        database.execute(
+            """
+            UPDATE tasks
+               SET status='RUNNING',stage='REMOTE_CLEANING_ANALYZING',
+                   progress=42,worker_id=?,lease_expires_at='2999-01-01T00:00:00+00:00'
+             WHERE task_id=?
+            """,
+            (f"agent:{node_id}", task.task_id),
+        )
+    busy = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    busy.raise_for_status()
+    node_truth = next(row for row in busy.json()["eligible_nodes"] if row["node_id"] == node_id)
+    assert node_truth["idle"] is False
+    assert node_truth["active_count"] == 1
+    assert node_truth["active_tasks"][0]["task_id"] == task.task_id
+    assert node_truth["active_tasks"][0]["operation"] == "CLEAN"
+    assert node_truth["active_tasks"][0]["preemptible"] is True
+
+
 def test_upload_batch_clean_association_points_to_same_durable_task(client):
     project_id = _create_project(client, "upload-clean-unified-truth")
     uploaded = _upload(client, project_id, "needs-clean.png", "ready.png")
@@ -113,6 +382,25 @@ def test_upload_batch_clean_association_points_to_same_durable_task(client):
     repeated.raise_for_status()
     assert repeated.json()["clean_task_id"] == task_id
     assert app_module.shared_task_repository().get(task_id).task_id == task_id
+
+
+def test_upload_batch_clean_rejects_material_that_became_formally_annotated(client):
+    project_id = _create_project(client, "upload-clean-unannotated-only")
+    uploaded = _upload(client, project_id, "later-annotated.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    app_module.write_annotation(
+        project_id,
+        image_id,
+        [{"class_id": 0, "label": "target", "x1": 10, "y1": 10, "x2": 50, "y2": 50}],
+        annotation_state="annotated",
+        annotation_origin="manual",
+    )
+    response = client.post(
+        f"/api/v55/projects/{project_id}/upload-batches/{uploaded['batch_id']}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
+    )
+    assert response.status_code == 409
+    assert "只允许把未标注素材" in str(response.json())
 
 
 def test_clean_executes_through_real_fenced_material_worker(client):
@@ -204,3 +492,18 @@ def test_clean_analysis_timeout_fails_one_image_and_continues_next(client, monke
     completed_states = [state for state in states if state != "failed"]
     assert len(completed_states) == 1
     assert completed_states[0] in {"passed", "needs_review"}
+
+
+def test_clean_retry_contract_resets_interrupted_running_rows_for_preemption_recovery():
+    import inspect
+    from platform_core.material_batches import MaterialBatchHandler
+    source = inspect.getsource(MaterialBatchHandler._run)
+    assert 'retry_states = ("failed", "running") if operation is BatchOperation.CLEAN else ("failed",)' in source
+
+
+def test_clean_prepare_contract_persists_node_scheduling():
+    import inspect
+    from platform_core import material_batches
+    source = inspect.getsource(material_batches.prepare_batch)
+    assert 'request_payload["scheduling"]' in source
+    assert '"queue_policy": queue_policy' in source

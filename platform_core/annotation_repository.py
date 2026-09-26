@@ -8,8 +8,12 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from filelock import FileLock
+
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 
 
 def _normalize_scope(values) -> list[str]:
@@ -54,46 +58,83 @@ class AnnotationRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "annotations.sqlite3"
-        with closing(self._connect()) as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS annotations (
-                    image_id TEXT PRIMARY KEY,
-                    annotation_state TEXT NOT NULL CHECK(annotation_state IN
-                        ('unannotated','annotated','confirmed_empty')),
-                    version INTEGER NOT NULL, content_digest TEXT NOT NULL,
-                    boxes_json TEXT NOT NULL,
-                    scope_json TEXT NOT NULL DEFAULT '[]',
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
-                CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
-                CREATE TABLE IF NOT EXISTS annotation_delete_backup (
-                    token TEXT NOT NULL, image_id TEXT NOT NULL,
-                    annotation_state TEXT NOT NULL, version INTEGER NOT NULL,
-                    content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
-                    scope_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(token, image_id)
-                );
-                CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
-                    ON annotation_delete_backup(token, image_id);
-            """)
-            columns = {
-                str(row[1])
-                for row in db.execute("PRAGMA table_info(annotations)").fetchall()
-            }
-            if "scope_json" not in columns:
-                db.execute(
-                    "ALTER TABLE annotations "
-                    "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
-                )
-                db.commit()
+        self._initialize()
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
         return db
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as db:
+                db.execute("PRAGMA busy_timeout=250")
+                return int(db.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as db:
+                version = int(db.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"annotation repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(db.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"annotation repository requires WAL mode, got {mode}"
+                    )
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS annotations (
+                        image_id TEXT PRIMARY KEY,
+                        annotation_state TEXT NOT NULL CHECK(annotation_state IN
+                            ('unannotated','annotated','confirmed_empty')),
+                        version INTEGER NOT NULL, content_digest TEXT NOT NULL,
+                        boxes_json TEXT NOT NULL,
+                        scope_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
+                    CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
+                    CREATE TABLE IF NOT EXISTS annotation_delete_backup (
+                        token TEXT NOT NULL, image_id TEXT NOT NULL,
+                        annotation_state TEXT NOT NULL, version INTEGER NOT NULL,
+                        content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
+                        scope_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(token, image_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
+                        ON annotation_delete_backup(token, image_id);
+                """)
+                columns = {
+                    str(row[1])
+                    for row in db.execute("PRAGMA table_info(annotations)").fetchall()
+                }
+                if "scope_json" not in columns:
+                    db.execute(
+                        "ALTER TABLE annotations "
+                        "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+                db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+                db.commit()
 
     @staticmethod
     def _id(image_id):
@@ -119,29 +160,288 @@ class AnnotationRepository:
             result['annotation_scope'] = self._default_negative_scope()
         return result
 
-    def get(self, image_id):
-        image_id = self._id(image_id)
-        with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
-        if row:
-            return self._decode_persisted_row(row)
-        path = self.project_path / 'annotations' / f'{image_id}.json'
-        legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-        boxes = legacy.get('boxes') or []
-        state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
-        scope = _normalize_scope(legacy.get('annotation_scope'))
-        if state == 'annotated' and not scope:
-            scope = _normalize_scope(box.get('label') or box.get('code') for box in boxes)
-        if state == 'confirmed_empty' and not scope:
+    def _legacy_record(self, image_id: str) -> dict:
+        path = self.project_path / "annotations" / f"{image_id}.json"
+        legacy = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        boxes = legacy.get("boxes") or []
+        state = legacy.get("annotation_state") or (
+            "annotated" if boxes else "unannotated"
+        )
+        scope = _normalize_scope(legacy.get("annotation_scope"))
+        if state == "annotated" and not scope:
+            scope = _normalize_scope(
+                box.get("label") or box.get("code") for box in boxes
+            )
+        if state == "confirmed_empty" and not scope:
             scope = self._default_negative_scope()
         return {
             **legacy,
-            'image_id': image_id,
+            "image_id": image_id,
+            "boxes": boxes,
+            "annotation_state": state,
+            "annotation_scope": scope,
+            "version": 0,
+        }
+
+    def get(self, image_id):
+        image_id = self._id(image_id)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM annotations WHERE image_id=?",
+                (image_id,),
+            ).fetchone()
+        if row:
+            return self._decode_persisted_row(row)
+        return self._legacy_record(image_id)
+
+    def get_many(self, image_ids):
+        ids = list(dict.fromkeys(self._id(value) for value in image_ids))
+        if len(ids) > 500:
+            raise ValueError("annotation batch lookup is limited to 500 image ids")
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT * FROM annotations WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        result = {
+            str(row["image_id"]): self._decode_persisted_row(row)
+            for row in rows
+        }
+        for image_id in ids:
+            if image_id not in result:
+                # The batch query already proved this ID is absent from SQLite.
+                # Go straight to legacy JSON fallback instead of opening another
+                # connection and repeating the same SELECT once per missing ID.
+                result[image_id] = self._legacy_record(image_id)
+        return result
+
+    def _content_payload(self, boxes, annotation_state=None, annotation_scope=None):
+        boxes = [dict(box) for box in (boxes or [])]
+        state = annotation_state or ('annotated' if boxes else 'confirmed_empty')
+        if state not in STATES or bool(boxes) != (state == 'annotated'):
+            raise ValueError('annotation state does not agree with boxes')
+        scope = _normalize_scope(annotation_scope)
+        if state == 'annotated' and not scope:
+            scope = _normalize_scope(
+                box.get('label') or box.get('code') for box in boxes
+            )
+        if state == 'confirmed_empty' and not scope:
+            scope = self._default_negative_scope()
+        if state == 'unannotated':
+            scope = []
+        boxes_payload = json.dumps(
+            boxes, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            allow_nan=False,
+        )
+        scope_payload = json.dumps(
+            scope, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        )
+        digest_payload = json.dumps(
+            {
+                'annotation_state': state,
+                'annotation_scope': scope,
+                'boxes': json.loads(boxes_payload),
+            },
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            allow_nan=False,
+        )
+        return {
             'boxes': boxes,
             'annotation_state': state,
             'annotation_scope': scope,
-            'version': 0,
+            'boxes_payload': boxes_payload,
+            'scope_payload': scope_payload,
+            'content_digest': hashlib.sha256(
+                digest_payload.encode('utf-8')
+            ).hexdigest(),
         }
+
+    def record_digest(self, record) -> str:
+        prepared = self._content_payload(
+            record.get('boxes') or [],
+            record.get('annotation_state'),
+            record.get('annotation_scope'),
+        )
+        return prepared['content_digest']
+
+    def plan_label_remap(
+        self, record, *, source_label: str | None = None,
+        source_labels=None, target_label: str, target_class_id: int,
+    ) -> dict:
+        sources = list(dict.fromkeys(
+            str(value).strip()
+            for value in (
+                source_labels
+                if source_labels is not None
+                else [source_label]
+            )
+            if str(value or '').strip()
+        ))
+        target = str(target_label or '').strip()
+        if not sources or not target or target in sources:
+            raise ValueError('source and target labels are required and must differ')
+        source_set = set(sources)
+        boxes, changed = [], 0
+        for raw in record.get('boxes') or []:
+            box = dict(raw)
+            label = str(box.get('label') or box.get('code') or '').strip()
+            if label in source_set:
+                box['label'] = target
+                if 'code' in box:
+                    box['code'] = target
+                box['class_id'] = int(target_class_id)
+                if 'canonical_label_id' in box:
+                    box['canonical_label_id'] = target
+                if 'canonical_project_class_id' in box:
+                    box['canonical_project_class_id'] = int(target_class_id)
+                changed += 1
+            boxes.append(box)
+        original_scope = _normalize_scope(record.get('annotation_scope'))
+        scope = [
+            target if str(value).strip() in source_set else str(value).strip()
+            for value in (record.get('annotation_scope') or [])
+            if str(value).strip()
+        ]
+        prepared = self._content_payload(
+            boxes,
+            record.get('annotation_state'),
+            scope,
+        )
+        return {
+            **prepared,
+            'changed_boxes': changed,
+            'changed_scope': int(
+                str(record.get('annotation_state') or '') == 'confirmed_empty'
+                and prepared['annotation_scope'] != original_scope
+            ),
+        }
+
+    def remap_labels_if_digests(
+        self, requests, *, source_label: str | None = None,
+        source_labels=None, target_label: str,
+        target_class_id: int, project_material: bool = True,
+    ) -> list[dict]:
+        requests = [dict(item) for item in requests or []]
+        if len(requests) > 500:
+            raise ValueError('annotation remap batch is limited to 500 image ids')
+        if not requests:
+            return []
+        ids = [self._id(item.get('image_id')) for item in requests]
+        if len(set(ids)) != len(ids):
+            raise ValueError('annotation remap image ids must be unique')
+        preloaded = self.get_many(ids)
+        results, projections = [], {}
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                for request, image_id in zip(requests, ids):
+                    row = db.execute(
+                        'SELECT * FROM annotations WHERE image_id=?',
+                        (image_id,),
+                    ).fetchone()
+                    current = (
+                        self._decode_persisted_row(row)
+                        if row is not None else preloaded[image_id]
+                    )
+                    current_digest = self.record_digest(current)
+                    expected = str(request.get('expected_digest') or '')
+                    if not expected or current_digest != expected:
+                        results.append({
+                            'image_id': image_id,
+                            'status': 'stale',
+                            'current_digest': current_digest,
+                        })
+                        continue
+                    planned = self.plan_label_remap(
+                        current,
+                        source_label=source_label,
+                        source_labels=source_labels,
+                        target_label=target_label,
+                        target_class_id=target_class_id,
+                    )
+                    changed_content = planned['content_digest'] != current_digest
+                    if changed_content:
+                        if row is not None:
+                            changed = db.execute(
+                                """UPDATE annotations SET
+                                   annotation_state=?, version=version+1,
+                                   content_digest=?, boxes_json=?, scope_json=?,
+                                   updated_at=?
+                                   WHERE image_id=? AND content_digest=?""",
+                                (
+                                    planned['annotation_state'],
+                                    planned['content_digest'],
+                                    planned['boxes_payload'],
+                                    planned['scope_payload'],
+                                    now,
+                                    image_id,
+                                    current_digest,
+                                ),
+                            ).rowcount
+                            if changed != 1:
+                                results.append({
+                                    'image_id': image_id,
+                                    'status': 'stale',
+                                    'current_digest': current_digest,
+                                })
+                                continue
+                        else:
+                            db.execute(
+                                """INSERT INTO annotations
+                                   (image_id, annotation_state, version,
+                                    content_digest, boxes_json, scope_json,
+                                    created_at, updated_at)
+                                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)""",
+                                (
+                                    image_id,
+                                    planned['annotation_state'],
+                                    planned['content_digest'],
+                                    planned['boxes_payload'],
+                                    planned['scope_payload'],
+                                    now,
+                                    now,
+                                ),
+                            )
+                    label_counts = {}
+                    for box in planned['boxes']:
+                        code = str(
+                            box.get('label') or box.get('code') or ''
+                        ).strip()
+                        if code:
+                            label_counts[code] = label_counts.get(code, 0) + 1
+                    projections[image_id] = {
+                        'annotation_state': planned['annotation_state'],
+                        'annotation_scope': planned['annotation_scope'],
+                        'annotation_hash': planned['content_digest'],
+                        'annotated': planned['annotation_state'] in {
+                            'annotated', 'confirmed_empty',
+                        },
+                        'box_count': len(planned['boxes']),
+                        'labels': sorted(label_counts),
+                        'label_counts': label_counts,
+                    }
+                    results.append({
+                        'image_id': image_id,
+                        'status': 'applied' if changed_content else 'unchanged',
+                        'changed_boxes': int(planned['changed_boxes']),
+                        'changed_scope': int(planned.get('changed_scope') or 0),
+                        'content_digest': planned['content_digest'],
+                    })
+                db.execute('COMMIT')
+            except Exception:
+                db.execute('ROLLBACK')
+                raise
+        if project_material and projections and (
+            (self.project_path / 'materials.sqlite3').exists()
+            or (self.project_path / 'images.json').exists()
+        ):
+            from .material_repository import MaterialRepository
+            MaterialRepository(self.project_path).patch(projections)
+        return results
 
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""
@@ -326,15 +626,31 @@ class AnnotationRepository:
                 raise
 
     def finalize_delete(self, token) -> int:
-        """Delete only annotation rows that still match the durable backup snapshot."""
+        """Delete matching annotation truth and remain idempotent after a crash.
+
+        A recovery run may arrive after the annotation rows were already deleted
+        but before the journal/backup cleanup completed. Missing rows are therefore
+        treated as already finalized. A newer row with a different digest still
+        fails closed and is never removed.
+        """
         token = self._delete_token(token)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                expected = int(db.execute(
-                    "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
+                conflict = db.execute(
+                    """SELECT annotations.image_id
+                       FROM annotations
+                       JOIN annotation_delete_backup backup
+                         ON backup.image_id=annotations.image_id
+                       WHERE backup.token=?
+                         AND backup.content_digest<>annotations.content_digest
+                       LIMIT 1""",
                     (token,),
-                ).fetchone()[0])
+                ).fetchone()
+                if conflict is not None:
+                    raise RuntimeError(
+                        "annotation changed during dataset deletion; refusing stale delete"
+                    )
                 cursor = db.execute(
                     """DELETE FROM annotations
                        WHERE EXISTS (
@@ -346,10 +662,6 @@ class AnnotationRepository:
                     (token,),
                 )
                 deleted = max(0, int(cursor.rowcount))
-                if deleted != expected:
-                    raise RuntimeError(
-                        "annotation changed during dataset deletion; refusing stale delete"
-                    )
                 db.execute("COMMIT")
                 return deleted
             except Exception:

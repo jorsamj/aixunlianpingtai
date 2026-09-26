@@ -1,4 +1,4 @@
-import {installMaterialUploadRuntime} from './modules/material-upload-runtime.js?v=422529';
+import {installMaterialUploadRuntime} from './modules/material-upload-runtime.js?v=422541';
 
 const runtime = installMaterialUploadRuntime({
   getState: () => state,

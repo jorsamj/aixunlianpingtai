@@ -26,13 +26,20 @@ from .annotation_repository import AnnotationRepository
 from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
-from .snapshots import build_snapshot
+from .snapshots import (
+    build_snapshot,
+    dataset_revision_document,
+    ensure_dataset_revision,
+    persist_dataset_revision,
+)
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
+from .training_lineage import build_training_lineage
+from .training_evaluation import build_evaluation_truth, build_iteration_decision
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -569,14 +576,26 @@ def materialize_portable_dataset(
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
         durable=False,
     )
+    portable_snapshot = ensure_dataset_revision(snapshot)
     snapshot_path = root / "snapshot.json"
-    atomic_write_json(snapshot_path, dict(snapshot))
+    atomic_write_json(snapshot_path, portable_snapshot)
+    revision_path = root / "dataset-revision.json"
+    atomic_write_json(revision_path, dataset_revision_document(portable_snapshot))
     manifest = {
         "schema_version": 3,
-        "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "snapshot_id": str(portable_snapshot.get("snapshot_id") or ""),
+        "dataset_revision_schema_version": int(
+            portable_snapshot.get("dataset_revision_schema_version") or 0
+        ),
+        "canonical_annotation_schema_version": int(
+            portable_snapshot.get("canonical_annotation_schema_version") or 0
+        ),
+        "dataset_revision_id": str(portable_snapshot.get("dataset_revision_id") or ""),
         "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
+        "dataset_revision_ref": "dataset-revision.json",
+        "dataset_revision_sha256": _sha256(revision_path),
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": training_total_size_bytes,
         "splits": splits,
@@ -626,6 +645,22 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
     expected_snapshot = str(manifest.get("snapshot_sha256") or "")
     if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
         raise ValueError("portable training snapshot SHA256 mismatch")
+    snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    revision = _resolve_relative(
+        path.parent,
+        str(manifest.get("dataset_revision_ref") or ""),
+    )
+    expected_revision_sha = str(manifest.get("dataset_revision_sha256") or "")
+    if not revision.is_file() or not expected_revision_sha or _sha256(revision) != expected_revision_sha:
+        raise ValueError("portable dataset revision SHA256 mismatch")
+    revision_value = json.loads(revision.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "")
+    if (
+        not revision_id
+        or str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+        or str(revision_value.get("dataset_revision_id") or "") != revision_id
+    ):
+        raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -643,6 +678,7 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
             verified += 1
     return {
         "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": manifest.get("dataset_revision_id"),
         "verified_files": verified,
         "verification_mode": "materialization_evidence",
     }
@@ -652,6 +688,25 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     path = Path(manifest_path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
     resolve_dataset_yaml(path)
+    snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    if not snapshot_path.is_file():
+        raise FileNotFoundError("portable training snapshot does not exist")
+    snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "").strip()
+    if revision_id:
+        revision_path = _resolve_relative(
+            path.parent,
+            str(manifest.get("dataset_revision_ref") or ""),
+        )
+        if not revision_path.is_file():
+            raise FileNotFoundError("portable dataset revision evidence is missing")
+        revision_value = json.loads(revision_path.read_text(encoding="utf-8"))
+        if (
+            str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+            or str(revision_value.get("dataset_revision_id") or "") != revision_id
+            or str(manifest.get("dataset_revision_sha256") or "") != _sha256(revision_path)
+        ):
+            raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -671,7 +726,11 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
             if not label_path.is_file() or _sha256(label_path) != str(member.get("label_sha256") or ""):
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1
-    return {"snapshot_id": manifest.get("snapshot_id"), "verified_files": verified}
+    return {
+        "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": revision_id,
+        "verified_files": verified,
+    }
 
 
 @dataclass(frozen=True)
@@ -680,7 +739,9 @@ class RemoteTrainingBundle:
     manifest: Path
     data_yaml: Path
     snapshot: Path
+    dataset_revision: Path | None
     snapshot_id: str
+    dataset_revision_id: str
     verified_files: int
 
 
@@ -705,12 +766,20 @@ def resolve_remote_training_bundle(manifest_path: str | Path) -> RemoteTrainingB
     snapshot_id = str(manifest.get("snapshot_id") or "")
     if not snapshot_id or str(snapshot_value.get("snapshot_id") or "") != snapshot_id:
         raise ValueError("portable training snapshot identity mismatch")
+    dataset_revision_id = str(verification.get("dataset_revision_id") or "")
+    dataset_revision = (
+        _resolve_relative(path.parent, str(manifest.get("dataset_revision_ref") or ""))
+        if dataset_revision_id
+        else None
+    )
     return RemoteTrainingBundle(
         root=path.parent,
         manifest=path,
         data_yaml=resolve_dataset_yaml(path),
         snapshot=snapshot,
+        dataset_revision=dataset_revision,
         snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
         verified_files=int(verification["verified_files"]),
     )
 
@@ -755,11 +824,20 @@ def _selected_project_images(
     by_id = {str(row.get("id")): row for row in rows}
     result = []
     annotations = AnnotationRepository(project)
+    annotation_by_id: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(wanted), 500):
+        annotation_by_id.update(annotations.get_many(wanted[offset:offset + 500]))
     for image_id in wanted:
         row = dict(by_id[image_id])
         image_id = str(row.get("id") or "")
-        annotation = annotations.get(image_id)
+        annotation = annotation_by_id[image_id]
         row['annotation_state'] = annotation['annotation_state']
+        row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['annotation_hash'] = str(
+            annotation.get('content_digest')
+            or row.get('annotation_hash')
+            or ''
+        )
         row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
         row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)
@@ -808,6 +886,9 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
+        "--resource-profile", str(payload.get("resource_profile") or "balanced"),
+        "--gpu-policy", str(payload.get("gpu_policy") or "auto"),
+        "--precision", str(payload.get("precision") or "auto"),
     ]
     value_options = {
         "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
@@ -823,6 +904,8 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for key, default in value_options.items():
         value = payload.get(f"resolved_{key}", payload.get(key, default)) if key in {"workers", "cache"} else payload.get(key, default)
         argv.extend([f"--{key.replace('_', '-')}", str(value)])
+    if payload.get("time") is not None:
+        argv.extend(["--time", str(float(payload.get("time")))])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
         "cos_lr": False, "deterministic": True, "auto_supplement": False,
@@ -834,6 +917,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for option in ("resource_context", "resource_resolution", "metrics_db"):
         if payload.get(option):
             argv.extend(["--" + option.replace("_", "-"), str(payload[option])])
+    argv.extend(["--runtime-stop-policy", "target_only"])
     return argv
 
 
@@ -1115,6 +1199,9 @@ class TrainingHandler:
         if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
+        dataset_revision_id = str(snapshot.get("dataset_revision_id") or "")
+        if not dataset_revision_id:
+            raise RuntimeError("completed training is missing its durable dataset revision")
         completion_error = _training_completion_error(
             job,
             expected_task_id=context.task.task_id,
@@ -1128,6 +1215,8 @@ class TrainingHandler:
         verification = verify_portable_dataset(manifest_path)
         if str(verification.get("snapshot_id") or "") != snapshot_id:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+        if str(verification.get("dataset_revision_id") or "") != dataset_revision_id:
+            raise RuntimeError("completed training dataset manifest does not match durable dataset revision")
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -1194,6 +1283,16 @@ class TrainingHandler:
         partial = (training_report.get("test_result") or {}).get("status") == "failed"
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
+        quality_gate = job.get("quality_gate") if isinstance(job.get("quality_gate"), dict) else {
+            "runtime_stop_policy": "target_only",
+            "eval_interval": int(payload.get("eval_interval") or 0),
+            "metric": str(payload.get("eval_metric") or "map50"),
+            "continue_threshold": float(payload.get("continue_threshold") or 0),
+            "stop_threshold": float(payload.get("stop_threshold") or 0),
+            "stage_eval_samples": int(payload.get("val_max_samples") or 0),
+            "experiment_percent": float(payload.get("experiment_percent") or 0),
+            "split_seed": int(payload.get("seed") or 0),
+        }
         result = {
             "schema_version": 1,
             "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
@@ -1204,7 +1303,9 @@ class TrainingHandler:
             "actual_train_params": job.get("actual_train_params"),
             **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
             "snapshot_ref": "snapshot.json",
+            "dataset_revision_ref": "dataset-revision.json",
             "dataset_manifest_ref": manifest_ref,
             "counts": snapshot.get("counts") or {},
             "actual_ratios": snapshot.get("actual_ratios") or {},
@@ -1216,6 +1317,7 @@ class TrainingHandler:
             "base_selection_reason": job.get("base_selection_reason"),
             "verified_models": verified_models,
             "training_report": training_report,
+            "quality_gate": quality_gate,
             "dataset_verification": verification,
             "bundle_cache": bundle_cache_evidence,
             "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
@@ -1232,17 +1334,70 @@ class TrainingHandler:
             (model["ref"] for model in verified_models if last_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
             None,
         )
-        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         primary = best_output or last_output or context.artifacts.artifact_path(
             context.task.task_id, verified_models[0]["ref"]
         ).resolve()
         finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
+        model_sha256 = _sha256(primary)
+        completion = _training_completion_metadata(job, payload)
+        training_lineage = build_training_lineage(
+            task_id=context.task.task_id,
+            snapshot_id=snapshot_id,
+            dataset_revision_id=dataset_revision_id,
+            framework=str(payload.get("framework") or "ultralytics"),
+            base_version_id=job.get("base_version_id"),
+            base_version_name=job.get("base_version_name"),
+            base_model=job.get("model") or payload.get("model"),
+            base_selection_reason=job.get("base_selection_reason"),
+            execution={
+                "mode": str(payload.get("target") or "local"),
+                "worker_id": context.lease.worker_id,
+                "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
+                "assigned_device": job.get("assigned_device"),
+                "actual_device": job.get("actual_device"),
+            },
+            requested_params=payload,
+            actual_params=job.get("actual_train_params"),
+            iteration_action=job.get("confirmed_iteration_action") or payload.get("iteration_action"),
+            supplement_provenance=job.get("supplement_provenance"),
+            artifacts=[{
+                "role": "primary",
+                "file_name": primary.name,
+                "sha256": model_sha256,
+                "size_bytes": int(primary.stat().st_size),
+                "verified": True,
+            }],
+            training_status=final_status.value,
+            training_outcome=completion.get("training_outcome"),
+            completion_reason=completion.get("completion_reason"),
+            finished_at=finished_at,
+        )
+        evaluation = build_evaluation_truth(
+            training_report.get("test_result"),
+            task_id=context.task.task_id,
+            snapshot_id=snapshot_id,
+            dataset_revision_id=dataset_revision_id,
+            model_sha256=model_sha256,
+            finished_at=finished_at,
+        )
+        iteration_decision = build_iteration_decision(
+            evaluation,
+            quality_gate=quality_gate,
+        )
+        result.update({
+            "training_lineage": training_lineage,
+            "evaluation": evaluation,
+            "iteration_decision": iteration_decision,
+        })
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         attach_version(
             algorithms_path,
             str(algorithm.get("id")),
             {
                 "id": uuid.uuid4().hex[:12],
-                "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                "version_name": version_name,
+                "version_no": version_name,
                 "stored_path": str(primary),
                 "best_path": str(best_output) if best_output else "",
                 "last_path": str(last_output) if last_output else "",
@@ -1258,7 +1413,12 @@ class TrainingHandler:
                 "artifact_verified": True,
                 "trainable": True,
                 "framework": "ultralytics",
+                "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
                 "snapshot_id": snapshot_id,
+                "dataset_revision_id": dataset_revision_id,
+                "training_lineage": training_lineage,
+                "evaluation": evaluation,
+                "iteration_decision": iteration_decision,
                 "result_ref": "result.json",
                 "task_id": context.task.task_id,
                 "job_id": context.task.task_id,
@@ -1298,7 +1458,12 @@ class TrainingHandler:
         }
         result["bundle_cache"] = bundle_cache_evidence
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
+        context.save_checkpoint({
+            "stage": "committed",
+            "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
+            "result_ref": "result.json",
+        })
         return final_status, "result.json"
 
     def run(self, context):
@@ -1380,7 +1545,12 @@ class TrainingHandler:
         # to rediscover the same content hashes.
         if _indexed_content_identity_ready(images):
             manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
+            snapshot = build_snapshot(
+                images,
+                manifest,
+                label_schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
             cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
 
         materialized_paths: dict[str, Path] = {}
@@ -1411,13 +1581,29 @@ class TrainingHandler:
                         current_item=f"校验训练素材 {index}/{total_materials}",
                     )
             manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
+            snapshot = build_snapshot(
+                images,
+                manifest,
+                label_schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
 
         if manifest is None or snapshot is None:
             raise RuntimeError("training snapshot preparation did not produce a manifest")
 
+        revision = dataset_revision_document(snapshot)
+        persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
-        context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
+        context.artifacts.atomic_write_json(
+            context.task.task_id,
+            "dataset-revision.json",
+            revision,
+        )
+        context.save_checkpoint({
+            "stage": "snapshot_ready",
+            "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
+        })
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
 
@@ -1548,6 +1734,8 @@ class TrainingHandler:
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),
             "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
+            "supplement_provenance": snapshot.get("supplement_provenance"),
             "dataset_counts": manifest.counts,
             "epochs": int(payload.get("epochs") or 50),
             "imgsz": int(payload.get("imgsz") or 640),
@@ -1561,6 +1749,19 @@ class TrainingHandler:
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
+            "resource_profile": payload.get("resource_profile", "balanced"),
+            "precision": payload.get("precision", "auto"),
+            "max_train_hours": payload.get("time"),
+            "quality_gate": {
+                "runtime_stop_policy": "target_only",
+                "eval_interval": int(payload.get("eval_interval") or 0),
+                "metric": str(payload.get("eval_metric") or "map50"),
+                "continue_threshold": float(payload.get("continue_threshold") or 0),
+                "stop_threshold": float(payload.get("stop_threshold") or 0),
+                "stage_eval_samples": int(payload.get("val_max_samples") or 0),
+                "experiment_percent": float(payload.get("experiment_percent") or 0),
+                "split_seed": int(seed),
+            },
         }
         atomic_write_json(job_file, job)
         if context.cancel_requested():

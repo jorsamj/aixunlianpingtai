@@ -1,0 +1,100 @@
+name: ChangLian Login Auth
+
+on:
+  pull_request:
+    paths:
+      - app.py
+      - platform_core/changlian_login_auth.py
+      - static/index.html
+      - static/login.html
+      - static/login.js
+      - static/auth-session.js
+      - static/auth.css
+      - tools/test_auth_server.py
+      - playwright.auth.config.mjs
+      - tests/browser/changlian-login-auth.spec.mjs
+      - tests/unit/test_changlian_login_auth.py
+      - tests/frontend/changlian-login-ui.test.mjs
+      - .github/workflows/changlian-login-auth.yml
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - platform_core/changlian_login_auth.py
+      - static/index.html
+      - static/login.html
+      - static/login.js
+      - static/auth-session.js
+      - static/auth.css
+      - tools/test_auth_server.py
+      - playwright.auth.config.mjs
+      - tests/browser/changlian-login-auth.spec.mjs
+      - tests/unit/test_changlian_login_auth.py
+      - tests/frontend/changlian-login-ui.test.mjs
+      - .github/workflows/changlian-login-auth.yml
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused Python dependencies
+        run: python -m pip install --disable-pip-version-check pytest requests
+      - name: Backend login contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_changlian_login_auth.py
+      - name: Frontend login contracts
+        run: node --test tests/frontend/changlian-login-ui.test.mjs
+      - name: Syntax and wiring guards
+        run: |
+          python -m py_compile app.py platform_core/changlian_login_auth.py
+          node --check static/login.js
+          node --check static/auth-session.js
+          grep -Fq 'DEFAULT_CHANGLIAN_LOGIN_BASE_URL = "http://vip.24hlink.cn/prod-api"' platform_core/changlian_login_auth.py
+          grep -Fq 'return f"{self.base_url}/login"' platform_core/changlian_login_auth.py
+          if grep -Fq '/internal/auth/token' platform_core/changlian_login_auth.py; then echo "user login must not use internal application token auth" >&2; exit 1; fi
+          grep -Fq '@app.post("/api/auth/login")' app.py
+          grep -Fq 'httponly=True' app.py
+          grep -Fq 'auth_guard_decision' app.py
+          grep -Fq 'def _auth_test_bypass_enabled()' app.py
+          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' app.py
+          grep -Fq '"upstream_token_expiry_source": "test_bypass"' app.py
+          grep -Fq '_MACHINE_NODE_EXECUTOR_PREFIX' platform_core/changlian_login_auth.py
+          grep -Fq '_MACHINE_HEARTBEAT_RE' platform_core/changlian_login_auth.py
+          grep -Fq 'name="username"' static/login.html
+          grep -Fq 'name="password"' static/login.html
+          grep -Fq 'fetch('\''/api/auth/login'\''' static/login.js
+          if grep -Eq 'localStorage|sessionStorage' static/login.js static/auth-session.js; then echo "credentials/session must not be browser storage owned" >&2; exit 1; fi
+
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real browser login persistence
+        run: npx playwright test --config=playwright.auth.config.mjs
+      - name: Browser auth permanent guards
+        run: |
+          grep -Fq "refresh keeps the ChangLian login session" tests/browser/changlian-login-auth.spec.mjs
+          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' tools/test_auth_server.py
+          grep -Fq 'MC_CHANGLIAN_LOGIN_BASE_URL' tools/test_auth_server.py

@@ -339,10 +339,20 @@ class TrainingBundleCache:
             data_yaml = _resolve_relative(
                 bundle, str(manifest.get("data_yaml_ref") or "")
             )
+            revision_id = str(manifest.get("dataset_revision_id") or "").strip()
+            revision_path = (
+                _resolve_relative(
+                    bundle,
+                    str(manifest.get("dataset_revision_ref") or ""),
+                )
+                if revision_id
+                else None
+            )
         except ValueError:
             return None
         expected_snapshot_sha = str(manifest.get("snapshot_sha256") or "")
         expected_data_yaml = str(marker.get("data_yaml_sha256") or "")
+        expected_revision_sha = str(manifest.get("dataset_revision_sha256") or "")
         if (
             _has_link_component(bundle, snapshot_path)
             or not snapshot_path.is_file()
@@ -352,6 +362,15 @@ class TrainingBundleCache:
             or not data_yaml.is_file()
             or not expected_data_yaml
             or _sha256(data_yaml) != expected_data_yaml
+            or (
+                revision_path is not None
+                and (
+                    _has_link_component(bundle, revision_path)
+                    or not revision_path.is_file()
+                    or not expected_revision_sha
+                    or _sha256(revision_path) != expected_revision_sha
+                )
+            )
         ):
             return None
 
@@ -467,7 +486,10 @@ class TrainingBundleCache:
             if progress is not None:
                 progress(index, len(members), member)
 
-        for reference_key in ("snapshot_ref", "data_yaml_ref"):
+        reference_keys = ["snapshot_ref", "data_yaml_ref"]
+        if str(manifest.get("dataset_revision_id") or "").strip():
+            reference_keys.append("dataset_revision_ref")
+        for reference_key in reference_keys:
             reference = str(manifest.get(reference_key) or "")
             source_path = _resolve_relative(source, reference)
             destination_path = _resolve_relative(destination_bundle, reference)

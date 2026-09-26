@@ -296,6 +296,51 @@ def _component_keys(
     return result
 
 
+def exclude_reserved_test_components(
+    images: Sequence[Mapping[str, Any]],
+    train_image_ids: Sequence[str],
+    test_image_ids: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Remove training candidates connected to a reserved independent test cohort.
+
+    This reuses the same component relation truth as the split leakage guard so
+    fixed-benchmark identities stay server-private while exact images, duplicate
+    content, video/group siblings and other coupled samples cannot enter train/val.
+    Callers may expose counts, but should not expose the excluded identities.
+    """
+    train_ids = tuple(dict.fromkeys(
+        str(value).strip() for value in train_image_ids if str(value).strip()
+    ))
+    test_ids = tuple(dict.fromkeys(
+        str(value).strip() for value in test_image_ids if str(value).strip()
+    ))
+    if not train_ids or not test_ids:
+        return train_ids, ()
+
+    wanted = set(train_ids) | set(test_ids)
+    rows = [
+        row for row in images
+        if str(row.get("id") or "").strip() in wanted
+    ]
+    component_keys = _component_keys(rows)
+    reserved_components = {
+        component_keys[image_id]
+        for image_id in test_ids
+        if image_id in component_keys
+    }
+    test_id_set = set(test_ids)
+    excluded = tuple(
+        image_id for image_id in train_ids
+        if image_id in test_id_set
+        or component_keys.get(image_id) in reserved_components
+    )
+    excluded_set = set(excluded)
+    return (
+        tuple(image_id for image_id in train_ids if image_id not in excluded_set),
+        excluded,
+    )
+
+
 def _select_grouped(
     rows: Sequence[Mapping[str, Any]],
     component_keys: Mapping[str, str],

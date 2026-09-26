@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#f6f8fc" />
   <title>畅联云算法训练</title>
-  <link rel="stylesheet" href="/static/styles.css?v=42.24.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=42.24.41" />
   <link rel="stylesheet" href="/static/training-create-modal.css?v=422400" />
+  <link rel="stylesheet" href="/static/service-nodes.css?v=422533" />
+  <link rel="stylesheet" href="/static/auth.css?v=422600" />
 </head>
 <body>
   <div id="toast" class="toast hidden"></div>
@@ -35,7 +37,12 @@
       <div class="top-right">
         <div id="projectBadge" class="project-badge"><span class="project-dot"></span><span>默认空间</span></div>
         <span id="versionBadge" class="version-badge">v42.24.0</span>
+        <div class="auth-user-chip" id="authIdentity" title="当前畅联云登录账号">
+          <span class="auth-user-avatar">CL</span>
+          <span class="auth-user-copy"><b id="authUsername">畅联云用户</b><small id="authSessionLife">已登录</small></span>
+        </div>
         <button class="btn ghost small" id="refreshBtn">刷新</button>
+        <button class="btn ghost small auth-logout-btn" id="logoutBtn" type="button" onclick="window.logoutChangLianAuth?.()">退出</button>
       </div>
     </header>
     <section id="summary" class="summary"></section>
@@ -48,13 +55,15 @@
       <div id="modalBody" class="modal-body"></div>
     </div>
   </div>
+  <script src="/static/auth-session.js?v=422601"></script>
   <script src="/static/material-pagination-bootstrap.js?v=42.24.0"></script>
-  <script src="/static/app.js?v=42.25.99"></script>
-  <script type="module" src="/static/main.mjs?v=42.25.99"></script>
-  <script type="module" src="/static/material-upload-bootstrap.mjs?v=422529"></script>
-  <script type="module" src="/static/zip-import-bootstrap.mjs?v=422530"></script>
-  <script type="module" src="/static/modules/storage-cache-runtime.js?v=422527"></script>
-  <script type="module" src="/static/modules/training-task-visibility-runtime.js?v=422523"></script>
-  <script type="module" src="/static/training-checkpoint-resume-bootstrap.mjs?v=422531"></script>
+  <script src="/static/app.js?v=42.25.261"></script>
+  <script type="module" src="/static/main.mjs?v=42.25.249"></script>
+  <script type="module" src="/static/material-upload-bootstrap.mjs?v=422531"></script>
+  <script type="module" src="/static/zip-import-bootstrap.mjs?v=422543"></script>
+  <script type="module" src="/static/modules/storage-cache-runtime.js?v=422540"></script>
+  <script type="module" src="/static/modules/training-task-visibility-runtime.js?v=422576"></script>
+  <script type="module" src="/static/training-checkpoint-resume-bootstrap.mjs?v=422541"></script>
+  <script type="module" src="/static/service-node-bootstrap.mjs?v=422549"></script>
 </body>
 </html>

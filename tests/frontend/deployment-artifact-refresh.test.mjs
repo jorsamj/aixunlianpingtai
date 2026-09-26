@@ -11,20 +11,26 @@ function owner(startMarker,endMarker){
   return source.slice(start,end);
 }
 
-test('deployment cache honors TTL and refreshes authoritative artifacts before reuse',()=>{
-  const load=owner('  async function loadDeployData(force=false){','  window.loadDeployData=loadDeployData;');
-  assert.match(load,/Date\.now\(\)-Number\(cached\.ts\|\|0\)<ttl/);
-  assert.match(load,/await refreshDeployArtifactsV39\(\)/);
+test('canonical version history cache is single-flight and authoritative refresh bypasses cache',()=>{
+  const history=owner('  const conversionHistoryInflight428=new Map();','  window.loadVersionConversionHistory428=deploymentHistory428;');
+  assert.match(history,/cacheKey428\('verdeploy',aid,vid\)/);
+  assert.match(history,/conversionHistoryInflight428\.has\(inflightKey\)/);
+  assert.match(history,/\/api\/v42\/projects\/\$\{pid\(\)\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments/);
+  assert.match(history,/conversionHistoryInflight428\.delete\(inflightKey\)/);
 });
 
-test('deployment polling refreshes artifacts when a conversion enters a successful terminal state',()=>{
-  const poll=owner('  async function pollDeployJobs(){','  window.renderDeployCenter=function(){');
-  assert.match(poll,/\['done','blocked_by_hardware'\]\.includes\(current\)/);
-  assert.match(poll,/if\(artifactChanged\)await refreshDeployArtifactsV39\(\)/);
+test('canonical version polling replaces a terminal transition so newly committed outputs appear',()=>{
+  const poll=owner('  function patchVersionConversionLive428(aid,vid,r){','  window.openVersionConvert428=async function(aid,vid)');
+  assert.match(poll,/conversionActive428\(previous\)&&!conversionActive428\(next\)\)return false/);
+  assert.match(poll,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(poll,/else replaceVersionConversionBody428\(aid,vid,next\)/);
+  assert.match(source,/class="convert428-outputs">\$\{deployOutput428\(j\)\}/);
+  assert.match(source,/o\.exists&&o\.download_url/);
 });
 
-test('deployment artifact page revalidates server truth without manual refresh',()=>{
-  const render=owner('  window.renderDeployArtifacts=function(){','  // Add deployment action to algorithm version management.');
-  assert.match(render,/deployArtifactsRefreshedAt/);
-  assert.match(render,/refreshDeployArtifactsV39\(\)/);
+test('canonical conversion resource reads are cached and single-flight without loading retired page data',()=>{
+  const resources=owner('  async function deployResources428(force=false){','  window.loadVersionConversionHistory428=deploymentHistory428;');
+  assert.match(resources,/deployResourcesInflight428/);
+  assert.match(resources,/api\('\/api\/v39\/deploy\/resources'\)/);
+  assert.doesNotMatch(resources,/source-models|deploy\/artifacts|deploy\/jobs/);
 });

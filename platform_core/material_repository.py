@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from filelock import FileLock
+
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
+_SCHEMA_VERSION = 3
+_INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -41,9 +45,17 @@ CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(l
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(material_id, label_code)
 );
 CREATE INDEX IF NOT EXISTS ix_material_labels_code ON material_labels(label_code, material_id);
+CREATE TABLE IF NOT EXISTS material_annotation_scopes (
+    material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    label_code TEXT NOT NULL,
+    PRIMARY KEY(material_id, label_code)
+);
+CREATE INDEX IF NOT EXISTS ix_material_annotation_scopes_code
+    ON material_annotation_scopes(label_code, material_id);
 CREATE TABLE IF NOT EXISTS material_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -170,17 +182,92 @@ class MaterialRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "materials.sqlite3"
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
+        self._initialize()
         self._migrate_legacy_json()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
         database.execute("PRAGMA busy_timeout=30000")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"material repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"material repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(_SCHEMA)
+                if version < 2:
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO material_annotation_scopes(material_id, label_code)
+                        SELECT m.id, CAST(scope.value AS TEXT)
+                          FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
+                         WHERE trim(CAST(scope.value AS TEXT)) <> ''
+                           AND COALESCE(
+                               json_extract(m.payload_json, '$.annotation_state'),
+                               json_extract(m.payload_json, '$.annotation_status'),
+                               ''
+                           ) = 'confirmed_empty'
+                        """
+                    )
+                if version < 3:
+                    columns = {
+                        str(row[1])
+                        for row in database.execute(
+                            "PRAGMA table_info(material_labels)"
+                        ).fetchall()
+                    }
+                    if "box_count" not in columns:
+                        database.execute(
+                            "ALTER TABLE material_labels "
+                            "ADD COLUMN box_count INTEGER NOT NULL DEFAULT 0"
+                        )
+                    database.execute(
+                        """
+                        UPDATE material_labels
+                           SET box_count = COALESCE((
+                               SELECT CAST(counts.value AS INTEGER)
+                                 FROM materials m,
+                                      json_each(m.payload_json, '$.label_counts') AS counts
+                                WHERE m.id = material_labels.material_id
+                                  AND CAST(counts.key AS TEXT) = material_labels.label_code
+                                LIMIT 1
+                           ), 0)
+                        """
+                    )
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
@@ -244,9 +331,39 @@ class MaterialRepository:
             ),
         )
         database.execute("DELETE FROM material_labels WHERE material_id = ?", (row["id"],))
+        raw_label_counts = (
+            row.get("label_counts")
+            if isinstance(row.get("label_counts"), Mapping)
+            else {}
+        )
         database.executemany(
-            "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)",
-            ((row["id"], label) for label in row["labels"]),
+            "INSERT INTO material_labels(material_id, label_code, box_count) "
+            "VALUES (?, ?, ?)",
+            (
+                (
+                    row["id"],
+                    label,
+                    max(0, int(raw_label_counts.get(label) or 0)),
+                )
+                for label in row["labels"]
+            ),
+        )
+        scopes = (
+            sorted({
+                str(label).strip()
+                for label in row.get("annotation_scope") or []
+                if str(label).strip()
+            })
+            if str(row.get("annotation_state") or "") == "confirmed_empty"
+            else []
+        )
+        database.execute(
+            "DELETE FROM material_annotation_scopes WHERE material_id = ?",
+            (row["id"],),
+        )
+        database.executemany(
+            "INSERT INTO material_annotation_scopes(material_id, label_code) VALUES (?, ?)",
+            ((row["id"], label) for label in scopes),
         )
         return row
 
@@ -254,15 +371,21 @@ class MaterialRepository:
         legacy = self.project_path / "images.json"
         if not legacy.is_file():
             return
-        stat = legacy.stat()
-        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
+        # Fast-path the common steady state before touching a potentially large
+        # legacy JSON file. The same predicates are rechecked inside the writer
+        # transaction below, so this optimization cannot reintroduce the race.
         with closing(self._connect()) as database:
             migrated = database.execute(
                 "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
             ).fetchone()
-            existing = int(database.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+            existing = int(
+                database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+            )
         if migrated or existing:
             return
+
+        stat = legacy.stat()
+        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
         value = json.loads(legacy.read_text(encoding="utf-8"))
         rows = value.get("items", []) if isinstance(value, dict) else value
         if not isinstance(rows, list):
@@ -270,6 +393,18 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
+                # Recheck after acquiring the writer transaction. Concurrent
+                # process startup may have completed the migration after this
+                # process read the legacy JSON but before BEGIN IMMEDIATE won.
+                migrated = database.execute(
+                    "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
+                ).fetchone()
+                existing = int(
+                    database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+                )
+                if migrated or existing:
+                    database.execute("ROLLBACK")
+                    return
                 for source in rows:
                     self._write_row(database, source)
                 if rows:
@@ -280,7 +415,8 @@ class MaterialRepository:
                 )
                 database.execute("COMMIT")
             except Exception:
-                database.execute("ROLLBACK")
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
                 raise
 
     def read(self) -> MaterialSnapshot:
@@ -292,6 +428,21 @@ class MaterialRepository:
     def get(self, image_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
+        return self._row_payload(row) if row else None
+
+    def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
+        content_sha256 = str(content_sha256 or "").strip().lower()
+        if (
+            len(content_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in content_sha256)
+        ):
+            return None
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT payload_json FROM materials "
+                "WHERE lower(trim(content_sha256))=? ORDER BY created_at,id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
         return self._row_payload(row) if row else None
 
     def get_many(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
@@ -541,6 +692,101 @@ class MaterialRepository:
     def list_ids(self, **kwargs: Any) -> MaterialIdPage:
         page = self.list_page(**kwargs)
         return MaterialIdPage([str(row["id"]) for row in page.items], page.next_cursor, page.total)
+
+    def label_usage(self) -> dict[str, dict[str, int]]:
+        """Aggregate label usage from the normalized label index."""
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT label_code AS label,
+                       COUNT(*) AS images,
+                       SUM(box_count) AS boxes
+                  FROM material_labels
+                 WHERE box_count > 0
+                 GROUP BY label_code
+                 ORDER BY label_code
+                """
+            ).fetchall()
+        return {
+            str(row["label"]): {
+                "images": int(row["images"] or 0),
+                "boxes": int(row["boxes"] or 0),
+            }
+            for row in rows
+        }
+
+    def label_reference_usage(self) -> dict[str, dict[str, int]]:
+        """Count positive and confirmed-empty references from normalized indexes."""
+        with closing(self._connect()) as database:
+            positive = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_labels GROUP BY label_code"
+                ).fetchall()
+            }
+            scoped = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_annotation_scopes "
+                    "WHERE label_code <> '*' GROUP BY label_code"
+                ).fetchall()
+            }
+        return {
+            code: {
+                "positive_images": positive.get(code, 0),
+                "scope_images": scoped.get(code, 0),
+                "affected_images": positive.get(code, 0) + scoped.get(code, 0),
+            }
+            for code in sorted(set(positive) | set(scoped))
+        }
+
+    def label_reference_preview(self, label_codes: Sequence[str]) -> dict[str, int]:
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != "*"
+        ))
+        if not codes:
+            return {
+                "positive_images": 0,
+                "scope_images": 0,
+                "affected_images": 0,
+                "boxes": 0,
+            }
+        if len(codes) > 100:
+            raise ValueError("label reference preview is limited to 100 labels")
+        placeholders = ",".join("?" for _ in codes)
+        with closing(self._connect()) as database:
+            positive = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            scoped = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_annotation_scopes "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            affected = int(database.execute(
+                "SELECT COUNT(DISTINCT material_id) FROM ("
+                f"SELECT material_id FROM material_labels WHERE label_code IN ({placeholders}) "
+                "UNION ALL "
+                f"SELECT material_id FROM material_annotation_scopes WHERE label_code IN ({placeholders})"
+                ")",
+                [*codes, *codes],
+            ).fetchone()[0])
+            boxes = int(database.execute(
+                f"SELECT COALESCE(SUM(box_count),0) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+        return {
+            "positive_images": positive,
+            "scope_images": scoped,
+            "affected_images": affected,
+            "boxes": boxes,
+        }
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")

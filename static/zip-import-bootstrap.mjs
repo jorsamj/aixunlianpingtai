@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=422530';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=422543';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -7,7 +7,6 @@ const runtime = installZipImportRuntime({
 });
 
 if (runtime) {
-  const originalStartImportJobV19 = window.startImportJobV19;
   const LEGACY_IMPORT_POLL_SENTINEL = -1;
 
   const claimLegacyImportPolling = () => {
@@ -26,17 +25,24 @@ if (runtime) {
   // always read the backend, while background polling stays exclusively runtime-owned.
   claimLegacyImportPolling();
 
-  if (typeof originalStartImportJobV19 === 'function' && !originalStartImportJobV19.__zipImportRuntimeBridge) {
-    const bridgedStartImportJobV19 = async function(...args) {
-      claimLegacyImportPolling();
-      const result = await originalStartImportJobV19.apply(this, args);
+  const durableUploadFromImportModal = () => {
+    const input = document.getElementById('importFile');
+    if (!input?.files?.length) {
+      window.toast?.('请选择压缩包');
+      return null;
+    }
+    return runtime.upload(input).catch(() => null);
+  };
+  durableUploadFromImportModal.__zipImportRuntimeBridge = true;
+  window.doImportUploadV19 = durableUploadFromImportModal;
+
+  window.ZipImportRuntimeLegacyBridge = Object.freeze({
+    beforeStart: claimLegacyImportPolling,
+    async afterStart() {
       await runtime.reconcile?.('legacy-start');
       claimLegacyImportPolling();
-      return result;
-    };
-    bridgedStartImportJobV19.__zipImportRuntimeBridge = true;
-    window.startImportJobV19 = bridgedStartImportJobV19;
-  }
+    },
+  });
 }
 
 if (runtime && window.PlatformCore?.runtime) {

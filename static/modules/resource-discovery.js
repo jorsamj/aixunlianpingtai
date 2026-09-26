@@ -1,6 +1,7 @@
 import {canonicalTaskPhase, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
 
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
+const RESOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -40,16 +41,72 @@ function dateText(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN');
 }
 
-function abortableDelay(milliseconds, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    }, {once: true});
-  });
+function discoveryScopeLabel(task) {
+  const scope = String(task.discovery_scope || '').trim().toLowerCase();
+  if (scope === 'full') return '全机（仅本地文件系统）';
+  if (scope === 'directory') return '指定目录';
+  if (scope === 'fast') return '指定环境快速检测';
+  if (scope === 'auto') return '自动检测';
+  return scope || '未返回';
 }
+
+function discoveryFailureMessage(task) {
+  const taskStatus = canonicalTaskStatus(task);
+  if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
+  const raw = String(task.error?.message || task.error || '').trim();
+  const normalized = raw.toLocaleLowerCase();
+  if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
+    return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
+  }
+  if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
+    return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
+  }
+  return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
+}
+
+function progressBody(task, kind) {
+  const metrics = task.metrics || task;
+  const environment = kind === 'environment';
+  const taskStatus = canonicalTaskStatus(task);
+  const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
+  const permissionErrors = Number(metrics.permission_errors) || 0;
+  const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
+  const active = isCanonicalTaskActive(task);
+  const shape = [active ? 1 : 0, environment ? 'env' : 'model', roots.length, permissionErrors ? 1 : 0, terminalMessage ? 1 : 0].join(':');
+  return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}" data-rd-shape="${shape}">
+    <div class="rd-task-state"><span data-rd-field="status" class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b data-rd-field="phase">${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
+    ${active ? '<div class="rd-indeterminate"><i></i></div>' : ''}
+    <div class="rd-current"><span>扫描范围</span><b data-rd-field="scope">${escapeHtml(discoveryScopeLabel(task))}</b></div>
+    ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
+    <div class="rd-task-counts"><div><span>已扫描目录</span><b data-rd-field="scanned_dirs">${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b data-rd-field="python_candidates">${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b data-rd-field="validated_environments">${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b data-rd-field="models_found">${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b data-rd-field="permission_errors">${permissionErrors}</b></div></div>
+    <div class="rd-current"><span>当前路径</span><code data-rd-field="current_item">${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
+    ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
+    ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
+    <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
+  </div>`;
+}
+
+export function patchResourceDiscoveryProgress(current, task, kind) {
+  if (!current) return false;
+  const holder = document.createElement('div');
+  holder.innerHTML = progressBody(task, kind).trim();
+  const next = holder.firstElementChild;
+  if (!next) return false;
+  if (current.dataset.rdShape !== next.dataset.rdShape) {
+    current.dataset.rdShape = next.dataset.rdShape || '';
+    current.innerHTML = next.innerHTML;
+    return true;
+  }
+  for (const nextField of next.querySelectorAll('[data-rd-field]')) {
+    const key = nextField.dataset.rdField;
+    const currentField = current.querySelector(`[data-rd-field="${key}"]`);
+    if (!currentField) continue;
+    currentField.textContent = nextField.textContent;
+    if (key === 'status') currentField.className = nextField.className;
+  }
+  return true;
+}
+
 
 export function installResourceDiscoveryRuntime(dependencies = {}) {
   if (window.ResourceDiscoveryRuntime?.installed) return window.ResourceDiscoveryRuntime;
@@ -59,9 +116,10 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   const showModal = dependencies.modal;
   const refreshApplication = dependencies.refresh || (async () => {});
   const getPage = dependencies.getPage || (() => '');
-  if (typeof request !== 'function' || typeof showModal !== 'function') return null;
+  const registry = dependencies.pollRegistry || window.PollRegistryRuntime;
+  if (typeof request !== 'function' || typeof showModal !== 'function' || !registry?.startTimeout || !registry?.clear) return null;
 
-  const previousRenderResources = window.renderResources;
+  const renderBase = dependencies.renderBase || (() => window.renderResourceBasePage?.());
   const runtime = {
     installed: true,
     environments: [],
@@ -74,6 +132,8 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     modelNextCursor: null,
     modelCursorStack: [],
     cacheGeneration: 0,
+    cacheLoadedAt: 0,
+    cacheRefreshPromise: null,
     pollControllers: new Set()
   };
 
@@ -141,18 +201,32 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     runtime.modelNextCursor = response?.next_cursor || null;
   }
 
-  async function refreshCache(resetModels = true) {
+  async function refreshCache(resetModels = true, {force = false} = {}) {
+    const age = Date.now() - Number(runtime.cacheLoadedAt || 0);
+    if (!force && runtime.cacheLoadedAt > 0 && age >= 0 && age < RESOURCE_CACHE_TTL_MS) {
+      if (getPage() === '训练资源') renderCachePanel();
+      return runtime;
+    }
+    if (runtime.cacheRefreshPromise) return runtime.cacheRefreshPromise;
     const generation = ++runtime.cacheGeneration;
     if (resetModels) {
       runtime.modelCursor = null;
       runtime.modelCursorStack = [];
     }
-    try {
-      await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
-      if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
-    } catch (error) {
-      if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
-    }
+    runtime.cacheRefreshPromise = (async () => {
+      try {
+        await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
+        runtime.cacheLoadedAt = Date.now();
+        if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
+        return runtime;
+      } catch (error) {
+        if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
+        return null;
+      } finally {
+        runtime.cacheRefreshPromise = null;
+      }
+    })();
+    return runtime.cacheRefreshPromise;
   }
 
   function enhanceResourcePage() {
@@ -174,49 +248,6 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     renderCachePanel();
   }
 
-  function discoveryScopeLabel(task) {
-    const scope = String(task.discovery_scope || '').trim().toLowerCase();
-    if (scope === 'full') return '全机（仅本地文件系统）';
-    if (scope === 'directory') return '指定目录';
-    if (scope === 'fast') return '指定环境快速检测';
-    if (scope === 'auto') return '自动检测';
-    return scope || '未返回';
-  }
-
-  function discoveryFailureMessage(task) {
-    const taskStatus = canonicalTaskStatus(task);
-    if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
-    const raw = String(task.error?.message || task.error || '').trim();
-    const normalized = raw.toLocaleLowerCase();
-    if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
-      return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
-    }
-    if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
-      return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
-    }
-    return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
-  }
-
-  function progressBody(task, kind) {
-    const metrics = task.metrics || task;
-    const environment = kind === 'environment';
-    const taskStatus = canonicalTaskStatus(task);
-    const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
-    const permissionErrors = Number(metrics.permission_errors) || 0;
-    const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
-    return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}">
-      <div class="rd-task-state"><span class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b>${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
-      ${isCanonicalTaskActive(task) ? '<div class="rd-indeterminate"><i></i></div>' : ''}
-      <div class="rd-current"><span>扫描范围</span><b>${escapeHtml(discoveryScopeLabel(task))}</b></div>
-      ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
-      <div class="rd-task-counts"><div><span>已扫描目录</span><b>${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b>${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b>${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b>${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b>${permissionErrors}</b></div></div>
-      <div class="rd-current"><span>当前路径</span><code>${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
-      ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
-      ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
-      <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
-    </div>`;
-  }
-
   function watchModalClose(taskId, controller) {
     const observer = new MutationObserver(() => {
       const current = document.getElementById('resourceDiscoveryTask');
@@ -230,40 +261,60 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     let task = initial;
     const taskId = task.id || task.task_id;
     if (!taskId) throw new Error('后台任务未返回 task_id');
+    const pollKey = `resource-discovery:${taskId}`;
     showModal(kind === 'environment' ? '检测本机 Ultralytics 环境' : '扫描本机模型', progressBody(task, kind), true);
     const root = document.getElementById('resourceDiscoveryTask');
     const controller = new AbortController();
     runtime.pollControllers.add(controller);
     if (root) watchModalClose(taskId, controller);
-    try {
-      while (!controller.signal.aborted && isCanonicalTaskActive(task)) {
-        await abortableDelay(1100, controller.signal);
-        task = await request(`/api/resource-discovery/tasks/${encodeURIComponent(taskId)}`, {signal: controller.signal});
-        const live = document.getElementById('resourceDiscoveryTask');
-        if (!live || live.dataset.taskId !== String(taskId)) {
-          controller.abort();
-          break;
-        }
-        live.outerHTML = progressBody(task, kind);
-      }
-      if (!controller.signal.aborted) {
+
+    return new Promise(resolve => {
+      let settled = false;
+      const cleanup = value => {
+        if (settled) return;
+        settled = true;
+        registry.clear(pollKey);
+        runtime.pollControllers.delete(controller);
+        if (!controller.signal.aborted) controller.abort();
+        resolve(value);
+      };
+      const finish = async () => {
+        if (controller.signal.aborted) return cleanup(null);
         if (SUCCESS_TASK_STATUSES.has(canonicalTaskStatus(task))) {
-          await refreshCache(true);
+          await refreshCache(true, {force: true});
           notify(kind === 'environment' ? '环境检测完成，请确认要使用的环境' : '模型扫描完成');
         } else if (canonicalTaskStatus(task) === 'FAILED') {
           notify(discoveryFailureMessage(task), 'error');
         } else if (canonicalTaskStatus(task) === 'CANCELLED') {
           notify(discoveryFailureMessage(task), 'info');
         }
-      }
-      return task;
-    } catch (error) {
-      if (error?.name !== 'AbortError') notify(error.message || '读取检测进度失败');
-      return null;
-    } finally {
-      runtime.pollControllers.delete(controller);
-      controller.abort();
-    }
+        cleanup(task);
+      };
+      const tick = async () => {
+        if (controller.signal.aborted) return cleanup(null);
+        try {
+          task = await request(`/api/resource-discovery/tasks/${encodeURIComponent(taskId)}`, {signal: controller.signal});
+          const live = document.getElementById('resourceDiscoveryTask');
+          if (!live || live.dataset.taskId !== String(taskId)) return cleanup(null);
+          patchResourceDiscoveryProgress(live, task, kind);
+          if (isCanonicalTaskActive(task)) registry.startTimeout(pollKey, '训练资源', tick, 1100);
+          else await finish();
+        } catch (error) {
+          if (error?.name !== 'AbortError') notify(error.message || '读取检测进度失败');
+          cleanup(null);
+        }
+      };
+      controller.signal.addEventListener('abort', () => {
+        registry.clear(pollKey);
+        runtime.pollControllers.delete(controller);
+        if (!settled) {
+          settled = true;
+          resolve(null);
+        }
+      }, {once: true});
+      if (isCanonicalTaskActive(task)) registry.startTimeout(pollKey, '训练资源', tick, 1100);
+      else void finish();
+    });
   }
 
   async function createTask(endpoint, payload, kind) {
@@ -292,15 +343,16 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     return runtime.scanModels({scope: 'directory', roots: [root]});
   };
   window.scanAllModels = () => runtime.scanModels({scope: 'full'});
-  window.refreshResourceDiscoveryCache = () => refreshCache(true);
+  window.refreshResourceDiscoveryCache = () => refreshCache(true, {force: true});
   window.selectResourceEnvironment = async index => {
     const candidate = runtime.environments[Number(index)];
     if (!candidate || status(candidate.status) !== 'AVAILABLE') return notify('该环境不可用，无法启用');
     try {
       await request('/api/ultralytics_env/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({python_path: candidate.python_path || candidate.python_executable, root: candidate.root || '', yolo_path: candidate.yolo_path || ''})});
+      window.invalidateTrainingDeviceCacheV3?.();
       notify('已启用所选 Ultralytics 环境');
       await refreshApplication();
-      await refreshCache(true);
+      await refreshCache(true, {force: true});
     } catch (error) {
       notify(error.message || '启用环境失败');
     }
@@ -321,9 +373,9 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   };
 
   window.renderResources = function resourceDiscoveryRenderResources() {
-    previousRenderResources?.();
+    renderBase?.();
     enhanceResourcePage();
-    refreshCache(true);
+    void refreshCache(true);
   };
   runtime.render = window.renderResources;
   window.ResourceDiscoveryRuntime = runtime;

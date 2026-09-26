@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -49,6 +50,20 @@ def _project_label_catalog(project: Path) -> tuple[list[str], dict[str, dict[str
     return ordered, catalog
 
 
+def _temporary_or_unmapped_label(code: str) -> bool:
+    value = str(code or "").strip().lower()
+    if not value:
+        return True
+    if value in {"unknown", "unmapped", "temporary", "temp", "class"}:
+        return True
+    return bool(
+        re.fullmatch(r"(?:class|cls)[_-]?\d+", value)
+        or value.startswith("unknown_")
+        or value.startswith("unmapped_")
+        or value.startswith("temp_")
+    )
+
+
 def selected_material_label_codes(project: Path, payload: Mapping[str, Any]) -> list[str]:
     """Return only labels evidenced by the exact materials selected for this task.
 
@@ -71,20 +86,41 @@ def selected_material_label_codes(project: Path, payload: Mapping[str, Any]) -> 
     annotations = AnnotationRepository(project)
     encountered: list[str] = []
     seen: set[str] = set()
-    for image_id in selected_ids:
-        annotation = annotations.get(image_id)
-        for box in annotation.get("boxes") or []:
-            code = str(box.get("label") or box.get("code") or "").strip()
-            if code and code not in seen:
-                seen.add(code)
-                encountered.append(code)
-        for value in annotation.get("annotation_scope") or []:
-            code = str(value or "").strip()
-            if code and code != "*" and code not in seen:
-                seen.add(code)
-                encountered.append(code)
+    for offset in range(0, len(selected_ids), 500):
+        chunk = selected_ids[offset:offset + 500]
+        batch = annotations.get_many(chunk)
+        for image_id in chunk:
+            annotation = batch[image_id]
+            for box in annotation.get("boxes") or []:
+                code = str(box.get("label") or box.get("code") or "").strip()
+                if not code:
+                    raise ValueError(
+                        f"训练素材 {image_id} 存在没有 canonical label 的标注框；请先完成标签统一"
+                    )
+                if code not in seen:
+                    seen.add(code)
+                    encountered.append(code)
+            for value in annotation.get("annotation_scope") or []:
+                code = str(value or "").strip()
+                if code and code != "*" and code not in seen:
+                    seen.add(code)
+                    encountered.append(code)
 
-    project_order, _ = _project_label_catalog(project)
+    project_order, catalog = _project_label_catalog(project)
+    invalid = [code for code in encountered if code not in catalog]
+    if invalid:
+        raise ValueError(
+            "训练素材包含未映射、已删除或已停用的标签: "
+            + ", ".join(invalid[:10])
+            + "；请先在标签管理中统一后再训练"
+        )
+    temporary = [code for code in encountered if _temporary_or_unmapped_label(code)]
+    if temporary:
+        raise ValueError(
+            "训练素材包含临时/未知标签: "
+            + ", ".join(temporary[:10])
+            + "；class_x / unknown / temp_* 不能进入正式训练"
+        )
     rank = {code: index for index, code in enumerate(project_order)}
     return sorted(encountered, key=lambda code: (rank.get(code, 10**9), encountered.index(code), code))
 
@@ -150,9 +186,22 @@ def resolve_training_label_contract(
 
     data_root = Path(data_dir).resolve()
     project_path = Path(project).resolve()
+    project_order, catalog = _project_label_catalog(project_path)
+    project_rank = {code: index for index, code in enumerate(project_order)}
     available = selected_material_label_codes(project_path, payload)
     available_set = set(available)
     requested = _unique_codes(payload.get("train_labels") or [])
+    invalid_catalog_requested = [code for code in requested if code not in catalog]
+    if invalid_catalog_requested:
+        raise ValueError(
+            "本次选择包含非当前有效 canonical 标签: "
+            + ", ".join(invalid_catalog_requested[:10])
+        )
+    temporary_requested = [code for code in requested if _temporary_or_unmapped_label(code)]
+    if temporary_requested:
+        raise ValueError(
+            "本次选择包含临时/未知标签: " + ", ".join(temporary_requested[:10])
+        )
     mother = str(payload.get("model") or "").strip()
     previous = _iteration_version(algorithm, mother)
 
@@ -168,10 +217,22 @@ def resolve_training_label_contract(
             )
 
     inherited_codes = [str(item["code"]) for item in inherited]
-    inherited_set = set(inherited_codes)
+    dropped_inherited = [code for code in inherited_codes if code not in catalog]
+    retained_inherited: list[dict[str, Any]] = []
+    for item in inherited:
+        code = str(item["code"])
+        if code not in catalog:
+            continue
+        normalized = dict(item)
+        normalized["class_id"] = len(retained_inherited)
+        normalized["source"] = "previous_version"
+        retained_inherited.append(normalized)
+    retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
+    retained_inherited_set = set(retained_inherited_codes)
+
     invalid_requested = [
         code for code in requested
-        if code not in available_set and code not in inherited_set
+        if code not in available_set and code not in retained_inherited_set
     ]
     if invalid_requested:
         raise ValueError(
@@ -182,14 +243,20 @@ def resolve_training_label_contract(
             "首次训练必须从已选素材实际携带的标签中至少选择一个；母算法自带类别不会自动继承。"
         )
 
-    project_order, catalog = _project_label_catalog(project_path)
-    project_rank = {code: index for index, code in enumerate(project_order)}
-    requested_new = [code for code in requested if code not in inherited_set]
-    # Preserve the explicit request order. The UI emits project/catalog order,
-    # while direct API clients may intentionally choose another deterministic order.
-    effective = [dict(item) for item in inherited]
+    requested_new = [code for code in requested if code not in retained_inherited_set]
+    schema_change_reasons = []
+    if dropped_inherited:
+        schema_change_reasons.append("removed_or_inactive_labels")
+    if requested_new:
+        schema_change_reasons.append("added_labels")
+    label_schema_changed = bool(schema_change_reasons)
+
+    # Training always starts from model weights, never optimizer/trainer state.
+    # If schema changed, stale previous classes are dropped and current classes
+    # are reindexed contiguously before Ultralytics receives the dataset.
+    effective = [dict(item) for item in retained_inherited]
     for code in requested_new:
-        source = dict(catalog.get(code) or {"code": code})
+        source = dict(catalog[code])
         source.pop("project_class_id", None)
         source["code"] = code
         source["class_id"] = len(effective)
@@ -207,10 +274,17 @@ def resolve_training_label_contract(
         "available_material_label_codes": available,
         "requested_label_codes": requested,
         "inherited_label_codes": inherited_codes,
+        "retained_inherited_label_codes": retained_inherited_codes,
+        "dropped_inherited_label_codes": dropped_inherited,
         "effective_label_codes": [str(item["code"]) for item in effective],
         "effective_label_schema": effective,
+        "label_schema_changed": label_schema_changed,
+        "label_schema_change_reasons": schema_change_reasons,
         "base_version_id": None if previous is None else str(previous.get("id") or ""),
         "base_version_name": "" if previous is None else str(previous.get("version_name") or ""),
+        "base_training_mode": "previous_weights_init" if previous is not None else "mother_model_init",
+        "strict_resume": False,
+        "optimizer_state_resumed": False,
         "mother_model_labels_inherited": False,
         "project_label_count": len(project_rank),
     }
@@ -238,41 +312,52 @@ def _scoped_selected_project_images(materials, project: Path, image_ids: Sequenc
     if contract is None:
         return rows
     allowed = set(contract["effective_label_codes"])
-    annotations = AnnotationRepository(project)
     projected: list[dict[str, Any]] = []
     for original in rows:
+        # _ORIGINAL_SELECTED_PROJECT_IMAGES already freezes the full formal
+        # AnnotationRepository truth for this exact selection. Reuse that row
+        # instead of issuing a second per-image annotation query here.
         row = dict(original)
-        image_id = str(row.get("id") or "")
-        annotation = annotations.get(image_id)
-        state = str(annotation.get("annotation_state") or "unannotated")
-        raw_scope = [str(value) for value in annotation.get("annotation_scope") or []]
-        boxes = list(annotation.get("boxes") or [])
+        state = str(row.get("annotation_state") or "unannotated")
+        raw_scope = [str(value) for value in row.get("annotation_scope") or []]
+        boxes = list(row.get("boxes") or [])
         selected_boxes = [
             dict(box) for box in boxes
             if str(box.get("label") or box.get("code") or "").strip() in allowed
         ]
-        if state == "annotated" and not selected_boxes:
-            present = sorted({
-                str(box.get("label") or box.get("code") or "").strip()
-                for box in boxes
-                if str(box.get("label") or box.get("code") or "").strip()
-            })
-            raise ValueError(
-                f"训练素材 {image_id} 不包含本次训练标签；当前标注为 "
-                f"{', '.join(present[:8]) or '无'}。"
-                "如果它应作为负样本，请先明确执行“确认无目标”，不能通过过滤其他标签制造负样本。"
-            )
-        row["annotation_state"] = state
-        row["annotated"] = state in {"annotated", "confirmed_empty"}
-        row["boxes"] = selected_boxes if state == "annotated" else []
-        if state == "annotated":
-            explicit = {value for value in raw_scope if value and value != "*"}
-            row["annotation_scope"] = sorted((explicit & allowed) | {
-                str(box.get("label") or box.get("code") or "").strip()
-                for box in selected_boxes
-            })
+        present = sorted({
+            str(box.get("label") or box.get("code") or "").strip()
+            for box in boxes
+            if str(box.get("label") or box.get("code") or "").strip()
+        })
+        task_filtered_negative = state == "annotated" and not selected_boxes
+        row["source_annotation_state"] = state
+        row["source_labels"] = present
+        if task_filtered_negative:
+            # Material selection decides whether the image participates in this task;
+            # the task label contract decides which classes are positive. If all
+            # source boxes belong to unselected classes, keep the image and project
+            # it to an intentional task-local background sample. Source Ground Truth
+            # in AnnotationRepository is never mutated.
+            row["annotation_state"] = "confirmed_empty"
+            row["annotated"] = True
+            row["boxes"] = []
+            row["annotation_scope"] = sorted(allowed)
+            row["negative_origin"] = "filtered_by_training_labels"
         else:
-            row["annotation_scope"] = raw_scope
+            row["annotation_state"] = state
+            row["annotated"] = state in {"annotated", "confirmed_empty"}
+            row["boxes"] = selected_boxes if state == "annotated" else []
+            if state == "annotated":
+                explicit = {value for value in raw_scope if value and value != "*"}
+                row["annotation_scope"] = sorted((explicit & allowed) | {
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for box in selected_boxes
+                })
+            else:
+                row["annotation_scope"] = raw_scope
+                if state == "confirmed_empty":
+                    row["negative_origin"] = str(row.get("negative_origin") or "explicit_confirmed_empty")
         # The persisted annotation hash describes the full Ground Truth. Once
         # boxes are projected to this task schema, Snapshot must hash the task
         # projection instead of reusing the full-project digest.
@@ -314,6 +399,13 @@ def _persist_version_contract(project: Path, task_id: str, contract: Mapping[str
                 "schema_version": int(contract.get("schema_version") or 1),
                 "requested_label_codes": list(contract.get("requested_label_codes") or []),
                 "inherited_label_codes": list(contract.get("inherited_label_codes") or []),
+                "retained_inherited_label_codes": list(contract.get("retained_inherited_label_codes") or []),
+                "dropped_inherited_label_codes": list(contract.get("dropped_inherited_label_codes") or []),
+                "label_schema_changed": bool(contract.get("label_schema_changed")),
+                "label_schema_change_reasons": list(contract.get("label_schema_change_reasons") or []),
+                "base_training_mode": contract.get("base_training_mode"),
+                "strict_resume": False,
+                "optimizer_state_resumed": False,
                 "base_version_id": contract.get("base_version_id"),
                 "mother_model_labels_inherited": False,
             }

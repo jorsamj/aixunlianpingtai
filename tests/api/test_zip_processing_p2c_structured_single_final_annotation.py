@@ -128,11 +128,14 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
             assert box["y2"] == 19.0
             assert record["box_count"] == 1
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
+            assert box["source"] == "imported"
         else:
             assert annotation["annotation_state"] == "confirmed_empty"
             assert annotation["boxes"] == []
             assert record["box_count"] == 0
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
 
 
 def _voc_xml(filename: str, annotated: bool) -> str:
@@ -218,8 +221,11 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
             assert box["y2"] == 22.0
             assert record["box_count"] == 1
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"
+            assert box["source"] == "imported"
         else:
             assert annotation["annotation_state"] == "confirmed_empty"
             assert annotation["boxes"] == []
             assert record["box_count"] == 0
             assert record["annotated"] is True
+            assert record["annotation_origin"] == "imported"

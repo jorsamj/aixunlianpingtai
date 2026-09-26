@@ -42,3 +42,69 @@ test('fifty-image queue renders a bounded window around the active image', () =>
   assert.equal(visible[0], 'image-21');
   assert.equal(visible.at(-1), 'image-29');
 });
+
+
+test('beforeLoad paints immediately while the authoritative annotation request is pending', async () => {
+  let resolveLoad;
+  const events = [];
+  const workbench = createAnnotationWorkbench({
+    beforeLoad: id => events.push(`shell:${id}`),
+    load: id => new Promise(resolve => { resolveLoad = () => resolve({image_id: id}); }),
+    save: async () => true,
+    apply: value => events.push(`apply:${value.image_id}`),
+  });
+  const opening = workbench.open('one');
+  assert.deepEqual(events, ['shell:one']);
+  resolveLoad();
+  await opening;
+  assert.deepEqual(events, ['shell:one', 'apply:one']);
+});
+
+test('prefetched annotation opens from short-lived memory cache without a duplicate request', async () => {
+  const loads = [];
+  const applied = [];
+  const workbench = createAnnotationWorkbench({
+    load: async id => { loads.push(id); return {image_id: id}; },
+    save: async () => true,
+    apply: value => applied.push(value.image_id),
+  });
+  await workbench.open('one');
+  await workbench.prefetch(['two', 'two']);
+  assert.deepEqual(loads, ['one', 'two']);
+  await workbench.open('two');
+  assert.deepEqual(loads, ['one', 'two']);
+  assert.deepEqual(applied, ['one', 'two']);
+});
+
+test('remember replaces cached annotation truth after a save', async () => {
+  let loads = 0;
+  const applied = [];
+  const workbench = createAnnotationWorkbench({
+    load: async id => { loads += 1; return {image_id: id, boxes: []}; },
+    save: async () => true,
+    apply: value => applied.push(value),
+  });
+  await workbench.open('one');
+  workbench.remember('one', {image_id: 'one', boxes: [{label: 'person'}]});
+  await workbench.open('one');
+  assert.equal(loads, 1);
+  assert.deepEqual(applied.at(-1).boxes, [{label: 'person'}]);
+});
+
+
+test('closing the workbench can cancel pending apply without throwing away the short-lived cache', async () => {
+  let loads = 0;
+  const applied = [];
+  const workbench = createAnnotationWorkbench({
+    load: async id => { loads += 1; return {image_id: id}; },
+    save: async () => true,
+    apply: value => applied.push(value.image_id),
+  });
+
+  await workbench.open('one');
+  workbench.cancel();
+  await workbench.open('one');
+
+  assert.equal(loads, 1);
+  assert.deepEqual(applied, ['one', 'one']);
+});

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.training_material_picker_api import training_material_picker_router
 
@@ -24,6 +25,8 @@ def _record(index: int, *, annotated: bool = True) -> dict:
         "box_count": 1 if annotated else 0,
         "annotated": annotated,
         "labels": ["smoke"] if index % 2 == 0 else ["person"],
+        "width": 400,
+        "height": 200,
         "created_at": f"2026-09-15T12:{index // 60:02d}:{index % 60:02d}+00:00",
     }
 
@@ -33,6 +36,22 @@ def _client(tmp_path):
     project_path = data_dir / "projects" / "p1"
     repository = MaterialRepository(project_path)
     repository.upsert_many([_record(index, annotated=index < 230) for index in range(260)])
+    AnnotationRepository(project_path).upsert_many([
+        {
+            "image_id": f"m{index:04d}",
+            "annotation_state": "annotated",
+            "boxes": [{
+                "id": f"box-{index}",
+                "label": "smoke" if index % 2 == 0 else "person",
+                "class_id": 0 if index % 2 == 0 else 1,
+                "x1": 40,
+                "y1": 20,
+                "x2": 200,
+                "y2": 100,
+            }],
+        }
+        for index in range(230)
+    ])
     app = FastAPI()
     app.include_router(training_material_picker_router(
         lambda project_id: {"id": project_id} if project_id == "p1" else None,
@@ -87,6 +106,36 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     assert search.status_code == 200
     assert search.json()["total"] == 1
     assert search.json()["items"][0]["id"] == "m0007"
+
+
+def test_training_picker_batch_reads_formal_annotation_truth_for_current_page(tmp_path, monkeypatch):
+    client, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    annotations.upsert("m0001", [], "confirmed_empty", project_material=False)
+    annotations.upsert("m0002", [], "unannotated", project_material=False)
+    calls = []
+    original = AnnotationRepository.get_many
+
+    def tracked_get_many(self, image_ids):
+        ids = list(image_ids)
+        calls.append(ids)
+        return original(self, ids)
+
+    monkeypatch.setattr(AnnotationRepository, "get_many", tracked_get_many)
+    response = client.get("/api/v62/projects/p1/training-materials", params={"limit": 60})
+
+    assert response.status_code == 200
+    items = {item["image_id"]: item for item in response.json()["items"]}
+    assert len(calls) == 1
+    assert len(calls[0]) == 60
+    assert items["m0000"]["width"] == 400
+    assert items["m0000"]["height"] == 200
+    assert items["m0000"]["annotation_state"] == "annotated"
+    assert items["m0000"]["boxes"][0]["x1"] == 40
+    assert items["m0001"]["annotation_state"] == "confirmed_empty"
+    assert items["m0001"]["boxes"] == []
+    assert items["m0002"]["annotation_state"] == "unannotated"
+    assert items["m0002"]["boxes"] == []
 
 
 def test_training_picker_ids_support_explicit_bulk_selection_without_full_rows(tmp_path):

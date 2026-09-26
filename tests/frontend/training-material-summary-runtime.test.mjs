@@ -30,7 +30,7 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   const summaryRuntime = readFileSync(new URL('../../static/modules/training-material-summary-runtime.js', import.meta.url), 'utf8');
   const labelsRuntime = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
 
-  assert.match(main, /FULL_MATERIAL_PAGES\.delete\('训练任务'\)/);
+  assert.doesNotMatch(main, /FULL_MATERIAL_PAGES/);
   assert.match(main, /installTrainingMaterialSummaryRuntime/);
   assert.match(main, /materialSummaryRuntime: trainingMaterialSummaryRuntime/);
   assert.match(summaryRuntime, /training-materials\/selection-summary/);

@@ -22,16 +22,16 @@ test('final v36 ZIP import delegates to background v19 uploader and cannot fall 
   const owner = finalV36ImportOwner();
   assert.match(owner, /onclick="doImportUploadV19\(\)"/);
   assert.doesNotMatch(owner, /onclick="doImportData\(\)"/);
-  assert.equal((app.match(/window\.doImportData=/g) || []).length, 1, 'historical v18 fallback must remain single-owner while retained');
+  assert.equal((app.match(/window\.doImportData=/g) || []).length, 1, 'compatibility import bridge must remain single-owner while retained');
 });
 
-test('historical v18 fallback completion refreshes only labels and paged materials', () => {
+test('historical import bridge delegates to durable ZIP runtime and cannot revive v18 synchronous import', () => {
   const block = historicalImportBlock();
-  const endpoint = '/api/v18/projects/${pid()}/datasets/${state.datasetId}/import';
-  assert.equal(block.split(endpoint).length - 1, 1, 'historical fallback must submit the v18 import endpoint exactly once');
-  assert.match(block, /await window\.refreshLabels414\?\.\(false\)/);
-  assert.match(block, /if\(state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
+  assert.match(block, /window\.ZipImportRuntime\?\.upload/);
+  assert.doesNotMatch(block, /\/api\/v18\/projects\//);
+  assert.doesNotMatch(block, /refreshLabels414/);
+  assert.doesNotMatch(block, /reloadMaterialPage61/);
   for (const forbidden of ['await reload()', 'await loadAll()', 'await loadRelated()']) {
-    assert.equal(block.includes(forbidden), false, `v18 fallback completion must not use ${forbidden}`);
+    assert.equal(block.includes(forbidden), false, `compatibility bridge must not use ${forbidden}`);
   }
 });

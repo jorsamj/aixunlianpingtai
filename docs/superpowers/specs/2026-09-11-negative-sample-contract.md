@@ -133,3 +133,18 @@ Future Codex/engineers must not reintroduce any of these behaviors:
 ## 10. Remaining related work
 
 Algorithm-level stable label schema is still a separate v42.25 item. Until that is completed, the training Snapshot continues to receive the label schema supplied by the current training pipeline. The negative-sample contract is designed to become stricter, not looser, once each algorithm owns an explicit stable schema.
+
+
+## 11. 2026-09-17 Task-derived negative addendum
+
+The product contract now distinguishes **material Ground Truth** from a **training-task projection**.
+
+- Selecting material decides whether the image participates in the training task.
+- Selecting training labels decides which classes are positive for that task.
+- If an already-annotated selected image contains only classes that the user deselects for this task, the image remains in the task and is projected as `confirmed_empty` with `negative_origin=filtered_by_training_labels`.
+- The source AnnotationRepository row is immutable: its original boxes and `annotation_state=annotated` remain unchanged.
+- If a selected image contains both selected and deselected classes, only deselected boxes are filtered; the image stays positive.
+- Explicit material-level `确认无目标` remains a separate state and is recorded as `negative_origin=explicit_confirmed_empty` in the task projection.
+- Snapshot v3 persists `negative_origin`, `source_annotation_state`, `source_labels`, and `negative_origin_counts` so task-derived backgrounds are auditable.
+
+This deliberately permits a YOLO empty target for the locked task schema, while preventing task label filtering from rewriting source Ground Truth.

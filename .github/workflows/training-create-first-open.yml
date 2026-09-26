@@ -1,0 +1,143 @@
+name: Training Create First Open
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'static/index.html'
+      - 'static/main.mjs'
+      - 'static/app.js'
+      - 'static/modules/training-create-hydration.js'
+      - 'static/modules/training-task-visibility-runtime.js'
+      - 'static/modules/training-draft.js'
+      - 'static/modules/training-submit.js'
+      - 'tests/frontend/training-create-hydration.test.mjs'
+      - 'tests/frontend/training-modal-device-probe.test.mjs'
+      - 'tests/frontend/training-submit.test.mjs'
+      - 'tests/frontend/training-submit-validation.test.mjs'
+      - 'tests/browser/training-create-first-open.spec.mjs'
+      - 'tests/browser/training-quality-reports.spec.mjs'
+      - 'tests/browser/navigation-stability.spec.mjs'
+      - '.github/workflows/training-create-first-open.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check
+        run: >-
+          node --check static/modules/training-create-hydration.js &&
+          node --check static/modules/training-draft.js &&
+          node --check static/modules/training-submit.js &&
+          node --check static/main.mjs &&
+          node --check tests/frontend/training-create-hydration.test.mjs &&
+          node --check tests/frontend/training-submit-validation.test.mjs &&
+          node --check tests/browser/training-create-first-open.spec.mjs
+      - name: First-open training contracts
+        run: >-
+          node --test
+          tests/frontend/training-create-hydration.test.mjs
+          tests/frontend/training-modal-device-probe.test.mjs
+          tests/frontend/training-submit.test.mjs
+          tests/frontend/training-submit-validation.test.mjs
+      - name: Permanent first-open guards
+        shell: bash
+        run: |
+          grep -Fq 'installTrainingCreateHydrationRuntime' static/main.mjs
+          grep -Fq 'const createRuntime = window.TrainingCreateHydrationRuntime;' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'void createRuntime.start(algorithmId);' static/modules/training-task-visibility-runtime.js
+          if grep -Fq 'openTrainingCreateCanonical429' static/modules/training-task-visibility-runtime.js; then
+            echo 'training task create must stay behind TrainingCreateHydrationRuntime.start' >&2
+            exit 1
+          fi
+          grep -Fq 'training task create uses hydration truth even when training resource navigation is hidden' tests/browser/navigation-stability.spec.mjs
+          grep -Fq "build: 'training-create-hydration-" static/modules/training-create-hydration.js
+          grep -Fq 'const hydrateOptions = async' static/modules/training-create-hydration.js
+          grep -Fq 'const hydrateRecommendation = async' static/modules/training-create-hydration.js
+          grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
+          grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
+          grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
+          grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
+          grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
+          grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
+          grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
+          grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
+          grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js
+          grep -Fq 'recoveryRuntime: trainingRecoveryRuntime' static/main.mjs
+          grep -Fq 'annPointerAbort' static/app.js
+          grep -Fq 'window.saveAnnotationCore420=async function(silent=false,options={})' static/app.js
+          grep -Fq 'window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={})' static/app.js
+          if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
+          grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
+          grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq 'legacy training shell uses same-scope status helper before final visibility runtime takes ownership' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
+          grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
+          grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
+          grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
+          grep -Fq '/benchmark-reuse' static/app.js
+          grep -Fq 'benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)' static/app.js
+          grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
+          grep -Fq '阶段试验与目标' static/app.js
+          grep -Fq '未达继续 / 达标提前完成' static/app.js
+          grep -Fq "continue_threshold:0,stop_threshold:goal" static/app.js
+          if grep -Fq 'id="ts428Low"' static/app.js; then echo 'training target UI must not expose low-score runtime stop' >&2; exit 1; fi
+          if grep -Fq 'id="ts428Patience"' static/app.js; then echo 'target training UI must not expose a competing patience stop control' >&2; exit 1; fi
+          grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq "preferred_project_id" tests/browser/training-create-first-open.spec.mjs
+          grep -Fq "preferred_project_id" tests/browser/training-quality-reports.spec.mjs
+          if grep -Fq "JSON.stringify({projectId, page" tests/browser/training-create-first-open.spec.mjs tests/browser/training-quality-reports.spec.mjs; then echo 'browser tests must not restore production localStorage project selection' >&2; exit 1; fi
+          grep -Fq 'training target is the only automatic early-stop control' tests/browser/training-create-first-open.spec.mjs
+          test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
+          stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
+          benchmark_line="$(grep -nF 'async function loadTrainingBenchmarkReuseV1' static/app.js | head -1 | cut -d: -f1)"
+          test -n "$stable_line" && test -n "$benchmark_line" && test "$benchmark_line" -gt "$stable_line"
+          grep -Fq 'window.TrainingSubmitRuntime?.updateReadiness?.();' static/app.js
+          grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
+          grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js
+          grep -Fq "api('/api/v62/training-devices')" static/app.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome training create and completion report regression
+        run: >-
+          npx playwright test
+          tests/browser/training-create-first-open.spec.mjs
+          tests/browser/training-quality-reports.spec.mjs
+      - name: Feedback provenance browser guard
+        run: |
+          grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq 'training report shows requested epochs actual epochs stop reason and target status' tests/browser/training-quality-reports.spec.mjs
+          grep -Fq '最大轮次' static/app.js
+          grep -Fq '实际轮次' static/app.js
+          grep -Fq '停止原因' static/app.js
+          grep -Fq '目标状态' static/app.js

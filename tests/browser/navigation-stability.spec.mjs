@@ -1,5 +1,153 @@
 import {test, expect} from '@playwright/test';
 
+async function mockDurableZipUpload(page, {
+  jobId,
+  fileName = 'browser.zip',
+  report = {imported_images: 1, annotated_images: 0, boxes: 0, warnings: []},
+}) {
+  const uploadId = `upload-${jobId}`;
+  let uploaded = false;
+  let started = false;
+  const selecting = {
+    id: jobId,
+    file_name: fileName,
+    status: 'selecting',
+    stage: '上传与校验完成',
+    message: '等待启动后台导入',
+    progress: 0,
+    image_count: Number(report.imported_images || 0),
+    file_count: Number(report.imported_images || 0),
+    uncompressed_size_mb: 1,
+    format_hints: ['YOLO'],
+  };
+  const running = {...selecting, status: 'running', stage: '后台导入中', progress: 65};
+  const done = {...running, status: 'done', stage: '导入完成', message: '完成', progress: 100, report};
+
+  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/uploads$/, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        upload_id: uploadId,
+        part_size: 8 * 1024 * 1024,
+        completed_parts: [],
+        total_parts: 1,
+        upload_progress: 0,
+      }),
+    });
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/parts/\\d+$`), async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/complete$`), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    uploaded = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selecting)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}/start$`), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    started = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(running)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}$`), async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(started ? done : selecting)});
+  });
+  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs$/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const items = !uploaded ? [] : [started ? done : selecting];
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items})});
+  });
+}
+
+
+test('training task create uses hydration truth even when training resource navigation is hidden', async ({page, request}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  const project = await (await request.post('/api/projects', {data: {
+    name: `训练任务创建入口-${Date.now()}`,
+    labels: [{code: 'smoke', display_name: '烟雾'}],
+  }})).json();
+  const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
+    name: '训练任务入口回归',
+    industry: '测试',
+    algorithm_type: 'yolo_ultralytics',
+    remark: '',
+  }})).json();
+  const algorithmId = created.algorithm.id;
+
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', project.id);
+    await route.fallback({url: url.toString()});
+  });
+  let trainingOptionsCalls = 0;
+  await page.route('**/api/training_options**', async route => {
+    trainingOptionsCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id: 'task-create-ultralytics',
+        name: '任务页 Ultralytics',
+        type: 'local',
+        framework: 'ultralytics',
+        status: 'ready',
+        algorithms: [{
+          key: 'yolo_detect',
+          name: 'Ultralytics Detect',
+          base_model: 'yolo11n.pt',
+          default_epochs: 20,
+          default_imgsz: 640,
+          default_batch: 4,
+        }],
+        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      }]}),
+    });
+  });
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '训练任务'}));
+  });
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.TrainingCreateHydrationRuntime?.build || ''))
+    .toMatch(/^training-create-hydration-/);
+  await page.evaluate(id => {
+    const algorithm = (state.algorithms || []).find(row => String(row.id || '') === String(id));
+    if (!algorithm) throw new Error('seeded algorithm missing from browser state');
+    state.targets = [];
+    state.rec = null;
+    for (const button of document.querySelectorAll('#nav button')) {
+      if (String(button.textContent || '').includes('训练资源')) button.hidden = true;
+    }
+  }, algorithmId);
+
+  await expect(page.locator('[data-training-task-shell="canonical"]')).toBeVisible();
+  await expect(page.getByRole('button', {name: /训练资源/})).toBeHidden();
+  await page.getByRole('button', {name: '＋ 新建训练任务', exact: true}).click();
+
+  const dialog = page.getByRole('dialog', {name: '训练 · 训练任务入口回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await expect(dialog.locator('#tr429Target')).toHaveValue('task-create-ultralytics');
+  await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
+  expect(trainingOptionsCalls).toBeGreaterThan(0);
+  expect(pageErrors).toEqual([]);
+});
+
 test('delayed request from previous page cannot jump back over the current page', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -180,6 +328,47 @@ test('final navigation persists the selected page and restores it after reload',
   expect(pageErrors).toEqual([]);
 });
 
+test('service node owner commits its own shell without flashing another business page', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.route('**/api/v63/service-nodes', async route => {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: [], supported_capabilities: []})});
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => window.ServiceNodeRuntime?.build || null)).toBe('service-node-runtime-422539');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const openService = async () => page.evaluate(async () => {
+    window.setPage('服务节点');
+    await Promise.resolve();
+    await Promise.resolve();
+    const view = document.getElementById('view');
+    return {
+      page: state.page,
+      title: document.getElementById('title')?.textContent,
+      serviceShell: Boolean(view?.querySelector('[data-service-node-page]')),
+      wrongBusinessPage: Boolean(view?.querySelector('.alg428-card,.train428-page,.data426-page,.storage61-shell')),
+    };
+  });
+
+  await expect(openService()).resolves.toEqual({
+    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+  });
+  await expect(page.locator('[data-service-node-page]')).toBeVisible();
+
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('#title')).toHaveText('训练任务');
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toHaveText('数据集');
+
+  await expect(openService()).resolves.toEqual({
+    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test('legacy auto-label route alias resolves to 自动标注及清洗 through final navigation', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -227,8 +416,8 @@ test('storage configuration route is rendered by the final storage owner', async
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
-  await page.evaluate(() => window.setPage('素材存储配置'));
-  await expect(page.locator('#title')).toContainText('素材存储配置');
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.locator('#title')).toContainText('存储配置');
   await expect(page.locator('.storage61-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#storage61Rows')).toBeVisible();
 
@@ -251,7 +440,7 @@ test('formal version marker stays stable across final render owners and delayed 
   await page.waitForTimeout(1_800);
   await expectFormalVersion();
 
-  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '部署资源', '素材存储配置']) {
+  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '模型配置', '存储配置']) {
     await page.evaluate(next => window.setPage(next), route);
     await expect(page.locator('#title')).toContainText(route);
     await expectFormalVersion();
@@ -262,19 +451,46 @@ test('formal version marker stays stable across final render owners and delayed 
   expect(pageErrors).toEqual([]);
 });
 
-test('file input beautification survives page render lifecycle ownership', async ({page}) => {
+test('quality-center detection keeps multi-image and folder pickers after page render ownership', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
-  await page.evaluate(() => window.setPage('测试发布'));
-  await expect(page.locator('#title')).toContainText('测试发布');
-  await expect(page.locator('#predFile')).toHaveClass(/native-file426/);
-  await expect(page.locator('#predFile + .filepicker426')).toBeVisible();
-  await expect(page.locator('#predFile + .filepicker426 .filepicker426-btn')).toContainText('选择图片');
+  await page.evaluate(async () => {
+    window.setPage('质量中心');
+    await window.setQualityCenterTab411?.('detect');
+  });
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.locator('#benchFiles64')).toHaveAttribute('multiple', '');
+  await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
+  const detectionShell = page.locator('[data-quality-detection-shell="1"]');
+  await expect(detectionShell.getByRole('button', {name: '选择图片', exact: true})).toBeVisible();
+  await expect(detectionShell.getByRole('button', {name: '选择文件夹', exact: true})).toBeVisible();
 
+  expect(pageErrors).toEqual([]);
+});
+
+test('retired testing routes resolve to quality center and normal navigation exposes only three product groups', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => {
+    state.v427Advanced = false;
+    window.renderNav?.();
+    window.setPage('检测台');
+  });
+  await expect(page.locator('#title')).toHaveText('质量中心');
+  await expect(page.locator('.nav-group-title')).toHaveText(['总览','算法生成','数据中心']);
+  await expect(page.locator('#nav')).not.toContainText('测试评测');
+  await expect(page.locator('#nav')).not.toContainText('部署中心');
+  await expect(page.locator('#nav')).not.toContainText('测试发布');
+
+  await page.evaluate(() => window.setPage('测试发布'));
+  await expect(page.locator('#title')).toHaveText('质量中心');
   expect(pageErrors).toEqual([]);
 });
 
@@ -324,38 +540,11 @@ test('ZIP import completion surfaces review action and auto-opens review', async
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
-  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/jobs$/, async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id: 'zip-browser-1',
-        image_count: 3,
-        format_hints: ['YOLO'],
-        upload_seconds: 0.1,
-        scan_seconds: 0.1,
-      }),
-    });
+  await mockDurableZipUpload(page, {
+    jobId: 'zip-browser-1',
+    fileName: 'browser.zip',
+    report: {imported_images: 3, annotated_images: 2, boxes: 5, warnings: []},
   });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1\/start$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1$/, async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        id: 'zip-browser-1',
-        status: 'done',
-        stage: '导入完成',
-        message: '完成',
-        progress: 100,
-        processing_seconds: 0.2,
-        report: {imported_images: 3, annotated_images: 2, boxes: 5, warnings: []},
-      }),
-    });
-  });
-
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => {
@@ -392,19 +581,10 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
-  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/jobs$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      id: 'zip-r20g-scoped', image_count: 2, format_hints: ['YOLO'], upload_seconds: 0.1, scan_seconds: 0.1,
-    })});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-r20g-scoped\/start$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
-  });
-  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-r20g-scoped$/, async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      id: 'zip-r20g-scoped', status: 'done', stage: '导入完成', message: '完成', progress: 100,
-      processing_seconds: 0.2, report: {imported_images: 2, annotated_images: 1, boxes: 2, warnings: []},
-    })});
+  await mockDurableZipUpload(page, {
+    jobId: 'zip-r20g-scoped',
+    fileName: 'r20g.zip',
+    report: {imported_images: 2, annotated_images: 1, boxes: 2, warnings: []},
   });
   await page.route(/\/api\/v12\/projects\/[^/]+\/labels$/, async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -513,13 +693,13 @@ test('server storage import confirmation avoids broad related refresh', async ({
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
-  await page.evaluate(() => window.setPage('素材存储配置'));
-  await expect(page.locator('#title')).toContainText('素材存储配置');
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.locator('#title')).toContainText('存储配置');
   await page.evaluate(async () => { await window.openStorageImport61(); });
   await expect(page.locator('#si61ImportShell')).toBeVisible();
   await page.evaluate(() => {
     const status = document.getElementById('si61Status');
-    status.innerHTML = '<div data-import-class="smoke"><input data-label-code value="smoke"><input data-create-label type="checkbox" checked></div><button id="si61Confirm">确认建立索引</button>';
+    status.innerHTML = '<div data-import-class="smoke"><input data-label-code value="smoke"></div><button id="si61Confirm">确认建立索引</button>';
   });
 
   const broad = [];
@@ -553,7 +733,7 @@ test('server storage import confirmation avoids broad related refresh', async ({
     expect.stringMatching(/^POST \/api\/v61\/projects\/[^/]+\/storage-imports\/storage-r20g\/confirm$/),
     expect.stringMatching(/^GET \/api\/v62\/projects\/[^/]+\/tasks\/storage-r20g$/),
   ]);
-  expect(requests.some(row => row.startsWith('GET /api/v12/projects/') && row.endsWith('/labels'))).toBe(true);
+  expect(requests.some(row => row.startsWith('GET /api/v12/projects/') && row.endsWith('/labels'))).toBe(false);
   expect(broad).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
@@ -982,3 +1162,121 @@ test('model config save appears immediately without broad related refresh', asyn
   expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('platform integration is installed as a canonical navigation owner', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.route('**/api/v63/external-algorithm-platform/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith('/config')
+      ? {mode:'local', provider:'changlian', base_url:'', credentials:{configured:false, available:true}}
+      : path.endsWith('/history')
+        ? {items:[]}
+        : path.endsWith('/cache')
+          ? {categories:[], products:[], analyses:[], compute_platforms:[]}
+          : {ready:true, status:'local'};
+    await route.fulfill({status:200, contentType:'application/json', body:JSON.stringify(body)});
+  });
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout:15_000}).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(window.NavigationStability?.hasPageOwner?.('平台对接'))))
+    .toBe(true);
+
+  await page.evaluate(async () => {
+    const result = window.setPage('平台对接');
+    if (result && typeof result.then === 'function') await result;
+  });
+  await expect(page.locator('#title')).toHaveText('平台对接');
+  await expect(page.locator('[data-external-platform-page="1"]')).toBeVisible({timeout:10_000});
+  await expect(page.locator('#view [data-unknown-page]')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+
+test('formal utility pages avoid unknown-module fallback and retired deployment routes normalize safely', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state.uiReady)), {timeout: 15_000}).toBe(true);
+
+  const pages = [
+    '总览',
+    '质量中心',
+    '标签管理',
+    '模型配置',
+    '组件检测',
+    '平台对接',
+    '服务节点',
+  ];
+
+  for (const target of pages) {
+    await page.evaluate(async name => {
+      const result = window.setPage(name);
+      if (result && typeof result.then === 'function') await result;
+    }, target);
+
+    await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(target);
+    await expect(page.locator('#title')).toHaveText(target);
+    const fallback = page.locator('#view [data-unknown-page]');
+    await expect(fallback, `formal page ${target} must have a concrete renderer owner`).toHaveCount(0);
+    await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
+    await expect(page.locator('#view')).not.toContainText('当前页面不存在或已下线');
+  }
+
+  const aliases = [
+    ['部署转换', '算法列表'],
+    ['部署产物', '算法列表'],
+    ['部署资源', '模型配置'],
+    ['部署插件', '模型配置'],
+  ];
+  for (const [legacy, canonical] of aliases) {
+    await page.evaluate(async name => {
+      const result = window.setPage(name);
+      if (result && typeof result.then === 'function') await result;
+    }, legacy);
+    await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(canonical);
+    await expect(page.locator('#title')).toHaveText(canonical);
+  }
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('clicking the already active sidebar item does not invoke navigation again', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const active = page.locator('#nav .nav-btn.active').first();
+  await expect(active).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__sameNavProbeCalls = 0;
+    window.__sameNavProbeEpoch = Number(state.__navigationEpoch || 0);
+    const original = window.setPage;
+    window.setPage = function (...args) {
+      window.__sameNavProbeCalls += 1;
+      return original.apply(this, args);
+    };
+  });
+
+  await active.click();
+  await page.waitForTimeout(150);
+
+  const probe = await page.evaluate(() => ({
+    calls: window.__sameNavProbeCalls,
+    beforeEpoch: window.__sameNavProbeEpoch,
+    afterEpoch: Number(state.__navigationEpoch || 0),
+  }));
+  expect(probe.calls).toBe(0);
+  expect(probe.afterEpoch).toBe(probe.beforeEpoch);
+  expect(pageErrors).toEqual([]);
+});
+
+

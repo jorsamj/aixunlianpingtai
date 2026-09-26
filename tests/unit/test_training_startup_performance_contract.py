@@ -243,3 +243,48 @@ def test_startup_stage_contract_persists_first_batch_truth(tmp_path):
     assert job["startup_stage"] == "first_batch"
     assert job["training_started"] is True
     assert job["current_item"] == "首个 Batch 已开始"
+
+
+@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000])
+def test_selected_project_images_batches_annotation_repository_reads(monkeypatch, tmp_path, image_count):
+    image_ids = [f"image-{index:05d}" for index in range(image_count)]
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg", "content_sha256": "a" * 64}
+                for image_id in ids
+            ]
+
+    class FakeAnnotations:
+        def __init__(self):
+            self.calls = []
+
+        def get_many(self, ids):
+            batch = list(ids)
+            self.calls.append(batch)
+            assert len(batch) <= 500
+            return {
+                image_id: {
+                    "image_id": image_id,
+                    "annotation_state": "confirmed_empty",
+                    "annotation_scope": ["smoke"],
+                    "content_digest": f"digest-{image_id}",
+                    "boxes": [],
+                }
+                for image_id in batch
+            }
+
+        def get(self, _image_id):
+            pytest.fail("_selected_project_images must not issue per-image AnnotationRepository.get() calls")
+
+    annotations = FakeAnnotations()
+    monkeypatch.setattr(training_tasks, "AnnotationRepository", lambda _project: annotations)
+
+    rows = training_tasks._selected_project_images(FakeMaterials(), tmp_path, image_ids)
+
+    assert len(annotations.calls) == (image_count + 499) // 500
+    assert sum(len(batch) for batch in annotations.calls) == image_count
+    assert all(1 <= len(batch) <= 500 for batch in annotations.calls)
+    assert [row["id"] for row in rows] == image_ids
+    assert all(row["annotated"] is True for row in rows)

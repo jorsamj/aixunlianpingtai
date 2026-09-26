@@ -31,12 +31,18 @@ test('V417 classic mobile-sidebar setPage owner cannot return', () => {
 test('initial bootstrap setPage binding cannot return after named actual navigation owner migration', () => {
   assert.equal(app.includes('function setPage(p){state.page=p;render()} window.setPage=setPage;'), false);
   assert.equal(navigation.includes('performNavigation'), true, 'final navigation must own actual page application');
-  assert.equal(
-    main.includes(`performNavigation: page => {
-    state.page = page;
-    render();
-  },`),
-    true,
-    'main runtime must wire exactly one named state.page mutation + render owner',
-  );
+  const start = main.indexOf('performNavigation: page => {');
+  const end = main.indexOf('\n  },', start);
+  assert.ok(start >= 0 && end > start, 'main runtime must keep one named navigation owner');
+  const owner = main.slice(start, end);
+  const required = [
+    'MaterialPaginationRuntime61?.beforeNavigate?.(page)',
+    'state.page = page',
+    'uploadTaskCenterRuntime.switchProject?.()',
+    'render()',
+    'MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation)',
+  ];
+  const positions = required.map(item => owner.indexOf(item));
+  assert.equal(positions.every(position => position >= 0), true, 'final owner must keep all navigation side effects');
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions, 'final owner side effects must stay ordered');
 });

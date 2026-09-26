@@ -158,12 +158,10 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
-  const stableAlgorithmPage = app.lastIndexOf('window.renderAlgorithms423=function(){');
-  assert.ok(stableCards >= 0 && stableAlgorithmPage > stableCards);
-  const cardSource = app.slice(stableCards, stableAlgorithmPage);
-  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
-  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
+  const algorithmList = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  assert.match(algorithmList, /data-algorithm-train="\$\{esc\(algorithm\.id\)\}"/);
+  assert.match(algorithmList, /onclick="startAlgorithmTraining429\('\$\{esc\(algorithm\.id\)\}'\)"/);
+  assert.equal(algorithmList.includes('startAlgorithmTraining423'), false);
 
   const finalTaskRenderer = app.lastIndexOf('window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){');
   assert.ok(finalTaskRenderer >= 0);
@@ -174,7 +172,36 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
   const last423Call = app.lastIndexOf("startAlgorithmTraining423('${a.id}')");
   const last425OpenCall = app.lastIndexOf('openTrain425(');
   const last425CountCall = app.lastIndexOf('trainCounts425()');
-  assert.ok(last423Call >= 0 && last423Call < stableCards);
+  assert.ok(last423Call >= 0, 'legacy 423 call may remain only in retired app.js history');
   assert.ok(last425OpenCall >= 0 && last425OpenCall < finalTaskRenderer);
   assert.ok(last425CountCall >= 0 && last425CountCall < finalTaskRenderer);
+});
+
+
+test('inactive previous labels are dropped and mark schema changed', () => {
+  const algorithm = {
+    versions: [successfulVersion({
+      label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
+    })],
+  };
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire']}],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: [],
+  });
+  assert.deepEqual(view.inherited, ['fire']);
+  assert.deepEqual(view.droppedInherited, ['legacy_smoke']);
+  assert.deepEqual(view.effectivePreview, ['fire']);
+  assert.equal(view.labelSchemaChanged, true);
+  assert.equal(view.strictResume, false);
+  assert.equal(view.baseTrainingMode, 'previous_weights_init');
+});
+
+test('non-canonical material labels are surfaced but never selectable', () => {
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire', 'class_0']}],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm: {versions: []}, requestedCodes: ['class_0'],
+  });
+  assert.deepEqual(view.invalidAvailable, ['class_0']);
+  assert.equal(view.selectable.includes('class_0'), false);
+  assert.equal(view.effectivePreview.includes('class_0'), false);
 });

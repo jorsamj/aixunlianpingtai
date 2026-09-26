@@ -1,0 +1,380 @@
+name: External Algorithm Publish
+
+# Focused contract: platform model-asset storage, idempotent remote registration, and UI wiring.
+on:
+  pull_request:
+    paths:
+      - app.py
+      - platform_core/external_algorithm_publish.py
+      - platform_core/external_publish_request.py
+      - platform_core/deployment/conversion_tasks.py
+      - platform_core/remote_execution_transport.py
+      - platform_core/algorithms.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/training_tasks.py
+      - platform_core/model_artifacts.py
+      - platform_core/integration_audit.py
+      - static/main.mjs
+      - static/index.html
+      - static/modules/external-algorithm-publish.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_conversion_tasks.py
+      - tests/unit/test_remote_execution_transport.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/integration/test_training_task_worker.py
+      - tests/unit/test_algorithms.py
+      - tests/unit/test_model_artifacts.py
+      - tests/unit/test_integration_audit.py
+      - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - .github/workflows/external-algorithm-publish.yml
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - platform_core/external_algorithm_publish.py
+      - platform_core/external_publish_request.py
+      - platform_core/deployment/conversion_tasks.py
+      - platform_core/remote_execution_transport.py
+      - platform_core/algorithms.py
+      - platform_core/algorithm_sql_store.py
+      - platform_core/training_tasks.py
+      - platform_core/model_artifacts.py
+      - platform_core/integration_audit.py
+      - static/main.mjs
+      - static/index.html
+      - static/modules/external-algorithm-publish.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_conversion_tasks.py
+      - tests/unit/test_remote_execution_transport.py
+      - tests/unit/test_algorithm_sql_store.py
+      - tests/integration/test_training_task_worker.py
+      - tests/unit/test_algorithms.py
+      - tests/unit/test_model_artifacts.py
+      - tests/unit/test_integration_audit.py
+      - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - .github/workflows/external-algorithm-publish.yml
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused Python dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring
+      - name: Backend external-publish and model-asset contracts
+        run: |
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit \
+            tests/unit/test_external_algorithm_publish.py \
+            tests/unit/test_algorithms.py \
+            tests/unit/test_model_artifacts.py \
+            tests/unit/test_integration_audit.py \
+            tests/unit/test_algorithms.py
+      - name: Frontend external-publish contracts
+        run: |
+          node --test \
+            tests/frontend/external-algorithm-publish.test.mjs \
+            tests/frontend/model-artifact-runtime.test.mjs
+      - name: Artifact storage capability contract guard
+        run: |
+          grep -Fq 'def test_artifact_storage(' platform_core/model_artifacts.py
+          grep -Fq 'service.model_assets.test_artifact_storage(' platform_core/external_algorithm_publish.py
+          grep -Fq ').test_storage(source_id)' app.py
+          grep -Fq 'self.bucket.get_bucket_info()' platform_core/storage/oss.py
+          if grep -Fq 'list_buckets' platform_core/model_artifacts.py; then
+            echo 'artifact storage test must not require ListBuckets' >&2
+            exit 1
+          fi
+          grep -Fq 'test_artifact_storage_allows_bucket_info_access_denied_after_object_roundtrip' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_treats_non_accessdenied_bucket_metadata_failure_as_diagnostic' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_metadata_failure_does_not_hide_put_failure' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_put_403_reports_write_permission' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_stat_403_reports_read_permission' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_get_403_reports_read_permission' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_delete_403_reports_delete_permission' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_public_url_403_fails_changlian_filepath' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_storage_full_bucket_and_object_permissions_pass' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_generic_storage_health_contract_still_blocks_bucket_metadata_access_denied' tests/unit/test_model_artifacts.py
+          grep -Fq 'def save_artifact_oss_config(' platform_core/model_artifacts.py
+          grep -Fq 'ARTIFACT_OSS_SOURCE_ID = "model_artifact_oss"' platform_core/model_artifacts.py
+          grep -Fq '@router.put("/api/v64/model-artifacts/oss-config")' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_artifact_oss_config_is_standalone_from_material_storage' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_oss_config_blank_credentials_preserve_existing_secret' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_oss_first_save_requires_own_credentials_without_legacy_oss' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_purge_algorithm_deletes_remote_objects_and_canonical_rows' tests/unit/test_model_artifacts.py
+          grep -Fq 'def purge_algorithm(self, project_id: str, algorithm_id: str)' platform_core/model_artifacts.py
+          grep -Fq "usage||'')!=='model_artifact'" static/app.js
+      - name: Syntax and wiring guards
+        run: |
+          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/external_publish_request.py platform_core/deployment/conversion_tasks.py platform_core/remote_execution_transport.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
+          node --check static/modules/external-algorithm-publish.js
+          node --check static/modules/model-artifact-runtime.js
+          node --check static/modules/algorithm-list-runtime.js
+          grep -q "external_algorithm_publish_router" app.py
+          grep -q "request_external_auto_publish_if_enabled" app.py
+          grep -q "installExternalAlgorithmPublishRuntime" static/main.mjs
+          grep -q "installModelArtifactRuntime" static/main.mjs
+          grep -q "external-algorithm-auto-publish" platform_core/external_algorithm_publish.py
+          grep -q "auto-upload-worker" platform_core/external_algorithm_publish.py
+          grep -q "external_version_publications" platform_core/external_algorithm_publish.py
+          grep -q "_remote_version_analysis_id" platform_core/external_algorithm_publish.py
+          grep -q "_assert_current_external_identity" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
+          grep -q '"identity_ready": bool(identity\["ready"\])' platform_core/external_algorithm_publish.py
+          grep -q "test_publication_status_blocks_stale_changlian_master_data" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_id_accepts_official_scalar_data_ids" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_publication_repository_delete_algorithm_cascades_version_and_weight_mappings' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'def delete_algorithm(' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.version_create(payload)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.version_list_by_product(product_id)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.weight_create(payload)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.weight_list_by_version(algo_version_id)' platform_core/external_algorithm_publish.py
+          grep -Fq '"/internal/algorithm/algorithm-version/listByProduct/{productId}"' platform_core/external_algorithm_publish.py
+          grep -Fq '"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"' platform_core/external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_version_has_no_persisted_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_version_analysis_is_not_current_trainable_visual" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_version_creation_never_falls_back_to_product_id" tests/unit/test_external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_MISSING" platform_core/external_algorithm_publish.py
+          grep -q "def _trainable_analysis_ids" platform_core/external_algorithm_publish.py
+          grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
+          grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
+          grep -q "def _mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "def _artifact_mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_CHIP_REQUIRED" platform_core/external_algorithm_publish.py
+          grep -q "def _publish_transport_state" platform_core/external_algorithm_publish.py
+          grep -q "def _assert_publish_transport_ready" platform_core/external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_blocks_before_remote_version_when_public_base_url_missing" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_before_remote_version_when_model_asset_storage_missing" tests/unit/test_external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_UPLOAD_FAILED" platform_core/external_algorithm_publish.py
+          grep -Fq "Mandatory phase: original must be deliverable before creating a remote" platform_core/external_algorithm_publish.py
+          grep -q "test_model_asset_upload_failure_happens_before_remote_version_creation" tests/unit/test_external_algorithm_publish.py
+          grep -q "transport_ready === false" static/modules/external-algorithm-publish.js
+          grep -q "manual publish preflight blocks missing model delivery configuration" tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "ORIGINAL_MODEL_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_original_and_mapped_conversion_when_other_conversion_lacks_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_original_weight_allows_empty_chip_code" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_missing_chip_is_deferred_until_new_chip_bound_artifact_arrives" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'chip_code = _canonical_chip_code(artifact.get("chip_code") or "")' platform_core/external_algorithm_publish.py
+          grep -q "test_publish_allows_empty_version_no_and_omits_it_from_remote_payload" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_contract_failed_publication_is_rearmed_once_without_losing_attempt_audit" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_blocked_config_does_not_auto_retry_until_publish_config_changes" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'status="BLOCKED_CONFIG"' platform_core/external_algorithm_publish.py
+          grep -q "test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored" tests/unit/test_external_algorithm_publish.py
+          grep -q "export function publicationPreflight" static/modules/external-algorithm-publish.js
+          grep -q "publicationPreflight(status)" static/modules/external-algorithm-publish.js
+          grep -q "manual publish fetches read-only status before write request" tests/frontend/external-algorithm-publish.test.mjs
+          grep -Fq "待映射后自动追加" static/modules/external-algorithm-publish.js
+          grep -Fq "deferred_conversion_count" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_config_rejects_stale_compute_platform_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
+          grep -q 'data-external-publish-automation="1"' static/modules/external-algorithm-publish.js
+          grep -q "算力环境来自最近一次新畅联主数据同步" static/modules/external-algorithm-publish.js
+          grep -Fq "def _assert_current_external_identity(" platform_core/external_algorithm_publish.py
+          grep -Fq "self._assert_current_external_identity(algorithm, version)" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_MISSING" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
+          grep -q "external_artifact_publications" platform_core/external_algorithm_publish.py
+          grep -Fq "UNIQUE INDEX IF NOT EXISTS ux_external_version_publication_owner" platform_core/external_algorithm_publish.py
+          grep -Fq "ON external_version_publications(provider, project_id, algorithm_id, version_id)" platform_core/external_algorithm_publish.py
+          grep -Fq "ON external_artifact_publications(provider, artifact_id)" platform_core/external_algorithm_publish.py
+          grep -q "LEGACY_EXTERNAL_ARTIFACT_STORE_FROZEN" platform_core/external_algorithm_publish.py
+          grep -q "ALGORITHM_VERSION_LEGACY_REMOTE_FIELD_READ_ONLY" platform_core/algorithm_sql_store.py
+          grep -Fq "self._reject_legacy_remote_field_mutation(patch)" platform_core/algorithm_sql_store.py
+          grep -q "ARTIFACT_STORAGE_MIGRATION_CONFLICT" platform_core/external_algorithm_publish.py
+          if grep -Fq "INSERT INTO external_model_artifacts" platform_core/external_algorithm_publish.py; then echo "legacy external_model_artifacts must remain frozen" >&2; exit 1; fi
+          if grep -Fq "DELETE FROM external_artifact_publications" platform_core/external_algorithm_publish.py; then echo "publication migration history must not be deleted" >&2; exit 1; fi
+          grep -q "test_version_publications_are_unique_per_provider" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_repository_migrates_actual_legacy_schema_with_provider_key_once" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_version_remote_identity_backfills_once" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conflicting_legacy_and_publication_version_ids_fail_closed" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_uses_model_artifact_and_provider_mapping_single_owners" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conflicting_legacy_and_provider_weight_ids_fail_closed" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_artifact_backfill_is_idempotent_and_old_store_is_frozen" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_runtime_attach_version_rejects_legacy_remote_fields" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_runtime_patch_version_rejects_legacy_remote_fields" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_legacy_remote_fields_remain_readable_and_unrelated_patch_preserves_them" tests/unit/test_algorithm_sql_store.py
+          grep -q "test_existing_canonical_artifact_backfills_missing_legacy_storage_truth_idempotently" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_existing_canonical_artifact_storage_conflict_is_unknown_without_overwrite" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_existing_canonical_artifact_uploaded_at_conflict_is_unknown_without_overwrite" tests/unit/test_external_algorithm_publish.py
+          grep -Fq "superseded_by_artifact_id" platform_core/external_algorithm_publish.py
+          grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs" tests/unit/test_external_algorithm_publish.py
+          grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
+          grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
+          grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conversion_in_progress_does_not_block_training_version_and_original_weight" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_blocked_by_hardware_rknn_is_still_appended_as_conversion_weight" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'SUCCESSFUL_CONVERSION_STATUSES = frozenset(MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES)' platform_core/external_algorithm_publish.py
+          grep -Fq 'def request_external_auto_publish_for_conversion_if_enabled(' platform_core/external_publish_request.py
+          grep -Fq 'from .external_publish_request import (' platform_core/external_algorithm_publish.py
+          grep -Fq 'wait_for_external_publish_owner(30)' platform_core/external_algorithm_publish.py
+          ! grep -Fq 'time.sleep(30)' platform_core/external_algorithm_publish.py
+          grep -Fq 'assert wait_for_external_publish_owner(0) is True' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_conversion_publish_request_marks_blocked_by_hardware_version' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_conversion_publish_request_rejects_blocked_by_environment' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
+          grep -Fq 'ConversionHandler(_data_dir)' platform_core/deployment/conversion_tasks.py
+          grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
+          grep -Fq 'data_dir=DATA_DIR, project_id=project_id, conversion_job=cur' app.py
+          if grep -Eq 'threading\.Thread|while True|Scheduler|fastapi|APIRouter' platform_core/external_publish_request.py; then echo "conversion publish request must stay lightweight and reuse the existing owner" >&2; exit 1; fi
+          test "$(grep -Fc 'threading.Thread(target=worker_loop, name="external-algorithm-auto-publish"' platform_core/external_algorithm_publish.py)" = "1"
+          grep -q "test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'if not model_asset or str(model_asset.get("storage_status") or "").upper() != "UPLOADED"' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.weight_edit(payload)' platform_core/external_algorithm_publish.py
+          grep -Fq 'EXTERNAL_WEIGHT_EDIT_UNKNOWN' platform_core/external_algorithm_publish.py
+          grep -q "test_durable_remote_conversion_root_is_discovered_and_appended" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_auto_upload_discovers_durable_remote_conversion_root" tests/unit/test_model_artifacts.py
+          grep -q "_is_conversion_deliverable" platform_core/model_artifacts.py
+          grep -Fq 'candidate.name.lower() == "manifest.json"' platform_core/model_artifacts.py
+          grep -Fq 'assert len(durable_rows) == 1' tests/unit/test_model_artifacts.py
+          grep -Fq 'project / "deploy" / "jobs", project / "deployment" / "jobs"' platform_core/external_algorithm_publish.py
+          grep -Fq 'project / "deploy" / "jobs", project / "deployment" / "jobs"' platform_core/model_artifacts.py
+          grep -q "test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_model_artifacts.py
+          grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_with_empty_version_no_recovers_unique_name_and_analysis" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
+          grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_DELETE_FAILED" platform_core/external_algorithm_publish.py
+          grep -q "test_rollback_remote_delete_failure_keeps_local_versions_unchanged" tests/unit/test_algorithms.py
+          grep -q "test_historical_version_remote_delete_failure_keeps_local_version" tests/unit/test_algorithms.py
+          grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
+          grep -q "client.version_remove" platform_core/external_algorithm_publish.py
+          grep -Fq 'delete_current_version: Literal[True] = True' app.py
+          grep -Fq 'delete_current_version: bool = True' platform_core/algorithms.py
+          grep -Fq 'delete_current_version = True' platform_core/algorithms.py
+          grep -q 'test_rollback_always_deletes_current_version_and_records_audit' tests/unit/test_algorithms.py
+          grep -q 'test_rollback_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails' tests/unit/test_algorithms.py
+          grep -q 'test_direct_delete_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails' tests/unit/test_algorithms.py
+          grep -q 'ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
+          grep -q 'ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
+          grep -Fq 'remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback' app.py
+          grep -Fq 'delete_current_version:true' static/app.js
+          ! grep -Fq 'id="rollbackDeleteCurrent"' static/app.js
+          grep -Fq 'version rollback is destructive and external deletion is explained in the UI' tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "test_auto_publish_readiness_uses_canonical_model_storage_url" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_reuses_existing_verified_remote_training_object" tests/unit/test_external_algorithm_publish.py
+          grep -q "def _reuse_uploaded_model_asset" platform_core/external_algorithm_publish.py
+          grep -q "test_auto_publish_worker_recovers_successful_external_version_without_request_marker" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_model_storage_always_keeps_auto_upload_enabled" tests/unit/test_model_artifacts.py
+          grep -q "test_storage_test_verifies_long_term_delivery_url" tests/unit/test_model_artifacts.py
+          grep -q "test_storage_test_rejects_unreadable_delivery_url" tests/unit/test_model_artifacts.py
+          grep -q "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE" platform_core/model_artifacts.py
+          grep -Fq 'test_new_external_publish_save_does_not_persist_legacy_storage_fields' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_legacy_external_publish_storage_is_migrated_to_new_owners' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_runtime_ignores_stale_legacy_publish_storage_fields' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'body.pop("storage_source_id", None)' platform_core/external_algorithm_publish.py
+          grep -Fq 'body.pop("public_base_url", None)' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_artifact_object_key_rejects_empty_stable_identity' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_artifact_object_key_requires_full_hex_sha256' tests/unit/test_model_artifacts.py
+          grep -Fq 're.fullmatch(r"[0-9a-f]{64}", digest)' platform_core/model_artifacts.py
+          grep -Fq 'immutable_name = f"{digest}-' platform_core/model_artifacts.py
+          grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
+          grep -Fq '独立配置 · 自动归档' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactEndpoint' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactBucket' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactAccessKeyId' static/modules/model-artifact-runtime.js
+          grep -Fq 'modelArtifactAccessKeySecret' static/modules/model-artifact-runtime.js
+          grep -Fq '不需要先在“素材存储”创建或选择存储源' static/modules/model-artifact-runtime.js
+          ! grep -Fq 'modelArtifactStorageSource' static/modules/model-artifact-runtime.js
+          ! grep -Fq 'id="modelArtifactAutoUpload"' static/modules/model-artifact-runtime.js
+          grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
+          grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
+          grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
+          grep -Fq '存储配置 → 算法与转换结果存储' static/modules/external-algorithm-publish.js
+          grep -Fq '通用是特殊映射' static/modules/external-algorithm-publish.js
+          grep -Fq "enabled: key === 'original' ? true" static/modules/external-algorithm-publish.js
+          grep -Fq '官方同步接口' static/modules/external-algorithm-publish.js
+          grep -Fq '创建、查询和删除均使用新畅联官方 OpenAPI 固定路径' static/modules/external-algorithm-publish.js
+          if grep -Fq 'id="externalPublishVersionList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian version endpoint must not be user-editable" >&2; exit 1; fi
+          if grep -Fq 'id="externalPublishWeightList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian weight endpoint must not be user-editable" >&2; exit 1; fi
+          grep -q "publish UI locks recovery endpoints to official OpenAPI" tests/frontend/external-algorithm-publish.test.mjs
+          grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
+          grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
+          grep -Fq 'len({row["sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'assert {row["remote_chip_code"] for row in artifacts} == {"RK3568", "RK3576"}' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
+          grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
+          grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py
+          grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
+          grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
+          grep -Fq '具体芯片型号优先读取真实转换产物。' static/modules/external-algorithm-publish.js
+          grep -q "model_artifacts" platform_core/model_artifacts.py
+          grep -q "storage-test" platform_core/external_algorithm_publish.py
+          grep -q "run-auto" platform_core/external_algorithm_publish.py
+          grep -Fq "export function installExternalAlgorithmPublishRuntime" static/modules/external-algorithm-publish.js
+          grep -q "算法与转换结果存储" static/modules/model-artifact-runtime.js
+          grep -Fq "root_prefix:" static/modules/model-artifact-runtime.js
+          grep -Fq "source?.config?.public_base_url" static/modules/model-artifact-runtime.js
+          grep -Fq "modelArtifactPublicBaseUrl" static/modules/model-artifact-runtime.js
+          grep -Fq "test_auto_upload_uses_transport_safe_metadata_header_names" tests/unit/test_model_artifacts.py
+          grep -Fq 'upload_metadata["chip-code"] = chip_code' platform_core/model_artifacts.py
+          if grep -Fq 'upload_metadata["chip_code"]' platform_core/model_artifacts.py; then echo "artifact OSS metadata must not use underscore header keys" >&2; exit 1; fi
+          grep -q "public_url TEXT NOT NULL DEFAULT" platform_core/model_artifacts.py
+          grep -q "def public_url" platform_core/model_artifacts.py
+          grep -q "畅联云交互日志" static/modules/model-artifact-runtime.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-publish.js; then echo "external publish must not wrap renderAlg412" >&2; exit 1; fi
+          test ! -e tools/_one_shot_model_asset_integration.py
+          test ! -e .github/workflows/_one_shot_model_asset_integration.yml
+          grep -Fq 'PUBLICATION_SCHEMA_VERSION = 4' platform_core/external_algorithm_publish.py
+          test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian publish preflight
+        run: npx playwright test tests/browser/external-algorithm-publish.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

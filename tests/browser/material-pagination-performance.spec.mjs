@@ -20,6 +20,68 @@ function material(id, filename, labels = ['smoke']) {
     storage_source_id: 'default_local',
   };
 }
+async function mockDurableZipUpload(page, {
+  jobId,
+  fileName = 'browser.zip',
+  report = {imported_images: 1, annotated_images: 0, boxes: 0, warnings: []},
+}) {
+  const uploadId = `upload-${jobId}`;
+  let uploaded = false;
+  let started = false;
+  const selecting = {
+    id: jobId,
+    file_name: fileName,
+    status: 'selecting',
+    stage: '上传与校验完成',
+    message: '等待启动后台导入',
+    progress: 0,
+    image_count: Number(report.imported_images || 0),
+    file_count: Number(report.imported_images || 0),
+    uncompressed_size_mb: 1,
+    format_hints: ['YOLO'],
+  };
+  const running = {...selecting, status: 'running', stage: '后台导入中', progress: 65};
+  const done = {...running, status: 'done', stage: '导入完成', message: '完成', progress: 100, report};
+
+  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/uploads$/, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        upload_id: uploadId,
+        part_size: 8 * 1024 * 1024,
+        completed_parts: [],
+        total_parts: 1,
+        upload_progress: 0,
+      }),
+    });
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/parts/\\d+$`), async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/uploads/${uploadId}/complete$`), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    uploaded = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selecting)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}/start$`), async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    started = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(running)});
+  });
+  await page.route(new RegExp(`/api/v19/projects/[^/]+/import/jobs/${jobId}$`), async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(started ? done : selecting)});
+  });
+  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs$/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const items = !uploaded ? [] : [started ? done : selecting];
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items})});
+  });
+}
+
 
 test('dataset paging, search and refresh patch cards without rebuilding the shell', async ({page}) => {
   const pageErrors = [];
@@ -68,7 +130,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422205');
+    .toBe('material-pagination-runtime-422212');
 
   await page.evaluate(() => {
     state.data412Tab = 'processed';
@@ -81,6 +143,13 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#data412Grid')).toContainText('page-one.jpg', {timeout: 10_000});
   await expect(page.locator('#data412Pager')).toContainText('1 / 2');
+
+  await page.evaluate(() => {
+    document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
+    window.__datasetStableCard = document.querySelector('.data412-card[data-material-id="m-1"]');
+    window.renderData412Cards();
+  });
+  expect(await page.evaluate(() => window.__datasetStableCard === document.querySelector('.data412-card[data-material-id="m-1"]'))).toBe(true);
 
   await page.evaluate(() => {
     document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
@@ -132,6 +201,132 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 });
 
 
+test('quality center navigation does not hydrate the full material pool', async ({page}) => {
+  const apiRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422212');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
+
+  apiRequests.length = 0;
+  await page.evaluate(() => {
+    state.qualityCenterTab411 = 'overview';
+    window.setPage('质量中心');
+  });
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.getByRole('button', {name: '质量概览'})).toBeVisible();
+  await page.waitForTimeout(350);
+
+  expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
+});
+
+
+test('auto-label task page avoids full hydration until the user creates a task', async ({page}) => {
+  const apiRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) apiRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422212');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
+
+  apiRequests.length = 0;
+  await page.evaluate(() => {
+    state.v427OpsTab = 'label';
+    window.setPage('自动标注及清洗');
+  });
+  await expect(page.locator('#title')).toContainText('自动标注及清洗');
+  await expect(page.getByRole('button', {name: /创建AI标注任务/})).toBeVisible();
+  await page.waitForTimeout(350);
+  expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
+
+  const fullPoolRequest = page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return request.method() === 'GET' && /\/api\/projects\/[^/]+\/images$/.test(url.pathname);
+  });
+  await page.getByRole('button', {name: /创建AI标注任务/}).click();
+  await fullPoolRequest;
+  await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible({timeout: 10_000});
+});
+
+
+test('dataset return paints the cached page before a background refresh replaces it', async ({page}) => {
+  const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+  let mainReads = 0;
+  let slowReturn = false;
+
+  await page.route('**/api/v61/projects/*/materials**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/materials/ids')) return route.fallback();
+    const limit = Number(url.searchParams.get('limit') || 48);
+    if (limit === 1) {
+      await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: [], total: 1, next_cursor: null})});
+      return;
+    }
+    mainReads += 1;
+    if (slowReturn && mainReads >= 2) await new Promise(resolve => setTimeout(resolve, 650));
+    const name = mainReads >= 2 ? 'fresh-after-return.jpg' : 'cached-before-return.jpg';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [{
+          id: `cache-${mainReads}`, filename: name, url: pixel, size_bytes: 1024,
+          width: 640, height: 480, processing_status: 'processed', clean_status: 'ready',
+          ready: true, annotated: true, annotation_status: 'annotated', box_count: 1,
+          labels: ['smoke'], annotation_preview: [], storage_type: 'local', storage_source_id: 'default_local',
+        }],
+        total: 1, next_cursor: null,
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422212');
+  await page.evaluate(() => {
+    state.data412Tab = 'processed';
+    state.materialQuery61 = '';
+    state.materialAnnotated61 = 'all';
+    state.materialSourceFilter61 = 'all';
+    window.setPage('数据集');
+  });
+  await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61.state().cachedItems)).toBe(1);
+
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('#title')).toContainText('训练任务');
+  await page.evaluate(() => {
+    state.images = [{
+      id: 'full-pool-placeholder',
+      filename: 'full-pool-should-not-flash.jpg',
+      url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+      processing_status: 'processed',
+    }];
+  });
+  slowReturn = true;
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 250});
+  await expect(page.locator('#data412Grid')).not.toContainText('full-pool-should-not-flash.jpg');
+  await expect(page.locator('#data412Grid')).toContainText('fresh-after-return.jpg', {timeout: 5_000});
+  expect(mainReads).toBeGreaterThanOrEqual(2);
+});
+
+
 test('v19 background import completion uses scoped labels and material refresh without broad reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -172,64 +367,10 @@ test('v19 background import completion uses scoped labels and material refresh w
   const encodedProject = encodeURIComponent(projectId);
   const encodedDataset = encodeURIComponent(datasetId);
   const importJobId = 'zip-r20k-job';
-  let importStarted = false;
-  let listReads = 0;
-
-  const selectingJob = {
-    id: importJobId,
-    project_id: projectId,
-    dataset_id: datasetId,
-    status: 'selecting',
-    stage: '上传与校验完成',
-    progress: 0,
-    image_count: 2,
-    file_count: 4,
-    uncompressed_size_mb: 1,
-    format_hints: ['YOLO'],
-    images: [
-      {path: 'images/train/a.jpg', name: 'a.jpg', split: 'train', size_kb: 1},
-      {path: 'images/train/b.jpg', name: 'b.jpg', split: 'train', size_kb: 1},
-    ],
-    images_truncated: false,
-  };
-  const runningJob = {
-    ...selectingJob,
-    images: undefined,
-    status: 'running',
-    stage: '正在解析 YOLO / 原始图片',
-    progress: 70,
-    processed: 1,
-    total_selected: 2,
-  };
-  const doneJob = {
-    ...runningJob,
-    status: 'done',
-    stage: '导入完成',
-    progress: 100,
-    processed: 2,
-    report: {
-      detected_format: 'YOLO',
-      imported_images: 2,
-      annotated_images: 1,
-      boxes: 3,
-      warnings: [],
-    },
-  };
-
-  await page.route(`**/api/v19/projects/${encodedProject}/datasets/${encodedDataset}/import/jobs`, async route => {
-    expect(route.request().method()).toBe('POST');
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selectingJob)});
-  });
-  await page.route(`**/api/v19/projects/${encodedProject}/import/jobs/${importJobId}/start`, async route => {
-    expect(route.request().method()).toBe('POST');
-    importStarted = true;
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(runningJob)});
-  });
-  await page.route(`**/api/v19/projects/${encodedProject}/import/jobs`, async route => {
-    expect(route.request().method()).toBe('GET');
-    listReads += 1;
-    const job = !importStarted ? selectingJob : (listReads <= 2 ? runningJob : doneJob);
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items: [job]})});
+  await mockDurableZipUpload(page, {
+    jobId: importJobId,
+    fileName: 'r20k-yolo.zip',
+    report: {imported_images: 2, annotated_images: 1, boxes: 3, warnings: []},
   });
   await page.route(`**/api/v12/projects/${encodedProject}/labels`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -251,21 +392,18 @@ test('v19 background import completion uses scoped labels and material refresh w
 
   requests.length = 0;
   await page.locator('#zipImportPane').getByRole('button', {name: '开始导入'}).click();
-  await expect(page.locator('#importProgressText')).toHaveText('扫描完成', {timeout: 10_000});
-  await expect(page.locator('#importResult')).toContainText('候选格式');
-  await page.locator('#importResult').getByRole('button', {name: '解析全部并缩到后台'}).click();
-  await expect(page.locator('#modal')).toHaveClass(/hidden/);
   await expect(page.locator('#toast')).toContainText('后台导入完成：2 张图片', {timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.state?.().refreshBusy ?? null)).toBe(false);
   await expect(page.locator('#data412Grid')).toContainText('imported-r20k.jpg');
 
-  const createRequest = `POST /api/v19/projects/${projectId}/datasets/${datasetId}/import/jobs`;
   const startRequest = `POST /api/v19/projects/${projectId}/import/jobs/${importJobId}/start`;
   const listRequest = `GET /api/v19/projects/${projectId}/import/jobs`;
   const labelsRequest = `GET /api/v12/projects/${projectId}/labels`;
-  expect(requests.filter(row => row === createRequest)).toEqual([createRequest]);
+  expect(requests.some(row => row === `POST /api/v19/projects/${projectId}/datasets/default/import/uploads`)).toBe(true);
+  expect(requests.some(row => row.startsWith(`PUT /api/v19/projects/${projectId}/import/uploads/upload-${importJobId}/parts/`))).toBe(true);
+  expect(requests.some(row => row === `POST /api/v19/projects/${projectId}/import/uploads/upload-${importJobId}/complete`)).toBe(true);
   expect(requests.filter(row => row === startRequest)).toEqual([startRequest]);
-  expect(requests.filter(row => row === listRequest).length).toBeGreaterThanOrEqual(2);
+  expect(requests.filter(row => row === listRequest).length).toBeGreaterThanOrEqual(1);
   expect(requests.filter(row => row === labelsRequest)).toEqual([labelsRequest]);
   expect(requests.some(row => row.startsWith(`GET /api/v61/projects/${projectId}/materials?`))).toBe(true);
   expect(requests.some(row => row.includes('/api/v18/'))).toBe(false);
