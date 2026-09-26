@@ -4340,34 +4340,49 @@ async def upload_images(
 _ANNOTATION_INDEX_LOCK = threading.Lock()
 _ANNOTATION_INDEX_RUNNING: set = set()
 _ANNOTATION_INDEX_STATUS: Dict[str, Dict[str, Any]] = {}
+_ANNOTATION_INDEX_BATCH_SIZE = 500
 
 def _v52_annotation_index_worker(project_id: str):
     try:
         images = load_images(project_id)
         pending = [x for x in images if not x.get("annotation_summary_at")]
         total = len(pending)
-        _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": 0, "started_at": now_iso()}
+        started_at = now_iso()
+        _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": 0, "started_at": started_at}
         if not total:
             return
-        patches = {}
-        for i, img in enumerate(pending, 1):
-            image_id = str(img.get("id"))
-            anns = read_annotation(project_id, image_id)
-            boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
-            summary = _annotation_summary_for_material_index(
-                boxes, anns.get('annotation_state'), img,
-            )
-            patch = {
-                **summary,
-                "annotation_summary_at": anns.get("updated_at") or now_iso(),
+        annotations = _v50_annotation_repository(project_id)
+        materials = material_store(project_id)
+        for offset in range(0, total, _ANNOTATION_INDEX_BATCH_SIZE):
+            batch = pending[offset:offset + _ANNOTATION_INDEX_BATCH_SIZE]
+            image_ids = [str(img.get("id")) for img in batch]
+            annotation_rows = annotations.get_many(image_ids)
+            patches = {}
+            for img, image_id in zip(batch, image_ids):
+                anns = annotation_rows.get(image_id) or {
+                    "annotation_state": "unannotated", "boxes": [],
+                }
+                boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
+                summary = _annotation_summary_for_material_index(
+                    boxes, anns.get('annotation_state'), img,
+                )
+                patch = {
+                    **summary,
+                    "annotation_summary_at": anns.get("updated_at") or now_iso(),
+                }
+                if boxes:
+                    patch["processing_status"] = "processed"
+                patches[image_id] = patch
+            materials.patch(patches)
+            processed = min(total, offset + len(batch))
+            _ANNOTATION_INDEX_STATUS[project_id] = {
+                "running": True,
+                "total": total,
+                "processed": processed,
+                "started_at": started_at,
+                "updated_at": now_iso(),
             }
-            if boxes:
-                patch["processing_status"] = "processed"
-            patches[image_id] = patch
-            if i % 100 == 0 or i == total:
-                _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": i, "started_at": _ANNOTATION_INDEX_STATUS.get(project_id,{}).get("started_at"), "updated_at": now_iso()}
-        material_store(project_id).patch(patches)
-        _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "total": total, "processed": total, "finished_at": now_iso()}
+        _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "total": total, "processed": total, "started_at": started_at, "finished_at": now_iso()}
     except Exception as e:
         _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "error": str(e), "finished_at": now_iso()}
     finally:

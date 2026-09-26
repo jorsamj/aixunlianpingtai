@@ -77,3 +77,52 @@ def test_refreshed_bootstrap_counts_each_project_once_and_replaces_cache(monkeyp
     assert payload["project"]["id"] == "p2"
     assert [row["bootstrap_counts"]["jobs"] for row in payload["projects"]] == [4, 4, 4]
     assert app_module._V53_BOOTSTRAP_SNAPSHOT["project"]["id"] == "p2"
+
+
+def test_annotation_summary_migration_batches_repository_reads_and_projection_writes(monkeypatch):
+    project_id = "project-scale"
+    rows = [
+        {"id": f"image-{index:04d}", "filename": f"image-{index:04d}.jpg"}
+        for index in range(1201)
+    ]
+    read_batches = []
+    patch_batches = []
+
+    class FakeAnnotations:
+        def get_many(self, image_ids):
+            batch = list(image_ids)
+            read_batches.append(batch)
+            assert len(batch) <= app_module._ANNOTATION_INDEX_BATCH_SIZE
+            return {
+                image_id: {
+                    "image_id": image_id,
+                    "annotation_state": "annotated",
+                    "boxes": [{"label": "fire", "class_id": 0}],
+                    "updated_at": "2026-09-26T00:00:00Z",
+                }
+                for image_id in batch
+            }
+
+    class FakeMaterials:
+        def patch(self, patches):
+            patch_batches.append(dict(patches))
+            assert len(patches) <= app_module._ANNOTATION_INDEX_BATCH_SIZE
+            return list(patches.values())
+
+    monkeypatch.setattr(app_module, "load_images", lambda _project_id: rows)
+    monkeypatch.setattr(app_module, "_v50_annotation_repository", lambda _project_id: FakeAnnotations())
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(
+        app_module,
+        "read_annotation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("annotation summary migration must not issue per-image reads")
+        ),
+    )
+
+    app_module._v52_annotation_index_worker(project_id)
+
+    assert [len(batch) for batch in read_batches] == [500, 500, 201]
+    assert [len(batch) for batch in patch_batches] == [500, 500, 201]
+    assert app_module._ANNOTATION_INDEX_STATUS[project_id]["running"] is False
+    assert app_module._ANNOTATION_INDEX_STATUS[project_id]["processed"] == 1201
