@@ -6031,10 +6031,17 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         return;
       }
       progressShell(result.task);renderProgress(result.task);toast('人工审核已确认，正在写入正式标注');
-      const terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
-        initialTask:result.task,registry:window.PollRegistryRuntime,key:`ai-review-commit:${review.id}`,ownerPages:[ownerPage],delay:700,maxAttempts:900,
-        load:()=>api(taskApi(review.id)),onUpdate:renderProgress,
-      });
+      const pauseListPoll=ownerPage==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label';
+      if(pauseListPoll)window.AutoLabelPollRuntime?.deactivate?.();
+      let terminal;
+      try{
+        terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
+          initialTask:result.task,registry:window.PollRegistryRuntime,key:`ai-review-commit:${review.id}`,ownerPages:[ownerPage],delay:700,maxAttempts:900,
+          load:()=>api(taskApi(review.id)),onUpdate:renderProgress,
+        });
+      }finally{
+        if(pauseListPoll&&state.page===ownerPage&&(state.v427OpsTab||'label')==='label')window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[]);
+      }
       renderProgress(terminal);
       window.MaterialPaginationRuntime61?.invalidate?.();
       state.aiMaterialStatesSignature60='';state.aiMaterialStatesLoadedAt60=0;

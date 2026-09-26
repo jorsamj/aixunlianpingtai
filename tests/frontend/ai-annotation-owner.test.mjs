@@ -118,6 +118,19 @@ test('AI task creation never resolves display names or aliases into canonical la
 });
 
 
+test('AI review commit temporarily owns polling without racing the task list poller', () => {
+  const start = source.lastIndexOf('window.completeAiReview60=async mode=>');
+  const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
+  assert.ok(start > 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /ai-review-commit:/);
+  assert.match(block, /waitForTaskTerminal/);
+  assert.match(block, /AutoLabelPollRuntime\?\.deactivate/);
+  assert.match(block, /AutoLabelPollRuntime\?\.activate/);
+  assert.match(block, /pauseListPoll&&state\.page===ownerPage/);
+  assert.doesNotMatch(block, /createTaskPoller/);
+});
+
 test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
   const start = source.lastIndexOf('function stopAiTaskDetail60');
   const end = source.indexOf('function explicitCanonicalAiLabelText', start);
