@@ -1,5 +1,99 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 晚间最终性能审计进度（最新，覆盖下方同日旧状态）
+
+- 当前真实远端 HEAD：`1eaa0afbf16a972c8106b0f57f787eadd58e7d37`。
+- `VERSION.txt = 42.24.0`，仍未修改。
+- 未 merge main、未 tag、未 release、未 force push。
+- 当前 HEAD 的 20 个主要 Actions 在本节写入时仍全部 queued，**不能把当前 HEAD 写成全绿**。
+- 已完整 terminal 的强基线：
+  - `0a2ff10ab45ea0f011ed4f8090a042b610410755`：20/20 主要 workflows completed success。
+  - `07fef8c2c9f6d8a99e9c4632730e618bdc4947f7`：20/20 主要 workflows completed success。
+- 因此本轮 Annotation / AI Annotation / Training Input / Node Agent / Label Normalization / Remote Runtime 等关键改造均已有完整绿基线，但最新增量仍必须等待其自身 terminal checks。
+
+### 本轮最初三项性能债：全部 CLOSED
+
+1. AI `load_task_images()` 不再 `load_images(project_id)` 全库扫；500/批 MaterialRepository indexed lookup。
+2. AI `commit_candidate_decisions()` 不再逐图 Candidate/Annotation SQLite I/O；200/批 formal GT + commit journal，保留 fencing/cancel/idempotency/crash recovery。
+3. `training_tasks._selected_project_images()` 不再逐图 AnnotationRepository.get；500/批 get_many，并有 1k/10k/20k 结构合同。
+
+### 后续额外关闭的正式热路径
+
+- 手工标注 GET / SAVE：单图 Material indexed lookup；前端保存后只 patch 当前素材卡与下层预览，不 loadAll、不全页重绘。
+- AI 创建标签：只接受用户明确输入的 current canonical code；中文名 / alias / 历史 alias 不再自动转换。
+- AI task create：选中素材存在性 + reference annotations 均 <=500/批，不再全库扫描。
+- AI 详情 polling：PollRegistry 单 owner；modal close 清理；打开详情时暂停列表 poll，关闭/终态恢复。
+- 标签统一 UI：字段级 patch + transform 进度，不再 850ms 整块替换 modal。
+- 自动清洗详情进度：transform-only。
+- 历史 Annotation 摘要迁移：500/批 Annotation read + 500/批 Material projection patch。
+- Training scoped label projection：直接复用已冻结 selected rows，不再第二轮 Annotation N+1；有 20k 合同。
+- Benchmark reuse / supplement Candidate Set：Material + Annotation 都批量读取。
+- selected batch split：只 patch 选中 ID，不再 full-table mutate；filtered marked/unmarked Annotation 500/批。
+- 标签统一完成后 refresh：只刷新 labels + 当前 material page + import review，不再 broad bootstrap/loadAll。
+- TrainingSubmitRuntime：创建期间显示真实阶段；不伪造 durable task 创建后的 snapshot/Ground Truth 阶段。
+- training-submit.js cache key 已推进，避免浏览器命中旧模块。
+- 普通上传 / ZIP / Material Batch / PollRegistry 正式 owner 继续保持唯一。
+
+### 并发会话已补齐且本轮已核对的性能收口
+
+远端在本轮工作期间继续前进，已确认这些提交方向与当前架构一致，没有覆盖冲突：
+
+- `805c6219...` — bound large upload follow-up UI。
+- `6bc168b2...` — freeze large clean selections durably。
+- `fdd49b00...` — route bulk ready through material batches。
+- `e4d9a3d9...` — batch post-import review reads。
+- `f671489e...` — use frozen training label counts in reports。
+- `5e37969a...` — index single material edits。
+- `1e52430e...` — keep import review batch-scoped。
+
+这些均属于“复用正式 owner、去全扫/N+1/大 DOM”的同一收口方向，不要重新造第二套 runtime。
+
+### 本轮最后新增的性能收口
+
+1. **Dataset listing**
+   - 旧：每个 dataset 都重新过滤全素材 + 每图 read_annotation，复杂度接近 dataset_count × image_count。
+   - 新：一次遍历素材，Annotation <=500/批，单次聚合各 dataset images/annotated/boxes。
+   - 提交：`dc97d56e5fd897e86146e3ce73926487573abfe0`。
+
+2. **v55 upload batch enrichment**
+   - 旧：为一个 upload batch 调 `load_images(project_id)` 全库。
+   - 新：只按 batch items 的 image_id，<=500/批 MaterialRepository.get_many。
+   - 1201 条结构测试验证 500/500/201。
+   - 提交：`dc97d56e...`。
+
+3. **训练素材数据质量**
+   - 正式 UI `trainQuality429` 会传明确 image_ids。
+   - 旧：即使只选 100 张，也先 load_images(project_id) 全库；Annotation 逐图；每个 box 的 normalize 还会重复 get_project。
+   - 新：明确 image_ids / snapshot 时只 indexed 读取指定素材；Annotation <=500/批；质量检查复用已加载 project_state，不再每框重复 get_project。
+   - 1201 张结构测试验证 Material 500/500/201、Annotation 500/500/201、project truth 只读一次。
+   - 提交：`1eaa0afbf16a972c8106b0f57f787eadd58e7d37`。
+
+### 手工标注最终 hot-path 结论
+
+- pointermove 只改当前 active box DOM + requestAnimationFrame 合帧。
+- pointerup 才写 dirty/history/sidebar。
+- saveAnnotationCore420 保存后：
+  - 只更新 formal AnnotationRepository；
+  - 更新当前 state.images 单项；
+  - patch 当前 material card；
+  - 如从预览进入，只 patch 下层预览 overlay；
+  - 不 loadAll / 不 reloadMaterialPage / 不重建整个 gallery。
+- 因此“画框拖动 + 保存”当前不再存在已确认的全页高频刷新债。
+
+### 仍未完成的只有两类
+
+1. **最新 HEAD 自身 CI terminal**
+   - `1eaa0afb...` 当前 20 个 workflows 仍 queued。
+   - 任何 completed failure 必须先读真实 job log，不能用旧绿基线替代最新结果。
+
+2. **真实环境 profiling**
+   - 真实 20k/50k 图片内容；
+   - 真实 OSS/S3 RTT；
+   - NVIDIA Linux 节点；
+   - SQLite WAL contention / 峰值内存 / 解码吞吐；
+   - 浏览器实际大批选择与慢网络。
+   - 当前自动化证明的是复杂度/owner/contract，不冒充真实硬件吞吐验收。
+
 ## 2026-09-26 标注 / AI / 训练 / 素材性能二次收口（最新）
 
 - 本节产品代码基线 HEAD：`8443bd384cc9ee9fd6c92e8b36f78fe6aefefbbf`。
