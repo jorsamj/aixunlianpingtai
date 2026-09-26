@@ -1,5 +1,92 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-26 标注 / AI / 训练 / 素材性能二次收口（最新）
+
+- 本节产品代码基线 HEAD：`8443bd384cc9ee9fd6c92e8b36f78fe6aefefbbf`。
+- `VERSION.txt` 仍为 `42.24.0`；未 merge main、未 tag、未 release、未 force push。
+- 当前 HEAD 的 Actions 仍大量 queued，**不能写成全绿**。
+- 可确认的历史全绿基线：`0a2ff10ab45ea0f011ed4f8090a042b610410755` 的 20 个主要 workflows 全部 completed success，包括 Windows Node Agent Executor。
+- `07fef8c2...` 已确认 Label Normalization、AI Annotation Recovery、Node Agent Executor、Training Input Integrity 等关键合同 completed success；仍有部分远程 workflows 排队。
+
+### 本段新增关闭项
+
+1. **AI 创建标签决策回退 — CLOSED**
+   - 正式 `submitAiLabel429()` 曾把中文显示名和 alias 自动换成 canonical code，违反“用户明确决定 canonical label”的产品合同。
+   - 现前端仅接受当前有效 `label.code`；中文名、别名、历史 alias 不再转换。
+   - 后端 `_v47_parse_label_text(..., catalog)` 继续 fail-closed，只接受 current canonical code。
+   - AI 创建任务的素材存在性检查改为 MaterialRepository `get_many <= 500`；参考标注也改为 AnnotationRepository `get_many <= 500`，不再全库扫描 / 逐图读取。
+   - 提交：`cd4937c85fa9351167da592105a83536b884119e`。
+
+2. **Windows Agent fencing 测试竞态 — CLOSED**
+   - completed failure 真实日志显示 Ubuntu 同合同通过、Windows 仅“运行中 fencing”测试 marker 未出现。
+   - 根因是测试按第 6 次 heartbeat fencing，Windows Python 子进程可能尚未写 `started.marker`。
+   - 测试改为 worker 已证明启动后再模拟 generation lost；保留 kill / no stale finish / no publish 全部断言。
+   - `0a2ff10a...` 后 Node Agent Windows/Ubuntu 均成功。
+   - 提交：`0a2ff10ab45ea0f011ed4f8090a042b610410755`。
+
+3. **AI 详情重复轮询 + modal 泄漏 — CLOSED**
+   - AI 任务列表继续由 AutoLabelPollRuntime + PollRegistry 管理。
+   - AI 详情不再拥有独立 `createTaskPoller(setTimeout)`；统一改为 `waitForTaskTerminal + PollRegistry`。
+   - 打开详情暂停列表 poll；关弹窗/终态清理详情 poll 并恢复列表 poll。
+   - 永久 source guard 已改为要求新 owner，禁止恢复旧 `createTaskPoller`。
+   - 提交：`9fa3ea5b...`，合同修正：`07fef8c2...`。
+
+4. **高频进度 DOM / layout 写放大 — CLOSED**
+   - AI 详情、AI 列表 fallback、标签统一、自动清洗详情均改为 `transform: scaleX()`。
+   - 标签统一 850ms poll 不再整块 `ModalContentRuntime.replace()`，只 patch stage/pct/current_item/succeeded/failed KPI。
+   - 上传正式 runtime 之前已经是 rAF + transform。
+   - 提交：`9fa3ea5b...`、`07fef8c2...`、`37110f071ea33f77df1411722cd7f675d173da20`。
+
+5. **手工标注单图 GET / SAVE 全库扫描 — CLOSED**
+   - `GET /annotations/{image_id}` 和保存标注不再 `load_images(project_id)` 扫全素材库。
+   - 改为单 ID indexed `MaterialRepository.get_many()`；保存后 fresh material projection 也按 ID 读取。
+   - 正式 AnnotationRepository 写入 owner 不变。
+   - 提交：`f2946ad2c997b61d65e5f3f9ed439d5eb1608afb`。
+
+6. **训练标签 scoped projection 二次 N+1 — CLOSED**
+   - `_selected_project_images()` 已冻结正式 annotation truth 后，`_scoped_selected_project_images()` 不再重新逐图构造 AnnotationRepository 查询。
+   - 直接复用 frozen row 的 annotation_state / annotation_scope / boxes。
+   - 新增 20,000 行合同，若再次构造第二 AnnotationRepository 会直接失败。
+   - 提交：`f2946ad2...`。
+
+7. **训练 Benchmark / Candidate Set Material N+1 — CLOSED**
+   - `_training_reusable_benchmark()` 与 `_training_supplement_candidate_set()` 的 Material truth 由逐 ID `.get()` 改为 `get_many()` + by-id map。
+   - Annotation 继续批量读取。
+   - 提交：`c82af336b9089615da0126b60e2739ba78bce80e`。
+
+8. **批量移动 selected 素材全表 mutate — CLOSED**
+   - `/api/v20/.../images/batch_split` 的 `scope=selected` 不再调用兼容型 `MaterialRepository.mutate()` 全表读取。
+   - 改为只对明确选中 ID 做 indexed `patch()`。
+   - `filtered + marked/unmarked` 仍需扫匹配范围，但 Annotation facts 改为 500/批 `get_many()`，不再逐图开连接。
+   - 提交：`1cd5acfa74119f34cd978dd5d8a03b60024ca0cc`。
+
+9. **训练创建“按钮无反应”体验 — CLOSED**
+   - 继续复用唯一 `TrainingSubmitRuntime`，不新增 modal/runtime。
+   - “开始训练”提交期间显示真实创建阶段：
+     `读取训练配置 → 核验算法版本/主数据 → 核验训练资源/引擎/设备 → 整理训练素材与参数 → 服务端核验并创建持久任务`。
+   - 不提前伪造“冻结 Ground Truth / 生成 Snapshot”进度；这些在 durable training task 创建后仍由后端真实 `phase/current_item` 展示。
+   - 创建成功后现有 TrainingTaskRuntime 继续展示 `校验训练素材 / 准备训练数据 / 等待训练资源 / 验证训练设备 / 启动训练进程 / 训练中` 等 server truth。
+   - 提交：`8443bd384cc9ee9fd6c92e8b36f78fe6aefefbbf`。
+
+### owner / compatibility 审计结论
+
+- 手工标注 pointer runtime 是最终 interaction owner；旧 mouse layer 有永久 owner guards，当前不是第二公开 owner。
+- ZIP 正式浏览器 owner 为 ZipImportRuntime。legacy v19 polling 由 bootstrap claim/sentinel 接管，当前没有与正式 runtime 并行轮询。
+- `pollAnnotationIndex412()` 目前仅有定义、无正式调用，不能因函数存在就当成当前高频性能债。
+- v12 auto_split / dataset build 当前正式前端没有调用证据，暂不对兼容导出路径做无依据重构。
+- 正式“编辑数据”当前只走 v47 名称编辑；旧 v12 dataset-id mutation 分支没有当前 UI owner 证据。
+
+### 仍未完成 / 不得误报
+
+- 最新 `8443bd38...` Actions 尚未 terminal，不能称当前 HEAD CI 全绿。
+- 真实 20k 图片内容、真实 OSS/S3 RTT、真实 NVIDIA Linux 节点的吞吐、峰值内存、SQLite WAL contention 仍需要生产/预生产环境验收。
+- 浏览器尚未发送到服务端的本地 File 字节，页面关闭后无法继续上传；不要为此制造假后台。
+- 后续只继续处理**有正式调用证据**的 P1/P2；不要为了清理“旧函数名字”破坏 compatibility facade。
+
+### 本段提交序列
+
+`cd4937c8` → `0a2ff10a` → `9fa3ea5b` → `f2946ad2` → `c82af336` → `07fef8c2` → `37110f07` → `1cd5acfa` → `8443bd38`
+
 ## 2026-09-26 标注 / AI 审核 / 训练读取性能收口（最新，覆盖下方同日旧状态）
 
 - 本轮重新审计时真实远端 HEAD 为 `3b3b20dd4caee5b9c10eff68d8fb4da7d45e3385`，不是交接提示中的旧 SHA；正式 `VERSION.txt` 再次确认仍为 `42.24.0`。
