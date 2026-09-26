@@ -541,10 +541,12 @@ window.__resourceDiscoveryDependencies={
   const labelMappingReviewStates61=window.__labelMappingReviewStates61||(window.__labelMappingReviewStates61=new Map());
   const labelReviewApi61=()=>window.PlatformCore?.labelMappingReview;
   const labelReviewStateKey61=(kind,key)=>`${String(pid()||'default')}:${String(kind||'')}:${String(key||'')}`;
-  function getLabelReview61(kind,key,classes=[]){
+  function getLabelReview61(kind,key,classes=null){
     const api=labelReviewApi61();if(!api)throw new Error('标签映射审查模块尚未加载，请刷新页面后重试');
     const stateKey=labelReviewStateKey61(kind,key),existing=labelMappingReviewStates61.get(stateKey);
-    const review=existing?api.reconcileLabelMappingReview(existing,classes):api.createLabelMappingReview(classes);
+    if(existing&&!Array.isArray(classes))return existing;
+    const source=Array.isArray(classes)?classes:[];
+    const review=existing?api.reconcileLabelMappingReview(existing,source):api.createLabelMappingReview(source);
     labelMappingReviewStates61.set(stateKey,review);
     return review;
   }

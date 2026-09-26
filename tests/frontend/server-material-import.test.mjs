@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   buildImportConfirmation,
@@ -161,7 +162,7 @@ test('server import confirmation stays mapping-only after explicit canonical lab
 
 
 test('server import and rescan use the shared bounded manual label review model', () => {
-  const source = require('node:fs').readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /labelReviewMarkup61\('storage-import',taskId,classes\)/);
   assert.match(source, /labelReviewMarkup61\('rescan',String\(task\.task_id\|\|taskId\),classes\)/);
   assert.match(source, /buildManualLabelMapping/);
