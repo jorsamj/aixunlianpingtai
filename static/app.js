@@ -4815,7 +4815,15 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   window.invertImport414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.has(String(id))?state.import412Selected.delete(String(id)):state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   function importRemapProgress414(task,source,target){
     const total=Math.max(0,Number(task?.total||0)),processed=Math.max(0,Number(task?.processed||0)),raw=Number(task?.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0),status=String(task?.status||'').toUpperCase(),active=['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(status),rawStage=String(task?.stage||task?.phase||''),stage=['QUEUED','WAITING_RESOURCE'].includes(status)?'等待任务调度':rawStage==='REMAPPING_ANNOTATION_LABELS'?'正在批量统一标签':(rawStage||'正在处理'),detail=task?.current_item||`${processed}/${total||'-'} · ${source} → ${target}`;
-    return `<div class="zip411"><div class="zip411-main"><div class="zip411-progress"><div><span id="importRemapStage414">${esc(stage)}</span><b id="importRemapPct414">${Math.round(pct)}%</b></div><i><em id="importRemapBar414" style="width:${pct}%"></em></i><p id="importRemapMsg414">${esc(detail)}</p></div><div class="report429-kpis"><div><span>待处理</span><b>${Math.max(0,total-processed)}</b></div><div><span>已处理</span><b>${processed}</b></div><div><span>成功</span><b>${Number(task?.succeeded||0)}</b></div><div><span>失败</span><b>${Number(task?.failed||0)}</b></div></div>${active?'<div class="row end"><button class="btn danger" onclick="cancelImportRemap414()">取消任务</button><button class="btn" onclick="closeModal()">后台运行</button></div>':'<div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>'}</div></div>`;
+    return `<div class="zip411"><div class="zip411-main"><div class="zip411-progress"><div><span id="importRemapStage414">${esc(stage)}</span><b id="importRemapPct414">${Math.round(pct)}%</b></div><i><em id="importRemapBar414" style="transform:scaleX(${pct/100});transform-origin:left center"></em></i><p id="importRemapMsg414">${esc(detail)}</p></div><div class="report429-kpis"><div><span>待处理</span><b id="importRemapPending414">${Math.max(0,total-processed)}</b></div><div><span>已处理</span><b id="importRemapProcessed414">${processed}</b></div><div><span>成功</span><b id="importRemapSucceeded414">${Number(task?.succeeded||0)}</b></div><div><span>失败</span><b id="importRemapFailed414">${Number(task?.failed||0)}</b></div></div>${active?'<div class="row end"><button class="btn danger" onclick="cancelImportRemap414()">取消任务</button><button class="btn" onclick="closeModal()">后台运行</button></div>':'<div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>'}</div></div>`;
+  }
+  function patchImportRemapProgress414(task,source,target){
+    const root=document.getElementById('importRemapStage414')?.closest('.zip411');if(!root)return false;
+    const total=Math.max(0,Number(task?.total||0)),processed=Math.max(0,Number(task?.processed||0)),raw=Number(task?.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0),status=String(task?.status||'').toUpperCase(),rawStage=String(task?.stage||task?.phase||''),stage=['QUEUED','WAITING_RESOURCE'].includes(status)?'等待任务调度':rawStage==='REMAPPING_ANNOTATION_LABELS'?'正在批量统一标签':(rawStage||'正在处理'),detail=task?.current_item||`${processed}/${total||'-'} · ${source} → ${target}`;
+    const set=(id,value)=>{const node=root.querySelector(`#${id}`);if(node)node.textContent=String(value)};
+    set('importRemapStage414',stage);set('importRemapPct414',`${Math.round(pct)}%`);set('importRemapMsg414',detail);set('importRemapPending414',Math.max(0,total-processed));set('importRemapProcessed414',processed);set('importRemapSucceeded414',Number(task?.succeeded||0));set('importRemapFailed414',Number(task?.failed||0));
+    const bar=root.querySelector('#importRemapBar414');if(bar)bar.style.transform=`scaleX(${pct/100})`;
+    return true;
   }
   function armImportRemap414(taskId,source,target){
     const key='annotation-label-remap';
@@ -4854,8 +4862,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       const task=await api(`/api/v62/projects/${pid()}/material-batches/${taskId}`);
       state.import412RemapTask=task;
       if(state.page==='标签管理')renderLabelRemapBanner414(task);
-      const marker=document.getElementById('importRemapStage414'),body=marker?.closest('.modal-body');
-      if(body)window.ModalContentRuntime.replace(body,importRemapProgress414(task,source,target));
+      patchImportRemapProgress414(task,source,target);
       const status=String(task.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
@@ -5537,6 +5544,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const layers=[...document.querySelectorAll('.v424-modal-layer')];
     const base=document.getElementById('modal');
     const top=layers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
+    window.beforeCloseAiTask60?.(top);
     const annotationRoot=top?.querySelector('.ann420-stable');
     if(annotationRoot&&state.annotationWorkbench?.dirty){
       const ok=await window.saveAnn(true);
@@ -5600,31 +5608,59 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
 
   function progressShell(task){
-    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已完成 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><div id="ai60Error"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已完成 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><div id="ai60Error"></div><div id="ai60Actions" class="row end"></div></div>`,true);
   }
 
   function renderProgress(task){
     const root=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(task.id))}"]`);if(!root)return;
     const view=taskView(task),set=(id,value)=>{const node=root.querySelector(`#${id}`);if(node)node.textContent=value};
     set('ai60Status',view.statusText);set('ai60Percent',`${Number(view.percent||0).toFixed(1)}%`);set('ai60Counts',view.progressText);set('ai60Failed',view.failed);set('ai60Elapsed',elapsed(task));
-    const bar=root.querySelector('#ai60Bar');if(bar)bar.style.width=`${view.percent||0}%`;
+    const bar=root.querySelector('#ai60Bar');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const current=imageById(task.current_item);set('ai60Current',current?.filename||task.current_item||view.runtimeText||'等待 Worker 处理');
     const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="error-box422"><b>失败原因</b><span>${esc(view.error)}</span></div>`:'';
     const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">重试</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
     if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);
   }
 
+  function stopAiTaskDetail60({resumeList=true}={}){
+    const key=String(state.ai60DetailPollKey||'');
+    if(key)window.PollRegistryRuntime?.clear?.(key);
+    state.ai60DetailPollKey='';
+    if(resumeList&&state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label'){
+      window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[]);
+    }
+  }
+  window.beforeCloseAiTask60=function(top){
+    if(top?.querySelector?.('.ai60-progress'))stopAiTaskDetail60({resumeList:true});
+  };
   window.showAiTask60=async function(id){
+    const detailId=String(id||'');
+    const key=`ai-task-detail:${detailId}`;
     try{
-      const first=await api(taskApi(id));progressShell(first);renderProgress(first);
-      state.ai60Pollers=state.ai60Pollers||{};state.ai60Pollers[id]?.stop?.();
-      const poller=window.PlatformCore?.taskPoller?.createTaskPoller({load:()=>api(taskApi(id)),onUpdate:renderProgress,onError:error=>{const node=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(id))}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`}});
-      state.ai60Pollers[id]=poller;await poller?.start();
-    }catch(error){toast(error.message||error)}
+      stopAiTaskDetail60({resumeList:false});
+      const first=await api(taskApi(detailId));progressShell(first);renderProgress(first);
+      window.AutoLabelPollRuntime?.deactivate?.();
+      state.ai60DetailPollKey=key;
+      const terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
+        initialTask:first,
+        registry:window.PollRegistryRuntime,
+        key,
+        ownerPages:[state.page],
+        delay:1600,
+        maxAttempts:900,
+        load:()=>api(taskApi(detailId)),
+        onUpdate:renderProgress,
+        onError:error=>{const node=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(detailId)}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`},
+      });
+      if(state.ai60DetailPollKey===key){state.ai60DetailPollKey='';renderProgress(terminal);window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
+    }catch(error){
+      if(error?.name!=='AbortError')toast(error.message||error);
+      if(state.ai60DetailPollKey===key){state.ai60DetailPollKey='';window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
+    }
   };
   window.showTaskProgress427=function showTaskProgressCanonical60(type,id){if(type==='label')return showAiTask60(id);if(type==='clean')return window.showCleanTaskProgress429?.(id);return window.showTaskProgressCore427?.(type,id)};
   window.cancelAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/cancel`,{method:'POST'});renderProgress(task)}catch(error){toast(error.message||error)}};
-  window.retryAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});closeModal();showAiTask60(task.id)}catch(error){toast(error.message||error)}};
+  window.retryAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});await closeModal();return showAiTask60(task.id)}catch(error){toast(error.message||error)}};
 
   function explicitCanonicalAiLabelText(value){
     const parts=[...new Set(String(value||'').split(/[、,，;；\n\t]+/).map(item=>item.trim()).filter(Boolean))];

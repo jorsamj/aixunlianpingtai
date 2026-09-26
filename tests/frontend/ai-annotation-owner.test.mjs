@@ -116,3 +116,22 @@ test('AI task creation never resolves display names or aliases into canonical la
   assert.match(source, /中文名、别名、历史 alias 不会自动转换/);
   assert.doesNotMatch(source, /function normalizedLabelText\(/);
 });
+
+
+test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
+  const start = source.lastIndexOf('function stopAiTaskDetail60');
+  const end = source.indexOf('function explicitCanonicalAiLabelText', start);
+  assert.ok(start > 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /ai-task-detail:/);
+  assert.match(block, /waitForTaskTerminal/);
+  assert.match(block, /registry:window\.PollRegistryRuntime/);
+  assert.match(block, /beforeCloseAiTask60/);
+  assert.match(block, /AutoLabelPollRuntime\?\.deactivate/);
+  assert.match(block, /AutoLabelPollRuntime\?\.activate/);
+  assert.doesNotMatch(block, /createTaskPoller/);
+  assert.doesNotMatch(source, /state\.ai60Pollers/);
+  assert.match(source, /beforeCloseAiTask60\?\.\(top\)/);
+  assert.match(source, /ai60Bar" style="transform:scaleX\(0\)/);
+  assert.doesNotMatch(source, /bar\.style\.width=.*view\.percent/);
+});

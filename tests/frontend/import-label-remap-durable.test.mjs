@@ -14,7 +14,13 @@ test('post-import label remap is a durable material batch with real backend prog
   assert.match(source,/PollRegistryRuntime\?\.startTimeout/);
   assert.match(source,/annotation-label-remap/);
   assert.match(source,/getElementById\('importRemapStage414'\)/);
-  assert.match(source,/marker\?\.closest\('\.modal-body'\)/);
+  assert.match(source,/function patchImportRemapProgress414/);
+  assert.match(source,/importRemapBar414.*transform:scaleX/);
+  const pollStart=source.indexOf('window.pollImportRemap414=async function');
+  const pollEnd=source.indexOf('window.cancelImportRemap414',pollStart);
+  const poll=source.slice(pollStart,pollEnd);
+  assert.match(poll,/patchImportRemapProgress414\(task,source,target\)/);
+  assert.doesNotMatch(poll,/ModalContentRuntime\.replace/);
 });
 
 test('remap UI does not claim synchronous completion after task creation',()=>{
