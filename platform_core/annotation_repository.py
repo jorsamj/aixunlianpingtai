@@ -268,18 +268,27 @@ class AnnotationRepository:
         return prepared['content_digest']
 
     def plan_label_remap(
-        self, record, *, source_label: str, target_label: str,
-        target_class_id: int,
+        self, record, *, source_label: str | None = None,
+        source_labels=None, target_label: str, target_class_id: int,
     ) -> dict:
-        source = str(source_label or '').strip()
+        sources = list(dict.fromkeys(
+            str(value).strip()
+            for value in (
+                source_labels
+                if source_labels is not None
+                else [source_label]
+            )
+            if str(value or '').strip()
+        ))
         target = str(target_label or '').strip()
-        if not source or not target:
-            raise ValueError('source and target labels are required')
+        if not sources or not target or target in sources:
+            raise ValueError('source and target labels are required and must differ')
+        source_set = set(sources)
         boxes, changed = [], 0
         for raw in record.get('boxes') or []:
             box = dict(raw)
             label = str(box.get('label') or box.get('code') or '').strip()
-            if label == source:
+            if label in source_set:
                 box['label'] = target
                 if 'code' in box:
                     box['code'] = target
@@ -288,7 +297,7 @@ class AnnotationRepository:
             boxes.append(box)
         original_scope = _normalize_scope(record.get('annotation_scope'))
         scope = [
-            target if str(value).strip() == source else str(value).strip()
+            target if str(value).strip() in source_set else str(value).strip()
             for value in (record.get('annotation_scope') or [])
             if str(value).strip()
         ]
@@ -307,7 +316,8 @@ class AnnotationRepository:
         }
 
     def remap_labels_if_digests(
-        self, requests, *, source_label: str, target_label: str,
+        self, requests, *, source_label: str | None = None,
+        source_labels=None, target_label: str,
         target_class_id: int, project_material: bool = True,
     ) -> list[dict]:
         requests = [dict(item) for item in requests or []]
@@ -345,6 +355,7 @@ class AnnotationRepository:
                     planned = self.plan_label_remap(
                         current,
                         source_label=source_label,
+                        source_labels=source_labels,
                         target_label=target_label,
                         target_class_id=target_class_id,
                     )
@@ -391,6 +402,13 @@ class AnnotationRepository:
                                     now,
                                 ),
                             )
+                    label_counts = {}
+                    for box in planned['boxes']:
+                        code = str(
+                            box.get('label') or box.get('code') or ''
+                        ).strip()
+                        if code:
+                            label_counts[code] = label_counts.get(code, 0) + 1
                     projections[image_id] = {
                         'annotation_state': planned['annotation_state'],
                         'annotation_scope': planned['annotation_scope'],
@@ -399,11 +417,8 @@ class AnnotationRepository:
                             'annotated', 'confirmed_empty',
                         },
                         'box_count': len(planned['boxes']),
-                        'labels': sorted({
-                            str(box.get('label') or box.get('code') or '').strip()
-                            for box in planned['boxes']
-                            if str(box.get('label') or box.get('code') or '').strip()
-                        }),
+                        'labels': sorted(label_counts),
+                        'label_counts': label_counts,
                     }
                     results.append({
                         'image_id': image_id,

@@ -80,3 +80,26 @@ def test_label_schema_get_uses_existing_material_index_without_annotation_io(tmp
     assert smoke["usage_boxes"] == 3
     assert smoke["scope_images"] == 0
     assert smoke["affected_images"] == 2
+
+
+def test_label_usage_and_preview_use_normalized_index(tmp_path):
+    import inspect
+
+    repository = MaterialRepository(tmp_path / "project")
+    repository.upsert_many([
+        _material("a", {"fire": 2, "smoke": 1}),
+        _material("b", {"smoke": 3}, ["fire"]),
+    ])
+    assert repository.label_usage() == {
+        "fire": {"images": 1, "boxes": 2},
+        "smoke": {"images": 2, "boxes": 4},
+    }
+    assert repository.label_reference_preview(["fire", "smoke"]) == {
+        "positive_images": 2,
+        "scope_images": 1,
+        "affected_images": 2,
+        "boxes": 6,
+    }
+    source = inspect.getsource(MaterialRepository.label_usage)
+    assert "json_each" not in source
+    assert "material_labels" in source

@@ -156,6 +156,7 @@ from platform_core.material_batches import (
     SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
     create_annotation_remap_batch,
     create_annotation_remap_by_label,
+    create_annotation_remap_by_labels,
     estimate_batch as estimate_material_batch,
     prepare_batch as prepare_material_batch,
     publish_prepared_batch as publish_prepared_material_batch,
@@ -1358,17 +1359,20 @@ def get_project(project_id: str) -> Dict[str, Any]:
 
 def save_project(project: Dict[str, Any]):
     project["updated_at"] = now_iso()
-    write_json(project_dir(project["id"]) / "meta.json", project)
-    projects = read_json(PROJECTS_FILE, [])
-    found = False
-    for i, item in enumerate(projects):
-        if item["id"] == project["id"]:
-            projects[i] = project
-            found = True
-            break
-    if not found:
-        projects.append(project)
-    write_json(PROJECTS_FILE, projects)
+    meta_path = project_dir(project["id"]) / "meta.json"
+    with FileLock(str(PROJECTS_FILE) + ".lock", timeout=60):
+        with FileLock(str(meta_path) + ".lock", timeout=60):
+            atomic_write_json(meta_path, project)
+            projects = read_json(PROJECTS_FILE, [])
+            found = False
+            for i, item in enumerate(projects):
+                if item["id"] == project["id"]:
+                    projects[i] = project
+                    found = True
+                    break
+            if not found:
+                projects.append(project)
+            atomic_write_json(PROJECTS_FILE, projects)
 
 
 def safe_filename(filename: str) -> str:
@@ -8276,6 +8280,8 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": m.get("type") or "bbox",
             "hotkey": m.get("hotkey") or (str(i+1) if i < 9 else ""),
             "status": m.get("status") or "active",
+            "merged_into": str(m.get("merged_into") or ""),
+            "merged_at": str(m.get("merged_at") or ""),
             "aliases": normalize_label_aliases(m.get("aliases") or []),
         })
     return items
@@ -19962,6 +19968,64 @@ class V54LabelUnifyReq(BaseModel):
     target_label: str
 
 
+class V54LabelsUnifyReq(BaseModel):
+    source_class_ids: List[int] = Field(default_factory=list)
+    target_label: str
+
+
+class V54LabelsUnifyPreviewReq(BaseModel):
+    source_class_ids: List[int] = Field(default_factory=list)
+
+
+def _v54_resolve_unify_sources(project_id: str, source_class_ids):
+    project = get_project(project_id)
+    catalog = active_label_options(project_label_items(project))
+    by_id = {int(item.get('class_id', -1)): item for item in catalog}
+    ids = list(dict.fromkeys(int(value) for value in (source_class_ids or [])))
+    if not ids:
+        raise HTTPException(status_code=400, detail='请至少选择一个来源标签')
+    if len(ids) > 50:
+        raise HTTPException(status_code=422, detail='一次最多统一 50 个来源标签')
+    missing = [value for value in ids if value not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail='部分来源标签不存在或已停用，请刷新后重试')
+    return project, catalog, [by_id[value] for value in ids]
+
+
+def _v54_start_unify(project_id: str, source_class_ids, target_label: str):
+    _project, catalog, source_items = _v54_resolve_unify_sources(
+        project_id, source_class_ids,
+    )
+    target = normalize_label(target_label)
+    active_targets = {str(item.get('code')) for item in catalog}
+    if target not in active_targets:
+        raise HTTPException(
+            status_code=409,
+            detail='目标标签必须来自当前有效标签库；如需新标签，请先显式创建',
+        )
+    sources = [str(item.get('code') or '').strip() for item in source_items]
+    if target in sources:
+        raise HTTPException(status_code=400, detail='目标标签不能同时作为来源标签')
+    try:
+        task = create_annotation_remap_by_labels(
+            project_id,
+            material_store(project_id),
+            shared_task_repository(),
+            shared_task_artifacts(),
+            sources,
+            target,
+            retire_sources_on_success=True,
+        )
+    except MaterialBatchRequestError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return JSONResponse(
+        status_code=202,
+        content=public_material_batch(
+            task, shared_task_artifacts(), shared_task_repository()
+        ),
+    )
+
+
 @app.get('/api/v54/projects/{project_id}/label-schema')
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
@@ -19979,43 +20043,32 @@ def v54_label_schema(project_id: str):
     return {'ok': True, 'items': items}
 
 
+@app.post('/api/v54/projects/{project_id}/labels/unify/preview')
+def v54_preview_unify_labels(
+    project_id: str, payload: V54LabelsUnifyPreviewReq,
+):
+    _project, _catalog, source_items = _v54_resolve_unify_sources(
+        project_id, payload.source_class_ids,
+    )
+    sources = [str(item.get('code') or '').strip() for item in source_items]
+    return {
+        'ok': True,
+        'source_labels': sources,
+        **material_store(project_id).label_reference_preview(sources),
+    }
+
+
+@app.post('/api/v54/projects/{project_id}/labels/unify')
+def v54_unify_labels(project_id: str, payload: V54LabelsUnifyReq):
+    return _v54_start_unify(
+        project_id, payload.source_class_ids, payload.target_label,
+    )
+
+
 @app.post('/api/v54/projects/{project_id}/labels/{class_id}/unify')
 def v54_unify_label(project_id: str, class_id: int, payload: V54LabelUnifyReq):
-    project = get_project(project_id)
-    catalog = active_label_options(project_label_items(project))
-    source_item = next(
-        (item for item in catalog if int(item.get('class_id', -1)) == int(class_id)),
-        None,
-    )
-    if source_item is None:
-        raise HTTPException(status_code=404, detail='原标签不存在或已停用')
-    source = str(source_item.get('code') or '').strip()
-    target = normalize_label(payload.target_label)
-    active_targets = {str(item.get('code')) for item in catalog}
-    if target not in active_targets:
-        raise HTTPException(
-            status_code=409,
-            detail='目标标签必须来自当前有效标签库；如需新标签，请先显式创建',
-        )
-    if target == source:
-        raise HTTPException(status_code=400, detail='原标签和目标标签不能相同')
-    try:
-        task = create_annotation_remap_by_label(
-            project_id,
-            material_store(project_id),
-            shared_task_repository(),
-            shared_task_artifacts(),
-            source,
-            target,
-        )
-    except MaterialBatchRequestError as error:
-        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
-    return JSONResponse(
-        status_code=202,
-        content=public_material_batch(
-            task, shared_task_artifacts(), shared_task_repository()
-        ),
-    )
+    return _v54_start_unify(project_id, [class_id], payload.target_label)
+
 
 @app.get('/api/v54/projects/{project_id}/algorithms/{algorithm_id}/iteration-base')
 def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str = 'ultralytics'):

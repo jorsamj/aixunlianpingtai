@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from contextlib import closing
@@ -373,30 +374,48 @@ class BatchSelection:
         }
 
 
-def create_annotation_remap_by_label(
-    project_id, materials, repository, artifacts, source_label, target_label,
+def create_annotation_remap_by_labels(
+    project_id, materials, repository, artifacts, source_labels, target_label,
+    *, retire_sources_on_success=True,
 ):
-    """Freeze all indexed Ground Truth references for one canonical label."""
-    source = str(source_label or "").strip()
+    """Freeze the indexed union of multiple canonical source labels."""
+    sources = list(dict.fromkeys(
+        str(value).strip() for value in (source_labels or [])
+        if str(value).strip()
+    ))
     target = str(target_label or "").strip()
-    if not source or not target:
+    if not sources or not target:
         raise BatchRequestError(
             "MATERIAL_REMAP_LABEL_REQUIRED",
             "原标签和目标标签不能为空",
             400,
         )
-    if source == target:
+    if len(sources) > 50:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_TOO_MANY_LABELS",
+            "一次最多统一 50 个来源标签",
+            422,
+        )
+    if target in sources:
         raise BatchRequestError(
             "MATERIAL_REMAP_INVALID",
-            "原标签和目标标签不能相同",
+            "目标标签不能同时作为来源标签",
             400,
         )
     task_id = uuid.uuid4().hex
     selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
     request_payload = {
         "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
-        "options": {"source_label": source, "target_label": target},
-        "selection_spec": {"scope": "LABEL_REFERENCE", "source_label": source},
+        "options": {
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
+            "target_label": target,
+            "retire_sources_on_success": bool(retire_sources_on_success),
+        },
+        "selection_spec": {
+            "scope": "LABEL_REFERENCE",
+            "source_labels": sources,
+        },
     }
     try:
         with closing(BatchSelection(selection_path)):
@@ -409,16 +428,18 @@ def create_annotation_remap_by_label(
             database.execute("BEGIN IMMEDIATE")
             try:
                 revision = materials._revision(database)
+                placeholders = ",".join("?" for _ in sources)
                 database.execute(
                     "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
-                    "SELECT material_id FROM main.material_labels WHERE label_code=?",
-                    (source,),
+                    f"SELECT material_id FROM main.material_labels "
+                    f"WHERE label_code IN ({placeholders})",
+                    sources,
                 )
                 database.execute(
                     "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
-                    "SELECT material_id FROM main.material_annotation_scopes "
-                    "WHERE label_code=?",
-                    (source,),
+                    f"SELECT material_id FROM main.material_annotation_scopes "
+                    f"WHERE label_code IN ({placeholders})",
+                    sources,
                 )
                 total = int(database.execute(
                     "SELECT COUNT(*) FROM batch_selection.selection"
@@ -426,7 +447,7 @@ def create_annotation_remap_by_label(
                 if total <= 0:
                     raise BatchRequestError(
                         "MATERIAL_REMAP_SOURCE_UNUSED",
-                        "当前没有素材引用该原标签",
+                        "当前没有素材引用所选来源标签",
                         409,
                     )
                 if total > MAX_REMAP_SELECTION:
@@ -441,7 +462,7 @@ def create_annotation_remap_by_label(
                         ("frozen", utc_now()),
                         ("repository_revision", str(revision)),
                         ("selection_kind", "annotation_label_reference"),
-                        ("source_label", source),
+                        ("source_labels", json.dumps(sources, ensure_ascii=False)),
                         ("target_label", target),
                     ),
                 )
@@ -469,6 +490,19 @@ def create_annotation_remap_by_label(
             500,
         ) from error
 
+
+def create_annotation_remap_by_label(
+    project_id, materials, repository, artifacts, source_label, target_label,
+):
+    return create_annotation_remap_by_labels(
+        project_id,
+        materials,
+        repository,
+        artifacts,
+        [source_label],
+        target_label,
+        retire_sources_on_success=True,
+    )
 
 def create_annotation_remap_batch(
     project_id, materials, repository, artifacts, image_ids,
@@ -593,6 +627,104 @@ def _object_missing(error):
             return True
         error = error.__cause__
     return False
+
+
+def _atomic_write_json_file(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _retire_merged_source_labels(
+    data_dir: Path, project_id: str, sources, target: str,
+) -> list[str]:
+    sources = list(dict.fromkeys(
+        str(value).strip() for value in (sources or []) if str(value).strip()
+    ))
+    if not sources:
+        return []
+    project_path = data_dir / "projects" / project_id
+    meta_path = project_path / "meta.json"
+    projects_path = data_dir / "projects.json"
+    with FileLock(str(projects_path) + ".lock", timeout=60):
+        with FileLock(str(meta_path) + ".lock", timeout=60):
+            project = json.loads(meta_path.read_text(encoding="utf-8"))
+            labels = list(project.get("labels") or [])
+            metadata = project.setdefault("label_meta", [])
+            while len(metadata) < len(labels):
+                metadata.append({})
+            if target not in labels:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                    "目标标签已不存在，不能完成来源标签退役",
+                    409,
+                )
+            target_index = labels.index(target)
+            target_meta = (
+                metadata[target_index]
+                if isinstance(metadata[target_index], dict)
+                else {}
+            )
+            metadata[target_index] = target_meta
+            if str(target_meta.get("status") or "active").lower() != "active":
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                    "目标标签已停用，不能完成来源标签退役",
+                    409,
+                )
+            retired = []
+            merged_at = utc_now()
+            for source in sources:
+                if source not in labels:
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                        f"来源标签 {source} 已从标签配置中消失",
+                        409,
+                    )
+                index = labels.index(source)
+                row = metadata[index] if isinstance(metadata[index], dict) else {}
+                metadata[index] = row
+                status = str(row.get("status") or "active").lower()
+                if status == "merged" and str(row.get("merged_into") or "") == target:
+                    retired.append(source)
+                    continue
+                if status != "active":
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                        f"来源标签 {source} 状态已变化，请人工复核",
+                        409,
+                    )
+                row["status"] = "merged"
+                row["merged_into"] = target
+                row["merged_at"] = merged_at
+                retired.append(source)
+            project["updated_at"] = merged_at
+            _atomic_write_json_file(meta_path, project)
+
+            projects = []
+            if projects_path.is_file():
+                try:
+                    value = json.loads(projects_path.read_text(encoding="utf-8"))
+                    projects = value if isinstance(value, list) else []
+                except Exception:
+                    projects = []
+            replaced = False
+            for index, item in enumerate(projects):
+                if str(item.get("id") or "") == str(project_id):
+                    projects[index] = project
+                    replaced = True
+                    break
+            if not replaced:
+                projects.append(project)
+            _atomic_write_json_file(projects_path, projects)
+    return retired
 
 
 class MaterialBatchHandler:
@@ -728,14 +860,24 @@ class MaterialBatchHandler:
 
     def _run_annotation_remap(self, context, manifest, payload):
         options = dict((payload or {}).get("options") or {})
-        source = str(options.get("source_label") or "").strip()
+        sources = list(dict.fromkeys(
+            str(value).strip()
+            for value in (
+                options.get("source_labels")
+                or [options.get("source_label")]
+            )
+            if str(value or "").strip()
+        ))
         target = str(options.get("target_label") or "").strip()
-        if not source or not target or source == target:
+        if not sources or not target or target in sources:
             raise BatchRequestError(
                 "MATERIAL_REMAP_INVALID",
-                "标签变换任务的原标签和目标标签无效",
+                "标签变换任务的来源标签和目标标签无效",
                 409,
             )
+        source_text = "、".join(sources[:3])
+        if len(sources) > 3:
+            source_text += f" 等 {len(sources)} 个标签"
         project = str(context.task.project_id or "").strip()
         if (
             not project
@@ -832,13 +974,14 @@ class MaterialBatchHandler:
                 if not isinstance(plan, dict):
                     preview = annotations.plan_label_remap(
                         current,
-                        source_label=source,
+                        source_labels=sources,
                         target_label=target,
                         target_class_id=current_target_id,
                     )
                     plan = {
                         "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
-                        "source_label": source,
+                        "source_labels": sources,
+                        "source_label": sources[0] if len(sources) == 1 else "",
                         "target_label": target,
                         "source_digest": current_digest,
                         "result_digest": preview["content_digest"],
@@ -851,9 +994,17 @@ class MaterialBatchHandler:
                         "UPDATE selection SET tombstone_json=? WHERE image_id=?",
                         (json.dumps(plan, ensure_ascii=False), image_id),
                     )
+                plan_sources = list(dict.fromkeys(
+                    str(value).strip()
+                    for value in (
+                        plan.get("source_labels")
+                        or [plan.get("source_label")]
+                    )
+                    if str(value or "").strip()
+                ))
                 if (
                     plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value
-                    or str(plan.get("source_label") or "") != source
+                    or plan_sources != sources
                     or str(plan.get("target_label") or "") != target
                 ):
                     failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
@@ -868,7 +1019,7 @@ class MaterialBatchHandler:
                 ):
                     preview = annotations.plan_label_remap(
                         current,
-                        source_label=source,
+                        source_labels=sources,
                         target_label=target,
                         target_class_id=current_target_id,
                     )
@@ -899,7 +1050,7 @@ class MaterialBatchHandler:
             if executable:
                 outcomes = annotations.remap_labels_if_digests(
                     executable,
-                    source_label=source,
+                    source_labels=sources,
                     target_label=target,
                     target_class_id=current_target_id,
                     project_material=True,
@@ -937,7 +1088,7 @@ class MaterialBatchHandler:
             )
             current_item = (
                 f"正在批量统一标签 {processed}/{max(1, total)} · "
-                f"{source} → {target}"
+                f"{source_text} → {target}"
             )
             context.save_checkpoint(checkpoint)
             _check_active(
@@ -955,9 +1106,24 @@ class MaterialBatchHandler:
         summary = manifest.summary()
         summary.update(manifest.remap_result())
         summary.update({
-            "source_label": source,
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
             "target_label": target,
         })
+        if (
+            not summary["failed"]
+            and bool(options.get("retire_sources_on_success"))
+        ):
+            remaining = materials.label_reference_preview(sources)
+            if int(remaining.get("affected_images") or 0) != 0:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_REFERENCES_REMAIN",
+                    "标签统一已处理完成，但仍检测到来源标签引用，已阻止自动退役",
+                    409,
+                )
+            summary["retired_source_labels"] = _retire_merged_source_labels(
+                self.data_dir, project, sources, target,
+            )
         context.save_checkpoint(summary)
         context.artifacts.atomic_write_json(
             context.task.task_id, RESULT_REF, summary

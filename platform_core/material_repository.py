@@ -16,7 +16,7 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(l
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(material_id, label_code)
 );
 CREATE INDEX IF NOT EXISTS ix_material_labels_code ON material_labels(label_code, material_id);
@@ -241,6 +242,31 @@ class MaterialRepository:
                            ) = 'confirmed_empty'
                         """
                     )
+                if version < 3:
+                    columns = {
+                        str(row[1])
+                        for row in database.execute(
+                            "PRAGMA table_info(material_labels)"
+                        ).fetchall()
+                    }
+                    if "box_count" not in columns:
+                        database.execute(
+                            "ALTER TABLE material_labels "
+                            "ADD COLUMN box_count INTEGER NOT NULL DEFAULT 0"
+                        )
+                    database.execute(
+                        """
+                        UPDATE material_labels
+                           SET box_count = COALESCE((
+                               SELECT CAST(counts.value AS INTEGER)
+                                 FROM materials m,
+                                      json_each(m.payload_json, '$.label_counts') AS counts
+                                WHERE m.id = material_labels.material_id
+                                  AND CAST(counts.key AS TEXT) = material_labels.label_code
+                                LIMIT 1
+                           ), 0)
+                        """
+                    )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
@@ -305,9 +331,22 @@ class MaterialRepository:
             ),
         )
         database.execute("DELETE FROM material_labels WHERE material_id = ?", (row["id"],))
+        raw_label_counts = (
+            row.get("label_counts")
+            if isinstance(row.get("label_counts"), Mapping)
+            else {}
+        )
         database.executemany(
-            "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)",
-            ((row["id"], label) for label in row["labels"]),
+            "INSERT INTO material_labels(material_id, label_code, box_count) "
+            "VALUES (?, ?, ?)",
+            (
+                (
+                    row["id"],
+                    label,
+                    max(0, int(raw_label_counts.get(label) or 0)),
+                )
+                for label in row["labels"]
+            ),
         )
         scopes = (
             sorted({
@@ -655,23 +694,24 @@ class MaterialRepository:
         return MaterialIdPage([str(row["id"]) for row in page.items], page.next_cursor, page.total)
 
     def label_usage(self) -> dict[str, dict[str, int]]:
-        """Aggregate persisted annotation summaries without reopening annotation files."""
+        """Aggregate label usage from the normalized label index."""
         with closing(self._connect()) as database:
             rows = database.execute(
                 """
-                SELECT CAST(labels.key AS TEXT) AS label,
-                       COUNT(DISTINCT materials.id) AS images,
-                       SUM(CAST(labels.value AS INTEGER)) AS boxes
-                  FROM materials
-                  JOIN json_each(materials.payload_json, '$.label_counts') AS labels
-                 WHERE labels.key IS NOT NULL
-                   AND CAST(labels.value AS INTEGER) > 0
-                 GROUP BY labels.key
-                 ORDER BY labels.key
+                SELECT label_code AS label,
+                       COUNT(*) AS images,
+                       SUM(box_count) AS boxes
+                  FROM material_labels
+                 WHERE box_count > 0
+                 GROUP BY label_code
+                 ORDER BY label_code
                 """
             ).fetchall()
         return {
-            str(row["label"]): {"images": int(row["images"] or 0), "boxes": int(row["boxes"] or 0)}
+            str(row["label"]): {
+                "images": int(row["images"] or 0),
+                "boxes": int(row["boxes"] or 0),
+            }
             for row in rows
         }
 
@@ -700,6 +740,52 @@ class MaterialRepository:
                 "affected_images": positive.get(code, 0) + scoped.get(code, 0),
             }
             for code in sorted(set(positive) | set(scoped))
+        }
+
+    def label_reference_preview(self, label_codes: Sequence[str]) -> dict[str, int]:
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != "*"
+        ))
+        if not codes:
+            return {
+                "positive_images": 0,
+                "scope_images": 0,
+                "affected_images": 0,
+                "boxes": 0,
+            }
+        if len(codes) > 100:
+            raise ValueError("label reference preview is limited to 100 labels")
+        placeholders = ",".join("?" for _ in codes)
+        with closing(self._connect()) as database:
+            positive = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            scoped = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_annotation_scopes "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            affected = int(database.execute(
+                "SELECT COUNT(DISTINCT material_id) FROM ("
+                f"SELECT material_id FROM material_labels WHERE label_code IN ({placeholders}) "
+                "UNION ALL "
+                f"SELECT material_id FROM material_annotation_scopes WHERE label_code IN ({placeholders})"
+                ")",
+                [*codes, *codes],
+            ).fetchone()[0])
+            boxes = int(database.execute(
+                f"SELECT COALESCE(SUM(box_count),0) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+        return {
+            "positive_images": positive,
+            "scope_images": scoped,
+            "affected_images": affected,
+            "boxes": boxes,
         }
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:

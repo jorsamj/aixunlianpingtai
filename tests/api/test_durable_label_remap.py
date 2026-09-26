@@ -366,3 +366,131 @@ def test_unused_label_delete_is_soft_and_preserves_other_class_ids(
     assert recreated.json()["class_id"] == 1
     active = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
     assert [row["code"] for row in active] == ["fire", "smoke", "person"]
+
+
+def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    created_label = client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "person", "display_name": "人员"},
+    )
+    assert created_label.status_code == 200, created_label.text
+    app_module.write_annotation(
+        project_id,
+        image["id"],
+        [
+            _box(label="fire", class_id=0),
+            _box(label="smoke", class_id=1, x1=30, x2=50),
+        ],
+    )
+    second_id = "negative-multi-source"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "negative.jpg",
+        "stored_name": "negative.jpg",
+        "object_key": "uploads/negative.jpg",
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["fire", "smoke"],
+    )
+    # Sync the material projection for the explicit confirmed-empty fixture.
+    app_module.material_store(project_id).patch({
+        second_id: {
+            "annotation_state": "confirmed_empty",
+            "annotation_scope": ["fire", "smoke"],
+            "annotated": True,
+            "labels": [],
+            "label_counts": {},
+            "box_count": 0,
+        }
+    })
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    preview = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify/preview",
+        json={"source_class_ids": [0, 1]},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["affected_images"] == 2
+    assert preview.json()["boxes"] == 2
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify",
+        json={"source_class_ids": [0, 1], "target_label": "person"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 2
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_boxes"] == 2
+    assert final["result"]["changed_scope_images"] == 1
+    assert final["result"]["source_labels"] == ["fire", "smoke"]
+    assert final["result"]["retired_source_labels"] == ["fire", "smoke"]
+
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert [box["label"] for box in formal["boxes"]] == ["person", "person"]
+    assert {box["class_id"] for box in formal["boxes"]} == {2}
+    negative = app_module.read_annotation(project_id, second_id)
+    assert negative["annotation_scope"] == ["person"]
+
+    stored = app_module.get_project(project_id)
+    assert stored["labels"] == ["fire", "smoke", "person"]
+    assert stored["label_meta"][0]["status"] == "merged"
+    assert stored["label_meta"][0]["merged_into"] == "person"
+    assert stored["label_meta"][1]["status"] == "merged"
+    assert stored["label_meta"][1]["merged_into"] == "person"
+    active = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    assert [row["code"] for row in active] == ["person"]
+
+
+def test_partial_multi_source_unify_does_not_retire_sources(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "person", "display_name": "人员"},
+    )
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    second_id = "will-disappear"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "gone.jpg",
+        "stored_name": "gone.jpg",
+        "object_key": "uploads/gone.jpg",
+        "labels": ["smoke"],
+        "label_counts": {"smoke": 1},
+        "box_count": 1,
+        "annotated": True,
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [_box(label="smoke", class_id=1)],
+        annotation_state="annotated",
+    )
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify",
+        json={"source_class_ids": [0, 1], "target_label": "person"},
+    )
+    assert created.status_code == 202, created.text
+    app_module.material_store(project_id).remove_many([second_id])
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "PARTIAL_SUCCESS"
+    stored = app_module.get_project(project_id)
+    assert stored["label_meta"][0].get("status", "active") == "active"
+    assert stored["label_meta"][1].get("status", "active") == "active"
