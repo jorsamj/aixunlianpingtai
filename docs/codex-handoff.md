@@ -1,6 +1,130 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-27 23:xx Annotation source identity 批量化与 SHA fencing 收口（最新）
+
+- 写入前真实远端 HEAD：`df5f00351576233c27e18ddead5c0b18adc35384`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- 当前 HEAD 自身 **20 个主要 GitHub Actions workflows 全部 completed success (20/20)**。
+- Remote Material Import 子项全部 success：
+  - Ubuntu contract；
+  - Windows contract；
+  - API；
+  - Real Chrome。
+
+### 1. COCO / VOC annotation source identity 逐文件 SQLite 往返 — CLOSED
+
+提交：
+
+- `0286415213d107a240556f6862e7929e23a6cb68` — `perf: batch detection source identity`
+- `6d52f51259b99b829263a15af5ebcb9cf5ff87b5` — `test: align detection source batch mock`
+
+旧 `DetectionDatasetScanner._read_annotation_source()` 每个 COCO JSON / VOC XML 都执行：
+
+`inventory_for_keys([key])`
+→ 读取并 hash 文件
+→ `inventory_many([single])`
+
+VOC 允许最多 250,000 个 XML，因此即使内容读取本身必须逐文件，SQLite 仍会形成明显 N+1。
+
+现在：
+
+- expected dataset_objects identity 按 **500 key/批** 读取；
+- 每个文件仍逐文件读取、逐文件计算真实 SHA；
+- 每个文件仍逐项校验：
+  - object 是否存在于冻结 inventory；
+  - listed size 与实际 size；
+  - listed SHA（若存在）与实际 SHA；
+- verified identity 只缓存轻量 dict，按 **500/批** 写回原 ImportCandidateStore；
+- 不缓存 500 份大 JSON/XML 字节，不把 DB N+1 换成大内存；
+- 1001 个 source 的结构合同固定：
+  - read：`500 / 500 / 1`
+  - write：`500 / 500 / 1`
+
+#### 真实 CI 红灯记录
+
+`028641...` 的 Remote Material Import / Ubuntu contract 曾 completed failure。
+
+已读取真实 job log：
+
+- 126 tests passed；
+- 1 test failed；
+- 失败来自上一批结构测试自己的 monkeypatch：
+  `read_voc(key, maximum)`
+  没有接受新生产调用传入的
+  `expected_inventory=` / `identity_sink=` kwargs；
+- 不是生产 source identity 逻辑失败。
+
+`6d52f512...` 只修：
+
+- 测试 mock 接受 `**kwargs`；
+- 恢复 size mismatch 的原错误文案 `annotation source size changed while being read`。
+
+没有为了 CI 降低生产校验。
+
+### 2. YOLO label TXT source identity N+1 + 同尺寸换内容漏洞 — CLOSED
+
+提交：
+
+`df5f00351576233c27e18ddead5c0b18adc35384` — `perf: batch YOLO label source identity`
+
+旧 `YoloImportScanner._record_text_identity()`：
+
+- 每个 label TXT：
+  - `inventory_for_keys([label])`
+  - 读完 TXT 计算 SHA
+  - `inventory_many([single])`
+- 同时只校验 listed size；
+- 若已有可信 SHA，但文件被替换成“同尺寸不同内容”，旧实现会用新 SHA 覆盖旧 evidence，而不是 fail-closed。
+
+现在：
+
+- `scan_annotations()` 原本就一次读取最多 100 张 image 的 label-option inventory；
+- 该查询现在同时带回 `size_bytes / etag / sha256`；
+- label TXT 直接复用这个 page-scoped expected inventory，不再 scalar `inventory_for_keys([label])`；
+- verified label identities 在当前 100-image page 末尾一次 `inventory_many()`；
+- 201 个 label TXT 的永久合同固定为：
+  `100 / 100 / 1` 三次 identity write；
+- YAML / dataset-list TXT 保留原兼容 scalar owner，不重写 prepare 架构。
+
+同时新增更严格 source fencing：
+
+- 若 dataset_objects 已有 SHA；
+- 实际 TXT 与 listed size 相同但 SHA 不同；
+- 必须抛 `YOLO_SOURCE_CHANGED`；
+- 禁止静默覆盖旧 source evidence。
+
+因此本项不仅收掉 SQLite N+1，还补齐了 YOLO annotation source identity 的 same-size content-change 防篡改真相。
+
+### 当前导入链路性能状态
+
+已确认 CLOSED：
+
+- Remote review 250k 行不再保留 candidates/staged 双大列表；
+- Remote staging 流式 executemany + late-invalid rollback；
+- Remote YOLO/COCO/VOC manifest 500/批；
+- 本地 COCO/VOC manifest + annotation state 500/批；
+- COCO/VOC source identity expected/readback 500/批；
+- YOLO label TXT identity 复用 100-image page；
+- confirmed label mapping 仍全部由用户人工决定；
+- Candidate/Annotation/Import owner 没有新增第二套。
+
+### 暂不修改的已审计项
+
+`platform_core/storage/import_tasks.py` 的 Agent publication / storage_scan source verification 仍可能对每个对象执行 `exists() + stat()`。
+
+但当前 `StorageProvider` 正式协议只有 scalar：
+
+- `exists(object_key)`
+- `stat(object_key)`
+- `list_objects(...)`
+
+S3/OSS/Remote provider 没有通用 batch-stat 接口。为了消灭表面 N+1 而新增第二套 storage batch protocol，会扩大协议面并影响多 provider 行为；当前先不改。后续只有在真实 OSS/S3 RTT profiling 证明这是主要瓶颈时，再设计统一、可测试的 provider bulk metadata contract。
+
+同样，COCO 多 JSON 会保留 decoded `documents[]`，属于潜在峰值内存项；目前单 JSON 有 64MiB 上限，尚无真实 profiling 证明需要引入流式 JSON parser，因此不在本轮盲目重构。
+
+
+
 ## 2026-09-27 22:xx 导入大批量内存与 Annotation SQLite 事务收口（最新）
 
 - 写入前真实远端 HEAD：`19e986e6a8409523782cd0450ccba47452e8dbba`。
