@@ -14,6 +14,8 @@ from platform_core.remote_material_import import (
     REVIEW_DETECTION_ANNOTATIONS_MEMBER,
     RemoteMaterialImportError,
     RemoteMaterialStagingStore,
+    _commit_detection_review_annotations,
+    _commit_yolo_review_annotations,
     build_detection_material_review_archive,
     build_material_review_archive,
     build_storage_scan_material_review_archive,
@@ -920,4 +922,71 @@ def test_remote_material_staging_stream_rolls_back_late_invalid_row(tmp_path):
     assert error.value.code == "REMOTE_MATERIAL_STAGING_INVALID"
     assert "old.jpg" in store.get_many(["old.jpg"])
     assert store.get_many(["new.jpg"]) == {}
+
+@pytest.mark.parametrize("review_kind", ["yolo", "detection"])
+def test_large_annotation_manifest_writes_are_batched(tmp_path, monkeypatch, review_kind):
+    total = 1001
+    candidate_keys = {
+        f"incoming/image-{index:05d}.jpg"
+        for index in range(total)
+    }
+    review_root = tmp_path / review_kind
+    annotation_member = (
+        "yolo/annotations.jsonl"
+        if review_kind == "yolo"
+        else REVIEW_DETECTION_ANNOTATIONS_MEMBER
+    )
+    annotations_path = review_root.joinpath(*annotation_member.split("/"))
+    annotations_path.parent.mkdir(parents=True, exist_ok=True)
+    with annotations_path.open("w", encoding="utf-8", newline="\n") as stream:
+        for index in range(total):
+            key = f"incoming/image-{index:05d}.jpg"
+            row = {
+                "object_key": key,
+                "split": "train",
+                "label_key": None,
+                "dataset_key": "data.yaml" if review_kind == "yolo" else None,
+                "annotation_status": "confirmed_empty",
+                "box_count": 0,
+                "boxes": [],
+                "issues": [],
+            }
+            stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+
+    store = ImportCandidateStore(tmp_path / f"{review_kind}.sqlite3")
+    original_manifest_many = store.manifest_many
+    manifest_batches = []
+
+    def counted_manifest_many(rows):
+        batch = list(rows)
+        manifest_batches.append(len(batch))
+        return original_manifest_many(batch)
+
+    monkeypatch.setattr(store, "manifest_many", counted_manifest_many)
+    meta = {
+        "classes": [{"class_id": 0, "name": "fire"}],
+        "intent": "",
+        "dataset_yaml": "data.yaml",
+    }
+    if review_kind == "yolo":
+        quality = _commit_yolo_review_annotations(
+            review_root,
+            store,
+            candidate_keys=candidate_keys,
+            meta=meta,
+            expected_prefix="incoming",
+        )
+    else:
+        quality = _commit_detection_review_annotations(
+            review_root,
+            store,
+            candidate_keys=candidate_keys,
+            meta=meta,
+            expected_prefix="incoming",
+            annotations_member=REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+            manifest_identity=REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+        )
+
+    assert manifest_batches == [500, 500, 1]
+    assert quality["images"] == total
 

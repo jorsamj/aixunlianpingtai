@@ -1957,6 +1957,7 @@ def _commit_detection_review_annotations(
         else PurePosixPath()
     )
     seen: set[str] = set()
+    manifests: list[dict[str, Any]] = []
     states: list[dict[str, Any]] = []
     boxes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -2017,6 +2018,9 @@ def _commit_detection_review_annotations(
         }
 
     def flush() -> None:
+        if manifests:
+            store.manifest_many(manifests)
+            manifests.clear()
         if states or boxes or issues:
             store.annotation_batch(states, boxes, issues)
             states.clear()
@@ -2234,7 +2238,7 @@ def _commit_detection_review_annotations(
                 "annotation_status": status,
                 "box_count": len(raw_boxes),
             })
-            store.manifest_many([{
+            manifests.append({
                 "object_key": key,
                 "split": split,
                 "yaml_key": (
@@ -2244,7 +2248,7 @@ def _commit_detection_review_annotations(
                         str(manifest_identity or annotations_member)
                     ).as_posix()
                 ),
-            }])
+            })
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()
     flush()
@@ -2317,6 +2321,7 @@ def _commit_yolo_review_annotations(
         else PurePosixPath()
     )
     seen: set[str] = set()
+    manifests: list[dict[str, Any]] = []
     states: list[dict[str, Any]] = []
     boxes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -2376,6 +2381,9 @@ def _commit_yolo_review_annotations(
         }
 
     def flush() -> None:
+        if manifests:
+            store.manifest_many(manifests)
+            manifests.clear()
         if states or boxes or issues:
             store.annotation_batch(states, boxes, issues)
             states.clear()
@@ -2600,7 +2608,7 @@ def _commit_yolo_review_annotations(
                 "annotation_status": status,
                 "box_count": len(raw_boxes),
             })
-            store.manifest_many([{
+            manifests.append({
                 "object_key": key,
                 "split": split,
                 "yaml_key": (
@@ -2609,7 +2617,7 @@ def _commit_yolo_review_annotations(
                         str(meta.get("dataset_yaml") or "data.yaml")
                     ).as_posix()
                 ),
-            }])
+            })
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()
     flush()
