@@ -261,3 +261,51 @@ def test_candidate_write_session_reuses_connection_but_commits_every_image(
     assert guard_count == total
     assert store.summary()["total"] == total
 
+def test_generation_prefix_20k_reads_bounded_pages(tmp_path: Path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="recovery-20k", page_size=50)
+    total = 20_000
+    image_ids = [f"image-{index:05d}" for index in range(total)]
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items(
+        {
+            "image_id": image_id,
+            "status": "failed" if index % 11 == 0 else "empty",
+            "boxes": [],
+        }
+        for index, image_id in enumerate(image_ids)
+    )
+
+    original_connect = store._connect
+    page_reads = []
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            normalized = " ".join(str(sql).split())
+            if "SELECT image_id,status FROM candidates ORDER BY ordinal" in normalized:
+                raise AssertionError("recovery must not fetch the full candidate table")
+            if (
+                "SELECT ordinal,image_id,status FROM candidates" in normalized
+                and "WHERE ordinal>?" in normalized
+                and "LIMIT 500" in normalized
+            ):
+                page_reads.append(normalized)
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(
+        store,
+        "_connect",
+        lambda: CountingConnection(original_connect()),
+    )
+    result = store.generation_prefix(image_ids)
+
+    assert result["next_index"] == total
+    assert result["failed"] == sum(1 for index in range(total) if index % 11 == 0)
+    assert result["succeeded"] + result["failed"] == total
+    assert len(page_reads) == 40
+

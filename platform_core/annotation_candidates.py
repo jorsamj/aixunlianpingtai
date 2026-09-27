@@ -188,29 +188,44 @@ class CandidateStore:
         """
         expected = [str(value) for value in image_ids]
         self._ready(commit_guard=commit_guard)
-        with closing(self._connect()) as db:
-            rows = db.execute(
-                "SELECT image_id,status FROM candidates ORDER BY ordinal"
-            ).fetchall()
-        if len(rows) > len(expected):
-            raise ValueError("annotation candidate store contains more rows than task input")
         succeeded = 0
         failed = 0
-        for index, row in enumerate(rows):
-            image_id = str(row["image_id"])
-            if image_id != expected[index]:
-                raise ValueError(
-                    "annotation candidate recovery order does not match immutable task input"
-                )
-            status = str(row["status"])
-            if status == "failed":
-                failed += 1
-            elif status in {"success", "empty"}:
-                succeeded += 1
-            else:
-                raise ValueError(f"annotation candidate has invalid generation status: {status}")
+        next_index = 0
+        after_ordinal = 0
+        with closing(self._connect()) as db:
+            while True:
+                rows = db.execute(
+                    "SELECT ordinal,image_id,status FROM candidates "
+                    "WHERE ordinal>? ORDER BY ordinal LIMIT 500",
+                    (after_ordinal,),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    if next_index >= len(expected):
+                        raise ValueError(
+                            "annotation candidate store contains more rows than task input"
+                        )
+                    image_id = str(row["image_id"])
+                    if image_id != expected[next_index]:
+                        raise ValueError(
+                            "annotation candidate recovery order does not match immutable task input"
+                        )
+                    status = str(row["status"])
+                    if status == "failed":
+                        failed += 1
+                    elif status in {"success", "empty"}:
+                        succeeded += 1
+                    else:
+                        raise ValueError(
+                            f"annotation candidate has invalid generation status: {status}"
+                        )
+                    next_index += 1
+                after_ordinal = int(rows[-1]["ordinal"])
+                if len(rows) < 500:
+                    break
         return {
-            "next_index": len(rows),
+            "next_index": next_index,
             "succeeded": succeeded,
             "failed": failed,
         }
