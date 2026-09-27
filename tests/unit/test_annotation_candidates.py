@@ -309,3 +309,13 @@ def test_generation_prefix_20k_reads_bounded_pages(tmp_path: Path, monkeypatch):
     assert result["succeeded"] + result["failed"] == total
     assert len(page_reads) == 40
 
+def test_generation_prefix_rejects_more_rows_than_immutable_input(tmp_path: Path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="recovery-overrun", page_size=50)
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": "one", "status": "empty", "boxes": []},
+        {"image_id": "two", "status": "empty", "boxes": []},
+    ])
+    with pytest.raises(ValueError, match="more rows than task input"):
+        store.generation_prefix(["one"])
+

@@ -193,19 +193,24 @@ class CandidateStore:
         next_index = 0
         after_ordinal = 0
         with closing(self._connect()) as db:
-            while True:
+            stored_total = int(
+                db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+            )
+            if stored_total > len(expected):
+                raise ValueError(
+                    "annotation candidate store contains more rows than task input"
+                )
+            while next_index < stored_total:
                 rows = db.execute(
                     "SELECT ordinal,image_id,status FROM candidates "
                     "WHERE ordinal>? ORDER BY ordinal LIMIT 500",
                     (after_ordinal,),
                 ).fetchall()
                 if not rows:
-                    break
+                    raise ValueError(
+                        "annotation candidate recovery rows changed during validation"
+                    )
                 for row in rows:
-                    if next_index >= len(expected):
-                        raise ValueError(
-                            "annotation candidate store contains more rows than task input"
-                        )
                     image_id = str(row["image_id"])
                     if image_id != expected[next_index]:
                         raise ValueError(
@@ -222,8 +227,6 @@ class CandidateStore:
                         )
                     next_index += 1
                 after_ordinal = int(rows[-1]["ordinal"])
-                if len(rows) < 500:
-                    break
         return {
             "next_index": next_index,
             "succeeded": succeeded,
