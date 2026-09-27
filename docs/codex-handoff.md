@@ -1,6 +1,222 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-27 AI 大批审核 / Recovery 与训练大文件 I/O 收口（最新）
+
+- 写入前真实代码 HEAD：`7a04c91df48a09453146f086feb0ff6dde807033`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- `7a04c91d...` 自身 **20 个主要 GitHub Actions workflows 全部 completed success (20/20)**：
+  - success = 20
+  - failure = 0
+  - queued = 0
+  - in_progress = 0
+- 本轮没有新增 CandidateStore / AnnotationRepository / Training runtime / PollRegistry / modal owner；只在现有正式 owner 内收掉连接、全表读取和大文件重复 I/O。
+
+### 1. AI 生成 CandidateStore 每图重复 SQLite connect — CLOSED
+
+提交：
+
+`469fdcec201edbf62934e1dc0c46f3855e90c6c9` — `perf: reuse AI candidate writer connection`
+
+旧正式 `run_ai_annotation()` 每生成一张图就：
+
+`store.append_items([item])`
+
+而一次 append 内部会先 `_ready()` 打开 SQLite，再重新 `_connect()` 做正式写入；10k AI 候选会产生大量重复 connect / PRAGMA / schema 检查。
+
+现在：
+
+- `CandidateStore.write_session()` 在一次 AI generation loop 内复用一条 writer connection；
+- **仍然每张图独立**：
+  - `BEGIN IMMEDIATE`
+  - generation fencing guard
+  - `COMMIT`
+- checkpoint 仍在 candidate commit 后写入；
+- 没有为了性能改成“200 张一起 commit”，因此已付费 provider 调用在崩溃后仍可逐图恢复，不能因批量事务回滚而重复调用 AI；
+- 1001 张永久合同要求：
+  - connection = 2（一次 ready + 一条长生命周期 writer）
+  - commit = 1001
+  - fencing guard = 1001。
+
+### 2. AI generation recovery 全表 fetchall — CLOSED
+
+提交：
+
+- `1e7e3b2e062deb495bf12dd7574b92987535bccd` — `perf: page AI recovery prefix reads`
+- `dba0e8dd6f1d32115ca2c612f66e951b2a2145d9` — `test: keep AI recovery paging exact`
+
+旧 `generation_prefix()`：
+
+`SELECT image_id,status FROM candidates ORDER BY ordinal`
+→ `fetchall()`
+
+20k/100k recovery 会一次把完整候选 projection 搬进 Python。
+
+现在：
+
+- 先 `COUNT(*)` 获取 durable stored_total；
+- 若 `stored_total > immutable task input`，立即 fail-closed；
+- 再按 ordinal **500/批** keyset 读取；
+- 20,000 candidate 固定：
+  - 1 次 COUNT truth
+  - 40 个真实数据页
+- 原顺序、status 合法性、candidate 数量上限均保持 fail-closed。
+
+#### 真实 CI 红灯记录
+
+`1e7e3b2e...` 的 AI Annotation Recovery 在 Ubuntu / Windows 都出现真实 completed failure。
+
+已读取真实 job log，失败均为新 20k 结构合同：
+
+- expected page reads = 40
+- actual page reads = 41
+
+原因不是 candidate truth 错误，而是 20,000 恰好被 500 整除时，旧分页循环还做第 41 次空页 SELECT。
+
+没有为了 40 次断言直接“最后一页强行 break”，因为那会丢失“store 比 immutable input 多行”的 overrun 检查。
+
+`dba0e8dd...` 改为先 COUNT 真相，再只读取 stored_total 对应的真实数据页，并补：
+
+`test_generation_prefix_rejects_more_rows_than_immutable_input`
+
+保证性能合同与 fail-closed recovery 同时成立。
+
+### 3. AI review / Commit iterator 每页重复 SQLite connection — CLOSED
+
+提交：
+
+`8240eafb905f8f184b2a42718656fabbb9aeb722` — `perf: reuse AI candidate read connections`
+
+旧：
+
+- `iter_items()`
+- `iter_accepted_items()`
+
+每 200 candidate page 都重新打开一次 SQLite connection。
+
+这会影响：
+
+- review 首屏所需 `label_summary()` 全候选统计；
+- accepted candidate durable Commit 流。
+
+现在：
+
+- keyset page 仍保持 200；
+- 同一次 iterator 只复用一条 read connection；
+- 10,001 rows 固定 51 个 bounded page query；
+- 每个 iterator connection = 2（一次 ready + 一条长生命周期 read）；
+- candidate 内容、decision、accepted truth 均未缓存或改变。
+
+`8240eafb...` 的 AI Annotation Recovery 已 completed success；最新 `7a04c91d...` 上 AI Annotation Recovery 同样 completed success，Ubuntu/Windows recovery fencing contracts 均 success。
+
+### 4. 远程 Agent 训练失败日志整文件 read_text — CLOSED
+
+提交：
+
+`75b5d36ea2cc3cb54e29d64f18147a432e99df26` — `perf: bound remote training failure logs`
+
+旧失败 fallback：
+
+`runtime_log.read_text(...)[-6000:]`
+
+即使最终只展示 6000 字符，也会先把整个长期训练日志读进内存。
+
+现在：
+
+- `_tail_log_text()` 只 seek/read 文件尾部有界字节；
+- 错误优先级保持：
+  `job.error → job.message → bounded runtime log tail`；
+- 不改变训练成功/失败判定。
+
+`75b5d36e...` 自身 **20/20 workflows 全绿**，其中 Remote Training Runtime success。
+
+### 5. 本地训练模型官方 outputs：copy 后再次 full hash — CLOSED
+
+提交：
+
+`90ad87c597ecf8cbbe8a5a483e0a550fb3dba9cb` — `perf: hash training models during archive copy`
+
+旧 finalization：
+
+`shutil.copy2(source, destination)`
+→ `_sha256(destination)`
+
+对几十/几百 MiB `.pt` 产生额外完整磁盘读取。
+
+现在：
+
+- `_copy2_with_sha256()` 在 source→official task output 的 copy pass 同步计算：
+  - exact written SHA256
+  - exact written size
+- `copystat()` 保留原 `copy2` 文件元数据语义；
+- result `verified_models[]` 绑定实际写入 destination 的证据；
+- finalization winner、恢复覆盖 outputs、算法版本归档语义不变。
+
+`90ad87c5...` 自身 **20/20 workflows 全绿**，Training Input Integrity 与 Remote Training Runtime 均 success。
+
+### 6. Remote Training result ZIP：解压后再次 full hash embedded model — CLOSED
+
+提交：
+
+`cfec5f362a18038800c8ae69c2102a894fb2fa29` — `perf: hash remote training models during extract`
+
+旧 verifier：
+
+- ZIP 解压 `models/*.pt` 写盘；
+- 再 `_sha256(path)` 整文件读取；
+- 与 manifest expected SHA 比对。
+
+现在：
+
+- 每个 ZIP member 在**解压写盘同一 pass**同步记录 `(written_size, sha256)`；
+- embedded model 按这份 extraction evidence 与 manifest expected size/SHA fail-closed；
+- outer result ZIP 的 expected SHA/size 校验继续保留；
+- tampered model / undeclared member / generation identity 合同均未放宽；
+- separate-object-v1 行为不变。
+
+Remote Training Runtime 的 Ubuntu/Windows
+`Remote training publication and model asset contracts`
+均真实运行 `tests/unit/test_remote_training_results.py` 并 success。
+
+### 7. Primary model lineage / evaluation 又一次 full hash — CLOSED
+
+提交：
+
+`7a04c91df48a09453146f086feb0ff6dde807033` — `perf: reuse archived training model evidence`
+
+旧：
+
+官方 outputs 已经有 `verified_models[].sha256 / size_bytes` 后，
+创建 training lineage / evaluation 前又：
+
+`model_sha256 = _sha256(primary)`
+
+现在：
+
+- primary ref 从 `best_model_ref / last_model_ref / verified_models[0]` 确定；
+- SHA/size 直接复用**刚完成官方 outputs 归档时绑定的 verified evidence**；
+- lineage、evaluation、算法版本共用同一份 artifact truth；
+- 不再把主模型整文件再读一次。
+
+最新 `7a04c91d...`：
+
+- AI Annotation Recovery success；
+- Training Input Integrity success；
+- Remote Training Runtime success；
+- Windows/Ubuntu Remote Training publication/model contracts success；
+- Windows/Ubuntu durable preparation/integration success；
+- **全部 20 个主要 workflows completed success**。
+
+### 本轮明确保留、不盲目优化的边界
+
+1. `CandidateStore.label_summary()` 仍需要遍历候选 JSON 才能得到真实 per-label box/image 统计。当前已经是 bounded pages + 单 read connection；在没有 profiling 证明它仍是主瓶颈前，不新增第二套 label-stat owner。
+2. ModelArtifact `discover_version_artifacts()` 会重新 hash 当前本地模型/转换产物。这承担“训练结束后文件是否被替换”的当前内容身份校验，并用于 content-addressed artifact_id/Object Key，不能直接用历史 SHA 绕过。
+3. `ensure_uploaded()` 不会再次 hash 本地模型；它使用 discovery SHA，并通过 provider stat / server-visible SHA/size 校验上传对象。
+4. StorageProvider 的 per-object `exists()+stat()`、COCO 多 JSON decoded documents 内存项继续按上一节 handoff 约束：没有真实 OSS/S3 RTT / 峰值内存 profiling 前，不扩展新 bulk protocol 或流式 JSON parser。
+5. 自动化结构合同与 CI 不替代真实 20k/50k 图片、NVIDIA Linux、OSS RTT、SQLite WAL contention、峰值 RSS、真实大模型文件 I/O profiling。
+
+
+
 ## 2026-09-27 23:xx Annotation source identity 批量化与 SHA fencing 收口（最新）
 
 - 写入前真实远端 HEAD：`df5f00351576233c27e18ddead5c0b18adc35384`。
