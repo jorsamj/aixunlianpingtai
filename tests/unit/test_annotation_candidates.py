@@ -211,3 +211,53 @@ def test_label_revalidation_pages_large_candidate_store(tmp_path: Path, monkeypa
     store.remap_labels({}, {"fire": 0})
     assert len(page_reads) == 6
 
+def test_candidate_write_session_reuses_connection_but_commits_every_image(
+    tmp_path: Path, monkeypatch,
+):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="generation-writer", page_size=50)
+    total = 1001
+    store.initialize(labels=["fire"], total_images=total)
+
+    original_connect = store._connect
+    connection_count = 0
+    commit_count = 0
+    guard_count = 0
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, *args, **kwargs):
+            return self._inner.execute(*args, **kwargs)
+
+        def commit(self):
+            nonlocal commit_count
+            commit_count += 1
+            return self._inner.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def counted_connect():
+        nonlocal connection_count
+        connection_count += 1
+        return CountingConnection(original_connect())
+
+    def guard():
+        nonlocal guard_count
+        guard_count += 1
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+    with store.write_session(commit_guard=guard) as append_candidate:
+        for index in range(total):
+            append_candidate([{
+                "image_id": f"image-{index:05d}",
+                "status": "empty",
+                "boxes": [],
+            }])
+
+    assert connection_count == 2
+    assert commit_count == total
+    assert guard_count == total
+    assert store.summary()["total"] == total
+

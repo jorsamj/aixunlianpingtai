@@ -423,3 +423,11 @@ def test_generated_candidate_freezes_image_display_dimensions(tmp_path, monkeypa
     assert item["width"] == 1280
     assert item["height"] == 720
 
+def test_ai_generation_uses_reusable_candidate_write_session():
+    import inspect
+
+    source = inspect.getsource(run_ai_annotation)
+    assert "with store.write_session(" in source
+    assert "append_candidate([item])" in source
+    assert "store.append_items(" not in source
+

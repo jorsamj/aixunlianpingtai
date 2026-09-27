@@ -169,62 +169,63 @@ def run_ai_annotation(
             current_item=str(images[start - 1].get("id") or ""),
         )
 
-    for index in range(start, len(images)):
-        if context.cancel_requested():
-            return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-        image = images[index]
-        try:
-            generated = annotate(runtime_request, image)
-            boxes = list(generated.get("boxes") or [])
-            item = {
-                "image_id": str(image["id"]),
-                "filename": image.get("filename"),
-                "url": image.get("url"),
-                "width": image.get("width"),
-                "height": image.get("height"),
-                "status": "success" if boxes else "empty",
-                "boxes": boxes,
-                **{key: generated.get(key) for key in (
-                    "raw_response_hash", "request_id", "latency_ms", "provider", "model"
-                ) if generated.get(key) not in (None, "")},
-            }
-            next_succeeded = succeeded + 1
-            next_failed = failed
-        except Exception as error:
-            item = {
-                "image_id": str(image.get("id") or ""),
-                "filename": image.get("filename"),
-                "url": image.get("url"),
-                "width": image.get("width"),
-                "height": image.get("height"),
-                "status": "failed",
-                "boxes": [],
-                "error": _public_error(error),
-            }
-            next_succeeded = succeeded
-            next_failed = failed + 1
+    with store.write_session(
+        commit_guard=lambda: _assert_generation_commit(context),
+    ) as append_candidate:
+        for index in range(start, len(images)):
+            if context.cancel_requested():
+                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+            image = images[index]
+            try:
+                generated = annotate(runtime_request, image)
+                boxes = list(generated.get("boxes") or [])
+                item = {
+                    "image_id": str(image["id"]),
+                    "filename": image.get("filename"),
+                    "url": image.get("url"),
+                    "width": image.get("width"),
+                    "height": image.get("height"),
+                    "status": "success" if boxes else "empty",
+                    "boxes": boxes,
+                    **{key: generated.get(key) for key in (
+                        "raw_response_hash", "request_id", "latency_ms", "provider", "model"
+                    ) if generated.get(key) not in (None, "")},
+                }
+                next_succeeded = succeeded + 1
+                next_failed = failed
+            except Exception as error:
+                item = {
+                    "image_id": str(image.get("id") or ""),
+                    "filename": image.get("filename"),
+                    "url": image.get("url"),
+                    "width": image.get("width"),
+                    "height": image.get("height"),
+                    "status": "failed",
+                    "boxes": [],
+                    "error": _public_error(error),
+                }
+                next_succeeded = succeeded
+                next_failed = failed + 1
 
-        # A provider call can outlive the lease/cancellation decision. Never
-        # publish its result without re-checking current execution ownership.
-        if context.cancel_requested():
-            return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-        store.append_items(
-            [item],
-            commit_guard=lambda: _assert_generation_commit(context),
-        )
-        succeeded = next_succeeded
-        failed = next_failed
-        context.save_checkpoint({
-            "next_index": index + 1,
-            "succeeded": succeeded,
-            "failed": failed,
-            "source": "candidate_store",
-        })
-        context.heartbeat(
-            progress=int((index + 1) / max(1, len(images)) * 70),
-            stage="AI_ANNOTATION",
-            current_item=str(image.get("id") or ""),
-        )
+            # A provider call can outlive the lease/cancellation decision. Never
+            # publish its result without re-checking current execution ownership.
+            if context.cancel_requested():
+                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+            append_candidate([item])
+            succeeded = next_succeeded
+            failed = next_failed
+            context.save_checkpoint({
+                "next_index": index + 1,
+                "succeeded": succeeded,
+                "failed": failed,
+                "source": "candidate_store",
+            })
+            context.heartbeat(
+                progress=int((index + 1) / max(1, len(images)) * 70),
+                stage="AI_ANNOTATION",
+                current_item=str(image.get("id") or ""),
+            )
+
 
     summary = store.summary()
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {

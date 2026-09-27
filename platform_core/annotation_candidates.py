@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -109,6 +109,24 @@ class CandidateStore:
                 boxes_count=excluded.boxes_count,item_json=excluded.item_json""",
             (image_id, str(item.get("status") or "failed"), accepted, len(item["boxes"]), json.dumps(item, ensure_ascii=False)))
 
+    def _append_items_transaction(
+        self,
+        db,
+        items: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            for item in items:
+                self._put(db, item)
+            if commit_guard is not None:
+                commit_guard()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
     def append_items(
         self,
         items: Iterable[dict[str, Any]],
@@ -118,22 +136,41 @@ class CandidateStore:
         """Append/update candidates and optionally prove task ownership before commit.
 
         Candidate rows live in their own SQLite file, so obtaining the fenced
-        artifact path alone is not enough to fence a later SQLite commit.  The
+        artifact path alone is not enough to fence a later SQLite commit. The
         production AI annotation handler supplies a WorkerContext-backed guard
-        so a stale execution cannot commit model output after losing its lease.
+        so stale/late model output cannot commit after losing its lease.
         """
         self._ready(commit_guard=commit_guard)
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
-            try:
-                for item in items:
-                    self._put(db, item)
-                if commit_guard is not None:
-                    commit_guard()
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
+            self._append_items_transaction(
+                db,
+                items,
+                commit_guard=commit_guard,
+            )
+
+    @contextmanager
+    def write_session(
+        self,
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ):
+        """Reuse one connection while keeping every append independently durable.
+
+        AI generation must keep per-image recovery truth so an already-billed
+        provider call is not repeated after a crash. The session therefore
+        reuses only connection/schema setup; each append still executes its own
+        BEGIN IMMEDIATE, fencing guard, and COMMIT.
+        """
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            def append(items: Iterable[dict[str, Any]]) -> None:
+                self._append_items_transaction(
+                    db,
+                    items,
+                    commit_guard=commit_guard,
+                )
+
+            yield append
 
     def generation_prefix(
         self,
