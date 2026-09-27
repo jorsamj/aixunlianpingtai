@@ -7743,6 +7743,26 @@ def job_status(project_id: str, job_id: str):
     return response
 
 
+def _tail_training_log_text(path: Path, max_chars: int = 120000) -> str:
+    """Read only a bounded suffix of a potentially very large UTF-8 task log."""
+    try:
+        size = int(path.stat().st_size)
+        if size <= 0:
+            return ""
+        # UTF-8 uses at most four bytes per code point. Reading this many bytes
+        # is enough to recover max_chars from the suffix without scanning the
+        # entire log. Starting inside a multibyte sequence can lose at most one
+        # partial code point because decoding is intentionally best-effort.
+        max_bytes = max(4096, int(max_chars) * 4 + 4)
+        start = max(0, size - max_bytes)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            value = stream.read(max_bytes)
+        return value.decode("utf-8", errors="ignore")[-int(max_chars):].strip()
+    except (OSError, ValueError):
+        return ""
+
+
 @app.get("/api/projects/{project_id}/jobs/{job_id}/log", response_class=PlainTextResponse)
 def job_log(project_id: str, job_id: str):
     get_project(project_id)
@@ -7752,10 +7772,9 @@ def job_log(project_id: str, job_id: str):
 
     sections: List[str] = []
     log_file = project_dir(project_id) / "jobs" / job_id / "train.log"
-    if log_file.exists():
-        text = log_file.read_text(encoding="utf-8", errors="ignore").strip()
-        if text:
-            sections.append(text)
+    text = _tail_training_log_text(log_file)
+    if text:
+        sections.append(text)
 
     # Durable task logs contain scheduler/worker/remote-execution lifecycle
     # evidence that train.log alone cannot provide. Merge them into the same
@@ -7764,10 +7783,9 @@ def job_log(project_id: str, job_id: str):
     if task is not None and str(task.log_ref or "").strip():
         try:
             durable_log = shared_task_artifacts().artifact_path(job_id, task.log_ref)
-            if durable_log.is_file():
-                text = durable_log.read_text(encoding="utf-8", errors="ignore").strip()
-                if text and (not sections or text != sections[-1]):
-                    sections.append("[任务运行日志]\n" + text)
+            text = _tail_training_log_text(durable_log)
+            if text and (not sections or text != sections[-1]):
+                sections.append("[任务运行日志]\n" + text)
         except (OSError, ValueError):
             pass
 

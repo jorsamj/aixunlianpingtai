@@ -106,3 +106,30 @@ def test_sync_jobs_index_never_writes_read_projection_back_to_worker_job(tmp_pat
     index = json.loads((jobs_dir / "index.json").read_text(encoding="utf-8"))
     assert index[0]["progress_percent"] == 35
 
+def test_training_log_tail_reader_is_bounded_and_keeps_latest_text(tmp_path):
+    import app as app_module
+
+    path = tmp_path / "huge-train.log"
+    early_marker = "EARLY-ONLY-MARKER\n"
+    latest_marker = "LATEST-TRAINING-LINE"
+    path.write_text(
+        early_marker + ("epoch output\n" * 100_000) + latest_marker,
+        encoding="utf-8",
+    )
+
+    tail = app_module._tail_training_log_text(path, max_chars=120_000)
+
+    assert len(tail) <= 120_000
+    assert tail.endswith(latest_marker)
+    assert early_marker.strip() not in tail
+
+
+def test_training_job_log_endpoint_uses_bounded_tail_helper():
+    import inspect
+    import app as app_module
+
+    source = inspect.getsource(app_module.job_log)
+    assert "_tail_training_log_text(log_file)" in source
+    assert "_tail_training_log_text(durable_log)" in source
+    assert ".read_text(" not in source
+
