@@ -151,6 +151,23 @@ def _read_json(path: Path, default: Any) -> Any:
     return value
 
 
+def _tail_log_text(path: Path, *, max_chars: int = 6000) -> str:
+    """Read only a bounded UTF-8 suffix from a potentially large runtime log."""
+    try:
+        size = int(path.stat().st_size)
+        if size <= 0:
+            return ""
+        max_chars = max(1, int(max_chars))
+        max_bytes = max(4096, max_chars * 4 + 4)
+        start = max(0, size - max_bytes)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            raw = stream.read(max_bytes)
+        return raw.decode("utf-8", errors="replace")[-max_chars:].strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(
@@ -1156,13 +1173,7 @@ class AgentTrainingRunner:
                 if not error:
                     error = str(job.get("message") or "").strip()
                 if not error:
-                    try:
-                        error = runtime_log.read_text(
-                            encoding="utf-8",
-                            errors="replace",
-                        )[-6000:]
-                    except OSError:
-                        error = ""
+                    error = _tail_log_text(runtime_log, max_chars=6000)
                 raise AgentTrainingRuntimeError(
                     error
                     or f"training worker exited with code "

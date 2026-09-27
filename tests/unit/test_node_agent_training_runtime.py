@@ -21,6 +21,7 @@ from platform_core.node_agent_executor_runtime import (
 from platform_core.node_agent_training_runtime import (
     AgentTrainingRunner,
     AgentTrainingRuntimeError,
+    _tail_log_text,
 )
 from platform_core.remote_training_transport import create_training_bundle_archive
 from platform_core.task_runtime.process_control import (
@@ -1070,5 +1071,24 @@ def test_agent_failure_source_prefers_worker_job_error_over_secondary_message():
     source = Path("platform_core/node_agent_training_runtime.py").read_text(encoding="utf-8")
     error_read = source.index('error = str(job.get("error") or "").strip()')
     message_read = source.index('error = str(job.get("message") or "").strip()', error_read)
+    tail_read = source.index("_tail_log_text(runtime_log, max_chars=6000)", message_read)
     assert error_read >= 0
     assert message_read > error_read
+    assert tail_read > message_read
+    assert "runtime_log.read_text(" not in source
+
+def test_agent_training_log_tail_reader_is_bounded(tmp_path):
+    path = tmp_path / "large-runtime.log"
+    early = "EARLY-RUNTIME-MARKER"
+    latest = "LATEST-RUNTIME-FAILURE"
+    path.write_text(
+        early + "\n" + ("training output line\n" * 100_000) + latest,
+        encoding="utf-8",
+    )
+
+    tail = _tail_log_text(path, max_chars=6000)
+
+    assert len(tail) <= 6000
+    assert tail.endswith(latest)
+    assert early not in tail
+
