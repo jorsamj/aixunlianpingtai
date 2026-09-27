@@ -391,3 +391,35 @@ def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monk
     assert journal_writes == []
     assert replay["applied_images"] == total
     assert replay["boxes_added"] == 0
+
+def test_generated_candidate_freezes_image_display_dimensions(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"],
+        "labels": ["fire"],
+        "threshold": 0.45,
+        "model_config_id": "model-1",
+        "overwrite": False,
+    })
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.load_task_images",
+        lambda *_: [{
+            "id": "one",
+            "filename": "one.jpg",
+            "url": "/materials/one/content",
+            "width": 1280,
+            "height": 720,
+        }],
+    )
+
+    outcome = run_ai_annotation(
+        context,
+        annotate=lambda _request, _image: {"boxes": []},
+    )
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    item = CandidateStore(context.artifacts, task_id="ai-1").get("one")
+    assert item["filename"] == "one.jpg"
+    assert item["url"] == "/materials/one/content"
+    assert item["width"] == 1280
+    assert item["height"] == 720
+

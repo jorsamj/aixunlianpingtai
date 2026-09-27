@@ -19341,15 +19341,16 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     items = [dict(item) for item in page.items]
-    page_ids = [
+    missing_ids = list(dict.fromkeys(
         str(item.get("image_id") or "")
         for item in items
         if str(item.get("image_id") or "")
-    ]
+        and any(item.get(field) in (None, "") for field in ("url", "filename", "width", "height"))
+    ))
     materials = {
         str(row.get("id") or ""): public_material(project_id, row)
-        for row in material_store(project_id).get_many(page_ids)
-    } if page_ids else {}
+        for row in material_store(project_id).get_many(missing_ids)
+    } if missing_ids else {}
     for item in items:
         material = materials.get(str(item.get("image_id") or ""))
         if not material:

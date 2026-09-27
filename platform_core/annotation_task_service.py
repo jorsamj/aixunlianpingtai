@@ -180,6 +180,8 @@ def run_ai_annotation(
                 "image_id": str(image["id"]),
                 "filename": image.get("filename"),
                 "url": image.get("url"),
+                "width": image.get("width"),
+                "height": image.get("height"),
                 "status": "success" if boxes else "empty",
                 "boxes": boxes,
                 **{key: generated.get(key) for key in (
@@ -193,6 +195,8 @@ def run_ai_annotation(
                 "image_id": str(image.get("id") or ""),
                 "filename": image.get("filename"),
                 "url": image.get("url"),
+                "width": image.get("width"),
+                "height": image.get("height"),
                 "status": "failed",
                 "boxes": [],
                 "error": _public_error(error),

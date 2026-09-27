@@ -504,3 +504,45 @@ def test_candidate_page_enriches_only_current_material_page(
         f"/api/v61/projects/{project_id}/materials/history-000/content"
     )
 
+def test_complete_candidate_page_does_not_reload_material_projection(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "complete-candidate",
+        "filename": "complete.jpg",
+        "url": "/api/v61/projects/p/materials/complete-candidate/content",
+        "width": 1920,
+        "height": 1080,
+        "status": "success",
+        "boxes": [],
+    }])
+    lease = repository.claim_next(
+        "test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"},
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    class ForbiddenMaterials:
+        def get_many(self, _ids):
+            raise AssertionError("complete candidate metadata must not reload MaterialRepository")
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: ForbiddenMaterials())
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=24"
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["filename"] == "complete.jpg"
+    assert item["width"] == 1920
+    assert item["height"] == 1080
+
