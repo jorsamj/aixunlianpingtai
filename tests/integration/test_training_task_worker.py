@@ -182,6 +182,12 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert "image-7" not in set(snapshot["ids"]["train"] + snapshot["ids"]["validation"] + snapshot["ids"]["test"])
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
+    archived_model = artifacts.artifact_path(
+        "task-one", result["verified_models"][0]["ref"],
+    )
+    assert result["verified_models"][0]["sha256"] == hashlib.sha256(
+        archived_model.read_bytes()
+    ).hexdigest()
     assert (artifacts.artifact_path("task-one", "work/bundle/manifest.json")).is_file()
     bundle_manifest = artifacts.read_json("task-one", "work/bundle/manifest.json")
     bundled_ids = {
@@ -211,3 +217,12 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert result["training_lineage"] == versions[0]["training_lineage"]
     assert result["evaluation"] == versions[0]["evaluation"]
     assert result["iteration_decision"] == versions[0]["iteration_decision"]
+
+def test_training_model_archive_hashes_during_copy():
+    import inspect
+
+    source = inspect.getsource(training_tasks_module.TrainingHandler)
+    assert "_copy2_with_sha256(source, destination)" in source
+    assert "shutil.copy2(source, destination)" not in source
+    assert '"sha256": _sha256(destination)' not in source
+

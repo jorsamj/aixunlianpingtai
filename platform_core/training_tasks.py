@@ -68,6 +68,29 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _copy2_with_sha256(source: Path, destination: Path) -> tuple[int, str]:
+    """Copy one artifact while hashing the exact bytes written to its destination."""
+    digest = hashlib.sha256()
+    size_bytes = 0
+
+    class CountingHashingReader(_HashingReader):
+        def read(self, size: int = -1):
+            nonlocal size_bytes
+            chunk = super().read(size)
+            if chunk:
+                size_bytes += len(chunk)
+            return chunk
+
+    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+        shutil.copyfileobj(
+            CountingHashingReader(input_stream, digest),
+            output_stream,
+            length=1024 * 1024,
+        )
+    shutil.copystat(source, destination)
+    return size_bytes, digest.hexdigest()
+
+
 def _portable_relative(reference: str) -> Path:
     raw = str(reference or "")
     value = Path(raw)
@@ -1268,11 +1291,11 @@ class TrainingHandler:
             ref = f"outputs/{index:02d}_{source.name}"
             destination = context.artifacts.artifact_path(context.task.task_id, ref)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            size_bytes, digest = _copy2_with_sha256(source, destination)
             artifact = {
                 "ref": ref,
-                "sha256": _sha256(destination),
-                "size_bytes": destination.stat().st_size,
+                "sha256": digest,
+                "size_bytes": size_bytes,
             }
             verified_models.append(artifact)
             output_by_source[str(source)] = destination.resolve()
