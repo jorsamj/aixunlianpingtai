@@ -175,6 +175,23 @@ def _annotation_state(image: Mapping[str, Any], boxes: Sequence[Mapping[str, Any
     return str(image.get("annotation_state") or ("annotated" if boxes else "unannotated"))
 
 
+def _training_ground_truth_state(
+    image_id: str,
+    image: Mapping[str, Any],
+    boxes: Sequence[Mapping[str, Any]],
+) -> str:
+    """Accept only formal Ground Truth; cleaning never implies a negative label."""
+    state = _annotation_state(image, boxes)
+    if state not in {"annotated", "confirmed_empty"}:
+        raise ValueError(
+            f"训练素材 {image_id} 尚未形成正式标注 Ground Truth；"
+            "清洗完成不能替代人工/导入确认的标注或“已确认无目标”"
+        )
+    if bool(boxes) != (state == "annotated"):
+        raise ValueError(f"训练素材 {image_id} 的正式标注状态与标注框不一致")
+    return state
+
+
 def _annotation_scope(
     image: Mapping[str, Any],
     boxes: Sequence[Mapping[str, Any]],
@@ -284,17 +301,8 @@ def build_snapshot(
         image = by_id.get(image_id)
         if image is None:
             raise ValueError(f"训练素材 {image_id} 不存在")
-        processed = bool(
-            image.get("annotated")
-            or image.get("annotation_state") in {"annotated", "confirmed_empty"}
-            or image.get("processing_status") == "processed"
-            or image.get("cleaned_at")
-            or image.get("clean_skipped")
-        )
-        if not processed:
-            raise ValueError(f"训练素材 {image_id} 仍是未处理状态")
         boxes = list(image.get("boxes") or [])
-        state = _annotation_state(image, boxes)
+        state = _training_ground_truth_state(image_id, image, boxes)
         raw_scope = _annotation_scope(image, boxes)
         scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
         annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
@@ -353,19 +361,11 @@ def _build_snapshot_v2(
             image = by_id.get(image_id)
             if image is None:
                 raise ValueError(f"训练素材 {image_id} 不存在")
-            if not bool(
-                image.get("annotated")
-                or image.get("annotation_state") in {"annotated", "confirmed_empty"}
-                or image.get("processing_status") == "processed"
-                or image.get("cleaned_at")
-                or image.get("clean_skipped")
-            ):
-                raise ValueError(f"训练素材 {image_id} 仍是未处理状态")
             actual_hash = str(image.get("content_sha256") or "").strip()
             if actual_hash != manifest.content_hashes.get(image_id, ""):
                 raise ValueError(f"训练素材 {image_id} content hash 已变化")
             boxes = list(image.get("boxes") or [])
-            state = _annotation_state(image, boxes)
+            state = _training_ground_truth_state(image_id, image, boxes)
             raw_scope = _annotation_scope(image, boxes)
             scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
             annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
