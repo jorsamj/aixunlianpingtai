@@ -1,6 +1,125 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-27 22:xx 导入大批量内存与 Annotation SQLite 事务收口（最新）
+
+- 写入前真实远端 HEAD：`19e986e6a8409523782cd0450ccba47452e8dbba`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- 当前 HEAD 自身 **20 个主要 GitHub Actions workflows 全部 completed success (20/20)**。
+- 其中 Remote Material Import：
+  - API success；
+  - Real Chrome success；
+  - Windows contract success；
+  - Ubuntu contract success。
+- 本节只记录本轮真实完成内容；结构测试仍不能替代真实 20k/50k、OSS/S3 RTT、峰值内存和 NVIDIA Linux profiling。
+
+### 1. Remote Material review 250k 行 Python 大列表 — CLOSED
+
+并发提交：
+
+`0241d70458ec63ed80ebb2a83c05711dc5b43a2d` — `perf: stream remote material review truth`
+
+旧控制面：
+
+- `_read_review_rows()` 同时保留完整 `candidates[]`；
+- 另保留完整 `staged[]`；
+- 另有 `seen set`；
+- YOLO/COCO/VOC 调用方再构造完整 `candidate_keys set`；
+- `RemoteMaterialStagingStore.replace_many()` 又先构造 `values[]`。
+
+最大 review 合同允许 `_MAX_REVIEW_ROWS = 250_000`，因此 20k~250k 导入会被多份 Python dict/list 放大峰值内存。
+
+现在：
+
+- 已验证 candidate truth 写入临时 `verified-review.jsonl`；
+- `ImportCandidateStore.upsert_many()` 直接流式消费 generator；
+- `RemoteMaterialStagingStore.replace_many()` 改为流式 `executemany`；
+- staging 后段坏 row 时整 transaction rollback，旧 staging truth 保留；
+- 只保留 annotation coverage 所需的 candidate key set，不再同时保留两份大 dict list；
+- archive/payload SHA、尺寸、图片合法性、target prefix、storage identity、annotation coverage 均保持 fail-closed；
+- 没有新增第二套 ImportCandidateStore / staging owner / import runtime。
+
+新增 **10,001 行**结构合同，明确 candidate/staging 输入必须是 generator，不得退回 list/tuple。
+
+### 2. Remote YOLO / COCO / VOC annotation manifest 每图事务 — CLOSED
+
+提交：
+
+`a76566b6eddb29ae8b4cf2652386c255854f99c4` — `perf: batch remote annotation manifests`
+
+旧：
+
+- boxes/issues/state 已经有 bounded flush；
+- 但每张图仍 `store.manifest_many([single])`；
+- 20k annotation image 就产生约 20k 个 dataset_manifest SQLite transaction。
+
+现在：
+
+- manifest row 并入已有 annotation flush；
+- 顺序保持 **manifest first → annotation update**；
+- YOLO 与 COCO/VOC 共用同样批量边界；
+- 1001 张永久合同固定为 `500 / 500 / 1` 三次 manifest transaction；
+- box/issue 内存仍有 5000 条上限，不把“N+1 修复”换成“大内存 batch”。
+
+Remote Material Import 在该方向后续 HEAD 上已全绿。
+
+### 3. 本地 COCO / Pascal VOC scanner 每图 manifest + annotation transaction — CLOSED
+
+提交：
+
+`19e986e6a8409523782cd0450ccba47452e8dbba` — `perf: batch COCO VOC annotation writes`
+
+旧 `DetectionDatasetScanner`：
+
+每张 COCO/VOC image 都执行：
+
+`manifest_many([row])`
++
+`annotation_batch([state], boxes, issues)`
+
+即大数据集仍是 O(N) SQLite transaction。
+
+现在复用原 `ImportCandidateStore`，增加私有 bounded flush：
+
+- manifest rows：最多 500 image/批；
+- annotation states：最多 500 image/批；
+- box + issue：达到 5000 即提前 flush；
+- manifest 仍先于 annotation batch 持久化；
+- candidate、split、external class、confirmed_empty、source provenance、label mapping 规则均未改变；
+- 没有新增 scanner owner/store/runtime。
+
+1001 张 COCO 与 VOC 结构合同均验证：
+
+`500 / 500 / 1`
+
+Windows + Ubuntu 的 `Agent material and transport contracts` 都 completed success，当前 HEAD 总体 20/20 success。
+
+### 当前下一项 P1：annotation source identity 逐文件 SQLite 往返
+
+源码已确认但尚未修改：
+
+1. `DetectionDatasetScanner._read_annotation_source()`
+   - 每个 COCO JSON / VOC XML：
+     - `inventory_for_keys([key])`
+     - 读字节并计算 SHA
+     - `inventory_many([single])`
+   - VOC 最多允许 250,000 XML，因此会形成明显逐文件 DB 往返。
+
+2. `YoloImportScanner._record_text_identity()`
+   - 每个 dataset TXT / label TXT 同样做单 key inventory read + 单 row identity write。
+
+下一步只能在保持以下真相的前提下批量化：
+
+- 读取前/读取后 size/hash/source identity fencing；
+- 文本对象变化必须 fail-closed；
+- 已验证 SHA 必须进入现有 `dataset_objects` owner；
+- 不因为性能去掉 annotation source evidence；
+- 不新增第二套 source-identity store。
+
+建议做法是复用 scanner 当前已有的 100/500 key page：批读 expected inventory、读取后把 verified identity 放入 bounded sink，再通过现有 `inventory_many()` 批量写回。
+
+
+
 ## 2026-09-26 21:xx AI 审核拒绝路径重复全扫收口（最新）
 
 - 写入前真实远端 HEAD：`64015907bb115479b9297cdc1171a4fa54a1cdcd`。
