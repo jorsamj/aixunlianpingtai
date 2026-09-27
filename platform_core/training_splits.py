@@ -72,13 +72,13 @@ _COMPONENT_RELATION_FIELDS = (
 
 
 def _processed(row: Mapping[str, Any]) -> bool:
-    return bool(
-        row.get("annotation_state") in {"annotated", "confirmed_empty"}
-        or row.get("annotated")
-        or row.get("processing_status") == "processed"
-        or row.get("cleaned_at")
-        or row.get("clean_skipped")
-    )
+    """Training eligibility is formal annotation truth, never cleaning state."""
+    state = str(row.get("annotation_state") or "").strip().lower()
+    if state:
+        return state in {"annotated", "confirmed_empty"}
+    # Legacy callers may not carry annotation_state yet. Keep only the old
+    # explicit annotation flag; processing/cleaning metadata is not Ground Truth.
+    return bool(row.get("annotated"))
 
 
 def _identity(row: Mapping[str, Any]) -> str:
