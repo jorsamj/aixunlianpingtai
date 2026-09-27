@@ -341,7 +341,7 @@ def test_large_detection_annotation_writes_are_batched(tmp_path, monkeypatch):
         scanner, store = _scanner(root, payloads)
         monkeypatch.setattr(scanner, "_inspect", fake_candidate)
         if import_format == "voc":
-            def read_voc(key, _maximum):
+            def read_voc(key, _maximum, **_kwargs):
                 stem = Path(key).stem
                 return (
                     f"<annotation><filename>{stem}.jpg</filename>"

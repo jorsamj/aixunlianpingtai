@@ -231,7 +231,7 @@ class DetectionDatasetScanner:
         if listed_size and listed_size != actual_size:
             raise DetectionImportError(
                 "DETECTION_SOURCE_CHANGED",
-                "annotation source changed while being read",
+                "annotation source size changed while being read",
             )
         actual_sha = hashlib.sha256(raw).hexdigest()
         listed_sha = str(current.get("sha256") or "").strip().lower()
