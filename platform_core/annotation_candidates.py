@@ -276,31 +276,38 @@ class CandidateStore:
     def iter_items(self):
         self._ready()
         ordinal = 0
-        while True:
-            with closing(self._connect()) as db:
-                rows = db.execute("SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200", (ordinal,)).fetchall()
-            if not rows:
-                return
-            for row in rows:
-                yield self._decode(row)
-            ordinal = rows[-1]["ordinal"]
+        with closing(self._connect()) as db:
+            while True:
+                rows = db.execute(
+                    "SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200",
+                    (ordinal,),
+                ).fetchall()
+                if not rows:
+                    return
+                for row in rows:
+                    yield self._decode(row)
+                ordinal = int(rows[-1]["ordinal"])
+                if len(rows) < 200:
+                    return
 
     def iter_accepted_items(self):
         """Stream only accepted review rows in bounded ordinal pages."""
         self._ready()
         ordinal = 0
-        while True:
-            with closing(self._connect()) as db:
+        with closing(self._connect()) as db:
+            while True:
                 rows = db.execute(
                     "SELECT * FROM candidates WHERE ordinal>? AND accepted=1 "
                     "AND status IN ('success','empty') ORDER BY ordinal LIMIT 200",
                     (ordinal,),
                 ).fetchall()
-            if not rows:
-                return
-            for row in rows:
-                yield self._decode(row)
-            ordinal = rows[-1]["ordinal"]
+                if not rows:
+                    return
+                for row in rows:
+                    yield self._decode(row)
+                ordinal = int(rows[-1]["ordinal"])
+                if len(rows) < 200:
+                    return
 
     def get_commit_summaries(self, image_ids) -> dict[str, dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids or [] if str(value)))

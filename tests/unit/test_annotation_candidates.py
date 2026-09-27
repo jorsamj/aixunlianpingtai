@@ -319,3 +319,62 @@ def test_generation_prefix_rejects_more_rows_than_immutable_input(tmp_path: Path
     with pytest.raises(ValueError, match="more rows than task input"):
         store.generation_prefix(["one"])
 
+def test_large_candidate_iterators_reuse_one_read_connection(
+    tmp_path: Path, monkeypatch,
+):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="iterator-scale", page_size=50)
+    total = 10_001
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items(
+        {
+            "image_id": f"image-{index:05d}",
+            "status": "success",
+            "boxes": [{"label": "fire", "class_id": 0}],
+        }
+        for index in range(total)
+    )
+    store.decide_unmentioned(True)
+
+    original_connect = store._connect
+    connection_count = 0
+    item_reads = 0
+    accepted_reads = 0
+
+    class CountingConnection:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args):
+            nonlocal item_reads, accepted_reads
+            normalized = " ".join(str(sql).split())
+            if (
+                "SELECT * FROM candidates WHERE ordinal>? AND accepted=1" in normalized
+                and "LIMIT 200" in normalized
+            ):
+                accepted_reads += 1
+            elif (
+                "SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200"
+                in normalized
+            ):
+                item_reads += 1
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def counted_connect():
+        nonlocal connection_count
+        connection_count += 1
+        return CountingConnection(original_connect())
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+
+    assert sum(1 for _ in store.iter_items()) == total
+    assert connection_count == 2
+    assert item_reads == 51
+
+    connection_count = 0
+    assert sum(1 for _ in store.iter_accepted_items()) == total
+    assert connection_count == 2
+    assert accepted_reads == 51
+
