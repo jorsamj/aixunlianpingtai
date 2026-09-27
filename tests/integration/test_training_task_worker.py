@@ -226,3 +226,11 @@ def test_training_model_archive_hashes_during_copy():
     assert "shutil.copy2(source, destination)" not in source
     assert '"sha256": _sha256(destination)' not in source
 
+def test_training_primary_lineage_reuses_verified_model_evidence():
+    import inspect
+
+    source = inspect.getsource(training_tasks_module.TrainingHandler)
+    assert 'model_sha256 = str(primary_evidence["sha256"])' in source
+    assert 'model_size_bytes = int(primary_evidence["size_bytes"])' in source
+    assert "_sha256(primary)" not in source
+

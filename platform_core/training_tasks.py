@@ -1357,11 +1357,21 @@ class TrainingHandler:
             (model["ref"] for model in verified_models if last_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
             None,
         )
-        primary = best_output or last_output or context.artifacts.artifact_path(
-            context.task.task_id, verified_models[0]["ref"]
+        primary_ref = (
+            result["best_model_ref"]
+            or result["last_model_ref"]
+            or verified_models[0]["ref"]
+        )
+        primary = context.artifacts.artifact_path(
+            context.task.task_id, primary_ref
         ).resolve()
+        primary_evidence = next(
+            model for model in verified_models
+            if str(model.get("ref") or "") == str(primary_ref)
+        )
         finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
-        model_sha256 = _sha256(primary)
+        model_sha256 = str(primary_evidence["sha256"])
+        model_size_bytes = int(primary_evidence["size_bytes"])
         completion = _training_completion_metadata(job, payload)
         training_lineage = build_training_lineage(
             task_id=context.task.task_id,
@@ -1387,7 +1397,7 @@ class TrainingHandler:
                 "role": "primary",
                 "file_name": primary.name,
                 "sha256": model_sha256,
-                "size_bytes": int(primary.stat().st_size),
+                "size_bytes": model_size_bytes,
                 "verified": True,
             }],
             training_status=final_status.value,
