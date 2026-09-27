@@ -438,3 +438,69 @@ def test_annotation_task_frontend_cannot_make_alias_valid_for_backend(client, se
         })
         assert response.status_code == 400
         assert "不会根据中文名、别名或历史映射自动选择标签" in response.json()["detail"]
+
+def test_candidate_page_enriches_only_current_material_page(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    total = 120
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items([
+        {
+            "image_id": f"history-{index:03d}",
+            "status": "empty",
+            "boxes": [],
+        }
+        for index in range(total)
+    ])
+    lease = repository.claim_next(
+        "test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"},
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    material_calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_calls.append(batch)
+            assert len(batch) <= 100
+            return [
+                {
+                    "id": image_id,
+                    "filename": f"{image_id}.jpg",
+                    "width": 1280,
+                    "height": 720,
+                    "storage_source_id": "default_local",
+                    "storage_type": "local",
+                }
+                for image_id in batch
+            ]
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=100"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [len(batch) for batch in material_calls] == [100]
+    assert len(body["items"]) == 100
+    first = body["items"][0]
+    assert first["status"] == "empty"
+    assert first["boxes"] == []
+    assert first["filename"] == "history-000.jpg"
+    assert first["width"] == 1280
+    assert first["height"] == 720
+    assert first["url"] == (
+        f"/api/v61/projects/{project_id}/materials/history-000/content"
+    )
+

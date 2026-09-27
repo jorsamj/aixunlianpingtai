@@ -149,3 +149,15 @@ test('single AI review decisions patch one card instead of rebuilding the page',
   assert.match(decision, /renderReviewMetrics60\(review\);patchAiDecisionCard60\(key\)/);
   assert.doesNotMatch(decision, /grid\.innerHTML/);
 });
+
+test('AI review keeps historical candidate hydration page-scoped', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('async function loadReviewPage(offset)');
+  const end = source.indexOf('window.reviewAiLabel427=', start);
+  const loader = source.slice(start, end);
+  assert.match(loader, /review\.seen\.clear\(\)/);
+  assert.match(loader, /review\.seen\.set\(String\(item\.image_id\),item\)/);
+  assert.doesNotMatch(loader, /ensureFullPool/);
+  assert.doesNotMatch(loader, /MaterialPaginationRuntime61/);
+});
+

@@ -19322,7 +19322,24 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    response = {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+    items = [dict(item) for item in page.items]
+    page_ids = [
+        str(item.get("image_id") or "")
+        for item in items
+        if str(item.get("image_id") or "")
+    ]
+    materials = {
+        str(row.get("id") or ""): public_material(project_id, row)
+        for row in material_store(project_id).get_many(page_ids)
+    } if page_ids else {}
+    for item in items:
+        material = materials.get(str(item.get("image_id") or ""))
+        if not material:
+            continue
+        for field in ("url", "filename", "width", "height"):
+            if item.get(field) in (None, "") and material.get(field) not in (None, ""):
+                item[field] = material[field]
+    response = {"items": items, "next_cursor": page.next_cursor, "total": page.total}
     if cursor in {None, "", "0"}:
         response["label_summary"] = store.label_summary()
     return response
