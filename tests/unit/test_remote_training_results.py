@@ -4,6 +4,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import platform_core.remote_training_results as remote_training_results_module
 from platform_core.remote_training_results import (
     RemoteTrainingResultError,
     create_training_result_archive,
@@ -257,3 +258,40 @@ def test_training_result_manifest_only_requires_confirmed_separate_model_protoco
     assert verified.manifest["model_transport"] == "separate-object-v1"
     assert {item["role"] for item in verified.models} == {"best", "last"}
     assert not (verified.root / "models").exists()
+
+def test_training_result_verifier_hashes_embedded_models_during_extract(tmp_path, monkeypatch):
+    project = tmp_path / "agent-project"
+    created = create_training_result_archive(
+        project_dir=project,
+        job=_job(project),
+        task_id="train-remote-one",
+        execution_generation=7,
+        snapshot_id="snapshot-one",
+        destination=tmp_path / "result.zip",
+    )
+
+    original_sha256 = remote_training_results_module._sha256
+
+    def forbid_model_rehash(path):
+        value = Path(path)
+        if value.suffix.lower() == ".pt":
+            raise AssertionError("embedded model must use extraction-pass SHA256 evidence")
+        return original_sha256(value)
+
+    monkeypatch.setattr(
+        remote_training_results_module,
+        "_sha256",
+        forbid_model_rehash,
+    )
+    verified = verify_training_result_archive(
+        created.path,
+        tmp_path / "verified",
+        expected_sha256=created.sha256,
+        expected_size_bytes=created.size_bytes,
+        expected_task_id="train-remote-one",
+        expected_execution_generation=7,
+        expected_snapshot_id="snapshot-one",
+    )
+
+    assert {item["role"] for item in verified.models} == {"best", "last"}
+
