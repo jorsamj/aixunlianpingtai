@@ -274,6 +274,23 @@ class DetectionDatasetScanner:
             seen_hashes=seen_hashes if self.deduplicate_images else set(),
         )
 
+    def _flush_annotation_batch(
+        self,
+        manifests: list[dict],
+        states: list[dict],
+        boxes: list[dict],
+        issues: list[dict],
+    ) -> None:
+        """Persist one bounded annotation evidence batch using the existing task store."""
+        if manifests:
+            self.store.manifest_many(manifests)
+        if states or boxes or issues:
+            self.store.annotation_batch(states, boxes, issues)
+        manifests.clear()
+        states.clear()
+        boxes.clear()
+        issues.clear()
+
     def ensure_all_image_candidates(self) -> int:
         """Ensure every inventoried image has candidate truth without re-reading existing candidates."""
         added = 0
@@ -344,6 +361,10 @@ class DetectionDatasetScanner:
         missing_images = 0
         total_boxes = 0
         candidate_batch: list[dict] = []
+        manifest_batch: list[dict] = []
+        state_batch: list[dict] = []
+        box_batch: list[dict] = []
+        issue_batch: list[dict] = []
 
         for annotation_key, payload in documents:
             categories: dict[int, str] = {}
@@ -453,26 +474,40 @@ class DetectionDatasetScanner:
                     else "confirmed_empty" if not raw_annotations
                     else "invalid"
                 )
-                self.store.manifest_many([{
+                manifest_batch.append({
                     "object_key": key,
                     "split": split,
                     "yaml_key": annotation_key,
-                }])
-                self.store.annotation_batch(
-                    [{
-                        "object_key": key,
-                        "label_key": annotation_key,
-                        "annotation_status": status,
-                        "box_count": len(boxes),
-                    }],
-                    boxes,
-                    issues,
-                )
+                })
+                state_batch.append({
+                    "object_key": key,
+                    "label_key": annotation_key,
+                    "annotation_status": status,
+                    "box_count": len(boxes),
+                })
+                box_batch.extend(boxes)
+                issue_batch.extend(issues)
+                if (
+                    len(state_batch) >= BATCH_SIZE
+                    or len(box_batch) + len(issue_batch) >= 5000
+                ):
+                    self._flush_annotation_batch(
+                        manifest_batch,
+                        state_batch,
+                        box_batch,
+                        issue_batch,
+                    )
                 if image_index == 1 or image_index % 100 == 0:
                     self.progress(key)
 
         if candidate_batch:
             self.store.upsert_many(candidate_batch)
+        self._flush_annotation_batch(
+            manifest_batch,
+            state_batch,
+            box_batch,
+            issue_batch,
+        )
         self.store.set_label_mapping(names)
         quality = self.store.quality_summary()
         if missing_images:
@@ -502,6 +537,10 @@ class DetectionDatasetScanner:
         missing_images = 0
         total_boxes = 0
         candidate_batch: list[dict] = []
+        manifest_batch: list[dict] = []
+        state_batch: list[dict] = []
+        box_batch: list[dict] = []
+        issue_batch: list[dict] = []
 
         for annotation_index, annotation_key in enumerate(xml_keys, start=1):
             _cancelled(self.cancelled)
@@ -580,26 +619,40 @@ class DetectionDatasetScanner:
                 if warning:
                     issues.append({"object_key": key, "line_number": line_number, "code": warning, "severity": "warning"})
             status = "annotated" if boxes else "confirmed_empty" if not objects else "invalid"
-            self.store.manifest_many([{
+            manifest_batch.append({
                 "object_key": key,
                 "split": _split_from_key(annotation_key),
                 "yaml_key": annotation_key,
-            }])
-            self.store.annotation_batch(
-                [{
-                    "object_key": key,
-                    "label_key": annotation_key,
-                    "annotation_status": status,
-                    "box_count": len(boxes),
-                }],
-                boxes,
-                issues,
-            )
+            })
+            state_batch.append({
+                "object_key": key,
+                "label_key": annotation_key,
+                "annotation_status": status,
+                "box_count": len(boxes),
+            })
+            box_batch.extend(boxes)
+            issue_batch.extend(issues)
+            if (
+                len(state_batch) >= BATCH_SIZE
+                or len(box_batch) + len(issue_batch) >= 5000
+            ):
+                self._flush_annotation_batch(
+                    manifest_batch,
+                    state_batch,
+                    box_batch,
+                    issue_batch,
+                )
             if annotation_index == 1 or annotation_index % 100 == 0:
                 self.progress(key)
 
         if candidate_batch:
             self.store.upsert_many(candidate_batch)
+        self._flush_annotation_batch(
+            manifest_batch,
+            state_batch,
+            box_batch,
+            issue_batch,
+        )
         if not names:
             raise DetectionImportError("VOC_CLASSES_INVALID", "Pascal VOC dataset contains no valid classes")
         self.store.set_label_mapping(names)
