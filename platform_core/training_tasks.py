@@ -959,6 +959,67 @@ def _frozen_training_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return frozen
 
 
+def _training_split_quality(
+    images: Sequence[Mapping[str, Any]],
+    manifest: Any,
+    label_schema: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    by_id = {str(row.get("id") or ""): row for row in images}
+    role_box_counts: dict[str, int] = {}
+    role_label_counts: dict[str, dict[str, int]] = {}
+    for role in ("train", "validation", "test"):
+        counts: dict[str, int] = {}
+        box_total = 0
+        for image_id in manifest.ids[role]:
+            row = by_id.get(str(image_id)) or {}
+            for box in row.get("boxes") or []:
+                label = str(box.get("label") or box.get("code") or "").strip()
+                if not label:
+                    continue
+                counts[label] = counts.get(label, 0) + 1
+                box_total += 1
+        role_box_counts[role] = box_total
+        role_label_counts[role] = dict(sorted(counts.items()))
+    if role_box_counts["train"] <= 0:
+        raise ValueError("训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型")
+    if role_box_counts["validation"] <= 0:
+        raise ValueError("验证集没有任何正样本标注框，无法得到有意义的检测指标；请增加正样本或调整划分")
+    active_codes = [
+        str(item.get("code") or "").strip()
+        for item in label_schema
+        if str(item.get("code") or "").strip()
+    ]
+    missing_train = [
+        code for code in active_codes
+        if role_label_counts["train"].get(code, 0) <= 0
+    ]
+    train_labels = {
+        code for code, count in role_label_counts["train"].items()
+        if count > 0
+    }
+    missing_validation = [
+        code for code in sorted(train_labels)
+        if role_label_counts["validation"].get(code, 0) <= 0
+    ]
+    warnings = []
+    if missing_train:
+        warnings.append(
+            "启用标签在训练集缺少正样本: " + ", ".join(missing_train[:20])
+        )
+    if missing_validation:
+        warnings.append(
+            "训练标签在验证集缺少正样本，相关类别指标不可评估: "
+            + ", ".join(missing_validation[:20])
+        )
+    return {
+        "role_box_counts": role_box_counts,
+        "role_label_counts": role_label_counts,
+        "active_labels_without_train_positive": missing_train,
+        "train_labels_without_validation_positive": missing_validation,
+        "warnings": warnings,
+    }
+
+
 def freeze_training_inputs(
     project: Path,
     split_request: SplitRequest,
@@ -986,6 +1047,7 @@ def freeze_training_inputs(
         )
     label_schema = _label_schema(project)
     manifest = build_split_manifest(images, split_request, seed=int(seed))
+    input_quality = _training_split_quality(images, manifest, label_schema)
     snapshot = build_snapshot(
         images,
         manifest,
@@ -1007,6 +1069,7 @@ def freeze_training_inputs(
         "label_schema": [dict(item) for item in label_schema],
         "snapshot_id": str(snapshot["snapshot_id"]),
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
+        "input_quality": input_quality,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     value["input_freeze_id"] = _training_input_freeze_digest(value)
@@ -1054,6 +1117,9 @@ def resolve_training_input_freeze(
         if isinstance(item, Mapping)
     ]
     manifest = build_split_manifest(images, split_request, seed=int(seed))
+    input_quality = _training_split_quality(images, manifest, label_schema)
+    if dict(value.get("input_quality") or {}) != input_quality:
+        raise ValueError("training input freeze quality evidence mismatch")
     snapshot = build_snapshot(
         images,
         manifest,
