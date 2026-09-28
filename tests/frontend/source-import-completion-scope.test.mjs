@@ -22,6 +22,8 @@ test('source-import terminal completion refreshes only labels and current paged 
   assert.match(body, /\['queued','running'\][\s\S]*scheduleSourceImportRefreshV36\(\)/, 'queued and running tasks must schedule the next managed poll');
   assert.match(body, /else\{\s*window\.PollRegistryRuntime\?\.clear\?\.\(SOURCE_IMPORT_POLL_KEY_V36\)/, 'terminal tasks must clear managed polling');
   assert.doesNotMatch(body, /await loadRelated\(\)/, 'terminal source-import completion must not broad-refresh project state');
-  assert.match(body, /await window\.refreshLabels414\?\.\(false\)/, 'terminal source-import completion must refresh label schema');
-  assert.match(body, /if\(state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/, 'terminal source-import completion must refresh only the visible paged material domain');
+  assert.match(body, /const localRefreshes=\[window\.refreshLabels414\?\.\(false\)\]/, 'terminal source-import completion must refresh label schema');
+  assert.match(body, /if\(state\.page==='数据集'\)localRefreshes\.push\(window\.reloadMaterialPage61\?\.\(\)\)/, 'terminal source-import completion must refresh only the visible paged material domain');
+  assert.match(body, /Promise\.allSettled\(localRefreshes\.filter\(Boolean\)\)/, 'label and paged-material refreshes must run independently without serial blocking');
+  assert.doesNotMatch(body, /await window\.(?:refreshLabels414|reloadMaterialPage61)/, 'terminal scoped refreshes must not block each other');
 });
