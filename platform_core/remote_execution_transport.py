@@ -27,6 +27,7 @@ from .algorithms import (
 from filelock import FileLock, Timeout
 
 from .conversion import SUPPORTED_ROCKCHIP_CHIPS
+from .external_publish_request import request_external_auto_publish_if_enabled
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService, build_artifact_object_key
 from .remote_training_results import (
@@ -3020,11 +3021,19 @@ class RemoteExecutionTransportService:
                     {"external_analysis_id": durable_analysis_id},
                     now=str(getattr(task, "updated_at", "") or datetime.now(timezone.utc).isoformat()),
                 )
+            external_publish_requested = request_external_auto_publish_if_enabled(
+                data_dir=self.data_dir,
+                algorithms_path=self.algorithms_file(str(task.project_id)),
+                algorithm_id=algorithm_id,
+                version_id=version_id,
+                now=datetime.now(timezone.utc).isoformat(),
+            )
             return {
                 "algorithm_id": algorithm_id,
                 "version_id": version_id,
                 "version_name": str(existing_version.get("version_name") or ""),
                 "model_artifacts_committed": True,
+                "external_publish_requested": bool(external_publish_requested),
             }
 
         verified_models = result.get("verified_models")
@@ -3382,6 +3391,13 @@ class RemoteExecutionTransportService:
                     409,
                 ) from error
             raise
+        external_publish_requested = request_external_auto_publish_if_enabled(
+            data_dir=self.data_dir,
+            algorithms_path=self.algorithms_file(str(task.project_id)),
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
         return {
             "algorithm_id": algorithm_id,
             "version_id": version_id,
@@ -3390,6 +3406,7 @@ class RemoteExecutionTransportService:
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "label_codes": frozen_label_codes,
             "model_artifacts_committed": True,
+            "external_publish_requested": bool(external_publish_requested),
             "model_artifact_summary": {
                 "discovered": len(artifact_rows),
                 "uploaded": len(artifact_rows),

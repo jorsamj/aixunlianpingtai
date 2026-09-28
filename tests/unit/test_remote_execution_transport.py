@@ -1351,6 +1351,11 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         "platform_core.remote_execution_transport.attach_version_if_current",
         atomic_attach_spy,
     )
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.request_external_auto_publish_if_enabled",
+        lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
+    )
 
     confirmed_for_commit = {
         **confirmed,
@@ -1373,6 +1378,10 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     assert committed["algorithm_id"] == "algorithm-one"
     assert committed["version_id"] == confirmed_models["version_id"]
     assert committed["model_artifacts_committed"] is True
+    assert committed["external_publish_requested"] is True
+    assert len(publish_requests) == 1
+    assert publish_requests[0]["algorithm_id"] == "algorithm-one"
+    assert publish_requests[0]["version_id"] == confirmed_models["version_id"]
     assert attached and attached[0][0] == "algorithm-one"
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"

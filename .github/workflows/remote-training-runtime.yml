@@ -305,7 +305,7 @@ jobs:
           if grep -Fq '"training.paddle"' platform_core/training_runtime_tasks.py; then echo 'Durable production worker must not advertise unsupported Paddle capability' >&2; exit 1; fi
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
-          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS = frozenset({"rk3568", "rk3578", "rk3576"})' platform_core/remote_execution_transport.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS = SUPPORTED_ROCKCHIP_CHIPS' platform_core/remote_execution_transport.py
           grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS' app.py
           grep -Fq '@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])' tests/unit/test_remote_execution_transport.py
           grep -Fq '"chip": "rk3578"' tests/api/test_conversion_portable_contract.py
@@ -313,6 +313,10 @@ jobs:
           grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
           grep -Fq 'attach_version_if_current(' platform_core/training_tasks.py
           grep -Fq 'attach_version_if_current(' platform_core/remote_execution_transport.py
+          grep -Fq 'request_external_auto_publish_if_enabled(' platform_core/training_tasks.py
+          grep -Fq 'request_external_auto_publish_if_enabled(' platform_core/remote_execution_transport.py
+          grep -Fq 'assert result["external_publish_requested"] is True' tests/integration/test_training_completed_job_recovery.py
+          grep -Fq 'assert committed["external_publish_requested"] is True' tests/unit/test_remote_execution_transport.py
           grep -Fq 'def attach_version_if_current(' platform_core/algorithm_sql_store.py
           grep -Fq 'test_atomic_training_attach_allows_only_one_child_of_same_base' tests/unit/test_algorithm_sql_store.py
           grep -Fq 'test_atomic_training_attach_retry_is_idempotent_before_base_conflict' tests/unit/test_algorithm_sql_store.py

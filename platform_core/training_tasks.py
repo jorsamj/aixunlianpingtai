@@ -31,6 +31,7 @@ from .algorithms import (
     list_algorithms,
     resolve_current_version_id,
 )
+from .external_publish_request import request_external_auto_publish_if_enabled
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import (
@@ -2121,13 +2122,19 @@ class TrainingHandler:
         })
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        committed_version_id = (
+            str(existing_task_version.get("id") or "")
+            if isinstance(existing_task_version, Mapping)
+            else ""
+        )
         if existing_task_version is None:
+            committed_version_id = uuid.uuid4().hex[:12]
             try:
                 attach_version_if_current(
                     algorithms_path,
                     str(algorithm.get("id")),
                     {
-                        "id": uuid.uuid4().hex[:12],
+                        "id": committed_version_id,
                         "version_name": version_name,
                         "version_no": version_name,
                         "stored_path": str(primary),
@@ -2172,6 +2179,15 @@ class TrainingHandler:
                         "TRAINING_BASE_VERSION_STALE: " + error.detail
                     ) from error
                 raise
+
+        external_publish_requested = request_external_auto_publish_if_enabled(
+            data_dir=self.data_dir,
+            algorithms_path=algorithms_path,
+            algorithm_id=str(algorithm.get("id") or ""),
+            version_id=committed_version_id,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+        result["external_publish_requested"] = bool(external_publish_requested)
 
         # Seed the shared cache only after the official algorithm version has
         # been attached successfully. A task that fails before this point must
