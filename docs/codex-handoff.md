@@ -1,6 +1,208 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 训练 Progress 单一真相源 / Bootstrap Algorithm Revision 收口（最新）
+
+- 本节开发起点真实 HEAD：`4dbf804e7bd27d8c9086dc130e781ea0ed3b18fe`。
+- 本节写文档前真实代码 HEAD：`c2cdb926f6d9e298d03cfef78626100da507f5b5`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 最新 HEAD 共有 **114 个 check，114 个全部 queued，0 completed**。因此当前只能确认代码/合同已提交，**绝不能写成 CI 已通过**。
+- 本轮未 merge main、未 tag、未 release、未 force push，也没有删除或放宽训练准确性/标签/快照/泄漏测试。
+
+### 1. P0：训练 Progress 已从多套真相收口为一个服务端展示投影
+
+当前根因已经重新从真实代码确认：
+
+- Worker `train_worker.py` 持有真实 epoch / batch / elapsed / ETA / throughput；
+- Durable Task 持有 QUEUED / WAITING_RESOURCE / TRAINING / EVALUATING / FINALIZING / terminal 生命周期；
+- 旧 HTTP `enrich_job_runtime()` 每次 GET 又扫 log、`_infer_epoch_from_log()`、重新计算 percent / elapsed / ETA；
+- SSE 原来只发 Durable Task；
+- Browser stream 原来又从 `current_item` 字符串解析 epoch/batch；
+- HTTP refresh 会整批覆盖 SSE state。
+
+这会导致同一训练同时被多套 owner 计算，出现百分比、耗时和 ETA 来回跳。
+
+当前新增 canonical：
+
+`training_display_progress`
+
+字段包括：
+
+- `revision`
+- `updated_at`
+- `status`
+- `phase`
+- `phase_progress`
+- `overall_progress`
+- `current_epoch / total_epochs`
+- `current_batch / total_batches`
+- `elapsed_seconds / eta_seconds`
+- `throughput`
+- `message`
+- `telemetry_source`
+
+所有权规则：
+
+- Worker telemetry 只负责真实训练 epoch/batch/timing/throughput；
+- Durable Task 只负责 lifecycle/status/phase/resource；
+- 服务端只在 `platform_core/training_job_projection.py` 合并一次；
+- HTTP 与 SSE 均发布同一 projection；
+- live Durable job 禁止再走 log inference；
+- `_infer_epoch_from_log()` 仅保留 historical pre-Durable compatibility/recovery；
+- 训练 epoch 已完成但 Durable 尚在 evaluation/finalization 时，100% 保留给 terminal success；
+- 不再让浏览器通过 `current_item` 猜 epoch/batch。
+
+另外修了一个自查出的边界：
+
+Durable heartbeat 可能比最新 worker `job.json` 落后一个心跳窗口，所以 HTTP 在 lifecycle overlay 之前会冻结 `worker_progress_truth`，展示投影明确从冻结的 Worker telemetry 读取训练数据，防止旧 heartbeat 覆盖刚写入的 batch 进度。
+
+提交：
+
+- `28410c1d` — canonical training display projection；
+- `7ec5b3cb` — lifecycle overlay 前冻结 Worker telemetry；
+- `9473b2de` — 对齐永久测试/source guard。
+
+永久合同：
+
+- HTTP refresh 用 display revision 拒绝覆盖更晚的 SSE；
+- SSE 也拒绝旧 revision；
+- `trainingProgressView()` 优先读取 canonical display；
+- live Durable branch 中 source guard 禁止 `_job_log_text()` / `_infer_epoch_from_log()`；
+- browser stream source guard 禁止重新出现 `applyProgressCounters` 字符串解析。
+
+### 2. 已读取 completed failure 的真实日志，并修复失效 fixture/guard
+
+上一批 completed failure 不是统一一种原因，已经逐个读真实 job log：
+
+1. `Remote Training Runtime`
+   - `tests/api/test_training_request.py` 使用 `hashlib` 但测试文件漏 import；
+   - 修复测试 import，不改生产合同。
+
+2. `External Algorithm Platform`
+   - 旧 source guard 仍要求 compatibility `/api/projects/.../train/start` 自己再做一套 external refresh / local gate；
+   - 当前正确架构是 compatibility URL 只委托 canonical v12 Durable owner；
+   - 测试已改为：compatibility route 必须只 delegate，不能重新拥有第二套 gate；v12 + canonical enqueue 继续强制实时 external truth gate。
+
+3. Browser `training-label-selector`
+   - 旧 fixture 仍假设首次训练新标签默认勾选；
+   - 当前产品合同是：首次训练/new labels 默认全部不选，用户必须显式勾选；
+   - 测试改为显式勾 fire，smoke 保持未选；重新打开未形成真实版本的首训弹窗仍默认不选。
+
+4. Browser `material-workflows`
+   - 旧断言仍锁 `openBatch414`；
+   - 当前 canonical upload runtime 使用 `openRecentUploadBatch414("ready")`，只作用于本次上传素材；
+   - 测试已绑定 canonical owner，不回退旧全局批量入口。
+
+这些修改不是为了放宽测试，而是把已经过时、要求多 owner / 自动选标签 / 旧入口的 fixture 改成当前产品合同。
+
+### 3. P0：Bootstrap stale algorithm cache 已改为 SQL revision 驱动
+
+现场问题：
+
+新畅联同步已经把算法写入 `AlgorithmSqlStore`，当前算法 API 能看到；
+但 F5 后 `/api/v53/bootstrap/snapshot` 仍返回进程启动时的旧 `algorithms`；
+随后 AlgorithmListRuntime 再请求 v12 算法 API，新算法才“过一会又出现”。
+
+真实根因：
+
+`_v53_snapshot_with_live_jobs()` 以前只 overlay `jobs`，没有 overlay `algorithms`。
+
+当前修复：
+
+- `AlgorithmSqlStore` schema 升到 **v4**（这不是产品 VERSION）；
+- 增加持久 `algorithm_revision`；
+- 每一个成功的真实算法图写事务只 bump 一次：
+  - create / patch / delete algorithm；
+  - attach / patch / rollback / delete version；
+  - version operation；
+  - external sync；
+  - full replace；
+- external sync 如果全部 unchanged，不 bump revision；
+- `platform_core.algorithms.algorithm_store_revision()` 成为统一 revision reader；
+- Bootstrap snapshot 保存 `algorithm_revision`；
+- snapshot 请求时：
+  - cached revision == SQL revision → 继续走缓存；
+  - revision 不一致 → **只 reload algorithms overlay**；
+  - 不重跑材料、标注、模型配置、完整 bootstrap；
+- 并发读写使用前后 revision probe；若连续写导致无法取得稳定窗口，不会把潜在旧 rows 标成最新 revision；
+- 全局 bootstrap cache 只允许发布与当前 SQL revision 一致、且不倒退的 algorithm overlay。
+
+提交：
+
+- `d5f69ac9` — SQL revision + Bootstrap algorithm overlay + 同步按钮 selector；
+- `c2cdb926` — 并发写期间禁止错误发布 falsely-fresh revision。
+
+永久测试已覆盖：
+
+- read-only 查询不 bump revision；
+- create / patch / attach version revision 单调递增；
+- external unchanged sync 不 bump；
+- ready Bootstrap 缓存旧算法后，新建算法，下一次 snapshot 立即出现；
+- Bootstrap algorithm invalidation 不允许通过重新调用完整 `_v53_build_snapshot()` 解决。
+
+### 4. 算法列表“同步畅联云”按钮 selector 明确 bug 已修
+
+AlgorithmListRuntime 实际按钮：
+
+`data-algorithm-sync`
+
+旧 `syncNow()` 却找：
+
+`data-external-list-sync`
+
+所以请求可能发出，但算法列表按钮不会 disabled / 变成“正在同步…”。
+
+现在 `external-algorithm-platform.js` 已统一绑定：
+
+`[data-algorithm-sync]`
+
+并增加 frontend source contract，禁止旧 selector 重新出现。
+
+### 5. 当前 CI 真相
+
+文档写入前 HEAD：`c2cdb926f6d9e298d03cfef78626100da507f5b5`。
+
+GitHub 当前对该 HEAD 返回：
+
+- check total：114；
+- queued：114；
+- in_progress：0；
+- completed：0；
+- success：0；
+- failure：0。
+
+这表示 **runner backlog / 排队**，不是 success。
+
+后续 Agent 必须继续：
+
+- 一旦出现 completed failure，读取该 run 的真实 job log；
+- 不能根据历史 failure 继续猜；
+- 不能为了绿灯删除/放宽测试。
+
+### 6. 下一步继续顺序
+
+当前继续优先级：
+
+1. **新畅联 Sync Operation 单一 owner**
+   - Manual / Auto 共用 operation；
+   - operation_id / trigger_source / started_at / phase / processed/total / errors / result；
+   - 用户重复点同步应打开/读取当前 operation，不创建第二个；
+   - 开始减少 product → analyses → detail 的 N+1 外部请求。
+
+2. **ZIP Import 真实 phase/counter/ETA + 性能**
+   - UPLOAD / MERGE / VERIFY / EXTRACT / SCAN / ANNOTATION_PARSE / DB_COMMIT；
+   - bounded parallel readers + single batched DB writer；
+   - 排查重复完整 I/O。
+
+3. **AI 标注 canonical owner**
+   - 普通用户统一从模型配置选择；
+   - task submit 冻结 model_config_id / model_name / provider / config revision；
+   - 退役旧 renderer。
+
+本轮原则仍然是：
+
+**唯一 owner → 持久 revision → fail-closed → 删除旧推断/旧 selector → 永久测试。**
+
 ## 2026-09-28 训练基础权重冻结 / 本地远程版本原子提交闭环（最新）
 
 - 本节写入前真实代码 HEAD：`a384675928d9874d4c92c7abb18332eea022ec32`。
