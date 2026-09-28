@@ -1874,6 +1874,34 @@ class TrainingHandler:
         partial = (training_report.get("test_result") or {}).get("status") == "failed"
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
+        frozen_label_schema = [
+            dict(item)
+            for item in (snapshot.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        frozen_label_codes = [
+            str(item.get("code") or "").strip()
+            for item in frozen_label_schema
+        ]
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        frozen_input = (
+            context.artifacts.read_json(
+                context.task.task_id,
+                freeze_ref,
+                default={},
+            )
+            if freeze_ref else {}
+        )
+        frozen_label_contract = (
+            dict(frozen_input.get("label_contract") or {})
+            if isinstance(frozen_input, Mapping)
+            else {}
+        )
+        if not frozen_label_contract and isinstance(payload.get("label_contract"), Mapping):
+            # Compatibility only for early durable tasks that persisted the
+            # contract on the request before input-freeze became authoritative.
+            frozen_label_contract = dict(payload.get("label_contract") or {})
+        frozen_label_contract.pop("project_path", None)
         quality_gate = job.get("quality_gate") if isinstance(job.get("quality_gate"), dict) else {
             "runtime_stop_policy": "target_only",
             "eval_interval": int(payload.get("eval_interval") or 0),
@@ -1903,6 +1931,9 @@ class TrainingHandler:
             "test_source": requested.get("test_source"),
             "test_seed": snapshot.get("test_seed"),
             "validation_seed": snapshot.get("validation_seed"),
+            "label_schema": frozen_label_schema,
+            "label_codes": frozen_label_codes,
+            "label_contract": frozen_label_contract,
             "base_version_id": job.get("base_version_id"),
             "base_version_name": job.get("base_version_name"),
             "base_selection_reason": job.get("base_selection_reason"),
@@ -2014,6 +2045,9 @@ class TrainingHandler:
                 "artifact_verified": True,
                 "trainable": True,
                 "framework": "ultralytics",
+                "label_schema": frozen_label_schema,
+                "label_codes": frozen_label_codes,
+                "label_contract": frozen_label_contract,
                 "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
                 "snapshot_id": snapshot_id,
                 "dataset_revision_id": dataset_revision_id,
