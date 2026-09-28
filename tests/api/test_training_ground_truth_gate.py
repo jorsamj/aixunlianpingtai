@@ -169,3 +169,171 @@ def test_selected_training_material_reads_are_bounded(monkeypatch, tmp_path):
 
     assert len(selected) == 1001
     assert materials.calls == [500, 500, 1]
+
+
+def _freeze_rows(image_ids):
+    rows = []
+    for index, image_id in enumerate(image_ids, start=1):
+        rows.append(
+            {
+                "id": image_id,
+                "dataset_id": "default",
+                "filename": f"{image_id}.jpg",
+                "stored_name": f"{image_id}.jpg",
+                "storage_source_id": "default_local",
+                "storage_type": "local",
+                "object_key": f"uploads/{image_id}.jpg",
+                "content_sha256": f"{index:064x}",
+                "size_bytes": 100 + index,
+                "width": 640,
+                "height": 480,
+                "group_id": f"group-{image_id}",
+                "annotation_state": "annotated",
+                "annotation_scope": ["smoke"],
+                "annotation_hash": f"{index + 100:064x}",
+                "annotated": True,
+                "boxes": [
+                    {
+                        "label": "smoke",
+                        "class_id": 0,
+                        "x1": 10,
+                        "y1": 10,
+                        "x2": 100,
+                        "y2": 100,
+                    }
+                ],
+            }
+        )
+    return rows
+
+
+def test_training_input_freeze_survives_later_gt_and_label_changes(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitRequest
+
+    train_ids = ("train-1", "train-2", "train-3", "train-4")
+    test_ids = ("test-1",)
+    rows = _freeze_rows((*train_ids, *test_ids))
+    live_schema = [
+        {
+            "code": "smoke",
+            "class_id": 0,
+            "canonical_project_class_id": 4,
+            "status": "active",
+        }
+    ]
+
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [
+            dict(next(row for row in rows if row["id"] == image_id))
+            for image_id in image_ids
+        ],
+    )
+    monkeypatch.setattr(training_tasks, "_label_schema", lambda _project: [dict(x) for x in live_schema])
+
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=train_ids,
+        test_image_ids=test_ids,
+        validation_percent=25,
+    )
+    frozen = training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
+    frozen_snapshot_id = frozen["snapshot_id"]
+    frozen_revision_id = frozen["dataset_revision_id"]
+    frozen_id = frozen["input_freeze_id"]
+
+    # Simulate edits made after the user clicked "create training".
+    rows[0]["boxes"][0]["label"] = "fire"
+    rows[0]["annotation_scope"] = ["fire"]
+    live_schema[0]["code"] = "fire"
+
+    images, schema, _manifest, snapshot = training_tasks.resolve_training_input_freeze(
+        frozen,
+        split,
+        seed=17,
+    )
+
+    assert frozen["input_freeze_id"] == frozen_id
+    assert snapshot["snapshot_id"] == frozen_snapshot_id
+    assert snapshot["dataset_revision_id"] == frozen_revision_id
+    assert schema[0]["code"] == "smoke"
+    assert images[0]["boxes"][0]["label"] == "smoke"
+
+
+def test_training_input_freeze_rejects_tampering(monkeypatch, tmp_path):
+    import copy
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitRequest
+
+    train_ids = ("train-1", "train-2", "train-3", "train-4")
+    test_ids = ("test-1",)
+    rows = _freeze_rows((*train_ids, *test_ids))
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [
+            dict(next(row for row in rows if row["id"] == image_id))
+            for image_id in image_ids
+        ],
+    )
+    monkeypatch.setattr(
+        training_tasks,
+        "_label_schema",
+        lambda _project: [
+            {
+                "code": "smoke",
+                "class_id": 0,
+                "canonical_project_class_id": 4,
+                "status": "active",
+            }
+        ],
+    )
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=train_ids,
+        test_image_ids=test_ids,
+        validation_percent=25,
+    )
+    frozen = training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
+    tampered = copy.deepcopy(frozen)
+    tampered["images"][0]["boxes"][0]["label"] = "fire"
+
+    with pytest.raises(ValueError, match="freeze digest mismatch"):
+        training_tasks.resolve_training_input_freeze(tampered, split, seed=17)
+
+
+def test_training_input_freeze_requires_indexed_content_identity(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitRequest
+
+    train_ids = ("train-1", "train-2", "train-3", "train-4")
+    test_ids = ("test-1",)
+    rows = _freeze_rows((*train_ids, *test_ids))
+    rows[2]["content_sha256"] = ""
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [
+            dict(next(row for row in rows if row["id"] == image_id))
+            for image_id in image_ids
+        ],
+    )
+    monkeypatch.setattr(
+        training_tasks,
+        "_label_schema",
+        lambda _project: [{"code": "smoke", "class_id": 0, "status": "active"}],
+    )
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=train_ids,
+        test_image_ids=test_ids,
+        validation_percent=25,
+    )
+
+    with pytest.raises(ValueError, match="缺少可冻结的 SHA256"):
+        training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
