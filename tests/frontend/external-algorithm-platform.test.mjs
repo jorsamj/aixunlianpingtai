@@ -354,8 +354,8 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   assert.match(syncBlock, /credentials\?\.configured !== true/);
   assert.match(source, /sync-operation\?project_id=/);
   assert.match(syncBlock, /ensureSyncOperationPolling/);
-  assert.match(syncBlock, /data-algorithm-sync/);
-  assert.doesNotMatch(syncBlock, /data-external-list-sync/);
+  assert.match(source, /document\.querySelectorAll\('\[data-algorithm-sync\]'\)/);
+  assert.doesNotMatch(source, /data-external-list-sync/);
   assert.match(source, /id="externalPlatformTest"/);
   assert.match(source, /id="externalPlatformSave"/);
   assert.match(source, /id="externalPlatformSync"/);
@@ -438,7 +438,7 @@ test('sync operation UI reports real phase and counters without inventing a perc
   };
 
   assert.equal(externalSyncOperationActive(operation), true);
-  assert.equal(externalSyncOperationPhaseText(operation.current_phase), '读取产品分析方式');
+  assert.equal(externalSyncOperationPhaseText(operation.current_phase), '核验产品分析详情');
   const html = externalSyncOperationHtml(operation);
   assert.match(html, /37 \/ 126/);
   assert.match(html, /420 ms/);

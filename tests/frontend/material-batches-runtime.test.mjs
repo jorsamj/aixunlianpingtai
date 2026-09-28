@@ -30,3 +30,14 @@ test('large explicit ready selections reuse the durable material-batch owner', (
   assert.match(owner, /runMaterialBatch62\('MARK_CLEAN_SKIPPED',\{scope:'SELECTED',imageIds:ids,skipConfirm:true\}\)/);
   assert.match(owner, /if\(mode==='clean'\)return createClean427\(\{image_ids:ids\}\)/);
 });
+
+
+test('material batch terminal truth refreshes the canonical dataset page owner', () => {
+  const pollStart = source.indexOf('function poll(taskId)');
+  const resumeStart = source.indexOf('function resume()', pollStart);
+  assert.ok(pollStart >= 0 && resumeStart > pollStart);
+  const pollOwner = source.slice(pollStart, resumeStart);
+  assert.match(pollOwner, /if \(isMaterialBatchActive\(task\)\)/);
+  assert.match(pollOwner, /else \{[\s\S]*stopPolling\(id\);[\s\S]*await refresh\?\.\(\)/);
+  assert.match(main, /refresh: async \(\) => \{[\s\S]*await window\.reloadMaterialPage61\?\.\(\)/);
+});

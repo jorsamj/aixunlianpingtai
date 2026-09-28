@@ -50,7 +50,7 @@ test('v36 source import polling remains page-scoped through PollRegistry', () =>
 
 
 test('post-import review reads the imported batch directly without broad bootstrap refresh', () => {
-  const owner=region(app,'function importRows414()','function importRemapProgress414');
+  const owner=region(app,'function importRows414()','/* M4 final activation:');
   assert.match(owner,/Array\.isArray\(r\.images\)\?r\.images/);
   assert.match(owner,/images:rr\.images\|\|\[\]/);
   assert.match(owner,/refreshLabels414\(false\)/);
