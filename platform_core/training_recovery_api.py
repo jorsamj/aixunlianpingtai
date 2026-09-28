@@ -143,6 +143,7 @@ def training_recovery_router(
     task_repository,
     task_artifacts,
     data_dir_provider=None,
+    project_path_provider=None,
     agent_execution_payload_resolver=None,
     agent_result_upload_preparer=None,
     agent_result_upload_confirmer=None,
@@ -241,6 +242,7 @@ def training_recovery_router(
     root.include_router(training_material_picker_router(
         get_project,
         material_data_dir,
+        project_path_provider=project_path_provider,
     ))
     root.include_router(service_node_router(task_repository))
     root.include_router(central_scheduler_router(task_repository, task_artifacts))

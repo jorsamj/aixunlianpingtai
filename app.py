@@ -20808,6 +20808,7 @@ app.include_router(training_recovery_router(
     shared_task_repository,
     shared_task_artifacts,
     data_dir_provider=lambda: DATA_DIR,
+    project_path_provider=project_dir,
     agent_execution_payload_resolver=_resolve_agent_execution_payload,
     agent_result_upload_preparer=_prepare_agent_result_upload,
     agent_result_upload_confirmer=_confirm_agent_result_upload,

@@ -244,7 +244,11 @@ def _write_thumbnail(source: Path, target: Path, size: int) -> None:
         temp.unlink(missing_ok=True)
 
 
-def training_material_picker_router(get_project, data_dir_provider):
+def training_material_picker_router(
+    get_project,
+    data_dir_provider,
+    project_path_provider=None,
+):
     from fastapi import APIRouter, HTTPException, Query
     from fastapi.responses import FileResponse, RedirectResponse
 
@@ -270,7 +274,10 @@ def training_material_picker_router(get_project, data_dir_provider):
     def materials(project_id: str) -> MaterialRepository:
         get_project(project_id)
         try:
-            project_path = _safe_project_path(data_dir(), project_id)
+            if project_path_provider is not None:
+                project_path = Path(project_path_provider(project_id)).expanduser().resolve()
+            else:
+                project_path = _safe_project_path(data_dir(), project_id)
             return repository_for_path(str(project_path))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
