@@ -337,3 +337,40 @@ def test_training_input_freeze_requires_indexed_content_identity(monkeypatch, tm
 
     with pytest.raises(ValueError, match="缺少可冻结的 SHA256"):
         training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
+
+
+def test_training_input_freeze_rejects_all_negative_detection_training(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitRequest
+
+    train_ids = ("train-1", "train-2", "train-3", "train-4")
+    test_ids = ("test-1",)
+    rows = _freeze_rows((*train_ids, *test_ids))
+    for row in rows:
+        row["annotation_state"] = "confirmed_empty"
+        row["annotation_scope"] = ["smoke"]
+        row["boxes"] = []
+
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [
+            dict(next(row for row in rows if row["id"] == image_id))
+            for image_id in image_ids
+        ],
+    )
+    monkeypatch.setattr(
+        training_tasks,
+        "_label_schema",
+        lambda _project: [{"code": "smoke", "class_id": 0, "status": "active"}],
+    )
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=train_ids,
+        test_image_ids=test_ids,
+        validation_percent=25,
+    )
+
+    with pytest.raises(ValueError, match="训练集没有任何正样本"):
+        training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
