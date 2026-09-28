@@ -7174,10 +7174,16 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     try:
+        label_request = payload.model_dump(mode="json", exclude_none=True)
+        # Label admission must use the server-resolved effective training pool,
+        # not stale/raw request ids (for example benchmark-reserved test images).
+        label_request["train_image_ids"] = list(split.train_image_ids)
+        label_request["test_image_ids"] = list(split.test_image_ids)
+        label_request["selected_image_ids"] = list(split.train_image_ids)
         label_contract = resolve_training_label_contract(
             DATA_DIR,
             project_dir(project_id),
-            payload.model_dump(mode="json", exclude_none=True),
+            label_request,
             asset_algorithm,
         )
         projected_training_images = project_training_rows(
