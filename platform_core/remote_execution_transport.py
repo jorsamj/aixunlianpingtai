@@ -50,6 +50,7 @@ from .training_evaluation import build_evaluation_benchmark_scope, build_evaluat
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
+SUPPORTED_PORTABLE_RKNN_CHIPS = frozenset({"rk3568", "rk3578", "rk3576"})
 _REMOTE_PREFIX = "remote-execution"
 _SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -412,10 +413,10 @@ class RemoteExecutionTransportService:
                 409,
             )
         chip = str(chip or "").strip().lower()
-        if chip not in {"rk3568", "rk3576"}:
+        if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_RKNN_BOARD_CHIP_INVALID",
-                "RKNN board verification supports rk3568 or rk3576",
+                "RKNN board verification supports rk3568, rk3578 or rk3576",
                 422,
             )
         try:
@@ -857,10 +858,10 @@ class RemoteExecutionTransportService:
             return common
 
         chip = str(values.get("chip") or "").strip().lower()
-        if chip not in {"rk3568", "rk3576"}:
+        if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_CONVERSION_PARAMS_INVALID",
-                "portable Agent RKNN conversion currently supports rk3568 or rk3576",
+                "portable Agent RKNN conversion currently supports rk3568, rk3578 or rk3576",
                 422,
             )
         precision = str(values.get("precision") or "fp16").strip().lower()
@@ -3667,7 +3668,7 @@ class RemoteExecutionTransportService:
         chip = str(board.get("chip") or "").strip().lower()
         conversion_job_id = str(board.get("conversion_job_id") or "").strip()
         if (
-            chip not in {"rk3568", "rk3576"}
+            chip not in SUPPORTED_PORTABLE_RKNN_CHIPS
             or not conversion_job_id
             or runtime.get("ok") is not True
             or str(runtime.get("engine") or "").strip().lower() != "rknn-lite2"
@@ -4318,7 +4319,7 @@ class RemoteExecutionTransportService:
             model_sha = _normalized_sha256(board.get("model_sha256"), "board.model_sha256")
             if (
                 framework != "rknn"
-                or chip not in {"rk3568", "rk3576"}
+                or chip not in SUPPORTED_PORTABLE_RKNN_CHIPS
                 or not conversion_job_id
                 or input_size < 32
                 or input_size > 4096

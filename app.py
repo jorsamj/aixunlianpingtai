@@ -10313,7 +10313,7 @@ def _v48_supported_rockchip_chips(resource: Dict[str, Any]) -> List[str]:
     chips = {
         str(value or "").strip().lower()
         for value in values
-        if str(value or "").strip().lower() in {"rk3568", "rk3576"}
+        if str(value or "").strip().lower() in SUPPORTED_PORTABLE_RKNN_CHIPS
     }
     return sorted(chips)
 
@@ -10337,7 +10337,7 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
                 detail="、".join(chip.upper() for chip in chips) or "无"
                 summary["errors"].append({
                     "target":target,
-                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568 或 RK3576 后手动转换。",
+                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568、RK3578 或 RK3576 后手动转换。",
                 })
                 continue
             params["chip"]=chips[0]
@@ -15415,7 +15415,7 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             node_chips = [
                 str(chip).strip().lower()
                 for chip in (rknn.get("supported_chips") or [])
-                if str(chip).strip().lower() in {"rk3568", "rk3576"}
+                if str(chip).strip().lower() in SUPPORTED_PORTABLE_RKNN_CHIPS
             ]
             if not bool(rknn.get("available")) or not node_chips:
                 continue
@@ -15811,7 +15811,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
                 detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
             )
         if not chip or (supported_chips and chip not in supported_chips):
-            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
+            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3578、rk3576"
             raise HTTPException(
                 status_code=400,
                 detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
@@ -15948,7 +15948,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
 
 def _eligible_rknn_board_nodes(chip: str) -> list[dict[str, Any]]:
     chip = str(chip or "").strip().lower()
-    if chip not in {"rk3568", "rk3576"}:
+    if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
         return []
     rows = ServiceNodeRepository(shared_task_repository()).list_public()
     eligible = []
@@ -15997,7 +15997,7 @@ def _rknn_hardware_validation_context(project_id: str, job_id: str) -> dict[str,
     ):
         raise HTTPException(status_code=409, detail="当前转换结果不是可验证的 RKNN 产物")
     chip = str(target.get("chip") or "").strip().lower()
-    if chip not in {"rk3568", "rk3576"}:
+    if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
         raise HTTPException(status_code=400, detail=f"当前板端验证不支持芯片 {chip or '未指定'}")
 
     model_name = Path(str(output.get("file_name") or "")).name
@@ -16583,7 +16583,7 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     info=_v41_rknn_info(py)
     row['rknn_python']=py
     row['rknn_version']=str(info.get('version') or '')
-    row['supported_chips']=['rk3588','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118']
+    row['supported_chips']=['rk3588','rk3578','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118']
     if info.get('ok'):
         row.update(status='ready',targets=['rockchip'],version=row['rknn_version'],message='RKNN-Toolkit2 可用；无需开发板即可把 ONNX 转为 RKNN')
     else:
@@ -20586,6 +20586,7 @@ from platform_core.training_recovery_api import training_recovery_router
 from platform_core.remote_execution_transport import (
     RemoteExecutionTransportError,
     RemoteExecutionTransportService,
+    SUPPORTED_PORTABLE_RKNN_CHIPS,
 )
 
 

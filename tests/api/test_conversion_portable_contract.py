@@ -90,7 +90,7 @@ def _agent_rknn_resource():
         "status": "ready",
         "targets": ["rockchip"],
         "kind": "rockchip",
-        "supported_chips": ["rk3568", "rk3576"],
+        "supported_chips": ["rk3568", "rk3578", "rk3576"],
         "supported_precisions": ["fp16", "int8"],
     }
 
@@ -511,7 +511,7 @@ def test_agent_rknn_resource_requires_effective_rknn_capability_and_probe(monkey
                         "rknn_toolkit2": {
                             "available": True,
                             "version": "2.3.2",
-                            "supported_chips": ["rk3568", "rk3576"],
+                            "supported_chips": ["rk3568", "rk3578", "rk3576"],
                         }
                     },
                     "build_id": "b3",
@@ -525,7 +525,7 @@ def test_agent_rknn_resource_requires_effective_rknn_capability_and_probe(monkey
 
     assert checked["status"] == "ready"
     assert checked["targets"] == ["rockchip"]
-    assert checked["supported_chips"] == ["rk3568", "rk3576"]
+    assert checked["supported_chips"] == ["rk3568", "rk3576", "rk3578"]
     assert [row["node_id"] for row in checked["agent_nodes"]] == ["rknn-ready"]
     assert checked["agent_nodes"][0]["capability"] == "conversion.rknn"
 
@@ -557,7 +557,7 @@ def test_explicit_agent_rknn_creation_persists_target_and_portable_contract(
             params={
                 "input_size": 640,
                 "batch": 1,
-                "chip": "rk3568",
+                "chip": "rk3578",
                 "precision": "fp16",
             },
         ),
@@ -565,6 +565,7 @@ def test_explicit_agent_rknn_creation_persists_target_and_portable_contract(
 
     assert response["job"]["remote_portability"]["status"] == "ready"
     assert transport.calls[0]["target"] == "rockchip"
+    assert transport.calls[0]["params"]["chip"] == "rk3578"
     task = repository.created[0]
     assert task.kind is TaskKind.MODEL_CONVERSION
     assert task.required_capabilities == ("agent.remote",)

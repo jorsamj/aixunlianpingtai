@@ -305,6 +305,10 @@ jobs:
           if grep -Fq '"training.paddle"' platform_core/training_runtime_tasks.py; then echo 'Durable production worker must not advertise unsupported Paddle capability' >&2; exit 1; fi
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS = frozenset({"rk3568", "rk3578", "rk3576"})' platform_core/remote_execution_transport.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS' app.py
+          grep -Fq '@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])' tests/unit/test_remote_execution_transport.py
+          grep -Fq '"chip": "rk3578"' tests/api/test_conversion_portable_contract.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
           grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
           grep -Fq 'attach_version_if_current(' platform_core/training_tasks.py

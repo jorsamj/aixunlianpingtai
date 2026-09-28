@@ -1761,7 +1761,7 @@ def _portable_rknn_contract(tmp_path, monkeypatch, *, chip="rk3568"):
     return transport, provider, model, digest, contract
 
 
-@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])
+@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])
 def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypatch, chip):
     _transport, _provider, model, digest, contract = _portable_rknn_contract(
         tmp_path, monkeypatch, chip=chip
@@ -1781,7 +1781,7 @@ def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypa
 @pytest.mark.parametrize(
     ("params", "message"),
     [
-        ({"chip": "rk3588", "precision": "fp16"}, "rk3568 or rk3576"),
+        ({"chip": "rk3588", "precision": "fp16"}, "rk3568, rk3578 or rk3576"),
         ({"chip": "rk3568", "precision": "fp32"}, "fp16 or int8"),
         ({"chip": "rk3568", "precision": "fp16", "dynamic": True}, "static input shape"),
         ({"chip": "rk3568", "precision": "fp16", "batch": 2}, "batch=1"),
@@ -1891,10 +1891,11 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert publish_requests[0]["conversion_job"]["params"]["chip"] == "rk3568"
 
 
-def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path):
+@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])
+def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path, chip):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
-    model = tmp_path / "model_rk3568.rknn"
+    model = tmp_path / f"model_{chip}.rknn"
     image = tmp_path / "verify.jpg"
     model.write_bytes(b"verified-rknn-model")
     image.write_bytes(b"verify-image")
@@ -1905,13 +1906,13 @@ def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp
         conversion_job_id="convert-1",
         model_path=model,
         input_path=image,
-        chip="rk3568",
+        chip=chip,
         input_size=640,
     )
     deployment = contract["deployment"]
     assert deployment["runtime_format"] == "rknn"
     assert deployment["framework"] == "rknn"
-    assert deployment["board"]["chip"] == "rk3568"
+    assert deployment["board"]["chip"] == chip
     assert deployment["board"]["model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
     assert "signed.example.test" not in str(contract)
 
