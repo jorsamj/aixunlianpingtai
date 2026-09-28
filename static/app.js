@@ -4507,10 +4507,11 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     box.hidden=false;
     box.innerHTML=`<div class="label414-remap-banner"><span class="label414-remap-spin" aria-hidden="true"></span><div class="label414-remap-copy"><b>${esc(stage)} · ${Math.round(pct)}%</b><span>${esc(source)} → ${esc(target)} · ${processed}/${total||'-'}；刷新或关闭页面不会取消任务。</span><i><em style="transform:scaleX(${Math.max(0,Math.min(1,pct/100))})"></em></i></div><button class="btn mini" onclick="reopenLabelRemap414()">查看进度</button></div>`;
   }
+  window.renderLabelRemapBanner414=renderLabelRemapBanner414;
   window.reopenLabelRemap414=function(){
     const task=state.import412RemapTask;if(!task)return toast('当前没有可恢复的标签统一任务');
     const source=state.import412RemapSource||labelRemapSourceText414(task),target=state.import412RemapTarget||String(task.target_label||'');
-    modal('批量统一标签',importRemapProgress414(task,source,target),false);
+    modal('批量统一标签',window.importRemapProgress414(task,source,target),false);
   };
   async function resumeLabelUnify414(){
     if(state.page!=='标签管理'||!pid())return null;
@@ -4521,7 +4522,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       const source=labelRemapSourceText414(task),target=String(task.target_label||'');
       state.import412RemapTask=task;state.import412RemapSource=source;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
       renderLabelRemapBanner414(task);
-      armImportRemap414(task.task_id,source,target);
+      window.armImportRemap414?.(task.task_id,source,target);
       return task;
     }catch(e){
       const box=document.getElementById('label414RemapBanner');
@@ -4554,6 +4555,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const rows=(state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[];
     box.innerHTML=`<div class="label414-row head"><span>英文标签</span><span>中文名称</span><span>颜色</span><span>快捷键</span><span>正样本图片</span><span>负样本范围</span><span>标注框</span><span>操作</span></div>${rows.map(l=>{const affected=Number(l.affected_images||0);return `<div class="label414-row"><span><b class="label414-code">${esc(l.code)}</b></span><span>${esc(l.display_name||'-')}${(l.aliases||[]).length?`<small class="muted-line">别名：${(l.aliases||[]).map(esc).join('、')}</small>`:''}</span><span><i class="label414-color" style="background:${esc(l.color||'#64748b')}"></i>${esc(l.color||'')}</span><span>${esc(l.hotkey||'-')}</span><span>${Number(l.usage_images||0)}</span><span>${Number(l.scope_images||0)}</span><span>${Number(l.usage_boxes||0)}</span><span class="row"><button class="btn mini" onclick="openLabel414(${Number(l.class_id)})">编辑</button><button class="btn mini" onclick="openLabelUnify414(${Number(l.class_id)})" ${affected?'':'disabled'}>统一标签</button><button class="btn mini danger" onclick="deleteLabel414(${Number(l.class_id)},'${esc(l.code)}')">删除</button></span></div>`}).join('')||'<div class="empty">暂无标签。请先创建英文标签，例如 fire / smoke / person。</div>'}`;
   }
+  window.drawLabel414=drawLabel414;
   function labelUnifyRows414(){
     return ((state.label414UsageLoadedAt>0?state.label414Usage:state.labels)||[])
       .filter(item=>item?.code&&item.status!=='disabled'&&item.status!=='inactive'&&item.status!=='merged');
@@ -4624,8 +4626,8 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     try{
       const task=await api(`/api/v54/projects/${pid()}/labels/unify`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_class_ids:ids,target_label:target})});
       state.import412RemapTask=task;state.import412RemapSource=sourceText;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-schema';
-      modal('批量统一标签',importRemapProgress414(task,sourceText,target),false);
-      await pollImportRemap414(task.task_id,sourceText,target);
+      modal('批量统一标签',window.importRemapProgress414(task,sourceText,target),false);
+      await window.pollImportRemap414(task.task_id,sourceText,target);
     }catch(e){
       toast(e.message||e);
       if(button?.isConnected){button.disabled=false;button.classList.remove('is-loading');button.textContent='开始后台统一'}
@@ -4644,7 +4646,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       if(classId===null){await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color,aliases})})}
       else await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,display_name:display||code,color,hotkey,aliases})});
       await refreshLabels414(true);closeModal();
-      if(state.page==='标签管理')drawLabel414();
+      if(state.page==='标签管理')window.drawLabel414?.();
       toast(classId===null?'标签已创建':'标签已更新');
     }catch(e){toast(e.message||e)}
   };
@@ -4832,6 +4834,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const total=Math.max(0,Number(task?.total||0)),processed=Math.max(0,Number(task?.processed||0)),raw=Number(task?.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0),status=String(task?.status||'').toUpperCase(),active=['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(status),rawStage=String(task?.stage||task?.phase||''),stage=['QUEUED','WAITING_RESOURCE'].includes(status)?'等待任务调度':rawStage==='REMAPPING_ANNOTATION_LABELS'?'正在批量统一标签':(rawStage||'正在处理'),detail=task?.current_item||`${processed}/${total||'-'} · ${source} → ${target}`;
     return `<div class="zip411"><div class="zip411-main"><div class="zip411-progress"><div><span id="importRemapStage414">${esc(stage)}</span><b id="importRemapPct414">${Math.round(pct)}%</b></div><i><em id="importRemapBar414" style="transform:scaleX(${pct/100});transform-origin:left center"></em></i><p id="importRemapMsg414">${esc(detail)}</p></div><div class="report429-kpis"><div><span>待处理</span><b id="importRemapPending414">${Math.max(0,total-processed)}</b></div><div><span>已处理</span><b id="importRemapProcessed414">${processed}</b></div><div><span>成功</span><b id="importRemapSucceeded414">${Number(task?.succeeded||0)}</b></div><div><span>失败</span><b id="importRemapFailed414">${Number(task?.failed||0)}</b></div></div>${active?'<div class="row end"><button class="btn danger" onclick="cancelImportRemap414()">取消任务</button><button class="btn" onclick="closeModal()">后台运行</button></div>':'<div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>'}</div></div>`;
   }
+  window.importRemapProgress414=importRemapProgress414;
   function patchImportRemapProgress414(task,source,target){
     const root=document.getElementById('importRemapStage414')?.closest('.zip411');if(!root)return false;
     const total=Math.max(0,Number(task?.total||0)),processed=Math.max(0,Number(task?.processed||0)),raw=Number(task?.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0),status=String(task?.status||'').toUpperCase(),rawStage=String(task?.stage||task?.phase||''),stage=['QUEUED','WAITING_RESOURCE'].includes(status)?'等待任务调度':rawStage==='REMAPPING_ANNOTATION_LABELS'?'正在批量统一标签':(rawStage||'正在处理'),detail=task?.current_item||`${processed}/${total||'-'} · ${source} → ${target}`;
@@ -4842,15 +4845,16 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
   function armImportRemap414(taskId,source,target){
     const key='annotation-label-remap';
-    const run=()=>pollImportRemap414(taskId,source,target);
+    const run=()=>window.pollImportRemap414?.(taskId,source,target);
     if(window.PollRegistryRuntime?.startTimeout)return window.PollRegistryRuntime.startTimeout(key,['数据集','标签管理'],run,850);
     return setTimeout(()=>{if(['数据集','标签管理'].includes(state.page))run()},850);
   }
+  window.armImportRemap414=armImportRemap414;
   async function refreshLabelSchemaAfterRemap414(task,source,target){
     await refreshLabels414(true);
     const progressVisible=!!document.getElementById('importRemapStage414');
     if(progressVisible)closeModal();
-    if(state.page==='标签管理')drawLabel414();
+    if(state.page==='标签管理')window.drawLabel414?.();
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),scopeChanged=Number(task?.result?.changed_scope_images??0),failed=Number(task?.failed||0);
     toast(failed?`标签统一完成：${changed} 个框、${scopeChanged} 个负样本范围已更新，${failed} 张需复核；来源标签未退役`:`标签统一完成：${source} → ${target} · ${changed} 个框 · ${scopeChanged} 个负样本范围 · 来源标签已退役`);
     state.annotationRemapOrigin414='';
@@ -4878,18 +4882,18 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     try{
       const task=await api(`/api/v62/projects/${pid()}/material-batches/${taskId}`);
       state.import412RemapTask=task;
-      if(state.page==='标签管理')renderLabelRemapBanner414(task);
+      if(state.page==='标签管理')window.renderLabelRemapBanner414?.(task);
       patchImportRemapProgress414(task,source,target);
       const status=String(task.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
-        renderLabelRemapBanner414(null);
+        window.renderLabelRemapBanner414?.(null);
         if(state.annotationRemapOrigin414==='label-schema')return refreshLabelSchemaAfterRemap414(task,source,target);
         return refreshImportReviewAfterRemap414(task,source,target);
       }
       if(['FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
-        renderLabelRemapBanner414(null);
+        window.renderLabelRemapBanner414?.(null);
         return toast(task?.error_examples?.[0]?.error||'标签统一任务未完成，请查看任务状态');
       }
       armImportRemap414(taskId,source,target);
@@ -4900,7 +4904,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   };
   window.cancelImportRemap414=async function(){
     const task=state.import412RemapTask,id=task?.task_id||task?.id;if(!id)return;
-    try{await api(`/api/v62/projects/${pid()}/material-batches/${id}/cancel`,{method:'POST'});await pollImportRemap414(id,state.import412RemapSource||'',state.import412RemapTarget||'')}catch(e){toast(e.message||e)}
+    try{await api(`/api/v62/projects/${pid()}/material-batches/${id}/cancel`,{method:'POST'});await window.pollImportRemap414(id,state.import412RemapSource||'',state.import412RemapTarget||'')}catch(e){toast(e.message||e)}
   };
   window.remapImport414=async function(source,selectId){
     if(state.import412RemapSubmitting)return;
@@ -4911,8 +4915,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       const task=await api(`/api/v52/projects/${pid()}/labels/remap`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids,source_label:source,target_label:target})});
       if(!task?.task_id){toast(`无需变更：${source} → ${target}`);return}
       state.import412RemapTask=task;state.import412RemapSource=source;state.import412RemapTarget=target;
-      modal('批量统一标签',importRemapProgress414(task,source,target),false);
-      await pollImportRemap414(task.task_id,source,target);
+      modal('批量统一标签',window.importRemapProgress414(task,source,target),false);
+      await window.pollImportRemap414(task.task_id,source,target);
     }catch(e){toast(e.message||e)}
     finally{state.import412RemapSubmitting=false}
   };
