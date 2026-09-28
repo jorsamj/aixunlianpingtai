@@ -234,6 +234,28 @@ def test_v12_iteration_cannot_bypass_durable_split_with_latest_version(client, s
     assert "Durable Training" in response.json()["detail"]
 
 
+
+def test_unversioned_training_url_delegates_to_durable_v12_owner(client, seeded_project):
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "旧入口兼容别名", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "split_mode" in response.json()["detail"]
+    assert "Durable Training" in response.json()["detail"]
+
+
 def test_iteration_base_endpoint_ignores_failed_attempt_and_uses_latest_success(client, seeded_project, monkeypatch):
     import app as app_module
 
