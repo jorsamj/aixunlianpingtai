@@ -285,6 +285,12 @@ jobs:
           grep -Fq 'normalize_training_precision(payload.precision)' app.py
           grep -Fq 'v12 训练创建必须提交 split_mode 并走 Durable Training 主路径' app.py
           grep -Fq 'return v12_start_train(project_id, payload)' app.py
+          grep -Fq 'if framework != "ultralytics":' app.py
+          if grep -Fq '"training.paddle"' platform_core/training_runtime_tasks.py; then echo 'Durable production worker must not advertise unsupported Paddle capability' >&2; exit 1; fi
+          grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
+          grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
+          grep -Fq 'test_v12_rejects_paddle_before_algorithm_or_material_io' tests/api/test_training_request.py
           grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
           grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py
           grep -Fq 'test_unversioned_training_url_delegates_to_durable_v12_owner' tests/api/test_training_request.py
