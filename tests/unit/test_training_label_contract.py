@@ -434,7 +434,7 @@ def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
         json.dumps(meta, ensure_ascii=False), encoding="utf-8"
     )
     AnnotationRepository(project).upsert(
-        "a", [_box("fire")], annotation_state="annotated"
+        "a", [_box("fire"), _box("smoke")], annotation_state="annotated"
     )
     model = project / "previous.pt"
     model.write_bytes(b"model")
@@ -460,6 +460,7 @@ def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
         {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
         algorithm,
     )
+    assert contract["available_material_label_codes"] == ["fire", "smoke"]
     assert contract["inherited_label_codes"] == ["fire", "smoke"]
     assert contract["retained_inherited_label_codes"] == ["fire", "smoke"]
     assert contract["dropped_inherited_label_codes"] == []
