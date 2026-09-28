@@ -21,13 +21,6 @@ export function selectedMaterialLabelCodes(materials, selectedIds, labelCatalog 
         encountered.push(code);
       }
     }
-    for (const value of row?.annotation_scope || []) {
-      const code = String(value || '').trim();
-      if (code && code !== '*' && !seen.has(code)) {
-        seen.add(code);
-        encountered.push(code);
-      }
-    }
   }
   const rank = new Map((labelCatalog || []).map((item, index) => [String(item?.code || ''), index]));
   return encountered.sort((left, right) => {
@@ -97,10 +90,13 @@ export function resolveClientTrainingLabels({
     .filter(item => item?.code && item?.status !== 'disabled' && item?.status !== 'inactive')
     .map(item => String(item.code)));
   const inherited = latestVersionLabelInfo(algorithm);
-  const droppedInherited = inherited.codes.filter(code => !catalogSet.has(code));
-  const retainedInherited = inherited.codes.filter(code => catalogSet.has(code));
+  // Previous-version schema is immutable iteration lineage. Current catalog
+  // state only controls NEW selectable labels; it must not silently delete an
+  // inherited model output from the client preview.
+  const retainedInherited = unique(inherited.codes);
+  const droppedInherited = [];
   const inheritedSet = new Set(retainedInherited);
-  const invalidAvailable = available.filter(code => !catalogSet.has(code));
+  const invalidAvailable = available.filter(code => !catalogSet.has(code) && !inheritedSet.has(code));
   const selectable = available.filter(code => catalogSet.has(code) && !inheritedSet.has(code));
   const requested = unique(requestedCodes).filter(code => selectable.includes(code));
   return {
@@ -110,7 +106,7 @@ export function resolveClientTrainingLabels({
     inherited: retainedInherited,
     droppedInherited,
     invalidAvailable,
-    labelSchemaChanged: Boolean(droppedInherited.length || requested.length),
+    labelSchemaChanged: Boolean(requested.length),
     strictResume: false,
     baseTrainingMode: inherited.hasVersion ? 'previous_weights_init' : 'mother_model_init',
     hasPreviousVersion: inherited.hasVersion,
@@ -149,11 +145,9 @@ function selectionForState(state, algorithmId, hasPreviousVersion, selectable) {
   if (state.trainingLabelAlgorithmId !== algorithmId) {
     state.trainingLabelAlgorithmId = algorithmId;
     state.trainingLabelSelectionTouched = false;
-    return hasPreviousVersion ? [] : unique(selectable);
+    return [];
   }
-  const existing = canonicalSelectedCodes(state).filter(code => available.has(code));
-  if (!state.trainingLabelSelectionTouched && !hasPreviousVersion) return unique(selectable);
-  return existing;
+  return canonicalSelectedCodes(state).filter(code => available.has(code));
 }
 
 function resetTaskLabelInteraction(state) {
