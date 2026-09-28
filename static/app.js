@@ -1708,8 +1708,11 @@ window.installUsability417=function(){
       scheduleSourceImportRefreshV36();
     }else{
       window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
-      await window.refreshLabels414?.(false);
-      if(state.page==='数据集')await window.reloadMaterialPage61?.();
+      const localRefreshes=[window.refreshLabels414?.(false)];
+      if(state.page==='数据集')localRefreshes.push(window.reloadMaterialPage61?.());
+      const settled=await Promise.allSettled(localRefreshes.filter(Boolean));
+      const failed=settled.find(item=>item.status==='rejected');
+      if(failed)toast(`导入完成，但局部刷新失败：${failed.reason?.message||failed.reason}`);
     }
   };
 
@@ -4474,6 +4477,23 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   }
   window.restoreLabelSchema414=restoreLabelSchema414;
   window.refreshLabels414=refreshLabels414;
+  function applyLabelMutation414(result,classId){
+    const items=Array.isArray(result?.items)?result.items:[];
+    const targetId=Number(classId===null||classId===undefined?result?.class_id:classId);
+    if(!Number.isInteger(targetId)||!items.length)return false;
+    const byId=new Map();
+    for(const item of items){const id=Number(item?.class_id);if(Number.isInteger(id))byId.set(id,item)}
+    const target=byId.get(targetId);if(!target)return false;
+    const patch=rows=>{
+      const seen=new Set();
+      const next=(rows||[]).map(row=>{const id=Number(row?.class_id);if(Number.isInteger(id))seen.add(id);return byId.has(id)?{...row,...byId.get(id)}:row});
+      if(!seen.has(targetId))next.push(target);
+      return next;
+    };
+    state.labels=patch(state.labels);state.label414LoadedAt=Date.now();persistLabelSchema414(state.labels);
+    if(state.label414UsageLoadedAt>0)state.label414Usage=patch(state.label414Usage);
+    return true;
+  }
 
   // ---------- visible configuration center: label schema ----------
   const icon414={总览:'▦',质量中心:'◇',算法列表:'◆',训练任务:'▶',训练资源:'▧',数据集:'▤',视频切帧:'▣','自动标注及清洗':'✦',标签管理:'Aa',模型配置:'◉',存储配置:'▣',组件检测:'⌁',平台对接:'↔',畅联云数据:'▥',服务节点:'◫'};
@@ -4643,11 +4663,14 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     if(!englishCode414(code))return toast('英文标签格式不正确，例如 fire、smoke、yellow_helmet');
     if(hotkey&&!/^[1-9]$/.test(hotkey))return toast('快捷键只能填写 1-9');
     try{
-      if(classId===null){await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color,aliases})})}
-      else await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,display_name:display||code,color,hotkey,aliases})});
-      await refreshLabels414(true);closeModal();
+      let result;
+      if(classId===null){result=await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color,aliases})})}
+      else result=await api(`/api/v12/projects/${pid()}/labels/${classId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,display_name:display||code,color,hotkey,aliases})});
+      if(!applyLabelMutation414(result,classId))throw new Error('标签已保存，但服务端未返回完整标签状态，请刷新页面确认');
+      closeModal();
       if(state.page==='标签管理')window.drawLabel414?.();
       toast(classId===null?'标签已创建':'标签已更新');
+      void refreshLabels414(true).then(()=>{if(state.page==='标签管理')window.drawLabel414?.()}).catch(e=>toast(`标签已保存，但使用统计刷新失败：${e.message||e}`));
     }catch(e){toast(e.message||e)}
   };
   window.deleteLabel414=async function(classId,code){

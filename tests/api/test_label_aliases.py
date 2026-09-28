@@ -88,6 +88,8 @@ def test_new_canonical_label_retires_matching_alias_from_other_label(client):
         json={"label": "toukui1", "display_name": "头盔旧类"},
     )
     assert promoted.status_code == 200, promoted.text
+    promoted_items = promoted.json()["items"]
+    assert next(row for row in promoted_items if row["code"] == "toukui1")["display_name"] == "头盔旧类"
 
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     helmet = next(row for row in labels if row["code"] == "helmet")

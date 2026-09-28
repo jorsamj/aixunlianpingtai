@@ -567,6 +567,16 @@ test('label management create and edit stay page-scoped without loading the full
     value.startsWith(`GET /api/projects/${project.id}/images`)
   )).toBe(false);
 
+  let releaseUsageRefresh;
+  const usageRefreshGate = new Promise(resolve => { releaseUsageRefresh = resolve; });
+  let heldUsageRefresh = false;
+  await page.route(`**/api/v54/projects/${project.id}/label-schema`, async route => {
+    if (route.request().method() !== 'GET' || heldUsageRefresh) return route.continue();
+    heldUsageRefresh = true;
+    await usageRefreshGate;
+    await route.continue();
+  });
+
   await row.getByRole('button', {name: '编辑'}).click();
   dialog = page.getByRole('dialog', {name: '编辑标签'});
   await expect(dialog).toBeVisible();
@@ -578,6 +588,9 @@ test('label management create and edit stay page-scoped without loading the full
   const edited = page.locator('.label414-row', {hasText: 'helmet'}).last();
   await expect(edited).toContainText('安全头盔');
   await expect(edited).toContainText('helmet_old');
+  await expect.poll(() => heldUsageRefresh).toBe(true);
+  releaseUsageRefresh();
+  await page.unroute(`**/api/v54/projects/${project.id}/label-schema`);
 
   const labelsResponse = await request.get(`/api/v12/projects/${project.id}/labels`);
   expect(labelsResponse.ok()).toBeTruthy();

@@ -68,7 +68,9 @@ test('label unify progress recovers after refresh from durable material-batch tr
   assert.match(source,/label414RemapBanner/);
   assert.match(source,/reopenLabelRemap414/);
   assert.match(source,/刷新或关闭页面不会取消任务/);
-  assert.match(source,/armImportRemap414\(task\.task_id,source,target\)/);
+  assert.match(source,/window\.armImportRemap414=armImportRemap414/);
+  assert.match(source,/window\.armImportRemap414\?\.\(task\.task_id,source,target\)/);
+  assert.match(source,/window\.importRemapProgress414=importRemapProgress414/);
   const keys=[...source.matchAll(/const key='([^']*label-remap[^']*)'/g)].map(match=>match[1]);
   assert.deepEqual([...new Set(keys)],['annotation-label-remap']);
 });

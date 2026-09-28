@@ -4313,7 +4313,13 @@ def add_label(project_id: str, payload: AddLabelReq):
             )
     _prune_canonical_label_alias_conflicts(project)
     save_project(project)
-    return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
+    return {
+        "ok": True,
+        "class_id": idx,
+        "labels": project["labels"],
+        "label_meta": project.get("label_meta", []),
+        "items": active_label_options(project_label_items(project)),
+    }
 
 
 @app.post("/api/projects/{project_id}/images")

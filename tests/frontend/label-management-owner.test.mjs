@@ -33,7 +33,12 @@ test('label management has one canonical browser owner', () => {
   const saveEnd = app.indexOf('\n  window.deleteLabel414=', saveStart);
   assert.ok(saveStart >= 0 && saveEnd > saveStart);
   const save = app.slice(saveStart, saveEnd);
-  assert.match(save, /await refreshLabels414\(true\);closeModal\(\)/);
+  const truthPatch = save.indexOf('applyLabelMutation414(result,classId)');
+  const close = save.indexOf('closeModal()');
+  const usageRefresh = save.indexOf('void refreshLabels414(true)');
+  assert.ok(truthPatch >= 0 && truthPatch < close, 'successful mutation truth must be patched before modal close');
+  assert.ok(close >= 0 && close < usageRefresh, 'usage statistics refresh must not block modal close');
+  assert.doesNotMatch(save, /await refreshLabels414\(true\);closeModal\(\)/);
   assert.doesNotMatch(save, /refreshImages414|\/images/);
   assert.doesNotMatch(app, /refreshImages414/);
   assert.match(html, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
