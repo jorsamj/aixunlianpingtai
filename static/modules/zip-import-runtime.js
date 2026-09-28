@@ -39,26 +39,24 @@ export function zipDisplayProgress(job) {
   return value&&typeof value==='object'?value:null;
 }
 export function overallZipProgress(job) {
-  const display=zipDisplayProgress(job),canonical=Number(display?.overall_progress);
+  const display=zipDisplayProgress(job);
+  const rawCanonical=display?.overall_progress;
+  const canonical=rawCanonical===null||rawCanonical===undefined||rawCanonical===''?NaN:Number(rawCanonical);
   if(Number.isFinite(canonical)) return clamp(canonical);
-  // Compatibility only for historical jobs that predate server phase truth.
-  const s=status(job), backend=backendZipProgress(job), upload=clamp(job?.upload_progress);
-  if(s==='uploading') return Math.round(upload*3.5)/10;
-  if(s==='merging') return 36;
-  if(s==='validating') return 37;
-  if(['selecting','queued','waiting'].includes(s)) return 38;
-  if(s==='running') return Math.round((3800+backend*61)/10)/10;
-  if(s==='done') return 100;
-  if(s==='failed') {
-    if(upload>0&&upload<100) return Math.round(upload*3.5)/10;
-    return backend>0 ? Math.round((3800+backend*61)/10)/10 : 38;
-  }
-  return backend;
+  // The server projects historical jobs too. This raw value is only a
+  // fail-safe for malformed/offline fixtures, never a second lifecycle mapper.
+  const legacy=Number(job?.progress);
+  if(Number.isFinite(legacy)) return clamp(legacy);
+  return status(job)==='done'?100:0;
 }
 export function zipPhaseDetail(job) {
   const display=zipDisplayProgress(job);
   if(!display) return {text:'',phaseProgress:null,etaSeconds:null};
-  const completed=Number(display.completed),total=Number(display.total),phaseProgress=Number(display.phase_progress),etaSeconds=Number(display.eta_seconds);
+  const completedRaw=display.completed,totalRaw=display.total,phaseRaw=display.phase_progress,etaRaw=display.eta_seconds;
+  const completed=completedRaw===null||completedRaw===undefined||completedRaw===''?NaN:Number(completedRaw);
+  const total=totalRaw===null||totalRaw===undefined||totalRaw===''?NaN:Number(totalRaw);
+  const phaseProgress=phaseRaw===null||phaseRaw===undefined||phaseRaw===''?NaN:Number(phaseRaw);
+  const etaSeconds=etaRaw===null||etaRaw===undefined||etaRaw===''?NaN:Number(etaRaw);
   const unit=String(display.unit||'');
   const unitLabel={bytes:'字节',files:'文件',images:'图片',step:'步骤'}[unit]||unit;
   const counter=Number.isFinite(completed)&&Number.isFinite(total)&&total>0 ? `${Math.round(completed)} / ${Math.round(total)}${unitLabel?` ${unitLabel}`:''}` : '';
@@ -266,7 +264,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const stateResult=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
     return `<div class="zip411" data-zip-runtime="1"><section class="zip411-head"><div><b>${esc(job?.file_name||(getState()||{}).import411?.fileName||'ZIP 数据导入')}</b><span>${bytes(job?.uploaded_bytes||(getState()||{}).import411?.fileSize||0)}</span></div><button class="btn" onclick="closeModal()">关闭窗口</button></section><div class="zip411-main"><div class="zip411-progress"><div><span id="zipDurableStage">${esc(v.stage)}</span><b id="zipDurablePct">${Math.round(v.progress)}%</b></div><i><em id="zipDurableBar" data-progress="${Number(v.progress).toFixed(2)}" style="transform:scaleX(${(Number(v.progress)/100).toFixed(4)})"></em></i><p id="zipDurableMsg">${esc(v.message)}</p><small id="zipDurablePhaseMeta" class="item-sub">${esc(phase.text)}</small></div><div id="zipDurableQueue" class="alert ${v.queue.waits?'warn':'ok'}">${esc(queue)}</div><div class="zip411-times"><div><span>上传时间</span><b>${seconds(job?.upload_seconds)}</b></div><div><span>ZIP扫描</span><b>${seconds(job?.scan_seconds)}</b></div><div><span>后台处理</span><b>${seconds(job?.processing_seconds)}</b></div></div><div id="zip411Result">${stateResult}</div>${labelMappingMarkup(job)}</div></div>`;
   }
-  function uploadBody(){return `<div class="zip411" data-zip-runtime="1"><div class="zip411-main"><div class="zip411-progress"><div><span>正在上传 ZIP</span><b id="zipDurableUploadPct">${Math.round(uploading?.progress||0)}%</b></div><i><em id="zipDurableUploadBar" data-progress="${Number(uploading?.progress||0).toFixed(2)}" style="transform:scaleX(${(Number(uploading?.progress||0)/100).toFixed(4)})"></em></i><p id="zipDurableUploadMsg">${esc(uploading?.message||'准备上传')}</p></div><div class="alert warn">这里显示整条 ZIP 导入流程进度；网络上传完成后还会继续合并、校验和后台导入。</div></div></div>`}
+  function uploadBody(){return `<div class="zip411" data-zip-runtime="1"><div class="zip411-main"><div class="zip411-progress"><div><span>正在上传 ZIP</span><b id="zipDurableUploadPct">${Math.round(uploading?.progress||0)}%</b></div><i><em id="zipDurableUploadBar" data-progress="${Number(uploading?.progress||0).toFixed(2)}" style="transform:scaleX(${(Number(uploading?.progress||0)/100).toFixed(4)})"></em></i><p id="zipDurableUploadMsg">${esc(uploading?.message||'准备上传')}</p></div><div class="alert warn">这里仅显示当前网络上传的真实进度；上传完成后，合并、校验、扫描、解压和入库均以服务器任务状态为准。</div></div></div>`}
   function replaceOpenRuntime(html){
     const currentRoot=document.querySelector('.zip411[data-zip-runtime="1"]');
     if(!currentRoot)return false;
@@ -380,7 +378,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const file=input?.files?.[0];if(!file)return null;if(!/\.zip$/i.test(file.name||'')){notify?.('请选择 ZIP 压缩包');input.value='';return null}const project=pid();if(!project){notify?.('当前项目未加载，请刷新后重试');return null}
     let multipartTaskId='';uploading={progress:0,message:'准备上传',uploadId:''};window.closeModal?.();open();render();
     try{
-      const response=await uploadZipMultipartJob(project,file,{fetchImpl,onSession:session=>{multipartTaskId=String(session.upload_id||'');uploading={...uploading,uploadId:multipartTaskId};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:overallZipProgress({status:'uploading',upload_progress:Number(session.upload_progress||0)}),stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false})},onTransfer:e=>{const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:Math.round(e.ratio*350)/10,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:uploading.progress,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false});render()},onPhase:phase=>{uploading={...uploading,progress:36,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:36,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false});render()}});uploading=null;
+      const response=await uploadZipMultipartJob(project,file,{fetchImpl,onSession:session=>{multipartTaskId=String(session.upload_id||'');const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false})},onTransfer:e=>{const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false});render()},onPhase:phase=>{uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false});render()}});uploading=null;
       const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};knownJobs.set(String(provisional.id),provisional);writeIntent(project,provisional.id,'deferred');
       await reconcile('upload');open();return response;
     }catch(e){uploading=null;window.modal?.('ZIP 数据导入',`<div class="alert err">${esc(e.message||e)}</div>`,true);notify?.(e.message||e);throw e}finally{input.value=''}
