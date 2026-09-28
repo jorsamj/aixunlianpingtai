@@ -17751,6 +17751,7 @@ def _v47_file_for(project_id: str, folder: str, task_id: str) -> Path:
 
 from platform_core.cleaning import (
     MemoryHashIndex as _V47MemoryHashIndex,
+    clean_options as _v47_clean_options,
     dhash as _v47_dhash,
     hamming as _v47_hamming,
     image_metrics as _v47_image_metrics,
@@ -18197,6 +18198,10 @@ def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[s
         data.pop('target_node_id', ''),
         data.pop('queue_policy', 'normal'),
     )
+    # Use the same CLEAN option owner as material_batches.parse_request().
+    # Prepared durable requests persist canonical defaults, so retries must
+    # compare against that canonical shape rather than raw V47 payload fields.
+    data = _v47_clean_options(data)
     selection, _normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
     draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data, 'scheduling': scheduling}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)

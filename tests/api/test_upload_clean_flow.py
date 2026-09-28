@@ -220,6 +220,41 @@ def test_retry_after_prepared_task_before_batch_publication_completes_once(clien
     tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
     assert [item["id"] for item in tasks].count(task_id) == 1
 
+def test_prepared_clean_retry_rejects_changed_canonical_options(client):
+    import pytest
+    import app as app_module
+
+    pid = client.post(
+        "/api/projects",
+        json={"name": "prepared-option-fence", "labels": []},
+    ).json()["id"]
+    uploaded = upload_many_png(client, pid, ["clean.png"])
+    image_id = uploaded["uploaded"][0]["id"]
+    task_id = "clean-option-fence"
+
+    _, created = app_module._v62_prepare_clean_compat(
+        pid,
+        app_module.V47CleanReq(
+            image_ids=[image_id],
+            task_name="canonical-clean",
+            blur_min_laplacian=45,
+        ),
+        task_id=task_id,
+    )
+    assert created is True
+
+    with pytest.raises(ValueError, match="已关联不同请求"):
+        app_module._v62_prepare_clean_compat(
+            pid,
+            app_module.V47CleanReq(
+                image_ids=[image_id],
+                task_name="canonical-clean",
+                blur_min_laplacian=46,
+            ),
+            task_id=task_id,
+        )
+
+
 def test_retry_recreates_missing_task_from_published_batch_association(client):
     import app as app_module
 
@@ -827,7 +862,6 @@ def test_background_annotation_index_cannot_remove_a_new_upload(client, monkeypa
     import threading
 
     import app as app_module
-    from platform_core.material_store import MaterialStore
 
     project = client.post(
         "/api/projects",
@@ -844,16 +878,17 @@ def test_background_annotation_index_cannot_remove_a_new_upload(client, monkeypa
     })
     indexed = threading.Event()
     resume = threading.Event()
-    original = app_module.read_annotation
+    original_get_many = app_module.AnnotationRepository.get_many
 
-    def paused_read(pid, image_id):
-        value = original(pid, image_id)
-        if image_id == first["id"]:
+    def paused_get_many(repository, image_ids):
+        wanted = [str(image_id) for image_id in image_ids]
+        value = original_get_many(repository, wanted)
+        if first["id"] in wanted:
             indexed.set()
             assert resume.wait(5), "annotation index worker did not resume"
         return value
 
-    monkeypatch.setattr(app_module, "read_annotation", paused_read)
+    monkeypatch.setattr(app_module.AnnotationRepository, "get_many", paused_get_many)
     thread = threading.Thread(
         target=app_module._v52_annotation_index_worker,
         args=(project_id,),
