@@ -1580,3 +1580,129 @@ def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(t
 
     assert blocked.value.code == "EXTERNAL_ALGORITHM_INACTIVE"
     assert blocked.value.status_code == 409
+
+
+
+class _DeferredSyncThread:
+    instances = []
+
+    def __init__(self, *, target, name, daemon):
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+        type(self).instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def run(self):
+        assert self.started is True
+        self.target()
+
+
+def test_manual_sync_operation_is_durable_reused_and_finishes_through_canonical_sync(tmp_path: Path):
+    _DeferredSyncThread.instances.clear()
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    service.thread_factory = _DeferredSyncThread
+    algorithms_path = tmp_path / "operation-project" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    first = service.start_sync(
+        project_id="operation-project",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+    second = service.start_sync(
+        project_id="operation-project",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert first["accepted"] is True
+    assert second["accepted"] is False
+    assert first["operation"]["operation_id"] == second["operation"]["operation_id"]
+    assert first["operation"]["status"] == "queued"
+    assert first["operation"]["trigger_source"] == "manual"
+    assert len(_DeferredSyncThread.instances) == 1
+
+    _DeferredSyncThread.instances[0].run()
+
+    operation = service.current_sync_operation("operation-project")
+    assert operation["status"] == "success"
+    assert operation["current_phase"] == "completed"
+    assert operation["processed_products"] == 1
+    assert operation["total_products"] == 1
+    assert operation["success_count"] == 1
+    assert operation["error_count"] == 0
+    assert operation["counts"]["products"] == 1
+    assert operation["counts"]["added"] == 1
+    assert service.repository.history()[0]["operation_id"] == operation["operation_id"]
+    assert list_algorithms(algorithms_path)[0]["external_product_id"] == "p1"
+
+
+def test_sync_operation_cas_prevents_old_operation_from_overwriting_newer_one(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    first = service._new_sync_operation("cas-project", "manual")
+    claimed, _ = service.repository.claim_sync_operation("cas-project", first)
+    assert claimed is True
+
+    service.repository.update_sync_operation(
+        "cas-project",
+        first["operation_id"],
+        {"status": "success", "current_phase": "completed"},
+    )
+    second = service._new_sync_operation("cas-project", "auto")
+    claimed, second_current = service.repository.claim_sync_operation("cas-project", second)
+    assert claimed is True
+
+    returned = service.repository.update_sync_operation(
+        "cas-project",
+        first["operation_id"],
+        {"status": "failed", "current_phase": "failed"},
+    )
+
+    assert returned["operation_id"] == second_current["operation_id"]
+    assert service.repository.sync_operation("cas-project")["operation_id"] == second_current["operation_id"]
+    assert service.repository.sync_operation("cas-project")["status"] == "queued"
+
+
+def test_sync_operation_exposes_real_product_phase_counters_during_fetch(tmp_path: Path):
+    observed = []
+    state = {}
+
+    class ObservedClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            observed.append(dict(state["service"].repository.sync_operation("phase-project")))
+            return super().analyses(product_id)
+
+    service = _configured_external_service(tmp_path, ObservedClient)
+    state["service"] = service
+    algorithms_path = tmp_path / "phase-project" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    service.sync(project_id="phase-project", algorithms_path=algorithms_path, sync_type="auto")
+
+    assert observed
+    current = observed[0]
+    assert current["status"] == "running"
+    assert current["current_phase"] == "fetch_analyses"
+    assert current["processed_products"] == 0
+    assert current["total_products"] == 1
+    final = service.current_sync_operation("phase-project")
+    assert final["processed_products"] == 1
+    assert final["last_request_duration_ms"] >= 0
+
+
+def test_external_sync_router_uses_background_operation_owner():
+    source = (Path(__file__).resolve().parents[2] / "platform_core" / "external_algorithm_platform.py").read_text(encoding="utf-8")
+    route_start = source.index('@router.post("/sync")')
+    route_end = source.index('@router.get("/sync-history")', route_start)
+    block = source[route_start:route_end]
+
+    assert "service.start_sync(" in block
+    assert '@router.get("/sync-operation")' in block
+    assert "service.current_sync_operation(project_id)" in block
+    assert "service.sync(" not in block

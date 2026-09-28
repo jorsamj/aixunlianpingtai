@@ -11,6 +11,9 @@ import {
   externalCategoryMatches,
   externalCategoryTreeRows,
   externalCategoryVisibleRows,
+  externalSyncOperationActive,
+  externalSyncOperationHtml,
+  externalSyncOperationPhaseText,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
   safeExternalPlatformConfigSnapshot,
@@ -349,6 +352,8 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   const syncBlock = source.slice(syncStart, syncEnd);
   assert.doesNotMatch(syncBlock, /await save\(/);
   assert.match(syncBlock, /credentials\?\.configured !== true/);
+  assert.match(source, /sync-operation\?project_id=/);
+  assert.match(syncBlock, /ensureSyncOperationPolling/);
   assert.match(syncBlock, /data-algorithm-sync/);
   assert.doesNotMatch(syncBlock, /data-external-list-sync/);
   assert.match(source, /id="externalPlatformTest"/);
@@ -416,4 +421,27 @@ test('external training preflight exposes freshness without weakening the author
   assert.match(source, /Boolean\(cached\?\.algorithm\) && age >= 0 && age < Math\.max\(0, Number\(maxAgeMs\) \|\| 0\)/);
   assert.match(source, /trainingPreflightFresh,/);
   assert.match(source, /async function preflightTraining\(algorithmId, \{request, force = false, maxAgeMs = 30000\} = \{\}\)/);
+});
+
+
+test('sync operation UI reports real phase and counters without inventing a percentage', () => {
+  const operation = {
+    operation_id: 'sync-1',
+    status: 'running',
+    current_phase: 'fetch_analyses',
+    started_at: '2026-09-28T04:00:00Z',
+    processed_products: 37,
+    total_products: 126,
+    last_request_duration_ms: 420,
+    success_count: 37,
+    error_count: 0,
+  };
+
+  assert.equal(externalSyncOperationActive(operation), true);
+  assert.equal(externalSyncOperationPhaseText(operation.current_phase), '读取产品分析方式');
+  const html = externalSyncOperationHtml(operation);
+  assert.match(html, /37 \/ 126/);
+  assert.match(html, /420 ms/);
+  assert.match(html, /成功 \/ 错误/);
+  assert.doesNotMatch(html, /%/);
 });
