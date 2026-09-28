@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
-from .algorithms import attach_version, list_algorithms, resolve_current_version_id, update_algorithm_version
+from .algorithms import (
+    attach_version,
+    attach_version_if_current,
+    list_algorithms,
+    resolve_current_version_id,
+    update_algorithm_version,
+)
 from filelock import FileLock, Timeout
 
 from .material_repository import MaterialRepository
@@ -3359,11 +3365,21 @@ class RemoteExecutionTransportService:
             "finished_at": finished_at,
         }
 
-        attach_version(
-            self.algorithms_file(str(task.project_id)),
-            algorithm_id,
-            version,
-        )
+        try:
+            attach_version_if_current(
+                self.algorithms_file(str(task.project_id)),
+                algorithm_id,
+                version,
+                expected_current_version_id=expected_base_id or None,
+            )
+        except Exception as error:
+            if getattr(error, "code", "") == "ALGORITHM_VERSION_CONFLICT":
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_BASE_VERSION_STALE",
+                    str(error),
+                    409,
+                ) from error
+            raise
         return {
             "algorithm_id": algorithm_id,
             "version_id": version_id,
