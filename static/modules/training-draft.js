@@ -28,10 +28,11 @@ function versionSortKey(version) {
   return String(version?.finished_at || version?.created_at || version?.version_name || '');
 }
 
-export function trainingInheritanceFromAlgorithm(algorithm = {}) {
-  const versions = [...(algorithm?.versions || [])].sort((a, b) => versionSortKey(b).localeCompare(versionSortKey(a)));
+export function trainingBaseVersionFromAlgorithm(algorithm = {}) {
+  const versions = [...(algorithm?.versions || [])]
+    .sort((a, b) => versionSortKey(b).localeCompare(versionSortKey(a)));
   if (!versions.length) {
-    return {hasAny: false, hasPrevious: false, blocked: false, legacy: false, codes: [], versionId: ''};
+    return {hasAny: false, hasPrevious: false, blocked: false, versionId: ''};
   }
 
   const currentVersionId = String(algorithm?.current_version_id || '').trim();
@@ -39,19 +40,12 @@ export function trainingInheritanceFromAlgorithm(algorithm = {}) {
     ? versions.find(version => String(version?.id || version?.version_id || '').trim() === currentVersionId) || null
     : versions.find(successfulVersion) || null;
   if (!previous || !successfulVersion(previous)) {
-    return {hasAny: true, hasPrevious: false, blocked: true, legacy: false, codes: [], versionId: ''};
+    return {hasAny: true, hasPrevious: false, blocked: true, versionId: ''};
   }
-
-  const schema = [...(previous.label_schema || [])]
-    .sort((a, b) => Number(a?.class_id ?? 1e9) - Number(b?.class_id ?? 1e9));
-  const codes = unique(schema.map(item => item?.code));
-  const fallbackCodes = codes.length ? codes : unique(previous.label_codes || []);
   return {
     hasAny: true,
     hasPrevious: true,
     blocked: false,
-    legacy: !fallbackCodes.length,
-    codes: fallbackCodes,
     versionId: String(previous.id || previous.version_id || '').trim(),
   };
 }
@@ -64,8 +58,6 @@ export function createTrainingDraft(values = {}) {
 
   const materialIds = unique(values.materialIds);
   const testMaterialIds = splitMode === 'independent_test_set' ? unique(values.testMaterialIds) : [];
-  const inheritedLabelCodes = unique(values.inheritedLabelCodes);
-  const newLabelCodes = unique(values.newLabelCodes).filter(code => !inheritedLabelCodes.includes(code));
 
   return {
     algorithmId: String(values.algorithmId || '').trim(),
@@ -77,10 +69,7 @@ export function createTrainingDraft(values = {}) {
       ? numberOr(values.experimentPercent, 20)
       : null,
     validationPercent: numberOr(values.validationPercent, 20),
-    inheritedLabelCodes,
-    newLabelCodes,
-    effectiveLabelCodes: unique([...inheritedLabelCodes, ...newLabelCodes]),
-    inheritancePending: Boolean(values.inheritancePending),
+    newLabelCodes: unique(values.newLabelCodes),
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
       strategy: String(values.resource?.strategy || 'auto'),
@@ -102,8 +91,8 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const normalized = createTrainingDraft(draft);
   if (!normalized.algorithmId) throw new Error('请选择训练算法');
   if (!normalized.materialIds.length) throw new Error('请选择训练素材');
-  if (!normalized.effectiveLabelCodes.length && !normalized.inheritancePending) {
-    throw new Error('至少选择一个训练标签');
+  if (!normalized.baseVersionId && !normalized.newLabelCodes.length) {
+    throw new Error('首次训练至少选择一个训练标签');
   }
   if (!(normalized.validationPercent > 0 && normalized.validationPercent < 100)) {
     throw new Error('验证集比例必须在 0 到 100 之间');

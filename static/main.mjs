@@ -18,10 +18,10 @@ import {installTrainingMaterialPickerRuntime} from './modules/training-material-
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422502';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422563';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
-import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422509';
-import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422517';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422518';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422564';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422565';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422555';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
@@ -87,7 +87,7 @@ const pollRegistry = installPollRegistry({getState: () => state});
 const trainingDraftRuntime = installTrainingDraftRuntime({
   getState: () => state,
   createTrainingDraft,
-  trainingInheritanceFromAlgorithm,
+  trainingBaseVersionFromAlgorithm,
   directControlIds: TRAINING_DRAFT_CONTROL_IDS,
 });
 const trainingDraftControlsRuntime = installTrainingDraftControls({trainingDraftRuntime});
@@ -108,7 +108,7 @@ window.PlatformCore = {
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
   reports: {reportPresentation},

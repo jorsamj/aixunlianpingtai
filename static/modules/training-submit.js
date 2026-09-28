@@ -111,21 +111,21 @@ export function validateTrainingDevice(draft, devices = [], target = null) {
   return match;
 }
 
-export function trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting = false} = {}) {
+export function trainingSubmitReadiness({draft, base, benchmarkStatus, submitting = false} = {}) {
   if (submitting) return {ready: false, reason: 'submitting'};
   if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
   if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
-  if (inheritance?.blocked) return {ready: false, reason: 'iteration'};
+  if (base?.blocked) return {ready: false, reason: 'iteration'};
   return {ready: true, reason: ''};
 }
 
-export function supplementCandidateContext({asset, draft, inheritance} = {}) {
+export function supplementCandidateContext({asset, draft, base} = {}) {
   if (!asset || !draft) return null;
   const versionId = String(
     draft.baseVersionId
-    || inheritance?.versionId
+    || base?.versionId
     || asset.current_version_id
     || ''
   ).trim();
@@ -156,7 +156,7 @@ export function supplementCandidateContext({asset, draft, inheritance} = {}) {
   };
 }
 
-export function benchmarkReuseContext({asset, draft, inheritance, benchmark} = {}) {
+export function benchmarkReuseContext({asset, draft, base, benchmark} = {}) {
   if (!draft?.benchmarkReuseEnabled) return null;
   if (!asset || !draft) throw new Error('固定评测基准所属算法不存在，请刷新后重试');
   if (!benchmark || benchmark.loading) throw new Error('固定评测基准正在校验，请稍后再提交训练');
@@ -168,7 +168,7 @@ export function benchmarkReuseContext({asset, draft, inheritance, benchmark} = {
   }
   const currentVersionId = String(asset.current_version_id || '').trim();
   const sourceVersionId = String(benchmark.source_version_id || '').trim();
-  const draftVersionId = String(draft.baseVersionId || inheritance?.versionId || currentVersionId || '').trim();
+  const draftVersionId = String(draft.baseVersionId || base?.versionId || currentVersionId || '').trim();
   if (!sourceVersionId || !currentVersionId || sourceVersionId !== currentVersionId
       || (draftVersionId && draftVersionId !== sourceVersionId)) {
     throw new Error('固定评测基准来源版本已变化，请重新打开训练窗口');
@@ -260,7 +260,7 @@ export function installTrainingSubmitRuntime({
   const SUBMIT_STAGE_TEXT = Object.freeze({
     idle: '开始训练',
     'sync-draft': '正在读取训练配置…',
-    'validate-inheritance': '正在核验算法版本…',
+    'validate-version': '正在核验算法版本…',
     'resolve-algorithm': '正在核验算法主数据…',
     'resolve-target': '正在核验训练资源…',
     'resolve-engine': '正在核验训练引擎…',
@@ -296,11 +296,11 @@ export function installTrainingSubmitRuntime({
   function updateReadiness() {
     const state = getState?.() || {};
     const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
-    const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
+    const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
     const benchmarkStatus = String(state.trainingBenchmarkReuse?.algorithm_id || '') === String(draft?.algorithmId || '')
       ? state.trainingBenchmarkReuse
       : null;
-    const baseReadiness = trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting});
+    const baseReadiness = trainingSubmitReadiness({draft, base, benchmarkStatus, submitting});
     const asset = (state.algorithms || []).find(
       row => String(row?.id || '') === String(draft?.algorithmId || '')
     );
@@ -312,7 +312,7 @@ export function installTrainingSubmitRuntime({
       : baseReadiness;
     let supplementContext = null;
     try {
-      supplementContext = supplementCandidateContext({asset, draft, inheritance});
+      supplementContext = supplementCandidateContext({asset, draft, base});
     } catch (_) {
       supplementContext = null;
     }
@@ -343,9 +343,9 @@ export function installTrainingSubmitRuntime({
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
 
-      setSubmitStage('validate-inheritance');
-      const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
-      if (inheritance.blocked) {
+      setSubmitStage('validate-version');
+      const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
+      if (base.blocked) {
         throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退母算法。');
       }
 
@@ -356,7 +356,7 @@ export function installTrainingSubmitRuntime({
       if (externalReadiness?.ready === false) {
         throw new Error(externalReadiness.message || '当前畅联云算法主数据未就绪，请重新同步后再训练');
       }
-      const benchmarkContext = benchmarkReuseContext({asset, draft, inheritance, benchmark: state.trainingBenchmarkReuse});
+      const benchmarkContext = benchmarkReuseContext({asset, draft, base, benchmark: state.trainingBenchmarkReuse});
 
       setSubmitStage('resolve-target');
       const targetId = document.getElementById('tr429Target')?.value || '';
@@ -380,7 +380,7 @@ export function installTrainingSubmitRuntime({
         payload.benchmark_source_version_id = benchmarkContext.sourceVersionId;
         payload.benchmark_scope_id = benchmarkContext.scopeId;
       }
-      const supplementContext = supplementCandidateContext({asset, draft, inheritance});
+      const supplementContext = supplementCandidateContext({asset, draft, base});
       if (supplementContext?.active) {
         payload.supplement_candidate_set_id = supplementContext.candidateSetId;
       }
@@ -389,7 +389,7 @@ export function installTrainingSubmitRuntime({
       if (
         iterationAction
         && String(iterationAction?.source?.algorithm_id || '') === String(asset.id || '')
-        && String(iterationAction?.source?.version_id || '') === String(draft.baseVersionId || inheritance.versionId || '')
+        && String(iterationAction?.source?.version_id || '') === String(draft.baseVersionId || base.versionId || '')
       ) {
         payload.iteration_action = {
           action_id: String(iterationAction.action_id || ''),
