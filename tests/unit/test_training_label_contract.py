@@ -11,6 +11,7 @@ from PIL import Image
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.training_label_tasks import (
     _LABEL_CONTRACT,
+    _persist_version_contract,
     _scoped_selected_project_images,
     resolve_training_label_contract,
     selected_material_label_codes,
@@ -215,6 +216,56 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     })
     assert frozen_base["base_version_id"] == "v1"
     assert frozen_base["base_model_path"] == str(model.resolve())
+
+
+def test_version_contract_backfill_preserves_full_frozen_base_lineage(tmp_path: Path):
+    _data_dir, project = _project(tmp_path)
+    (project / "algorithms.json").write_text(
+        json.dumps([{
+            "id": "alg",
+            "versions": [{
+                "id": "v1",
+                "task_id": "task-1",
+                "label_contract": {
+                    "base_model_contract_schema_version": 1,
+                    "base_model_reference": "/frozen/original.pt",
+                    "base_model_sha256": "a" * 64,
+                    "base_model_size_bytes": 123,
+                },
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    contract = {
+        "algorithm_id": "alg",
+        "project_path": str(project),
+        "schema_version": 1,
+        "effective_label_schema": [
+            {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+        ],
+        "effective_label_codes": ["fire"],
+        "base_model_contract_schema_version": 1,
+        "base_model_reference": "/frozen/original.pt",
+        "base_model_sha256": "a" * 64,
+        "base_model_size_bytes": 123,
+        "base_training_mode": "previous_weights_init",
+        "base_version_id": "v0",
+        "strict_resume": False,
+        "optimizer_state_resumed": False,
+    }
+
+    _persist_version_contract(project, "task-1", contract)
+
+    from platform_core.algorithms import list_algorithms
+
+    version = list_algorithms(project / "algorithms.json")[0]["versions"][0]
+    persisted = version["label_contract"]
+    assert persisted["base_model_contract_schema_version"] == 1
+    assert persisted["base_model_reference"] == "/frozen/original.pt"
+    assert persisted["base_model_sha256"] == "a" * 64
+    assert persisted["base_model_size_bytes"] == 123
+    assert persisted["base_version_id"] == "v0"
+    assert "project_path" not in persisted
 
 
 def test_frozen_iteration_base_fails_closed_if_checkpoint_changes(tmp_path: Path):
