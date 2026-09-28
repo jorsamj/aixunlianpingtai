@@ -1,5 +1,166 @@
 # Codex / 人工接管交接记录
 
+
+## 2026-09-28 标签统一 → 迭代训练不复活旧标签：CI / Real Chrome 验收 CLOSED（最新）
+
+- 本节验收代码 cutoff：`5b575dab8f8ea1177860031ea8dd4ee29e89a885`（`test: align training label browser build guard`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 该 cutoff 重新读取远端真实分支、最近提交、生产代码、测试与 workflow 后确认：本轮“标签统一成功后，下一算法版本仍复活历史旧标签”已经 **CLOSED**。
+- 本节文档提交会产生新的 HEAD 与新一轮 CI；后续接手仍必须重新读取远端 HEAD / VERSION / checks，不能把本节 cutoff 当作未来最新 HEAD。
+- 本轮没有 merge main、tag、release、force push，没有删除/放宽测试，没有修改历史算法版本 schema，也没有新增第二套 Training Label / Label Governance owner。
+
+### 1. 真实根因与最终语义
+
+历史算法版本 `previous_version.label_schema` 继续保持不可变；创建新的迭代训练任务时，后端唯一 Training Label Contract owner 会把历史 schema 投影到**当前 canonical label governance**：
+
+- `active`：正常继承；
+- `merged`：沿 `merged_into` 链解析到当前 active target，支持 merge chain；
+- 多个历史标签合并到同一 target：去重，只保留一个 target class；
+- `inactive` 且没有 `merged_into`：fail-closed，不猜；
+- governance 中 missing：fail-closed，不猜；
+- 合并/去重后训练 `class_id` 强制重新连续为 `0..N-1`。
+
+后端当前明确返回并冻结：
+- `inherited_label_codes`
+- `retained_inherited_label_codes`
+- `merged_inherited_label_codes`
+- `dropped_inherited_label_codes`
+- `effective_label_codes`
+- `effective_label_schema`
+
+只要 schema 因 merge 发生变化：
+- `base_training_mode = previous_weights_init`
+- `strict_resume = false`
+- `optimizer_state_resumed = false`
+
+即：继续使用上一成功版本权重初始化，但绝不 strict resume optimizer。
+
+### 2. 前后端一致：浏览器只预览，服务器仍是唯一真相
+
+当前前端：
+- `state.labels` 继续只保存 active 标签，merged 老标签不会再次变成可选标签；
+- `state.labelGovernance414` 保存完整 active / inactive / merged / `merged_into`；
+- 训练弹窗标题为“上一版本继承（按当前标签治理）”；
+- merge 会显示“历史版本保持不变；本次训练按已确认统一关系折叠：source → target”；
+- inactive / missing 且无明确 merge target 会显示阻断提示，最终仍由服务器拒绝；
+- 前端不拥有第二套训练 schema 规则。
+
+当前静态资源真实 cache key：
+- `app.js?v=42.25.263`
+- `main.mjs?v=42.25.250`
+- `training-labels.js?v=422566`
+- `TrainingLabelRuntime.build = module-422566`
+
+这些只是 cache-bust/build key，正式 `VERSION.txt` 仍是 `42.24.0`。
+
+### 3. Ground Truth / governance / 历史版本集成验收
+
+`tests/api/test_durable_label_remap.py::test_multi_source_label_unify_is_one_durable_task_and_retires_sources` 已锁定完整链路：
+
+`fire + smoke -> person`
+→ 正式 Annotation boxes / confirmed-empty scope 均改为 `person`
+→ `fire.status = merged, merged_into = person`
+→ `smoke.status = merged, merged_into = person`
+→ active labels 只剩 `person`
+→ 下一次 training label contract 从历史 `fire/smoke/person` 投影后只剩 `person`
+→ 历史 V1 `label_schema` 保持原值不变。
+
+单元测试同时锁定：
+- merged 历史标签折叠到 canonical target；
+- class_id 重新连续；
+- previous weights init；
+- strict resume = false；
+- inactive without `merged_into` 必须拒绝。
+
+### 4. Real Chrome 验收
+
+`tests/browser/training-create-first-open.spec.mjs` 已包含真实用例：
+
+`merged historical labels do not reappear in the next training dialog`
+
+它真实打开训练弹窗并验证：
+- 只显示 canonical `smoke`；
+- 显示 `legacy_smoke → smoke`；
+- 不再显示“继承 · 旧烟雾”；
+- 类别数为 `1 类`。
+
+最近一次该 workflow 实际触发在：
+- SHA：`59fcab1a1dfd09ff280d46373fa38f05bde56a56`
+- Run：`Training Create First Open #36408999348`
+- `real-chrome`：completed / success
+- 浏览器日志：`11 passed (27.5s)`
+- Ubuntu contract：success
+- Windows contract：success
+
+随后 cutoff `5b575dab...` **只修改** `tests/browser/training-label-selector.spec.mjs` 的 build guard：
+`module-422513 -> module-422566`，未修改生产标签继承逻辑或上述 Training Create spec，因此该 workflow 的 paths 没有再次触发。
+
+### 5. 当前 cutoff 的 GitHub Actions 真相
+
+对 `5b575dab8f8ea1177860031ea8dd4ee29e89a885` 重新读取 check-runs / workflow runs：
+
+- Training Input Integrity：completed / success
+- Label Normalization Contract：completed / success
+- Frontend Runtime Stabilization：completed / success
+  - frontend：success
+  - browser-navigation：success
+- Node Agent Executor：completed / success
+  - Ubuntu contract：success
+  - Windows contract：success
+  - API：success
+
+当前 HEAD **没有 completed failure**。
+
+另外有 Remote Material Import / Portable Deployment / Remote Conversion Runtime 的 run 被 cancelled；不是本轮标签继承 failure，也没有据此宣布这些现场链路 VERIFIED。
+
+### 6. 已复核历史红灯真实日志，不靠 workflow 名称猜
+
+本轮最后两个相关红灯均已读取真实 job log：
+
+1. `Frontend Runtime Stabilization / browser-navigation`（旧 SHA `59fcab1...`）：
+   - Expected：`module-422513`
+   - Received：`module-422566`
+   - 属于测试 guard 落后于真实 build；
+   - cutoff `5b575dab...` 精确对齐 guard 后，最新 Frontend Runtime 已 success；
+   - 没有删除或放宽测试。
+
+2. `Label Normalization Contract / contract`（旧 SHA `67ce9ec...`）：
+   - 真实异常：`KeyError: 'platform_core/training_label_tasks.py'`
+   - 原因是 required 已加入该文件，但 workflow 的 `bodies` 映射漏接；
+   - `a566770d...` 补齐 source guard body 后，后续同 workflow 连续 success。
+
+此前担心的 Node Agent Windows cancellation 时序旧红灯，在当前 cutoff 上已经真实重新通过，不需要为了历史 run 改 Node Agent。
+
+### 7. 本问题最终验收结论
+
+以下全部满足：
+1. 标签统一后 source 为 merged 且有明确 `merged_into`；
+2. Ground Truth 已统一到 target；
+3. 历史算法版本 schema 不改；
+4. 新版本 effective schema 不复活 merged 老标签；
+5. 多历史标签合一 target 时只保留一个 class；
+6. training class_id 连续 `0..N-1`；
+7. 使用上一版本权重初始化；
+8. 不 strict resume optimizer；
+9. inactive / missing 无 merge target 时 fail-closed；
+10. 前端训练弹窗与后端 contract 同一治理语义；
+11. Real Chrome 已验证 merged 老标签不再以继承标签出现；
+12. 当前最新代码 cutoff 相关 checks 无 failure。
+
+因此：**标签统一 → 下一版本训练不复活旧标签 = CLOSED。**
+
+### 8. 下一步
+
+回到既定主流程 P0，不重构已 CLOSED 模块，按顺序继续：
+1. 批量图片上传 1k / 10k / 20k：partial failure / resume / progress / UI truth / 内存与 IO 边界；
+2. ZIP 10k / 20k：multipart / server merge / selected-tree / annotation parse / durable import；
+3. 导入 → Ground Truth；
+4. confirmed_empty / 人工标注；
+5. AI Candidate Review / Commit；
+6. 清洗 / 标签统一；
+7. 最终 E2E：素材 → 清洗 → 标签治理 → 标注 → 训练 → 算法版本 → OSS → 新畅联 → RKNN → 转换权重追加。
+
+
 ## 2026-09-28 训练主链 / RK3578 / 新畅联发布唤醒收口，代码 cutoff 63/63 全绿（最新）
 
 - 本节已验证代码 cutoff：`fcc8a3a75d9f6c94555de120ae08dc190849ee5c`（`fix: keep training core publish wake lightweight`）。
