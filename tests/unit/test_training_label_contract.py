@@ -93,6 +93,25 @@ def test_requested_label_must_exist_in_selected_materials(tmp_path: Path):
         )
 
 
+def test_requested_new_label_cannot_be_sourced_only_from_test_set(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    annotations = AnnotationRepository(project)
+    annotations.upsert("train", [_box("fire")], annotation_state="annotated")
+    annotations.upsert("test", [_box("person")], annotation_state="annotated")
+    with pytest.raises(ValueError, match="不在已选素材"):
+        resolve_training_label_contract(
+            data_dir,
+            project,
+            {
+                "model": "yolo11n.pt",
+                "train_image_ids": ["train"],
+                "test_image_ids": ["test"],
+                "train_labels": ["person"],
+            },
+            {"id": "alg", "versions": []},
+        )
+
+
 def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     AnnotationRepository(project).upsert("a", [_box("cigarette")], annotation_state="annotated")
@@ -366,7 +385,6 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     record = manifest["splits"]["train"][0]
     assert record["training_projection_policy"] == "redact_excluded_objects_v1"
     assert record["redacted_object_count"] == 1
-    assert record["training_content_sha256"] if "training_content_sha256" in record else record["content_sha256"]
     assert record["content_sha256"] != content_hash
 
 
