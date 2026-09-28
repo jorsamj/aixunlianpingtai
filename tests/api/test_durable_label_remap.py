@@ -393,6 +393,9 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
             _box(label="smoke", class_id=1, x1=30),
         ],
     )
+    app_module.material_store(project_id).patch({
+        image["id"]: {"processing_status": "processed"}
+    })
     second_id = "negative-multi-source"
     app_module.material_store(project_id).upsert({
         "id": second_id,
@@ -412,6 +415,7 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
             "annotation_state": "confirmed_empty",
             "annotation_scope": ["fire", "smoke"],
             "annotated": True,
+            "processing_status": "processed",
             "labels": [],
             "label_counts": {},
             "box_count": 0,
