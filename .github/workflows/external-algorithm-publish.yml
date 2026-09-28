@@ -221,6 +221,8 @@ jobs:
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_canonical_chip_code_supports_current_rockchip_targets_without_adding_rk3588" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'if compact in {"RK3568", "RK3578", "RK3576"}:' platform_core/external_algorithm_publish.py
           grep -q "test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs" tests/unit/test_external_algorithm_publish.py
           grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
           grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py

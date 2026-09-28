@@ -16,6 +16,7 @@ from platform_core.external_algorithm_platform import (
     PROVIDER_CHANGLIAN,
 )
 from platform_core.external_algorithm_publish import (
+    _canonical_chip_code,
     _remote_id,
     DEFAULT_PUBLISH_CONFIG,
     ExternalAlgorithmPublishService,
@@ -37,6 +38,14 @@ from platform_core.storage.source_repository import StorageSourceRepository
 def test_remote_id_accepts_official_scalar_data_ids():
     assert _remote_id({"code": 0, "data": 501}, ("algoVersionId",)) == "501"
     assert _remote_id({"code": 0, "data": 701}, ("weightId",)) == "701"
+
+def test_canonical_chip_code_supports_current_rockchip_targets_without_adding_rk3588():
+    assert _canonical_chip_code("rk3568") == "RK3568"
+    assert _canonical_chip_code("rk-3578") == "RK3578"
+    assert _canonical_chip_code("RK3578") == "RK3578"
+    assert _canonical_chip_code("rk3576") == "RK3576"
+    assert _canonical_chip_code("rk3588") == "rk3588"
+
 
 def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace(tmp_path: Path):
     payload = ExternalPublishConfigPayload()

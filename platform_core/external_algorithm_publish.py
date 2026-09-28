@@ -155,10 +155,8 @@ def _status_time(value: str) -> datetime | None:
 def _canonical_chip_code(value: Any) -> str:
     text = str(value or "").strip()
     compact = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
-    if compact == "RK3568":
-        return "RK3568"
-    if compact == "RK3576":
-        return "RK3576"
+    if compact in {"RK3568", "RK3578", "RK3576"}:
+        return compact
     return text
 
 
@@ -1579,7 +1577,7 @@ class ExternalAlgorithmPublishService:
                     "detail": "RKNN 产物缺少芯片身份",
                     "code": "MODEL_ARTIFACT_CHIP_REQUIRED",
                     "message": "RKNN 产物缺少芯片身份",
-                    "solution": "请重新生成或修复该 RKNN 转换结果，确保转换任务自身保留真实 chip/soc_version（RK3568/RK3576）；厂商映射不能替代产物真实芯片身份。",
+                    "solution": "请重新生成或修复该 RKNN 转换结果，确保转换任务自身保留真实 chip/soc_version（当前优先 RK3568/RK3578，兼容 RK3576）；厂商映射不能替代产物真实芯片身份。",
                     "status_code": 409,
                 }
         return state
