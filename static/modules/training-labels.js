@@ -87,7 +87,11 @@ export function resolveClientTrainingLabels({
     ? selectedMaterialLabelCodes(materials, selectedIds, labelCatalog)
     : sortedAvailableCodes(availableCodes, labelCatalog);
   const catalogSet = new Set((labelCatalog || [])
-    .filter(item => item?.code && item?.status !== 'disabled' && item?.status !== 'inactive')
+    .filter(item => (
+      item?.code
+      && item?.active !== false
+      && String(item?.status || 'active') === 'active'
+    ))
     .map(item => String(item.code)));
   const inherited = latestVersionLabelInfo(algorithm);
   // Previous-version schema is immutable iteration lineage. Current catalog
