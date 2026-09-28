@@ -111,6 +111,30 @@ def test_first_training_requires_explicit_label_choice(tmp_path: Path):
         )
 
 
+def test_confirmed_empty_scope_cannot_introduce_a_new_training_class(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    annotations = AnnotationRepository(project)
+    annotations.upsert("positive", [_box("fire")], annotation_state="annotated")
+    annotations.upsert(
+        "negative",
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["helmet"],
+    )
+
+    with pytest.raises(ValueError, match="不在已选素材"):
+        resolve_training_label_contract(
+            data_dir,
+            project,
+            {
+                "model": "yolo11n.pt",
+                "train_image_ids": ["positive", "negative"],
+                "train_labels": ["helmet"],
+            },
+            {"id": "alg", "versions": []},
+        )
+
+
 def test_requested_label_must_exist_in_selected_materials(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     AnnotationRepository(project).upsert("a", [_box("fire")], annotation_state="annotated")
