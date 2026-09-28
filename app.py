@@ -9674,10 +9674,13 @@ def v12_start_train(project_id: str, payload: TrainReq):
         payload.external_analysis_id,
     )
     confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
-    if confirmed_iteration_action is not None and not payload.split_mode:
-        raise HTTPException(status_code=409, detail="已确认迭代动作只能通过 Durable Training 主路径创建任务")
-    if payload.split_mode:
-        return _enqueue_explicit_training(project_id, payload)
+    if not payload.split_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="v12 训练创建必须提交 split_mode 并走 Durable Training 主路径；旧训练路径已禁止绕过冻结标签与 Snapshot 合同",
+        )
+    return _enqueue_explicit_training(project_id, payload)
+
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
     iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework, strict_latest=True)
     if iteration_base:
