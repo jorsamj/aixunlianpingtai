@@ -374,3 +374,137 @@ def test_training_input_freeze_rejects_all_negative_detection_training(monkeypat
 
     with pytest.raises(ValueError, match="训练集没有任何正样本"):
         training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
+
+
+def _selection_row(image_id, *, annotated=True, index=0):
+    if annotated:
+        return {
+            "id": image_id,
+            "processing_status": "processed",
+            "content_sha256": f"{index + 1:064x}",
+            "size_bytes": 100 + index,
+            "stored_name": f"{image_id}.jpg",
+            "group_id": f"group-{image_id}",
+            "annotation_state": "annotated",
+            "annotation_scope": ["smoke"],
+            "annotation_hash": "b" * 64,
+            "annotated": True,
+            "boxes": [{
+                "label": "smoke",
+                "class_id": 0,
+                "x1": 1, "y1": 1, "x2": 8, "y2": 8,
+            }],
+        }
+    return {
+        "id": image_id,
+        "processing_status": "processed",
+        "cleaned_at": "2026-09-28T00:00:00Z",
+        "content_sha256": f"{index + 1:064x}",
+        "size_bytes": 100 + index,
+        "stored_name": f"{image_id}.jpg",
+        "group_id": f"group-{image_id}",
+        "annotation_state": "unannotated",
+        "annotation_scope": [],
+        "annotation_hash": "",
+        "annotated": False,
+        "boxes": [],
+    }
+
+
+def test_cleaned_unannotated_selection_is_preserved_but_excluded_from_snapshot(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitMode, SplitRequest
+
+    rows = [
+        *[_selection_row(f"gt-{index}", index=index) for index in range(6)],
+        _selection_row("pending-1", annotated=False, index=10),
+    ]
+    by_id = {row["id"]: row for row in rows}
+
+    def selected_images(_materials, _project, image_ids):
+        return [dict(by_id[image_id]) for image_id in image_ids]
+
+    monkeypatch.setattr(training_tasks, "_selected_project_images", selected_images)
+    monkeypatch.setattr(
+        training_tasks,
+        "_label_schema",
+        lambda _project: [{"code": "smoke", "class_id": 0, "canonical_project_class_id": 7}],
+    )
+
+    requested = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in rows),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+    resolution = training_tasks.resolve_training_selection(tmp_path, requested)
+
+    assert resolution.selected_train_image_ids[-1] == "pending-1"
+    assert resolution.pending_annotation_image_ids == ("pending-1",)
+    assert "pending-1" not in resolution.effective_split.train_image_ids
+
+    frozen = training_tasks.freeze_training_inputs(
+        tmp_path,
+        requested,
+        seed=42,
+        selection_resolution=resolution,
+    )
+
+    assert frozen["selection"]["selected_train_count"] == 7
+    assert frozen["selection"]["effective_train_count"] == 6
+    assert frozen["selection"]["pending_annotation_count"] == 1
+    assert frozen["selection"]["pending_annotation_image_ids"] == ["pending-1"]
+    assert "pending-1" not in frozen["split"]["train_image_ids"]
+    assert "pending-1" not in {row["id"] for row in frozen["images"]}
+
+
+def test_cleaned_unannotated_independent_test_material_is_rejected(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitMode, SplitRequest
+
+    rows = [
+        _selection_row("train-a", index=0),
+        _selection_row("train-b", index=1),
+        _selection_row("test-pending", annotated=False, index=2),
+    ]
+    by_id = {row["id"]: row for row in rows}
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [dict(by_id[image_id]) for image_id in image_ids],
+    )
+    requested = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=("train-a", "train-b"),
+        test_image_ids=("test-pending",),
+        experiment_percent=None,
+        validation_percent=20,
+    )
+
+    with pytest.raises(ValueError, match="独立试验素材必须具备正式 Ground Truth"):
+        training_tasks.resolve_training_selection(tmp_path, requested)
+
+
+def test_all_pending_training_selection_fails_before_queue(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+    from platform_core.training_splits import SplitMode, SplitRequest
+
+    rows = [
+        _selection_row("pending-a", annotated=False, index=0),
+        _selection_row("pending-b", annotated=False, index=1),
+    ]
+    by_id = {row["id"]: row for row in rows}
+    monkeypatch.setattr(
+        training_tasks,
+        "_selected_project_images",
+        lambda _materials, _project, image_ids: [dict(by_id[image_id]) for image_id in image_ids],
+    )
+    requested = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=("pending-a", "pending-b"),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+
+    with pytest.raises(ValueError, match="本轮没有任何正式标注素材"):
+        training_tasks.resolve_training_selection(tmp_path, requested)
