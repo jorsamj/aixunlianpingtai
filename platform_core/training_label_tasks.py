@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from contextvars import ContextVar
@@ -217,18 +218,19 @@ def resolve_training_label_contract(
             )
 
     inherited_codes = [str(item["code"]) for item in inherited]
-    dropped_inherited = [code for code in inherited_codes if code not in catalog]
+    # A verified previous-version schema is immutable iteration lineage. Project
+    # label governance may later disable/remove a canonical label, but that must
+    # never silently renumber or delete an inherited model output. Only newly
+    # requested labels are required to be active in the current project catalog.
     retained_inherited: list[dict[str, Any]] = []
     for item in inherited:
-        code = str(item["code"])
-        if code not in catalog:
-            continue
         normalized = dict(item)
         normalized["class_id"] = len(retained_inherited)
         normalized["source"] = "previous_version"
         retained_inherited.append(normalized)
     retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
     retained_inherited_set = set(retained_inherited_codes)
+    dropped_inherited: list[str] = []
 
     invalid_requested = [
         code for code in requested
@@ -245,8 +247,6 @@ def resolve_training_label_contract(
 
     requested_new = [code for code in requested if code not in retained_inherited_set]
     schema_change_reasons = []
-    if dropped_inherited:
-        schema_change_reasons.append("removed_or_inactive_labels")
     if requested_new:
         schema_change_reasons.append("added_labels")
     label_schema_changed = bool(schema_change_reasons)
@@ -306,64 +306,113 @@ def _scoped_label_schema(project: Path) -> list[dict[str, Any]]:
     return [dict(item) for item in contract["effective_label_schema"]]
 
 
-def _scoped_selected_project_images(materials, project: Path, image_ids: Sequence[str]):
-    rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(materials, project, image_ids)
-    contract = _contract_for_project(project)
-    if contract is None:
-        return rows
-    allowed = set(contract["effective_label_codes"])
+def _projection_digest(
+    *,
+    state: str,
+    allowed: Sequence[str],
+    selected_boxes: Sequence[Mapping[str, Any]],
+    excluded_boxes: Sequence[Mapping[str, Any]],
+) -> str:
+    payload = {
+        "policy": "redact_excluded_objects_v1",
+        "source_annotation_state": str(state),
+        "effective_label_codes": list(allowed),
+        "selected_boxes": [dict(box) for box in selected_boxes],
+        "excluded_boxes": [dict(box) for box in excluded_boxes],
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def project_training_rows(
+    rows: Sequence[Mapping[str, Any]],
+    contract: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Project formal GT to one task schema while preserving excluded-object truth."""
+    allowed_order = _unique_codes(contract.get("effective_label_codes") or [])
+    allowed = set(allowed_order)
     projected: list[dict[str, Any]] = []
     for original in rows:
-        # _ORIGINAL_SELECTED_PROJECT_IMAGES already freezes the full formal
-        # AnnotationRepository truth for this exact selection. Reuse that row
-        # instead of issuing a second per-image annotation query here.
         row = dict(original)
         state = str(row.get("annotation_state") or "unannotated")
         raw_scope = [str(value) for value in row.get("annotation_scope") or []]
-        boxes = list(row.get("boxes") or [])
+        boxes = [dict(box) for box in (row.get("boxes") or [])]
         selected_boxes = [
-            dict(box) for box in boxes
+            box for box in boxes
             if str(box.get("label") or box.get("code") or "").strip() in allowed
+        ]
+        excluded_boxes = [
+            box for box in boxes
+            if str(box.get("label") or box.get("code") or "").strip() not in allowed
         ]
         present = sorted({
             str(box.get("label") or box.get("code") or "").strip()
             for box in boxes
             if str(box.get("label") or box.get("code") or "").strip()
         })
-        task_filtered_negative = state == "annotated" and not selected_boxes
         row["source_annotation_state"] = state
         row["source_labels"] = present
-        if task_filtered_negative:
-            # Material selection decides whether the image participates in this task;
-            # the task label contract decides which classes are positive. If all
-            # source boxes belong to unselected classes, keep the image and project
-            # it to an intentional task-local background sample. Source Ground Truth
-            # in AnnotationRepository is never mutated.
-            row["annotation_state"] = "confirmed_empty"
-            row["annotated"] = True
-            row["boxes"] = []
-            row["annotation_scope"] = sorted(allowed)
-            row["negative_origin"] = "filtered_by_training_labels"
-        else:
-            row["annotation_state"] = state
-            row["annotated"] = state in {"annotated", "confirmed_empty"}
-            row["boxes"] = selected_boxes if state == "annotated" else []
-            if state == "annotated":
+
+        if excluded_boxes:
+            row["training_excluded_boxes"] = excluded_boxes
+            row["training_projection_policy"] = "redact_excluded_objects_v1"
+            row["training_projection_digest"] = _projection_digest(
+                state=state,
+                allowed=allowed_order,
+                selected_boxes=selected_boxes,
+                excluded_boxes=excluded_boxes,
+            )
+
+        if state == "annotated":
+            if selected_boxes:
+                row["annotation_state"] = "annotated"
+                row["annotated"] = True
+                row["boxes"] = selected_boxes
                 explicit = {value for value in raw_scope if value and value != "*"}
                 row["annotation_scope"] = sorted((explicit & allowed) | {
                     str(box.get("label") or box.get("code") or "").strip()
                     for box in selected_boxes
                 })
+            elif excluded_boxes:
+                # The materializer must redact every excluded region before this
+                # task-local negative is allowed to reach train/validation loss.
+                row["annotation_state"] = "confirmed_empty"
+                row["annotated"] = True
+                row["boxes"] = []
+                row["annotation_scope"] = sorted(allowed)
+                row["negative_origin"] = "redacted_unselected_labels"
             else:
-                row["annotation_scope"] = raw_scope
-                if state == "confirmed_empty":
-                    row["negative_origin"] = str(row.get("negative_origin") or "explicit_confirmed_empty")
-        # The persisted annotation hash describes the full Ground Truth. Once
-        # boxes are projected to this task schema, Snapshot must hash the task
-        # projection instead of reusing the full-project digest.
+                row["boxes"] = []
+        else:
+            row["annotation_state"] = state
+            row["annotated"] = state in {"annotated", "confirmed_empty"}
+            row["boxes"] = []
+            row["annotation_scope"] = raw_scope
+            if state == "confirmed_empty":
+                row["negative_origin"] = str(
+                    row.get("negative_origin") or "explicit_confirmed_empty"
+                )
+
+        # Persisted annotation_hash describes full project GT. The task snapshot
+        # hashes projected truth plus training_projection_digest instead.
         row.pop("annotation_hash", None)
         projected.append(row)
     return projected
+
+
+def _scoped_selected_project_images(materials, project: Path, image_ids: Sequence[str]):
+    rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(materials, project, image_ids)
+    contract = _contract_for_project(project)
+    if contract is None:
+        return rows
+    return project_training_rows(rows, contract)
 
 
 def _install_scoped_training_hooks() -> None:
@@ -418,6 +467,18 @@ def _persist_version_contract(project: Path, task_id: str, contract: Mapping[str
 class LabelContractTrainingHandler(base.TrainingHandler):
     def _contract(self, context, payload: Mapping[str, Any]) -> tuple[Path, dict[str, Any]]:
         project = self.data_dir / "projects" / context.task.project_id
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        if freeze_ref:
+            frozen = context.artifacts.read_json(context.task.task_id, freeze_ref, default={})
+            frozen_contract = (
+                dict(frozen.get("label_contract") or {})
+                if isinstance(frozen, Mapping)
+                else {}
+            )
+            if frozen_contract:
+                frozen_contract["project_path"] = str(project.resolve())
+                return project, frozen_contract
+        # Compatibility only for tasks created before submit-time label freezing.
         algorithm = _algorithm_for_payload(project, payload)
         contract = resolve_training_label_contract(self.data_dir, project, payload, algorithm)
         contract["project_path"] = str(project.resolve())
