@@ -1033,6 +1033,22 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
         "schema_version": 1,
         "framework": "ultralytics",
         "snapshot_id": "snapshot-remote-one",
+        "dataset_revision_id": "f" * 64,
+        "label_schema": [
+            {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+        ],
+        "label_codes": ["smoke"],
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-one",
+            "effective_label_codes": ["smoke"],
+            "effective_label_schema": [
+                {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
         "bundle": {
             "storage_source_id": "remote-models",
             "object_key": "training-bundles/p1/snapshot/bundle.zip",
@@ -1354,6 +1370,13 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
+    assert version["label_codes"] == ["smoke"]
+    assert version["label_schema"] == [
+        {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+    ]
+    assert version["label_contract"]["algorithm_id"] == "algorithm-one"
+    assert version["label_contract"]["effective_label_codes"] == ["smoke"]
+    assert committed["label_codes"] == ["smoke"]
     assert version["training_lineage"]["parameters"]["requested"]["resource_profile"] == "performance"
     assert version["training_lineage"]["parameters"]["requested"]["precision"] == "fp16"
     assert version["training_lineage"]["parameters"]["actual"]["batch"] == 12
