@@ -212,6 +212,7 @@ def _frozen_base_contract(
     framework_value = str(framework or "ultralytics").strip().lower()
     reference = str(selection.get("base_model_path") or mother_model or "").strip()
     result = {
+        "base_model_contract_schema_version": 1,
         "framework": framework_value,
         "base_version_id": (
             str(selection.get("base_version_id") or "") if previous is not None else ""
