@@ -231,6 +231,10 @@ def main() -> None:
     env = os.environ.copy()
     env["MC_TRAIN_DATA_DIR"] = str(data_root)
     env["MC_PLATFORM_VERSION"] = "test"
+    # Use the same explicit test-only auth bypass as the browser/API harnesses.
+    # Production authentication remains enabled; this flag exists solely for
+    # isolated repositories created by acceptance tests.
+    env["MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     base_url = f"http://127.0.0.1:{args.port}"
 
