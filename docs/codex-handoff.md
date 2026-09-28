@@ -1,6 +1,102 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 主流程 P0：AI Candidate Review / Commit + 清洗 / 标签治理交叉验收 CLOSED（最新）
+
+- 本节代码 cutoff：`5ee96747ee30cb165e2ec874b706bbac4f4b2e9c`（`ci: gate AI review to formal GT`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 没有新增第二套 AI Candidate、Annotation、Cleaning、Label Governance owner。
+
+### 1. AI Candidate Review / Commit：CLOSED
+
+正式语义仍是：
+`AI 推理 -> CandidateStore -> AWAITING_CONFIRMATION -> 用户接受/拒绝/编辑 -> review_queued -> Worker Commit -> AnnotationRepository`
+
+关键不变量：
+- AI generation 只写 CandidateStore，不直接写 Ground Truth；
+- provider 返回晚于 cancel / lease fence 时不得提交 candidate；
+- 用户提交 decisions 后正式 annotation 仍保持不变，先进入 durable commit queue；
+- 只有 Worker commit confirmed review 后才写正式 AnnotationRepository；
+- 正式 AI 框带 `source=ai_candidate_confirmed` + `source_task_id`；
+- candidate label 在 commit 前按当前 active canonical catalog 重新验证，失效标签 fail-closed；
+- formal GT 与 candidate commit journal 分离，但 formal batch 成功后 journal 必须 catch-up，避免“GT 已写但任务被误标取消”；
+- replay 通过 commit journal 幂等，不重复叠加 AI 框。
+
+本轮补强：
+- AI 图片解析原本已有 1k / 10k / 20k，`MaterialRepository.get_many <= 500`；
+- review commit 的正式 GT + journal I/O 现扩到 1k / 10k / 20k，仍固定 `<= 200` / batch，并验证 replay 不重复写；
+- `test_persistent_ai_annotation_e2e.py` 已正式纳入现有 `AI Annotation Recovery` API job，不再是“仓库里有测试但 CI 不执行”。
+
+当前真实 CI：
+- AI Annotation Recovery push `36419268460`：success
+  - annotation-api-contract：success，`25 passed`（包含 persistent AI E2E）
+  - recovery Ubuntu：success，`33 passed`
+  - recovery Windows：success
+- Frontend Runtime Stabilization `36419268463`：frontend success；browser-navigation success。
+- browser-navigation 真实执行 `tests/browser/auto-label-polling.spec.mjs`；上一同生产代码 run 日志为 `76 passed`，当前 HEAD 也再次 success。
+
+Real Chrome AI review 已锁定：
+- 候选分页（54 条、24/page）；
+- 映射搜索 / 平台标签映射；
+- 显式新建 canonical label；
+- 跨页编辑保持；
+- 快速翻页旧响应不能覆盖新页；
+- 框编辑；
+- 全部接受；
+- decisions payload `commit=true`；
+- edited candidate boxes / labels 真正进入提交 payload。
+
+因此：**AI Candidate Review / Commit = CLOSED。**
+
+### 2. 清洗 / 标签统一交叉验收：CLOSED
+
+清洗：
+- CLEAN / MARK_CLEAN_SKIPPED 显式 selection 永久支持到 20,000 张；
+- selection 独立落 `selection.sqlite3`，不把 20k ID 挤进普通显式 500-ID owner；
+- cleaning scope 以正式 `annotation_state` 为真相，不以 box_count/annotated 派生字段猜；
+- annotated / unannotated / confirmed_empty 可明确区分；
+- 普通图片上传入口只允许把未标注素材送入图片质量清洗；带正式标注素材不会被上传清洗误处理；
+- 远程清洗要求 portable storage + agent.remote，不能因没有合适远端节点静默 fallback 到本机；
+- node busy / active durable task / queue truth 来自统一 TaskRepository；
+- 单图分析 timeout 只失败该图，批次继续；
+- CLEAN interrupted/running 行支持 durable retry / preemption recovery。
+
+标签统一：
+- `REMAP_ANNOTATION_LABELS` 是 durable MaterialBatch operation；
+- worker 才修改正式 AnnotationRepository，创建任务时不直接改 GT；
+- target label 在 worker 执行时重新确认 active；
+- material 被删除、人工标注并发改变时 fail-closed，不覆盖新人工真相；
+- GT 已提交但 selection 状态更新中断时可幂等恢复；
+- confirmed_empty 的 annotation_scope 同步 remap；
+- 多 source → target 是一个 durable task，全部成功后 source 才退休为 merged；
+- 下一训练版本通过当前 label governance 折叠历史 merged labels，不复活旧标签。
+
+当前 HEAD 真实门禁：
+- Remote Cleaning Runtime `36419273140`
+  - Ubuntu success
+  - Windows success
+  - API success
+  - Real Chrome success
+- Label Normalization Contract `36419273179`：success
+- Training Input Integrity `36419273203`
+  - JPEG/cache integrity Ubuntu success
+  - JPEG/cache integrity Windows success
+
+因此：**清洗 / 标签统一 / 训练输入交叉语义 = CLOSED。**
+
+### 3. 下一步只剩最终主流程发布链验收
+
+继续审计：
+`素材 -> 清洗 -> 标签治理 -> 标注 -> 训练 -> 算法版本 -> OSS -> 新畅联 -> RKNN -> 转换权重追加`
+
+原则：
+- 优先复用当前 permanent workflows / API contracts / Real Chrome；
+- 没有缺口就不再造重复 owner / 重复 E2E；
+- 若缺的是跨阶段衔接，只补最小 integration contract；
+- 所有结论以当前远端 HEAD + completed checks 为准。
+
+
+
 ## 2026-09-28 主流程 P0：批量图片上传 / ZIP 10k+20k / 导入 GT / 人工标注验收（最新）
 
 - 本节代码验收 cutoff：`cdf10aa16fdf50991ee6fa76948704264ed50fbd`（`test: confirm ZIP labels in 10k acceptance`）。
