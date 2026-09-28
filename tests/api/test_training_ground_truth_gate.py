@@ -116,3 +116,56 @@ def test_legacy_include_empty_cannot_reenable_unannotated_training_source():
     source = inspect.getsource(app_module.build_yolo_dataset_v44)
     assert source.count("is_training_ground_truth") >= 2
     assert "not payload.include_empty" not in source
+
+
+def test_selected_training_material_reads_are_bounded(monkeypatch, tmp_path):
+    import platform_core.training_tasks as training_tasks
+
+    image_ids = [f"image-{index}" for index in range(1001)]
+
+    class Materials:
+        def __init__(self):
+            self.calls = []
+
+        def get_many(self, ids):
+            ids = tuple(ids)
+            assert len(ids) <= 500
+            self.calls.append(len(ids))
+            return [
+                {
+                    "id": image_id,
+                    "content_sha256": "a" * 64,
+                    "size_bytes": 1,
+                    "width": 10,
+                    "height": 10,
+                }
+                for image_id in ids
+            ]
+
+    class Annotations:
+        def __init__(self, _project):
+            pass
+
+        def get_many(self, ids):
+            assert len(ids) <= 500
+            return {
+                image_id: {
+                    "annotation_state": "confirmed_empty",
+                    "annotation_scope": ["smoke"],
+                    "content_digest": "b" * 64,
+                    "boxes": [],
+                }
+                for image_id in ids
+            }
+
+    materials = Materials()
+    monkeypatch.setattr(training_tasks, "AnnotationRepository", Annotations)
+
+    selected = training_tasks._selected_project_images(
+        materials,
+        tmp_path,
+        image_ids,
+    )
+
+    assert len(selected) == 1001
+    assert materials.calls == [500, 500, 1]
