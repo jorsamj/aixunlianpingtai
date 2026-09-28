@@ -75,7 +75,7 @@ def test_training_request_normalizes_legacy_boolean_cache_before_string_validati
     assert app_module.TrainReq(cache="disk").cache == "disk"
 
 
-def test_training_job_locks_snapshot_base_and_requested_parameters(client, seeded_project, monkeypatch):
+def test_v12_product_training_rejects_legacy_unsplit_request(client, seeded_project, monkeypatch):
     import app as app_module
 
     project_id, train_image = seeded_project
@@ -126,30 +126,9 @@ def test_training_job_locks_snapshot_base_and_requested_parameters(client, seede
         },
     )
 
-    assert response.status_code == 200, response.text
-    job = response.json()["job"]
-    assert job["model"] == job["base_model_path"]
-    assert job["base_version_id"] is None
-    assert job["base_selection_reason"] == "mother_model"
-    assert job["queue_priority"] == 50
-    assert job["priority_scheme"] == "lower_number_first"
-    assert job["quality_gate"]["runtime_stop_policy"] == "target_only"
-    assert len(job["snapshot_id"]) == 64
-    expected = {
-        "epochs": 3,
-        "imgsz": 320,
-        "batch": 2,
-        "device": "cpu",
-        "workers": 0,
-        "optimizer": "AdamW",
-        "lr0": 0.002,
-        "weight_decay": 0.001,
-        "seed": 42,
-    }
-    for key, value in expected.items():
-        assert job["requested_train_params"][key] == value
-    assert "mosaic" in job["requested_train_params"]
-    assert "amp" in job["requested_train_params"]
+    assert response.status_code == 409, response.text
+    assert "split_mode" in response.json()["detail"]
+    assert "Durable Training" in response.json()["detail"]
 
 
 def test_legacy_training_route_also_requires_strict_latest_iteration_base(client, seeded_project, monkeypatch, tmp_path):
@@ -195,7 +174,7 @@ def test_legacy_training_route_also_requires_strict_latest_iteration_base(client
     assert seen["strict_latest"] is True
 
 
-def test_product_training_ignores_requested_mother_model_when_latest_version_exists(client, seeded_project, monkeypatch):
+def test_v12_iteration_cannot_bypass_durable_split_with_latest_version(client, seeded_project, monkeypatch):
     import app as app_module
 
     project_id, train_image = seeded_project
@@ -250,11 +229,9 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
         },
     )
 
-    assert response.status_code == 200, response.text
-    job = response.json()["job"]
-    assert job["base_version_id"] == "latest-version"
-    assert job["base_selection_reason"] == "current_verified_version"
-    assert job["model"] == str(latest_model.resolve())
+    assert response.status_code == 409, response.text
+    assert "split_mode" in response.json()["detail"]
+    assert "Durable Training" in response.json()["detail"]
 
 
 def test_iteration_base_endpoint_ignores_failed_attempt_and_uses_latest_success(client, seeded_project, monkeypatch):
@@ -342,7 +319,7 @@ def test_training_snapshot_randomly_assigns_selected_materials_to_experiment_spl
     assert build["split_seed"] == 42
 
 
-def test_training_rejects_random_pool_without_two_valid_annotated_materials(client, seeded_project, monkeypatch):
+def test_training_rejects_random_pool_with_missing_material_truth(client, seeded_project, monkeypatch):
     import app as app_module
 
     project_id, image = seeded_project
@@ -360,14 +337,17 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
             "algorithm": "yolo11n_det",
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
-            "selected_image_ids": [image["id"], "not-a-real-image"],
-            "random_experiment_split": True,
+            "train_labels": ["fire"],
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": [image["id"], "not-a-real-image"],
+            "test_image_ids": [],
             "experiment_percent": 20,
+            "validation_percent": 20,
         },
     )
 
-    assert response.status_code == 400
-    assert "训练集" in response.json()["detail"]
+    assert response.status_code == 409
+    assert "所选素材不存在" in response.json()["detail"]
 
 
 def test_product_training_submit_freezes_server_authoritative_label_contract(
