@@ -108,6 +108,9 @@ jobs:
           grep -Fq 'test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source' tests/unit/test_training_label_contract.py
           grep -Fq 'test_task_filtered_negative_materializes_as_empty_yolo_label' tests/unit/test_training_label_contract.py
           grep -Fq 'test_snapshot_preserves_redacted_task_negative_projection_evidence' tests/unit/test_negative_sample_contract.py
+          grep -Fq '"base_model_contract_schema_version": 1' platform_core/training_label_tasks.py
+          grep -Fq 'test_input_freeze_identity_changes_when_frozen_base_model_changes' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_version_contract_backfill_preserves_full_frozen_base_lineage' tests/unit/test_training_label_contract.py
           grep -Fq 'Task-derived negative addendum' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
           grep -Fq 'Never recreate `negative_origin=filtered_by_training_labels`' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
           if grep -Fq 'negative_origin"] = "filtered_by_training_labels"' platform_core/training_label_tasks.py; then
