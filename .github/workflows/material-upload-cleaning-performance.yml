@@ -5,8 +5,10 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/upload_batches.py'
       - 'platform_core/storage/local.py'
       - 'platform_core/material_repository_batch.py'
       - 'platform_core/cleaning.py'
