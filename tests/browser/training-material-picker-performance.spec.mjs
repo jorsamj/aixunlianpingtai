@@ -7,13 +7,13 @@ function material(index, page = 1) {
   return {
     id,
     filename: `${id}.jpg`,
-    labels: index % 2 ? ['person'] : ['smoke'],
-    annotated: true,
-    box_count: 1,
+    labels: index === 59 ? [] : (index % 2 ? ['person'] : ['smoke']),
+    annotated: index !== 59,
+    box_count: index === 59 ? 0 : 1,
     width: 400,
     height: 200,
-    annotation_state: 'annotated',
-    boxes: [{id: `box-${id}`, label: index % 2 ? 'person' : 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
+    annotation_state: index === 59 ? 'unannotated' : 'annotated',
+    boxes: index === 59 ? [] : [{id: `box-${id}`, label: index % 2 ? 'person' : 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
     processing_status: 'processed',
     thumbnail_url: `/thumb/${id}.png`,
     content_url: `/full/${id}.png`,
@@ -27,7 +27,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422505');
+    .toBe('training-material-picker-runtime-422506');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
@@ -112,6 +112,9 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(firstCard.locator('svg.train-v3-box-layer')).toHaveAttribute('viewBox', '0 0 400 200');
   await expect(firstCard.locator('svg.train-v3-box-layer rect[data-label="smoke"]')).toHaveAttribute('x', '40');
   await expect(firstCard.locator('.train-v3-annotation-state[data-annotation-state="annotated"]')).toContainText('已标注 · 1 框');
+  const pendingCard = page.locator('[data-material-id="picker-1-059"]');
+  await expect(pendingCard.locator('.train-v3-annotation-state[data-annotation-state="unannotated"]')).toContainText('已清洗 · 待标注');
+  await expect(pendingCard.locator('input')).toBeEnabled();
 
   await page.locator('#trV3Grid').evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
   await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(firstViewportThumbnailCount);
@@ -148,6 +151,13 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.materialIds?.() || []))
     .toContain(firstId);
+
+  await page.evaluate(() => { window.openTrainMaterialPickerV3('test'); });
+  await expect(page.locator('.train-v3-card')).toHaveCount(60, {timeout: 5_000});
+  const pendingTestCard = page.locator('[data-material-id="picker-1-059"]');
+  await expect(pendingTestCard.locator('input')).toBeDisabled();
+  await expect(pendingTestCard).toHaveAttribute('data-block-reason', '试验集必须已标注');
+  await page.getByRole('button', {name: '取消'}).click();
 
   expect(pageErrors).toEqual([]);
 });
