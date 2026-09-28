@@ -1,4 +1,5 @@
 import io
+import time
 import zipfile
 from pathlib import Path
 
@@ -211,7 +212,7 @@ def test_v19_failed_zip_progress_stops_at_failure_point_not_fake_100():
     assert progress["phase_label"] == "导入失败"
 
 
-def test_v19_zip_scan_progress_counts_only_real_members(tmp_path: Path):
+def test_v19_zip_scan_separates_verify_denominator_from_unknown_scan_work(tmp_path: Path):
     archive = tmp_path / "scan-progress.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("images/", b"")
@@ -222,12 +223,16 @@ def test_v19_zip_scan_progress_counts_only_real_members(tmp_path: Path):
     events = []
     result = app_module.v19_scan_zip(
         archive,
-        lambda done, total, name: events.append((done, total, name)),
+        lambda phase, done, total, message: events.append((phase, done, total, message)),
     )
 
     assert result["file_count"] == 3
-    assert events
-    assert events[-1][0:2] == (3, 3)
+    verify = [event for event in events if event[0] == "VERIFY"]
+    scan = [event for event in events if event[0] == "SCAN"]
+    assert verify
+    assert verify[-1][1:3] == (3, 3)
+    assert scan
+    assert all(event[1] is None and event[2] is None for event in scan)
 
 
 def test_v19_public_job_contains_canonical_zip_display_progress(client):
@@ -249,3 +254,46 @@ def test_v19_public_job_contains_canonical_zip_display_progress(client):
     assert public["zip_display_progress"]["phase"] == "ANNOTATION_PARSE"
     assert public["zip_display_progress"]["phase_progress"] == 25.0
     assert public["zip_display_progress"]["overall_progress"] == 75.0
+
+
+
+def test_v19_unknown_phase_denominator_does_not_fake_zero_percent_or_zero_eta():
+    metrics = app_module._v19_phase_metrics(
+        "SCAN",
+        None,
+        None,
+        started_at=time.time() - 1,
+    )
+    assert metrics["phase_progress"] is None
+    assert metrics["eta_seconds"] is None
+
+    display = app_module.v19_zip_display_progress({
+        "status": "validating",
+        "phase": "SCAN",
+        "phase_completed": None,
+        "phase_total": None,
+        "phase_progress": None,
+        "phase_elapsed_seconds": 1.0,
+        "eta_seconds": None,
+        "progress": 42,
+        "message": "正在识别图片与外部标注",
+    })
+    assert display["phase"] == "SCAN"
+    assert display["phase_progress"] is None
+    assert display["overall_progress"] == 42.0
+    assert display["eta_seconds"] is None
+
+
+def test_v19_scan_source_contract_never_marks_scan_100_before_annotation_detection_finishes():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    scan_start = source.index("def v19_scan_zip(")
+    scan_end = source.index("def _v19_prepare_scan(", scan_start)
+    scan = source[scan_start:scan_end]
+    finalize_start = source.index("def _v19_finalize_multipart_upload(")
+    finalize_end = source.index("def _v19_schedule_multipart_finalize", finalize_start)
+    finalize = source[finalize_start:finalize_end]
+
+    assert 'progress_cb("VERIFY", scan_index, scan_total, name)' in scan
+    assert '"SCAN",\n                    None,\n                    None,' in scan
+    assert '_v19_phase_metrics("SCAN", None, None' in finalize
+    assert 'progress=42' in finalize

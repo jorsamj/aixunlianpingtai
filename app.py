@@ -12048,7 +12048,7 @@ def _v19_phase_metrics(
 ) -> Dict[str, Any]:
     done = max(0.0, float(completed or 0))
     target = max(0.0, float(total or 0))
-    phase_progress = round(min(100.0, done / target * 100.0), 2) if target > 0 else 0.0
+    phase_progress = round(min(100.0, done / target * 100.0), 2) if target > 0 else None
     elapsed = None
     eta = None
     if started_at is not None:
@@ -12098,12 +12098,16 @@ def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         total = 0.0
     if total > 0:
-        phase_progress = min(100.0, done / total * 100.0)
+        phase_progress: Optional[float] = min(100.0, done / total * 100.0)
     else:
-        try:
-            phase_progress = max(0.0, min(100.0, float(job.get("phase_progress") or 0)))
-        except (TypeError, ValueError):
-            phase_progress = 0.0
+        raw_phase_progress = job.get("phase_progress")
+        if raw_phase_progress in (None, ""):
+            phase_progress = None
+        else:
+            try:
+                phase_progress = max(0.0, min(100.0, float(raw_phase_progress)))
+            except (TypeError, ValueError):
+                phase_progress = None
 
     if status == "done" or phase == "DONE":
         overall = 100.0
@@ -12115,19 +12119,19 @@ def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
             overall = 0.0
     else:
         start, end = V19_ZIP_PHASE_WINDOWS.get(phase, (0.0, 99.0))
-        overall = start + (end - start) * phase_progress / 100.0
+        overall = start if phase_progress is None else start + (end - start) * phase_progress / 100.0
         overall = max(0.0, min(99.0, overall))
 
     return {
         "phase": phase or None,
         "phase_label": V19_ZIP_PHASE_LABELS.get(phase, str(job.get("stage") or phase or "ZIP 导入")),
-        "phase_progress": round(phase_progress, 2),
+        "phase_progress": round(phase_progress, 2) if phase_progress is not None else None,
         "overall_progress": round(overall, 2),
         "completed": job.get("phase_completed"),
         "total": job.get("phase_total"),
         "unit": str(job.get("phase_unit") or ""),
         "elapsed_seconds": job.get("phase_elapsed_seconds"),
-        "eta_seconds": job.get("eta_seconds"),
+        "eta_seconds": job.get("eta_seconds") if phase_progress is not None else None,
         "message": str(job.get("message") or ""),
         "updated_at": job.get("updated_at"),
     }
@@ -12200,9 +12204,20 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 or scan_index % 250 == 0
             ):
                 try:
-                    progress_cb(scan_index, scan_total, name)
+                    progress_cb("VERIFY", scan_index, scan_total, name)
                 except Exception:
                     pass
+
+        if progress_cb:
+            try:
+                progress_cb(
+                    "SCAN",
+                    None,
+                    None,
+                    "ZIP 目录校验完成，正在识别图片与外部标注",
+                )
+            except Exception:
+                pass
 
         # Match the worker's import priority: COCO -> VOC -> YOLO.
         for name, info in members:
@@ -12335,6 +12350,17 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 } for index in range(max_class + 1)]
                 annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
                 detected_format = "YOLO"
+
+        if progress_cb:
+            try:
+                progress_cb(
+                    "SCAN",
+                    None,
+                    None,
+                    f"扫描完成：{len(images)} 张图片，格式 {detected_format}",
+                )
+            except Exception:
+                pass
 
     return {
         "file_count": file_count,
@@ -12719,35 +12745,55 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
             repository.assemble(upload_id, zip_path, on_progress=merge_progress)
             session = repository.get(upload_id)
 
-        scan_started = time.time()
+        verify_started = time.time()
+        scan_started: Optional[float] = None
         v19_update_job(
             project_id, upload_id,
             status="validating", stage="正在校验 ZIP 结构", progress=40,
             upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
-            phase="VERIFY", phase_completed=0, phase_total=1, phase_unit="step",
-            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
-            message="ZIP 合并完成，正在校验压缩包并扫描目录、图片和外部标签",
+            phase="VERIFY", phase_completed=None, phase_total=None, phase_unit="files",
+            phase_progress=None, phase_elapsed_seconds=0, eta_seconds=None,
+            message="ZIP 合并完成，正在校验压缩包目录结构",
         )
-        last_scan_emit = 0.0
-        def scan_progress(done, total_files, current_name):
-            nonlocal last_scan_emit
-            tick = time.monotonic()
-            if done != total_files and tick - last_scan_emit < 0.5:
+        last_verify_emit = 0.0
+        def scan_progress(phase, done, total_files, current_name):
+            nonlocal last_verify_emit, scan_started
+            if phase == "VERIFY":
+                tick = time.monotonic()
+                if done != total_files and tick - last_verify_emit < 0.5:
+                    return
+                last_verify_emit = tick
+                metrics = _v19_phase_metrics("VERIFY", done, total_files, started_at=verify_started)
+                phase_progress = metrics["phase_progress"]
+                v19_update_job(
+                    project_id,
+                    upload_id,
+                    status="validating",
+                    stage="正在校验 ZIP 结构",
+                    progress=round(40 + float(phase_progress or 0) * 0.02, 2),
+                    phase_unit="files",
+                    message=f"正在校验目录 {done}/{total_files} · {current_name}",
+                    **metrics,
+                )
                 return
-            last_scan_emit = tick
-            metrics = _v19_phase_metrics("SCAN", done, total_files, started_at=scan_started)
+
+            if scan_started is None:
+                scan_started = time.time()
+            metrics = _v19_phase_metrics("SCAN", None, None, started_at=scan_started)
             v19_update_job(
                 project_id,
                 upload_id,
                 status="validating",
-                stage="正在扫描 ZIP 内容",
-                progress=round(42 + metrics["phase_progress"] * 0.06, 2),
-                phase_unit="files",
-                message=f"正在扫描 {done}/{total_files} · {current_name}",
+                stage="正在扫描图片与外部标注",
+                progress=42,
+                phase_unit="",
+                message=str(current_name or "正在识别图片与外部标注"),
                 **metrics,
             )
+
+        scan_total_started = time.time()
         scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress))
-        scan_seconds = round(max(0.0, time.time() - scan_started), 2)
+        scan_seconds = round(max(0.0, time.time() - scan_total_started), 2)
         if scan.get("image_count", 0) == 0:
             raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
         scan_images = list(scan.pop("images", []) or [])
