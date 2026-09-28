@@ -636,3 +636,44 @@ test('submit runtime sends only fixed benchmark identity while exact test ids st
   assert.equal(Object.hasOwn(sent, 'experiment_percent'), false);
   cleanup(runtime);
 });
+
+
+test('created task notice distinguishes effective training truth from pending annotation selection', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({
+      ok: true,
+      async json() {
+        return {
+          ...durableTask(),
+          selection: {
+            selected_train_count: 10_000,
+            effective_train_count: 2_000,
+            pending_annotation_count: 8_000,
+            test_count: 0,
+          },
+        };
+      },
+    }),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      inheritance: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  const result = await window.submitTrain429();
+  assert.ok(result);
+  assert.match(notices[0], /本轮有效 2000 张/);
+  assert.match(notices[0], /待标注 8000 张已保留/);
+  cleanup(runtime);
+});
