@@ -64,3 +64,28 @@ def test_confirmed_empty_remains_an_explicit_training_negative():
     assert frozen["annotation_state"] == "confirmed_empty"
     assert frozen["annotation_scope"] == ["smoke"]
     assert frozen["box_count"] == 0
+
+
+def test_training_label_schema_compacts_active_classes_without_losing_canonical_id(tmp_path):
+    import json
+
+    from platform_core.training_tasks import _label_schema
+
+    (tmp_path / "meta.json").write_text(
+        json.dumps(
+            {
+                "label_meta": [
+                    {"code": "retired", "status": "inactive", "class_id": 0},
+                    {"code": "smoke", "status": "active", "class_id": 1},
+                    {"code": "fire", "status": "active", "class_id": 7},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    schema = _label_schema(tmp_path)
+
+    assert [row["code"] for row in schema] == ["smoke", "fire"]
+    assert [row["class_id"] for row in schema] == [0, 1]
+    assert [row["canonical_project_class_id"] for row in schema] == [1, 7]
