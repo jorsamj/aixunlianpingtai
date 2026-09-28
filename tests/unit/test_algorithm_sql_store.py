@@ -1057,3 +1057,5 @@ def test_external_sync_does_not_bump_algorithm_revision_when_master_data_is_unch
     assert first["added"] == 1
     assert second["unchanged"] == 1
     assert store.revision() == first_revision
+    persisted = store.read_one("external-product-1")
+    assert persisted["external_last_synced_at"] == "2026-09-28T04:33:00Z"

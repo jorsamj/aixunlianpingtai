@@ -487,8 +487,18 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   expect(pageErrors).toEqual([]);
   const readyDialog = page.getByRole('dialog', {name: '批量无需清洗'});
   await expect(readyDialog.getByText('共 1 张未处理素材')).toBeVisible();
+  const readyTaskRequest = page.waitForRequest(req => {
+    if (req.method() !== 'POST') return false;
+    const pathname = new URL(req.url()).pathname;
+    return /\/api\/v62\/projects\/[^/]+\/material-batches$/.test(pathname);
+  });
   await readyDialog.getByRole('button', {name: '确认无需清洗'}).click();
-  await expect(page.getByRole('button', {name: /已处理1/})).toBeVisible();
+  const submittedReadyTask = await readyTaskRequest;
+  const readyPayload = submittedReadyTask.postDataJSON();
+  expect(readyPayload.operation).toBe('MARK_CLEAN_SKIPPED');
+  expect(readyPayload.selection_spec?.scope).toBe('SELECTED');
+  expect(readyPayload.selection_spec?.image_ids).toHaveLength(1);
+  expect(pageErrors).toEqual([]);
 
   await page.locator('.data426-head button[onclick="openDataUpload426()"]').click();
   await page.locator('#up426Images').setInputFiles([

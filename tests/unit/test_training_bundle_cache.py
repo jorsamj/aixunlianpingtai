@@ -234,7 +234,7 @@ def test_cache_publication_is_ordered_after_algorithm_version_attachment():
     from platform_core.training_tasks import TrainingHandler
 
     source = inspect.getsource(TrainingHandler._finalize_completed_job)
-    assert source.index("attach_version(") < source.index(").publish_verified(")
+    assert source.index("attach_version_if_current(") < source.index(").publish_verified(")
     assert source.index(").publish_verified(") < source.index('"stage": "committed"')
 
 

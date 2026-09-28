@@ -178,7 +178,7 @@ jobs:
           grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
           grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
           grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
-          grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
+          grep -Fq "build: 'material-batch-runtime-422403'" static/modules/material-batches.js
           grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
           if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
           grep -Eq "build: 'model-artifacts-[0-9]+'" static/modules/model-artifact-runtime.js

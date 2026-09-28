@@ -260,7 +260,8 @@ jobs:
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rollback_with_empty_version_no_recovers_unique_name_and_analysis" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery" tests/unit/test_external_algorithm_publish.py
-          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'SCHEMA_VERSION = 4' platform_core/algorithm_sql_store.py
+          grep -Fq 'algorithm_revision' platform_core/algorithm_sql_store.py
           grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
           grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
           grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py

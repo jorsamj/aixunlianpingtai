@@ -667,7 +667,15 @@ class AlgorithmSqlStore:
                     master = dict(master_raw)
                     algorithm_id = existing.get(str(product_id))
                     if not algorithm_id:
-                        item = {**master, "current_version_id": None, "version_operations": [], "versions": [], "created_at": synced_at, "updated_at": synced_at}
+                        item = {
+                            **master,
+                            "current_version_id": None,
+                            "version_operations": [],
+                            "versions": [],
+                            "external_last_synced_at": synced_at,
+                            "created_at": synced_at,
+                            "updated_at": synced_at,
+                        }
                         sort_index = int(conn.execute("SELECT COALESCE(MIN(sort_index),0)-1 FROM algorithms WHERE project_id=?", (self.project_id,)).fetchone()[0])
                         self._insert_algorithm_conn(conn, item, sort_index)
                         self._replace_analyses_conn(conn, str(item["id"]), item)
@@ -676,17 +684,66 @@ class AlgorithmSqlStore:
                     current = self._read_one_conn(conn, algorithm_id)
                     if current is None:
                         continue
-                    changed = any(current.get(key) != value for key, value in master.items())
+                    # Observation metadata and local derivative/version state do
+                    # not constitute an external master-data graph change.
+                    # In particular, external_last_synced_at advances on every
+                    # successful sync but must not invalidate Bootstrap caches.
+                    compare_ignored = {
+                        "id",
+                        "current_version_id",
+                        "versions",
+                        "version_operations",
+                        "created_at",
+                        "updated_at",
+                        "external_last_synced_at",
+                    }
+                    list_fields = {
+                        "external_analyses",
+                        "external_analysis_ids",
+                        "external_compute_platform_ids",
+                    }
+
+                    def comparable(key: str, value: Any) -> Any:
+                        if key == "external_analyses":
+                            rows = [
+                                dict(row)
+                                for row in (value or [])
+                                if isinstance(row, Mapping)
+                            ]
+                            return sorted(
+                                rows,
+                                key=lambda row: (
+                                    str(row.get("analysis_id") or row.get("analysisId") or ""),
+                                    self._dumps(row),
+                                ),
+                            )
+                        if key in list_fields:
+                            return sorted(str(item) for item in (value or []))
+                        return value
+
+                    changed = any(
+                        comparable(key, current.get(key)) != comparable(key, value)
+                        for key, value in master.items()
+                        if key not in compare_ignored
+                    )
                     merged = dict(current)
                     merged.update(master)
                     # external master data must never rewrite the platform's stable algorithm id
                     merged["id"] = algorithm_id
+                    merged["external_last_synced_at"] = synced_at
                     if changed:
                         merged["updated_at"] = synced_at
                         self._update_algorithm_conn(conn, merged)
                         self._replace_analyses_conn(conn, algorithm_id, merged)
                         updated += 1
                     else:
+                        # Freshness metadata is durable but intentionally does
+                        # not move algorithm_revision or algorithm.updated_at.
+                        conn.execute(
+                            "UPDATE algorithms SET external_last_synced_at=? "
+                            "WHERE project_id=? AND id=?",
+                            (synced_at, self.project_id, algorithm_id),
+                        )
                         unchanged += 1
                 incoming_ids = {str(key) for key in incoming}
                 for row in rows:

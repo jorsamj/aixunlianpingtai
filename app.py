@@ -9631,6 +9631,7 @@ def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any
 
 V56_PRIORITY_SCHEME = "lower_number_first"
 V56_LEGACY_PRIORITY_MAP = {100: 1, 80: 20, 50: 50}
+_LEGACY_V48_TRAIN_QUEUE_LOCK = threading.RLock()
 
 
 def _v56_normalize_priority(job: Dict[str, Any]) -> int:
@@ -9669,7 +9670,7 @@ def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[st
 
 def _v48_dispatch_training_queues(project_id: str) -> None:
     """Run one task per resource, using lower-number-first priority and FIFO ties."""
-    with V48_TRAIN_QUEUE_LOCK:
+    with _LEGACY_V48_TRAIN_QUEUE_LOCK:
         rows=[]
         for jf in _v48_all_job_files(project_id):
             j=read_json(jf,{})
