@@ -132,6 +132,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
+from platform_core.training_tasks import freeze_training_inputs
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
@@ -7173,6 +7174,24 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             if existing_task.project_id == project_id and existing_task.kind is TaskKind.TRAINING:
                 return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
+    try:
+        input_freeze = freeze_training_inputs(
+            project_dir(project_id),
+            split,
+            seed=int(payload.seed or 0),
+            supplement_candidate_set=supplement_candidate_set,
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"训练输入无法冻结：{error}",
+        ) from error
+    input_freeze_ref = "input-freeze.json"
+    shared_task_artifacts().atomic_write_json(
+        task_id,
+        input_freeze_ref,
+        input_freeze,
+    )
     request_payload = payload.model_dump(mode="json", exclude_none=True)
     if supplement_candidate_set:
         request_payload["supplement_candidate_set"] = supplement_candidate_set
@@ -7199,6 +7218,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "schema_version": 3,
             "requested_device": payload.device,
             "external_analysis_id": external_analysis_id,
+            "input_freeze_ref": input_freeze_ref,
+            "input_freeze_id": input_freeze["input_freeze_id"],
+            "snapshot_id": input_freeze["snapshot_id"],
+            "dataset_revision_id": input_freeze["dataset_revision_id"],
             **(
                 {
                     "remote_input_state": "PREPARING",
@@ -7299,6 +7322,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "requested_train_images": len(split.train_image_ids),
             "requested_test_images": len(split.test_image_ids),
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
+            "input_freeze_id": input_freeze["input_freeze_id"],
+            "snapshot_id": input_freeze["snapshot_id"],
+            "dataset_revision_id": input_freeze["dataset_revision_id"],
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "artifact_verified": False,
