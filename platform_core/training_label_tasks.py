@@ -70,11 +70,14 @@ def selected_material_label_codes(
     payload: Mapping[str, Any],
     *,
     allowed_nonactive_codes: Sequence[str] = (),
+    positive_only: bool = False,
 ) -> list[str]:
     """Return only labels evidenced by the exact materials selected for this task.
 
     Positive annotations contribute their box labels. Explicit confirmed-empty
-    samples contribute their scoped labels. Historical '*' negatives do not
+    samples contribute their scoped labels for preflight validation, but callers
+    may request positive-only evidence when deciding which NEW classes can enter
+    a task schema. Historical '*' negatives do not
     manufacture project-wide choices because the original concrete scope is no
     longer knowable.
     """
@@ -90,7 +93,9 @@ def selected_material_label_codes(
         return []
     annotations = AnnotationRepository(project)
     encountered: list[str] = []
+    positive_encountered: list[str] = []
     seen: set[str] = set()
+    positive_seen: set[str] = set()
     for offset in range(0, len(selected_ids), 500):
         chunk = selected_ids[offset:offset + 500]
         batch = annotations.get_many(chunk)
@@ -105,6 +110,9 @@ def selected_material_label_codes(
                 if code not in seen:
                     seen.add(code)
                     encountered.append(code)
+                if code not in positive_seen:
+                    positive_seen.add(code)
+                    positive_encountered.append(code)
             for value in annotation.get("annotation_scope") or []:
                 code = str(value or "").strip()
                 if code and code != "*" and code not in seen:
@@ -133,7 +141,8 @@ def selected_material_label_codes(
             + "；class_x / unknown / temp_* 不能进入正式训练"
         )
     rank = {code: index for index, code in enumerate(project_order)}
-    return sorted(encountered, key=lambda code: (rank.get(code, 10**9), encountered.index(code), code))
+    evidence = positive_encountered if positive_only else encountered
+    return sorted(evidence, key=lambda code: (rank.get(code, 10**9), evidence.index(code), code))
 
 
 def _normalized_version_schema(values: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
@@ -235,6 +244,7 @@ def resolve_training_label_contract(
         project_path,
         payload,
         allowed_nonactive_codes=inherited_codes,
+        positive_only=True,
     )
     available_set = set(available)
     # A verified previous-version schema is immutable iteration lineage. Project
