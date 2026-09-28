@@ -75,6 +75,27 @@ def test_training_request_normalizes_legacy_boolean_cache_before_string_validati
     assert app_module.TrainReq(cache="disk").cache == "disk"
 
 
+def test_v12_rejects_paddle_before_algorithm_or_material_io(client, seeded_project):
+    project_id, _ = seeded_project
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "paddle",
+            "algorithm_asset_id": "does-not-need-to-exist",
+            "model": "PP-YOLOE",
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": ["does-not-need-to-exist"],
+            "experiment_percent": 20,
+            "validation_percent": 20,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "Durable Training" in response.json()["detail"]
+    assert "PaddleDetection" in response.json()["detail"]
+
+
 def test_v12_product_training_rejects_legacy_unsplit_request(client, seeded_project, monkeypatch):
     import app as app_module
 
@@ -131,47 +152,36 @@ def test_v12_product_training_rejects_legacy_unsplit_request(client, seeded_proj
     assert "Durable Training" in response.json()["detail"]
 
 
-def test_legacy_training_route_also_requires_strict_latest_iteration_base(client, seeded_project, monkeypatch, tmp_path):
+def test_legacy_training_route_never_runs_its_own_iteration_selector(
+    client, seeded_project, monkeypatch
+):
     import app as app_module
 
     project_id, _ = seeded_project
-    seen = {}
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "旧入口单 Owner", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    seen = {"called": False}
 
-    def strict_spy(*args, **kwargs):
-        seen.update(kwargs)
-        return None
+    def strict_spy(*_args, **_kwargs):
+        seen["called"] = True
+        raise AssertionError("legacy URL must not own iteration-base selection")
 
     monkeypatch.setattr(app_module, "_v54_iteration_base", strict_spy)
-    monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
-    monkeypatch.setattr(app_module, "check_ultralytics_train_runtime", lambda _python_path: "ok")
-    monkeypatch.setattr(
-        app_module,
-        "build_dataset",
-        lambda _project_id, _payload: {
-            "dataset": str(tmp_path),
-            "data_yaml": str(tmp_path / "data.yaml"),
-            "counts": {},
-            "labels": [],
-        },
-    )
 
     response = client.post(
         f"/api/projects/{project_id}/train/start",
         json={
             "framework": "ultralytics",
-            "algorithm": "yolo11n_det",
-            "algorithm_asset_id": "asset-with-versions",
+            "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
-            "epochs": 1,
-            "imgsz": 320,
-            "batch": 1,
-            "device": "cpu",
         },
     )
 
-    assert response.status_code == 200, response.text
-    assert seen["strict_latest"] is True
+    assert response.status_code == 409, response.text
+    assert "split_mode" in response.json()["detail"]
+    assert seen["called"] is False
 
 
 def test_v12_iteration_cannot_bypass_durable_split_with_latest_version(client, seeded_project, monkeypatch):
