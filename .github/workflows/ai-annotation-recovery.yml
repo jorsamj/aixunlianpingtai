@@ -15,6 +15,7 @@ on:
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/api/test_annotation_task_runtime.py
+      - tests/integration/test_persistent_ai_annotation_e2e.py
       - tests/browser/material-workflows.spec.mjs
       - tests/browser/auto-label-polling.spec.mjs
       - tests/unit/test_annotation_candidates.py
@@ -34,6 +35,7 @@ on:
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/api/test_annotation_task_runtime.py
+      - tests/integration/test_persistent_ai_annotation_e2e.py
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
       - tests/frontend/annotation-task-view.test.mjs
@@ -132,10 +134,12 @@ jobs:
           python -m py_compile
           app.py
           tests/api/test_annotation_task_runtime.py
+          tests/integration/test_persistent_ai_annotation_e2e.py
       - name: Durable annotation API truth
         run: >-
           python -m pytest -q
           tests/api/test_annotation_task_runtime.py
+          tests/integration/test_persistent_ai_annotation_e2e.py
       - name: Version and diff guard
         shell: bash
         run: |
