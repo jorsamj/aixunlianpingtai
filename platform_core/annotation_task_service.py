@@ -115,13 +115,18 @@ def run_ai_annotation(
     context,
     *,
     annotate: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] = annotate_one,
+    data_dir: Path | None = None,
 ) -> WorkerOutcome:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
     if not isinstance(request, dict):
         raise ValueError("AI annotation request is invalid")
     runtime_request = dict(request)
     if annotate is annotate_one:
-        runtime_request = _prepare_runtime_request(context.task.project_id, runtime_request)
+        runtime_request = _prepare_runtime_request(
+            context.task.project_id,
+            runtime_request,
+            data_dir=data_dir,
+        )
     images = load_task_images(context.task.project_id, runtime_request.get("image_ids") or [])
     preview_count = max(0, int(runtime_request.get("preview_count") or 0))
     if preview_count:
@@ -241,37 +246,20 @@ def run_ai_annotation(
     )
 
 
-def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    from app import _annotation_label_catalog, _annotation_runtime_provider, get_project
+def _prepare_runtime_request(
+    project_id: str,
+    request: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+) -> dict[str, Any]:
+    from .annotation_runtime import prepare_request
 
-    provider, config = _annotation_runtime_provider(request)
-    labels = [str(value) for value in request.get("labels") or []]
-    catalog = _annotation_label_catalog(get_project(project_id))
-    selected = [item for item in catalog if str(item.get("code")) in labels]
-    label_ids = {str(item["code"]): int(item["class_id"]) for item in selected}
-    missing = sorted(set(labels) - set(label_ids))
-    if missing:
-        raise ValueError("task labels are unavailable or inactive: " + ", ".join(missing))
-    prepared = dict(request)
-    prepared.update({
-        "_provider": provider,
-        "_provider_config": config,
-        "label_catalog": selected,
-        "label_ids": label_ids,
-        "label_aliases": {
-            str(item["code"]): list(dict.fromkeys(
-                value
-                for value in [
-                    str(item.get("display_name_zh") or "").strip(),
-                    *[str(alias).strip() for alias in item.get("aliases") or []],
-                ]
-                if value
-            ))
-            for item in selected
-        },
-        "prompt_template": str((request.get("prompt_template_snapshot") or {}).get("prompt") or ""),
-    })
-    return prepared
+    if data_dir is None:
+        # Focused tests and legacy in-process callers may not pass the Worker
+        # root explicitly. Production worker_registration always does.
+        from app import DATA_DIR as app_data_dir
+        data_dir = Path(app_data_dir)
+    return prepare_request(data_dir, project_id, request, runtime=True)
 
 
 def _public_error(error: Exception) -> str:
@@ -539,11 +527,14 @@ def commit_confirmed_review(context):
 
 
 class AnnotationHandler:
+    def __init__(self, data_dir: Path | None = None):
+        self.data_dir = Path(data_dir).resolve() if data_dir is not None else None
+
     def run(self, context):
         review = commit_confirmed_review(context)
         if review is not None:
             return review
-        outcome = run_ai_annotation(context)
+        outcome = run_ai_annotation(context, data_dir=self.data_dir)
         return outcome.status, outcome.result_ref
 
     def recover(self, context):
@@ -552,6 +543,6 @@ class AnnotationHandler:
 
 def worker_registration(_data_dir: Path):
     return {
-        "handlers": {TaskKind.AI_ANNOTATION: AnnotationHandler()},
+        "handlers": {TaskKind.AI_ANNOTATION: AnnotationHandler(_data_dir)},
         "capabilities": {"vision_provider"},
     }

@@ -61,6 +61,7 @@ from platform_core.algorithms import (
 from platform_core import auto_label as auto_label_core
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.annotation_task_service import commit_candidate_decisions
+from platform_core.annotation_runtime import prepare_request as prepare_annotation_request
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
@@ -19085,24 +19086,6 @@ def _v47_build_annotation_prompt(
     return template.replace('{labels}', '、'.join(str(item.get('code')) for item in labels))
 
 
-def _annotation_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
-    config_id = str(payload.get('model_config_id') or '')
-    provider_id = str(payload.get('provider_id') or '')
-    cfg = next((x for x in _v35_model_items() if x.get('id') == config_id or x.get('id') == provider_id), None)
-    if cfg:
-        runtime_cfg = dict(cfg)
-        reference = str(cfg.get('secret_ref') or '')
-        runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
-        return auto_label_core.provider_factory(runtime_cfg), cfg
-    if provider_id:
-        return auto_label_core.provider_factory(provider_id), {'id': provider_id, 'name': provider_id}
-    cfg = _v47_default_annotation_model()
-    runtime_cfg = dict(cfg)
-    reference = str(cfg.get('secret_ref') or '')
-    runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
-    return auto_label_core.provider_factory(runtime_cfg), cfg
-
-
 def _retired_v47_annotation_api() -> None:
     raise HTTPException(
         status_code=410,
@@ -19187,6 +19170,10 @@ def public_annotation_task(
         "error": task.error,
         "name": str((request or {}).get("task_name") or "AI自动标注任务") if isinstance(request, dict) else "AI自动标注任务",
         "requested_labels": list((request or {}).get("labels") or []) if isinstance(request, dict) else [],
+        "model_config_id": str((request or {}).get("model_config_id") or "") if isinstance(request, dict) else "",
+        "model_config_name": str((request or {}).get("model_config_name") or "") if isinstance(request, dict) else "",
+        "model_provider": str((request or {}).get("model_provider") or "") if isinstance(request, dict) else "",
+        "model_config_revision": str((request or {}).get("model_config_revision") or "") if isinstance(request, dict) else "",
         "total_count": total_count,
         "completed_count": min(total_count, completed_count) if total_count else completed_count,
         "failed_count": failed_count,
@@ -19204,31 +19191,16 @@ def _annotation_summary(task: TaskRecord) -> dict:
 
 
 def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq) -> tuple[dict, str]:
-    project = get_project(project_id)
-    labels = _v47_parse_label_text(
-        payload.labels_text,
-        _annotation_label_catalog(project),
-    )
-    reference_ids = list(dict.fromkeys(
-        str(value) for value in (payload.reference_image_ids or []) if str(value)
+    # Web submission owns selection/material validation only. Model/prompt
+    # selection and immutable configuration snapshots belong to the shared
+    # worker-safe annotation_runtime owner used by both v60 and Material Batch.
+    get_project(project_id)
+    image_ids = list(dict.fromkeys(
+        str(value) for value in payload.image_ids if str(value)
     ))
-    annotations = _v50_annotation_repository(project_id)
-    for offset in range(0, len(reference_ids), 500):
-        reference_rows = annotations.get_many(reference_ids[offset:offset + 500])
-        for image_id in reference_ids[offset:offset + 500]:
-            for box in (reference_rows.get(image_id) or {}).get("boxes", []):
-                label = normalize_label(str(box.get("label") or ""))
-                if label and label not in labels:
-                    labels.append(label)
-    if not labels:
-        raise HTTPException(status_code=400, detail="请输入标签，或选择至少一张已有标注的参考图片")
-    available = {str(item.get("code")) for item in _annotation_label_catalog(project)}
-    unknown = sorted(set(labels) - available)
-    if unknown:
-        raise HTTPException(status_code=400, detail="以下标签不在标签库或已停用：" + "、".join(unknown))
-    image_ids = list(dict.fromkeys(str(value) for value in payload.image_ids if str(value)))
     if not image_ids:
         raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
+
     existing = set()
     materials = material_store(project_id)
     for offset in range(0, len(image_ids), 500):
@@ -19239,29 +19211,35 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
         )
     missing = sorted(set(image_ids) - existing)
     if missing:
-        raise HTTPException(status_code=400, detail="以下素材不存在：" + "、".join(missing[:20]))
-    config = next(
-        (item for item in _v35_model_items() if item.get("id") in {payload.model_config_id, payload.provider_id}),
-        None,
-    )
-    if not config and not payload.provider_id:
-        config = _v47_default_annotation_model()
-    template = {}
-    if payload.prompt_template_id and payload.prompt_template_id != "default":
-        template = next((item for item in _v35_prompt_items() if item.get("id") == payload.prompt_template_id), None) or {}
-        if not template:
-            raise HTTPException(status_code=400, detail="提示词模板不存在")
+        raise HTTPException(
+            status_code=400,
+            detail="以下素材不存在：" + "、".join(missing[:20]),
+        )
+
     request = payload.model_dump(mode="json")
     request.update({
         "image_ids": image_ids,
-        "labels": labels,
-        "model_config_id": (config or {}).get("id") or payload.model_config_id,
-        "prompt_template_snapshot": template,
-        "prompt_template_version_id": template.get("version_id") or "",
-        "schema_version": 1,
+        "schema_version": 2,
     })
-    provider_key = str((config or {}).get("id") or payload.provider_id or "default")
-    return request, provider_key
+    try:
+        # _v35_model_items() performs the one-time legacy secret migration.
+        # prepare_annotation_request() is the only owner that interprets the
+        # model/prompt configuration and freezes it for Durable execution.
+        prepared = prepare_annotation_request(
+            DATA_DIR,
+            project_id,
+            request,
+            runtime=False,
+            model_configs=_v35_model_items(),
+            prompt_templates=_v35_prompt_items(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    provider_key = str(prepared.get("model_config_id") or "")
+    if not provider_key:
+        raise HTTPException(status_code=400, detail="AI_MODEL_CONFIG_NOT_FOUND: 请选择可用模型配置")
+    return prepared, provider_key
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks")

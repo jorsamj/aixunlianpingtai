@@ -29,3 +29,30 @@ test('v60 AI tasks never fall through the legacy v47 progress modal', () => {
   assert.match(block, /if\(type==='label'\)return showAiTask60\(id\)/);
   assert.match(block, /if\(type==='clean'\)return window\.showCleanTaskProgress429\?\.\(id\)/);
 });
+
+
+test('canonical AI creation selects a saved model config and never exposes a temporary detect URL', () => {
+  const createStart = app.indexOf('window.createAiLabelCore429=function');
+  const createEnd = app.indexOf('// ---------- training from processed', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  const createBlock = app.slice(createStart, createEnd);
+  assert.match(createBlock, /id="ai429Model"/);
+  assert.match(createBlock, /任务创建时冻结/);
+  assert.doesNotMatch(createBlock, /preUrl|临时检测接口/);
+
+  const submitStart = app.indexOf('window.submitAiLabel429=async function');
+  const submitEnd = app.indexOf('function taskRow', submitStart);
+  const submitBlock = app.slice(submitStart, submitEnd);
+  assert.match(submitBlock, /getElementById\('ai429Model'\)/);
+  assert.match(submitBlock, /model_config_id:modelConfigId/);
+  assert.doesNotMatch(submitBlock, /find\(item=>item\.default_for_annotation\)/);
+});
+
+test('legacy v35 auto-label modal delegates to the v60 CandidateStore flow', () => {
+  const start = app.indexOf('window.openAutoLabelModal=async function');
+  const end = app.indexOf('window.applyPrePromptTplV35=function', start);
+  assert.ok(start >= 0 && end > start);
+  const block = app.slice(start, end);
+  assert.match(block, /window\.createAiLabel429/);
+  assert.doesNotMatch(block, /preUrl|临时检测接口|preModelCfg/);
+});

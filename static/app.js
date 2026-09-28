@@ -1587,12 +1587,12 @@ window.installUsability417=function(){
   function promptLibraryPanelV35(){return `<div class="row end"><button class="btn primary" onclick="openPromptTemplateModalV35()">新增提示词模板</button><button class="btn" onclick="setPage('模型配置')">模型配置</button></div><div class="divider"></div>${promptTemplateListHtmlV35()}`}
 
   window.openAutoLabelModal=async function(){
-    state.modelConfigs=(await safe(api('/api/v35/model-configs')))?.items||[];
-    state.promptTemplates=(await safe(api('/api/v35/prompt-templates')))?.items||[];
-    state.prelabelTasks=(await safe(api(`/api/v33/projects/${pid()}/prelabel-tasks`)))?.items||[];
-    const labelList=(state.labels||[]).map(l=>`<option value="${esc(l.code||l.display_name)}">`).join('');
-    modal('创建自动标注任务',`<div class="form"><div class="grid2-mini"><div class="field"><label>模型标注模板</label><select id="prePromptTpl" class="select" onchange="applyPrePromptTplV35()"><option value="">不使用模板</option>${(state.promptTemplates||[]).map(t=>`<option value="${esc(t.id)}">${esc(t.name)} · ${esc(t.framework||'')}</option>`).join('')}</select></div><div class="field"><label>模型配置</label><select id="preModelCfg" class="select"><option value="">临时接口</option>${configOptionsV35('')}</select></div></div><div id="manualPrelabelBox"><div class="field"><label>临时检测接口</label><input id="preUrl" class="input" placeholder="http://127.0.0.1:9000/detect"></div></div><div class="grid2-mini"><div class="field"><label>训练框架/保存格式</label><select id="preFramework" class="select"><option value="ultralytics">Ultralytics / YOLO</option><option value="paddle">飞桨 / COCO</option><option value="internal">仅平台内部标注</option></select></div><div class="field"><label>标注范围</label><select id="preRange" class="select"><option value="unmarked">仅未标注</option><option value="current">当前筛选</option><option value="all">全部图片</option><option value="marked">已标注</option></select></div><div class="field"><label>目标标签</label><input id="preLabel" list="preLabelList" class="input" value="${esc((state.labels&&state.labels[0]?.code)||'fire')}"><datalist id="preLabelList">${labelList}</datalist></div><div class="field"><label>置信度阈值</label><input id="preThreshold" class="input" value="0.5"></div><div class="field"><label>请求方式</label><select id="preMode" class="select"><option value="json_base64">JSON Base64</option><option value="multipart_file">Multipart 文件上传</option></select></div><div class="field"><label>图片字段名</label><input id="preField" class="input" value="image"></div></div><div class="field"><label>提示词</label><textarea id="prePrompt" rows="6" placeholder="选择模板后自动带出，也可以临时修改"></textarea></div><div class="field check"><label><input type="checkbox" id="preOverwrite"> 覆盖同标签旧框</label></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="startPrelabelTask()">创建任务</button></div><div id="prelabelRunResult"></div></div>`,true);
+    // Retired v35 UI delegates to the canonical v60 CandidateStore flow.
+    // Never expose the historical temporary detect URL / direct-write form.
+    state.modelConfigs=(await safe(api('/api/v35/model-configs')))?.items||state.modelConfigs||[];
+    return window.createAiLabel429?.();
   };
+
   window.applyPrePromptTplV35=function(){
     const id=$('#prePromptTpl')?.value||''; const t=(state.promptTemplates||[]).find(x=>x.id===id); if(!t)return;
     if($('#preModelCfg')&&t.model_config_id)$('#preModelCfg').value=t.model_config_id;
@@ -1609,15 +1609,8 @@ window.installUsability417=function(){
     return imgs.filter(i=>(i.box_count||0)===0);
   }
   window.startPrelabelTask=async function(){
-    const out=$('#prelabelRunResult');
-    try{
-      const range=$('#preRange')?.value||'unmarked'; const imgs=selectedImagesForAutoLabelV35(range); if(!imgs.length)throw new Error('当前范围内没有图片');
-      const body={model_config_id:$('#preModelCfg')?.value||null,prompt_template_id:$('#prePromptTpl')?.value||null,detect_url:$('#preModelCfg')?.value?null:($('#preUrl')?.value||''),request_mode:$('#preMode')?.value||'json_base64',image_field:$('#preField')?.value||'image',prompt:$('#prePrompt')?.value||'',threshold:parseFloat($('#preThreshold')?.value||'0.5'),target_label:$('#preLabel')?.value||'person',image_ids:imgs.map(i=>i.id),overwrite:!!$('#preOverwrite')?.checked,task_name:`${$('#preLabel')?.value||'目标'} 自动标注`,training_framework:$('#preFramework')?.value||'internal',dataset_id:state.datasetId,include_empty:false};
-      if(out)out.innerHTML='<div class="loading">正在创建任务...</div>';
-      const r=await api(`/api/v35/projects/${pid()}/prelabel-tasks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(out)out.innerHTML=`<div class="alert ok">任务已创建：${esc(r.name||r.id)}</div>`;
-      await refreshPrelabelTasksOnly?.(); toast('自动标注任务已创建');
-    }catch(e){ if(out)out.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`; toast(e.message||'创建失败') }
+    toast('旧版自动标注入口已退役，请使用当前AI自动标注任务');
+    return window.createAiLabel429?.();
   };
 
   // Render now if already loaded
@@ -3901,7 +3894,19 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.renderAiRefs429=function(){const g=document.getElementById('ai429RefGrid');if(!g)return;g.innerHTML=refs429().slice(0,40).map(x=>`<button data-image-id="${esc(x.id)}" class="${state.ai429RefSelected.has(x.id)?'on':''}" onclick="toggleRef429('${x.id}')"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${esc((x.labels||[]).join('、'))}</span></button>`).join('')||'<div class="empty">没有符合筛选条件的已标注图片</div>'};
   window.toggleAiRefLabel429=function(l){state.ai429RefLabels.has(l)?state.ai429RefLabels.delete(l):state.ai429RefLabels.add(l);document.querySelectorAll('.ai429-chip').forEach(b=>b.classList.toggle('on',state.ai429RefLabels.has(b.dataset.label)));renderAiRefs429()};
   window.toggleRefCore429=function(id){state.ai429RefSelected.has(id)?state.ai429RefSelected.delete(id):state.ai429RefSelected.add(id);renderAiRefs429()};
-  window.createAiLabelCore429=function(opts={}){const ids=opts.image_ids?.length?opts.image_ids:(state.images||[]).filter(x=>!x.annotated).map(x=>x.id),model=(state.modelConfigs||[]).find(x=>x.default_for_annotation)||(state.modelConfigs||[])[0];state.ai429RefLabels=new Set();state.ai429RefSelected=new Set();const chips=(state.labels||[]).map(l=>`<button type="button" class="ai429-chip" data-label="${esc(l.code)}" onclick="toggleAiRefLabel429('${esc(l.code)}')">${esc(l.display_name||l.code)}</button>`).join('');modal('创建AI自动标注任务',`<div class="ailabel427 ai429"><div class="ailabel427-model"><span>系统自动使用</span><b>${esc(model?.name||'未配置AI模型')}</b><em>模型与提示词在高级功能的模型配置中统一维护</em></div><div class="field"><label>平台标签英文编码</label><input id="ai429Labels" class="input" placeholder="例如：person、smoke、fire"><small>仅接受当前有效标签的 code；中文名、别名、历史 alias 不会自动转换。</small></div><div class="or427"><i></i><span>或者跟随已有标注</span><i></i></div><section class="ai429-ref"><header><div><b>筛选参考素材</b><span>先筛选，再选择已标注图片；系统会提取这些图片的标签</span></div><input id="ai429RefQ" class="input" placeholder="搜索素材名" oninput="renderAiRefs429()"></header><div class="ai429-chips">${chips}</div><div id="ai429RefGrid" class="ref427-grid"></div></section><details class="advanced427-box"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ailabel427-target">本次待处理 <b>${ids.length}</b> 张图片</div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick='submitAiLabel429(${JSON.stringify(ids)})'>开始AI标注</button></div></div>`,true)};
+  window.createAiLabelCore429=function(opts={}){
+    const ids=opts.image_ids?.length?opts.image_ids:(state.images||[]).filter(x=>!x.annotated).map(x=>x.id);
+    const configs=state.modelConfigs||[];
+    const model=configs.find(x=>x.default_for_annotation)||configs[0];
+    const modelOptions=configs.map(item=>`<option value="${esc(item.id)}" ${String(item.id)===String(model?.id)?'selected':''}>${esc(item.name||item.model_name||item.id)} · ${esc(item.model_name||item.provider_type||'视觉模型')}</option>`).join('');
+    state.ai429RefLabels=new Set();
+    state.ai429RefSelected=new Set();
+    const chips=(state.labels||[]).map(l=>`<button type="button" class="ai429-chip" data-label="${esc(l.code)}" onclick="toggleAiRefLabel429('${esc(l.code)}')">${esc(l.display_name||l.code)}</button>`).join('');
+    const modelPanel=configs.length
+      ? `<div class="field"><label>AI模型配置</label><select id="ai429Model" class="select">${modelOptions}</select><small>模型、Endpoint、Provider 与 Secret 引用会在任务创建时冻结；之后修改模型配置不会让已排队任务换模型。</small></div>`
+      : `<div class="alert warn"><b>还没有可用AI模型配置</b><span>请先到模型配置中添加视觉模型。AI标注不支持临时检测接口。</span><button class="btn small" onclick="closeModal();setPage('模型配置')">去模型配置</button></div>`;
+    modal('创建AI自动标注任务',`<div class="ailabel427 ai429">${modelPanel}<div class="field"><label>平台标签英文编码</label><input id="ai429Labels" class="input" placeholder="例如：person、smoke、fire"><small>仅接受当前有效标签的 code；中文名、别名、历史 alias 不会自动转换。</small></div><div class="or427"><i></i><span>或者跟随已有标注</span><i></i></div><section class="ai429-ref"><header><div><b>筛选参考素材</b><span>先筛选，再选择已标注图片；系统会提取这些图片的标签</span></div><input id="ai429RefQ" class="input" placeholder="搜索素材名" oninput="renderAiRefs429()"></header><div class="ai429-chips">${chips}</div><div id="ai429RefGrid" class="ref427-grid"></div></section><details class="advanced427-box"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ailabel427-target">本次待处理 <b>${ids.length}</b> 张图片</div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" ${configs.length?'':'disabled'} onclick='submitAiLabel429(${JSON.stringify(ids)})'>开始AI标注</button></div></div>`,true);
+  };
 
 
   // ---------- training from processed, labeled pool; internal split is automatic ----------
@@ -5684,9 +5689,22 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!ids.length)return toast('没有需要标注的图片');
     const parsed=explicitCanonicalAiLabelText(document.getElementById('ai429Labels')?.value||'');
     if(parsed.unknown.length)return toast(`AI标注只接受当前有效的平台标签 code：${parsed.unknown.slice(0,8).join('、')}`);
-    const model=(state.modelConfigs||[]).find(item=>item.default_for_annotation)||(state.modelConfigs||[])[0];
-    const body={image_ids:ids.map(String),labels_text:parsed.text,reference_image_ids:[...(state.ai429RefSelected||new Set())].map(String),threshold:+document.getElementById('ai429Threshold')?.value||.45,overwrite:!!document.getElementById('ai429Overwrite')?.checked,task_name:`AI自动标注-${new Date().toLocaleString()}`,model_config_id:model?.id||null};
-    try{const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});closeModal();showAiTask60(task.id)}catch(error){toast(error.message||error)}
+    const modelConfigId=String(document.getElementById('ai429Model')?.value||'').trim();
+    if(!modelConfigId)return toast('请选择已配置的AI视觉模型');
+    const body={
+      image_ids:ids.map(String),
+      labels_text:parsed.text,
+      reference_image_ids:[...(state.ai429RefSelected||new Set())].map(String),
+      threshold:+document.getElementById('ai429Threshold')?.value||.45,
+      overwrite:!!document.getElementById('ai429Overwrite')?.checked,
+      task_name:`AI自动标注-${new Date().toLocaleString()}`,
+      model_config_id:modelConfigId,
+    };
+    try{
+      const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      closeModal();
+      showAiTask60(task.id);
+    }catch(error){toast(error.message||error)}
   };
 
   function taskRow(task){

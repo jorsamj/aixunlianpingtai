@@ -6,7 +6,13 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
-from platform_core.annotation_task_service import _public_error, commit_candidate_decisions, load_task_images, run_ai_annotation
+from platform_core.annotation_task_service import (
+    _prepare_runtime_request,
+    _public_error,
+    commit_candidate_decisions,
+    load_task_images,
+    run_ai_annotation,
+)
 from platform_core.task_runtime import ArtifactStore, ExecutionFencedError, TaskKind, TaskRecord, TaskStatus
 
 
@@ -431,3 +437,12 @@ def test_ai_generation_uses_reusable_candidate_write_session():
     assert "append_candidate([item])" in source
     assert "store.append_items(" not in source
 
+
+
+def test_worker_runtime_request_uses_worker_safe_annotation_runtime_owner():
+    import inspect
+
+    source = inspect.getsource(_prepare_runtime_request)
+    assert "from .annotation_runtime import prepare_request" in source
+    assert "prepare_request(data_dir, project_id, request, runtime=True)" in source
+    assert "_annotation_runtime_provider" not in source

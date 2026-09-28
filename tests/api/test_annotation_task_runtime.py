@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -40,10 +41,30 @@ def _awaiting(project_id, count, repository, artifacts):
     return task_id
 
 
-def test_annotation_task_create_is_private_and_worker_queued(client, seeded_project, isolated_task_runtime):
+def test_annotation_task_create_is_private_and_worker_queued(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
     project_id, image = seeded_project
+    config = {
+        "id": "model-1",
+        "name": "视觉模型一",
+        "model_name": "vision-v1",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://vision-v1.local/v1",
+        "secret_ref": "xjalgo:model-config:model-1",
+        "headers_json": {
+            "X-Trace": "keep",
+            "Authorization": "Bearer must-not-freeze",
+        },
+        "updated_at": "2026-09-28T06:20:00Z",
+    }
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [dict(config)])
+
     response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
-        "image_ids": [image["id"]], "labels_text": "fire", "provider_id": "fake-provider",
+        "image_ids": [image["id"]],
+        "labels_text": "fire",
+        "model_config_id": "model-1",
         "business_instruction": "find fire",
     })
     assert response.status_code == 202, response.text
@@ -52,9 +73,22 @@ def test_annotation_task_create_is_private_and_worker_queued(client, seeded_proj
     assert body["total_count"] == 1
     assert body["completed_count"] == 0
     assert body["failed_count"] == 0
+    assert body["model_config_id"] == "model-1"
+    assert body["model_config_name"] == "视觉模型一"
+    assert body["model_provider"] == "local_openai"
+    assert len(body["model_config_revision"]) == 64
     assert "payload_ref" not in body and "business_instruction" not in body
+    assert "model_config_snapshot" not in body
+    assert "secret_ref" not in body
+
     request = isolated_task_runtime[1].read_json(body["id"], "request.json")
     assert request["image_ids"] == [image["id"]]
+    assert request["model_config_snapshot"]["model_name"] == "vision-v1"
+    assert request["model_config_snapshot"]["detect_url"] == "http://vision-v1.local/v1"
+    assert request["model_config_snapshot"]["secret_ref"] == "xjalgo:model-config:model-1"
+    assert request["model_config_snapshot"]["headers_json"] == {"X-Trace": "keep"}
+    assert "api_key" not in request["model_config_snapshot"]
+    assert request["model_config_revision"] == body["model_config_revision"]
 
 
 def test_annotation_task_detail_reads_real_worker_checkpoint_counts(client, seeded_project, isolated_task_runtime):
@@ -356,7 +390,7 @@ def test_retired_v47_annotation_routes_fail_closed(client, seeded_project):
 
 def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
     assert hasattr(app_module, "_annotation_label_catalog")
-    assert hasattr(app_module, "_annotation_runtime_provider")
+    assert not hasattr(app_module, "_annotation_runtime_provider")
     assert not hasattr(app_module, "_v47_label_catalog")
     assert not hasattr(app_module, "_v47_runtime_provider")
 
@@ -546,3 +580,36 @@ def test_complete_candidate_page_does_not_reload_material_projection(
     assert item["width"] == 1920
     assert item["height"] == 1080
 
+
+
+def test_annotation_task_rejects_raw_provider_id_without_model_config(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "configured-model",
+        "name": "Configured",
+        "model_name": "vision",
+        "provider_type": "local_openai",
+        "detect_url": "http://configured.local/v1",
+    }])
+
+    response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]],
+        "labels_text": "fire",
+        "provider_id": "raw-temporary-provider",
+    })
+
+    assert response.status_code == 400
+    assert "AI_MODEL_CONFIG_NOT_FOUND" in response.json()["detail"]
+
+
+def test_canonical_annotation_create_uses_shared_model_snapshot_owner():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    start = source.index("def _annotation_create_payload(")
+    end = source.index('@app.post("/api/v60/projects/{project_id}/annotation-tasks")', start)
+    block = source[start:end]
+
+    assert "prepare_annotation_request(" in block
+    assert "_v35_resolve_model_and_prompt" not in block
+    assert "_annotation_runtime_provider" not in source
