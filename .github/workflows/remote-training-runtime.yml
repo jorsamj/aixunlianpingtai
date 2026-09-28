@@ -284,8 +284,10 @@ jobs:
           grep -Fq 'TRAINING_PRECISION_UNSUPPORTED' platform_core/training_precision.py
           grep -Fq 'normalize_training_precision(payload.precision)' app.py
           grep -Fq 'v12 训练创建必须提交 split_mode 并走 Durable Training 主路径' app.py
+          grep -Fq 'return v12_start_train(project_id, payload)' app.py
           grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
           grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py
+          grep -Fq 'test_unversioned_training_url_delegates_to_durable_v12_owner' tests/api/test_training_request.py
           grep -Fq 'verify_effective_training_precision(' train_worker.py
           grep -Fq 'def effective_loader_resources(train_image_count, batch, workers):' platform_core/training_metrics.py
           grep -Fq 'batch capped' platform_core/training_metrics.py
