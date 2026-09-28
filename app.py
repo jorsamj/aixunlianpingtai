@@ -2989,6 +2989,7 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
             "boxes": list(row.get("boxes") or []),
             "annotation_state": row.get("annotation_state"),
             "annotation_scope": row.get("annotation_scope"),
+            "expected_version": row.get("expected_version"),
         })
     saved_rows = _v50_annotation_repository(project_id).upsert_many(
         prepared,

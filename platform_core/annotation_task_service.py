@@ -358,7 +358,9 @@ def commit_candidate_decisions(
             image_id = str(item["image_id"])
             if image_id in committed:
                 continue
-            previous = list((previous_by_id.get(image_id) or {}).get("boxes") or [])
+            previous_row = previous_by_id.get(image_id) or {}
+            previous = list(previous_row.get("boxes") or [])
+            expected_version = int(previous_row.get("version") or 0)
             existing = {
                 (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
                 for box in previous
@@ -401,6 +403,7 @@ def commit_candidate_decisions(
                     "boxes": final_boxes,
                     "annotation_state": annotation_state,
                     "annotation_origin": annotation_origin,
+                    "expected_version": expected_version,
                 })
                 batch_boxes_added += len(incoming)
             summary = {
