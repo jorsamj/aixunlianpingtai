@@ -438,7 +438,15 @@ export function installTrainingSubmitRuntime({
       closeModal?.();
       state.alg428Expanded = state.alg428Expanded || {};
       state.alg428Expanded[asset.id] = true;
-      notify?.(`训练任务已进入后台队列 · ${createdTask.task_id}`);
+      const selection = body?.selection && typeof body.selection === 'object' ? body.selection : null;
+      let createdMessage = `训练任务已进入后台队列 · ${createdTask.task_id}`;
+      if (selection && Number.isFinite(Number(selection.effective_train_count))) {
+        createdMessage += ` · 本轮有效 ${Math.max(0, Number(selection.effective_train_count))} 张`;
+      }
+      if (selection && Number(selection.pending_annotation_count || 0) > 0) {
+        createdMessage += ` · 待标注 ${Math.max(0, Number(selection.pending_annotation_count))} 张已保留`;
+      }
+      notify?.(createdMessage);
 
       try {
         await reloadRelated?.();
@@ -462,7 +470,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422508',
+    build: 'training-submit-422509',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,
