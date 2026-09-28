@@ -69,6 +69,36 @@ def test_first_training_uses_only_user_selected_material_labels(tmp_path: Path):
     assert "helmet" not in contract["effective_label_codes"]
 
 
+def test_training_class_ids_are_dense_while_canonical_ids_remain_stable(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    for row in meta["label_meta"]:
+        if row["code"] == "fire":
+            row["class_id"] = 1
+        elif row["code"] == "smoke":
+            row["class_id"] = 7
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    annotations = AnnotationRepository(project)
+    annotations.upsert("a", [_box("fire"), _box("smoke")], annotation_state="annotated")
+
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {
+            "model": "yolo11n.pt",
+            "train_image_ids": ["a"],
+            "train_labels": ["fire", "smoke"],
+        },
+        {"id": "alg", "versions": []},
+    )
+
+    schema = contract["effective_label_schema"]
+    assert [item["class_id"] for item in schema] == [0, 1]
+    assert [item["canonical_project_class_id"] for item in schema] == [1, 7]
+
+
 def test_first_training_requires_explicit_label_choice(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     AnnotationRepository(project).upsert("a", [_box("fire")], annotation_state="annotated")
