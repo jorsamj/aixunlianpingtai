@@ -682,6 +682,44 @@ class RemoteTrainingPrepareHandler:
             )
             self._target(context, training_task_id)
 
+            frozen_label_schema = [
+                dict(item)
+                for item in (snapshot.get("label_schema") or [])
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ]
+            frozen_label_codes = [
+                str(item.get("code") or "").strip()
+                for item in frozen_label_schema
+            ]
+            freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+            frozen_input = (
+                context.artifacts.read_json(
+                    training_task_id,
+                    freeze_ref,
+                    default={},
+                )
+                if freeze_ref else {}
+            )
+            frozen_label_contract = (
+                dict(frozen_input.get("label_contract") or {})
+                if isinstance(frozen_input, Mapping)
+                else {}
+            )
+            if not frozen_label_contract and isinstance(payload.get("label_contract"), Mapping):
+                frozen_label_contract = dict(payload.get("label_contract") or {})
+            frozen_label_contract.pop("project_path", None)
+            contract_codes = [
+                str(value or "").strip()
+                for value in (frozen_label_contract.get("effective_label_codes") or [])
+                if str(value or "").strip()
+            ]
+            if contract_codes and contract_codes != frozen_label_codes:
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_LABEL_CONTRACT_MISMATCH",
+                    "frozen label contract does not match the durable dataset snapshot",
+                    target_status=TaskStatus.FAILED,
+                )
+
             dataset_bytes = sum(int(row.get("size_bytes") or 0) for row in images)
             decoded_dataset_bytes = (
                 sum(
@@ -705,6 +743,9 @@ class RemoteTrainingPrepareHandler:
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                     "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
                     "supplement_provenance": snapshot.get("supplement_provenance"),
+                    "label_schema": frozen_label_schema,
+                    "label_codes": frozen_label_codes,
+                    "label_contract": frozen_label_contract,
                     "bundle": bundle_ref,
                     "model": model_ref,
                     "result": {
