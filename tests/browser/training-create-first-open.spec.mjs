@@ -152,7 +152,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
 
 
 
-test('merged historical labels do not reappear in the next training dialog', async ({page, request}) => {
+test('training dialog hides label history and only shows current material label choices', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
 
   await page.route('**/api/training_options**', route => route.fulfill({
@@ -164,45 +164,28 @@ test('merged historical labels do not reappear in the next training dialog', asy
       type: 'local',
       framework: 'ultralytics',
       status: 'ready',
-      algorithms: [{
-        key: 'yolo_detect',
-        name: 'Ultralytics Detect',
-        base_model: 'yolo11n.pt',
-        default_epochs: 20,
-        default_imgsz: 640,
-        default_batch: 4,
-      }],
+      algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 20, default_imgsz: 640, default_batch: 4}],
       base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
+    status: 200, contentType: 'application/json',
     body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
   }));
   await page.route('**/api/v62/training-devices', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
+    status: 200, contentType: 'application/json',
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
     const body = route.request().postDataJSON();
     const count = Array.isArray(body?.image_ids) ? body.image_ids.length : 0;
     await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
+      status: 200, contentType: 'application/json',
       body: JSON.stringify({
-        requested_count: count,
-        matched_count: count,
-        selectable_count: count,
-        eligible_count: count,
-        pending_annotation_count: 0,
-        eligible_total: count,
-        box_count: count,
-        size_bytes: count * 1024,
-        label_codes: ['smoke'],
-        label_counts: {smoke: count},
-        repository_revision: 1,
+        requested_count: count, matched_count: count, selectable_count: count,
+        eligible_count: count, pending_annotation_count: 0, eligible_total: count,
+        box_count: count, size_bytes: count * 1024,
+        label_codes: ['smoke'], label_counts: {smoke: count}, repository_revision: 1,
       }),
     });
   });
@@ -221,29 +204,16 @@ test('merged historical labels do not reappear in the next training dialog', asy
     if (!algorithm) throw new Error('algorithm missing from browser state');
     algorithm.current_version_id = 'merged-label-version';
     algorithm.versions = [{
-      id: 'merged-label-version',
-      version_name: '20260928180000',
-      training_status: 'SUCCEEDED',
-      artifact_verified: true,
-      trainable: true,
-      framework: 'ultralytics',
-      label_schema: [
-        {code: 'legacy_smoke', class_id: 0},
-        {code: 'smoke', class_id: 1},
-      ],
+      id: 'merged-label-version', version_name: '20260928180000',
+      training_status: 'SUCCEEDED', artifact_verified: true, trainable: true, framework: 'ultralytics',
+      label_schema: [{code: 'legacy_smoke', class_id: 0}, {code: 'smoke', class_id: 1}],
     }];
     const activeSmoke = (state.labels || []).find(row => String(row?.code || '') === 'smoke')
       || {code: 'smoke', display_name: '烟雾', class_id: 0, status: 'active'};
     state.labels = [{...activeSmoke, status: 'active'}];
     state.labelGovernance414 = [
       {...activeSmoke, status: 'active'},
-      {
-        code: 'legacy_smoke',
-        display_name: '旧烟雾',
-        class_id: 99,
-        status: 'merged',
-        merged_into: 'smoke',
-      },
+      {code: 'legacy_smoke', display_name: '旧烟雾', class_id: 99, status: 'merged', merged_into: 'smoke'},
     ];
     window.TrainingDraftRuntime.update({algorithmId});
     window.TrainingDraftRuntime.setMaterialIds(['merged-label-material']);
@@ -251,12 +221,18 @@ test('merged historical labels do not reappear in the next training dialog', asy
 
   const panel = dialog.locator('#trainingLabelContractPanel');
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText('上一版本继承（按当前标签治理）');
-  await expect(panel.locator('.training-label-inherited')).toHaveCount(1);
-  await expect(panel.locator('.training-label-inherited')).toContainText('烟雾');
-  await expect(panel).toContainText('legacy_smoke → smoke');
-  await expect(panel).not.toContainText('继承 · 旧烟雾');
-  await expect(panel.locator('.training-label-contract-count')).toHaveText('1 类');
+  await expect(panel).toContainText('训练标签');
+  await expect(panel).toContainText('烟雾');
+  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(1);
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('已选 0');
+  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).not.toContainText('legacy_smoke');
+  await expect(panel).not.toContainText('合并关系');
+  await expect(panel).not.toContainText('Schema Changed');
+  await expect(panel.locator('.training-label-inherited')).toHaveCount(0);
+
+  await panel.locator('[data-training-label-code="smoke"]').check();
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('已选 1');
 });
 
 test('same selected materials reload canonical labels after a completed label unification', async ({page, request}) => {

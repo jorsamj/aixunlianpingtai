@@ -150,11 +150,11 @@ test('recommended mode preserves scheduler-owned auto device and adaptive profil
   assert.equal(parameters.time, null);
 });
 
-test('submit readiness depends only on canonical draft, inheritance and submitting state', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}}), {ready: true, reason: ''});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), inheritance: {blocked: false}}), {ready: false, reason: 'materials'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: true}}), {ready: false, reason: 'iteration'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
+test('submit readiness depends only on canonical draft, base and submitting state', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), base: {blocked: false}}), {ready: false, reason: 'materials'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: true}}), {ready: false, reason: 'iteration'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
 });
 
 test('device validation fails closed for missing or unavailable device', () => {
@@ -183,7 +183,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, base: () => ({blocked: false})},
     trainingDraftToRequest,
   });
 
@@ -219,7 +219,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { reloaded += 1; },
     renderAlgorithms: () => { rendered += 1; },
@@ -267,7 +267,7 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: true}),
+      base: () => ({blocked: true}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
@@ -315,7 +315,7 @@ test('stale changlian master data disables submit and blocks network POST', asyn
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: false}),
+      base: () => ({blocked: false}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
@@ -346,7 +346,7 @@ test('submit button exposes truthful creation stages while the durable POST is p
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
   });
 
@@ -382,7 +382,7 @@ test('double click cannot create two independent training tasks', async () => {
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
   });
@@ -419,7 +419,7 @@ test('refresh failure after successful POST does not invite a duplicate training
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { throw new Error('list offline'); },
     notify: message => notices.push(String(message)),
@@ -449,7 +449,7 @@ test('2xx without the formal durable task identity is not success and keeps the 
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     trainingTaskRuntime: {acceptCreatedTask: () => { accepted += 1; }},
     closeModal: () => { closed += 1; },
@@ -475,7 +475,7 @@ test('durable response task id must match the submitted planned task id', async 
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     closeModal: () => { closed += 1; },
     notify: message => notices.push(String(message)),
@@ -504,7 +504,7 @@ test('confirmed iteration action lineage is injected only for matching current d
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
-    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -532,7 +532,7 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
-    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -541,7 +541,7 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   cleanup(runtime);
 });
 
-test('supplement candidate context follows the inherited version and actual selected materials', () => {
+test('supplement candidate context follows the base version and actual selected materials', () => {
   const asset = {
     id: 'alg-1', current_version_id: 'ver-1',
     versions: [{id: 'ver-1', supplement_data_candidate_set: {
@@ -555,7 +555,7 @@ test('supplement candidate context follows the inherited version and actual sele
     testMaterialIds: ['img-3'],
     splitMode: 'independent_test_set',
   });
-  const context = supplementCandidateContext({asset, draft: value, inheritance: {versionId: 'ver-1'}});
+  const context = supplementCandidateContext({asset, draft: value, base: {versionId: 'ver-1'}});
   assert.equal(context.candidateSetId, 'a'.repeat(64));
   assert.equal(context.sourceCandidateCount, 3);
   assert.deepEqual(context.adoptedMaterialIds, ['img-2', 'img-3']);
@@ -586,7 +586,7 @@ test('submit runtime carries candidate_set_id when selected materials adopt feed
     projectId: () => 'project-1',
     trainingDraftRuntime: {
       sync: () => value, current: () => value,
-      inheritance: () => ({blocked: false, versionId: 'ver-1'}),
+      base: () => ({blocked: false, versionId: 'ver-1'}),
     },
     trainingDraftToRequest,
   });
@@ -598,22 +598,22 @@ test('fixed benchmark context requires current bundle-verified backend identity'
   const asset = {id: 'alg-1', current_version_id: 'ver-1'};
   const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
   const context = benchmarkReuseContext({
-    asset, draft: value, inheritance: {versionId: 'ver-1'},
+    asset, draft: value, base: {versionId: 'ver-1'},
     benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 12, binding_level: 'bundle_verified'},
   });
   assert.equal(context.sourceVersionId, 'ver-1');
   assert.equal(context.scopeId, 'c'.repeat(64));
   assert.equal(context.testImageCount, 12);
   assert.throws(() => benchmarkReuseContext({
-    asset: {...asset, current_version_id: 'ver-2'}, draft: value, inheritance: {versionId: 'ver-1'},
+    asset: {...asset, current_version_id: 'ver-2'}, draft: value, base: {versionId: 'ver-1'},
     benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), test_image_count: 12, binding_level: 'bundle_verified'},
   }), /来源版本已变化/);
 });
 
 test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
 });
 
 test('submit runtime sends only fixed benchmark identity while exact test ids stay server-side', async () => {
@@ -626,7 +626,7 @@ test('submit runtime sends only fixed benchmark identity while exact test ids st
   globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return durableTask(sent.task_id); }}; }};
   const runtime = installTrainingSubmitRuntime({
     getState: () => state, projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => value, current: () => value, inheritance: () => ({blocked: false, versionId: 'ver-1'})},
+    trainingDraftRuntime: {sync: () => value, current: () => value, base: () => ({blocked: false, versionId: 'ver-1'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -665,7 +665,7 @@ test('created task notice distinguishes effective training truth from pending an
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: false}),
+      base: () => ({blocked: false}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),

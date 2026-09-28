@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 import {
-  latestVersionLabelInfo,
   resolveClientTrainingLabels,
   selectedMaterialLabelCodes,
   selectedTrainingMaterialIds,
@@ -14,21 +13,9 @@ const catalog = [
   {code: 'smoke', display_name: '烟雾'},
   {code: 'person', display_name: '人员'},
   {code: 'helmet', display_name: '安全帽'},
-  {code: 'cigarette', display_name: '香烟'},
 ];
 
-function successfulVersion(overrides = {}) {
-  return {
-    id: 'v1',
-    created_at: '2026-09-10T00:00:00Z',
-    training_status: 'SUCCEEDED',
-    artifact_verified: true,
-    trainable: true,
-    ...overrides,
-  };
-}
-
-test('available labels come only from selected materials', () => {
+test('available labels come only from selected material positive labels', () => {
   const materials = [
     {id: 'a', labels: ['fire', 'person']},
     {id: 'b', labels: ['smoke']},
@@ -37,7 +24,7 @@ test('available labels come only from selected materials', () => {
   assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), ['fire', 'smoke', 'person']);
 });
 
-test('confirmed empty scope never becomes selectable new-class evidence', () => {
+test('confirmed empty scope never becomes selectable label evidence', () => {
   const materials = [
     {id: 'a', labels: [], annotation_scope: ['fire', 'smoke']},
     {id: 'b', labels: [], annotation_scope: ['*']},
@@ -45,103 +32,61 @@ test('confirmed empty scope never becomes selectable new-class evidence', () => 
   assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), []);
 });
 
-test('training material ids come only from canonical draft even when historical state is polluted', () => {
+test('training material ids come only from canonical draft', () => {
   const state = {
-    train428AlgorithmId: 'stale-algorithm',
     train429Selected: new Set(['stale-material']),
-    train425Selected: {train: new Set(['stale-train']), val: new Set(['stale-val'])},
     trainingDraft: {algorithmId: 'canonical-algorithm', materialIds: ['canonical-1', 'canonical-2']},
   };
   assert.deepEqual(selectedTrainingMaterialIds(state), ['canonical-1', 'canonical-2']);
 });
 
-test('training materials are empty before canonical draft exists', () => {
-  const state = {
-    train429Selected: new Set(['retired-value']),
-    train425Selected: {train: new Set(['retired-train'])},
-  };
-  assert.deepEqual(selectedTrainingMaterialIds(state), []);
-});
-
-test('previous version labels are inherited and only material labels are selectable additions', () => {
-  const algorithm = {
-    versions: [successfulVersion({
-      label_schema: [{code: 'fire', class_id: 0}, {code: 'smoke', class_id: 1}],
-    })],
-  };
+test('client label picker only filters current active material labels and explicit choices', () => {
+  const labelCatalog = [
+    {code: 'fire', display_name: '明火', active: true, status: 'active'},
+    {code: 'smoke', display_name: '烟雾', active: true, status: 'active'},
+    {code: 'legacy_smoke', display_name: '旧烟雾', active: false, status: 'merged', merged_into: 'smoke'},
+  ];
   const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire', 'cigarette', 'person']}],
-    selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: ['cigarette'],
+    materials: [{id: 'a', labels: ['fire', 'smoke', 'legacy_smoke']}],
+    selectedIds: ['a'],
+    labelCatalog,
+    requestedCodes: ['smoke', 'legacy_smoke'],
   });
-  assert.deepEqual(view.inherited, ['fire', 'smoke']);
-  assert.deepEqual(view.selectable, ['person', 'cigarette']);
-  assert.deepEqual(view.requested, ['cigarette']);
-  assert.deepEqual(view.effectivePreview, ['fire', 'smoke', 'cigarette']);
+  assert.deepEqual(view.selectable, ['fire', 'smoke']);
+  assert.deepEqual(view.requested, ['smoke']);
+  assert.deepEqual(view.invalidAvailable, ['legacy_smoke']);
+  assert.equal('inherited' in view, false);
+  assert.equal('effectivePreview' in view, false);
 });
 
-test('failed newer version never overrides latest successful trainable label schema', () => {
-  const info = latestVersionLabelInfo({
-    versions: [
-      successfulVersion({id: 'ok', created_at: '2026-09-10T00:00:00Z', label_schema: [{code: 'fire', class_id: 0}]}),
-      {
-        id: 'failed-newer', created_at: '2026-09-11T00:00:00Z', training_status: 'FAILED',
-        artifact_verified: false, trainable: false, label_schema: [{code: 'person', class_id: 0}],
-      },
-    ],
-  });
-  assert.equal(info.version.id, 'ok');
-  assert.deepEqual(info.codes, ['fire']);
-});
-
-test('label inheritance follows explicit current version after rollback', () => {
-  const info = latestVersionLabelInfo({
-    current_version_id: 'v3',
-    versions: [
-      successfulVersion({id: 'v5', created_at: '2026-09-12T00:00:00Z', label_schema: [{code: 'person', class_id: 0}]}),
-      successfulVersion({id: 'v3', created_at: '2026-09-10T00:00:00Z', label_schema: [{code: 'fire', class_id: 0}]}),
-    ],
-  });
-  assert.equal(info.version.id, 'v3');
-  assert.deepEqual(info.codes, ['fire']);
-});
-
-test('algorithm with versions but no successful trainable version is blocked instead of treated as first training', () => {
-  const info = latestVersionLabelInfo({
-    versions: [{
-      id: 'failed', created_at: '2026-09-11T00:00:00Z', training_status: 'FAILED',
-      artifact_verified: false, trainable: false,
-    }],
-  });
-  assert.equal(info.hasAnyVersion, true);
-  assert.equal(info.hasVersion, false);
-  assert.equal(info.blocked, true);
-});
-
-test('first training never inherits mother-model classes', () => {
-  const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire', 'smoke']}],
-    selectedIds: ['a'], labelCatalog: catalog, algorithm: {versions: []}, requestedCodes: ['fire'],
-  });
-  assert.equal(view.hasPreviousVersion, false);
-  assert.deepEqual(view.inherited, []);
-  assert.deepEqual(view.effectivePreview, ['fire']);
-});
-
-test('legacy successful previous version is flagged for server-side snapshot recovery', () => {
-  const info = latestVersionLabelInfo({versions: [successfulVersion({id: 'old'})]});
-  assert.equal(info.hasVersion, true);
-  assert.equal(info.legacyUnknown, true);
-  assert.deepEqual(info.codes, []);
-});
-
-test('first training never auto-selects new labels for the user', () => {
+test('first render never auto-selects material labels for the user', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
-  assert.equal(source.includes('return hasPreviousVersion ? [] : unique(selectable);'), false);
-  assert.equal(source.includes('if (!state.trainingLabelSelectionTouched && !hasPreviousVersion) return unique(selectable);'), false);
-  assert.match(source, /state\.trainingLabelAlgorithmId = algorithmId;[\s\S]{0,180}return \[\];/);
+  assert.match(source, /state\.trainingLabelAlgorithmId = algorithmId;\r?\n\s*return \[\];/);
+  assert.equal(source.includes('return unique(selectable);'), false);
 });
 
-test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () => {
+test('training label UI has no historical inheritance or merge audit owner', () => {
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  for (const token of [
+    'latestVersionLabelInfo',
+    'resolveInheritedGovernance',
+    'labelGovernance414',
+    'merged_into',
+    'mergedInherited',
+    'droppedInherited',
+    'governanceBlockedInherited',
+    'training-label-inherited',
+    '上一版本继承',
+    '历史版本保持不变',
+    'Label Schema Changed',
+  ]) {
+    assert.equal(source.includes(token), false, `training create UI must not own history audit token: ${token}`);
+  }
+  assert.match(source, /labelHistoryOwner: false/);
+  assert.match(source, /迭代类别与标签合并由服务器自动处理/);
+});
+
+test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
   for (const token of [
     '__trainingLabelsWrapped', 'wrappedEntrypoints', "wrap('startAlgorithmTraining429'", "wrap('refreshTrain429'",
@@ -150,17 +95,12 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
     assert.equal(source.includes(token), false, `retired TrainingLabel lifecycle token remains: ${token}`);
   }
   assert.match(source, /trainingDraftRuntime\?\.subscribe/);
+  assert.match(source, /materialSummaryRuntime\.summaryReadyFor/);
+  assert.match(source, /materialSummaryRuntime\?\.invalidate\?\.\(\)/);
   assert.match(source, /queueMicrotask/);
-  assert.match(source, /labelOnlyDraftUpdate/);
-  assert.match(source, /updateCount\(state\);\r?\n\s*return;/);
-  const checkboxHandler = source.slice(
-    source.indexOf("panel.querySelectorAll('[data-training-label-code]')"),
-    source.indexOf('return true;', source.indexOf("panel.querySelectorAll('[data-training-label-code]')")),
-  );
-  assert.equal(checkboxHandler.includes('queueRefresh();'), false, 'label toggle must not replace its own DOM during click');
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422567'/);
+  assert.match(source, /build: 'module-422568'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
@@ -175,81 +115,4 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
   const taskSource = app.slice(finalTaskRenderer, finalTaskRenderer + 5000);
   assert.equal(taskSource.includes('openTrain425()'), false);
   assert.equal(taskSource.includes('▶ 开始训练'), false);
-
-  const last423Call = app.lastIndexOf("startAlgorithmTraining423('${a.id}')");
-  const last425OpenCall = app.lastIndexOf('openTrain425(');
-  const last425CountCall = app.lastIndexOf('trainCounts425()');
-  assert.ok(last423Call >= 0, 'legacy 423 call may remain only in retired app.js history');
-  assert.ok(last425OpenCall >= 0 && last425OpenCall < finalTaskRenderer);
-  assert.ok(last425CountCall >= 0 && last425CountCall < finalTaskRenderer);
-});
-
-
-test('merged previous labels collapse into the current canonical target in the client preview', () => {
-  const algorithm = {
-    versions: [successfulVersion({
-      label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
-    })],
-  };
-  const governance = [
-    ...catalog,
-    {code: 'legacy_smoke', display_name: '旧烟雾', status: 'merged', merged_into: 'smoke'},
-  ];
-  const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire', 'smoke']}],
-    selectedIds: ['a'], labelCatalog: catalog, labelGovernance: governance,
-    algorithm, requestedCodes: [],
-  });
-  assert.deepEqual(view.inherited, ['fire', 'smoke']);
-  assert.deepEqual(view.mergedInherited, {legacy_smoke: 'smoke'});
-  assert.deepEqual(view.droppedInherited, ['legacy_smoke']);
-  assert.deepEqual(view.governanceBlockedInherited, []);
-  assert.deepEqual(view.effectivePreview, ['fire', 'smoke']);
-  assert.equal(view.labelSchemaChanged, true);
-  assert.equal(view.strictResume, false);
-  assert.equal(view.baseTrainingMode, 'previous_weights_init');
-});
-
-test('inactive previous labels without merged_into are blocked instead of silently inherited', () => {
-  const algorithm = {
-    versions: [successfulVersion({
-      label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
-    })],
-  };
-  const governance = [
-    ...catalog,
-    {code: 'legacy_smoke', display_name: '旧烟雾', status: 'inactive', active: false},
-  ];
-  const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire']}],
-    selectedIds: ['a'], labelCatalog: catalog, labelGovernance: governance,
-    algorithm, requestedCodes: [],
-  });
-  assert.deepEqual(view.inherited, ['fire']);
-  assert.deepEqual(view.governanceBlockedInherited, ['legacy_smoke']);
-  assert.deepEqual(view.effectivePreview, ['fire']);
-});
-
-test('inactive current-catalog labels are never selectable as new classes', () => {
-  const labelCatalog = [
-    {code: 'fire', display_name: '明火', active: true, status: 'active'},
-    {code: 'helmet', display_name: '安全帽', active: false, status: 'inactive'},
-  ];
-  const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire', 'helmet']}],
-    selectedIds: ['a'], labelCatalog, algorithm: {versions: []}, requestedCodes: ['helmet'],
-  });
-  assert.deepEqual(view.selectable, ['fire']);
-  assert.deepEqual(view.invalidAvailable, ['helmet']);
-  assert.deepEqual(view.requested, []);
-});
-
-test('non-canonical material labels are surfaced but never selectable', () => {
-  const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire', 'class_0']}],
-    selectedIds: ['a'], labelCatalog: catalog, algorithm: {versions: []}, requestedCodes: ['class_0'],
-  });
-  assert.deepEqual(view.invalidAvailable, ['class_0']);
-  assert.equal(view.selectable.includes('class_0'), false);
-  assert.equal(view.effectivePreview.includes('class_0'), false);
 });
