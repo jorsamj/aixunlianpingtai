@@ -31,7 +31,6 @@ from .algorithms import (
     list_algorithms,
     resolve_current_version_id,
 )
-from .external_publish_request import request_external_auto_publish_if_enabled
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import (
@@ -69,6 +68,13 @@ _SUCCESSFUL_TRAINING_OUTCOMES = {
     # verified checkpoint, but the result recommends another iteration.
     "needs_optimization",
 }
+
+
+def _request_external_publish_after_training(**kwargs) -> bool:
+    """Wake the existing external publisher without widening training-core imports."""
+    from .external_publish_request import request_external_auto_publish_if_enabled
+
+    return request_external_auto_publish_if_enabled(**kwargs)
 
 
 def _sha256(path: Path) -> str:
@@ -2180,7 +2186,7 @@ class TrainingHandler:
                     ) from error
                 raise
 
-        external_publish_requested = request_external_auto_publish_if_enabled(
+        external_publish_requested = _request_external_publish_after_training(
             data_dir=self.data_dir,
             algorithms_path=algorithms_path,
             algorithm_id=str(algorithm.get("id") or ""),

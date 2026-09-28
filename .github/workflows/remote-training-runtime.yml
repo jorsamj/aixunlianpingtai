@@ -313,7 +313,9 @@ jobs:
           grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
           grep -Fq 'attach_version_if_current(' platform_core/training_tasks.py
           grep -Fq 'attach_version_if_current(' platform_core/remote_execution_transport.py
-          grep -Fq 'request_external_auto_publish_if_enabled(' platform_core/training_tasks.py
+          grep -Fq 'def _request_external_publish_after_training(' platform_core/training_tasks.py
+          grep -Fq 'from .external_publish_request import request_external_auto_publish_if_enabled' platform_core/training_tasks.py
+          grep -Fq '_request_external_publish_after_training(' platform_core/training_tasks.py
           grep -Fq 'request_external_auto_publish_if_enabled(' platform_core/remote_execution_transport.py
           grep -Fq 'assert result["external_publish_requested"] is True' tests/integration/test_training_completed_job_recovery.py
           grep -Fq 'assert committed["external_publish_requested"] is True' tests/unit/test_remote_execution_transport.py

@@ -221,7 +221,7 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path, monk
 
     publish_requests = []
     monkeypatch.setattr(
-        "platform_core.training_tasks.request_external_auto_publish_if_enabled",
+        "platform_core.training_tasks._request_external_publish_after_training",
         lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
     )
 
