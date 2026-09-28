@@ -529,14 +529,29 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
             continue
         seen_endpoints.add(id(endpoint))
         summary_endpoints.append(endpoint)
-    assert len(summary_endpoints) == 1, [
-        (
-            getattr(endpoint, "__module__", ""),
-            getattr(endpoint, "__qualname__", ""),
-            id(endpoint),
+    endpoint_truth = []
+    for endpoint in summary_endpoints:
+        endpoint_closure = inspect.getclosurevars(endpoint)
+        materials_owner = endpoint_closure.nonlocals.get("materials")
+        materials_closure = inspect.getclosurevars(materials_owner) if materials_owner else None
+        provider = (
+            materials_closure.nonlocals.get("project_path_provider")
+            if materials_closure is not None
+            else None
         )
-        for endpoint in summary_endpoints
-    ]
+        try:
+            repository_path = str(materials_owner(project_id).path.resolve()) if materials_owner else ""
+        except Exception as error:
+            repository_path = f"ERROR:{type(error).__name__}:{error}"
+        endpoint_truth.append({
+            "endpoint_id": id(endpoint),
+            "module": getattr(endpoint, "__module__", ""),
+            "name": getattr(endpoint, "__qualname__", ""),
+            "project_path_provider": getattr(provider, "__qualname__", repr(provider)),
+            "provider_module": getattr(provider, "__module__", ""),
+            "repository_path": repository_path,
+        })
+    assert len(summary_endpoints) == 1, endpoint_truth
     summary_endpoint = summary_endpoints[0]
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
     endpoint_closure = inspect.getclosurevars(summary_endpoint)
