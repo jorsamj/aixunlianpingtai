@@ -874,9 +874,14 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
         item = dict(value) if isinstance(value, dict) else {"code": str(value)}
         if item.get("active") is False or item.get('status', 'active') != 'active':
             continue
-        item["class_id"] = int(item.get("class_id", index))
-        if item.get("code"):
-            items.append(item)
+        if not item.get("code"):
+            continue
+        # Project/canonical class ids are durable governance identity and may
+        # contain gaps after soft-delete/unify. Training ids are a separate,
+        # frozen 0..N-1 namespace required by YOLO.
+        item["canonical_project_class_id"] = int(item.get("class_id", index))
+        item["class_id"] = len(items)
+        items.append(item)
     return items
 
 
