@@ -1,6 +1,174 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 主流程交接 / CI 红灯与迭代标签合同审计（最新）
+
+- 本节写入前真实分支 HEAD：`c74a747cb4704f5d6e3b7498ac065cb3a5671267`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 本轮未 merge main、未 tag、未 release、未 force push；未新增第二套 AnnotationRepository / Training runtime / Picker / Label owner。
+- 当前主流程优先级仍是：**训练准确性与稳定性 > 批量素材导入 / 空素材 > 手工标注 > 数据清洗 > 新畅联对接**。
+
+### 1. 当前已收口的主流程事实
+
+当前长期分支已经具备：
+
+- 已清洗但未标注素材可作为“训练候选”被用户选择，但不会伪装成 Ground Truth；
+- 正式监督训练只接受 `annotated` / `confirmed_empty`；
+- `confirmed_empty` 是明确负样本，普通 `unannotated` 绝不能静默导出为空 YOLO 标签；
+- `include_empty` 历史兼容参数不能重新绕过 Ground Truth 合同；
+- 训练候选、有效监督素材、待标注素材通过 `TrainingSelectionResolution` 分层保存；
+- `input-freeze.json` 在任务提交时冻结本轮正式训练真相，排队期间标注/标签变化不能静默篡改已经创建的任务；
+- 本机 / 远程训练都复用同一冻结真相，素材真正物化时再次核对 SHA256；
+- training class_id 与平台 canonical class_id 分离，训练导出连续 `0..N-1`，并保留 `canonical_project_class_id` 做溯源；
+- 手工标注保存通过 AnnotationRepository 现有 `version` 做 optimistic concurrency，stale writer 返回 409，不能静默覆盖别人最新标注；
+- 大批量训练素材读取保持 500/批；已清洗待标注素材不会被制造成负样本。
+
+### 2. 当前 CI 真实状态：18 success / 2 completed failure
+
+当前 HEAD 的 20 个主要 GitHub Actions workflow：
+
+- **success = 18**
+- **failure = 2**
+- queued / in_progress = 0
+
+两个 completed failure 已读取真实 job log，不能把当前 HEAD 宣称为全绿。
+
+#### 2.1 Training Input Integrity — FAILED
+
+Workflow run：`36363187396`
+
+失败 job：
+
+- Ubuntu：`108744311440`
+- Windows：`108744311683`
+
+两边是同一类失败：旧 `tests/unit/test_training_splits.py` fixture 仍在制造缺少当前正式 `annotation_state / processing truth` 的旧样本；新的 `build_split_manifest()` 会 fail-closed：
+
+`ValueError: train 集包含未处理素材 ...`
+
+当前失败覆盖包括 split mode、group leakage、confirmed_empty compatibility 等 6 个旧测试。
+
+**接手要求：优先更新测试 fixture / 合同，使其构造真实的正式 GT / 已处理素材；不得为了让旧测试通过而重新放宽生产 Ground Truth 规则。**
+
+#### 2.2 Remote Training Runtime — FAILED
+
+Workflow run：`36363187284`
+
+其中：
+
+- `ultralytics-loader-contract`：SUCCESS
+- Ubuntu `preparation-contract`：SUCCESS
+- Windows `preparation-contract`：SUCCESS
+- `api`：FAILURE（job `108744311377`）
+
+真实日志显示 8 个旧 API 用例与当前提交时训练输入校验不一致，典型包括：
+
+- 直接提交不存在的假素材 ID：`train-a / train-b / test-a`、`one / two / three`，现在正确返回 409 “所选素材不存在”；
+- continue-training fixture 中素材没有满足“已清洗候选 / 正式 GT”新合同，正确 fail-closed；
+- supplement candidate set 仅两张素材却要求安全拆分 train / validation / test，当前因不可拆分组件数量不足正确 409。
+
+**接手要求同样是修测试数据和期望，不允许通过删除 submit-time preflight、放宽 leakage guard、允许不存在素材等方式追求 CI 绿灯。**
+
+### 3. 用户刚确认的“迭代训练 + 标签选择”产品语义
+
+用户要求后续重点核对并最终实现：
+
+1. 算法已有版本时，新训练属于迭代训练，必须从该算法**当前/上一有效版本**权重继续，而不是重新从母模型开始；
+2. 上一版本已有标签/schema 需要继承；
+3. 本轮选择训练图片后，图片里出现的“新增标签”由用户显式决定是否加入本轮算法；
+4. 用户没有选择某个图片携带的新标签时，**图片本身仍可参与训练**；
+5. 但该未选择标签不应成为本轮算法的新增类别，本轮算法不能因为素材里出现它就自动扩充 schema；
+6. 系统禁止替用户自动选择、同义词推荐或隐式映射标签。
+
+本轮只做了代码审计，**没有改这部分生产实现**。
+
+### 4. 迭代权重 / 标签继承：当前做到什么程度
+
+#### 已有 / 基本正确
+
+后端基础模型选择：
+
+- `platform_core/algorithms.py::choose_algorithm_iteration_base()`
+- `app.py::_v54_iteration_base(..., strict_latest=True)`
+
+当前行为是：算法已有可训练版本后，迭代训练使用 current / verified version；如果该版本不可用，会 fail-closed，**不会静默回退母模型**。
+
+前端训练草稿：
+
+- `static/modules/training-draft.js::trainingInheritanceFromAlgorithm()`
+- `static/modules/training-labels.js::resolveClientTrainingLabels()`
+
+当前已经区分：
+
+- `inheritedLabelCodes`：上一版本 schema，前端显示为“继承”，不可作为本轮新增标签取消；
+- `newLabelCodes`：本轮已选素材带出的新增标签，用户可勾选 / 不勾选；
+- `effectiveLabelCodes = inherited + new selected`；
+- schema 变化时前端语义已经是“上一版本权重初始化”，而不是严格 optimizer resume。
+
+`trainingDraftToRequest()` 会把用户本轮新增标签选择提交为：
+
+`train_labels: normalized.newLabelCodes`
+
+#### 仍未闭环 — P0
+
+**Durable Training 后端目前没有真正使用 `payload.train_labels` 来裁剪本轮冻结的 label schema。**
+
+当前：
+
+- `platform_core/training_tasks.py::freeze_training_inputs()`
+- 仍直接调用 `_label_schema(project)`
+- `_label_schema(project)` 会取项目全部 active labels
+
+因此现在存在前后端不一致：
+
+- 前端让用户选择“本轮新增标签”；
+- 请求也提交了 `train_labels`；
+- 但后端冻结 Snapshot 时仍可能把项目全部 active labels 放进本轮 `label_schema`。
+
+此外旧 `app.py::build_yolo_dataset_v44()` 的 `train_labels` 主要是**筛选图片**，不是“从参与图片中剔除未选标签的训练框”。
+
+所以用户刚描述的：
+
+> 图片可以继续参与训练，但没有选中的新增标签，本轮算法不应自动知晓 / 扩充为类别
+
+**目前还没有 server-authoritative 闭环。**
+
+### 5. 下一会话实现迭代标签前必须特别注意的技术语义
+
+不要简单地“把未选标签的框从 YOLO txt 删除”就宣布完成。
+
+原因：标准目标检测训练里，如果图片上真实存在某目标，但把它的 box 删除，模型可能把该区域当背景，从而受到负向监督。这与“本轮算法不知道该标签”并不完全等价。
+
+因此下一会话应先基于现有产品语义设计一个**不会污染旧类准确率**的 server-authoritative 合同，再实现。至少要确认：
+
+- inherited schema 必须来自当前 verified version 的 frozen `label_schema`，不能只相信前端；
+- 本轮新增 schema 只能来自用户显式提交的 `train_labels`，并验证它确实来自已选素材/current active canonical labels；
+- 未选择的新标签不能进入 `data.yaml names` / 本轮 training class IDs；
+- 同一图片若含未选择类别，如何处理该目标区域必须有明确训练语义，不能把“忽略类别”误做成“明确背景”；
+- schema 变化继续保持 `strict_resume=false`、optimizer state 不续接，只用上一版本权重初始化；
+- 后端必须有永久测试，证明绕过前端直接 POST 也不能偷偷扩大 label schema。
+
+### 6. 新会话执行顺序
+
+1. **重新读取远端真实 HEAD、VERSION、最近 commits 和当前 CI；不要直接把本节 SHA 当作最新。**
+2. 第一优先级：修复上述两个 workflow 的旧 fixture / 测试合同，保持生产 Ground Truth / submit freeze / leakage guard 不放宽；跑到 completed success 后再继续。
+3. 第二优先级：完成“上一版本标签继承 + 本轮显式新增标签”的后端权威合同，并解决“参与图片里未选类别”的 YOLO 监督语义。
+4. 然后继续主流程审计：
+   - 批量素材导入 / 空标注语义；
+   - 手工标注；
+   - 数据清洗确认与删除保护；
+   - 新畅联训练成功 → original 权重 → conversion 权重追加 → 删除/同步闭环。
+5. 最后做真实生产验证：
+   - NVIDIA Linux；
+   - 20k / 50k 图片；
+   - OSS/S3 RTT；
+   - SQLite WAL 峰值；
+   - 内存 / 磁盘 IOPS；
+   - 长浏览器会话。
+6. queued / in_progress 永远不能算 success；任何 completed failure 必须先读真实 job log再处理。
+
+
+
 ## 2026-09-28 主流程准确性 / 已清洗未标注训练候选语义收口（最新）
 
 - 本节写入前真实代码 HEAD：`f7d6ce10bd575f2eaa7fde51fdc775077b6b47f2`。
