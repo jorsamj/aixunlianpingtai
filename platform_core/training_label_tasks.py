@@ -271,13 +271,17 @@ def resolve_training_label_contract(
     label_schema_changed = bool(schema_change_reasons)
 
     # Training always starts from model weights, never optimizer/trainer state.
-    # If schema changed, stale previous classes are dropped and current classes
-    # are reindexed contiguously before Ultralytics receives the dataset.
+    # Inherited class identity is retained; newly selected classes append to the
+    # task schema. Training class_id is reindexed contiguously while canonical
+    # project class identity remains separately auditable.
     effective = [dict(item) for item in retained_inherited]
     for code in requested_new:
         source = dict(catalog[code])
-        source.pop("project_class_id", None)
+        canonical_project_class_id = int(
+            source.pop("project_class_id", source.get("class_id", len(effective)))
+        )
         source["code"] = code
+        source["canonical_project_class_id"] = canonical_project_class_id
         source["class_id"] = len(effective)
         source["source"] = "selected_material"
         effective.append(source)
