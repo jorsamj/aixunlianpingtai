@@ -1,5 +1,118 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-28 标签保存 page-scoped 主流程收口 / Browser 红灯关闭 / 代码 cutoff 59/59 全绿（最新）
+
+- 本节已验证代码 cutoff：`5954a7919608930aff5472206d492a277fa9cd54`（`test: lock nonblocking scoped refresh contracts`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 该代码 cutoff 的 GitHub check 真相：**59 total / 59 success / 0 failure / 0 queued / 0 in_progress**。
+- `Frontend Runtime Stabilization / frontend`：completed success。
+- `Frontend Runtime Stabilization / browser-navigation`：completed success。
+- 本节之后的文档提交会产生新的 HEAD 和新一轮 CI；因此接手时仍必须重新读取远端真实 HEAD / VERSION / checks，不能把本节 cutoff 当成未来最新 HEAD。
+- 本轮没有 merge main、tag、release、force push，没有删除/放宽测试，也没有恢复 retired owner。
+
+### 1. CLOSED：标签管理编辑保存后 Modal 不关闭
+
+真实根因不是 5 秒 timeout 太短，而是 `window.saveLabel414` 在标签 PUT/POST 已成功后，仍同步：
+
+`await refreshLabels414(true) -> closeModal()`
+
+其中 `/api/v54/projects/{project_id}/label-schema` 是标签使用统计/管理页派生 truth；它慢时会把已经成功的保存操作和 Modal 关闭一起拖住。
+
+当前正确语义已收口为：
+
+`mutation API success -> authoritative label items -> patch label truth -> close modal -> page-local render -> background usage refresh`
+
+具体：
+- PUT 原本已返回 canonical `items`；POST 标签创建现在也统一返回 canonical `items`。
+- `applyLabelMutation414(result, classId)` 只用服务端返回的 canonical label items 更新 `state.labels`，并在 usage 已加载时按 class_id patch 对应 identity 字段。
+- 只有服务端 mutation 成功且返回可用 authoritative target 时才关闭 Modal。
+- API 400/409/500 或 mutation truth 不完整时，Modal 保持打开并显示真实错误。
+- `refreshLabels414(true)` 改为 Modal 关闭后的后台 usage refresh；它失败只提示“标签已保存，但使用统计刷新失败”，不会把成功保存伪装成失败。
+- create/edit 仍然 page-scoped，**没有重新加载完整 material pool**。
+
+永久 Browser 合同已经加强：测试会主动卡住 `/api/v54/.../label-schema` usage refresh；编辑保存仍必须先关闭 Modal、更新标签行，然后测试才释放 usage 请求。因此不是加 timeout 或放宽测试。
+
+关键提交：
+- `f73b0aaaea580afeda257930529699d1104d5311` — `fix: make label save truth page-scoped`
+- `5954a7919608930aff5472206d492a277fa9cd54` — `test: lock nonblocking scoped refresh contracts`
+
+### 2. CLOSED：Source Import terminal scoped refresh 串行阻塞
+
+同一轮 Browser 还暴露出 source-import terminal completion 偶发拿不到 paged Material refresh。
+
+真实代码原来串行：
+
+`await refreshLabels414(false) -> await reloadMaterialPage61()`
+
+标签 schema 请求慢/失败会延迟甚至阻断当前数据集的 paged material refresh。
+
+现在 terminal owner `window.refreshSourceImportTasksV36` 保持唯一 PollRegistry 生命周期，并只启动两个局部 refresh：
+- `refreshLabels414(false)`
+- 当前仍在“数据集”页面时的 `reloadMaterialPage61()`
+
+两者通过 `Promise.allSettled` 并发、互不阻塞；仍禁止 broad `loadRelated()` / full project reload。
+
+永久 source contract 明确锁定：
+- PollRegistry owner 不变；
+- 只刷新 labels + current paged materials；
+- 两个 scoped refresh 不允许重新串行 await；
+- 不恢复完整项目/完整素材池刷新。
+
+### 3. CLOSED：标签统一跨 UI scope bridge 与旧 source guard
+
+并发到达的 `b9522d961ee0dbde2d832aac51a8f0aac94cbb32` 已将标签统一进度所需的 canonical helper 显式桥接到 `window`：
+- `window.armImportRemap414`
+- `window.importRemapProgress414`
+- `window.renderLabelRemapBanner414`
+- `window.drawLabel414`
+
+本轮没有回退该修复。旧 frontend source guard 已升级为锁定新的唯一公开 bridge，而不是要求旧 lexical 直调。因此 Candidate/Annotation/ZIP/Training owner 均未新增第二套。
+
+### 4. 当前真正生效的 owner / truth
+
+- 标签管理浏览器 owner：`renderLabelManagement414` + `window.saveLabel414`。
+- 标签 mutation 后的 identity truth：POST/PUT 返回的 canonical `items`。
+- 标签 usage/statistics：`/api/v54/projects/{project_id}/label-schema`，属于保存后的派生 refresh，不再控制保存成功与否。
+- Source Import terminal lifecycle：`window.refreshSourceImportTasksV36` + PollRegistry key `source-import-v36`。
+- 当前 Material 列表：v61 paged material owner；终态只 refresh 当前页域。
+- 历史标签统一：Durable Material Batch `REMAP_ANNOTATION_LABELS` owner，跨页面恢复继续读取 durable task truth。
+
+### 5. CI / 验证边界
+
+代码 cutoff `5954a7919608930aff5472206d492a277fa9cd54`：
+- **59/59 checks success**；
+- Frontend unit 全通过；
+- Real Chrome `browser-navigation` 全通过；
+- Label Normalization backend/frontend/source guards 全通过；
+- 没有 queued / in_progress / completed failure。
+
+这证明 GitHub Actions 所覆盖的代码、API、frontend contracts、Real Chrome regression 已通过。
+
+仍未宣称真实环境 VERIFIED：
+- Linux/NVIDIA GPU 真实训练；
+- 正式 OSS；
+- 新畅联生产接口；
+- Rockchip RK3568/RK3578 实板转换/推理。
+
+没有现场证据时继续标记 OPEN。
+
+### 6. 下一步
+
+当前 Browser blocker 已关闭。接下来按既定 P0 顺序继续**主流程准确性审计，不重构已 CLOSED 模块**：
+
+1. 训练创建唯一 Durable owner；
+2. submit-time Ground Truth / Snapshot / label contract / base checkpoint freeze；
+3. `redact_excluded_objects_v2_preserve_selected` 默认与 v1 legacy replay；
+4. 迭代算法上一成功版本标签继承 + 用户显式选择新标签；
+5. Local / Remote frozen truth 一致；
+6. training success/failure durable truth；
+7. 训练成功后的新畅联版本/原始权重发布，以及转换后追加权重；
+8. 再审批量上传、ZIP 1k/10k/20k、confirmed_empty、人工标注、AI Review、清洗、标签统一、转换发布。
+
+原则仍是：**查真实 bug -> 修最小根因 -> 前后端/Worker/Durable truth 一致 -> 永久测试。**
+
+
+
 ## 2026-09-28 当前真实接管点：AI 标注闭环 / 训练标签投影 / CI 仅剩 1 个 Browser 红灯（最高优先级）
 
 - 本节代码状态 cutoff：`ce383fcc1af6ee5420860a42e65181a594545c5e`。

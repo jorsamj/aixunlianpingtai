@@ -1,3 +1,16 @@
+<!-- LIVE_HANDOFF_2026_09_28_LABEL_SAVE_GREEN -->
+> ## 2026-09-28 当前接手入口：标签保存主流程已收口，代码 cutoff 59/59 全绿（最高优先级）
+>
+> 已验证代码 cutoff：`5954a7919608930aff5472206d492a277fa9cd54`；`VERSION.txt=42.24.0`。该 cutoff **59 checks：59 success / 0 failure / 0 queued / 0 in_progress**；Frontend Runtime 的 `frontend` 与 `browser-navigation` 均 completed success。
+>
+> 本轮 CLOSED：标签编辑保存不再等待 v54 usage 统计后才关 Modal；POST/PUT mutation 返回/使用 canonical `items`，先 patch authoritative label truth、关闭 Modal、局部 render，再后台刷新 usage。Browser 永久测试会故意卡住 usage 请求，仍要求保存后的 Modal 及时关闭，因此不是放宽 timeout。Source Import terminal 的 labels 与当前 v61 paged materials 也已改为 `Promise.allSettled` 并发局部刷新，避免标签请求阻断素材页刷新，且不恢复 broad project/material pool reload。
+>
+> 并发提交 `b9522d9` 的标签统一跨 UI scope bridge 已保留，并同步更新永久 source guard；没有恢复旧 owner。当前标签管理 owner 为 `renderLabelManagement414 + window.saveLabel414`，Source Import terminal owner 为 `window.refreshSourceImportTasksV36 + PollRegistry(source-import-v36)`。
+>
+> 下一步进入既定 P0 主流程准确性审计：训练创建/输入冻结/迭代标签继承/显式标签选择/Local-Remote 一致/训练终态 truth/训练完成后的新畅联发布。不要重新设计已经 CLOSED 的 AI CandidateStore、AnnotationRepository、ZIP progress、标签统一或训练 redaction v2。
+>
+> **验证边界：** 59/59 是 GitHub Actions code cutoff 证据；Linux/NVIDIA 真实训练、正式 OSS、新畅联生产接口、RK3568/RK3578 实板仍未现场 VERIFIED。本文档提交自身会生成新的 HEAD 和新 CI，接手必须先重读实时远端，不得把上面的 cutoff 当成未来最新 HEAD。
+>
 <!-- LIVE_HANDOFF_2026_09_28_CURRENT -->
 > ## 2026-09-28 当前接手入口（最高优先级）
 >
