@@ -10,6 +10,7 @@ import {
   pickZipJob,
   zipQueueInfo,
   zipNeedsLabelConfirmation,
+  zipPhaseDetail,
   zipLabelChoice,
   zipStartDisposition,
   isZipBootstrapReconcile,
@@ -140,4 +141,39 @@ test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=
   assert.match(source,/buildManualLabelMapping/);
   assert.match(source,/bulkMapLabels/);
   assert.doesNotMatch(source,/create_labels/);
+});
+
+
+test('canonical ZIP projection owns stage message percent and ETA for new jobs',()=>{
+  const job={
+    id:'canonical',
+    status:'running',
+    stage:'legacy stage',
+    message:'legacy message',
+    progress:7,
+    zip_display_progress:{
+      phase:'ANNOTATION_PARSE',
+      phase_label:'解析图片与标注',
+      phase_progress:40,
+      overall_progress:79.2,
+      completed:400,
+      total:1000,
+      unit:'images',
+      eta_seconds:21,
+      message:'正在解析 400/1000',
+    },
+  };
+  const view=zipView(job,[job]);
+  assert.equal(view.progress,79.2);
+  assert.equal(view.stage,'解析图片与标注');
+  assert.equal(view.message,'正在解析 400/1000');
+  assert.equal(zipPhaseDetail(job).text,'阶段 40% · 400 / 1000 图片 · 预计剩余 21 秒');
+});
+
+test('ZIP runtime renders server phase counter and ETA instead of inventing another phase percent',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/zip_display_progress/);
+  assert.match(source,/zipDurablePhaseMeta/);
+  assert.match(source,/zipPhaseDetail\(job\)/);
+  assert.match(source,/overall_progress/);
 });

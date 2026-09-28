@@ -113,3 +113,32 @@ def test_legacy_session_without_expiry_uses_metadata_mtime(tmp_path: Path):
     result = repository.cleanup_expired()
 
     assert result['removed_uploads'] == 1
+
+
+
+def test_multipart_assemble_reports_real_byte_progress(tmp_path: Path):
+    repository = ZipMultipartRepository(tmp_path)
+    payload = b'a' * (4 * 1024 * 1024) + b'b' * (4 * 1024 * 1024) + b'c' * 123
+    session = repository.create_or_resume(
+        dataset_id='default',
+        file_name='progress.zip',
+        file_size=len(payload),
+        fingerprint='progress',
+        part_size=4 * 1024 * 1024,
+    )
+    for index in range(session['total_parts']):
+        start = index * session['part_size']
+        end = min(len(payload), start + session['part_size'])
+        repository.write_part(session['upload_id'], index, BytesIO(payload[start:end]))
+
+    events = []
+    result = repository.assemble(
+        session['upload_id'],
+        tmp_path / 'progress.zip',
+        on_progress=lambda written, total, part, parts: events.append((written, total, part, parts)),
+    )
+
+    assert result['assembled_bytes'] == len(payload)
+    assert events
+    assert events[-1] == (len(payload), len(payload), session['total_parts'], session['total_parts'])
+    assert all(current[0] >= previous[0] for previous, current in zip(events, events[1:]))

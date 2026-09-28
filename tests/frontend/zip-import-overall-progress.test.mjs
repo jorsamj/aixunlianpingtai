@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {overallZipProgress} from '../../static/modules/zip-import-runtime.js';
+import {overallZipProgress, zipPhaseDetail} from '../../static/modules/zip-import-runtime.js';
 
 const runtime = readFileSync(new URL('../../static/modules/zip-import-runtime.js', import.meta.url), 'utf8');
 
@@ -31,4 +31,37 @@ test('multipart upload distinguishes browser transfer from server merge and impo
   assert.match(runtime,/uploading=\{\.\.\.uploading,progress:36,message:phase\.message\}/);
   assert.match(runtime,/status:'MERGING',progress:36/);
   assert.match(runtime,/if\(s==='running'\) return Math\.round\(\(3800\+backend\*61\)\/10\)\/10/);
+});
+
+
+test('server ZIP display projection overrides browser legacy phase weights', () => {
+  const job={
+    status:'running',
+    progress:5,
+    zip_display_progress:{
+      phase:'EXTRACT',
+      phase_label:'解压导入范围',
+      phase_progress:25,
+      overall_progress:53,
+      completed:25,
+      total:100,
+      unit:'files',
+      eta_seconds:12,
+    },
+  };
+  assert.equal(overallZipProgress(job),53);
+  assert.deepEqual(zipPhaseDetail(job),{
+    text:'阶段 25% · 25 / 100 文件 · 预计剩余 12 秒',
+    phaseProgress:25,
+    etaSeconds:12,
+  });
+});
+
+test('browser fixed phase weights remain compatibility-only fallback', () => {
+  const start=runtime.indexOf('export function overallZipProgress(job)');
+  const end=runtime.indexOf('export function zipPhaseDetail(job)',start);
+  const block=runtime.slice(start,end);
+  assert.match(block,/zip_display_progress|zipDisplayProgress/);
+  assert.match(block,/if\(Number\.isFinite\(canonical\)\) return clamp\(canonical\)/);
+  assert.match(block,/Compatibility only for historical jobs/);
 });

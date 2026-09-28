@@ -8,7 +8,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from filelock import FileLock
 
@@ -299,7 +299,13 @@ class ZipMultipartRepository:
             public = self._public(latest)
         return {**public, 'part_number': number, 'part_sha256': digest.hexdigest()}
 
-    def assemble(self, upload_id: str, destination: str | Path) -> dict[str, Any]:
+    def assemble(
+        self,
+        upload_id: str,
+        destination: str | Path,
+        *,
+        on_progress: Callable[[int, int, int, int], object] | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             meta = self._read(upload_id)
             if self._expired(meta, self._meta_path(upload_id)):
@@ -325,6 +331,18 @@ class ZipMultipartRepository:
                             output.write(chunk)
                             digest.update(chunk)
                             written += len(chunk)
+                            if on_progress is not None:
+                                try:
+                                    on_progress(
+                                        written,
+                                        int(meta['file_size']),
+                                        index + 1,
+                                        total_parts,
+                                    )
+                                except Exception:
+                                    # Progress reporting is observability only;
+                                    # it must never corrupt an otherwise-valid assembly.
+                                    pass
             if written != int(meta['file_size']):
                 temporary.unlink(missing_ok=True)
                 raise ValueError(f'assembled ZIP size mismatch: {written}/{meta["file_size"]}')

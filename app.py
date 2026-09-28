@@ -12010,9 +12010,133 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     atomic_write_json(f, persisted)
 
 
+V19_ZIP_PHASE_WINDOWS: Dict[str, Tuple[float, float]] = {
+    "UPLOAD": (0.0, 35.0),
+    "MERGE": (35.0, 40.0),
+    "VERIFY": (40.0, 42.0),
+    "SCAN": (42.0, 48.0),
+    "WAITING_CONFIRMATION": (48.0, 48.0),
+    "READY": (48.0, 48.0),
+    "QUEUE": (48.0, 48.0),
+    "EXTRACT": (48.0, 68.0),
+    "ANNOTATION_PARSE": (68.0, 96.0),
+    "DB_COMMIT": (96.0, 99.0),
+    "DONE": (100.0, 100.0),
+}
+V19_ZIP_PHASE_LABELS = {
+    "UPLOAD": "上传 ZIP",
+    "MERGE": "合并 ZIP 分片",
+    "VERIFY": "校验 ZIP 结构",
+    "SCAN": "扫描 ZIP 内容",
+    "WAITING_CONFIRMATION": "等待确认标签",
+    "READY": "等待启动后台导入",
+    "QUEUE": "等待项目导入资源",
+    "EXTRACT": "解压导入范围",
+    "ANNOTATION_PARSE": "解析图片与标注",
+    "DB_COMMIT": "提交素材与标注",
+    "DONE": "导入完成",
+    "FAILED": "导入失败",
+}
+
+
+def _v19_phase_metrics(
+    phase: str,
+    completed: int | float | None,
+    total: int | float | None,
+    *,
+    started_at: float | None = None,
+) -> Dict[str, Any]:
+    done = max(0.0, float(completed or 0))
+    target = max(0.0, float(total or 0))
+    phase_progress = round(min(100.0, done / target * 100.0), 2) if target > 0 else 0.0
+    elapsed = None
+    eta = None
+    if started_at is not None:
+        elapsed = round(max(0.0, time.time() - float(started_at)), 2)
+        if done > 0 and target > done:
+            eta = round(max(0.0, elapsed / done * (target - done)), 2)
+        elif target > 0 and done >= target:
+            eta = 0.0
+    return {
+        "phase": str(phase or "").upper(),
+        "phase_completed": completed,
+        "phase_total": total,
+        "phase_progress": phase_progress,
+        "phase_elapsed_seconds": elapsed,
+        "eta_seconds": eta,
+    }
+
+
+def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
+    """Canonical product-facing ZIP progress projection.
+
+    phase counters are factual. overall_progress is only a stable display
+    projection over those server-owned phases; browser code must not invent
+    a second set of phase weights.
+    """
+    status = str(job.get("status") or "").strip().lower()
+    phase = str(job.get("phase") or "").strip().upper()
+    if not phase:
+        phase = {
+            "uploading": "UPLOAD",
+            "merging": "MERGE",
+            "validating": "SCAN",
+            "selecting": "WAITING_CONFIRMATION" if job.get("label_confirmation_required") else "READY",
+            "queued": "QUEUE",
+            "waiting": "QUEUE",
+            "running": "ANNOTATION_PARSE",
+            "done": "DONE",
+            "failed": "FAILED",
+        }.get(status, "")
+
+    try:
+        done = max(0.0, float(job.get("phase_completed") or 0))
+    except (TypeError, ValueError):
+        done = 0.0
+    try:
+        total = max(0.0, float(job.get("phase_total") or 0))
+    except (TypeError, ValueError):
+        total = 0.0
+    if total > 0:
+        phase_progress = min(100.0, done / total * 100.0)
+    else:
+        try:
+            phase_progress = max(0.0, min(100.0, float(job.get("phase_progress") or 0)))
+        except (TypeError, ValueError):
+            phase_progress = 0.0
+
+    if status == "done" or phase == "DONE":
+        overall = 100.0
+        phase_progress = 100.0
+    elif status == "failed" or phase == "FAILED":
+        try:
+            overall = max(0.0, min(99.0, float(job.get("progress") or 0)))
+        except (TypeError, ValueError):
+            overall = 0.0
+    else:
+        start, end = V19_ZIP_PHASE_WINDOWS.get(phase, (0.0, 99.0))
+        overall = start + (end - start) * phase_progress / 100.0
+        overall = max(0.0, min(99.0, overall))
+
+    return {
+        "phase": phase or None,
+        "phase_label": V19_ZIP_PHASE_LABELS.get(phase, str(job.get("stage") or phase or "ZIP 导入")),
+        "phase_progress": round(phase_progress, 2),
+        "overall_progress": round(overall, 2),
+        "completed": job.get("phase_completed"),
+        "total": job.get("phase_total"),
+        "unit": str(job.get("phase_unit") or ""),
+        "elapsed_seconds": job.get("phase_elapsed_seconds"),
+        "eta_seconds": job.get("eta_seconds"),
+        "message": str(job.get("message") or ""),
+        "updated_at": job.get("updated_at"),
+    }
+
+
 def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
     result = dict(job or {})
     result.pop("images", None)
+    result["zip_display_progress"] = v19_zip_display_progress(result)
     limit = max(0, min(500, int(image_limit or 0)))
     if limit:
         images = v19_read_scan_images(project_id, str(result.get("id") or ""))
@@ -12030,7 +12154,7 @@ def v19_update_job(project_id: str, job_id: str, **kwargs):
         pass
 
 
-def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
+def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
     import xml.etree.ElementTree as ET
 
     images: List[Dict[str, Any]] = []
@@ -12042,9 +12166,15 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
     annotation_box_count = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = []
-        for info in zf.infolist():
-            name = v19_normalize_zip_path(info.filename)
-            if not name or name.endswith("/"):
+        infos = [
+            (v19_normalize_zip_path(info.filename), info)
+            for info in zf.infolist()
+            if info.filename
+            and not v19_normalize_zip_path(info.filename).endswith("/")
+        ]
+        scan_total = len(infos)
+        for scan_index, (name, info) in enumerate(infos, 1):
+            if not name:
                 continue
             members.append((name, info))
             file_count += 1
@@ -12064,6 +12194,15 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
                 hints.add("COCO")
             if low.endswith(".xml"):
                 hints.add("VOC")
+            if progress_cb and (
+                scan_index == 1
+                or scan_index == scan_total
+                or scan_index % 250 == 0
+            ):
+                try:
+                    progress_cb(scan_index, scan_total, name)
+                except Exception:
+                    pass
 
         # Match the worker's import priority: COCO -> VOC -> YOLO.
         for name, info in members:
@@ -12258,9 +12397,16 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
         with lock:
             _v50_begin_image_batch(project_id)
             try:
-                v19_update_job(project_id, job_id, status="running", stage="正在解压数据集", progress=8,
-                               total_selected=total_selected, processed=0, message="后台解析已开始",
-                               processing_started_at=now_iso())
+                extract_started = time.time()
+                v19_update_job(
+                    project_id, job_id,
+                    status="running", stage="正在解压数据集", progress=48,
+                    phase="EXTRACT", phase_completed=0, phase_total=0, phase_unit="files",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    total_selected=total_selected, processed=0,
+                    message="已获得项目导入锁，开始按导入范围解压",
+                    processing_started_at=now_iso(),
+                )
                 if extracted.exists():
                     shutil.rmtree(extracted, ignore_errors=True)
                 extracted.mkdir(parents=True, exist_ok=True)
@@ -12271,10 +12417,18 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     if done != total and tick - last_extract_emit < 0.6:
                         return
                     last_extract_emit = tick
-                    frac=done/max(1,total); prog=8+frac*24
-                    elapsed=max(0.01,time.time()-processing_started)
-                    eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
-                    v19_update_job(project_id, job_id, stage="正在解压数据集", progress=round(prog,1), processed=done, total_files=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
+                    metrics = _v19_phase_metrics("EXTRACT", done, total, started_at=extract_started)
+                    v19_update_job(
+                        project_id, job_id,
+                        stage="正在解压数据集",
+                        progress=round(48 + metrics["phase_progress"] * 0.20, 2),
+                        phase_unit="files",
+                        processed=done,
+                        total_files=total,
+                        message=msg,
+                        processing_seconds=round(max(0.0, time.time()-processing_started), 1),
+                        **metrics,
+                    )
                 _v18_safe_extract(
                     zip_path,
                     extracted,
@@ -12285,7 +12439,10 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     project_id,
                     job_id,
                     stage="正在识别标注格式",
-                    progress=38,
+                    progress=68,
+                    phase="ANNOTATION_PARSE", phase_completed=0,
+                    phase_total=total_selected, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
                     processed=0,
                     message=(
                         f"已按选择范围解压 {len(selected_paths)} 张图片，正在识别标注格式"
@@ -12301,6 +12458,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     "source_task_id": job_id,
                     "confirmed_at": str(job.get("label_confirmed_at") or ""),
                 }
+                annotation_started = time.time()
                 last_import_emit = 0.0
                 def import_progress(done,total,msg):
                     nonlocal last_import_emit
@@ -12308,18 +12466,30 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     if done != total and tick - last_import_emit < 0.6:
                         return
                     last_import_emit = tick
-                    frac=done/max(1,total); prog=45+frac*50
-                    elapsed=max(0.01,time.time()-processing_started)
-                    eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
+                    metrics = _v19_phase_metrics("ANNOTATION_PARSE", done, total, started_at=annotation_started)
                     visible_msg = (
                         f"正在统一标签并写入标注 · {msg}"
                         if frozen_mapping else msg
                     )
-                    v19_update_job(project_id, job_id, stage=visible_msg, progress=round(prog,1), processed=done, total_selected=total, message=visible_msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
+                    v19_update_job(
+                        project_id, job_id,
+                        stage=visible_msg,
+                        progress=round(68 + metrics["phase_progress"] * 0.28, 2),
+                        phase_unit="images",
+                        processed=done,
+                        total_selected=total,
+                        message=visible_msg,
+                        processing_seconds=round(max(0.0, time.time()-processing_started), 1),
+                        **metrics,
+                    )
                 v19_update_job(
                     project_id, job_id,
                     stage=("正在统一标签并写入标注" if frozen_mapping else "正在解析 COCO / VOC / YOLO 标注"),
-                    progress=44, processed=0,
+                    progress=68,
+                    phase="ANNOTATION_PARSE", phase_completed=0,
+                    phase_total=total_selected, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    processed=0,
                 )
                 imported = _v18_import_coco(
                     project_id, parse_root, dataset_id, report, import_progress,
@@ -12327,14 +12497,14 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     import_context=import_context,
                 )
                 if not imported:
-                    v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=44, processed=0)
+                    v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=68, phase="ANNOTATION_PARSE", processed=0)
                     imported = _v18_import_voc(
                         project_id, parse_root, dataset_id, report, import_progress,
                         label_mapping=frozen_mapping,
                         import_context=import_context,
                     )
                 if not imported:
-                    v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=44, processed=0)
+                    v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=68, phase="ANNOTATION_PARSE", processed=0)
                     imported = _v18_import_yolo(
                         project_id, parse_root, dataset_id, report, import_progress,
                         label_mapping=frozen_mapping,
@@ -12367,22 +12537,47 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 raise
             else:
                 # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
+                commit_started = time.time()
+                commit_total = int(report.get("imported_images") or total_selected or 0)
+                v19_update_job(
+                    project_id, job_id,
+                    stage="正在提交素材与标注",
+                    progress=96,
+                    phase="DB_COMMIT", phase_completed=0,
+                    phase_total=commit_total, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    message="解析完成，正在一次性提交素材索引与标注投影",
+                )
                 _v50_end_image_batch(save=True)
+                metrics = _v19_phase_metrics("DB_COMMIT", commit_total, commit_total, started_at=commit_started)
+                v19_update_job(
+                    project_id, job_id,
+                    progress=99,
+                    phase_unit="images",
+                    message="素材索引与标注投影已提交",
+                    **metrics,
+                )
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(
             project_id, job_id, status="done", stage="导入完成", progress=100,
+            phase="DONE", phase_completed=1, phase_total=1, phase_unit="step",
+            phase_progress=100, eta_seconds=0,
             processed=report.get("imported_images", 0), report=report,
             processing_seconds=processing_seconds, finished_at=now_iso(),
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
     except HTTPException as e:
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
-                       error=str(e.detail), report=report,
+        current = v19_read_job(project_id, job_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
+                       phase="FAILED", error=str(e.detail), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e.detail))
     except Exception as e:
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
-                       error=str(e), report=report,
+        current = v19_read_job(project_id, job_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
+                       phase="FAILED", error=str(e), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e))
     finally:
@@ -12425,6 +12620,8 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
             "uploaded_bytes": int(session.get("received_bytes") or 0),
             "upload_progress": float(session.get("upload_progress") or 0),
             "status": "uploading", "stage": "正在上传 ZIP", "progress": 0,
+            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
+            "phase_total": int(payload.file_size), "phase_unit": "bytes",
             "message": "分片上传已创建，可断点续传",
             "upload_session_id": job_id, "total_parts": int(session.get("total_parts") or 0),
             "created_at": now_iso(), "updated_at": now_iso(),
@@ -12434,6 +12631,8 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
             "status": "uploading", "stage": "正在上传 ZIP",
             "uploaded_bytes": int(session.get("received_bytes") or 0),
             "upload_progress": float(session.get("upload_progress") or 0),
+            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
+            "phase_total": int(payload.file_size), "phase_unit": "bytes",
             "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
             "updated_at": now_iso(),
         })
@@ -12460,6 +12659,10 @@ async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number
             "status": "uploading", "stage": "正在上传 ZIP",
             "uploaded_bytes": int(result.get("received_bytes") or 0),
             "upload_progress": float(result.get("upload_progress") or 0),
+            "phase": "UPLOAD",
+            "phase_completed": int(result.get("received_bytes") or 0),
+            "phase_total": int(result.get("file_size") or job.get("phase_total") or 0),
+            "phase_unit": "bytes",
             "message": f"已完成 {completed}/{total_parts} 个分片",
             "updated_at": now_iso(),
         })
@@ -12481,27 +12684,69 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
         jd.mkdir(parents=True, exist_ok=True)
         zip_path = jd / "source.zip"
 
+        merge_started = time.time()
         v19_update_job(
             project_id, upload_id,
-            status="merging", stage="正在合并 ZIP 分片", progress=0,
+            status="merging", stage="正在合并 ZIP 分片", progress=35,
             upload_progress=100,
+            phase="MERGE", phase_completed=0,
+            phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
+            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
             message="文件已上传，服务器正在后台合并 ZIP；页面可以关闭",
         )
         if not (
             str(session.get("status") or "") == "completed"
             and zip_path.is_file()
         ):
-            repository.assemble(upload_id, zip_path)
+            last_merge_emit = 0.0
+            def merge_progress(written, total_bytes, part_number, total_parts):
+                nonlocal last_merge_emit
+                tick = time.monotonic()
+                if written != total_bytes and tick - last_merge_emit < 0.5:
+                    return
+                last_merge_emit = tick
+                metrics = _v19_phase_metrics("MERGE", written, total_bytes, started_at=merge_started)
+                v19_update_job(
+                    project_id,
+                    upload_id,
+                    status="merging",
+                    stage="正在合并 ZIP 分片",
+                    progress=round(35 + metrics["phase_progress"] * 0.05, 2),
+                    phase_unit="bytes",
+                    message=f"正在合并分片 {part_number}/{total_parts}",
+                    **metrics,
+                )
+            repository.assemble(upload_id, zip_path, on_progress=merge_progress)
             session = repository.get(upload_id)
 
+        scan_started = time.time()
         v19_update_job(
             project_id, upload_id,
-            status="validating", stage="正在校验 ZIP", progress=0,
+            status="validating", stage="正在校验 ZIP 结构", progress=40,
             upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
-            message="ZIP 合并完成，服务器正在后台扫描目录、图片和外部标签",
+            phase="VERIFY", phase_completed=0, phase_total=1, phase_unit="step",
+            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+            message="ZIP 合并完成，正在校验压缩包并扫描目录、图片和外部标签",
         )
-        scan_started = time.time()
-        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
+        last_scan_emit = 0.0
+        def scan_progress(done, total_files, current_name):
+            nonlocal last_scan_emit
+            tick = time.monotonic()
+            if done != total_files and tick - last_scan_emit < 0.5:
+                return
+            last_scan_emit = tick
+            metrics = _v19_phase_metrics("SCAN", done, total_files, started_at=scan_started)
+            v19_update_job(
+                project_id,
+                upload_id,
+                status="validating",
+                stage="正在扫描 ZIP 内容",
+                progress=round(42 + metrics["phase_progress"] * 0.06, 2),
+                phase_unit="files",
+                message=f"正在扫描 {done}/{total_files} · {current_name}",
+                **metrics,
+            )
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress))
         scan_seconds = round(max(0.0, time.time() - scan_started), 2)
         if scan.get("image_count", 0) == 0:
             raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
@@ -12520,26 +12765,41 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
             "scan_seconds": scan_seconds,
             "status": "selecting",
             "stage": "上传与校验完成",
-            "progress": 0,
-            "message": "后台扫描完成，等待确认标签并开始正式导入",
+            "progress": 48,
+            "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+            "phase_completed": 1,
+            "phase_total": 1,
+            "phase_unit": "step",
+            "phase_progress": 100,
+            "phase_elapsed_seconds": scan_seconds,
+            "eta_seconds": None,
+            "message": (
+                "后台扫描完成，等待确认标签并开始正式导入"
+                if scan.get("label_confirmation_required")
+                else "后台扫描完成，等待开始正式导入"
+            ),
             "scan_images_ref": "scan-images.json",
             "uploaded_at": latest.get("uploaded_at") or now_iso(),
             "updated_at": now_iso(),
         }
         v19_write_job(project_id, finished)
     except zipfile.BadZipFile:
+        current = v19_read_job(project_id, upload_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
         v19_update_job(
             project_id, upload_id,
-            status="failed", stage="ZIP 校验失败", progress=0,
-            upload_progress=100,
+            status="failed", stage="ZIP 校验失败", progress=failed_progress,
+            phase="FAILED", upload_progress=100,
             error="压缩包已损坏、格式不正确或不是有效 ZIP。",
             message="ZIP 校验失败", finished_at=now_iso(),
         )
     except Exception as error:
+        current = v19_read_job(project_id, upload_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
         v19_update_job(
             project_id, upload_id,
-            status="failed", stage="ZIP 处理失败", progress=0,
-            upload_progress=100, error=str(error), message=str(error),
+            status="failed", stage="ZIP 处理失败", progress=failed_progress,
+            phase="FAILED", upload_progress=100, error=str(error), message=str(error),
             finished_at=now_iso(),
         )
     finally:
@@ -12591,8 +12851,11 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
             )
         v19_update_job(
             project_id, upload_id,
-            status="merging", stage="正在合并 ZIP 分片", progress=0,
+            status="merging", stage="正在合并 ZIP 分片", progress=35,
             upload_progress=100,
+            phase="MERGE", phase_completed=0,
+            phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
+            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
             message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
         )
 
@@ -12652,8 +12915,15 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "batch_id": job_id,
         "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
-        "status": "selecting", "stage": "上传与校验完成", "progress": 0,
-        "message": "上传与ZIP校验完成，等待开始后台导入",
+        "status": "selecting", "stage": "上传与校验完成", "progress": 48,
+        "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+        "phase_completed": 1, "phase_total": 1, "phase_unit": "step",
+        "phase_progress": 100, "eta_seconds": None,
+        "message": (
+            "上传与ZIP校验完成，等待确认标签并开始后台导入"
+            if scan.get("label_confirmation_required")
+            else "上传与ZIP校验完成，等待开始后台导入"
+        ),
         "scan_images_ref": "scan-images.json",
         "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
     }
@@ -12743,10 +13013,12 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
     v19_update_job(
         project_id, job_id,
         status="running",
-        stage="准备后台解析",
-        progress=3,
+        stage="等待项目导入资源",
+        progress=48,
+        phase="QUEUE", phase_completed=0, phase_total=1, phase_unit="step",
+        phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
         selected_count=len(selected_paths) or job.get("image_count", 0),
-        message="标签确认已冻结，正在进入后台解析",
+        message="标签确认已冻结，正在等待项目级导入锁",
     )
     th = threading.Thread(
         target=v19_import_worker,

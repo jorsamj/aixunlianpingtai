@@ -171,3 +171,81 @@ def test_v19_worker_has_no_second_selected_root_copy_owner():
     assert "selected_image_paths=selected_paths if selected_paths else None" in worker
     assert "selected_root" not in worker
     assert "v19_copy_selected_tree" not in source
+
+
+
+def test_v19_zip_display_progress_projects_real_phase_counters():
+    progress = app_module.v19_zip_display_progress({
+        "status": "running",
+        "phase": "EXTRACT",
+        "phase_completed": 25,
+        "phase_total": 100,
+        "phase_unit": "files",
+        "phase_elapsed_seconds": 6.5,
+        "eta_seconds": 19.5,
+        "message": "正在解压 25/100 个文件",
+        "updated_at": "2026-09-28T05:20:00Z",
+    })
+
+    assert progress["phase"] == "EXTRACT"
+    assert progress["phase_label"] == "解压导入范围"
+    assert progress["phase_progress"] == 25.0
+    assert progress["overall_progress"] == 53.0
+    assert progress["completed"] == 25
+    assert progress["total"] == 100
+    assert progress["unit"] == "files"
+    assert progress["eta_seconds"] == 19.5
+
+
+def test_v19_failed_zip_progress_stops_at_failure_point_not_fake_100():
+    progress = app_module.v19_zip_display_progress({
+        "status": "failed",
+        "phase": "FAILED",
+        "progress": 63.5,
+        "stage": "ZIP 处理失败",
+        "message": "boom",
+    })
+
+    assert progress["overall_progress"] == 63.5
+    assert progress["phase"] == "FAILED"
+    assert progress["phase_label"] == "导入失败"
+
+
+def test_v19_zip_scan_progress_counts_only_real_members(tmp_path: Path):
+    archive = tmp_path / "scan-progress.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("images/", b"")
+        zf.writestr("images/a.jpg", b"not-a-real-jpeg")
+        zf.writestr("labels/a.txt", "0 0.5 0.5 0.5 0.5\n")
+        zf.writestr("data.yaml", "names: [object]\n")
+
+    events = []
+    result = app_module.v19_scan_zip(
+        archive,
+        lambda done, total, name: events.append((done, total, name)),
+    )
+
+    assert result["file_count"] == 3
+    assert events
+    assert events[-1][0:2] == (3, 3)
+
+
+def test_v19_public_job_contains_canonical_zip_display_progress(client):
+    project = client.post('/api/projects', json={'name': 'zip-public-progress', 'labels': []}).json()
+    project_id = project['id']
+    job = {
+        "id": "zip-progress-job",
+        "project_id": project_id,
+        "status": "running",
+        "phase": "ANNOTATION_PARSE",
+        "phase_completed": 50,
+        "phase_total": 200,
+        "phase_unit": "images",
+        "progress": 75,
+        "message": "正在解析",
+    }
+    public = app_module.v19_public_job(project_id, job)
+
+    assert public["zip_display_progress"]["phase"] == "ANNOTATION_PARSE"
+    assert public["zip_display_progress"]["phase_progress"] == 25.0
+    assert public["zip_display_progress"]["overall_progress"] == 75.0
