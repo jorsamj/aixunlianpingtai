@@ -114,12 +114,14 @@ def build_training_display_progress(
     public_runtime: Mapping[str, Any] | None = None,
     *,
     revision: int | None = None,
+    telemetry_job: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Combine lifecycle and worker telemetry into one product display truth."""
     runtime = public_runtime or {}
+    telemetry = telemetry_job if telemetry_job is not None else job
     training_progress = (
-        job.get("training_progress")
-        if isinstance(job.get("training_progress"), Mapping)
+        telemetry.get("training_progress")
+        if isinstance(telemetry.get("training_progress"), Mapping)
         else {}
     )
     status = _canonical_status(job, public_runtime)
@@ -131,7 +133,7 @@ def build_training_display_progress(
         or ""
     ).strip()
 
-    worker_progress = _optional_number(job.get("progress_percent"))
+    worker_progress = _optional_number(telemetry.get("progress_percent"))
     durable_progress = _optional_number(runtime.get("progress_percent"))
     candidates = [value for value in (worker_progress, durable_progress) if value is not None]
     overall_progress = max(candidates) if candidates else 0.0
@@ -144,24 +146,24 @@ def build_training_display_progress(
     current_epoch = _optional_int(
         training_progress.get("epoch")
         if training_progress.get("epoch") is not None
-        else job.get("current_epoch")
+        else telemetry.get("current_epoch")
     )
     total_epochs = _optional_int(
         training_progress.get("total_epochs")
         if training_progress.get("total_epochs") is not None
-        else (job.get("total_epochs") if job.get("total_epochs") is not None else job.get("epochs"))
+        else (telemetry.get("total_epochs") if telemetry.get("total_epochs") is not None else telemetry.get("epochs"))
     )
-    current_batch = _optional_int(job.get("current_batch"))
-    total_batches = _optional_int(job.get("total_batches"))
+    current_batch = _optional_int(telemetry.get("current_batch"))
+    total_batches = _optional_int(telemetry.get("total_batches"))
     elapsed_seconds = _optional_number(
         training_progress.get("elapsed_seconds")
         if training_progress.get("elapsed_seconds") is not None
-        else job.get("elapsed_seconds")
+        else telemetry.get("elapsed_seconds")
     )
     eta_seconds = _optional_number(
         training_progress.get("eta_seconds")
         if training_progress.get("eta_seconds") is not None
-        else job.get("eta_seconds")
+        else telemetry.get("eta_seconds")
     )
     if status in _TERMINAL_STATUSES:
         eta_seconds = 0.0
@@ -169,7 +171,7 @@ def build_training_display_progress(
         eta_seconds = None
     throughput = _optional_number(training_progress.get("images_per_second"))
 
-    worker_item = str(job.get("current_item") or job.get("message") or "").strip()
+    worker_item = str(telemetry.get("current_item") or telemetry.get("message") or "").strip()
     runtime_item = str(runtime.get("current_item") or "").strip()
     if phase in {"training", "trainer_startup"} and worker_item:
         message = worker_item
@@ -180,7 +182,7 @@ def build_training_display_progress(
         value is not None
         for value in (current_epoch, current_batch, elapsed_seconds, eta_seconds, throughput)
     ) or bool(training_progress)
-    updated_at = _latest_timestamp(runtime.get("updated_at"), job.get("updated_at"))
+    updated_at = _latest_timestamp(runtime.get("updated_at"), telemetry.get("updated_at"))
     return {
         "revision": int(revision if revision is not None else _next_display_revision()),
         "updated_at": updated_at or None,
@@ -205,8 +207,14 @@ def build_training_display_progress(
 def apply_training_display_progress(
     job: MutableMapping[str, Any],
     public_runtime: Mapping[str, Any] | None = None,
+    *,
+    telemetry_job: Mapping[str, Any] | None = None,
 ) -> MutableMapping[str, Any]:
-    display = build_training_display_progress(job, public_runtime)
+    display = build_training_display_progress(
+        job,
+        public_runtime,
+        telemetry_job=telemetry_job,
+    )
     job["training_display_progress"] = display
     job["display_revision"] = display["revision"]
     job["progress_percent"] = display["overall_progress"]

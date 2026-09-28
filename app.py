@@ -1153,6 +1153,7 @@ def enrich_job_runtime(
     job_id = job.get("id") or ""
     worker_error = str(job.get("error") or "").strip()
     worker_message = str(job.get("message") or "").strip()
+    worker_progress_truth = dict(job)
     durable = repository.get(str(job_id)) if job_id else None
     public_runtime = None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
@@ -1263,6 +1264,7 @@ def enrich_job_runtime(
             persisted_status = str(persisted.get("status") or "").strip().lower()
             if persisted_status in ended_terminal_statuses:
                 job = persisted
+                worker_progress_truth = dict(persisted)
                 status = persisted_status
             if status in {"queued", "running", "waiting", "pending"}:
                 # 正常情况下 worker 会写 done/failed；如果服务刚好轮询到进程已退但文件未回写，则兜底。
@@ -1285,7 +1287,11 @@ def enrich_job_runtime(
     if durable is not None and public_runtime is not None:
         # Live Durable jobs use one canonical display projection. Do not scan
         # logs or recompute elapsed/ETA on each GET.
-        apply_training_display_progress(job, public_runtime)
+        apply_training_display_progress(
+            job,
+            public_runtime,
+            telemetry_job=worker_progress_truth,
+        )
         status = str(job.get("status") or status).strip().lower()
         job["elapsed_text"] = _human_seconds(job.get("elapsed_seconds")) if job.get("elapsed_seconds") is not None else "-"
         job["eta_text"] = _human_seconds(job.get("eta_seconds")) if job.get("eta_seconds") is not None else "估算中"

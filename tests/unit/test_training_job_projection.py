@@ -135,3 +135,37 @@ def test_apply_training_display_progress_never_estimates_missing_eta():
     assert job["eta_seconds"] is None
     assert job["elapsed_seconds"] is None
     assert job["training_display_progress"]["telemetry_source"] == "worker_training_telemetry"
+
+
+
+def test_display_projection_uses_frozen_worker_telemetry_after_durable_overlay():
+    worker = {
+        "status": "running",
+        "progress_percent": 48.5,
+        "current_epoch": 6,
+        "total_epochs": 10,
+        "current_batch": 7,
+        "total_batches": 10,
+        "elapsed_seconds": 75,
+        "eta_seconds": 80,
+        "current_item": "Epoch 6/10 · Batch 7/10",
+    }
+    overlaid = {
+        **worker,
+        "progress_percent": 46.0,
+        "current_item": "Epoch 6/10 · Batch 4/10",
+    }
+    runtime = {
+        "status": "RUNNING",
+        "phase": "training",
+        "progress_percent": 46.0,
+        "current_item": "Epoch 6/10 · Batch 4/10",
+    }
+
+    apply_training_display_progress(overlaid, runtime, telemetry_job=worker)
+
+    assert overlaid["progress_percent"] == 48.5
+    assert overlaid["current_item"] == "Epoch 6/10 · Batch 7/10"
+    assert overlaid["current_batch"] == 7
+    assert overlaid["elapsed_seconds"] == 75.0
+    assert overlaid["eta_seconds"] == 80.0
