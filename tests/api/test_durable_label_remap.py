@@ -500,20 +500,33 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     ]
     direct_revision = direct_materials.current_revision()
 
-    summary_path = "/api/v62/projects/{project_id}/training-materials/selection-summary"
-    summary_routes = [
-        route
-        for route in app_module.app.routes
-        if getattr(route, "path", "") == summary_path
-        and "POST" in (getattr(route, "methods", set()) or set())
-    ]
-    assert len(summary_routes) == 1, [
+    request_path = f"/api/v62/projects/{project_id}/training-materials/selection-summary"
+    request_scope = {
+        "type": "http",
+        "path": request_path,
+        "root_path": "",
+        "method": "POST",
+        "scheme": "http",
+        "query_string": b"",
+        "headers": [],
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+    }
+    matched_routes = []
+    for route in app_module.app.routes:
+        match, _child_scope = route.matches(request_scope)
+        if getattr(match, "name", "") == "FULL":
+            matched_routes.append(route)
+    assert len(matched_routes) == 1, [
         (
-            getattr(route.endpoint, "__module__", ""),
-            getattr(route.endpoint, "__qualname__", ""),
+            getattr(route, "path", ""),
+            sorted(getattr(route, "methods", set()) or set()),
+            getattr(getattr(route, "endpoint", None), "__module__", ""),
+            getattr(getattr(route, "endpoint", None), "__qualname__", ""),
         )
-        for route in summary_routes
+        for route in matched_routes
     ]
+    summary_routes = matched_routes
     summary_endpoint = summary_routes[0].endpoint
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
     direct_summary = summary_endpoint(
