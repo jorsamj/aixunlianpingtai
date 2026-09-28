@@ -19,6 +19,8 @@ from platform_core.training_label_tasks import (
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_tasks import (
     TrainingSelectionResolution,
+    TRAINING_PROJECTION_POLICY_V1,
+    _apply_training_projection,
     freeze_training_inputs,
     materialize_portable_dataset,
     resolve_frozen_training_base,
@@ -500,7 +502,7 @@ def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_pa
     assert rows[0]["source_labels"] == ["fire", "person"]
     assert "negative_origin" not in rows[0]
     assert [box["label"] for box in rows[0]["training_excluded_boxes"]] == ["person"]
-    assert rows[0]["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert rows[0]["training_projection_policy"] == "redact_excluded_objects_v2_preserve_selected"
     assert len(rows[0]["training_projection_digest"]) == 64
     assert "annotation_hash" not in rows[0]
 
@@ -534,7 +536,7 @@ def test_projection_turns_only_unselected_labels_into_task_negative_without_muta
     assert projected["source_annotation_state"] == "annotated"
     assert projected["source_labels"] == ["person"]
     assert [box["label"] for box in projected["training_excluded_boxes"]] == ["person"]
-    assert projected["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert projected["training_projection_policy"] == "redact_excluded_objects_v2_preserve_selected"
     assert len(projected["training_projection_digest"]) == 64
 
     # The task projection must never rewrite material-library Ground Truth.
@@ -637,13 +639,105 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     assert label.read_text(encoding="utf-8") == ""
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     record = manifest["splits"]["train"][0]
-    assert record["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert record["training_projection_policy"] == "redact_excluded_objects_v2_preserve_selected"
     assert record["redacted_object_count"] == 1
     assert record["content_sha256"] != content_hash
     with Image.open(bundle / "dataset" / "images" / "train" / "a.jpg") as projected_image:
         r, g, b = projected_image.convert("RGB").getpixel((10, 10))
     assert min(r, g, b) > 150
 
+
+
+def test_redaction_v2_preserves_selected_positive_pixels_inside_excluded_box(tmp_path: Path):
+    _, project = _project(tmp_path)
+    annotations = AnnotationRepository(project)
+    annotations.upsert(
+        "a",
+        [
+            {"label": "person", "x1": 1, "y1": 1, "x2": 60, "y2": 60},
+            {"label": "fire", "x1": 20, "y1": 20, "x2": 35, "y2": 35},
+        ],
+        annotation_state="annotated",
+    )
+    image_file = tmp_path / "overlap.png"
+    source = Image.new("RGB", (100, 100), (230, 230, 230))
+    source.paste((0, 0, 0), (1, 1, 60, 60))
+    source.paste((240, 20, 20), (20, 20, 35, 35))
+    source.save(image_file, format="PNG")
+    content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
+
+    class Materials:
+        def get_many(self, _ids):
+            return [{"id": "a", "filename": image_file.name, "width": 100, "height": 100}]
+
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0}],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+    rows[0]["content_sha256"] = content_hash
+    assert rows[0]["training_projection_policy"] == "redact_excluded_objects_v2_preserve_selected"
+
+    bundle = materialize_portable_dataset(
+        tmp_path / "work-overlap",
+        {
+            "snapshot_id": "overlap-redaction-v2",
+            "label_schema": contract["effective_label_schema"],
+            "ids": {"train": ["a"], "validation": [], "test": []},
+            "images": [{"image_id": "a", "content_sha256": content_hash}],
+        },
+        rows,
+        lambda _row: image_file,
+        safety_reserve_bytes=0,
+    )
+
+    with Image.open(bundle / "dataset" / "images" / "train" / "a.png") as projected:
+        rgb = projected.convert("RGB")
+        outside_selected = rgb.getpixel((10, 10))
+        selected_target = rgb.getpixel((25, 25))
+
+    assert min(outside_selected) > 150
+    assert selected_target[0] > 180
+    assert selected_target[1] < 80
+    assert selected_target[2] < 80
+    label_lines = (
+        bundle / "dataset" / "labels" / "train" / "a.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(label_lines) == 1
+    assert label_lines[0].startswith("0 ")
+
+
+def test_legacy_v1_redaction_remains_replayable_without_v2_pixel_restore(tmp_path: Path):
+    image_file = tmp_path / "legacy-v1.png"
+    source = Image.new("RGB", (100, 100), (230, 230, 230))
+    source.paste((0, 0, 0), (1, 1, 60, 60))
+    source.paste((240, 20, 20), (20, 20, 35, 35))
+    source.save(image_file, format="PNG")
+
+    identity = _apply_training_projection(
+        image_file,
+        {
+            "id": "legacy",
+            "boxes": [{"label": "fire", "x1": 20, "y1": 20, "x2": 35, "y2": 35}],
+            "training_excluded_boxes": [
+                {"label": "person", "x1": 1, "y1": 1, "x2": 60, "y2": 60}
+            ],
+            "training_projection_policy": TRAINING_PROJECTION_POLICY_V1,
+            "training_projection_digest": "a" * 64,
+        },
+        "train",
+        {},
+    )
+
+    assert identity["training_projection_policy"] == TRAINING_PROJECTION_POLICY_V1
+    with Image.open(image_file) as projected:
+        r, g, b = projected.convert("RGB").getpixel((25, 25))
+    assert min(r, g, b) > 150
 
 def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
     data_dir, project = _project(tmp_path)

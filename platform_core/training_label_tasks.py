@@ -418,7 +418,7 @@ def _projection_digest(
     excluded_boxes: Sequence[Mapping[str, Any]],
 ) -> str:
     payload = {
-        "policy": "redact_excluded_objects_v1",
+        "policy": base.TRAINING_PROJECTION_POLICY,
         "source_annotation_state": str(state),
         "effective_label_codes": list(allowed),
         "selected_boxes": [dict(box) for box in selected_boxes],
@@ -466,7 +466,7 @@ def project_training_rows(
 
         if excluded_boxes:
             row["training_excluded_boxes"] = excluded_boxes
-            row["training_projection_policy"] = "redact_excluded_objects_v1"
+            row["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY
             row["training_projection_digest"] = _projection_digest(
                 state=state,
                 allowed=allowed_order,

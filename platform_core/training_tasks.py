@@ -53,6 +53,8 @@ from .training_evaluation import build_evaluation_truth, build_iteration_decisio
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
 TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
+TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"
+TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
@@ -480,7 +482,7 @@ def _apply_training_projection(
     role: str,
     image_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Redact task-excluded objects from train/validation copies before loss sees them."""
+    """Redact task-excluded objects while preserving selected positive pixels."""
     identity = dict(image_identity)
     excluded = [
         dict(box) for box in (row.get("training_excluded_boxes") or [])
@@ -488,11 +490,35 @@ def _apply_training_projection(
     ]
     if not excluded or role == "test":
         return identity
-    if str(row.get("training_projection_policy") or "") != "redact_excluded_objects_v1":
-        raise ValueError("excluded training objects require redact_excluded_objects_v1 policy")
+    policy = str(row.get("training_projection_policy") or "")
+    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}:
+        raise ValueError("excluded training objects require a supported redaction policy")
     projection_digest = str(row.get("training_projection_digest") or "").strip().lower()
     if len(projection_digest) != 64:
         raise ValueError("training projection digest is missing or invalid")
+
+    def pixel_bounds(
+        box: Mapping[str, Any], width: int, height: int,
+    ) -> tuple[int, int, int, int]:
+        if all(key in box for key in ("x1", "y1", "x2", "y2")):
+            x1, y1 = float(box["x1"]), float(box["y1"])
+            x2, y2 = float(box["x2"]), float(box["y2"])
+        else:
+            cx, cy = float(box.get("cx", 0)), float(box.get("cy", 0))
+            bw, bh = float(box.get("w", 0)), float(box.get("h", 0))
+            if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
+                cx, cy, bw, bh = cx * width, cy * height, bw * width, bh * height
+            x1, y1 = cx - bw / 2, cy - bh / 2
+            x2, y2 = cx + bw / 2, cy + bh / 2
+        left = max(0, min(width, int(x1)))
+        top = max(0, min(height, int(y1)))
+        right = max(0, min(width, int(x2 + 0.999999)))
+        bottom = max(0, min(height, int(y2 + 0.999999)))
+        if right <= left or bottom <= top:
+            raise ValueError(
+                f"training projection box is outside image bounds: {row.get('id')}"
+            )
+        return left, top, right, bottom
 
     temporary = destination.with_name(
         f".{destination.name}.{uuid.uuid4().hex}.projection.tmp"
@@ -503,33 +529,34 @@ def _apply_training_projection(
             canvas = source.convert("RGB")
             width, height = canvas.size
             if width <= 0 or height <= 0:
-                raise ValueError(f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions")
+                raise ValueError(
+                    f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions"
+                )
+            original = canvas.copy() if policy == TRAINING_PROJECTION_POLICY else None
             median = tuple(int(value) for value in ImageStat.Stat(canvas).median[:3])
             draw = ImageDraw.Draw(canvas)
             redacted = 0
             for box in excluded:
-                if all(key in box for key in ("x1", "y1", "x2", "y2")):
-                    x1, y1 = float(box["x1"]), float(box["y1"])
-                    x2, y2 = float(box["x2"]), float(box["y2"])
-                else:
-                    cx, cy = float(box.get("cx", 0)), float(box.get("cy", 0))
-                    bw, bh = float(box.get("w", 0)), float(box.get("h", 0))
-                    if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
-                        cx, cy, bw, bh = cx * width, cy * height, bw * width, bh * height
-                    x1, y1 = cx - bw / 2, cy - bh / 2
-                    x2, y2 = cx + bw / 2, cy + bh / 2
-                left = max(0, min(width, int(x1)))
-                top = max(0, min(height, int(y1)))
-                right = max(0, min(width, int(x2 + 0.999999)))
-                bottom = max(0, min(height, int(y2 + 0.999999)))
-                if right <= left or bottom <= top:
-                    raise ValueError(
-                        f"excluded training box is outside image bounds: {row.get('id')}"
-                    )
+                left, top, right, bottom = pixel_bounds(box, width, height)
                 draw.rectangle((left, top, right - 1, bottom - 1), fill=median)
                 redacted += 1
             if redacted != len(excluded):
                 raise ValueError("not all excluded training objects were redacted")
+
+            # v2 restores each selected positive rectangle after excluded-object
+            # redaction. Without this, a large unselected box can erase the
+            # pixels of a nested selected target while its positive YOLO label
+            # remains, creating contradictory training truth.
+            if original is not None:
+                for box in (row.get("boxes") or []):
+                    if not isinstance(box, Mapping):
+                        continue
+                    left, top, right, bottom = pixel_bounds(box, width, height)
+                    canvas.paste(
+                        original.crop((left, top, right, bottom)),
+                        (left, top),
+                    )
+
             save_format = image_format or (
                 "JPEG" if destination.suffix.lower() in _JPEG_SUFFIXES else "PNG"
             )
@@ -553,12 +580,11 @@ def _apply_training_projection(
             f"{previous_reason}+excluded_object_redaction"
             if previous_reason else "excluded_object_redaction"
         ),
-        training_projection_policy="redact_excluded_objects_v1",
+        training_projection_policy=policy,
         training_projection_digest=projection_digest,
         redacted_object_count=len(excluded),
     )
     return identity
-
 
 def materialize_portable_dataset(
     task_root: str | Path,
