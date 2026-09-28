@@ -142,6 +142,7 @@ def training_recovery_router(
     get_project,
     task_repository,
     task_artifacts,
+    data_dir_provider=None,
     agent_execution_payload_resolver=None,
     agent_result_upload_preparer=None,
     agent_result_upload_confirmer=None,
@@ -228,9 +229,18 @@ def training_recovery_router(
 
     root = APIRouter()
     root.include_router(recovery_router)
+    # Project/material truth belongs to the platform data root, not the task
+    # artifact store. Artifact storage may be relocated/isolated independently;
+    # deriving project paths from it can make the picker read a different
+    # materials.sqlite3 than the annotation/material owners.
+    material_data_dir = (
+        data_dir_provider
+        if data_dir_provider is not None
+        else lambda: task_artifacts().root.parent.parent
+    )
     root.include_router(training_material_picker_router(
         get_project,
-        lambda: task_artifacts().root.parent.parent,
+        material_data_dir,
     ))
     root.include_router(service_node_router(task_repository))
     root.include_router(central_scheduler_router(task_repository, task_artifacts))

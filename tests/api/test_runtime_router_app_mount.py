@@ -47,6 +47,7 @@ def test_production_app_mounts_runtime_router_exactly_once():
     ]
     keywords = {item.arg: item.value for item in router_call.keywords if item.arg}
     assert set(keywords) == {
+        "data_dir_provider",
         "agent_execution_payload_resolver",
         "agent_result_upload_preparer",
         "agent_result_upload_confirmer",
@@ -58,6 +59,9 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_clean_selection_page_provider",
         "agent_clean_selection_read_provider",
     }
+    assert isinstance(keywords["data_dir_provider"], ast.Lambda)
+    assert isinstance(keywords["data_dir_provider"].body, ast.Name)
+    assert keywords["data_dir_provider"].body.id == "DATA_DIR"
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
     assert isinstance(keywords["agent_result_upload_preparer"], ast.Name)
@@ -96,6 +100,9 @@ def test_v63_subrouters_keep_single_composition_owner():
     assert "central_scheduler_router" not in app_source
     assert "agent_executor_router" not in app_source
 
+    assert "data_dir_provider" in runtime_source
+    assert "material_data_dir" in runtime_source
+    assert "lambda: task_artifacts().root.parent.parent" in runtime_source
     assert runtime_source.count("root.include_router(service_node_router(task_repository))") == 1
     assert runtime_source.count(
         "root.include_router(central_scheduler_router(task_repository, task_artifacts))"
