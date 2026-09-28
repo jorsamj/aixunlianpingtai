@@ -303,7 +303,14 @@ test('same selected materials reload canonical labels after a completed label un
   await card.getByRole('button', {name: '训练'}).click();
   let dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout: 10_000});
-  await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
+  await page.evaluate(() => {
+    if (!(state.labels || []).some(row => String(row?.code || '') === 'fire')) {
+      state.labels = [...(state.labels || []), {
+        code: 'fire', display_name: '明火', class_id: 1, active: true, status: 'active',
+      }];
+    }
+    window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']);
+  });
 
   let panel = dialog.locator('#trainingLabelContractPanel');
   await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(1);
