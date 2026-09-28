@@ -959,6 +959,8 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     )
     algorithms = app_module.list_algorithms_internal(project_id)
     target = next(row for row in algorithms if row["id"] == algorithm["id"])
+    base_model = app_module.project_dir(project_id) / "feedback-base.pt"
+    base_model.write_bytes(b"verified-feedback-base")
     target["current_version_id"] = version_id
     target["versions"] = [{
         "id": version_id,
@@ -967,6 +969,10 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         "artifact_verified": True,
         "trainable": True,
         "framework": "ultralytics",
+        "stored_path": str(base_model),
+        "label_schema": [
+            {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+        ],
         "supplement_data_candidate_set": candidate_set,
     }]
     save_algorithms(app_module.algorithms_file(project_id), algorithms)
@@ -1073,6 +1079,8 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     ).json()["algorithm"]
     rows = app_module.list_algorithms_internal(project_id)
     target = next(row for row in rows if row["id"] == algorithm["id"])
+    benchmark_model = app_module.project_dir(project_id) / "benchmark-v1.pt"
+    benchmark_model.write_bytes(b"verified-benchmark-base")
     target["current_version_id"] = "benchmark-v1"
     target["versions"] = [{
         "id": "benchmark-v1",
@@ -1082,6 +1090,10 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
         "artifact_verified": True,
         "trainable": True,
         "framework": "ultralytics",
+        "stored_path": str(benchmark_model),
+        "label_schema": [
+            {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+        ],
         "evaluation": {
             "status": "succeeded",
             "snapshot_id": snapshot_id,
