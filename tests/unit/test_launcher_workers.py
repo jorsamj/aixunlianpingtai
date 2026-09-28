@@ -107,7 +107,7 @@ def test_training_only_registry_owns_supported_training_capabilities(tmp_path):
     assert set(registration.handlers) == {TaskKind.TRAINING}
     assert registration.roles == frozenset({"training"})
     assert "training.ultralytics" in registration.capabilities
-    assert "training.paddle" in registration.capabilities
+    assert "training.paddle" not in registration.capabilities
 
 
 def test_scheduler_default_idle_poll_supports_subsecond_claim_cycle():
