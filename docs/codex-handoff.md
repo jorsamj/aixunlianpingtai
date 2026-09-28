@@ -1,6 +1,130 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 迭代标签 Server-Authoritative 闭环 / 未选目标防错误负监督（最新）
+
+- 本节写入前真实代码 HEAD：`d1807fd4284181b38d8d47df2b67859c4a0b84f8`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 本轮未 merge main、未 tag、未 release、未 force push；没有新增第二套 Training / Snapshot / Annotation / Picker owner。
+- 当前 GitHub Actions runner 存在明显 backlog：本节写入时该 HEAD 的 `Training Input Integrity` push/PR 与 `Remote Training Runtime` PR 仍为 **queued**，因此**当前不能声称全绿**。
+
+### 1. 上一轮两个真实 CI 红灯已经按正确方式 CLOSED
+
+最初交接里的两个 completed failure 都只通过修正旧 fixture/测试合同收口，没有放宽生产规则：
+
+- `Training Input Integrity`
+  - 旧 split / snapshot fixture 补齐正式 Ground Truth 与 processed truth；
+  - Snapshot 不重复拥有 processing admission，`processing_status` 准入仍归 `build_split_manifest()/resolve_training_selection()`。
+- `Remote Training Runtime`
+  - 旧 API fixture 不再提交不存在的假素材 ID；
+  - continue/supplement 等 fixture 按当前真实 material truth / leakage guard 建数据。
+
+已确认的 completed-success 证据：
+
+- `Training Input Integrity` push run `36367518722`：SUCCESS；
+- `Training Input Integrity` PR run `36367522023`：SUCCESS；
+- `Remote Training Runtime` PR run `36367522000`：SUCCESS，四个 job 全部 success。
+
+相关 fixture 提交：
+
+- `09be82b1`：split fixture 对齐正式 annotation truth；
+- `be3c0db8`：durable training API fixture 使用真实 material truth；
+- `f0cf9146`：snapshot fixture 对齐正式 training truth；
+- `27fd522d`：processing admission 保持由 split boundary 单一 owner 负责。
+
+### 2. 迭代标签合同现在由服务器在 submit-time 冻结
+
+此前前端已有：
+
+- `inheritedLabelCodes`
+- `newLabelCodes`
+- `effectiveLabelCodes`
+- `train_labels`
+
+但 Durable Training 的 `freeze_training_inputs()` 仍取项目全部 active labels，前后端不一致。
+
+当前已改为：
+
+1. `/api/v12/projects/{project_id}/train/start` 在任务入队前由服务器读取真实算法/版本、真实已选训练素材标注与用户提交的 `train_labels`；
+2. 上一 verified/current version 的 frozen `label_schema` 作为 inherited schema；
+3. 用户显式选择且确实存在于**服务器最终 effective training pool** 的新标签才允许追加；
+4. 固定评测保留图 / `test_image_ids` 中单独出现的标签不能借原始请求绕过，不能扩充训练 schema；
+5. 最终 schema 重新压成连续 training class_id `0..N-1`，canonical identity 继续保留；
+6. `label_contract`、投影后的正式 GT、最终 schema 一起进入 `input-freeze.json`，并参与 freeze digest；
+7. Worker 新任务优先读取 frozen `label_contract`，排队后项目标签/标注变化不能重算本任务 schema；
+8. pre-freeze 历史任务才走兼容重算路径。
+
+关键提交：
+
+- `dd753397`：保留迭代 schema 与 excluded-label truth；
+- `48054e44`：freeze label projection，并在训练副本物化阶段处理 excluded object；
+- `ff53a2f4`：projection evidence 绑定 Snapshot / Dataset Revision identity；
+- `2f6a80d0`：submit-time 冻结 server-authoritative label contract；
+- `d8c75968` / `fe1a6e3e`：新标签只从真实 training candidates / server-resolved effective split 取证；
+- `a37d8a81` / `d1807fd4`：上一 verified schema 的 inherited label 即使后来被项目 catalog 停用，也不会静默删类/重排；只有 inherited code 可作为稳定历史身份继续使用，其他 dangling/停用/未映射 label 仍 fail-closed。
+
+### 3. 未选择的新标签：禁止“删 box + 原图继续训练”的错误负监督
+
+旧 `training_label_tasks.py` 已存在 task projection owner，但旧实现会：
+
+- 删除未选类别 bbox；
+- 如果图片只剩未选类别，则直接投影成 `confirmed_empty`；
+- 原图目标仍可见，YOLO empty target 会把它当背景监督风险。
+
+当前已收口为现有 owner 内的 `redact_excluded_objects_v1`，没有新建第二套训练 runtime：
+
+- 源 AnnotationRepository 永远不改；
+- task projection 冻结 `training_excluded_boxes`；
+- 同时冻结 `training_projection_policy` 和 deterministic `training_projection_digest`；
+- train / validation 的**任务本地副本**在源 SHA256 校验完成后，把 excluded bbox 对应像素区域做确定性遮除；
+- 遮除完成后重新计算 training content SHA256；
+- 只有 excluded object 已从 train/validation pixels 移除后，该 task-local image 才允许成为本轮 schema 的空 target；
+- independent test/evaluation 图不做像素遮除，只按 frozen effective schema 评分；
+- Snapshot / Dataset Revision / bundle manifest 都记录 projection evidence，避免不同标签投影错误命中同一 bundle cache。
+
+这是一种针对标准 Ultralytics YOLO TXT 数据合同的保守兼容方案：当前普通 YOLO detection dataset 没有可直接表达“这个 bbox 区域完全忽略 loss”的标准 TXT ignore-region 合同，所以**不能把可见但未标注的新类别目标留在训练图里**。task-local redaction 不修改源图，不等价宣称为原生 ignore loss。
+
+永久规则已写入：
+
+- `docs/superpowers/specs/2026-09-11-negative-sample-contract.md`
+- `.github/workflows/training-input-integrity.yml`
+
+CI source guard 现在明确：
+
+- 必须存在 `redact_excluded_objects_v1`；
+- 必须存在 projection digest / materializer redaction；
+- 禁止重新出现 `negative_origin="filtered_by_training_labels"` 的旧“可见目标 + empty label”语义。
+
+### 4. 当前永久测试覆盖
+
+已补 / 调整：
+
+- direct POST 不带首训显式标签 → 409；
+- direct POST 选择不在已选训练素材中的标签 → 409；
+- 有效显式标签 → `input-freeze.json` 只冻结对应 schema；
+- test/evaluation-only label 不能成为新训练 label；
+- inherited schema + 显式新增 label 连续重编号；
+- schema change 保持 `strict_resume=false`、`optimizer_state_resumed=false`，只用上一版本权重初始化；
+- 上一版本 inherited label 在项目 catalog 后续停用后仍保持 class identity；
+- 混合 selected/unselected bbox 会保留 excluded-box projection evidence；
+- 只有 unselected bbox 的图片必须在任务副本中真实遮除对应像素，测试直接读取物化后的 JPEG 像素证明目标区域被移除；
+- Snapshot 持久化 redaction origin / policy / digest / excluded count；
+- bundle manifest 记录 redaction policy、digest、redacted object count 和变化后的 training content hash。
+
+### 5. 当前真实 CI 状态与下一步
+
+本节写入时最新代码 HEAD `d1807fd4` 的相关新一轮 Actions **仍 queued**，queued / in_progress 不能算 success。
+
+下一接手动作固定：
+
+1. 重新读取远端 HEAD，不能假定仍是 `d1807fd4`；
+2. 读取该 HEAD 最新 `Training Input Integrity` 与 `Remote Training Runtime`；
+3. 任何 completed failure 必须先读真实 job log，再修真实问题；
+4. 两个 workflow completed success 后，才能把本轮标签 P0 标 CLOSED；
+5. 然后再继续系统审计：训练 → 批量导入/空素材 → 手工标注 → 清洗 → 新畅联，重点查假成功、状态漂移、N+1/全量扫描、错误负样本、schema 漂移、网络超时重复写、删除不同步和前后端事实不一致。
+
+
+
 ## 2026-09-28 主流程交接 / CI 红灯与迭代标签合同审计（最新）
 
 - 本节写入前真实分支 HEAD：`c74a747cb4704f5d6e3b7498ac065cb3a5671267`。
