@@ -166,6 +166,17 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "time": 2.5,
         "requested_device": "auto",
         "device": "auto",
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-fire",
+            "effective_label_codes": ["fire"],
+            "effective_label_schema": [
+                {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
     }
     if supplement_candidate_set is not None:
         target_payload["supplement_candidate_set"] = dict(supplement_candidate_set)
@@ -255,6 +266,10 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["framework"] == "ultralytics"
     assert training["snapshot_id"]
     assert len(training["dataset_revision_id"]) == 64
+    assert training["label_codes"] == ["fire"]
+    assert training["label_schema"][0]["code"] == "fire"
+    assert training["label_contract"]["algorithm_id"] == "algorithm-fire"
+    assert training["label_contract"]["effective_label_codes"] == ["fire"]
     assert training["model"]["type"] == "official"
     assert training["model"]["reference"] == "yolo11n.pt"
     assert training["params"]["runtime_stop_policy"] == "target_only"
