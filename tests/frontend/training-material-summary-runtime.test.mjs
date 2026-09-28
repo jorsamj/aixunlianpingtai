@@ -29,6 +29,7 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const summaryRuntime = readFileSync(new URL('../../static/modules/training-material-summary-runtime.js', import.meta.url), 'utf8');
   const labelsRuntime = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
   assert.doesNotMatch(main, /FULL_MATERIAL_PAGES/);
   assert.match(main, /installTrainingMaterialSummaryRuntime/);
@@ -40,5 +41,11 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(summaryRuntime, /可直接训练/);
   assert.match(summaryRuntime, /待标注/);
   assert.match(labelsRuntime, /materialSummaryRuntime\.summaryReadyFor/);
+  assert.match(labelsRuntime, /materialSummaryRuntime\?\.invalidate\?\.\(\)/);
   assert.match(labelsRuntime, /正在读取已选素材标签/);
+  assert.match(summaryRuntime, /function invalidate\(\)/);
+  assert.match(summaryRuntime, /currentSignature = null/);
+  assert.match(summaryRuntime, /summary = null/);
+  assert.match(app, /invalidateTrainingMaterialSummaryAfterLabelMutation414/);
+  assert.match(app, /runtime\?\.refresh\?\.\(ids,\{force:true\}\)/);
 });

@@ -14,11 +14,13 @@ on:
       - 'static/modules/training-draft.js'
       - 'static/modules/training-submit.js'
       - 'static/modules/training-labels.js'
+      - 'static/modules/training-material-summary-runtime.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
       - 'tests/frontend/training-submit-validation.test.mjs'
       - 'tests/frontend/training-labels.test.mjs'
+      - 'tests/frontend/training-material-summary-runtime.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
       - 'tests/browser/navigation-stability.spec.mjs'
@@ -55,6 +57,7 @@ jobs:
           tests/frontend/training-submit.test.mjs
           tests/frontend/training-submit-validation.test.mjs
           tests/frontend/training-labels.test.mjs
+          tests/frontend/training-material-summary-runtime.test.mjs
       - name: Permanent first-open guards
         shell: bash
         run: |
@@ -78,6 +81,10 @@ jobs:
           grep -Fq 'merged previous labels collapse into the current canonical target in the client preview' tests/frontend/training-labels.test.mjs
           grep -Fq 'inactive previous labels without merged_into are blocked instead of silently inherited' tests/frontend/training-labels.test.mjs
           grep -Fq 'labelGovernance414' static/modules/training-labels.js
+          grep -Fq 'materialSummaryRuntime?.invalidate?.();' static/modules/training-labels.js
+          grep -Fq 'function invalidate()' static/modules/training-material-summary-runtime.js
+          grep -Fq 'invalidateTrainingMaterialSummaryAfterLabelMutation414' static/app.js
+          grep -Fq 'same selected materials reload canonical labels after a completed label unification' tests/browser/training-create-first-open.spec.mjs
           grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
           grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
           grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js

@@ -259,6 +259,96 @@ test('merged historical labels do not reappear in the next training dialog', asy
   await expect(panel.locator('.training-label-contract-count')).toHaveText('1 类');
 });
 
+test('same selected materials reload canonical labels after a completed label unification', async ({page, request}) => {
+  const {project} = await seedProject(request);
+  let unified = false;
+  let selectedSummaryCalls = 0;
+
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'label-unify-refresh',
+      name: 'Label Unify Refresh',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 20,
+        default_imgsz: 640,
+        default_batch: 4,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+    }]})
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
+    const body = route.request().postDataJSON();
+    const ids = Array.isArray(body?.image_ids) ? body.image_ids.map(String) : [];
+    if (ids.includes('same-material-after-unify')) selectedSummaryCalls += 1;
+    const labels = unified ? ['smoke'] : ['legacy_smoke'];
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        requested_count: ids.length,
+        matched_count: ids.length,
+        selectable_count: ids.length,
+        eligible_count: ids.length,
+        pending_annotation_count: 0,
+        selectable_total: ids.length,
+        eligible_total: ids.length,
+        box_count: ids.length,
+        size_bytes: ids.length * 1024,
+        label_codes: ids.length ? labels : [],
+        label_counts: ids.length ? {[labels[0]]: ids.length} : {},
+        repository_revision: unified ? 2 : 1,
+      }),
+    });
+  });
+
+  await selectIsolatedTestProject(page, project.id, '算法列表');
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  let card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  let dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
+
+  let panel = dialog.locator('#trainingLabelContractPanel');
+  await expect(panel).toContainText('legacy_smoke');
+  await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(1);
+
+  await page.evaluate(() => window.closeModal());
+  unified = true;
+
+  card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
+
+  panel = dialog.locator('#trainingLabelContractPanel');
+  await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(2);
+  await expect(panel).not.toContainText('legacy_smoke');
+  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(1);
+  await expect(panel).toContainText('烟雾');
+});
+
 test('training target is the only automatic early-stop control', async ({page, request}) => {
   const {project} = await seedProject(request);
 

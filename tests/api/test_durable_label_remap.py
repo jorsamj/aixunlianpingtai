@@ -468,6 +468,17 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     assert governance["fire"]["merged_into"] == "person"
     assert governance["smoke"]["merged_into"] == "person"
 
+    training_summary = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-summary",
+        json={"image_ids": [image["id"], second_id]},
+    )
+    assert training_summary.status_code == 200, training_summary.text
+    summary_body = training_summary.json()
+    assert summary_body["label_codes"] == ["person"]
+    assert summary_body["label_counts"] == {"person": 1}
+    assert "fire" not in summary_body["label_codes"]
+    assert "smoke" not in summary_body["label_codes"]
+
     model = tmp_path / "previous.pt"
     model.write_bytes(b"model")
     previous_schema = [
