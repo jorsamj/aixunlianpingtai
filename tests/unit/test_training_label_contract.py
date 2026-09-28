@@ -349,7 +349,9 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     _, project = _project(tmp_path)
     AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
     image_file = tmp_path / "task-negative.jpg"
-    Image.new("RGB", (100, 100), (220, 220, 220)).save(image_file, format="JPEG")
+    source_image = Image.new("RGB", (100, 100), (220, 220, 220))
+    source_image.paste((0, 0, 0), (1, 1, 21, 21))
+    source_image.save(image_file, format="JPEG")
     content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
 
     class Materials:
@@ -386,6 +388,9 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     assert record["training_projection_policy"] == "redact_excluded_objects_v1"
     assert record["redacted_object_count"] == 1
     assert record["content_sha256"] != content_hash
+    with Image.open(bundle / "dataset" / "images" / "train" / "a.jpg") as projected_image:
+        r, g, b = projected_image.convert("RGB").getpixel((10, 10))
+    assert min(r, g, b) > 150
 
 
 def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
