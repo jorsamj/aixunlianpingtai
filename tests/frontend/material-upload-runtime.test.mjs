@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import {
   MaterialUploadContractError,
   MaterialUploadInterruptedError,
+  compactUploadedMaterial,
   partitionMaterialFiles,
+  recoverMaterialUploadRequest,
   uploadMaterialFilesSequentially,
 } from '../../static/modules/material-upload-runtime.js';
 
@@ -14,6 +16,69 @@ const files = count => Array.from({length: count}, (_, index) => ({name: `image-
 test('large upload is partitioned into bounded chunks', () => {
   const chunks = partitionMaterialFiles(files(130), {maxFiles: 64, maxBytes: 1024 * 1024});
   assert.deepEqual(chunks.map(chunk => chunk.length), [64, 64, 2]);
+});
+
+test('1k 10k and 20k selections stay inside the 64-file chunk contract', () => {
+  assert.equal(partitionMaterialFiles(files(1_000)).length, 16);
+  assert.equal(partitionMaterialFiles(files(10_000)).length, 157);
+  const chunks20k = partitionMaterialFiles(files(20_000));
+  assert.equal(chunks20k.length, 313);
+  assert.equal(Math.max(...chunks20k.map(chunk => chunk.length)), 64);
+  assert.equal(chunks20k.reduce((sum, chunk) => sum + chunk.length, 0), 20_000);
+});
+
+test('20k aggregate projects full server rows to compact follow-up state', async () => {
+  const result = await uploadMaterialFilesSequentially(files(20_000), {
+    projectUploaded: compactUploadedMaterial,
+    requestChunk: async chunk => ({
+      uploaded: chunk.map((file, index) => ({
+        id: `${file.name}-${index}`, filename: file.name, url: `/material/${file.name}`,
+        content_sha256: 'f'.repeat(64), object_key: `uploads/${file.name}`,
+        annotation_state: 'unannotated', processing_status: 'unprocessed',
+      })), failed: [],
+    }),
+  });
+  assert.equal(result.confirmedFiles, 20_000);
+  assert.equal(result.uploaded.length, 20_000);
+  assert.deepEqual(Object.keys(result.uploaded[0]).sort(), [
+    'annotated', 'annotation_index_pending', 'annotation_state', 'clean_skipped',
+    'cleaned_at', 'filename', 'id', 'processing_status', 'url',
+  ]);
+  assert.equal('content_sha256' in result.uploaded[0], false);
+  assert.equal('object_key' in result.uploaded[0], false);
+});
+
+test('durable receipt recovers a committed chunk after ambiguous response loss', async () => {
+  let calls = 0;
+  const recovered = await recoverMaterialUploadRequest({
+    projectId: 'p1', requestId: 'up-request-1', pollMs: 0, maxPolls: 3,
+    sleep: async () => {},
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        status: 200, ok: true,
+        async json() {
+          return calls === 1
+            ? {id: 'up-request-1', upload_request_status: 'PROCESSING', items: []}
+            : {id: 'up-request-1', upload_request_status: 'SUCCEEDED',
+               upload_failed: [{name: 'bad.txt', reason: '不支持的图片格式'}],
+               items: [{image_id: 'm1', image: {id: 'm1', filename: 'good.jpg'}}]};
+        },
+      };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(recovered.batch_id, 'up-request-1');
+  assert.deepEqual(recovered.uploaded.map(row => row.id), ['m1']);
+  assert.equal(recovered.failed_count, 1);
+});
+
+test('missing durable receipt is distinguishable from processing', async () => {
+  const recovered = await recoverMaterialUploadRequest({
+    projectId: 'p1', requestId: 'not-created', maxPolls: 1,
+    fetchImpl: async () => ({status: 404, ok: false, json: async () => ({detail: 'missing'})}),
+  });
+  assert.equal(recovered, null);
 });
 
 test('byte ceiling starts a new chunk without splitting a file', () => {
@@ -89,7 +154,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
   const classic = index.match(/<script src="\/static\/app\.js\?v=([^"]+)"><\/script>/);
   const main = index.match(/<script type="module" src="\/static\/main\.mjs\?v=([^"]+)"><\/script>/);
-  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422531"><\/script>/);
+  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422532"><\/script>/);
   assert.ok(classic && main && upload, 'classic app, main runtime and upload bootstrap must all be loaded');
   assert.match(classic[1], /^\d+(?:\.\d+)+$/, 'classic app must carry a numeric cache-bust marker');
   assert.match(main[1], /^\d+(?:\.\d+)+$/, 'main runtime must carry a numeric cache-bust marker');
@@ -98,7 +163,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   assert.ok(index.indexOf(classic[0]) < index.indexOf(main[0]), 'main runtime must load after classic app');
   assert.ok(index.indexOf(main[0]) < index.indexOf(upload[0]), 'upload bootstrap must load after main runtime');
   assert.match(bootstrap, /installMaterialUploadRuntime/);
-  assert.match(bootstrap, /material-upload-runtime\.js\?v=422541/);
+  assert.match(bootstrap, /material-upload-runtime\.js\?v=422542/);
   assert.match(runtime, /window\.doUploadImages426 = input =>/);
   assert.match(runtime, /window\.uploadData424 = \(\) =>/);
   assert.match(runtime, /openRecentUploadBatch414\(\"ready\"\)/);
@@ -126,6 +191,9 @@ test('large upload keeps server-paged dataset state bounded and avoids huge inli
   assert.match(runtime, /state\.page === '数据集' && window\.__materialPaging61\?\.mode === 'paged'/);
   assert.match(runtime, /if \(!pagedDataset\) \{\s*state\.images =/s);
   assert.match(runtime, /state\.recentUploadedMaterials61 = \[\.\.\.recent\.values\(\)\]/);
+  assert.match(runtime, /compactUploadedMaterial/);
+  assert.match(runtime, /requestMaterialChunkRecoverable/);
+  assert.match(runtime, /upload_request_id/);
   assert.match(runtime, /openRecentUploadBatch414\("ready"\)/);
   assert.match(runtime, /openRecentUploadBatch414\("clean"\)/);
   assert.doesNotMatch(runtime, /JSON\.stringify\(ids\)/);

@@ -1,5 +1,7 @@
 export const DEFAULT_UPLOAD_CHUNK_SIZE = 64;
 export const DEFAULT_UPLOAD_CHUNK_BYTES = 128 * 1024 * 1024;
+export const DEFAULT_UPLOAD_RECOVERY_POLL_MS = 500;
+export const DEFAULT_UPLOAD_RECOVERY_MAX_POLLS = 240;
 
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -61,6 +63,7 @@ export class MaterialUploadInterruptedError extends Error {
 export async function uploadMaterialFilesSequentially(files, {
   requestChunk,
   onEvent = () => {},
+  projectUploaded = item => item,
   maxFiles = DEFAULT_UPLOAD_CHUNK_SIZE,
   maxBytes = DEFAULT_UPLOAD_CHUNK_BYTES,
 } = {}) {
@@ -121,16 +124,16 @@ export async function uploadMaterialFilesSequentially(files, {
     }
     activeRequests -= 1;
 
-    const uploaded = responseRows(response, 'uploaded');
+    const responseUploaded = responseRows(response, 'uploaded');
     const failed = responseRows(response, 'failed');
-    const accounted = uploaded.length + failed.length;
+    const accounted = responseUploaded.length + failed.length;
     if (accounted !== chunk.length) {
       throw new MaterialUploadContractError(
         `服务器返回的本批处理数量不完整：${accounted}/${chunk.length}`,
         {chunkIndex: index, response, expected: chunk.length, accounted},
       );
     }
-    aggregate.uploaded.push(...uploaded);
+    aggregate.uploaded.push(...responseUploaded.map(item => projectUploaded(item)));
     aggregate.failed.push(...failed);
     if (response?.batch_id) aggregate.batchIds.push(String(response.batch_id));
     aggregate.confirmedFiles += accounted;
@@ -168,10 +171,84 @@ function formatBytes(value) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function uploadRequestError(message, status = 0, details = {}) {
+  const error = new Error(String(message || '上传请求失败'));
+  error.status = Number(status || 0);
+  error.details = details;
+  return error;
+}
+
+export function compactUploadedMaterial(item) {
+  const row = item || {};
+  return {
+    id: String(row.id || ''),
+    filename: String(row.filename || ''),
+    url: String(row.url || ''),
+    annotation_state: String(row.annotation_state || row.annotation_status || 'unannotated'),
+    annotation_index_pending: !!row.annotation_index_pending,
+    processing_status: String(row.processing_status || 'unprocessed'),
+    annotated: !!row.annotated,
+    cleaned_at: row.cleaned_at || null,
+    clean_skipped: !!row.clean_skipped,
+  };
+}
+
+function uploadRequestSeed() {
+  const random = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
+    || Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+  return `up${Date.now().toString(36)}${random}`.slice(0, 54);
+}
+
+function uploadRequestId(seed, chunkIndex) {
+  return `${seed}-${String(chunkIndex + 1).padStart(4, '0')}`.slice(0, 64);
+}
+
+export async function recoverMaterialUploadRequest({
+  projectId,
+  requestId,
+  fetchImpl = (...args) => fetch(...args),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  pollMs = DEFAULT_UPLOAD_RECOVERY_POLL_MS,
+  maxPolls = DEFAULT_UPLOAD_RECOVERY_MAX_POLLS,
+} = {}) {
+  if (!projectId || !requestId) return null;
+  const url = `/api/v55/projects/${encodeURIComponent(String(projectId))}/upload-batches/${encodeURIComponent(String(requestId))}`;
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(url, {cache: 'no-store'});
+    } catch (error) {
+      if (attempt + 1 >= maxPolls) throw error;
+      await sleep(pollMs);
+      continue;
+    }
+    if (response.status === 404) return null;
+    let body = {};
+    try { body = await response.json(); } catch (_) {}
+    if (!response.ok) throw uploadRequestError(body?.detail || body?.message || `HTTP ${response.status}`, response.status, body);
+    const status = String(body?.upload_request_status || 'SUCCEEDED').toUpperCase();
+    if (status === 'SUCCEEDED') {
+      const uploaded = responseRows(body, 'items').map(item => item?.image).filter(Boolean);
+      const failed = responseRows(body, 'upload_failed');
+      return {
+        batch_id: String(body?.id || requestId), uploaded, failed,
+        uploaded_image_ids: uploaded.map(item => String(item?.id || '')).filter(Boolean),
+        uploaded_count: uploaded.length, failed_count: failed.length,
+        elapsed_seconds: Number(body?.upload_elapsed_seconds || 0),
+        total: Number(body?.upload_material_total || 0), replayed: true, recovered: true,
+      };
+    }
+    if (status === 'FAILED') throw uploadRequestError(body?.upload_request_error || '服务器已确认当前上传批次失败', 409, body);
+    if (attempt + 1 < maxPolls) await sleep(pollMs);
+  }
+  throw uploadRequestError('服务器仍在处理当前批次，结果尚未确认；请勿重复选择上传，稍后可继续恢复', 409);
+}
+
 export function requestMaterialChunkXHR(files, {
   projectId,
   datasetId = 'default',
   storageSourceId = 'default_local',
+  requestId = '',
   onTransfer = () => {},
   xhrFactory = () => new XMLHttpRequest(),
 } = {}) {
@@ -180,26 +257,54 @@ export function requestMaterialChunkXHR(files, {
     for (const file of files || []) form.append('files', file);
     form.append('dataset_id', datasetId || 'default');
     form.append('storage_source_id', storageSourceId || 'default_local');
+    if (requestId) form.append('upload_request_id', String(requestId));
     const xhr = xhrFactory();
     xhr.open('POST', `/api/projects/${encodeURIComponent(String(projectId || ''))}/images`, true);
     xhr.upload.onprogress = event => {
       if (!event.lengthComputable) return;
       onTransfer({loadedBytes: event.loaded, totalBytes: event.total, ratio: event.total ? event.loaded / event.total : 0});
     };
-    xhr.onerror = () => reject(new Error('网络连接异常，当前批次结果未确认'));
-    xhr.onabort = () => reject(new Error('上传已取消，当前批次结果未确认'));
+    xhr.onerror = () => reject(uploadRequestError('网络连接异常，当前批次结果未确认'));
+    xhr.onabort = () => reject(uploadRequestError('上传已取消，当前批次结果未确认'));
     xhr.onload = () => {
       let body = {};
       try { body = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
       if (xhr.status < 200 || xhr.status >= 300) {
         const detail = body?.error?.detail || body?.detail || xhr.responseText || `HTTP ${xhr.status}`;
-        reject(new Error(String(detail)));
+        reject(uploadRequestError(String(detail), xhr.status, body));
         return;
       }
       resolve(body);
     };
     xhr.send(form);
   });
+}
+
+export async function requestMaterialChunkRecoverable(files, options = {}) {
+  const requestId = String(options?.requestId || '');
+  try {
+    return await requestMaterialChunkXHR(files, options);
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    if (!requestId || (status && status !== 409)) throw error;
+    const recoveryOptions = {
+      projectId: options.projectId, requestId,
+      fetchImpl: options.fetchImpl, sleep: options.sleep,
+      pollMs: options.pollMs, maxPolls: options.maxPolls,
+    };
+    const recovered = await recoverMaterialUploadRequest(recoveryOptions);
+    if (recovered) return recovered;
+    try {
+      return await requestMaterialChunkXHR(files, options);
+    } catch (retryError) {
+      const retryStatus = Number(retryError?.status || 0);
+      if (!retryStatus || retryStatus === 409) {
+        const recoveredAfterRetry = await recoverMaterialUploadRequest(recoveryOptions);
+        if (recoveredAfterRetry) return recoveredAfterRetry;
+      }
+      throw retryError;
+    }
+  }
 }
 
 export function installMaterialUploadRuntime({
@@ -236,9 +341,10 @@ export function installMaterialUploadRuntime({
   };
   const patchState = uploaded => {
     const state = getState() || {};
-    const uploadedIds = new Set(uploaded.map(item => String(item?.id)));
+    const compact = uploaded.map(compactUploadedMaterial);
+    const uploadedIds = new Set(compact.map(item => String(item?.id)));
     const recent = new Map((state.recentUploadedMaterials61 || []).map(item => [String(item?.id), item]));
-    for (const item of uploaded) recent.set(String(item?.id), item);
+    for (const item of compact) recent.set(String(item?.id), item);
     state.recentUploadedMaterials61 = [...recent.values()];
     const pagedDataset = state.page === '数据集' && window.__materialPaging61?.mode === 'paged';
     if (!pagedDataset) {
@@ -268,6 +374,8 @@ export function installMaterialUploadRuntime({
       return null;
     }
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
+    const requestSeed = uploadRequestSeed();
+    const chunkRequestIds = chunks.map((_, index) => uploadRequestId(requestSeed, index));
     const uploadTaskId = `images:${Date.now()}:${Math.random().toString(16).slice(2,8)}`;
     const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
     const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
@@ -332,10 +440,12 @@ export function installMaterialUploadRuntime({
       const aggregate = await uploadMaterialFilesSequentially(rows, {
         maxFiles,
         maxBytes,
-        requestChunk: (chunk, context) => requestMaterialChunkXHR(chunk, {
+        projectUploaded: compactUploadedMaterial,
+        requestChunk: (chunk, context) => requestMaterialChunkRecoverable(chunk, {
           projectId: pid,
           datasetId,
           storageSourceId,
+          requestId: chunkRequestIds[context.chunkIndex],
           onTransfer: context.onTransfer,
         }),
         onEvent: event => {
