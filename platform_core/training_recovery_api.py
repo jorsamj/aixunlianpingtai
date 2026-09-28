@@ -142,8 +142,6 @@ def training_recovery_router(
     get_project,
     task_repository,
     task_artifacts,
-    data_dir_provider=None,
-    project_path_provider=None,
     agent_execution_payload_resolver=None,
     agent_result_upload_preparer=None,
     agent_result_upload_confirmer=None,
@@ -220,30 +218,15 @@ def training_recovery_router(
             "recovery_action": before["recovery_action"],
         }
 
-    # app.py intentionally owns a single additive runtime-router mount. Keep all
-    # independent v62/v63 runtime APIs composed at that integration point rather
-    # than adding import-time route side effects or a second scheduler surface.
-    from .training_material_picker_api import training_material_picker_router
+    # app.py owns one additive runtime-router mount for recovery / scheduler /
+    # agent APIs. Project material paging is mounted separately by app.py so it
+    # cannot inherit task-artifact storage paths.
     from .service_nodes import service_node_router
     from .task_node_assignments import central_scheduler_router
     from .agent_execution import agent_executor_router
 
     root = APIRouter()
     root.include_router(recovery_router)
-    # Project/material truth belongs to the platform data root, not the task
-    # artifact store. Artifact storage may be relocated/isolated independently;
-    # deriving project paths from it can make the picker read a different
-    # materials.sqlite3 than the annotation/material owners.
-    material_data_dir = (
-        data_dir_provider
-        if data_dir_provider is not None
-        else lambda: task_artifacts().root.parent.parent
-    )
-    root.include_router(training_material_picker_router(
-        get_project,
-        material_data_dir,
-        project_path_provider=project_path_provider,
-    ))
     root.include_router(service_node_router(task_repository))
     root.include_router(central_scheduler_router(task_repository, task_artifacts))
     root.include_router(agent_executor_router(

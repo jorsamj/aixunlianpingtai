@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
+      - 'app.py'
       - 'platform_core/training_material_picker_api.py'
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
@@ -14,6 +16,7 @@ on:
       - 'static/main.mjs'
       - 'tests/api/test_training_material_picker_api.py'
       - 'tests/api/test_training_material_selection_summary_api.py'
+      - 'tests/api/test_runtime_router_app_mount.py'
       - 'tests/frontend/training-material-picker-runtime.test.mjs'
       - 'tests/frontend/training-material-summary-runtime.test.mjs'
       - 'tests/frontend/training-labels.test.mjs'
@@ -46,6 +49,7 @@ jobs:
           python -m pytest -q
           tests/api/test_training_material_picker_api.py
           tests/api/test_training_material_selection_summary_api.py
+          tests/api/test_runtime_router_app_mount.py
       - name: Frontend syntax and contracts
         run: >-
           node --check static/modules/training-material-picker-runtime.js &&
@@ -100,6 +104,11 @@ jobs:
           grep -Fq 'repository.list_page' platform_core/training_material_picker_api.py
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
           grep -Fq 'requested_training_material_ids' platform_core/training_material_picker_api.py
+          grep -Fq 'app.include_router(training_material_picker_router(' app.py
+          if grep -Fq 'training_material_picker_router' platform_core/training_recovery_api.py; then
+            echo 'training material picker must not be nested under recovery runtime' >&2
+            exit 1
+          fi
 
   real-chrome-picker:
     runs-on: ubuntu-24.04
