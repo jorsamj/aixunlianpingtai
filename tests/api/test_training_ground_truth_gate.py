@@ -1,6 +1,6 @@
 import pytest
 
-from platform_core.snapshots import build_snapshot
+from platform_core.snapshots import build_snapshot, is_training_ground_truth
 from platform_core.training_splits import SplitManifest, SplitMode, _processed
 
 
@@ -89,3 +89,30 @@ def test_training_label_schema_compacts_active_classes_without_losing_canonical_
     assert [row["code"] for row in schema] == ["smoke", "fire"]
     assert [row["class_id"] for row in schema] == [0, 1]
     assert [row["canonical_project_class_id"] for row in schema] == [1, 7]
+
+
+@pytest.mark.parametrize(
+    ("state", "boxes", "eligible"),
+    [
+        ("annotated", [{"label": "smoke"}], True),
+        ("confirmed_empty", [], True),
+        ("unannotated", [], False),
+        ("annotated", [], False),
+        ("confirmed_empty", [{"label": "smoke"}], False),
+    ],
+)
+def test_training_ground_truth_eligibility_is_explicit(state, boxes, eligible):
+    assert is_training_ground_truth(state, boxes) is eligible
+
+
+def test_legacy_include_empty_cannot_reenable_unannotated_training_source():
+    import inspect
+    import app as app_module
+
+    source = inspect.getsource(app_module.dataset_items_by_split)
+    assert "is_training_ground_truth" in source
+    assert "not include_empty" not in source
+
+    source = inspect.getsource(app_module.build_yolo_dataset_v44)
+    assert source.count("is_training_ground_truth") >= 2
+    assert "not payload.include_empty" not in source
