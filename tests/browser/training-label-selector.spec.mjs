@@ -143,8 +143,11 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(labels).toContainText('烟雾');
   await expect(labels).toHaveCSS('display', 'block');
   await expect(dialog.locator('.train-ui-labels-card #trainingLabelContractPanel')).toBeVisible();
+  const fire = labels.locator('input[data-training-label-code="fire"]');
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
-  await smoke.uncheck();
+  await expect(fire).not.toBeChecked();
+  await expect(smoke).not.toBeChecked();
+  await fire.check();
 
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
@@ -274,7 +277,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await secondPicker.getByRole('button', {name: '确认选择'}).click();
 
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
-  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).toBeChecked();
-  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).toBeChecked();
-  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual(['fire', 'smoke']);
+  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).not.toBeChecked();
+  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).not.toBeChecked();
+  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual([]);
 });

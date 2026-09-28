@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from platform_core.training_job_projection import (
     apply_training_display_progress,
     apply_training_task_truth,
@@ -169,3 +171,25 @@ def test_display_projection_uses_frozen_worker_telemetry_after_durable_overlay()
     assert overlaid["current_batch"] == 7
     assert overlaid["elapsed_seconds"] == 75.0
     assert overlaid["eta_seconds"] == 80.0
+
+
+
+def test_live_durable_training_progress_has_one_server_projection_and_no_log_inference():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "app.py").read_text(encoding="utf-8")
+    start = source.index("    if durable is not None and public_runtime is not None:", source.index("def enrich_job_runtime"))
+    historical = source.index("        # Historical pre-Durable compatibility/recovery", start)
+    end = source.index("    if (", historical)
+    durable_block = source[start:historical]
+    historical_block = source[historical:end]
+
+    assert "apply_training_display_progress(" in durable_block
+    assert "_job_log_text(" not in durable_block
+    assert "_infer_epoch_from_log(" not in durable_block
+    assert "_job_log_text(" in historical_block
+    assert "_infer_epoch_from_log(" in historical_block
+
+    stream = (root / "static/modules/training-progress-stream.js").read_text(encoding="utf-8")
+    assert "training_display_progress" in stream
+    assert "displayRevision(" in stream
+    assert "applyProgressCounters" not in stream

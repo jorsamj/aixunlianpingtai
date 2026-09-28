@@ -482,7 +482,7 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   await expect(singleDialog.getByText('成功上传 1 张')).toBeVisible();
   await expect(singleDialog.getByText('本次上传 1 张素材')).toBeVisible();
   await expect(singleDialog.getByText('本次图片是否需要清洗？')).toHaveCount(0);
-  expect(await singleDialog.getByRole('button', {name: '批量无需清洗'}).getAttribute('onclick')).toContain('openBatch414');
+  expect(await singleDialog.getByRole('button', {name: '批量无需清洗'}).getAttribute('onclick')).toContain('openRecentUploadBatch414("ready")');
   await singleDialog.getByRole('button', {name: '批量无需清洗'}).click();
   expect(pageErrors).toEqual([]);
   const readyDialog = page.getByRole('dialog', {name: '批量无需清洗'});

@@ -1235,37 +1235,52 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
     assert readiness["ready"] is False
 
 
-def test_legacy_v12_training_entry_enforces_external_analysis_gate():
+def test_v12_training_entry_enforces_external_analysis_gate_before_durable_enqueue():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
     end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
-    assert "_refresh_external_training_algorithm(project_id, asset_algorithm)" in block
-    assert "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)" in block
-    assert "resolve_external_training_analysis(" in block
-    assert block.index("_refresh_external_training_algorithm(project_id, asset_algorithm)") < block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)")
-    assert block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)") < block.index("resolve_external_training_analysis(")
-    assert block.index("resolve_external_training_analysis(") < block.index("if payload.split_mode:")
-    assert '"external_analysis_id": external_analysis_id' in block
+    refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
+    local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
+    analysis_gate = "resolve_external_training_analysis("
+    split_gate = "if not payload.split_mode:"
+    enqueue = "return _enqueue_explicit_training(project_id, payload)"
+
+    for marker in (refresh, local_gate, analysis_gate, split_gate, enqueue):
+        assert marker in block
+    assert block.index(refresh) < block.index(local_gate)
+    assert block.index(local_gate) < block.index(analysis_gate)
+    assert block.index(analysis_gate) < block.index(split_gate)
+    assert block.index(split_gate) < block.index(enqueue)
 
 
-def test_all_backend_training_create_owners_recheck_external_truth_before_local_gate():
+def test_training_create_has_one_external_truth_owner_plus_compatibility_delegate():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
     local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
-    owners = (
-        ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def check_ultralytics_train_runtime"),
-        ('@app.post("/api/projects/{project_id}/train/start")', "def resolve_server"),
-        ('@app.post("/api/v12/projects/{project_id}/train/start")', "def _v48_resource_key"),
-    )
-    for start_marker, end_marker in owners:
-        start = source.index(start_marker)
-        end = source.index(end_marker, start)
-        block = source[start:end]
-        assert refresh in block, start_marker
-        assert local_gate in block, start_marker
-        assert block.index(refresh) < block.index(local_gate), start_marker
+
+    enqueue_start = source.index("def _enqueue_explicit_training(project_id: str, payload: TrainReq)")
+    enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
+    enqueue_block = source[enqueue_start:enqueue_end]
+    assert refresh in enqueue_block
+    assert local_gate in enqueue_block
+    assert "resolve_external_training_analysis(" in enqueue_block
+    assert enqueue_block.index(refresh) < enqueue_block.index(local_gate)
+
+    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    v12_end = source.index("def _v48_resource_key", v12_start)
+    v12_block = source[v12_start:v12_end]
+    assert refresh in v12_block
+    assert local_gate in v12_block
+    assert "return _enqueue_explicit_training(project_id, payload)" in v12_block
+
+    compatibility_start = source.index('@app.post("/api/projects/{project_id}/train/start")')
+    compatibility_end = source.index("def resolve_server", compatibility_start)
+    compatibility_block = source[compatibility_start:compatibility_end]
+    assert "return v12_start_train(project_id, payload)" in compatibility_block
+    assert refresh not in compatibility_block
+    assert local_gate not in compatibility_block
 
 
 class DetailOverridesSummaryClient(FakeChangLianClient):
