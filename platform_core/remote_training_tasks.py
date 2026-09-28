@@ -26,6 +26,7 @@ from .training_tasks import (
     _label_schema,
     _selected_project_images,
     materialize_portable_dataset,
+    resolve_frozen_training_base,
     resolve_training_input_freeze,
 )
 from .snapshots import (
@@ -442,18 +443,32 @@ class RemoteTrainingPrepareHandler:
                 "training algorithm no longer exists",
                 target_status=TaskStatus.FAILED,
             )
+
         mother = str(payload.get("model") or "").strip()
         versions = list(algorithm.get("versions") or [])
-        base = choose_algorithm_iteration_base(
-            algorithm,
-            mother,
-            "ultralytics",
-            strict_latest=bool(versions),
-            artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
-        )
-        base_path = str(base.get("base_model_path") or mother).strip()
+        try:
+            base = resolve_frozen_training_base(payload)
+        except ValueError as error:
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_BASE_CONTRACT_INVALID",
+                str(error),
+                target_status=TaskStatus.FAILED,
+            ) from error
+        if base is None:
+            # Compatibility for remote tasks created before submit-time base
+            # identity freezing.
+            base = choose_algorithm_iteration_base(
+                algorithm,
+                mother,
+                "ultralytics",
+                strict_latest=bool(versions),
+                artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+            )
 
-        if not versions:
+        base_path = str(base.get("base_model_path") or mother).strip()
+        version_id = str(base.get("base_version_id") or "").strip()
+
+        if not version_id:
             canonical = next(
                 (
                     name
@@ -467,19 +482,32 @@ class RemoteTrainingPrepareHandler:
                     "type": "official",
                     "reference": canonical,
                     "base_selection_reason": str(base.get("base_selection_reason") or "mother_model"),
+                    "base_training_mode": str(base.get("base_training_mode") or "mother_model_init"),
                 }
+            staged = self._stage_direct_model(
+                provider=provider,
+                source_id=source_id,
+                project_id=project_id,
+                task_id=task_id,
+                model_path=Path(base_path),
+            )
+            frozen_sha = str(base.get("base_model_sha256") or "").strip().lower()
+            frozen_size = int(base.get("base_model_size_bytes") or 0)
+            if frozen_sha and (
+                str(staged.get("sha256") or "").strip().lower() != frozen_sha
+                or int(staged.get("size_bytes") or 0) != frozen_size
+            ):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_BASE_MODEL_CHANGED",
+                    "mother model changed after training task creation",
+                    target_status=TaskStatus.FAILED,
+                )
             return {
-                **self._stage_direct_model(
-                    provider=provider,
-                    source_id=source_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    model_path=Path(base_path),
-                ),
+                **staged,
                 "base_selection_reason": str(base.get("base_selection_reason") or "mother_model"),
+                "base_training_mode": str(base.get("base_training_mode") or "mother_model_init"),
             }
 
-        version_id = str(base.get("base_version_id") or "")
         version = next(
             (item for item in versions if str(item.get("id") or "") == version_id),
             None,
@@ -487,7 +515,7 @@ class RemoteTrainingPrepareHandler:
         if version is None:
             raise RemoteTrainingPreparationError(
                 "REMOTE_TRAINING_BASE_VERSION_MISSING",
-                "latest training base version cannot be resolved",
+                "frozen training base version can no longer be resolved",
                 target_status=TaskStatus.FAILED,
             )
         resolved_base = Path(base_path).expanduser().resolve()
@@ -508,10 +536,20 @@ class RemoteTrainingPrepareHandler:
         if candidate is None:
             raise RemoteTrainingPreparationError(
                 "REMOTE_TRAINING_BASE_ARTIFACT_MISSING",
-                "latest algorithm version has no verifiable original model artifact",
+                "frozen algorithm version has no verifiable original model artifact",
                 target_status=TaskStatus.FAILED,
             )
         row = self.model_artifacts.ensure_uploaded(candidate)
+        frozen_sha = str(base.get("base_model_sha256") or "").strip().lower()
+        frozen_size = int(base.get("base_model_size_bytes") or 0)
+        row_sha = str(row.get("sha256") or "").strip().lower()
+        row_size = int(row.get("size_bytes") or 0)
+        if frozen_sha and (row_sha != frozen_sha or row_size != frozen_size):
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_BASE_ARTIFACT_CHANGED",
+                "frozen base model artifact no longer matches submit-time SHA256/size",
+                target_status=TaskStatus.FAILED,
+            )
         if (
             str(row.get("storage_status") or "").upper() != "UPLOADED"
             or str(row.get("storage_source_id") or "") != source_id
@@ -519,18 +557,18 @@ class RemoteTrainingPrepareHandler:
         ):
             raise RemoteTrainingPreparationError(
                 "REMOTE_TRAINING_BASE_ARTIFACT_UPLOAD_FAILED",
-                str(row.get("storage_error") or "latest base model is not uploaded to remote storage"),
+                str(row.get("storage_error") or "frozen base model is not uploaded to remote storage"),
             )
         metadata = provider.stat(str(row["object_key"]))
-        digest = str(row.get("sha256") or "").strip().lower()
+        digest = row_sha
         if (
-            int(metadata.size_bytes) != int(row.get("size_bytes") or 0)
+            int(metadata.size_bytes) != row_size
             or not str(metadata.sha256 or "").strip()
             or str(metadata.sha256).strip().lower() != digest
         ):
             raise RemoteTrainingPreparationError(
                 "REMOTE_TRAINING_BASE_ARTIFACT_UNVERIFIED",
-                "latest base model object is missing matching size/SHA256 evidence",
+                "frozen base model object is missing matching size/SHA256 evidence",
             )
         return {
             "type": "object",
@@ -541,10 +579,11 @@ class RemoteTrainingPrepareHandler:
             "content_type": mimetypes.guess_type(str(row["file_name"]))[0]
             or "application/octet-stream",
             "sha256": digest,
-            "size_bytes": int(row["size_bytes"]),
+            "size_bytes": row_size,
             "base_version_id": version_id,
             "base_version_name": str(base.get("base_version_name") or ""),
             "base_selection_reason": str(base.get("base_selection_reason") or ""),
+            "base_training_mode": str(base.get("base_training_mode") or "previous_weights_init"),
         }
 
     def run(self, context):
