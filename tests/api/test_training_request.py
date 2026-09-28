@@ -1159,3 +1159,96 @@ def test_training_truth_validation_keeps_material_reads_batched():
         assert "materials.get_many(" in source
         assert "materials.get(" not in source
         assert "AnnotationRepository(project_dir(project_id)).get_many(" in source
+
+
+def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
+    client, seeded_project
+):
+    import app as app_module
+    from platform_core.material_repository import MaterialRepository
+
+    project_id, _ = seeded_project
+    colors = ["red", "green", "blue", "yellow", "purple", "orange"]
+    formal = []
+    for index, color in enumerate(colors):
+        uploaded = client.post(
+            f"/api/projects/{project_id}/images",
+            files=[("files", (f"formal-{index}.jpg", _image_bytes(color), "image/jpeg"))],
+            data={"dataset_id": "default"},
+        ).json()["uploaded"][0]
+        saved = client.post(
+            f"/api/projects/{project_id}/annotations/{uploaded['id']}",
+            json={"boxes": [{
+                "class_id": 0,
+                "label": "fire",
+                "x1": 10,
+                "y1": 10,
+                "x2": 90,
+                "y2": 90,
+            }]},
+        )
+        assert saved.status_code == 200, saved.text
+        formal.append(uploaded)
+
+    pending = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("pending-cleaned.jpg", _image_bytes("gray"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    MaterialRepository(app_module.project_dir(project_id)).patch({
+        pending["id"]: {
+            "processing_status": "processed",
+            "cleaned_at": "2026-09-28T00:00:00+00:00",
+        }
+    })
+
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "待标注候选训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    selected_ids = [row["id"] for row in formal] + [pending["id"]]
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": selected_ids,
+            "test_image_ids": [],
+            "experiment_percent": 20,
+            "validation_percent": 20,
+            "device": "cpu",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    selection = response.json()["selection"]
+    assert selection == {
+        "selected_train_count": 7,
+        "effective_train_count": 6,
+        "pending_annotation_count": 1,
+        "test_count": 0,
+    }
+
+    task_id = response.json()["task"]["task_id"]
+    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert payload["selected_train_image_ids"] == selected_ids
+    assert payload["pending_annotation_image_ids"] == [pending["id"]]
+    assert pending["id"] not in payload["train_image_ids"]
+    assert len(payload["train_image_ids"]) == 6
+
+    frozen = app_module.shared_task_artifacts().read_json(task_id, "input-freeze.json")
+    assert frozen["selection"]["selected_train_count"] == 7
+    assert frozen["selection"]["pending_annotation_image_ids"] == [pending["id"]]
+    assert pending["id"] not in {row["id"] for row in frozen["images"]}
+    assert pending["id"] not in frozen["split"]["train_image_ids"]
+
+    job = app_module.read_json(
+        app_module.project_dir(project_id) / "jobs" / task_id / "job.json",
+        {},
+    )
+    assert job["selected_train_images"] == 7
+    assert job["effective_train_images"] == 6
+    assert job["pending_annotation_images"] == 1
