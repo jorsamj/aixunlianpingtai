@@ -3222,6 +3222,51 @@ class RemoteExecutionTransportService:
             snapshot_truth or None,
             dataset_manifest=dataset_manifest or None,
         )
+        frozen_label_schema = [
+            dict(item)
+            for item in (training.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        if not frozen_label_schema and snapshot_truth:
+            frozen_label_schema = [
+                dict(item)
+                for item in (snapshot_truth.get("label_schema") or [])
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ]
+        frozen_label_codes = [
+            str(item.get("code") or "").strip()
+            for item in frozen_label_schema
+        ]
+        frozen_label_contract = (
+            dict(training.get("label_contract") or {})
+            if isinstance(training.get("label_contract"), Mapping)
+            else {}
+        )
+        if not frozen_label_contract and isinstance(payload.get("label_contract"), Mapping):
+            frozen_label_contract = dict(payload.get("label_contract") or {})
+        frozen_label_contract.pop("project_path", None)
+        contract_codes = [
+            str(value or "").strip()
+            for value in (frozen_label_contract.get("effective_label_codes") or [])
+            if str(value or "").strip()
+        ]
+        if contract_codes and contract_codes != frozen_label_codes:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_LABEL_CONTRACT_MISMATCH",
+                "remote training frozen label contract does not match snapshot schema",
+                409,
+            )
+        snapshot_codes = [
+            str(item.get("code") or "").strip()
+            for item in (snapshot_truth.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        if snapshot_codes and frozen_label_codes and snapshot_codes != frozen_label_codes:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_LABEL_SNAPSHOT_MISMATCH",
+                "remote training label schema changed between preparation and commit",
+                409,
+            )
         evaluation = build_evaluation_truth(
             report.get("test_result") if isinstance(report.get("test_result"), Mapping) else {},
             task_id=str(task.task_id),
@@ -3298,6 +3343,9 @@ class RemoteExecutionTransportService:
             "artifact_verified": True,
             "trainable": True,
             "framework": "ultralytics",
+            "label_schema": frozen_label_schema,
+            "label_codes": frozen_label_codes,
+            "label_contract": frozen_label_contract,
             "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
@@ -3322,6 +3370,7 @@ class RemoteExecutionTransportService:
             "version_name": version_name,
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
+            "label_codes": frozen_label_codes,
             "model_artifacts_committed": True,
             "model_artifact_summary": {
                 "discovered": len(artifact_rows),
