@@ -1,4 +1,4 @@
-import json
+import inspect
 import sqlite3
 
 import app as app_module
@@ -501,65 +501,43 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     ]
     direct_revision = direct_materials.current_revision()
 
-    request_path = f"/api/v62/projects/{project_id}/training-materials/selection-summary"
-    request_scope = {
-        "type": "http",
-        "path": request_path,
-        "root_path": "",
-        "method": "POST",
-        "scheme": "http",
-        "query_string": b"",
-        "headers": [],
-        "server": ("testserver", 80),
-        "client": ("testclient", 50000),
-    }
-    matched_routes = []
-    matched_route_truth = []
-    for route in app_module.app.routes:
-        match, child_scope = route.matches(request_scope)
-        if getattr(match, "name", "") == "FULL":
-            matched_routes.append(route)
-            endpoint = getattr(route, "endpoint", None) or child_scope.get("endpoint")
+    def nested_routes(routes):
+        seen = set()
+        stack = list(routes)
+        while stack:
+            route = stack.pop()
+            marker = id(route)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield route
             original_router = getattr(route, "original_router", None)
-            original_routes = []
-            for child in getattr(original_router, "routes", []) or []:
-                child_endpoint = getattr(child, "endpoint", None)
-                original_routes.append({
-                    "type": f"{type(child).__module__}.{type(child).__name__}",
-                    "path": getattr(child, "path", ""),
-                    "path_format": getattr(child, "path_format", ""),
-                    "methods": sorted(getattr(child, "methods", set()) or set()),
-                    "name": getattr(child, "name", ""),
-                    "endpoint_module": getattr(child_endpoint, "__module__", ""),
-                    "endpoint_name": getattr(child_endpoint, "__qualname__", ""),
-                })
-            matched_route_truth.append({
-                "route_type": f"{type(route).__module__}.{type(route).__name__}",
-                "path": getattr(route, "path", ""),
-                "path_format": getattr(route, "path_format", ""),
-                "methods": sorted(getattr(route, "methods", set()) or set()),
-                "name": getattr(route, "name", ""),
-                "endpoint_module": getattr(endpoint, "__module__", ""),
-                "endpoint_name": getattr(endpoint, "__qualname__", ""),
-                "include_context": repr(getattr(route, "include_context", None)),
-                "original_routes": original_routes,
-                "child_scope": {
-                    key: str(value)
-                    for key, value in child_scope.items()
-                    if key in {"path", "root_path", "route", "endpoint", "app"}
-                },
-                "repr": repr(route),
-            })
-    if len(matched_routes) != 1:
-        raise AssertionError(json.dumps(
-            matched_route_truth,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        ))
-    summary_routes = matched_routes
+            stack.extend(list(getattr(original_router, "routes", []) or []))
+            stack.extend(list(getattr(route, "routes", []) or []))
+
+    summary_routes = [
+        route for route in nested_routes(app_module.app.routes)
+        if getattr(route, "path_format", getattr(route, "path", ""))
+        == "/api/v62/projects/{project_id}/training-materials/selection-summary"
+        and "POST" in (getattr(route, "methods", set()) or set())
+    ]
+    assert len(summary_routes) == 1, [
+        (
+            type(route).__name__,
+            getattr(route, "path", ""),
+            getattr(getattr(route, "endpoint", None), "__module__", ""),
+            getattr(getattr(route, "endpoint", None), "__qualname__", ""),
+        )
+        for route in summary_routes
+    ]
     summary_endpoint = summary_routes[0].endpoint
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
+    endpoint_closure = inspect.getclosurevars(summary_endpoint)
+    materials_owner = endpoint_closure.nonlocals["materials"]
+    materials_closure = inspect.getclosurevars(materials_owner)
+    assert materials_closure.nonlocals["project_path_provider"] is app_module.project_dir
+    picker_repository = materials_owner(project_id)
+    assert picker_repository.path.resolve() == direct_materials.path.resolve()
     direct_summary = summary_endpoint(
         project_id,
         {"image_ids": [image["id"], second_id]},
