@@ -2116,6 +2116,70 @@ def test_conversion_publish_request_rejects_blocked_by_environment(tmp_path: Pat
     assert "external_publish_requested_at" not in version
 
 
+def test_publish_owner_stitches_training_request_and_late_rknn_weight(tmp_path: Path):
+    """One existing owner must bridge training publication and late conversion publication."""
+    FakePublishingClient.reset()
+    wait_for_external_publish_owner(0)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory, auto_publish=True)
+    _seed_external_algorithm(tmp_path)
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"id": "p1", "name": "项目1"}]),
+        encoding="utf-8",
+    )
+    service = _service(tmp_path, memory)
+
+    training_requested = request_external_auto_publish_if_enabled(
+        data_dir=tmp_path,
+        algorithms_path=_algorithms_file(tmp_path, "p1"),
+        algorithm_id="a1",
+        version_id="v1",
+        now="2026-09-28T12:10:00Z",
+    )
+    assert training_requested is True
+    first = service.run_auto_publish_once()
+    assert first["published"] == 1
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weights[0]["fileName"] == "best.pt"
+
+    _seed_conversion(
+        tmp_path,
+        job_id="convert-rk3568-after-training",
+        target="rockchip",
+        chip="rk3568",
+        content=b"late-rk3568-model",
+    )
+    conversion_requested = request_external_auto_publish_for_conversion_if_enabled(
+        data_dir=tmp_path,
+        project_id="p1",
+        conversion_job={
+            "status": "done",
+            "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
+        },
+        now="2026-09-28T12:11:00Z",
+    )
+    assert conversion_requested is True
+
+    second = service.run_auto_publish_once()
+    assert second["published"] == 1
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    rknn = next(
+        row for row in FakePublishingClient.weights
+        if str(row.get("fileName") or "").endswith(".rknn")
+    )
+    assert rknn["chipCode"] == "RK3568"
+    assert rknn["algoVersionId"] == FakePublishingClient.weights[0]["algoVersionId"]
+
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "PUBLISHED"
+    assert service.publication_requires_sync(
+        "p1", algorithm, algorithm["versions"][0], publication,
+    ) is False
+
+
 def test_conversion_in_progress_does_not_block_training_version_and_original_weight(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()

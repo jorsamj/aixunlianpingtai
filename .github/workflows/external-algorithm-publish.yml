@@ -227,6 +227,7 @@ jobs:
           grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
           grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
           grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_owner_stitches_training_request_and_late_rknn_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_conversion_in_progress_does_not_block_training_version_and_original_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_blocked_by_hardware_rknn_is_still_appended_as_conversion_weight" tests/unit/test_external_algorithm_publish.py
