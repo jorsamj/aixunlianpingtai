@@ -1,6 +1,159 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 训练创建单 Owner / 标签选择前后端一致性补充（最新）
+
+- 本节写入前真实代码 HEAD：`254fbb2f0964f52e0f4b5dfaca75a72a229cd0f3`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 当前 GitHub Actions runner 仍处于明显 backlog：最近 100 个分支 run 全部为 `queued`；该 HEAD 的 `Training Input Integrity`、`Remote Training Runtime`、`Frontend Runtime Stabilization` 均尚未得到 completed 结果。**queued / in_progress 不算通过，因此本轮 P0 仍不得宣称全绿。**
+- 本轮继续遵守：不 merge main、不 tag、不 release、不 force push、不删除测试、不为测试放宽生产准确性规则。
+
+### 1. 训练创建现在只有一个 Durable owner
+
+审计发现同一产品曾同时保留：
+
+- `/api/v12/projects/{project_id}/train/start`
+- `/api/projects/{project_id}/train/start`
+- v12 内部还残留一段不带 `split_mode` 即进入旧 `build_yolo_dataset_v44()` 的同步创建分支。
+
+这会允许 direct POST 绕过 submit-time label freeze / Snapshot / Ground Truth 合同，属于真实 P0。
+
+当前已收口：
+
+- v12 不带 `split_mode` 直接 409，明确要求 Durable Training；
+- 现代前端 `training-submit.js` 本来就提交 `split_mode`，主 UI 不受影响；
+- 旧无版本 URL 现在只是兼容别名：`return v12_start_train(project_id, payload)`；
+- 已物理删除约 29KB 重复旧训练创建实现和 v12 不可达旧同步分支，不保留第二套 owner；
+- v42 历史自动迭代写入口已经由现有 `_legacy_iteration_write_disabled()` 禁用，不作为当前生产写入口。
+
+关键提交：
+
+- `39dbcbcf`：v12 旧无 split 路径 fail-closed；
+- `de824ef3`：永久 API 测试锁定 legacy bypass 必须失败；
+- `58655aed`：CI guard 锁定 Durable-only v12；
+- `4d9d3142`：退役重复 legacy training creation owner；
+- `ecbf2e1e`：旧 URL 必须委托 Durable owner；
+- `9db4aca8`：CI guard 强制单 Durable owner。
+
+### 2. 真实 YOLO E2E 已迁到生产 Durable handler
+
+旧 `tests/e2e/test_real_yolo_training.py` 仍使用无 `split_mode` 的旧同步 job 语义。
+
+当前已改为：
+
+1. v12 提交 `train_labels + split_mode + train_image_ids + test_image_ids`；
+2. 返回 202 Durable Task；
+3. 测试通过 `resolve_worker_registration(DATA_DIR, {"training"})` 获取实际生产 training handler；
+4. Scheduler 执行真实 CPU 训练；
+5. 最后同时核对模型产物与 `input-freeze.json` 中冻结的 label schema。
+
+提交：`3914f0c7 test: move real yolo e2e onto durable training owner`。
+
+### 3. 三层 class_id 身份现在真正分离
+
+发现 P0：新增 label 进入 task schema 时曾丢掉 project canonical class identity，只留下连续 training class_id。
+
+当前规则：
+
+`source_class_id != canonical_project_class_id != training class_id`
+
+例如项目：
+
+- fire canonical = 1
+- smoke canonical = 7
+
+本轮 YOLO：
+
+- fire training = 0，canonical_project_class_id = 1
+- smoke training = 1，canonical_project_class_id = 7
+
+修复 / 测试：
+
+- `176a9f52 fix: preserve canonical class identity in task schema`
+- `4962de4a test: lock canonical and training class namespaces`
+
+以后禁止直接把 canonical 1/7 当 YOLO class id，也禁止训练压号时丢失 canonical 溯源。
+
+### 4. 新增类别必须存在正式正样本，负样本 scope 不能制造新类
+
+进一步发现：`confirmed_empty.annotation_scope` 之前也会进入“可新增标签”证据，导致只有某类别负样本、没有任何正 bbox 时，用户仍可能把该类别加入 schema。
+
+当前已调整：
+
+- 新类别必须至少由已选 **effective training pool** 中一个正式 positive bbox 证明；
+- `confirmed_empty.annotation_scope` 仍可用于已有/inherited 类别的负样本语义和 dangling-label preflight；
+- 但它不能把一个全新类别加入本轮算法。
+
+修复 / 测试：
+
+- `6f91bc19 fix: require positive evidence for newly added labels`
+- `ba204cf2 test: block negative-only evidence from adding classes`
+
+### 5. 前端不再替用户自动选择新增标签
+
+前端审计发现三个与服务器新合同不一致的点：
+
+1. 首次训练会默认把全部可选标签自动勾上；
+2. 本地 fallback 会把 `annotation_scope` 也展示为“本次素材可新增标签”；
+3. 当前项目 catalog 若停用上一版本 inherited label，前端会把它从继承预览删除，而服务器正确语义是继续保留 previous verified schema。
+
+当前统一为：
+
+- 首次训练：新增标签默认 **一个都不自动选择**；
+- 迭代训练：previous-version inherited labels 自动保留且不可取消；
+- 新增标签永远由用户显式勾选；
+- 可新增标签只来自正式 positive bbox，不来自 `confirmed_empty` scope；
+- 当前 catalog 只决定“新标签是否可选”，不能静默删除 inherited output identity；
+- 前端 active-label admission 与后端一致：`active !== false && status == active`。
+
+提交：
+
+- `6d643531 fix: align client label choices with frozen server schema`
+- `d1441323 test: require explicit client-side new-label choice`
+- `8f486303 fix: mirror server active-label admission in client`
+- `21216f1e test: reject inactive labels in client additions`
+
+大批量路径也已核对：`training_material_picker_api.py::_selection_summary` 的 `label_codes` 来自 `material_labels`（正式 bbox 标签）；负样本 scope 单独存在 `material_annotation_scopes`，因此 10k/20k 服务端摘要不会把负样本 scope 混成新增类别。
+
+### 6. Projection / bundle cache 身份补强
+
+新增永久测试证明：同一源图、同一 label schema，只要 `training_projection_digest` 不同，`snapshot_id` 和 `dataset_revision_id` 必须不同，避免不同 excluded-object redaction 投影命中同一个 bundle cache。
+
+提交：`a7145989 test: bind projection digest to training cache identity`。
+
+### 7. CI guard 已跟随 canonical owner，不保留死代码凑 grep
+
+退役旧训练 owner 后，旧 workflow source guard 中两项会必然假红：
+
+- `runtime_stop_policy="target_only"` 原来查 `app.py`，真实 Durable owner 在 `platform_core/training_tasks.py`；
+- external master-data preflight 的精确出现次数从旧重复 owner 的 3 次变成真实单 owner 下 2 次。
+
+当前已正确把 guard 指向生产 owner，没有为了 grep 重新塞死代码：
+
+- `254fbb2f ci: point training guards at canonical durable owner`
+
+同时已静态自检 `Training Input Integrity` 的 16 条固定 source guard：当前 HEAD **16/16 命中**。
+
+### 8. 当前状态 / 下一步
+
+已知旧红灯的 completed-success 证据仍有效：
+
+- `Training Input Integrity` push `36367518722`：SUCCESS；
+- `Training Input Integrity` PR `36367522023`：SUCCESS；
+- `Remote Training Runtime` PR `36367522000`：SUCCESS。
+
+但这些是本轮 P0 后续代码之前的结果，**不能替代最新 HEAD 验证**。
+
+接手顺序：
+
+1. 每次继续前重新读取远端 HEAD；
+2. 优先等 / 读取当前 HEAD 最新 `Training Input Integrity`、`Remote Training Runtime`、`Frontend Runtime Stabilization`；
+3. 任何 completed failure 必须先读取真实 job log，再修；
+4. 只有当前代码头相关 workflow completed success，才能将本轮迭代标签 P0 标 CLOSED；
+5. 之后再按主流程优先级继续：训练整体一致性 → 批量导入/空素材 → 手工标注 → 数据清洗 → 新畅联。
+
+
+
 ## 2026-09-28 迭代标签 Server-Authoritative 闭环 / 未选目标防错误负监督（最新）
 
 - 本节写入前真实代码 HEAD：`d1807fd4284181b38d8d47df2b67859c4a0b84f8`。
