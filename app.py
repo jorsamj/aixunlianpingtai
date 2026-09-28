@@ -7171,6 +7171,15 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
+    if framework != "ultralytics":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "当前 Durable Training 主流程只支持 Ultralytics。"
+                "PaddleDetection 尚未接入同一套冻结 Snapshot / COCO bundle / completion 合同，"
+                "不能创建一个会在 Worker 端晚失败的训练任务。"
+            ),
+        )
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     try:
@@ -7195,8 +7204,6 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             status_code=409,
             detail=f"训练标签合同无法冻结：{error}",
         ) from error
-    if framework not in {"ultralytics", "paddle"}:
-        raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
     target = str(payload.target or "local").strip().lower()
     if target == "remote":
         # v42.25 control-plane scheduling replaces the legacy direct remote
