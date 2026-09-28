@@ -7171,15 +7171,6 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
-    if framework != "ultralytics":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "当前 Durable Training 主流程只支持 Ultralytics。"
-                "PaddleDetection 尚未接入同一套冻结 Snapshot / COCO bundle / completion 合同，"
-                "不能创建一个会在 Worker 端晚失败的训练任务。"
-            ),
-        )
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     try:
@@ -9454,6 +9445,14 @@ def v12_start_train(project_id: str, payload: TrainReq):
     validate_train_request(payload)
     p = project_dir(project_id)
     framework = (payload.framework or "ultralytics").strip().lower()
+    if framework != "ultralytics":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "当前 Durable Training 主流程只支持 Ultralytics。"
+                "PaddleDetection 尚未接入同一套冻结 Snapshot / COCO bundle / completion 合同。"
+            ),
+        )
     alg = get_algorithm_config(payload.algorithm or "")
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     if not str(payload.algorithm_asset_id or "").strip():
