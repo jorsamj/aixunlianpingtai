@@ -160,7 +160,7 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
   assert.equal(checkboxHandler.includes('queueRefresh();'), false, 'label toggle must not replace its own DOM during click');
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422566'/);
+  assert.match(source, /build: 'module-422567'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
