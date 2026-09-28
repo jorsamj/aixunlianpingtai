@@ -172,23 +172,82 @@ def _legacy_snapshot_schema(data_dir: Path, version: Mapping[str, Any]) -> list[
     return _normalized_version_schema(snapshot.get("label_schema") or [])
 
 
+def _iteration_base(
+    algorithm: Mapping[str, Any],
+    mother_model: str,
+    framework: str,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+    framework_value = str(framework or "ultralytics").strip().lower()
+    versions = list(algorithm.get("versions") or [])
+    selection = choose_algorithm_iteration_base(
+        algorithm,
+        mother_model,
+        framework_value,
+        strict_latest=bool(versions),
+        artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+    )
+    version_id = str(selection.get("base_version_id") or "")
+    previous = (
+        next((row for row in versions if str(row.get("id") or "") == version_id), None)
+        if version_id else None
+    )
+    return previous, dict(selection)
+
+
 def _iteration_version(
     algorithm: Mapping[str, Any],
     mother_model: str,
     framework: str,
 ) -> Mapping[str, Any] | None:
-    versions = list(algorithm.get("versions") or [])
-    if not versions:
-        return None
-    selection = choose_algorithm_iteration_base(
-        algorithm,
-        mother_model,
-        str(framework or "ultralytics").strip().lower(),
-        strict_latest=True,
-        artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+    previous, _selection = _iteration_base(algorithm, mother_model, framework)
+    return previous
+
+
+def _frozen_base_contract(
+    previous: Mapping[str, Any] | None,
+    selection: Mapping[str, Any],
+    mother_model: str,
+    framework: str,
+) -> dict[str, Any]:
+    framework_value = str(framework or "ultralytics").strip().lower()
+    reference = str(selection.get("base_model_path") or mother_model or "").strip()
+    result = {
+        "framework": framework_value,
+        "base_version_id": (
+            str(selection.get("base_version_id") or "") if previous is not None else ""
+        ),
+        "base_version_name": (
+            str(selection.get("base_version_name") or "") if previous is not None else ""
+        ),
+        "base_model_kind": str(
+            selection.get("base_model_kind")
+            or ("train_checkpoint" if previous is not None else "mother_model")
+        ),
+        "base_model_reference": reference,
+        "base_model_sha256": "",
+        "base_model_size_bytes": 0,
+        "base_selection_reason": str(
+            selection.get("base_selection_reason")
+            or ("current_verified_version" if previous is not None else "mother_model")
+        ),
+    }
+    if not reference:
+        return result
+
+    candidate = Path(reference).expanduser()
+    if not candidate.is_file():
+        # Official/model-registry references are frozen by exact name. They are
+        # resolved by the execution environment later, but a newly-created
+        # algorithm version may not change this first-training choice.
+        return result
+
+    resolved = candidate.resolve()
+    result.update(
+        base_model_reference=str(resolved),
+        base_model_sha256=base._sha256(resolved),
+        base_model_size_bytes=int(resolved.stat().st_size),
     )
-    version_id = str(selection.get("base_version_id") or "")
-    return next((row for row in versions if str(row.get("id") or "") == version_id), None)
+    return result
 
 
 def resolve_training_label_contract(
@@ -222,10 +281,17 @@ def resolve_training_label_contract(
             "本次选择包含临时/未知标签: " + ", ".join(temporary_requested[:10])
         )
     mother = str(payload.get("model") or "").strip()
-    previous = _iteration_version(
+    framework_value = str(payload.get("framework") or "ultralytics").strip().lower()
+    previous, base_selection = _iteration_base(
         algorithm,
         mother,
-        str(payload.get("framework") or "ultralytics"),
+        framework_value,
+    )
+    base_contract = _frozen_base_contract(
+        previous,
+        base_selection,
+        mother,
+        framework_value,
     )
 
     inherited: list[dict[str, Any]] = []
@@ -313,8 +379,7 @@ def resolve_training_label_contract(
         "effective_label_schema": effective,
         "label_schema_changed": label_schema_changed,
         "label_schema_change_reasons": schema_change_reasons,
-        "base_version_id": None if previous is None else str(previous.get("id") or ""),
-        "base_version_name": "" if previous is None else str(previous.get("version_name") or ""),
+        **base_contract,
         "base_training_mode": "previous_weights_init" if previous is not None else "mother_model_init",
         "strict_resume": False,
         "optimizer_state_resumed": False,
