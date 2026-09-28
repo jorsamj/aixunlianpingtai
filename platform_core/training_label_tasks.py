@@ -78,7 +78,6 @@ def selected_material_label_codes(project: Path, payload: Mapping[str, Any]) -> 
         [
             *(payload.get("train_image_ids") or []),
             *(payload.get("val_image_ids") or []),
-            *(payload.get("test_image_ids") or []),
             *(payload.get("selected_image_ids") or []),
         ]
     )
@@ -156,6 +155,7 @@ def _legacy_snapshot_schema(data_dir: Path, version: Mapping[str, Any]) -> list[
 def _iteration_version(
     algorithm: Mapping[str, Any],
     mother_model: str,
+    framework: str,
 ) -> Mapping[str, Any] | None:
     versions = list(algorithm.get("versions") or [])
     if not versions:
@@ -163,7 +163,7 @@ def _iteration_version(
     selection = choose_algorithm_iteration_base(
         algorithm,
         mother_model,
-        "ultralytics",
+        str(framework or "ultralytics").strip().lower(),
         strict_latest=True,
         artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
     )
@@ -204,7 +204,11 @@ def resolve_training_label_contract(
             "本次选择包含临时/未知标签: " + ", ".join(temporary_requested[:10])
         )
     mother = str(payload.get("model") or "").strip()
-    previous = _iteration_version(algorithm, mother)
+    previous = _iteration_version(
+        algorithm,
+        mother,
+        str(payload.get("framework") or "ultralytics"),
+    )
 
     inherited: list[dict[str, Any]] = []
     if previous is not None:
