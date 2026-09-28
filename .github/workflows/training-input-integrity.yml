@@ -100,9 +100,14 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'negative_origin"] = "redacted_unselected_labels"' platform_core/training_label_tasks.py
-          grep -Fq 'training_projection_policy"] = "redact_excluded_objects_v1"' platform_core/training_label_tasks.py
+          grep -Fq 'TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"' platform_core/training_tasks.py
+          grep -Fq 'training_projection_policy"] = base.TRAINING_PROJECTION_POLICY' platform_core/training_label_tasks.py
+          grep -Fq 'policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}' platform_core/training_tasks.py
           grep -Fq 'def _apply_training_projection(' platform_core/training_tasks.py
           grep -Fq 'excluded_object_redaction' platform_core/training_tasks.py
+          grep -Fq 'test_redaction_v2_preserves_selected_positive_pixels_inside_excluded_box' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_legacy_v1_redaction_remains_replayable_without_v2_pixel_restore' tests/unit/test_training_label_contract.py
           grep -Fq 'training_projection_digest' platform_core/snapshots.py
           grep -Fq 'negative_origin_counts' platform_core/snapshots.py
           grep -Fq 'test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source' tests/unit/test_training_label_contract.py
