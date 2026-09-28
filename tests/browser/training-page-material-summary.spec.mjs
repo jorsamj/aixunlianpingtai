@@ -79,8 +79,10 @@ test('training page stays paged and selected labels come from server summary', a
   await expect(page.locator('#tr429Labels')).toContainText('人员');
   await expect(page.locator('#trainingLabelContractPanel')).toContainText('烟雾');
   await expect(page.locator('#trainingLabelContractPanel')).toContainText('人员');
+  // Server truth exposes available material labels, but the product must
+  // never select new training classes on the user's behalf.
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime.current().newLabelCodes.slice().sort()))
-    .toEqual(['person', 'smoke']);
+    .toEqual([]);
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialSummaryRuntime.state().fullPoolHydration))
     .toBe(false);
 });
