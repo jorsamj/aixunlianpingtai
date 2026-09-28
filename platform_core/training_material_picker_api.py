@@ -67,6 +67,11 @@ def _public_picker_material(project_id: str, row: dict, annotation: dict) -> dic
         "boxes": boxes,
         "processing_status": str(row.get("processing_status") or ""),
         "annotation_state": annotation_state,
+        "training_state": (
+            "trainable"
+            if annotation_state in {"annotated", "confirmed_empty"}
+            else "pending_annotation"
+        ),
         "source_available": row.get("source_available") is not False,
         "size_bytes": max(0, int(row.get("size_bytes") or 0)),
         "thumbnail_url": f"/api/v62/projects/{quote(str(project_id), safe='')}/training-materials/{encoded}/thumbnail?size={DEFAULT_THUMBNAIL_SIZE}",
@@ -108,32 +113,44 @@ def _selection_summary(repository: MaterialRepository, image_ids: list[str]) -> 
             )
         row = database.execute(
             "SELECT COUNT(m.id) AS matched_count, "
-            "COALESCE(SUM(CASE WHEN m.annotated <> 0 THEN 1 ELSE 0 END), 0) AS eligible_count, "
-            "COALESCE(SUM(CASE WHEN m.annotated <> 0 THEN m.box_count ELSE 0 END), 0) AS box_count, "
-            "COALESCE(SUM(CASE WHEN m.annotated <> 0 THEN m.size_bytes ELSE 0 END), 0) AS size_bytes "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' THEN 1 ELSE 0 END), 0) AS selectable_count, "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN 1 ELSE 0 END), 0) AS eligible_count, "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated = 0 THEN 1 ELSE 0 END), 0) AS pending_annotation_count, "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN m.box_count ELSE 0 END), 0) AS box_count, "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN m.size_bytes ELSE 0 END), 0) AS size_bytes, "
+            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' THEN m.size_bytes ELSE 0 END), 0) AS selectable_size_bytes "
             "FROM requested_training_material_ids r "
             "LEFT JOIN materials m ON m.id = r.id"
         ).fetchone()
         label_rows = database.execute(
             "SELECT ml.label_code AS label_code, COUNT(DISTINCT ml.material_id) AS material_count "
             "FROM requested_training_material_ids r "
-            "JOIN materials m ON m.id = r.id AND m.annotated <> 0 "
+            "JOIN materials m ON m.id = r.id AND m.processing_status = 'processed' AND m.annotated <> 0 "
             "JOIN material_labels ml ON ml.material_id = m.id "
             "GROUP BY ml.label_code ORDER BY ml.label_code"
         ).fetchall()
-        eligible_total = int(database.execute(
-            "SELECT COUNT(*) FROM materials WHERE annotated <> 0"
-        ).fetchone()[0])
+        totals = database.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN processing_status = 'processed' THEN 1 ELSE 0 END), 0) AS selectable_total, "
+            "COALESCE(SUM(CASE WHEN processing_status = 'processed' AND annotated <> 0 THEN 1 ELSE 0 END), 0) AS eligible_total, "
+            "COALESCE(SUM(CASE WHEN processing_status = 'processed' AND annotated = 0 THEN 1 ELSE 0 END), 0) AS pending_annotation_total "
+            "FROM materials"
+        ).fetchone()
     label_counts = {str(item["label_code"]): int(item["material_count"]) for item in label_rows}
     return {
         "requested_count": len(image_ids),
         "matched_count": int(row["matched_count"] or 0),
+        "selectable_count": int(row["selectable_count"] or 0),
         "eligible_count": int(row["eligible_count"] or 0),
+        "pending_annotation_count": int(row["pending_annotation_count"] or 0),
         "box_count": int(row["box_count"] or 0),
         "size_bytes": int(row["size_bytes"] or 0),
+        "selectable_size_bytes": int(row["selectable_size_bytes"] or 0),
         "label_codes": list(label_counts),
         "label_counts": label_counts,
-        "eligible_total": eligible_total,
+        "selectable_total": int(totals["selectable_total"] or 0),
+        "eligible_total": int(totals["eligible_total"] or 0),
+        "pending_annotation_total": int(totals["pending_annotation_total"] or 0),
     }
 
 
@@ -142,6 +159,7 @@ def _bulk_filtered_ids(
     *,
     query: str = "",
     labels: tuple[str, ...] = (),
+    require_ground_truth: bool = False,
 ) -> tuple[list[str], int]:
     """Resolve a large filtered selection server-side with one HTTP request.
 
@@ -152,8 +170,10 @@ def _bulk_filtered_ids(
     filters = {
         "query": str(query or "").strip(),
         "labels": labels,
-        "annotated": True,
+        "processing_status": "processed",
     }
+    if require_ground_truth:
+        filters["annotated"] = True
     cursor = None
     ids: list[str] = []
     total = -1
@@ -272,7 +292,7 @@ def training_material_picker_router(get_project, data_dir_provider):
                 limit=int(limit),
                 query=str(query or "").strip(),
                 labels=tuple(label or ()),
-                annotated=True,
+                processing_status="processed",
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -311,7 +331,7 @@ def training_material_picker_router(get_project, data_dir_provider):
                 {
                     "query": str(query or "").strip(),
                     "labels": tuple(label or ()),
-                    "annotated": True,
+                    "processing_status": "processed",
                 },
                 cursor=cursor,
                 limit=int(limit),
@@ -335,7 +355,15 @@ def training_material_picker_router(get_project, data_dir_provider):
             query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
             if bool(body.get("all_available")):
                 labels = ()
-            ids, total = _bulk_filtered_ids(repository, query=query, labels=labels)
+            role = str(body.get("role") or "train").strip().lower()
+            if role not in {"train", "test"}:
+                raise ValueError("role must be train or test")
+            ids, total = _bulk_filtered_ids(
+                repository,
+                query=query,
+                labels=labels,
+                require_ground_truth=role == "test",
+            )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
