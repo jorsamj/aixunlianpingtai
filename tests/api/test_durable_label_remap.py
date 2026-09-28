@@ -1,3 +1,5 @@
+import sqlite3
+
 import app as app_module
 
 from platform_core.annotation_repository import AnnotationRepository
@@ -477,6 +479,26 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     assert projected_positive["annotated"] is True
     assert projected_positive["labels"] == ["person"]
     assert projected_positive["label_counts"] == {"person": 2}
+    direct_materials = app_module.material_store(project_id)
+    with sqlite3.connect(direct_materials.path) as database:
+        database.row_factory = sqlite3.Row
+        indexed_material = database.execute(
+            "SELECT processing_status, annotated, box_count FROM materials WHERE id=?",
+            (image["id"],),
+        ).fetchone()
+        indexed_labels = database.execute(
+            "SELECT label_code, box_count FROM material_labels WHERE material_id=? ORDER BY label_code",
+            (image["id"],),
+        ).fetchall()
+    assert dict(indexed_material) == {
+        "processing_status": "processed",
+        "annotated": 1,
+        "box_count": 2,
+    }
+    assert [dict(row) for row in indexed_labels] == [
+        {"label_code": "person", "box_count": 2}
+    ]
+    direct_revision = direct_materials.current_revision()
 
     training_summary = client.post(
         f"/api/v62/projects/{project_id}/training-materials/selection-summary",
@@ -484,6 +506,7 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     )
     assert training_summary.status_code == 200, training_summary.text
     summary_body = training_summary.json()
+    assert summary_body["repository_revision"] == direct_revision
     assert summary_body["label_codes"] == ["person"]
     assert summary_body["label_counts"] == {"person": 1}
     assert "fire" not in summary_body["label_codes"]
