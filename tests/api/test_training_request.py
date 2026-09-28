@@ -369,6 +369,61 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
     assert "训练集" in response.json()["detail"]
 
 
+def test_product_training_submit_freezes_server_authoritative_label_contract(
+    client, seeded_project
+):
+    import app as app_module
+
+    project_id, seed_image = seeded_project
+    one = _mark_training_ready(client, project_id, seed_image)
+    two = _upload_training_ready(client, project_id, "label-contract-two.jpg", (31, 47, 63))
+    three = _upload_training_ready(client, project_id, "label-contract-three.jpg", (79, 97, 113))
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "标签冻结合同", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    base_request = {
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [one["id"], two["id"], three["id"]],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+    }
+
+    missing = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json=base_request,
+    )
+    assert missing.status_code == 409
+    assert "首次训练必须" in missing.json()["detail"]
+
+    bypass = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={**base_request, "train_labels": ["smoke"]},
+    )
+    assert bypass.status_code == 409
+    assert "不在已选素材" in bypass.json()["detail"]
+
+    accepted = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={**base_request, "train_labels": ["fire"]},
+    )
+    assert accepted.status_code == 202, accepted.text
+    task = accepted.json()["task"]
+    frozen = app_module.shared_task_artifacts().read_json(
+        task["id"], "input-freeze.json", default={}
+    )
+    assert [row["code"] for row in frozen["label_schema"]] == ["fire"]
+    assert frozen["label_contract"]["requested_label_codes"] == ["fire"]
+    assert frozen["label_contract"]["inherited_label_codes"] == []
+    assert frozen["label_contract"]["effective_label_codes"] == ["fire"]
+    assert frozen["label_contract"]["strict_resume"] is False
+    assert frozen["label_contract"]["optimizer_state_resumed"] is False
+
+
 def test_product_training_route_rejects_unknown_algorithm_asset(client, seeded_project):
     project_id, _ = seeded_project
     response = client.post(
