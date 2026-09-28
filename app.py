@@ -7222,6 +7222,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "input_freeze_id": input_freeze["input_freeze_id"],
             "snapshot_id": input_freeze["snapshot_id"],
             "dataset_revision_id": input_freeze["dataset_revision_id"],
+            "input_quality": input_freeze["input_quality"],
             **(
                 {
                     "remote_input_state": "PREPARING",
@@ -7325,6 +7326,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "input_freeze_id": input_freeze["input_freeze_id"],
             "snapshot_id": input_freeze["snapshot_id"],
             "dataset_revision_id": input_freeze["dataset_revision_id"],
+            "input_quality": input_freeze["input_quality"],
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "artifact_verified": False,
