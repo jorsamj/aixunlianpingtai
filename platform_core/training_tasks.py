@@ -839,7 +839,9 @@ def _selected_project_images(
     wanted = tuple(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
     if not wanted:
         raise ValueError("train_image_ids 不能为空")
-    rows = materials.get_many(wanted)
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(wanted), 500):
+        rows.extend(materials.get_many(wanted[offset:offset + 500]))
     found = {str(row.get("id")) for row in rows}
     missing = [image_id for image_id in wanted if image_id not in found]
     if missing:
