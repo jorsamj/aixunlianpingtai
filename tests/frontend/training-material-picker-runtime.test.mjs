@@ -110,9 +110,18 @@ test('annotated preview uses source coordinates as the SVG viewBox', () => {
 
 test('empty boxes preserve confirmed-empty and unannotated as distinct states', () => {
   const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
-  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'unannotated', boxes: []});
+  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, processing_status: 'processed', annotation_state: 'unannotated', boxes: []});
   assert.match(confirmed, /已确认无目标/);
-  assert.match(unannotated, /未标注/);
+  assert.match(unannotated, /已清洗 · 待标注/);
   assert.doesNotMatch(confirmed, /<svg/);
   assert.doesNotMatch(unannotated, /<svg/);
+});
+
+
+test('cleaned unannotated materials are selectable for train but fenced from independent test', () => {
+  assert.match(source, /missingTestTruth = picker\.role === 'test'/);
+  assert.match(source, /role: picker\?\.role \|\| 'train'/);
+  assert.match(source, /试验集必须已标注/);
+  assert.match(source, /待标注素材会保留在任务中/);
+  assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
 });
