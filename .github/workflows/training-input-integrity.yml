@@ -99,14 +99,19 @@ jobs:
       - name: Permanent task-filtered negative guards
         shell: bash
         run: |
-          grep -Fq 'negative_origin"] = "filtered_by_training_labels"' platform_core/training_label_tasks.py
+          grep -Fq 'negative_origin"] = "redacted_unselected_labels"' platform_core/training_label_tasks.py
+          grep -Fq 'training_projection_policy"] = "redact_excluded_objects_v1"' platform_core/training_label_tasks.py
+          grep -Fq 'def _apply_training_projection(' platform_core/training_tasks.py
+          grep -Fq 'excluded_object_redaction' platform_core/training_tasks.py
+          grep -Fq 'training_projection_digest' platform_core/snapshots.py
           grep -Fq 'negative_origin_counts' platform_core/snapshots.py
           grep -Fq 'test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source' tests/unit/test_training_label_contract.py
           grep -Fq 'test_task_filtered_negative_materializes_as_empty_yolo_label' tests/unit/test_training_label_contract.py
-          grep -Fq 'test_snapshot_preserves_task_filtered_negative_origin' tests/unit/test_negative_sample_contract.py
+          grep -Fq 'test_snapshot_preserves_redacted_task_negative_projection_evidence' tests/unit/test_negative_sample_contract.py
           grep -Fq 'Task-derived negative addendum' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
-          if grep -Fq '不能通过过滤其他标签制造负样本' platform_core/training_label_tasks.py; then
-            echo 'legacy rejection of task-derived negatives must not return' >&2
+          grep -Fq 'Never recreate `negative_origin=filtered_by_training_labels`' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
+          if grep -Fq 'negative_origin"] = "filtered_by_training_labels"' platform_core/training_label_tasks.py; then
+            echo 'visible deselected objects must never return as filtered empty-label negatives' >&2
             exit 1
           fi
           test ! -e tools/_one_shot_task_filtered_negative.py
