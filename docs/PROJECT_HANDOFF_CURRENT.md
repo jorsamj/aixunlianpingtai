@@ -1,3 +1,15 @@
+<!-- LIVE_HANDOFF_2026_09_28_CURRENT -->
+> ## 2026-09-28 当前接手入口（最高优先级）
+>
+> 代码状态 cutoff：`ce383fcc1af6ee5420860a42e65181a594545c5e`；`VERSION.txt=42.24.0`。该 cutoff 当前 **58 checks：57 success / 1 failure / 0 queued / 0 in_progress**。唯一红灯是 Frontend Runtime Stabilization 的 `browser-navigation`：76 个 Playwright case 中 75 passed / 1 failed，失败为标签管理“编辑标签”点击保存后 modal 5 秒内仍未关闭。
+>
+> 近期已完成：新畅联 sync 单 operation + analysis summary N+1 优化且 detail truth 不降级；ZIP selected-tree 重复 I/O 消除 + 服务端真实 phase/counter/ETA；AI v60 模型配置 submit-time 冻结、secret 仅保留 reference、用户显式选择 canonical labels、参考图不自动扩张标签；AI Review commit journal/cancellation gap 与 AnnotationRepository CAS 并发覆盖防护；训练未选标签对象 redaction 升级为 `redact_excluded_objects_v2_preserve_selected`，避免大 excluded box 抹掉已选正样本像素，同时保留 v1 历史 replay。
+>
+> 下一步不要重新修已经消失的历史红灯。先 focused reproduce 当前唯一 Browser failure，查保存 API/返回状态/局部 refresh/modal close 真相；禁止只加 timeout，禁止恢复 full material pool。修复后重新看最新 HEAD 的全部 Actions。
+>
+> 完整说明：`docs/codex-handoff.md` 顶部“2026-09-28 当前真实接管点”；可直接复制的新会话指令：`docs/CODEX_TAKEOVER_PROMPT_2026-09-28.md`。
+>
+
 <!-- LIVE_HANDOFF_2026_09_25_ANNOTATION_CLEANING -->
 > ## 2026-09-25 标注 / 数据清洗最新接手入口（最高优先级）
 >

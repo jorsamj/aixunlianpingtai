@@ -1,5 +1,141 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-28 当前真实接管点：AI 标注闭环 / 训练标签投影 / CI 仅剩 1 个 Browser 红灯（最高优先级）
+
+- 本节代码状态 cutoff：`ce383fcc1af6ee5420860a42e65181a594545c5e`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 该代码 cutoff 的 GitHub check 真相：**58 total / 57 success / 1 failure / 0 queued / 0 in_progress**。
+- 唯一失败 check：`Frontend Runtime Stabilization / browser-navigation`，job `108840375284`。
+- 本节文档提交会把分支 HEAD 再向前推进；新会话第一步仍必须重新读取远端真实 HEAD / VERSION / 最近 commits / 当前 Actions，不能把上述 cutoff 当成最新 HEAD。
+- 继续遵守：不 merge main、不 tag、不 release、不 force push、不删除或放宽测试、不恢复退役 owner、不写死 Windows 路径。
+
+### 1. 已完成：新畅联同步与 ZIP 导入性能 / 进度单一真相源
+
+从 `13b4180c` 到 `e9bc23f6` 已完成：
+
+- 新畅联 Manual / Auto sync 收口到单一 operation truth。
+- 外部分析方式列表支持 `analysis_list_all()` 一次读取 summary index，能证明 product ownership 时消除 product→analyses N+1；不能证明时回退原有 per-product list。
+- **训练资格真相仍以每个 analysis 的 detail/getInfo 为准**，即 `status == 1 && analysisType == 1`；listAll 只做索引优化，不能覆盖 authoritative detail。
+- ZIP 选择性导入不再“先全量 extract 再复制 selected tree”，只写用户选择的 image member，同时保留 annotation/config member，减少一次完整磁盘写放大。
+- ZIP merge/verify/scan/extract/annotation/db-commit 的展示进度收口为服务端 `zip_display_progress`；真实 bytes / entries / counters / ETA 从服务端发布。
+- 浏览器侧旧固定百分比估算器已退役为历史兼容，当前 job 优先读取服务端 canonical projection。
+- VERIFY 与 SCAN 已拆开，避免“验证/扫描”阶段进度含义混在一起。
+
+关键提交：
+- `13b4180c` — unify external sync operation truth
+- `a13af3b8` — remove external analysis summary N+1
+- `2724e0f6` — eliminate duplicate ZIP selected-tree copy
+- `161f6104` — server-owned ZIP phase progress
+- `a20a28b5` — retire browser ZIP progress estimators
+- `e9bc23f6` — separate ZIP verify and scan progress truth
+
+### 2. 已完成：AI 标注 canonical owner、模型配置冻结与显式标签选择
+
+当前 AI 标注正式流程仍是：
+
+`AI inference -> CandidateStore -> AWAITING_CONFIRMATION -> 人工审核/编辑/接受/拒绝 -> Commit -> AnnotationRepository Ground Truth`
+
+本轮进一步收口：
+
+- v60 创建任务与 Material Batch 共用 worker-safe `platform_core.annotation_runtime` owner。
+- 模型配置在 submit-time 冻结：`model_config_id / model_name / provider / config revision / secret_ref` 等任务输入持久化；**secret value 不进入 request.json**，Worker 执行时才按 secret reference 解析。
+- 普通用户只从“模型配置”选择正式视觉模型；不再暴露临时 endpoint/provider 执行入口。
+- AI 标签必须由用户**显式填写/选择当前有效 canonical label code**；中文名、alias、历史 alias、参考图片都不能自动替用户决定标签。
+- 参考图片只作为视觉 example，不能读取其 bbox 后自动扩张本次 labels。
+- AI Review commit 关闭 cancellation gap：正式 Ground Truth 写入后，commit journal catch-up 不再被刚到达的 cancel 截断，避免“GT 已写但 journal 未记”的半提交。
+- AI Review 正式写入携带 `expected_version`，通过 AnnotationRepository CAS 防止审核提交覆盖并发人工标注修改。
+- CandidateStore / formal AnnotationRepository 继续是两个明确 durable owner，不新增第二套 Ground Truth 存储。
+
+关键提交：
+- `8f521207` — freeze canonical AI annotation model configuration
+- `5893e697` — require explicit AI annotation labels
+- `07db5297` — lock AI review and explicit training labels
+- `3de7e799` — close AI review commit cancellation gap
+- `4a340260` — fence AI review against concurrent annotation edits
+- `ce383fcc` — align AI recovery guard with journal catch-up
+
+### 3. 已完成：训练“未选标签对象”投影升级为 v2，避免误伤已选目标
+
+此前训练允许同一张图片继续参与，但本次未选择的 label 不进入本次算法类别。为避免未选对象仍作为正样本泄漏，训练 bundle 会对 excluded object 做像素 redaction。
+
+本轮发现一个准确性边界：若“未选标签的大框”覆盖“已选标签的小框”，v1 直接涂抹大框会把已选目标像素也抹掉，但 YOLO positive label 仍保留，形成“有标签、没目标像素”的矛盾训练真相。
+
+当前已升级：
+
+- canonical policy：`redact_excluded_objects_v2_preserve_selected`。
+- 先 redaction 未选对象，再从原图恢复所有 selected positive rectangle 的像素。
+- 因此未选择的标签不会被本次训练知晓，同时尽量不破坏已选择类别的正样本视觉证据。
+- 历史 `redact_excluded_objects_v1` 仍可 replay，不能破坏旧 frozen task。
+- projection digest / manifest / source guard 已同步锁定 v2 与 legacy v1 compatibility。
+
+关键提交：
+- `e41ce7bf` — preserve selected targets during label redaction
+- `90960c85` — lock redaction v2 and legacy replay
+
+### 4. 前一批 CI 红灯已大幅清空
+
+在 `161f6104` 后处理过的真实问题/合同包括：
+
+- 旧 training stop path 的 retired queue lock / training runtime 合同。
+- External Algorithm SQL unchanged sync 不应因 sync metadata 改变而 bump master-data revision。
+- Training bundle cache publication 必须保持“算法版本 attach 完成后再 publish verified”语义。
+- ZIP progress/source guards、external publish/platform guards、remote training guards 等历史 source literal 已与 canonical owner 对齐。
+- 这些工作已经反映在当前 cutoff：**57/58 checks success**，不再是上一轮的 13 个 completed failures。
+
+不要重新修已经消失的旧红灯；新会话必须以当前 live check-runs 为准。
+
+### 5. 当前唯一 OPEN：标签管理“编辑标签”保存后 Modal 未关闭
+
+真实失败日志：
+
+- Workflow/job：`Frontend Runtime Stabilization / browser-navigation`，job `108840375284`。
+- Playwright：**76 tests -> 75 passed / 1 failed**。
+- 失败 case：
+  `tests/browser/material-workflows.spec.mjs:518`
+  `label management create and edit stay page-scoped without loading the full material pool`
+- 失败断言位置约 line 577：
+  点击“编辑标签 -> 保存”后，`getByRole('dialog', { name: '编辑标签' })` 在 5 秒内仍 visible。
+- 该 case 的目的还包括：标签管理 create/edit 必须 page-scoped，不能为了保存标签重新加载 full material pool。
+
+下一会话处理原则：
+
+1. **先 focused reproduce / 读真实 network + browser state**，确认保存 API 是否成功、是否 4xx/409、是否成功但 UI 没 close、是否 authoritative refresh 卡住。
+2. 不要先把 timeout 从 5s 调大。
+3. 不要为了关 modal 恢复 full material mode / 全量素材 refresh。
+4. 保存成功后应关闭 modal，并只 patch/refresh 标签管理所需的小范围 truth。
+5. 保存失败必须留在 modal 并显示真实 error，不能“假关闭”。
+6. 修完后先跑该 focused browser case，再跑 `browser-navigation`，最后重新看当前 HEAD 的全部 check-runs。
+
+### 6. 下一会话优先级
+
+P0-1：关闭上面的唯一 browser 红灯，保证标签管理 page-scoped create/edit 主流程稳定。
+
+P0-2：重新确认最新 HEAD 所有 completed checks；只有当前 HEAD 全部 success 才能写“CI 全绿”。
+
+P0-3：做一轮主流程回归审计，重点不是重构，而是防止近期 AI/标签投影改动破坏：
+- 批量上传 / ZIP 导入；
+- 无目标/confirmed_empty；
+- 手工标注；
+- AI Candidate review + commit；
+- 数据清洗；
+- 训练创建、输入冻结、迭代标签继承、显式标签选择；
+- External ChangLian 同步/发布。
+
+P1：在 CI 稳定后再做真实环境验收：Linux/NVIDIA GPU、真实 OSS、新畅联生产接口、Rockchip 转换/实板。没有现场证据不得写成 VERIFIED。
+
+### 7. 不得破坏的长期产品合同
+
+- `VERSION.txt` 必须保持 `42.24.0`。
+- 训练创建唯一 Durable owner；Local/Remote 必须使用 frozen Ground Truth/Snapshot/base checkpoint/label contract。
+- 用户决定标签；导入和 AI 都不得自动映射/自动替用户选 canonical label。
+- `confirmed_empty` 是正式负样本。
+- AI 不能直接写正式标注；必须 Candidate -> 人工确认 -> Commit。
+- AnnotationRepository / CandidateStore / ZIP / TrainingSubmit / PollRegistry 不新增第二 owner。
+- 新畅联训练资格必须实时 authoritative detail 验证。
+- 外部删除 -> 本地同步删除（包括训练成果），不得仅显示“已下架”。
+- 前端 progress 不自造假百分比；优先服务端 durable truth。
+- queued / in_progress 不算 success；历史 HEAD 的绿灯不能替代当前 HEAD。
+
 
 ## 2026-09-28 训练 Progress 单一真相源 / Bootstrap Algorithm Revision 收口（最新）
 
