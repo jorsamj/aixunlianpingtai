@@ -500,6 +500,30 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     ]
     direct_revision = direct_materials.current_revision()
 
+    summary_path = "/api/v62/projects/{project_id}/training-materials/selection-summary"
+    summary_routes = [
+        route
+        for route in app_module.app.routes
+        if getattr(route, "path", "") == summary_path
+        and "POST" in (getattr(route, "methods", set()) or set())
+    ]
+    assert len(summary_routes) == 1, [
+        (
+            getattr(route.endpoint, "__module__", ""),
+            getattr(route.endpoint, "__qualname__", ""),
+        )
+        for route in summary_routes
+    ]
+    summary_endpoint = summary_routes[0].endpoint
+    assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
+    direct_summary = summary_endpoint(
+        project_id,
+        {"image_ids": [image["id"], second_id]},
+    )
+    assert direct_summary["repository_revision"] == direct_revision
+    assert direct_summary["label_codes"] == ["person"]
+    assert direct_summary["label_counts"] == {"person": 1}
+
     training_summary = client.post(
         f"/api/v62/projects/{project_id}/training-materials/selection-summary",
         json={"image_ids": [image["id"], second_id]},
