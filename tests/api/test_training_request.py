@@ -4,10 +4,36 @@ import pytest
 from PIL import Image
 
 
-def _image_bytes(color: str) -> bytes:
+def _image_bytes(color: str | tuple[int, int, int]) -> bytes:
     stream = io.BytesIO()
     Image.new("RGB", (128, 128), color).save(stream, format="JPEG")
     return stream.getvalue()
+
+
+def _mark_training_ready(client, project_id: str, image: dict, *, label: str = "fire", class_id: int = 0) -> dict:
+    import app as app_module
+
+    response = client.post(
+        f"/api/projects/{project_id}/annotations/{image['id']}",
+        json={"boxes": [{
+            "class_id": class_id, "label": label,
+            "x1": 10, "y1": 10, "x2": 80, "y2": 80,
+        }]},
+    )
+    assert response.status_code == 200, response.text
+    app_module.material_store(project_id).patch({
+        image["id"]: {"processing_status": "processed"},
+    })
+    return image
+
+
+def _upload_training_ready(client, project_id: str, name: str, color: tuple[int, int, int]) -> dict:
+    image = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", (name, _image_bytes(color), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    return _mark_training_ready(client, project_id, image)
 
 
 def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
@@ -386,7 +412,10 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     import app as app_module
     from platform_core.task_runtime import TaskKind, TaskStatus
 
-    project_id, _ = seeded_project
+    project_id, seed_image = seeded_project
+    train_a = _mark_training_ready(client, project_id, seed_image)
+    train_b = _upload_training_ready(client, project_id, "durable-train-b.jpg", (17, 31, 47))
+    test_a = _upload_training_ready(client, project_id, "durable-test-a.jpg", (61, 73, 89))
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "异步训练请求", "algorithm_type": "yolo_ultralytics"},
@@ -403,8 +432,8 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "independent_test_set",
-            "train_image_ids": ["train-a", "train-b"],
-            "test_image_ids": ["test-a"],
+            "train_image_ids": [train_a["id"], train_b["id"]],
+            "test_image_ids": [test_a["id"]],
             "validation_percent": 20,
             "experiment_percent": None,
             "queue_priority": 7,
@@ -422,8 +451,8 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert persisted.priority == 7
     payload = app_module.shared_task_artifacts().read_json(task["id"], "payload.json")
     assert payload["schema_version"] == 3
-    assert payload["train_image_ids"] == ["train-a", "train-b"]
-    assert payload["test_image_ids"] == ["test-a"]
+    assert payload["train_image_ids"] == [train_a["id"], train_b["id"]]
+    assert payload["test_image_ids"] == [test_a["id"]]
     assert not payload.get("train_dataset_ids")
 
 
@@ -433,7 +462,10 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
     import app as app_module
     from platform_core.task_runtime import TaskKind, TaskStatus
 
-    project_id, _ = seeded_project
+    project_id, seed_image = seeded_project
+    train_a = _mark_training_ready(client, project_id, seed_image)
+    train_b = _upload_training_ready(client, project_id, "remote-train-b.jpg", (23, 41, 59))
+    test_a = _upload_training_ready(client, project_id, "remote-test-a.jpg", (67, 83, 101))
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "远程准备训练", "algorithm_type": "yolo_ultralytics"},
@@ -447,8 +479,8 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "independent_test_set",
-            "train_image_ids": ["train-a", "train-b"],
-            "test_image_ids": ["test-a"],
+            "train_image_ids": [train_a["id"], train_b["id"]],
+            "test_image_ids": [test_a["id"]],
             "validation_percent": 20,
             "experiment_percent": None,
             "queue_priority": 9,
@@ -503,7 +535,10 @@ def test_training_route_rejects_dataset_group_contract(client, seeded_project):
 
 @pytest.mark.parametrize("percent", [1, 12.5, 37, 99])
 def test_explicit_random_test_percentage_is_accepted(client, seeded_project, percent):
-    project_id, _ = seeded_project
+    project_id, seed_image = seeded_project
+    one = _mark_training_ready(client, project_id, seed_image)
+    two = _upload_training_ready(client, project_id, "random-two.jpg", (29, 43, 71))
+    three = _upload_training_ready(client, project_id, "random-three.jpg", (79, 97, 113))
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": f"随机试验集 {percent}", "algorithm_type": "yolo_ultralytics"},
@@ -515,7 +550,7 @@ def test_explicit_random_test_percentage_is_accepted(client, seeded_project, per
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "random_test_from_training_pool",
-            "train_image_ids": ["one", "two", "three"],
+            "train_image_ids": [one["id"], two["id"], three["id"]],
             "test_image_ids": [],
             "experiment_percent": percent,
             "validation_percent": 20,
@@ -755,6 +790,9 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
         files=[("files", ("second-action.jpg", _image_bytes("navy"), "image/jpeg"))],
         data={"dataset_id": "default"},
     ).json()["uploaded"][0]
+    third = _upload_training_ready(client, project_id, "third-action.jpg", (109, 127, 149))
+    _mark_training_ready(client, project_id, train_image)
+    _mark_training_ready(client, project_id, second)
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "确认动作幂等训练", "algorithm_type": "yolo_ultralytics"},
@@ -785,7 +823,7 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
         "algorithm_asset_id": algorithm["id"],
         "model": "yolo11n.pt",
         "split_mode": "random_test_from_training_pool",
-        "train_image_ids": [train_image["id"], second["id"]],
+        "train_image_ids": [train_image["id"], second["id"], third["id"]],
         "test_image_ids": [],
         "experiment_percent": 20,
         "validation_percent": 20,
@@ -822,13 +860,8 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         data={"dataset_id": "default"},
     ).json()["uploaded"][0]
     for image in (candidate_image, second):
-        assert client.post(
-            f"/api/projects/{project_id}/annotations/{image['id']}",
-            json={"boxes": [{
-                "class_id": 0, "label": "fire",
-                "x1": 10, "y1": 10, "x2": 80, "y2": 80,
-            }]},
-        ).status_code == 200
+        _mark_training_ready(client, project_id, image)
+    third = _upload_training_ready(client, project_id, "feedback-third.jpg", (131, 151, 173))
 
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
@@ -883,7 +916,7 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         "algorithm_asset_id": algorithm["id"],
         "model": "yolo11n.pt",
         "split_mode": "random_test_from_training_pool",
-        "train_image_ids": [candidate_image["id"], second["id"]],
+        "train_image_ids": [candidate_image["id"], second["id"], third["id"]],
         "test_image_ids": [],
         "experiment_percent": 20,
         "validation_percent": 20,
