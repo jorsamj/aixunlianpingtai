@@ -194,6 +194,7 @@ jobs:
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
           tests/integration/test_training_task_worker.py
+          tests/integration/test_training_completed_job_recovery.py
       - name: Portable bundle and scheduler contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -291,6 +292,9 @@ jobs:
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
+          grep -Fq 'test_local_finalization_rejects_stale_iteration_base' tests/integration/test_training_completed_job_recovery.py
+          grep -Fq 'test_local_finalization_reuses_same_task_version_before_stale_check' tests/integration/test_training_completed_job_recovery.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
           grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
