@@ -268,6 +268,7 @@ jobs:
           app.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_tasks.py
+          platform_core/remote_execution_transport.py
           platform_core/task_node_assignments.py
           platform_core/worker_registry.py
       - name: Remote training creation API
@@ -290,6 +291,10 @@ jobs:
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
+          grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
+          grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
           grep -Fq 'test_v12_rejects_paddle_before_algorithm_or_material_io' tests/api/test_training_request.py
           grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
           grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py
