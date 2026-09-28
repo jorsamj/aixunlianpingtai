@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import app as app_module
@@ -549,7 +550,13 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
                 },
                 "repr": repr(route),
             })
-    assert len(matched_routes) == 1, matched_route_truth
+    if len(matched_routes) != 1:
+        raise AssertionError(json.dumps(
+            matched_route_truth,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ))
     summary_routes = matched_routes
     summary_endpoint = summary_routes[0].endpoint
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
