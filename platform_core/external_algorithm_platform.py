@@ -969,6 +969,50 @@ def _analysis_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisId", "analysis_id", "id") or "").strip()
 
 
+def _analysis_product_id(row: Mapping[str, Any]) -> str:
+    return str(_value_from(row, "productId", "product_id") or "").strip()
+
+
+def _group_analysis_summaries_by_product(
+    rows: Iterable[Mapping[str, Any]],
+    product_ids: Iterable[str],
+) -> Dict[str, list[Dict[str, Any]]] | None:
+    """Group listAll summaries when ownership is explicit and unambiguous.
+
+    listAll is a performance index only. If any row omits productId we return
+    None so callers can fall back to listByProduct without weakening truth.
+    Rows for products outside the visual-product set are ignored.
+    """
+    known = {str(value) for value in product_ids if str(value)}
+    grouped: Dict[str, list[Dict[str, Any]]] = {pid: [] for pid in known}
+    owner_by_analysis: Dict[str, str] = {}
+    seen_by_product: Dict[str, set[str]] = {pid: set() for pid in known}
+
+    for raw in rows:
+        row = dict(raw)
+        product_id = _analysis_product_id(row)
+        if not product_id:
+            return None
+        if product_id not in known:
+            continue
+        analysis_id = _analysis_id(row)
+        previous_owner = owner_by_analysis.get(analysis_id)
+        if previous_owner and previous_owner != product_id:
+            raise PlatformError(
+                "EXTERNAL_ANALYSIS_PRODUCT_AMBIGUOUS",
+                "新畅联分析方式所属产品冲突",
+                f"analysisId={analysis_id}; products={previous_owner},{product_id}",
+                "请核对分析方式 listAll 返回的 productId；平台不会把同一分析方式归入多个算法产品。",
+                502,
+            )
+        owner_by_analysis[analysis_id] = product_id
+        if analysis_id in seen_by_product[product_id]:
+            continue
+        seen_by_product[product_id].add(analysis_id)
+        grouped[product_id].append(row)
+    return grouped
+
+
 def _compute_platform_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "computePlatformId", "compute_platform_id", "id") or "").strip()
 
@@ -2464,17 +2508,66 @@ class ExternalAlgorithmPlatformService:
                 last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
             )
 
+            product_ids = [_product_id(product) for product in products]
+            summary_index: Dict[str, list[Dict[str, Any]]] | None = None
+            analysis_list_source = "per_product"
+            analysis_list_fallback_reason = ""
+            bulk_loader = getattr(client, "analysis_list_all", None)
+            if callable(bulk_loader):
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="fetch_analysis_index",
+                )
+                request_started = time.perf_counter()
+                try:
+                    bulk_summaries = _validated_external_items(
+                        bulk_loader(),
+                        id_resolver=_analysis_id,
+                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                        entity_name="分析方式",
+                    )
+                    summary_index = _group_analysis_summaries_by_product(
+                        bulk_summaries,
+                        product_ids,
+                    )
+                    if summary_index is None:
+                        analysis_list_source = "per_product_fallback"
+                        analysis_list_fallback_reason = "analysis listAll 缺少 productId，已回退按产品读取"
+                    else:
+                        analysis_list_source = "list_all"
+                except Exception as index_error:
+                    # listAll is an optimization only. The existing
+                    # listByProduct path remains the compatibility source for
+                    # summaries, while getInfo remains the authoritative truth.
+                    summary_index = None
+                    analysis_list_source = "per_product_fallback"
+                    analysis_list_fallback_reason = str(
+                        getattr(index_error, "detail", index_error)
+                    )[:500]
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="fetch_analyses",
+                    analysis_list_source=analysis_list_source,
+                    analysis_list_fallback_reason=analysis_list_fallback_reason,
+                    last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+                )
+
             analyses_by_product: Dict[str, list[Dict[str, Any]]] = {}
             processed_products = 0
             for product in products:
                 pid = _product_id(product)
                 request_started = time.perf_counter()
-                summaries = _validated_external_items(
-                    client.analyses(pid),
-                    id_resolver=_analysis_id,
-                    error_code="EXTERNAL_ANALYSIS_ID_MISSING",
-                    entity_name=f"算法产品 {pid} 的分析方式",
-                )
+                if summary_index is None:
+                    summaries = _validated_external_items(
+                        client.analyses(pid),
+                        id_resolver=_analysis_id,
+                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                        entity_name=f"算法产品 {pid} 的分析方式",
+                    )
+                else:
+                    summaries = list(summary_index.get(pid) or [])
                 analyses_by_product[pid] = [
                     _analysis_detail_truth(client, summary, product_id=pid)
                     for summary in summaries
@@ -2487,6 +2580,8 @@ class ExternalAlgorithmPlatformService:
                     processed_products=processed_products,
                     total_products=len(products),
                     success_count=processed_products,
+                    analysis_list_source=analysis_list_source,
+                    analysis_list_fallback_reason=analysis_list_fallback_reason,
                     last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
                 )
 

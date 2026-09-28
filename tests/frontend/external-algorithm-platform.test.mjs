@@ -445,3 +445,21 @@ test('sync operation UI reports real phase and counters without inventing a perc
   assert.match(html, /成功 \/ 错误/);
   assert.doesNotMatch(html, /%/);
 });
+
+
+test('sync operation UI exposes listAll optimization source without changing progress into a fake percent', () => {
+  const html = externalSyncOperationHtml({
+    operation_id: 'sync-list-all',
+    status: 'running',
+    current_phase: 'fetch_analyses',
+    processed_products: 2,
+    total_products: 9,
+    analysis_list_source: 'list_all',
+    success_count: 2,
+    error_count: 0,
+  });
+  assert.match(html, /listAll 一次读取/);
+  assert.match(html, /2 \/ 9/);
+  assert.doesNotMatch(html, /%/);
+  assert.equal(externalSyncOperationPhaseText('fetch_analysis_index'), '读取分析方式索引');
+});

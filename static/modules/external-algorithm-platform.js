@@ -348,7 +348,8 @@ export function externalSyncOperationPhaseText(value) {
     fetch_categories: '读取算法品目',
     fetch_products: '读取算法产品',
     fetch_compute_platforms: '读取算力环境',
-    fetch_analyses: '读取产品分析方式',
+    fetch_analysis_index: '读取分析方式索引',
+    fetch_analyses: '核验产品分析详情',
     purge_removed_algorithms: '清理远端已删除算法',
     cache_commit: '提交主数据缓存',
     algorithm_mirror_commit: '提交本地算法镜像',
@@ -370,6 +371,11 @@ export function externalSyncOperationHtml(operation) {
   const requestText = Number.isFinite(requestDuration) && requestDuration >= 0
     ? `${requestDuration} ms`
     : '-';
+  const analysisListSource = ({
+    list_all: 'listAll 一次读取',
+    per_product: '按产品读取',
+    per_product_fallback: 'listAll 异常，已按产品回退',
+  }[String(operation.analysis_list_source || '')] || '-');
   const errorText = status === 'failed'
     ? `<div class="alert warn" style="margin-top:10px"><b>${escapeHtml(operation.error || '同步失败')}</b><span>${escapeHtml(operation.detail || '')}</span></div>`
     : '';
@@ -380,6 +386,7 @@ export function externalSyncOperationHtml(operation) {
       <div><span>当前阶段</span><b>${escapeHtml(externalSyncOperationPhaseText(operation.current_phase))}</b></div>
       <div><span>产品进度</span><b>${escapeHtml(productProgress)}</b></div>
       <div><span>最近请求耗时</span><b>${escapeHtml(requestText)}</b></div>
+      <div><span>分析列表</span><b>${escapeHtml(analysisListSource)}</b></div>
       <div><span>成功 / 错误</span><b>${Number(operation.success_count || 0)} / ${Number(operation.error_count || 0)}</b></div>
     </div>
     ${errorText}

@@ -1706,3 +1706,153 @@ def test_external_sync_router_uses_background_operation_owner():
     assert '@router.get("/sync-operation")' in block
     assert "service.current_sync_operation(project_id)" in block
     assert "service.sync(" not in block
+
+
+
+class BulkAnalysisListClient(FakeChangLianClient):
+    analyses_calls = 0
+    analysis_list_all_calls = 0
+    detail_calls = []
+
+    def products(self, **_filters):
+        return {"data": [
+            {"productId": "p1", "productName": "抽烟检测", "categoryId": "c1", "status": 1, "productType": 3},
+            {"productId": "p2", "productName": "打电话检测", "categoryId": "c1", "status": 1, "productType": 3},
+        ]}
+
+    def analysis_list_all(self, **_filters):
+        type(self).analysis_list_all_calls += 1
+        return {"data": [
+            {"analysisId": "a1", "productId": "p1", "analysisName": "抽烟视觉分析", "analysisType": 1, "status": 1},
+            {"analysisId": "a2", "productId": "p2", "analysisName": "打电话视觉分析", "analysisType": 1, "status": 1},
+        ]}
+
+    def analyses(self, product_id):
+        type(self).analyses_calls += 1
+        raise AssertionError(f"listAll 可完整分组时不应再调用 listByProduct: {product_id}")
+
+    def analysis_info(self, analysis_id):
+        type(self).detail_calls.append(str(analysis_id))
+        mapping = {
+            "a1": {"productId": "p1", "analysisName": "抽烟视觉分析"},
+            "a2": {"productId": "p2", "analysisName": "打电话视觉分析"},
+        }
+        row = mapping[str(analysis_id)]
+        return {"data": {
+            "analysisId": str(analysis_id),
+            "productId": row["productId"],
+            "analysisName": row["analysisName"],
+            "analysisType": 1,
+            "status": 1,
+        }}
+
+
+def test_sync_uses_analysis_list_all_once_and_keeps_detail_truth_per_analysis(tmp_path: Path):
+    BulkAnalysisListClient.analyses_calls = 0
+    BulkAnalysisListClient.analysis_list_all_calls = 0
+    BulkAnalysisListClient.detail_calls = []
+    service = _configured_external_service(tmp_path, BulkAnalysisListClient)
+    algorithms_path = tmp_path / "bulk-analysis-index" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-analysis-index",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    assert BulkAnalysisListClient.analysis_list_all_calls == 1
+    assert BulkAnalysisListClient.analyses_calls == 0
+    assert BulkAnalysisListClient.detail_calls == ["a1", "a2"]
+    operation = service.current_sync_operation("bulk-analysis-index")
+    assert operation["analysis_list_source"] == "list_all"
+    assert operation["processed_products"] == 2
+    assert operation["total_products"] == 2
+    rows = sorted(list_algorithms(algorithms_path), key=lambda row: row["external_product_id"])
+    assert [row["external_product_id"] for row in rows] == ["p1", "p2"]
+    assert [row["external_analysis_ids"] for row in rows] == [["a1"], ["a2"]]
+
+
+class BulkAnalysisFallbackClient(FakeChangLianClient):
+    analysis_list_all_calls = 0
+    analyses_calls = 0
+
+    def analysis_list_all(self, **_filters):
+        type(self).analysis_list_all_calls += 1
+        return {"data": [{
+            "analysisId": "a1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 1,
+        }]}
+
+    def analyses(self, product_id):
+        type(self).analyses_calls += 1
+        return super().analyses(product_id)
+
+
+def test_sync_falls_back_to_list_by_product_when_list_all_cannot_prove_product_ownership(tmp_path: Path):
+    BulkAnalysisFallbackClient.analysis_list_all_calls = 0
+    BulkAnalysisFallbackClient.analyses_calls = 0
+    service = _configured_external_service(tmp_path, BulkAnalysisFallbackClient)
+    algorithms_path = tmp_path / "bulk-analysis-fallback" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-analysis-fallback",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    assert BulkAnalysisFallbackClient.analysis_list_all_calls == 1
+    assert BulkAnalysisFallbackClient.analyses_calls == 1
+    operation = service.current_sync_operation("bulk-analysis-fallback")
+    assert operation["analysis_list_source"] == "per_product_fallback"
+    assert "productId" in operation["analysis_list_fallback_reason"]
+
+
+class BulkSummaryEnabledButDetailDisabledClient(FakeChangLianClient):
+    def analysis_list_all(self, **_filters):
+        return {"data": [{
+            "analysisId": "a1",
+            "productId": "p1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 1,
+        }]}
+
+    def analyses(self, product_id):
+        raise AssertionError("优化路径不应查询 listByProduct")
+
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1",
+            "productId": "p1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 0,
+        }}
+
+
+def test_bulk_analysis_index_never_overrides_authoritative_detail_training_status(tmp_path: Path):
+    service = _configured_external_service(tmp_path, BulkSummaryEnabledButDetailDisabledClient)
+    algorithms_path = tmp_path / "bulk-detail-truth" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-detail-truth",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert algorithm["external_analysis_ids"] == []
+    assert algorithm["external_analyses"][0]["status"] == "0"
+    assert service.current_sync_operation("bulk-detail-truth")["analysis_list_source"] == "list_all"
