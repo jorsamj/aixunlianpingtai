@@ -133,6 +133,7 @@ from platform_core.storage.zip_import import (
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
 from platform_core.training_tasks import freeze_training_inputs, resolve_training_selection
+from platform_core.training_label_tasks import project_training_rows, resolve_training_label_contract
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
@@ -7170,6 +7171,24 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
+    if asset_algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在")
+    try:
+        label_contract = resolve_training_label_contract(
+            DATA_DIR,
+            project_dir(project_id),
+            payload.model_dump(mode="json", exclude_none=True),
+            asset_algorithm,
+        )
+        projected_training_images = project_training_rows(
+            selection_resolution.effective_images,
+            label_contract,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"训练标签合同无法冻结：{error}",
+        ) from error
     if framework not in {"ultralytics", "paddle"}:
         raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
     target = str(payload.target or "local").strip().lower()
@@ -7200,6 +7219,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             seed=int(payload.seed or 0),
             supplement_candidate_set=supplement_candidate_set,
             selection_resolution=selection_resolution,
+            effective_images=projected_training_images,
+            label_schema_override=label_contract["effective_label_schema"],
+            label_contract=label_contract,
         )
     except (TypeError, ValueError) as error:
         raise HTTPException(
@@ -7252,6 +7274,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "snapshot_id": input_freeze["snapshot_id"],
             "dataset_revision_id": input_freeze["dataset_revision_id"],
             "input_quality": input_freeze["input_quality"],
+            "label_contract": input_freeze.get("label_contract") or {},
             **(
                 {
                     "remote_input_state": "PREPARING",
