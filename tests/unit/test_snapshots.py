@@ -28,7 +28,14 @@ def test_snapshot_contains_only_processed_images_and_is_deterministic():
 
 
 def test_unprocessed_selected_image_is_rejected():
-    images = [{"id": "raw", "processing_status": "unprocessed", "labels": []}]
+    images = [{
+        "id": "raw",
+        "processing_status": "unprocessed",
+        "labels": ["fire"],
+        "annotation_state": "annotated",
+        "annotated": True,
+        "boxes": [{"label": "fire"}],
+    }]
 
     try:
         build_snapshot(images, ["raw"], [], [{"code": "fire"}], seed=1)
@@ -51,6 +58,9 @@ def test_v3_snapshot_contains_three_roles_provenance_content_hash_and_annotation
                 "video_task_id": "video-1" if index < 2 else "",
                 "group_id": "video-1" if index < 2 else f"g{index}",
                 "content_sha256": f"hash-{index}",
+                "annotated": True,
+                "annotation_state": "annotated",
+                "annotation_scope": ["fire"],
                 "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 2, "y2": 2}],
             }
         )
