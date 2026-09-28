@@ -200,3 +200,38 @@ def test_snapshot_preserves_redacted_task_negative_projection_evidence():
     assert locked["training_projection_digest"] == "a" * 64
     assert locked["training_excluded_label_count"] == 1
     assert snapshot["negative_origin_counts"] == {"redacted_unselected_labels": 1}
+
+def test_projection_digest_changes_snapshot_and_dataset_revision_identity():
+    base = {
+        "id": "projection-cache-key",
+        "content_sha256": "b" * 64,
+        "stored_name": "projection-cache-key.jpg",
+        "annotation_state": "annotated",
+        "annotation_scope": ["fire"],
+        "annotated": True,
+        "processing_status": "processed",
+        "boxes": [
+            {"label": "fire", "x1": 10, "y1": 10, "x2": 30, "y2": 30}
+        ],
+        "source_annotation_state": "annotated",
+        "source_labels": ["fire", "people"],
+        "training_projection_policy": "redact_excluded_objects_v1",
+        "training_excluded_boxes": [
+            {"label": "people", "x1": 40, "y1": 40, "x2": 70, "y2": 70}
+        ],
+    }
+    schema = [{"code": "fire", "class_id": 0}]
+    first = build_snapshot(
+        [{**base, "training_projection_digest": "1" * 64}],
+        _manifest("projection-cache-key", "b" * 64),
+        schema,
+    )
+    second = build_snapshot(
+        [{**base, "training_projection_digest": "2" * 64}],
+        _manifest("projection-cache-key", "b" * 64),
+        schema,
+    )
+
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert first["dataset_revision_id"] != second["dataset_revision_id"]
+
