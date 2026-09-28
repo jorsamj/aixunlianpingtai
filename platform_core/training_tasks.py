@@ -25,6 +25,7 @@ from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
 from .algorithms import (
     attach_version,
+    attach_version_if_current,
     choose_algorithm_iteration_base,
     list_algorithms,
     resolve_current_version_id,
@@ -2094,7 +2095,7 @@ class TrainingHandler:
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         if existing_task_version is None:
-            attach_version(
+            attach_version_if_current(
                 algorithms_path,
                 str(algorithm.get("id")),
                 {
@@ -2131,6 +2132,9 @@ class TrainingHandler:
                     "created_at": finished_at,
                     "finished_at": finished_at,
                 },
+                expected_current_version_id=(
+                    expected_base_version_id or None
+                ),
             )
 
         # Seed the shared cache only after the official algorithm version has
