@@ -132,7 +132,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
-from platform_core.training_tasks import freeze_training_inputs
+from platform_core.training_tasks import freeze_training_inputs, resolve_training_selection
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
@@ -7117,9 +7117,13 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                 if str(value).strip()
             ))
             benchmark_selected_training_count = len(train_ids)
-            reservation_rows = MaterialRepository(project_dir(project_id)).get_many(
-                (*train_ids, *benchmark_reuse["test_image_ids"])
-            )
+            reservation_repository = MaterialRepository(project_dir(project_id))
+            reservation_ids = (*train_ids, *benchmark_reuse["test_image_ids"])
+            reservation_rows = []
+            for offset in range(0, len(reservation_ids), 500):
+                reservation_rows.extend(
+                    reservation_repository.get_many(reservation_ids[offset:offset + 500])
+                )
             train_ids, reserved_training_ids = exclude_reserved_test_components(
                 reservation_rows,
                 train_ids,
@@ -7139,6 +7143,21 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+    requested_split = split
+    try:
+        selection_resolution = resolve_training_selection(
+            project_dir(project_id),
+            requested_split,
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"训练素材选择无法形成监督训练输入：{error}",
+        ) from error
+    split = selection_resolution.effective_split
+    selection_truth = selection_resolution.truth()
+
     supplement_candidate_set = _training_supplement_candidate_set(
         project_id, asset_algorithm, payload, split,
     )
@@ -7177,9 +7196,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     try:
         input_freeze = freeze_training_inputs(
             project_dir(project_id),
-            split,
+            requested_split,
             seed=int(payload.seed or 0),
             supplement_candidate_set=supplement_candidate_set,
+            selection_resolution=selection_resolution,
         )
     except (TypeError, ValueError) as error:
         raise HTTPException(
@@ -7206,6 +7226,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "selected_training_candidate_count": benchmark_selected_training_count,
             "reserved_training_candidate_count": benchmark_reserved_training_count,
             "effective_training_candidate_count": len(split.train_image_ids),
+            "pending_annotation_candidate_count": len(selection_resolution.pending_annotation_image_ids),
         }
     prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
@@ -7213,6 +7234,14 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "split_mode": split.mode.value,
             "train_image_ids": list(split.train_image_ids),
             "test_image_ids": list(split.test_image_ids),
+            "selected_train_image_ids": list(selection_resolution.selected_train_image_ids),
+            "pending_annotation_image_ids": list(selection_resolution.pending_annotation_image_ids),
+            "selection_counts": {
+                "selected_train_count": selection_truth["selected_train_count"],
+                "effective_train_count": selection_truth["effective_train_count"],
+                "pending_annotation_count": selection_truth["pending_annotation_count"],
+                "test_count": selection_truth["test_count"],
+            },
             "experiment_percent": split.experiment_percent,
             "validation_percent": split.validation_percent,
             "schema_version": 3,
@@ -7308,6 +7337,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                     "selected_training_candidate_count": benchmark_selected_training_count,
                     "reserved_training_candidate_count": benchmark_reserved_training_count,
                     "effective_training_candidate_count": len(split.train_image_ids),
+                    "pending_annotation_candidate_count": len(selection_resolution.pending_annotation_image_ids),
                 }
                 if benchmark_reuse else None
             ),
@@ -7322,6 +7352,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "split_mode": split.mode.value,
             "requested_train_images": len(split.train_image_ids),
             "requested_test_images": len(split.test_image_ids),
+            "selected_train_images": selection_truth["selected_train_count"],
+            "effective_train_images": selection_truth["effective_train_count"],
+            "pending_annotation_images": selection_truth["pending_annotation_count"],
+            "selection_truth": selection_truth,
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
             "input_freeze_id": input_freeze["input_freeze_id"],
             "snapshot_id": input_freeze["snapshot_id"],
@@ -7338,6 +7372,12 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         content={
             "ok": True,
             "task": _public_task(record),
+            "selection": {
+                "selected_train_count": selection_truth["selected_train_count"],
+                "effective_train_count": selection_truth["effective_train_count"],
+                "pending_annotation_count": selection_truth["pending_annotation_count"],
+                "test_count": selection_truth["test_count"],
+            },
             **(
                 {
                     "preparation_task_id": preparation_record.task_id,
