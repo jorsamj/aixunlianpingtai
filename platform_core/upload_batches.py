@@ -13,6 +13,7 @@ from .annotations import atomic_write_json
 
 _BATCH_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _DECISIONS = {"pending", "clean", "ready"}
+_UPLOAD_REQUEST_STATUSES = {"PROCESSING", "SUCCEEDED", "FAILED"}
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
 _Result = TypeVar("_Result")
@@ -22,6 +23,41 @@ def _validate_batch_id(batch_id: str) -> str:
     if not isinstance(batch_id, str) or not _BATCH_ID_PATTERN.fullmatch(batch_id):
         raise ValueError("上传批次 ID 无效")
     return batch_id
+
+
+def _normalize_upload_request_manifest(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("上传请求 manifest 必须是数组")
+    rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise ValueError("上传请求 manifest 元素必须是对象")
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            raise ValueError("上传请求 manifest 文件名不能为空")
+        try:
+            size = int(raw.get("size") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("上传请求 manifest 文件大小无效") from error
+        if size < 0:
+            raise ValueError("上传请求 manifest 文件大小无效")
+        rows.append({"name": name, "size": size, "content_type": str(raw.get("content_type") or "")})
+    return rows
+
+
+def _normalize_upload_failures(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("上传失败记录必须是数组")
+    rows: list[dict[str, str]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise ValueError("上传失败记录元素必须是对象")
+        rows.append({"name": str(raw.get("name") or "文件"), "reason": str(raw.get("reason") or "处理失败")})
+    return rows
 
 
 def _lock_for(path: Path) -> threading.RLock:
@@ -63,6 +99,17 @@ def _validated_batch(value: Any, expected_id: str | None = None) -> dict[str, An
         seen.add(image_id)
         items.append(item)
     batch["items"] = items
+    if "upload_request_status" in batch:
+        status = str(batch.get("upload_request_status") or "").strip().upper()
+        if status not in _UPLOAD_REQUEST_STATUSES:
+            raise ValueError("上传请求状态无效")
+        batch["upload_request_status"] = status
+        batch["upload_request_manifest"] = _normalize_upload_request_manifest(batch.get("upload_request_manifest"))
+        batch["upload_failed"] = _normalize_upload_failures(batch.get("upload_failed"))
+        if "upload_dataset_id" in batch:
+            batch["upload_dataset_id"] = str(batch.get("upload_dataset_id") or "default")
+        if "upload_storage_source_id" in batch:
+            batch["upload_storage_source_id"] = str(batch.get("upload_storage_source_id") or "default_local")
     if "clean_task_id" in batch and batch["clean_task_id"] is not None:
         if not isinstance(batch["clean_task_id"], str) or not batch["clean_task_id"]:
             raise ValueError("上传批次 clean_task_id 必须是非空字符串")
@@ -165,6 +212,69 @@ class UploadBatchStore:
     def read(self, batch_id: str) -> dict[str, Any]:
         with self.locked(batch_id):
             return self._read_unlocked(batch_id)
+
+    def begin_upload_request(
+        self, batch_id: str, *, created_at: str,
+        manifest: Sequence[Mapping[str, Any]], dataset_id: str, storage_source_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create the durable idempotency receipt before material writes begin."""
+        batch_id = _validate_batch_id(batch_id)
+        normalized_manifest = _normalize_upload_request_manifest(list(manifest))
+        expected_dataset = str(dataset_id or "default")
+        expected_source = str(storage_source_id or "default_local")
+        with self.locked(batch_id):
+            path = self._path(batch_id)
+            if path.is_file():
+                current = self._read_unlocked(batch_id)
+                if (
+                    current.get("upload_request_manifest") != normalized_manifest
+                    or str(current.get("upload_dataset_id") or "default") != expected_dataset
+                    or str(current.get("upload_storage_source_id") or "default_local") != expected_source
+                ):
+                    raise ValueError("上传请求 ID 已用于不同文件或保存位置")
+                return current, False
+            value = {
+                "id": batch_id, "created_at": str(created_at), "updated_at": str(created_at),
+                "items": [], "upload_request_status": "PROCESSING",
+                "upload_request_manifest": normalized_manifest, "upload_failed": [],
+                "upload_dataset_id": expected_dataset, "upload_storage_source_id": expected_source,
+            }
+            return self._write_unlocked(batch_id, value), True
+
+    def complete_upload_request(
+        self, batch_id: str, image_ids: Sequence[str], *,
+        failed: Sequence[Mapping[str, Any]], finished_at: str,
+        elapsed_seconds: float, material_total: int,
+    ) -> dict[str, Any]:
+        batch_id = _validate_batch_id(batch_id)
+        with self.locked(batch_id):
+            batch = self._read_unlocked(batch_id)
+            status = str(batch.get("upload_request_status") or "").upper()
+            if status == "SUCCEEDED":
+                return batch
+            if status != "PROCESSING":
+                raise ValueError("上传请求不处于可完成状态")
+            batch["items"] = [{"image_id": str(image_id), "decision": "pending"} for image_id in image_ids if str(image_id)]
+            batch["upload_request_status"] = "SUCCEEDED"
+            batch["upload_failed"] = _normalize_upload_failures(list(failed))
+            batch["upload_elapsed_seconds"] = round(max(0.0, float(elapsed_seconds)), 2)
+            batch["upload_material_total"] = max(0, int(material_total))
+            batch["finished_at"] = str(finished_at)
+            batch["updated_at"] = str(finished_at)
+            batch.pop("upload_request_error", None)
+            return self._write_unlocked(batch_id, batch)
+
+    def fail_upload_request(self, batch_id: str, *, error: str, failed_at: str) -> dict[str, Any]:
+        batch_id = _validate_batch_id(batch_id)
+        with self.locked(batch_id):
+            batch = self._read_unlocked(batch_id)
+            if str(batch.get("upload_request_status") or "").upper() == "SUCCEEDED":
+                return batch
+            batch["upload_request_status"] = "FAILED"
+            batch["upload_request_error"] = str(error or "上传请求失败")
+            batch["failed_at"] = str(failed_at)
+            batch["updated_at"] = str(failed_at)
+            return self._write_unlocked(batch_id, batch)
 
     def mutate(
         self,

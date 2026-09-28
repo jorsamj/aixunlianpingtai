@@ -4322,21 +4322,78 @@ def add_label(project_id: str, payload: AddLabelReq):
     }
 
 
+def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
+    manifest = []
+    for file in files:
+        filename = safe_filename(file.filename or "image.jpg")
+        raw_size = getattr(file, "size", None)
+        if raw_size is None:
+            stream = file.file
+            position = stream.tell()
+            stream.seek(0, os.SEEK_END)
+            raw_size = stream.tell()
+            stream.seek(position)
+        manifest.append({
+            "name": filename,
+            "size": max(0, int(raw_size or 0)),
+            "content_type": str(file.content_type or ""),
+        })
+    return manifest
+
+
+def _plain_upload_replay_response(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
+    image_ids = [str(item.get("image_id") or "") for item in (batch.get("items") or []) if str(item.get("image_id") or "")]
+    indexed = {str(row.get("id")): row for row in material_store(project_id).get_many(image_ids)}
+    uploaded = [dict(indexed[image_id]) for image_id in image_ids if image_id in indexed]
+    failed = [dict(item) for item in (batch.get("upload_failed") or [])]
+    return {
+        "batch_id": str(batch.get("id") or ""),
+        "uploaded": uploaded, "failed": failed,
+        "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
+        "uploaded_count": len(uploaded), "failed_count": len(failed),
+        "elapsed_seconds": float(batch.get("upload_elapsed_seconds") or 0.0),
+        "total": int(batch.get("upload_material_total") or material_store(project_id).count()),
+        "replayed": True,
+    }
+
+
 @app.post("/api/projects/{project_id}/images")
 async def upload_images(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
+    upload_request_id: Optional[str] = Form(None),
 ):
     get_project(project_id)
-    p = project_dir(project_id)
     uploaded, failed = [], []
-    batch_id = uuid.uuid4().hex[:12]
+    store = upload_batch_store(project_id)
+    request_id = str(upload_request_id or "").strip()
+    batch_id = request_id or uuid.uuid4().hex[:12]
+    receipt_created = False
+    if request_id:
+        try:
+            receipt, receipt_created = store.begin_upload_request(
+                request_id, created_at=now_iso(), manifest=_plain_upload_manifest(files),
+                dataset_id=dataset_id, storage_source_id=storage_source_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if not receipt_created:
+            request_status = str(receipt.get("upload_request_status") or "").upper()
+            if request_status == "SUCCEEDED":
+                return _plain_upload_replay_response(project_id, receipt)
+            if request_status == "PROCESSING":
+                raise HTTPException(status_code=409, detail={
+                    "code": "UPLOAD_REQUEST_IN_PROGRESS",
+                    "message": "该上传批次仍在服务器处理中，请查询批次状态后恢复",
+                })
+            raise HTTPException(status_code=409, detail={
+                "code": "UPLOAD_REQUEST_FAILED",
+                "message": str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
+            })
+
     started = time.time()
     _v50_begin_image_batch(project_id)
     try:
-        # Starlette already owns a seekable/spooled UploadFile. Send that stream
-        # directly to StorageManager instead of writing imports/upload_* and then
-        # copying the same bytes into the final object a second time.
         for file in files:
             filename = safe_filename(file.filename or "image.jpg")
             ext = Path(filename).suffix.lower()
@@ -4353,12 +4410,7 @@ async def upload_images(
                     failed.append({"name": filename, "reason": "文件为空"})
                     continue
                 record = add_image_record(
-                    project_id,
-                    stream,
-                    filename,
-                    "raw",
-                    dataset_id,
-                    storage_source_id,
+                    project_id, stream, filename, "raw", dataset_id, storage_source_id,
                     defer_unannotated_annotation=True,
                 )
                 if record:
@@ -4371,30 +4423,39 @@ async def upload_images(
                 failed.append({"name": filename, "reason": str(error)})
         committed = _v50_end_image_batch(save=True)
         if committed:
-            committed_by_id = {
-                str(item.get("id")): item for item in committed
-            }
-            uploaded = [
-                dict(committed_by_id.get(str(item.get("id"))) or item)
-                for item in uploaded
-            ]
-    except Exception:
+            committed_by_id = {str(item.get("id")): item for item in committed}
+            uploaded = [dict(committed_by_id.get(str(item.get("id"))) or item) for item in uploaded]
+        elapsed_seconds = round(max(0.0, time.time() - started), 2)
+        material_total = material_store(project_id).count()
+        image_ids = [str(item.get("id")) for item in uploaded]
+        if receipt_created:
+            store.complete_upload_request(
+                batch_id, image_ids, failed=failed, finished_at=now_iso(),
+                elapsed_seconds=elapsed_seconds, material_total=material_total,
+            )
+        else:
+            store.create(batch_id, image_ids, now_iso())
+    except Exception as error:
+        rollback_error = None
         if _v50_active_image_batch(project_id):
-            _v50_end_image_batch(save=False)
+            try:
+                _v50_end_image_batch(save=False)
+            except Exception as cleanup_error:
+                rollback_error = cleanup_error
+        if receipt_created:
+            try:
+                store.fail_upload_request(batch_id, error=str(rollback_error or error), failed_at=now_iso())
+            except Exception:
+                pass
+        if rollback_error is not None:
+            raise rollback_error from error
         raise
 
-    upload_batch_store(project_id).create(
-        batch_id,
-        [str(item.get("id")) for item in uploaded],
-        now_iso(),
-    )
     return {
-        "batch_id": batch_id,
-        "uploaded": uploaded, "failed": failed,
+        "batch_id": batch_id, "uploaded": uploaded, "failed": failed,
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
-        "elapsed_seconds": round(max(0.0, time.time()-started), 2),
-        "total": material_store(project_id).count(),
+        "elapsed_seconds": elapsed_seconds, "total": material_total, "replayed": False,
     }
 
 
@@ -18715,6 +18776,9 @@ def v55_apply_upload_batch_decisions(
         raise HTTPException(status_code=404, detail='上传批次不存在')
     with store.locked(batch_id):
         original = _v55_read_upload_batch(store, batch_id, locked=True)
+        upload_request_status = str(original.get('upload_request_status') or 'SUCCEEDED').upper()
+        if upload_request_status != 'SUCCEEDED':
+            raise HTTPException(status_code=409, detail='上传批次尚未完成，不能提交清洗决策')
         clean_task_id = str(original.get('clean_task_id') or '')
         associated_clean_ids = [
             str(image_id)
