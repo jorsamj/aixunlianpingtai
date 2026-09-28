@@ -1670,6 +1670,85 @@ def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, 
     }
 
 
+def resolve_frozen_training_base(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve and verify the submit-time base-model contract.
+
+    New durable tasks freeze the exact iteration checkpoint before queueing.
+    Historical tasks without this contract retain the compatibility reselect
+    path in TrainingHandler.
+    """
+    contract = payload.get("label_contract")
+    if not isinstance(contract, Mapping):
+        return None
+    if int(contract.get("base_model_contract_schema_version") or 0) != 1:
+        return None
+
+    framework = str(payload.get("framework") or "ultralytics").strip().lower()
+    contract_framework = str(contract.get("framework") or framework).strip().lower()
+    if contract_framework != framework:
+        raise ValueError(
+            "frozen training base framework does not match task framework"
+        )
+
+    mode = str(contract.get("base_training_mode") or "").strip()
+    version_id = str(contract.get("base_version_id") or "").strip()
+    version_name = str(contract.get("base_version_name") or "")
+    reference = str(contract.get("base_model_reference") or "").strip()
+    expected_sha = str(contract.get("base_model_sha256") or "").strip().lower()
+    try:
+        expected_size = int(contract.get("base_model_size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("frozen training base size is invalid") from error
+
+    if mode == "previous_weights_init":
+        if not version_id or not reference or len(expected_sha) != 64 or expected_size <= 0:
+            raise ValueError("frozen iteration base model evidence is incomplete")
+    elif mode == "mother_model_init":
+        if version_id:
+            raise ValueError("mother-model training cannot freeze a previous version id")
+        if not reference:
+            raise ValueError("frozen mother model reference is empty")
+    else:
+        raise ValueError("frozen training base mode is invalid")
+
+    resolved_reference = reference
+    if expected_sha or expected_size:
+        candidate = Path(reference).expanduser().resolve()
+        if not candidate.is_file():
+            raise ValueError("frozen training base model file no longer exists")
+        actual_size = int(candidate.stat().st_size)
+        if expected_size <= 0 or actual_size != expected_size:
+            raise ValueError("frozen training base model size changed after task creation")
+        actual_sha = _sha256(candidate)
+        if len(expected_sha) != 64 or actual_sha != expected_sha:
+            raise ValueError("frozen training base model SHA256 changed after task creation")
+        allowed_suffixes = (
+            {".pt"}
+            if framework == "ultralytics"
+            else {".pdparams", ".pdmodel", ".pdiparams"}
+        )
+        if candidate.suffix.lower() not in allowed_suffixes:
+            raise ValueError("frozen training base model format does not match task framework")
+        resolved_reference = str(candidate)
+
+    return {
+        "base_version_id": version_id or None,
+        "base_version_name": version_name,
+        "base_model_path": resolved_reference,
+        "base_model_kind": str(contract.get("base_model_kind") or "mother_model"),
+        "base_selection_reason": str(
+            contract.get("base_selection_reason")
+            or ("current_verified_version" if version_id else "mother_model")
+        ),
+        "base_model_sha256": expected_sha,
+        "base_model_size_bytes": expected_size,
+        "base_training_mode": mode,
+        "framework": framework,
+    }
+
+
 class TrainingHandler:
     def __init__(
         self,
@@ -2237,13 +2316,17 @@ class TrainingHandler:
         if algorithm is None:
             raise ValueError("training algorithm no longer exists")
         mother = str(payload.get("model") or "").strip()
-        base = choose_algorithm_iteration_base(
-            algorithm,
-            mother,
-            "ultralytics",
-            strict_latest=bool(algorithm.get("versions")),
-            artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
-        )
+        framework = str(payload.get("framework") or "ultralytics").strip().lower()
+        base = resolve_frozen_training_base(payload)
+        if base is None:
+            # Compatibility for tasks created before submit-time base freezing.
+            base = choose_algorithm_iteration_base(
+                algorithm,
+                mother,
+                framework,
+                strict_latest=bool(algorithm.get("versions")),
+                artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+            )
         model = str(base.get("base_model_path") or mother)
         with context.repository._connect() as database:
             reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()
@@ -2270,13 +2353,18 @@ class TrainingHandler:
             "id": context.task.task_id,
             "task_id": context.task.task_id,
             "status": "queued",
-            "framework": "ultralytics",
+            "framework": framework,
             "asset_algorithm_id": algorithm.get("id"),
             "algorithm_name": algorithm.get("name"),
             "model": model,
             "base_version_id": base.get("base_version_id"),
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),
+            "base_model_sha256": base.get("base_model_sha256") or "",
+            "base_model_size_bytes": int(base.get("base_model_size_bytes") or 0),
+            "base_training_mode": base.get("base_training_mode") or (
+                "previous_weights_init" if base.get("base_version_id") else "mother_model_init"
+            ),
             "snapshot_id": snapshot["snapshot_id"],
             "dataset_revision_id": snapshot["dataset_revision_id"],
             "supplement_provenance": snapshot.get("supplement_provenance"),
