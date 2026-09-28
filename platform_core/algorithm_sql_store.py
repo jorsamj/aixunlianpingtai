@@ -357,6 +357,142 @@ class AlgorithmSqlStore:
                 raise
         return value
 
+    def attach_version_if_current(
+        self,
+        algorithm_id: str,
+        version: Mapping[str, Any],
+        *,
+        expected_current_version_id: str | None,
+    ) -> dict:
+        """Atomically compare the training base and attach one new current version.
+
+        Duplicate training_job_id is resolved first so a crash after the first
+        successful attach remains idempotent even though current_version_id now
+        points at that same task's version.
+        """
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        value = dict(version)
+        version_id = str(value.get("id") or "").strip()
+        if not version_id:
+            raise PlatformError(
+                "ALGORITHM_VERSION_ID_REQUIRED",
+                "算法版本缺少 ID",
+                algorithm_id,
+                "请重新归档训练版本。",
+                409,
+            )
+        task_id = str(
+            value.get("task_id")
+            or value.get("job_id")
+            or value.get("training_job_id")
+            or ""
+        ).strip()
+        expected = str(expected_current_version_id or "").strip()
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                algorithm_row = conn.execute(
+                    "SELECT current_version_id FROM algorithms "
+                    "WHERE project_id=? AND id=?",
+                    (self.project_id, algorithm_id),
+                ).fetchone()
+                if algorithm_row is None:
+                    raise PlatformError(
+                        "ALGORITHM_NOT_FOUND",
+                        "算法不存在",
+                        f"找不到算法 {algorithm_id}。",
+                        "请刷新算法列表后重试。",
+                        404,
+                    )
+
+                if task_id:
+                    duplicate = conn.execute(
+                        "SELECT * FROM algorithm_versions "
+                        "WHERE algorithm_id=? AND training_job_id=? LIMIT 1",
+                        (algorithm_id, task_id),
+                    ).fetchone()
+                    if duplicate is not None:
+                        conn.rollback()
+                        return self._version_from_row(duplicate)
+
+                persisted_current = str(
+                    algorithm_row["current_version_id"] or ""
+                ).strip()
+                if expected:
+                    if persisted_current and persisted_current != expected:
+                        raise PlatformError(
+                            "ALGORITHM_VERSION_CONFLICT",
+                            "算法当前版本已经发生变化",
+                            f"训练任务基于 {expected}，当前实际版本为 {persisted_current}。",
+                            "请保留该任务结果用于审计，并基于当前版本重新发起迭代训练。",
+                            409,
+                        )
+                    if not persisted_current:
+                        base_exists = conn.execute(
+                            "SELECT 1 FROM algorithm_versions "
+                            "WHERE algorithm_id=? AND id=?",
+                            (algorithm_id, expected),
+                        ).fetchone()
+                        if base_exists is None:
+                            raise PlatformError(
+                                "ALGORITHM_VERSION_CONFLICT",
+                                "训练基础版本已经不存在",
+                                f"训练任务基于 {expected}，但该版本已被删除或回退清理。",
+                                "请基于当前有效版本重新发起训练。",
+                                409,
+                            )
+                else:
+                    any_version = conn.execute(
+                        "SELECT 1 FROM algorithm_versions "
+                        "WHERE algorithm_id=? LIMIT 1",
+                        (algorithm_id,),
+                    ).fetchone()
+                    if persisted_current or any_version is not None:
+                        actual = persisted_current or "<legacy-inferred>"
+                        raise PlatformError(
+                            "ALGORITHM_VERSION_CONFLICT",
+                            "首训任务的算法版本状态已经变化",
+                            f"任务创建时没有基础版本，当前已存在版本 {actual}。",
+                            "请按迭代训练重新提交任务，不能让旧首训覆盖当前版本。",
+                            409,
+                        )
+
+                if conn.execute(
+                    "SELECT 1 FROM algorithm_versions WHERE id=?",
+                    (version_id,),
+                ).fetchone() is not None:
+                    raise PlatformError(
+                        "ALGORITHM_VERSION_ID_DUPLICATED",
+                        "算法版本 ID 已存在",
+                        version_id,
+                        "请检查训练归档幂等状态。",
+                        409,
+                    )
+                sort_index = int(
+                    conn.execute(
+                        "SELECT COALESCE(MIN(sort_index),0)-1 "
+                        "FROM algorithm_versions WHERE algorithm_id=?",
+                        (algorithm_id,),
+                    ).fetchone()[0]
+                )
+                self._insert_version_conn(conn, algorithm_id, value, sort_index)
+                updated_at = str(
+                    value.get("finished_at") or value.get("created_at") or ""
+                ) or None
+                conn.execute(
+                    "UPDATE algorithms SET current_version_id=?, "
+                    "updated_at=COALESCE(?,updated_at) "
+                    "WHERE project_id=? AND id=?",
+                    (version_id, updated_at, self.project_id, algorithm_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return value
+
     def patch_version(self, algorithm_id: str, version_id: str, patch: Mapping[str, Any], *, now: str) -> dict:
         self.ensure_ready()
         algorithm_id = str(algorithm_id)
