@@ -472,6 +472,12 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     assert governance["fire"]["merged_into"] == "person"
     assert governance["smoke"]["merged_into"] == "person"
 
+    projected_positive = app_module.material_store(project_id).get(image["id"])
+    assert projected_positive["processing_status"] == "processed"
+    assert projected_positive["annotated"] is True
+    assert projected_positive["labels"] == ["person"]
+    assert projected_positive["label_counts"] == {"person": 2}
+
     training_summary = client.post(
         f"/api/v62/projects/{project_id}/training-materials/selection-summary",
         json={"image_ids": [image["id"], second_id]},
