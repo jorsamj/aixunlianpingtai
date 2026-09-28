@@ -24,7 +24,7 @@ def _record(index: int, *, annotated: bool = True) -> dict:
         "processing_status": "processed",
         "box_count": 1 if annotated else 0,
         "annotated": annotated,
-        "labels": ["smoke"] if index % 2 == 0 else ["person"],
+        "labels": (["smoke"] if index % 2 == 0 else ["person"]) if annotated else [],
         "width": 400,
         "height": 200,
         "created_at": f"2026-09-15T12:{index // 60:02d}:{index % 60:02d}+00:00",
@@ -71,7 +71,7 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     first = client.get("/api/v62/projects/p1/training-materials", params={"limit": 120})
     assert first.status_code == 200
     body = first.json()
-    assert body["total"] == 230
+    assert body["total"] == 260
     assert body["limit"] == 120
     assert len(body["items"]) == 120
     assert body["next_cursor"]
@@ -88,7 +88,7 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     )
     assert second.status_code == 200
     second_body = second.json()
-    assert len(second_body["items"]) == 110
+    assert len(second_body["items"]) == 120
     assert {item["id"] for item in body["items"]}.isdisjoint({item["id"] for item in second_body["items"]})
 
     smoke = client.get(
@@ -181,8 +181,16 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert all_available.status_code == 200
     all_body = all_available.json()
     assert all_body["selection_mode"] == "all_available"
-    assert all_body["total"] == 230
-    assert len(all_body["items"]) == 230
+    assert all_body["total"] == 260
+    assert len(all_body["items"]) == 260
+
+    test_only = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={"query": "", "labels": [], "all_available": True, "role": "test"},
+    )
+    assert test_only.status_code == 200
+    assert test_only.json()["total"] == 230
+    assert len(test_only.json()["items"]) == 230
 
 
 def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
@@ -212,3 +220,35 @@ def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
     with Image.open(source) as original:
         assert original.size == (900, 600)
     assert repository.get("m0001") is not None
+
+
+def test_cleaned_unannotated_material_is_selectable_but_not_counted_as_ground_truth(tmp_path):
+    client, _repository = _client(tmp_path)
+
+    page = client.get(
+        "/api/v62/projects/p1/training-materials",
+        params={"limit": 60, "query": "material-0250"},
+    )
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["id"] == "m0250"
+    assert item["processing_status"] == "processed"
+    assert item["annotation_state"] == "unannotated"
+    assert item["training_state"] == "pending_annotation"
+    assert item["annotated"] is False
+
+    summary = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["m0000", "m0001", "m0250"]},
+    )
+    assert summary.status_code == 200
+    facts = summary.json()
+    assert facts["matched_count"] == 3
+    assert facts["selectable_count"] == 3
+    assert facts["eligible_count"] == 2
+    assert facts["pending_annotation_count"] == 1
+    assert facts["selectable_total"] == 260
+    assert facts["eligible_total"] == 230
+    assert facts["pending_annotation_total"] == 30
