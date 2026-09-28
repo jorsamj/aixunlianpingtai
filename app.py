@@ -11377,23 +11377,54 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
 # v18 robust annotated dataset import
 # -----------------------------
 
-def _v18_safe_extract(zip_path: Path, dest: Path, progress_cb=None):
+def _v18_safe_extract(
+    zip_path: Path,
+    dest: Path,
+    progress_cb=None,
+    *,
+    selected_image_paths: Optional[Sequence[str]] = None,
+):
+    """Safely extract one ZIP, optionally filtering image payloads at source.
+
+    When selected_image_paths is provided, only those image members are written;
+    all non-image members (annotations/configuration) remain available so the
+    existing COCO/VOC/YOLO parsers keep the same semantics. This avoids the old
+    full-extract -> second-copy selected_root I/O path.
+    """
     dest = dest.resolve()
+    selected = None
+    if selected_image_paths is not None:
+        selected = {
+            v19_normalize_zip_path(value)
+            for value in selected_image_paths
+            if v19_normalize_zip_path(value)
+        }
     with zipfile.ZipFile(zip_path, 'r') as zf:
-        members=[m for m in zf.infolist() if m.filename and not m.filename.endswith('/')]
-        total=max(1,len(members))
-        for idx, member in enumerate(members, 1):
-            name = member.filename.replace('\\', '/')
-            if name.startswith('/') or '..' in Path(name).parts:
-                raise HTTPException(status_code=400, detail=f'压缩包包含不安全路径：{name}')
+        planned = []
+        for member in zf.infolist():
+            if not member.filename or member.filename.endswith('/'):
+                continue
+            raw_name = str(member.filename or '').replace('\\', '/')
+            if raw_name.startswith('/') or '..' in Path(raw_name).parts:
+                raise HTTPException(status_code=400, detail=f'压缩包包含不安全路径：{raw_name}')
+            name = v19_normalize_zip_path(raw_name)
             target = (dest / name).resolve()
-            if not str(target).startswith(str(dest)):
+            if target != dest and dest not in target.parents:
                 raise HTTPException(status_code=400, detail=f'压缩包包含越权路径：{name}')
+            is_image = Path(name).suffix.lower() in IMAGE_EXTS
+            if selected is not None and is_image and name not in selected:
+                continue
+            planned.append((member, name, target))
+
+        total = len(planned)
+        for idx, (member, name, target) in enumerate(planned, 1):
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, 'wb') as out:
                 shutil.copyfileobj(src, out, length=8*1024*1024)
             if progress_cb:
-                progress_cb(idx,total,f'正在解压 {idx}/{total} 个文件')
+                progress_cb(idx, total, f'正在解压 {idx}/{total} 个文件')
+        if progress_cb and total == 0:
+            progress_cb(0, 0, 'ZIP 中没有需要解压的文件')
 
 
 def _v18_split_from_path(path: Path) -> str:
@@ -12190,22 +12221,6 @@ def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
     return prepared
 
 
-def v19_copy_selected_tree(extracted: Path, selected_root: Path, selected_paths: List[str]):
-    selected = {v19_normalize_zip_path(x) for x in selected_paths if x}
-    selected_root.mkdir(parents=True, exist_ok=True)
-    # 复制全部标注/配置文件，图片只复制用户选择的，解析时就不会把未选图片导入进来。
-    for f in extracted.rglob("*"):
-        if not f.is_file():
-            continue
-        rel = v19_normalize_zip_path(str(f.relative_to(extracted)))
-        is_img = f.suffix.lower() in IMAGE_EXTS
-        if is_img and rel not in selected:
-            continue
-        dst = selected_root / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(f, dst)
-
-
 def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
@@ -12234,7 +12249,6 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
     job_dir = v19_job_dir(project_id, job_id)
     zip_path = job_dir / "source.zip"
     extracted = job_dir / "extracted"
-    selected_root = job_dir / "selected_root"
     selected_paths = [v19_normalize_zip_path(x) for x in selected_paths if x]
     total_selected = len(selected_paths) or int(job.get("image_count", 0) or 0)
     report = v19_build_report_base(job)
@@ -12261,15 +12275,25 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
                     v19_update_job(project_id, job_id, stage="正在解压数据集", progress=round(prog,1), processed=done, total_files=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
-                _v18_safe_extract(zip_path, extracted, extract_progress)
-                v19_update_job(project_id, job_id, stage="正在准备解析范围", progress=34, processed=0)
+                _v18_safe_extract(
+                    zip_path,
+                    extracted,
+                    extract_progress,
+                    selected_image_paths=selected_paths if selected_paths else None,
+                )
+                v19_update_job(
+                    project_id,
+                    job_id,
+                    stage="正在识别标注格式",
+                    progress=38,
+                    processed=0,
+                    message=(
+                        f"已按选择范围解压 {len(selected_paths)} 张图片，正在识别标注格式"
+                        if selected_paths
+                        else "数据集解压完成，正在识别标注格式"
+                    ),
+                )
                 parse_root = extracted
-                if selected_paths:
-                    if selected_root.exists():
-                        shutil.rmtree(selected_root, ignore_errors=True)
-                    v19_copy_selected_tree(extracted, selected_root, selected_paths)
-                    parse_root = selected_root
-                v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
                 frozen_mapping = dict(job.get("label_mapping") or {}) or None
                 import_context = {
@@ -12363,7 +12387,6 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                        finished_at=now_iso(), message=str(e))
     finally:
         shutil.rmtree(extracted, ignore_errors=True)
-        shutil.rmtree(selected_root, ignore_errors=True)
 
 
 

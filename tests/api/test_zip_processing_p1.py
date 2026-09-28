@@ -1,4 +1,5 @@
 import io
+import zipfile
 from pathlib import Path
 
 from PIL import Image
@@ -131,3 +132,42 @@ def test_yolo_batch_processing_bounds_project_reads_and_material_patches(monkeyp
     assert summary['total'] == 100
     assert summary['annotated'] == 100
     assert summary['boxes'] == 100
+
+
+
+def test_v19_selected_import_extracts_only_selected_images_and_keeps_annotation_files(tmp_path: Path):
+    archive = tmp_path / "selected.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("images/train/keep.jpg", b"keep-image")
+        zf.writestr("images/train/skip.jpg", b"skip-image")
+        zf.writestr("labels/train/keep.txt", "0 0.5 0.5 0.5 0.5\n")
+        zf.writestr("labels/train/skip.txt", "0 0.5 0.5 0.5 0.5\n")
+        zf.writestr("data.yaml", "names: [object]\n")
+
+    target = tmp_path / "extract"
+    target.mkdir()
+    events = []
+    app_module._v18_safe_extract(
+        archive,
+        target,
+        lambda done, total, message: events.append((done, total, message)),
+        selected_image_paths=["images/train/keep.jpg"],
+    )
+
+    assert (target / "images/train/keep.jpg").read_bytes() == b"keep-image"
+    assert not (target / "images/train/skip.jpg").exists()
+    assert (target / "labels/train/keep.txt").is_file()
+    assert (target / "labels/train/skip.txt").is_file()
+    assert (target / "data.yaml").is_file()
+    assert events[-1][:2] == (4, 4)
+
+
+def test_v19_worker_has_no_second_selected_root_copy_owner():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    start = source.index("def v19_import_worker(")
+    end = source.index("class V19MultipartUploadReq", start)
+    worker = source[start:end]
+
+    assert "selected_image_paths=selected_paths if selected_paths else None" in worker
+    assert "selected_root" not in worker
+    assert "v19_copy_selected_tree" not in source
