@@ -395,7 +395,7 @@ def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
     assert not hasattr(app_module, "_v47_runtime_provider")
 
 
-def test_annotation_create_payload_uses_bounded_material_and_reference_lookups(monkeypatch):
+def test_annotation_create_payload_uses_bounded_material_lookup_and_shared_runtime_owner(monkeypatch):
     project = {
         "id": "scale-project",
         "labels": ["fire"],
@@ -404,7 +404,7 @@ def test_annotation_create_payload_uses_bounded_material_and_reference_lookups(m
     image_ids = [f"image-{index:05d}" for index in range(1_200)]
     reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
     material_batches = []
-    annotation_batches = []
+    prepared_calls = []
 
     class FakeMaterials:
         def get_many(self, ids):
@@ -413,32 +413,34 @@ def test_annotation_create_payload_uses_bounded_material_and_reference_lookups(m
             assert len(batch) <= 500
             return [{"id": image_id} for image_id in batch]
 
-    class FakeAnnotations:
-        def get_many(self, ids):
-            batch = list(ids)
-            annotation_batches.append(batch)
-            assert len(batch) <= 500
-            return {
-                image_id: {
-                    "image_id": image_id,
-                    "annotation_state": "annotated",
-                    "boxes": [{"label": "fire", "class_id": 0}],
-                }
-                for image_id in batch
-            }
+    def fake_prepare(data_dir, project_id, request, **kwargs):
+        prepared_calls.append((data_dir, project_id, dict(request), dict(kwargs)))
+        return {
+            **request,
+            "labels": ["fire"],
+            "model_config_id": "model-1",
+            "model_config_snapshot": {
+                "id": "model-1",
+                "name": "Scale Model",
+                "model_name": "vision",
+            },
+            "model_config_revision": "a" * 64,
+            "schema_version": 2,
+        }
 
     monkeypatch.setattr(app_module, "get_project", lambda _project_id: project)
     monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
-    monkeypatch.setattr(app_module, "_v50_annotation_repository", lambda _project_id: FakeAnnotations())
+    monkeypatch.setattr(app_module, "prepare_annotation_request", fake_prepare)
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-1",
+        "name": "Scale Model",
+        "model_name": "vision",
+    }])
+    monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [])
     monkeypatch.setattr(
         app_module,
         "load_images",
         lambda *_args, **_kwargs: pytest.fail("AI task creation must not scan the whole material library"),
-    )
-    monkeypatch.setattr(
-        app_module,
-        "read_annotation",
-        lambda *_args, **_kwargs: pytest.fail("AI reference labels must use bounded AnnotationRepository.get_many"),
     )
 
     request, provider_key = app_module._annotation_create_payload(
@@ -447,15 +449,19 @@ def test_annotation_create_payload_uses_bounded_material_and_reference_lookups(m
             image_ids=image_ids,
             reference_image_ids=reference_ids,
             labels_text="fire",
-            provider_id="fake-provider",
+            model_config_id="model-1",
         ),
     )
 
     assert [len(batch) for batch in material_batches] == [500, 500, 200]
-    assert [len(batch) for batch in annotation_batches] == [500, 500, 1]
+    assert len(prepared_calls) == 1
+    _, project_id, submitted, kwargs = prepared_calls[0]
+    assert project_id == "scale-project"
+    assert submitted["reference_image_ids"] == reference_ids
+    assert kwargs["runtime"] is False
     assert request["image_ids"] == image_ids
     assert request["labels"] == ["fire"]
-    assert provider_key == "fake-provider"
+    assert provider_key == "model-1"
 
 
 def test_annotation_task_frontend_cannot_make_alias_valid_for_backend(client, seeded_project, isolated_task_runtime):

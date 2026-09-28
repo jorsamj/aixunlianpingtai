@@ -150,3 +150,46 @@ def test_raw_provider_identifier_is_not_an_execution_owner(tmp_path):
             runtime=False,
             model_configs=[_model()],
         )
+
+
+def test_reference_labels_use_bounded_repository_batches_without_full_scan(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
+    batches = []
+
+    class FakeAnnotations:
+        def __init__(self, _project_dir):
+            pass
+
+        def get_many(self, ids):
+            batch = list(ids)
+            batches.append(batch)
+            assert len(batch) <= 500
+            return {
+                image_id: {
+                    "image_id": image_id,
+                    "boxes": [{"label": "fire", "class_id": 0}],
+                }
+                for image_id in batch
+            }
+
+    monkeypatch.setattr(
+        "platform_core.annotation_repository.AnnotationRepository",
+        FakeAnnotations,
+    )
+
+    frozen = annotation_runtime.prepare_request(
+        tmp_path,
+        "p1",
+        {
+            "image_ids": ["image-1"],
+            "reference_image_ids": reference_ids,
+            "model_config_id": "model-1",
+        },
+        runtime=False,
+        model_configs=[_model()],
+    )
+
+    assert [len(batch) for batch in batches] == [500, 500, 1]
+    assert frozen["reference_image_ids"] == reference_ids
+    assert frozen["labels"] == ["fire"]

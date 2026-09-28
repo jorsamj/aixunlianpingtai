@@ -194,8 +194,6 @@ def prepare_request(
     references = list(dict.fromkeys(
         str(value) for value in (prepared.get("reference_image_ids") or []) if str(value)
     ))
-    if len(references) > 500:
-        raise ValueError("AI_REFERENCE_LIMIT: at most 500 reference images are allowed")
     if references and not runtime:
         for label in _reference_labels(data_dir, project_id, references):
             if label not in labels:
