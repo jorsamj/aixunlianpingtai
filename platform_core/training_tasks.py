@@ -23,7 +23,12 @@ from PIL import Image, ImageDraw, ImageFile, ImageOps, ImageStat, UnidentifiedIm
 
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
-from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
+from .algorithms import (
+    attach_version,
+    choose_algorithm_iteration_base,
+    list_algorithms,
+    resolve_current_version_id,
+)
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import (
@@ -1749,6 +1754,48 @@ def resolve_frozen_training_base(
     }
 
 
+def _training_finalization_existing_version(
+    algorithm: Mapping[str, Any],
+    *,
+    task_id: str,
+    expected_base_version_id: str | None,
+    framework: str,
+) -> Mapping[str, Any] | None:
+    """Fence stale local iteration commits and make post-attach recovery idempotent."""
+    task_value = str(task_id or "").strip()
+    existing = next(
+        (
+            version
+            for version in (algorithm.get("versions") or [])
+            if str(version.get("task_id") or version.get("job_id") or "") == task_value
+        ),
+        None,
+    )
+    if existing is not None:
+        return existing
+
+    expected = str(expected_base_version_id or "").strip()
+    current = str(
+        resolve_current_version_id(
+            algorithm,
+            framework=str(framework or "ultralytics").strip().lower(),
+        )
+        or ""
+    )
+    if expected:
+        if current != expected:
+            raise RuntimeError(
+                "TRAINING_BASE_VERSION_STALE: "
+                f"task was frozen on base {expected}, current version is {current or '<none>'}"
+            )
+    elif current:
+        raise RuntimeError(
+            "TRAINING_BASE_VERSION_STALE: "
+            f"first-run task was frozen without a base, but current version is now {current}"
+        )
+    return None
+
+
 class TrainingHandler:
     def __init__(
         self,
@@ -1828,6 +1875,29 @@ class TrainingHandler:
         algorithm = next((row for row in algorithms if str(row.get("id")) == algorithm_id), None)
         if algorithm is None:
             raise RuntimeError("completed training algorithm no longer exists")
+        framework = str(payload.get("framework") or "ultralytics").strip().lower()
+        expected_base_version_id = str(
+            job.get("base_version_id") or payload.get("base_version_id") or ""
+        ).strip()
+        existing_task_version = _training_finalization_existing_version(
+            algorithm,
+            task_id=context.task.task_id,
+            expected_base_version_id=expected_base_version_id,
+            framework=framework,
+        )
+        if existing_task_version is not None:
+            existing_snapshot_id = str(existing_task_version.get("snapshot_id") or "").strip()
+            existing_revision_id = str(
+                existing_task_version.get("dataset_revision_id") or ""
+            ).strip()
+            if existing_snapshot_id and existing_snapshot_id != snapshot_id:
+                raise RuntimeError(
+                    "TRAINING_VERSION_RECOVERY_MISMATCH: existing task version has another snapshot"
+                )
+            if existing_revision_id and existing_revision_id != dataset_revision_id:
+                raise RuntimeError(
+                    "TRAINING_VERSION_RECOVERY_MISMATCH: existing task version has another dataset revision"
+                )
 
         source_values = list(job.get("verified_models") or [])
         if not source_values:
@@ -2023,44 +2093,46 @@ class TrainingHandler:
         })
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        attach_version(
-            algorithms_path,
-            str(algorithm.get("id")),
-            {
-                "id": uuid.uuid4().hex[:12],
-                "version_name": version_name,
-                "version_no": version_name,
-                "stored_path": str(primary),
-                "best_path": str(best_output) if best_output else "",
-                "last_path": str(last_output) if last_output else "",
-                "model_name": primary.name,
-                "verified_models": verified_models,
-                "training_status": final_status.value,
-                "training_outcome": job.get("training_outcome"),
-                "completion_reason": job.get("completion_reason"),
-                "base_version_id": job.get("base_version_id"),
-                "base_version_name": job.get("base_version_name"),
-                "base_selection_reason": job.get("base_selection_reason"),
-                "metrics": training_report.get("metrics") or {},
-                "artifact_verified": True,
-                "trainable": True,
-                "framework": "ultralytics",
-                "label_schema": frozen_label_schema,
-                "label_codes": frozen_label_codes,
-                "label_contract": frozen_label_contract,
-                "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
-                "snapshot_id": snapshot_id,
-                "dataset_revision_id": dataset_revision_id,
-                "training_lineage": training_lineage,
-                "evaluation": evaluation,
-                "iteration_decision": iteration_decision,
-                "result_ref": "result.json",
-                "task_id": context.task.task_id,
-                "job_id": context.task.task_id,
-                "created_at": finished_at,
-                "finished_at": finished_at,
-            },
-        )
+        if existing_task_version is None:
+            attach_version(
+                algorithms_path,
+                str(algorithm.get("id")),
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "version_name": version_name,
+                    "version_no": version_name,
+                    "stored_path": str(primary),
+                    "best_path": str(best_output) if best_output else "",
+                    "last_path": str(last_output) if last_output else "",
+                    "model_name": primary.name,
+                    "verified_models": verified_models,
+                    "training_status": final_status.value,
+                    "training_outcome": job.get("training_outcome"),
+                    "completion_reason": job.get("completion_reason"),
+                    "base_version_id": job.get("base_version_id"),
+                    "base_version_name": job.get("base_version_name"),
+                    "base_selection_reason": job.get("base_selection_reason"),
+                    "metrics": training_report.get("metrics") or {},
+                    "artifact_verified": True,
+                    "trainable": True,
+                    "framework": "ultralytics",
+                    "label_schema": frozen_label_schema,
+                    "label_codes": frozen_label_codes,
+                    "label_contract": frozen_label_contract,
+                    "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
+                    "snapshot_id": snapshot_id,
+                    "dataset_revision_id": dataset_revision_id,
+                    "training_lineage": training_lineage,
+                    "evaluation": evaluation,
+                    "iteration_decision": iteration_decision,
+                    "result_ref": "result.json",
+                    "task_id": context.task.task_id,
+                    "job_id": context.task.task_id,
+                    "created_at": finished_at,
+                    "finished_at": finished_at,
+                },
+            )
+
         # Seed the shared cache only after the official algorithm version has
         # been attached successfully. A task that fails before this point must
         # not become the source of a future fast-path training bundle.
