@@ -1340,9 +1340,16 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         "platform_core.remote_execution_transport.resolve_current_version_id",
         lambda _algorithm, framework=None: None,
     )
+    def atomic_attach_spy(
+        _path, algorithm_id, version, *, expected_current_version_id
+    ):
+        assert expected_current_version_id is None
+        attached.append((algorithm_id, dict(version)))
+        return dict(version)
+
     monkeypatch.setattr(
-        "platform_core.remote_execution_transport.attach_version",
-        lambda _path, algorithm_id, version: attached.append((algorithm_id, dict(version))) or dict(version),
+        "platform_core.remote_execution_transport.attach_version_if_current",
+        atomic_attach_spy,
     )
 
     confirmed_for_commit = {
