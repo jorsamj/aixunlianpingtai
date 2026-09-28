@@ -30,6 +30,7 @@ from .snapshots import (
     build_snapshot,
     dataset_revision_document,
     ensure_dataset_revision,
+    is_training_ground_truth,
     persist_dataset_revision,
 )
 from .storage import StorageManager
@@ -887,6 +888,109 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
     return items
 
 
+@dataclass(frozen=True)
+class TrainingSelectionResolution:
+    requested_split: SplitRequest
+    effective_split: SplitRequest
+    effective_images: tuple[dict[str, Any], ...]
+    selected_train_image_ids: tuple[str, ...]
+    pending_annotation_image_ids: tuple[str, ...]
+
+    def truth(self) -> dict[str, Any]:
+        return {
+            "selected_train_image_ids": list(self.selected_train_image_ids),
+            "effective_train_image_ids": list(self.effective_split.train_image_ids),
+            "pending_annotation_image_ids": list(self.pending_annotation_image_ids),
+            "test_image_ids": list(self.effective_split.test_image_ids),
+            "selected_train_count": len(self.selected_train_image_ids),
+            "effective_train_count": len(self.effective_split.train_image_ids),
+            "pending_annotation_count": len(self.pending_annotation_image_ids),
+            "test_count": len(self.effective_split.test_image_ids),
+        }
+
+
+def _processed_training_candidate(row: Mapping[str, Any]) -> bool:
+    return (
+        str(row.get("processing_status") or "").strip().lower() == "processed"
+        or bool(row.get("cleaned_at"))
+        or bool(row.get("clean_skipped"))
+    )
+
+
+def resolve_training_selection(
+    project: Path,
+    split_request: SplitRequest,
+) -> TrainingSelectionResolution:
+    """Separate user-selectable cleaned material from formal supervised truth.
+
+    Cleaned/unannotated training material is valid task intent, but it is never
+    converted into an empty YOLO label. Independent test material remains
+    Ground-Truth-only because evaluation without labels is meaningless.
+    """
+    image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
+    images = _selected_project_images(MaterialRepository(project), project, image_ids)
+    by_id = {str(row.get("id") or ""): row for row in images}
+
+    effective_train: list[str] = []
+    pending_annotation: list[str] = []
+    invalid_train: list[str] = []
+    for image_id in split_request.train_image_ids:
+        row = by_id[str(image_id)]
+        boxes = list(row.get("boxes") or [])
+        state = str(row.get("annotation_state") or "unannotated")
+        if is_training_ground_truth(state, boxes):
+            effective_train.append(str(image_id))
+        elif state == "unannotated" and not boxes and _processed_training_candidate(row):
+            pending_annotation.append(str(image_id))
+        else:
+            invalid_train.append(str(image_id))
+
+    if invalid_train:
+        raise ValueError(
+            "训练候选包含尚未清洗完成或标注状态不一致的素材: "
+            + ", ".join(invalid_train[:5])
+        )
+
+    invalid_test: list[str] = []
+    for image_id in split_request.test_image_ids:
+        row = by_id[str(image_id)]
+        if not is_training_ground_truth(
+            row.get("annotation_state"),
+            list(row.get("boxes") or []),
+        ):
+            invalid_test.append(str(image_id))
+    if invalid_test:
+        raise ValueError(
+            "独立试验素材必须具备正式 Ground Truth，以下素材仍待标注: "
+            + ", ".join(invalid_test[:5])
+        )
+
+    if not effective_train:
+        raise ValueError(
+            "已清洗未标注素材可以选入训练任务，但本轮没有任何正式标注素材可用于监督训练；"
+            "请先完成至少一部分人工标注或 AI 标注审核确认"
+        )
+
+    effective_split = SplitRequest(
+        mode=split_request.mode,
+        train_image_ids=tuple(effective_train),
+        test_image_ids=tuple(split_request.test_image_ids),
+        experiment_percent=split_request.experiment_percent,
+        validation_percent=split_request.validation_percent,
+    )
+    effective_ids = set((*effective_split.train_image_ids, *effective_split.test_image_ids))
+    effective_images = tuple(
+        row for row in images if str(row.get("id") or "") in effective_ids
+    )
+    return TrainingSelectionResolution(
+        requested_split=split_request,
+        effective_split=effective_split,
+        effective_images=effective_images,
+        selected_train_image_ids=tuple(split_request.train_image_ids),
+        pending_annotation_image_ids=tuple(pending_annotation),
+    )
+
+
 _TRAINING_INPUT_FREEZE_SCHEMA_VERSION = 1
 _TRAINING_INPUT_FREEZE_FIELDS = (
     "id",
@@ -1026,14 +1130,14 @@ def freeze_training_inputs(
     *,
     seed: int,
     supplement_candidate_set: Mapping[str, Any] | None = None,
+    selection_resolution: TrainingSelectionResolution | None = None,
 ) -> dict[str, Any]:
-    """Freeze DB truth at submit time without reading/copying source image bytes."""
-    image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
-    images = _selected_project_images(
-        MaterialRepository(project),
-        project,
-        image_ids,
-    )
+    """Freeze formal DB truth at submit time without reading/copying source bytes."""
+    resolution = selection_resolution or resolve_training_selection(project, split_request)
+    if resolution.requested_split != split_request:
+        raise ValueError("training selection resolution does not match the requested split")
+    effective_split = resolution.effective_split
+    images = [dict(row) for row in resolution.effective_images]
     if not _indexed_content_identity_ready(images):
         invalid = [
             str(row.get("id") or "")
@@ -1046,7 +1150,7 @@ def freeze_training_inputs(
             + "；请先重新扫描/导入建立内容身份后再训练"
         )
     label_schema = _label_schema(project)
-    manifest = build_split_manifest(images, split_request, seed=int(seed))
+    manifest = build_split_manifest(images, effective_split, seed=int(seed))
     input_quality = _training_split_quality(images, manifest, label_schema)
     snapshot = build_snapshot(
         images,
@@ -1055,11 +1159,11 @@ def freeze_training_inputs(
         supplement_candidate_set=supplement_candidate_set,
     )
     split_truth = {
-        "mode": split_request.mode.value,
-        "train_image_ids": list(split_request.train_image_ids),
-        "test_image_ids": list(split_request.test_image_ids),
-        "experiment_percent": split_request.experiment_percent,
-        "validation_percent": split_request.validation_percent,
+        "mode": effective_split.mode.value,
+        "train_image_ids": list(effective_split.train_image_ids),
+        "test_image_ids": list(effective_split.test_image_ids),
+        "experiment_percent": effective_split.experiment_percent,
+        "validation_percent": effective_split.validation_percent,
         "seed": int(seed),
     }
     value = {
@@ -1070,6 +1174,7 @@ def freeze_training_inputs(
         "snapshot_id": str(snapshot["snapshot_id"]),
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
+        "selection": resolution.truth(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     value["input_freeze_id"] = _training_input_freeze_digest(value)
