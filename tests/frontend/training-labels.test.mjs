@@ -203,6 +203,20 @@ test('inactive previous labels remain inherited and do not change schema by them
   assert.equal(view.baseTrainingMode, 'previous_weights_init');
 });
 
+test('inactive current-catalog labels are never selectable as new classes', () => {
+  const labelCatalog = [
+    {code: 'fire', display_name: '明火', active: true, status: 'active'},
+    {code: 'helmet', display_name: '安全帽', active: false, status: 'inactive'},
+  ];
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire', 'helmet']}],
+    selectedIds: ['a'], labelCatalog, algorithm: {versions: []}, requestedCodes: ['helmet'],
+  });
+  assert.deepEqual(view.selectable, ['fire']);
+  assert.deepEqual(view.invalidAvailable, ['helmet']);
+  assert.deepEqual(view.requested, []);
+});
+
 test('non-canonical material labels are surfaced but never selectable', () => {
   const view = resolveClientTrainingLabels({
     materials: [{id: 'a', labels: ['fire', 'class_0']}],
