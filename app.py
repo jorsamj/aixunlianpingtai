@@ -130,7 +130,7 @@ from platform_core.storage.zip_import import (
     resolve_server_zip,
     safe_member_path,
 )
-from platform_core.snapshots import build_snapshot, persist_snapshot
+from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
@@ -4968,12 +4968,12 @@ def build_dataset(project_id: str, payload: BuildDatasetReq):
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or payload.include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             selected.append((img, ann))
-            if not ann.get("boxes"):
+            if ann.get("annotation_state") == "confirmed_empty":
                 empty_count += 1
     if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的数据。请先上传图片并标注，或勾选包含未标注图片。")
+        raise HTTPException(status_code=400, detail="没有可生成的数据。请先完成标注；无目标图片请先明确“确认无目标”。")
     ratio = max(0.5, min(float(payload.train_ratio), 0.95))
     selected = sorted(selected, key=lambda x: x[0]["id"])
     if len(selected) == 1:
@@ -5081,12 +5081,12 @@ def build_paddle_dataset_internal(project_id: str, train_ratio: float = 0.8, inc
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             selected.append((img, ann))
-            if not ann.get("boxes"):
+            if ann.get("annotation_state") == "confirmed_empty":
                 empty_count += 1
     if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的飞桨数据。请先上传图片并标注，或勾选包含未标注图片。")
+        raise HTTPException(status_code=400, detail="没有可生成的飞桨数据。请先完成标注；无目标图片请先明确“确认无目标”。")
     ratio = max(0.5, min(float(train_ratio), 0.95))
     selected = sorted(selected, key=lambda x: x[0]["id"])
     if len(selected) == 1:
@@ -8629,6 +8629,7 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
         "label_usage": {label: 0 for label in project.get("labels", [])},
         "invalid_boxes": 0,
         "empty_images": 0,
+        "unannotated_images": 0,
         "can_train": False,
         "warnings": [],
     }
@@ -8644,12 +8645,14 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
                 clean.append(nb)
             else:
                 result["invalid_boxes"] += 1
-        if clean or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), clean):
             result["splits"][split]["images"] += 1
-        if clean:
+        if clean and ann.get("annotation_state") == "annotated":
             result["annotated_images"] += 1
-        else:
+        elif ann.get("annotation_state") == "confirmed_empty":
             result["empty_images"] += 1
+        else:
+            result["unannotated_images"] += 1
         for b in clean:
             result["box_count"] += 1
             result["splits"][split]["boxes"] += 1
@@ -8981,7 +8984,7 @@ def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_e
     result = {"train": [], "val": [], "test": []}
     for img in sorted(images, key=lambda x: x.get("id", "")):
         ann = read_annotation(project_id, img["id"])
-        if not ann.get("boxes") and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
+        if not is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             continue
         split = (img.get("split") or "train").lower()
         if split not in result:
@@ -9021,7 +9024,7 @@ def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
                     clean.append(nb)
                 else:
                     counts["invalid_boxes"] += 1
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             shutil.copy2(src, dataset / "images" / part / img["stored_name"])
             lines = []
@@ -9176,7 +9179,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
                 nb = normalize_box_for_project(project_id, img, b, create_label=False)
                 if nb:
                     clean.append(nb)
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             labs = {str(b.get("label") or "") for b in clean}
             if combined_filter and not labs.intersection(combined_filter):
@@ -9201,7 +9204,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
             for b in ann.get("boxes", []):
                 nb=normalize_box_for_project(project_id,img,b,create_label=False)
                 if nb: clean.append(nb)
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             labs={str(b.get("label") or "") for b in clean}
             filt=train_filter if split=="train" else val_filter if split=="val" else set()
