@@ -65,7 +65,12 @@ def _temporary_or_unmapped_label(code: str) -> bool:
     )
 
 
-def selected_material_label_codes(project: Path, payload: Mapping[str, Any]) -> list[str]:
+def selected_material_label_codes(
+    project: Path,
+    payload: Mapping[str, Any],
+    *,
+    allowed_nonactive_codes: Sequence[str] = (),
+) -> list[str]:
     """Return only labels evidenced by the exact materials selected for this task.
 
     Positive annotations contribute their box labels. Explicit confirmed-empty
@@ -107,7 +112,13 @@ def selected_material_label_codes(project: Path, payload: Mapping[str, Any]) -> 
                     encountered.append(code)
 
     project_order, catalog = _project_label_catalog(project)
-    invalid = [code for code in encountered if code not in catalog]
+    inherited_allowlist = {
+        str(code).strip() for code in allowed_nonactive_codes if str(code).strip()
+    }
+    invalid = [
+        code for code in encountered
+        if code not in catalog and code not in inherited_allowlist
+    ]
     if invalid:
         raise ValueError(
             "训练素材包含未映射、已删除或已停用的标签: "
@@ -189,8 +200,6 @@ def resolve_training_label_contract(
     project_path = Path(project).resolve()
     project_order, catalog = _project_label_catalog(project_path)
     project_rank = {code: index for index, code in enumerate(project_order)}
-    available = selected_material_label_codes(project_path, payload)
-    available_set = set(available)
     requested = _unique_codes(payload.get("train_labels") or [])
     invalid_catalog_requested = [code for code in requested if code not in catalog]
     if invalid_catalog_requested:
@@ -222,6 +231,12 @@ def resolve_training_label_contract(
             )
 
     inherited_codes = [str(item["code"]) for item in inherited]
+    available = selected_material_label_codes(
+        project_path,
+        payload,
+        allowed_nonactive_codes=inherited_codes,
+    )
+    available_set = set(available)
     # A verified previous-version schema is immutable iteration lineage. Project
     # label governance may later disable/remove a canonical label, but that must
     # never silently renumber or delete an inherited model output. Only newly
