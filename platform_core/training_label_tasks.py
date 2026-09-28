@@ -4,11 +4,16 @@ import hashlib
 import json
 import re
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import training_tasks as base
-from .algorithms import choose_algorithm_iteration_base, list_algorithms, save_algorithms
+from .algorithms import (
+    choose_algorithm_iteration_base,
+    list_algorithms,
+    update_algorithm_version,
+)
 from .annotation_repository import AnnotationRepository
 from .task_runtime import ArtifactStore, TaskKind, TaskStatus
 
@@ -532,38 +537,65 @@ def _algorithm_for_payload(project: Path, payload: Mapping[str, Any]) -> dict[st
 
 
 def _persist_version_contract(project: Path, task_id: str, contract: Mapping[str, Any]) -> None:
+    """Patch only the completed version; never replace the whole algorithm graph."""
     path = project / "algorithms.json"
-    algorithms = list_algorithms(path)
-    changed = False
-    for algorithm in algorithms:
-        if str(algorithm.get("id") or "") != str(contract.get("algorithm_id") or ""):
-            continue
-        for version in algorithm.get("versions") or []:
-            if str(version.get("task_id") or version.get("job_id") or "") != str(task_id):
-                continue
-            version["label_schema"] = [dict(item) for item in contract.get("effective_label_schema") or []]
-            version["label_codes"] = list(contract.get("effective_label_codes") or [])
-            persisted_contract = {
-                key: value
-                for key, value in contract.items()
-                if key != "project_path"
-            }
-            previous_contract = (
-                dict(version.get("label_contract") or {})
-                if isinstance(version.get("label_contract"), Mapping)
-                else {}
-            )
-            version["label_contract"] = {
+    algorithm_id = str(contract.get("algorithm_id") or "").strip()
+    if not algorithm_id:
+        return
+    algorithm = next(
+        (
+            row
+            for row in list_algorithms(path)
+            if str(row.get("id") or "") == algorithm_id
+        ),
+        None,
+    )
+    if algorithm is None:
+        return
+    version = next(
+        (
+            row
+            for row in (algorithm.get("versions") or [])
+            if str(row.get("task_id") or row.get("job_id") or "") == str(task_id)
+        ),
+        None,
+    )
+    if version is None:
+        return
+    version_id = str(version.get("id") or "").strip()
+    if not version_id:
+        return
+
+    persisted_contract = {
+        key: value
+        for key, value in contract.items()
+        if key != "project_path"
+    }
+    previous_contract = (
+        dict(version.get("label_contract") or {})
+        if isinstance(version.get("label_contract"), Mapping)
+        else {}
+    )
+    update_algorithm_version(
+        path,
+        algorithm_id,
+        version_id,
+        {
+            "label_schema": [
+                dict(item)
+                for item in contract.get("effective_label_schema") or []
+            ],
+            "label_codes": list(contract.get("effective_label_codes") or []),
+            "label_contract": {
                 **previous_contract,
                 **persisted_contract,
                 "strict_resume": False,
                 "optimizer_state_resumed": False,
                 "mother_model_labels_inherited": False,
-            }
-            changed = True
-            break
-    if changed:
-        save_algorithms(path, algorithms)
+            },
+        },
+        now=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 class LabelContractTrainingHandler(base.TrainingHandler):
