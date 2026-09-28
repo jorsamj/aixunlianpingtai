@@ -663,7 +663,9 @@ def test_explicit_material_selection_rejects_invalid_requests(client, seeded_pro
     assert message in response.json()["detail"]
 
 
-def _iteration_version(version_id, *, decision_id, evaluation_id, decision="continue_training"):
+def _iteration_version(
+    version_id, *, decision_id, evaluation_id, decision="continue_training", stored_path=None
+):
     return {
         "id": version_id,
         "version_name": f"20260919-{version_id}",
@@ -671,7 +673,7 @@ def _iteration_version(version_id, *, decision_id, evaluation_id, decision="cont
         "artifact_verified": True,
         "trainable": True,
         "framework": "ultralytics",
-        "stored_path": f"/models/{version_id}/best.pt",
+        "stored_path": str(stored_path or f"/models/{version_id}/best.pt"),
         "label_schema": [{"code": "fire", "class_id": 0, "canonical_project_class_id": 0}],
         "dataset_revision_id": "a" * 64,
         "snapshot_id": f"snapshot-{version_id}",
@@ -859,9 +861,16 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "确认动作幂等训练", "algorithm_type": "yolo_ultralytics"},
     ).json()["algorithm"]
+    base_model = app_module.project_dir(project_id) / "v-current-base.pt"
+    base_model.write_bytes(b"verified-iteration-base")
     attach_version(
         app_module.algorithms_file(project_id), algorithm["id"],
-        _iteration_version("v-current", decision_id="a" * 64, evaluation_id="b" * 64),
+        _iteration_version(
+            "v-current",
+            decision_id="a" * 64,
+            evaluation_id="b" * 64,
+            stored_path=base_model,
+        ),
     )
     confirm = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
@@ -905,6 +914,9 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
     assert job["confirmed_iteration_action"]["action_id"] == action["action_id"]
     request = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
     assert request["iteration_action"] == context
+    assert request["base_version_id"] == "v-current"
+    assert request["base_model_reference"] == str(base_model.resolve())
+    assert request["base_model_sha256"] == hashlib.sha256(base_model.read_bytes()).hexdigest()
 
 
 def test_durable_training_requires_matching_supplement_candidate_set_identity(
