@@ -120,24 +120,6 @@ def build_annotation_prompt(cfg, labels, *, width, height, business_instruction,
     return template.replace("{labels}", "、".join(str(item.get("code")) for item in labels))
 
 
-def _reference_labels(data_dir: Path, project_id: str, references: list[str]) -> list[str]:
-    if not references:
-        return []
-    from .annotation_repository import AnnotationRepository
-
-    annotations = AnnotationRepository(data_dir / "projects" / project_id)
-    labels: list[str] = []
-    for offset in range(0, len(references), 500):
-        batch = references[offset:offset + 500]
-        rows = annotations.get_many(batch)
-        for image_id in batch:
-            for box in (rows.get(image_id) or {}).get("boxes") or []:
-                label = str(box.get("label") or "").strip()
-                if label and label not in labels:
-                    labels.append(label)
-    return labels
-
-
 def prepare_request(
     data_dir,
     project_id,
@@ -194,10 +176,6 @@ def prepare_request(
     references = list(dict.fromkeys(
         str(value) for value in (prepared.get("reference_image_ids") or []) if str(value)
     ))
-    if references and not runtime:
-        for label in _reference_labels(data_dir, project_id, references):
-            if label not in labels:
-                labels.append(label)
     if not labels:
         raise ValueError("AI_LABELS_REQUIRED: select annotation labels")
 

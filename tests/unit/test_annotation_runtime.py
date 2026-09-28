@@ -152,30 +152,43 @@ def test_raw_provider_identifier_is_not_an_execution_owner(tmp_path):
         )
 
 
-def test_reference_labels_use_bounded_repository_batches_without_full_scan(tmp_path, monkeypatch):
+def test_reference_images_never_choose_labels_for_user(tmp_path, monkeypatch):
     _write_project(tmp_path)
-    reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
-    batches = []
 
-    class FakeAnnotations:
+    class ForbiddenAnnotations:
         def __init__(self, _project_dir):
-            pass
-
-        def get_many(self, ids):
-            batch = list(ids)
-            batches.append(batch)
-            assert len(batch) <= 500
-            return {
-                image_id: {
-                    "image_id": image_id,
-                    "boxes": [{"label": "fire", "class_id": 0}],
-                }
-                for image_id in batch
-            }
+            pytest.fail("reference images must not be read to choose AI labels")
 
     monkeypatch.setattr(
         "platform_core.annotation_repository.AnnotationRepository",
-        FakeAnnotations,
+        ForbiddenAnnotations,
+    )
+
+    with pytest.raises(ValueError, match="AI_LABELS_REQUIRED"):
+        annotation_runtime.prepare_request(
+            tmp_path,
+            "p1",
+            {
+                "image_ids": ["image-1"],
+                "reference_image_ids": ["reference-1"],
+                "model_config_id": "model-1",
+            },
+            runtime=False,
+            model_configs=[_model()],
+        )
+
+
+def test_reference_images_are_preserved_without_expanding_explicit_labels(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
+
+    class ForbiddenAnnotations:
+        def __init__(self, _project_dir):
+            pytest.fail("reference images must not be read to expand explicit AI labels")
+
+    monkeypatch.setattr(
+        "platform_core.annotation_repository.AnnotationRepository",
+        ForbiddenAnnotations,
     )
 
     frozen = annotation_runtime.prepare_request(
@@ -184,12 +197,12 @@ def test_reference_labels_use_bounded_repository_batches_without_full_scan(tmp_p
         {
             "image_ids": ["image-1"],
             "reference_image_ids": reference_ids,
+            "labels": ["fire"],
             "model_config_id": "model-1",
         },
         runtime=False,
         model_configs=[_model()],
     )
 
-    assert [len(batch) for batch in batches] == [500, 500, 1]
     assert frozen["reference_image_ids"] == reference_ids
     assert frozen["labels"] == ["fire"]
