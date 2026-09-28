@@ -276,7 +276,11 @@ def main() -> None:
 
         create_project = session.post(
             f"{base_url}/api/projects",
-            json={"name": "zip-10k-processing-acceptance", "description": "", "labels": []},
+            json={
+                "name": "zip-10k-processing-acceptance",
+                "description": "",
+                "labels": [{"code": "object", "display_name": "object"}],
+            },
             timeout=30,
         )
         create_project.raise_for_status()
@@ -419,10 +423,21 @@ def main() -> None:
             }
         )
 
+        external_classes = list(job.get("external_classes") or [])
+        if not bool(job.get("label_confirmation_required")):
+            raise AssertionError("YOLO 10k acceptance must require explicit label confirmation")
+        if not any(
+            str(row.get("class_id")) == "0" and str(row.get("name") or "") == "object"
+            for row in external_classes
+        ):
+            raise AssertionError(f"unexpected external classes: {external_classes!r}")
+        result["label_confirmation_required"] = True
+        result["external_classes"] = external_classes
+
         start_started = time.perf_counter()
         start_response = session.post(
             f"{base_url}/api/v19/projects/{project_id}/import/jobs/{job_id}/start",
-            json={"selected_paths": []},
+            json={"selected_paths": [], "label_mapping": {"0": "object"}},
             timeout=30,
         )
         start_seconds = time.perf_counter() - start_started
@@ -542,6 +557,7 @@ def main() -> None:
             "multipart_protocol": result["upload_protocol"] == "multipart",
             "multipart_resume": result["multipart_resume_verified"] is True,
             "multipart_parts_complete": result["multipart_total_parts"] >= 1 and len(result["multipart_part_seconds"]) <= result["multipart_total_parts"],
+            "manual_label_confirmation": result["label_confirmation_required"] is True,
             "bounded_create_preview": result["create_preview_count"] <= 500 and result["create_images_truncated"] is True,
             "report_truth": result["report_imported_images"] == IMAGE_COUNT and result["report_annotated_images"] == IMAGE_COUNT and result["report_boxes"] == IMAGE_COUNT,
             "material_truth": result["material_total"] == IMAGE_COUNT and result["material_boxes"] == IMAGE_COUNT and result["material_annotated"] == IMAGE_COUNT,
