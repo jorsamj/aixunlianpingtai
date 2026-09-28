@@ -30,3 +30,5 @@ def test_bootstrap_algorithm_cache_is_revision_guarded_and_does_not_rebuild_ever
     assert "_v53_build_snapshot(" not in overlay
     assert "list_algorithms_internal(project_id)" not in overlay
     assert "_v53_algorithms_with_revision(project_id)" in overlay
+    assert "stable_revision == publish_revision" in overlay
+    assert "return algorithms, before" in source

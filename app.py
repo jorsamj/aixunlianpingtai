@@ -19994,14 +19994,19 @@ def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]]
     avoids caching rows from revision N under revision N+1.
     """
     path = algorithms_file(project_id)
-    for _ in range(3):
+    algorithms: List[Dict[str, Any]] = []
+    before = 0
+    for _ in range(5):
         before = algorithm_store_revision(path)
         algorithms = list_algorithms_internal(project_id)
         after = algorithm_store_revision(path)
         if before == after:
             return algorithms, after
-    algorithms = list_algorithms_internal(project_id)
-    return algorithms, algorithm_store_revision(path)
+
+    # Under sustained concurrent writes, never label potentially older rows with
+    # a newer revision. Returning the last pre-read revision guarantees the next
+    # request will retry instead of publishing a falsely-fresh cache entry.
+    return algorithms, before
 
 
 def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
@@ -20019,8 +20024,13 @@ def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -
         # algorithm revision backwards under concurrent snapshot requests.
         current_cached = _V53_BOOTSTRAP_SNAPSHOT
         published_revision = int(current_cached.get("algorithm_revision") or 0)
+        publish_revision = algorithm_store_revision(algorithms_file(project_id))
         cached_project_id = str((current_cached.get("project") or {}).get("id") or "")
-        if cached_project_id == project_id and stable_revision >= published_revision:
+        if (
+            cached_project_id == project_id
+            and stable_revision == publish_revision
+            and stable_revision >= published_revision
+        ):
             refreshed = dict(current_cached)
             refreshed["algorithms"] = algorithms
             refreshed["algorithm_revision"] = stable_revision
