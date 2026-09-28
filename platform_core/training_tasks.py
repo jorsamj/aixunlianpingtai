@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import psutil
 import yaml
-from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFile, ImageOps, ImageStat, UnidentifiedImageError
 
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
@@ -467,6 +467,92 @@ def _yolo_line(box: Mapping[str, Any], width: float, height: float, class_id: in
     return f"{class_id} " + " ".join(f"{value:.8f}" for value in values)
 
 
+def _apply_training_projection(
+    destination: Path,
+    row: Mapping[str, Any],
+    role: str,
+    image_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Redact task-excluded objects from train/validation copies before loss sees them."""
+    identity = dict(image_identity)
+    excluded = [
+        dict(box) for box in (row.get("training_excluded_boxes") or [])
+        if isinstance(box, Mapping)
+    ]
+    if not excluded or role == "test":
+        return identity
+    if str(row.get("training_projection_policy") or "") != "redact_excluded_objects_v1":
+        raise ValueError("excluded training objects require redact_excluded_objects_v1 policy")
+    projection_digest = str(row.get("training_projection_digest") or "").strip().lower()
+    if len(projection_digest) != 64:
+        raise ValueError("training projection digest is missing or invalid")
+
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid.uuid4().hex}.projection.tmp"
+    )
+    try:
+        with Image.open(destination) as source:
+            image_format = str(source.format or "").upper()
+            canvas = source.convert("RGB")
+            width, height = canvas.size
+            if width <= 0 or height <= 0:
+                raise ValueError(f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions")
+            median = tuple(int(value) for value in ImageStat.Stat(canvas).median[:3])
+            draw = ImageDraw.Draw(canvas)
+            redacted = 0
+            for box in excluded:
+                if all(key in box for key in ("x1", "y1", "x2", "y2")):
+                    x1, y1 = float(box["x1"]), float(box["y1"])
+                    x2, y2 = float(box["x2"]), float(box["y2"])
+                else:
+                    cx, cy = float(box.get("cx", 0)), float(box.get("cy", 0))
+                    bw, bh = float(box.get("w", 0)), float(box.get("h", 0))
+                    if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
+                        cx, cy, bw, bh = cx * width, cy * height, bw * width, bh * height
+                    x1, y1 = cx - bw / 2, cy - bh / 2
+                    x2, y2 = cx + bw / 2, cy + bh / 2
+                left = max(0, min(width, int(x1)))
+                top = max(0, min(height, int(y1)))
+                right = max(0, min(width, int(x2 + 0.999999)))
+                bottom = max(0, min(height, int(y2 + 0.999999)))
+                if right <= left or bottom <= top:
+                    raise ValueError(
+                        f"excluded training box is outside image bounds: {row.get('id')}"
+                    )
+                draw.rectangle((left, top, right - 1, bottom - 1), fill=median)
+                redacted += 1
+            if redacted != len(excluded):
+                raise ValueError("not all excluded training objects were redacted")
+            save_format = image_format or (
+                "JPEG" if destination.suffix.lower() in _JPEG_SUFFIXES else "PNG"
+            )
+            save_options = (
+                {"quality": 100, "subsampling": 0}
+                if save_format in {"JPEG", "JPG"} else {}
+            )
+            canvas.save(temporary, format=save_format, **save_options)
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise ValueError("training projection produced an empty image")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    previous_reason = str(identity.get("normalization_reason") or "").strip()
+    identity.update(
+        training_content_sha256=_sha256(destination),
+        training_size_bytes=destination.stat().st_size,
+        normalized=True,
+        normalization_reason=(
+            f"{previous_reason}+excluded_object_redaction"
+            if previous_reason else "excluded_object_redaction"
+        ),
+        training_projection_policy="redact_excluded_objects_v1",
+        training_projection_digest=projection_digest,
+        redacted_object_count=len(excluded),
+    )
+    return identity
+
+
 def materialize_portable_dataset(
     task_root: str | Path,
     snapshot: Mapping[str, Any],
@@ -555,6 +641,9 @@ def materialize_portable_dataset(
         image_identity = _normalize_training_image(
             destination, expected_hash, size_bytes
         )
+        image_identity = _apply_training_projection(
+            destination, row, role, image_identity
+        )
         training_hash = str(image_identity["training_content_sha256"])
         training_size_bytes = int(image_identity["training_size_bytes"])
         training_total_size_bytes += training_size_bytes
@@ -581,6 +670,9 @@ def materialize_portable_dataset(
                 "training_input_policy": TRAINING_INPUT_POLICY,
                 "normalized": bool(image_identity["normalized"]),
                 "normalization_reason": image_identity["normalization_reason"],
+                "training_projection_policy": image_identity.get("training_projection_policy"),
+                "training_projection_digest": image_identity.get("training_projection_digest"),
+                "redacted_object_count": int(image_identity.get("redacted_object_count") or 0),
                 "label_sha256": _sha256(label_path),
             }
         )
@@ -1021,6 +1113,9 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "negative_origin",
     "source_annotation_state",
     "source_labels",
+    "training_excluded_boxes",
+    "training_projection_policy",
+    "training_projection_digest",
     "external_annotation",
     "external_annotation_needs_review",
     "external_annotation_review_reason",
@@ -1131,13 +1226,25 @@ def freeze_training_inputs(
     seed: int,
     supplement_candidate_set: Mapping[str, Any] | None = None,
     selection_resolution: TrainingSelectionResolution | None = None,
+    effective_images: Sequence[Mapping[str, Any]] | None = None,
+    label_schema_override: Sequence[Mapping[str, Any]] | None = None,
+    label_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
     resolution = selection_resolution or resolve_training_selection(project, split_request)
     if resolution.requested_split != split_request:
         raise ValueError("training selection resolution does not match the requested split")
     effective_split = resolution.effective_split
-    images = [dict(row) for row in resolution.effective_images]
+    source_images = [dict(row) for row in resolution.effective_images]
+    images = (
+        [dict(row) for row in effective_images]
+        if effective_images is not None
+        else source_images
+    )
+    source_ids = [str(row.get("id") or "") for row in source_images]
+    projected_ids = [str(row.get("id") or "") for row in images]
+    if projected_ids != source_ids:
+        raise ValueError("projected training images must preserve frozen selection identity/order")
     if not _indexed_content_identity_ready(images):
         invalid = [
             str(row.get("id") or "")
@@ -1149,7 +1256,13 @@ def freeze_training_inputs(
             + ", ".join(invalid[:5])
             + "；请先重新扫描/导入建立内容身份后再训练"
         )
-    label_schema = _label_schema(project)
+    label_schema = (
+        [dict(item) for item in label_schema_override]
+        if label_schema_override is not None
+        else _label_schema(project)
+    )
+    if not label_schema:
+        raise ValueError("training label schema is empty")
     manifest = build_split_manifest(images, effective_split, seed=int(seed))
     input_quality = _training_split_quality(images, manifest, label_schema)
     snapshot = build_snapshot(
@@ -1175,6 +1288,13 @@ def freeze_training_inputs(
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
         "selection": resolution.truth(),
+        **(
+            {"label_contract": {
+                key: item for key, item in dict(label_contract).items()
+                if key != "project_path"
+            }}
+            if label_contract is not None else {}
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     value["input_freeze_id"] = _training_input_freeze_digest(value)
@@ -1221,6 +1341,15 @@ def resolve_training_input_freeze(
         for item in (value.get("label_schema") or [])
         if isinstance(item, Mapping)
     ]
+    frozen_contract = value.get("label_contract")
+    if isinstance(frozen_contract, Mapping) and frozen_contract:
+        contract_schema = [
+            dict(item)
+            for item in (frozen_contract.get("effective_label_schema") or [])
+            if isinstance(item, Mapping)
+        ]
+        if contract_schema != label_schema:
+            raise ValueError("training input freeze label contract/schema mismatch")
     manifest = build_split_manifest(images, split_request, seed=int(seed))
     input_quality = _training_split_quality(images, manifest, label_schema)
     if dict(value.get("input_quality") or {}) != input_quality:
