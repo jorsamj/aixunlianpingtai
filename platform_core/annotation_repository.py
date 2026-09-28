@@ -53,6 +53,17 @@ def _active_project_labels(project_path: Path) -> list[str]:
     return _normalize_scope(active)
 
 
+class AnnotationConflictError(RuntimeError):
+    def __init__(self, image_id: str, expected_version: int, actual_version: int):
+        self.image_id = str(image_id)
+        self.expected_version = int(expected_version)
+        self.actual_version = int(actual_version)
+        super().__init__(
+            f"annotation {self.image_id} changed concurrently: "
+            f"expected version {self.expected_version}, actual {self.actual_version}"
+        )
+
+
 class AnnotationRepository:
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
@@ -464,6 +475,20 @@ class AnnotationRepository:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
                 image_id = self._id(row['image_id'])
+                expected_version = row.get('expected_version')
+                if expected_version is not None:
+                    expected_version = int(expected_version)
+                    if expected_version < 0:
+                        raise ValueError('expected annotation version must be >= 0')
+                    current = db.execute(
+                        "SELECT version FROM annotations WHERE image_id=?",
+                        (image_id,),
+                    ).fetchone()
+                    actual_version = int(current['version']) if current is not None else 0
+                    if actual_version != expected_version:
+                        raise AnnotationConflictError(
+                            image_id, expected_version, actual_version
+                        )
                 boxes = list(row.get('boxes') or [])
                 state = row.get('annotation_state') or ('annotated' if boxes else 'confirmed_empty')
                 if state not in STATES or bool(boxes) != (state == 'annotated'):
@@ -558,13 +583,14 @@ class AnnotationRepository:
 
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
-        *, project_material: bool = True,
+        *, project_material: bool = True, expected_version=None,
     ):
         persisted = self.upsert_many([{
             'image_id': image_id,
             'boxes': boxes,
             'annotation_state': annotation_state,
             'annotation_scope': annotation_scope,
+            'expected_version': expected_version,
         }], project_material=project_material, return_rows=True)
         if not persisted:
             raise RuntimeError("annotation upsert did not return a persisted row")
