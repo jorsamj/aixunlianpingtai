@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from PIL import Image
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.training_label_tasks import (
@@ -227,6 +228,9 @@ def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_pa
     assert rows[0]["source_annotation_state"] == "annotated"
     assert rows[0]["source_labels"] == ["fire", "person"]
     assert "negative_origin" not in rows[0]
+    assert [box["label"] for box in rows[0]["training_excluded_boxes"]] == ["person"]
+    assert rows[0]["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert len(rows[0]["training_projection_digest"]) == 64
     assert "annotation_hash" not in rows[0]
 
 
@@ -255,9 +259,12 @@ def test_projection_turns_only_unselected_labels_into_task_negative_without_muta
     assert projected["annotated"] is True
     assert projected["boxes"] == []
     assert projected["annotation_scope"] == ["fire"]
-    assert projected["negative_origin"] == "filtered_by_training_labels"
+    assert projected["negative_origin"] == "redacted_unselected_labels"
     assert projected["source_annotation_state"] == "annotated"
     assert projected["source_labels"] == ["person"]
+    assert [box["label"] for box in projected["training_excluded_boxes"]] == ["person"]
+    assert projected["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert len(projected["training_projection_digest"]) == 64
 
     # The task projection must never rewrite material-library Ground Truth.
     source = annotations.get("a")
@@ -273,7 +280,7 @@ def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
         annotation_state="annotated",
     )
     image_file = tmp_path / "source.jpg"
-    image_file.write_bytes(b"not-a-real-image-but-copy-contract-only")
+    Image.new("RGB", (100, 100), (220, 220, 220)).save(image_file, format="JPEG")
     content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
 
     class Materials:
@@ -323,7 +330,7 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     _, project = _project(tmp_path)
     AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
     image_file = tmp_path / "task-negative.jpg"
-    image_file.write_bytes(b"task-negative-source")
+    Image.new("RGB", (100, 100), (220, 220, 220)).save(image_file, format="JPEG")
     content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
 
     class Materials:
@@ -355,6 +362,12 @@ def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path)
     label = bundle / "dataset" / "labels" / "train" / "a.txt"
     assert label.is_file()
     assert label.read_text(encoding="utf-8") == ""
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    record = manifest["splits"]["train"][0]
+    assert record["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert record["redacted_object_count"] == 1
+    assert record["training_content_sha256"] if "training_content_sha256" in record else record["content_sha256"]
+    assert record["content_sha256"] != content_hash
 
 
 def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
@@ -387,7 +400,7 @@ def test_training_preflight_rejects_temp_class_even_if_catalog_contains_it(tmp_p
         selected_material_label_codes(project, {"train_image_ids": ["a"]})
 
 
-def test_iteration_schema_change_drops_inactive_previous_label_and_reindexes(tmp_path: Path):
+def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
     for row in meta["label_meta"]:
@@ -425,12 +438,12 @@ def test_iteration_schema_change_drops_inactive_previous_label_and_reindexes(tmp
         algorithm,
     )
     assert contract["inherited_label_codes"] == ["fire", "smoke"]
-    assert contract["retained_inherited_label_codes"] == ["fire"]
-    assert contract["dropped_inherited_label_codes"] == ["smoke"]
-    assert contract["effective_label_codes"] == ["fire"]
-    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0]
-    assert contract["label_schema_changed"] is True
-    assert contract["label_schema_change_reasons"] == ["removed_or_inactive_labels"]
+    assert contract["retained_inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["dropped_inherited_label_codes"] == []
+    assert contract["effective_label_codes"] == ["fire", "smoke"]
+    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0, 1]
+    assert contract["label_schema_changed"] is False
+    assert contract["label_schema_change_reasons"] == []
     assert contract["base_training_mode"] == "previous_weights_init"
     assert contract["strict_resume"] is False
 
