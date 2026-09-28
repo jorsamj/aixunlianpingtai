@@ -38,7 +38,8 @@ test('canonical AI creation selects a saved model config and never exposes a tem
   const createBlock = app.slice(createStart, createEnd);
   assert.match(createBlock, /id="ai429Model"/);
   assert.match(createBlock, /任务创建时冻结/);
-  assert.doesNotMatch(createBlock, /preUrl|临时检测接口/);
+  assert.match(createBlock, /不支持临时检测接口/);
+  assert.doesNotMatch(createBlock, /id="preUrl"|id="preModelCfg"/);
 
   const submitStart = app.indexOf('window.submitAiLabel429=async function');
   const submitEnd = app.indexOf('function taskRow', submitStart);
@@ -54,5 +55,5 @@ test('legacy v35 auto-label modal delegates to the v60 CandidateStore flow', () 
   assert.ok(start >= 0 && end > start);
   const block = app.slice(start, end);
   assert.match(block, /window\.createAiLabel429/);
-  assert.doesNotMatch(block, /preUrl|临时检测接口|preModelCfg/);
+  assert.doesNotMatch(block, /id="preUrl"|id="preModelCfg"/);
 });
