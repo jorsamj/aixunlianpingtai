@@ -299,6 +299,20 @@ def delete_algorithm(path: Path, algorithm_id: str) -> None:
 def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
     return AlgorithmSqlStore(Path(path)).attach_version(str(algorithm_id), version)
 
+def attach_version_if_current(
+    path: Path,
+    algorithm_id: str,
+    version: Mapping[str, Any],
+    *,
+    expected_current_version_id: str | None,
+) -> dict:
+    """Atomically attach a training version only if its frozen base is still current."""
+    return AlgorithmSqlStore(Path(path)).attach_version_if_current(
+        str(algorithm_id),
+        version,
+        expected_current_version_id=expected_current_version_id,
+    )
+
 def update_algorithm_version(
     path: Path,
     algorithm_id: str,
