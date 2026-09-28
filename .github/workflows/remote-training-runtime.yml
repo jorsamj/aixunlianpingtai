@@ -23,6 +23,8 @@ on:
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/algorithms.py'
+      - 'platform_core/algorithm_sql_store.py'
       - 'platform_core/training_metrics.py'
       - 'platform_core/training_devices.py'
       - 'platform_core/training_precision.py'
@@ -55,6 +57,7 @@ on:
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
       - 'tests/unit/test_training_scheduler_target.py'
+      - 'tests/unit/test_algorithm_sql_store.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
@@ -85,6 +88,8 @@ on:
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/algorithms.py'
+      - 'platform_core/algorithm_sql_store.py'
       - 'platform_core/training_metrics.py'
       - 'platform_core/training_devices.py'
       - 'platform_core/training_precision.py'
@@ -117,6 +122,7 @@ on:
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
       - 'tests/unit/test_training_scheduler_target.py'
+      - 'tests/unit/test_algorithm_sql_store.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
@@ -150,6 +156,8 @@ jobs:
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
           platform_core/training_tasks.py
+          platform_core/algorithms.py
+          platform_core/algorithm_sql_store.py
           platform_core/training_metrics.py
           platform_core/training_devices.py
           platform_core/training_precision.py
@@ -190,6 +198,7 @@ jobs:
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
           tests/unit/test_training_scheduler_target.py
+          tests/unit/test_algorithm_sql_store.py
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
@@ -221,6 +230,11 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_model_artifacts.py
+      - name: Atomic training version commit fencing
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_algorithm_sql_store.py
+          -k "atomic_training_attach or atomic_first_training_attach"
       - name: Worker registration and repository fencing
         run: >-
           python -m pytest -q --confcutdir=tests/unit/task_runtime
@@ -293,6 +307,11 @@ jobs:
           grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
           grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
+          grep -Fq 'attach_version_if_current(' platform_core/training_tasks.py
+          grep -Fq 'attach_version_if_current(' platform_core/remote_execution_transport.py
+          grep -Fq 'def attach_version_if_current(' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_atomic_training_attach_allows_only_one_child_of_same_base' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_atomic_training_attach_retry_is_idempotent_before_base_conflict' tests/unit/test_algorithm_sql_store.py
           grep -Fq 'test_local_finalization_rejects_stale_iteration_base' tests/integration/test_training_completed_job_recovery.py
           grep -Fq 'test_local_finalization_reuses_same_task_version_before_stale_check' tests/integration/test_training_completed_job_recovery.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
