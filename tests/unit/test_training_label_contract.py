@@ -16,7 +16,13 @@ from platform_core.training_label_tasks import (
     resolve_training_label_contract,
     selected_material_label_codes,
 )
-from platform_core.training_tasks import materialize_portable_dataset, resolve_frozen_training_base
+from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_tasks import (
+    TrainingSelectionResolution,
+    freeze_training_inputs,
+    materialize_portable_dataset,
+    resolve_frozen_training_base,
+)
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:
@@ -216,6 +222,74 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     })
     assert frozen_base["base_version_id"] == "v1"
     assert frozen_base["base_model_path"] == str(model.resolve())
+
+
+def test_input_freeze_identity_changes_when_frozen_base_model_changes(tmp_path: Path):
+    _data_dir, project = _project(tmp_path)
+    images = tuple(
+        {
+            "id": f"image-{index}",
+            "dataset_id": "pool",
+            "filename": f"image-{index}.jpg",
+            "stored_name": f"image-{index}.jpg",
+            "content_sha256": hashlib.sha256(f"image-{index}".encode()).hexdigest(),
+            "size_bytes": 100 + index,
+            "width": 100,
+            "height": 100,
+            "processing_status": "processed",
+            "annotation_state": "annotated",
+            "annotation_scope": ["fire"],
+            "annotated": True,
+            "group_id": f"group-{index}",
+            "boxes": [_box("fire")],
+        }
+        for index in range(5)
+    )
+    split = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(row["id"] for row in images[:4]),
+        test_image_ids=(images[4]["id"],),
+        experiment_percent=None,
+        validation_percent=25,
+    )
+    resolution = TrainingSelectionResolution(
+        requested_split=split,
+        effective_split=split,
+        effective_images=images,
+        selected_train_image_ids=split.train_image_ids,
+        pending_annotation_image_ids=(),
+    )
+    schema = [{"code": "fire", "class_id": 0, "canonical_project_class_id": 0}]
+    common = {
+        "base_model_contract_schema_version": 1,
+        "framework": "ultralytics",
+        "base_training_mode": "previous_weights_init",
+        "base_version_id": "v1",
+        "base_model_reference": "/frozen/v1.pt",
+        "base_model_size_bytes": 123,
+    }
+    first = freeze_training_inputs(
+        project,
+        split,
+        seed=7,
+        selection_resolution=resolution,
+        effective_images=images,
+        label_schema_override=schema,
+        label_contract={**common, "base_model_sha256": "a" * 64},
+    )
+    second = freeze_training_inputs(
+        project,
+        split,
+        seed=7,
+        selection_resolution=resolution,
+        effective_images=images,
+        label_schema_override=schema,
+        label_contract={**common, "base_model_sha256": "b" * 64},
+    )
+
+    assert first["snapshot_id"] == second["snapshot_id"]
+    assert first["dataset_revision_id"] == second["dataset_revision_id"]
+    assert first["input_freeze_id"] != second["input_freeze_id"]
 
 
 def test_version_contract_backfill_preserves_full_frozen_base_lineage(tmp_path: Path):
