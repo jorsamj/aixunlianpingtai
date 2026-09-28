@@ -43,6 +43,7 @@ from platform_core.storage.import_confirmation import (
     resolve_external_label_mapping,
 )
 from platform_core.algorithms import (
+    algorithm_store_revision,
     attach_version as attach_algorithm_version,
     choose_algorithm_iteration_base,
     choose_iteration_base,
@@ -19986,8 +19987,47 @@ def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
     return jobs if isinstance(jobs, list) else []
 
 
+def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]], int]:
+    """Read algorithms against one stable SQL revision.
+
+    A concurrent writer between the two revision probes makes us retry. This
+    avoids caching rows from revision N under revision N+1.
+    """
+    path = algorithms_file(project_id)
+    for _ in range(3):
+        before = algorithm_store_revision(path)
+        algorithms = list_algorithms_internal(project_id)
+        after = algorithm_store_revision(path)
+        if before == after:
+            return algorithms, after
+    algorithms = list_algorithms_internal(project_id)
+    return algorithms, algorithm_store_revision(path)
+
+
 def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
+    global _V53_BOOTSTRAP_SNAPSHOT
     payload = dict(snapshot or {})
+    cached_revision = int(payload.get("algorithm_revision") or 0)
+    current_revision = algorithm_store_revision(algorithms_file(project_id))
+    if cached_revision != current_revision:
+        algorithms, stable_revision = _v53_algorithms_with_revision(project_id)
+        payload["algorithms"] = algorithms
+        payload["algorithm_revision"] = stable_revision
+        payload["algorithms_generated_at"] = now_iso()
+
+        # Publish an atomic replacement only when it cannot move the cached
+        # algorithm revision backwards under concurrent snapshot requests.
+        current_cached = _V53_BOOTSTRAP_SNAPSHOT
+        published_revision = int(current_cached.get("algorithm_revision") or 0)
+        cached_project_id = str((current_cached.get("project") or {}).get("id") or "")
+        if cached_project_id == project_id and stable_revision >= published_revision:
+            refreshed = dict(current_cached)
+            refreshed["algorithms"] = algorithms
+            refreshed["algorithm_revision"] = stable_revision
+            refreshed["algorithms_generated_at"] = payload["algorithms_generated_at"]
+            refreshed["generated_at"] = now_iso()
+            _V53_BOOTSTRAP_SNAPSHOT = refreshed
+
     payload["jobs"] = _v53_live_jobs(project_id)
     payload["jobs_generated_at"] = now_iso()
     return payload
@@ -19996,12 +20036,14 @@ def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -
 def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
     # First paint reads repository counters and small metadata indexes only.
     # Materials use v61 pagination; legacy annotation JSON is resolved per image.
-    project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
+    project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project)
+    algorithms, algorithm_revision = _v53_algorithms_with_revision(project_id)
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
     jobs=_v53_live_jobs(project_id)
     model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
-    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"model_configs":model_configs,"generated_at":now_iso(),"jobs_generated_at":now_iso()}
+    generated_at=now_iso()
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"algorithm_revision":algorithm_revision,"algorithms_generated_at":generated_at,"jobs":jobs,"model_configs":model_configs,"generated_at":generated_at,"jobs_generated_at":generated_at}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT

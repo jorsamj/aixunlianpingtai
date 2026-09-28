@@ -228,7 +228,7 @@ def test_schema_v1_store_upgrades_indexes_without_rewriting_data(tmp_path: Path)
             ).fetchall()
         }
 
-    assert schema_version == "3"
+    assert schema_version == "4"
     assert "idx_algorithms_project_sort" in indexes
     assert "idx_analyses_algorithm_sort" in indexes
     assert reopened.read_one("algorithm-preserved")["name"] == "保留算法"
@@ -290,7 +290,7 @@ def test_schema_v2_backfills_only_durable_timestamp_training_version_numbers(tmp
         schema_version = connection.execute(
             "SELECT value FROM algorithm_store_meta WHERE key='schema_version'"
         ).fetchone()[0]
-    assert schema_version == "3"
+    assert schema_version == "4"
 
 
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
@@ -973,3 +973,87 @@ def test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type(tmp_path:
     by_id = {row["analysis_id"]: row for row in persisted["external_analyses"]}
     assert by_id["legacy-visual"]["active"] is False
     assert by_id["missing-type"]["status"] == "1"
+
+
+
+def test_algorithm_revision_is_durable_monotonic_and_read_only_reads_do_not_bump(tmp_path: Path):
+    project = tmp_path / "projects" / "p-revision"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+
+    initial = store.revision()
+    assert store.read_all() == []
+    assert store.revision() == initial
+
+    store.create_algorithm({
+        "id": "algo-revision",
+        "name": "Revision 算法",
+        "versions": [],
+        "current_version_id": None,
+        "created_at": "2026-09-28T04:30:00Z",
+        "updated_at": "2026-09-28T04:30:00Z",
+    })
+    created_revision = store.revision()
+    assert created_revision == initial + 1
+    assert store.read_one("algo-revision")["name"] == "Revision 算法"
+    assert store.revision() == created_revision
+
+    store.patch_algorithm("algo-revision", {
+        "remark": "changed",
+        "updated_at": "2026-09-28T04:31:00Z",
+    })
+    patched_revision = store.revision()
+    assert patched_revision == created_revision + 1
+
+    store.attach_version("algo-revision", {
+        "id": "v-revision",
+        "version_name": "20260928123100",
+        "task_id": "train-revision",
+        "framework": "ultralytics",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "finished_at": "2026-09-28T04:31:00Z",
+    })
+    assert store.revision() == patched_revision + 1
+
+
+def test_external_sync_does_not_bump_algorithm_revision_when_master_data_is_unchanged(tmp_path: Path):
+    project = tmp_path / "projects" / "p-revision-sync"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    incoming = {
+        "product-1": {
+            "id": "external-product-1",
+            "name": "外部算法",
+            "source_type": "EXTERNAL",
+            "provider_type": "CHANG_LIAN",
+            "external_product_id": "product-1",
+            "external_active": True,
+            "master_data_readonly": True,
+            "versions": [],
+            "external_analyses": [],
+        }
+    }
+
+    first = store.sync_external_algorithms(
+        incoming,
+        provider="CHANG_LIAN",
+        synced_at="2026-09-28T04:32:00Z",
+    )
+    first_revision = store.revision()
+    second = store.sync_external_algorithms(
+        incoming,
+        provider="CHANG_LIAN",
+        synced_at="2026-09-28T04:33:00Z",
+    )
+
+    assert first["added"] == 1
+    assert second["unchanged"] == 1
+    assert store.revision() == first_revision

@@ -254,6 +254,11 @@ def algorithm_store_status(path: Path) -> dict[str, Any]:
     return AlgorithmSqlStore(Path(path)).migration_status()
 
 
+def algorithm_store_revision(path: Path) -> int:
+    """Return the canonical algorithm graph revision for read-cache invalidation."""
+    return AlgorithmSqlStore(Path(path)).revision()
+
+
 def create_algorithm(
     path: Path,
     payload: Mapping[str, Any],

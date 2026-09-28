@@ -1005,7 +1005,7 @@ export function installExternalAlgorithmPlatformRuntime({
 
     const buttons = [
       document.getElementById('externalPlatformSync'),
-      ...document.querySelectorAll('[data-external-list-sync]'),
+      ...document.querySelectorAll('[data-algorithm-sync]'),
     ].filter(Boolean);
     for (const button of buttons) {
       button.disabled = true;

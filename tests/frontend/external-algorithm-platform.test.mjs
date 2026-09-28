@@ -349,6 +349,8 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   const syncBlock = source.slice(syncStart, syncEnd);
   assert.doesNotMatch(syncBlock, /await save\(/);
   assert.match(syncBlock, /credentials\?\.configured !== true/);
+  assert.match(syncBlock, /data-algorithm-sync/);
+  assert.doesNotMatch(syncBlock, /data-external-list-sync/);
   assert.match(source, /id="externalPlatformTest"/);
   assert.match(source, /id="externalPlatformSave"/);
   assert.match(source, /id="externalPlatformSync"/);

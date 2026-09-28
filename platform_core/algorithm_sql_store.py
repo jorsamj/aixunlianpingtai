@@ -13,7 +13,7 @@ from filelock import FileLock
 from .errors import PlatformError
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
 _INIT_LOCK_TIMEOUT = 30
@@ -240,10 +240,20 @@ class AlgorithmSqlStore:
                     preserved_legacy_remote_fields=preserved_legacy_remote_fields,
                 )
                 self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
+
+    def revision(self) -> int:
+        """Return the durable algorithm graph revision for cache invalidation."""
+        self.ensure_ready()
+        with self._connect() as conn:
+            try:
+                return max(0, int(self._meta(conn, "algorithm_revision") or 0))
+            except (TypeError, ValueError):
+                return 0
 
     def read_one(self, algorithm_id: str) -> dict | None:
         self.ensure_ready()
@@ -272,6 +282,7 @@ class AlgorithmSqlStore:
                 ).fetchone()[0])
                 self._insert_algorithm_conn(conn, value, sort_index)
                 self._replace_analyses_conn(conn, algorithm_id, value)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -299,6 +310,7 @@ class AlgorithmSqlStore:
                 self._update_algorithm_conn(conn, merged)
                 if replace_analyses:
                     self._replace_analyses_conn(conn, algorithm_id, merged)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -313,6 +325,7 @@ class AlgorithmSqlStore:
                 cursor = conn.execute("DELETE FROM algorithms WHERE project_id=? AND id=?", (self.project_id, str(algorithm_id)))
                 if cursor.rowcount != 1:
                     raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -351,6 +364,7 @@ class AlgorithmSqlStore:
                     "UPDATE algorithms SET current_version_id=?, updated_at=COALESCE(?,updated_at) WHERE project_id=? AND id=?",
                     (version_id, updated_at, self.project_id, algorithm_id),
                 )
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -487,6 +501,7 @@ class AlgorithmSqlStore:
                     "WHERE project_id=? AND id=?",
                     (version_id, updated_at, self.project_id, algorithm_id),
                 )
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -520,6 +535,7 @@ class AlgorithmSqlStore:
                     },
                 )
                 conn.execute("UPDATE algorithms SET updated_at=? WHERE project_id=? AND id=?", (now, self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -566,6 +582,7 @@ class AlgorithmSqlStore:
                 )
                 if delete_current_version:
                     conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, expected_current_version_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -604,6 +621,7 @@ class AlgorithmSqlStore:
                 payload["version_operations"] = operations
                 conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, version_id))
                 conn.execute("UPDATE algorithms SET updated_at=?, payload_json=? WHERE project_id=? AND id=?", (now, self._dumps(payload), self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -627,6 +645,7 @@ class AlgorithmSqlStore:
                 operation.update(dict(patch))
                 payload["version_operations"] = operations
                 conn.execute("UPDATE algorithms SET payload_json=? WHERE project_id=? AND id=?", (self._dumps(payload), self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -684,6 +703,8 @@ class AlgorithmSqlStore:
                         (self.project_id, str(row["id"])),
                     ).rowcount
                     deleted += int(changed or 0)
+                if added or updated or deleted:
+                    self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -827,6 +848,7 @@ class AlgorithmSqlStore:
                 "version_count": version_count,
                 "external_analysis_count": analysis_count,
                 "schema_version": int(self._meta(conn, "schema_version") or SCHEMA_VERSION),
+                "algorithm_revision": int(self._meta(conn, "algorithm_revision") or 0),
                 "legacy_json_migrated": self._meta(conn, "legacy_json_migrated") == "1",
             }
 
@@ -912,6 +934,8 @@ class AlgorithmSqlStore:
                 );
             """
         )
+        if self._meta(conn, "algorithm_revision") is None:
+            self._set_meta(conn, "algorithm_revision", "0")
         self._repair_missing_training_version_numbers(conn)
         self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
@@ -1277,3 +1301,13 @@ class AlgorithmSqlStore:
             "INSERT INTO algorithm_store_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, str(value)),
         )
+
+    @classmethod
+    def _bump_revision(cls, conn: sqlite3.Connection) -> int:
+        try:
+            current = max(0, int(cls._meta(conn, "algorithm_revision") or 0))
+        except (TypeError, ValueError):
+            current = 0
+        value = current + 1
+        cls._set_meta(conn, "algorithm_revision", str(value))
+        return value
