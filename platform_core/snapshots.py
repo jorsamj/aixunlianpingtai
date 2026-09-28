@@ -175,6 +175,18 @@ def _annotation_state(image: Mapping[str, Any], boxes: Sequence[Mapping[str, Any
     return str(image.get("annotation_state") or ("annotated" if boxes else "unannotated"))
 
 
+def is_training_ground_truth(
+    annotation_state: Any,
+    boxes: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Formal training truth is either annotated boxes or explicit confirmed-empty."""
+    state = str(annotation_state or ("annotated" if boxes else "unannotated"))
+    return (
+        (state == "annotated" and bool(boxes))
+        or (state == "confirmed_empty" and not boxes)
+    )
+
+
 def _training_ground_truth_state(
     image_id: str,
     image: Mapping[str, Any],
@@ -187,7 +199,7 @@ def _training_ground_truth_state(
             f"训练素材 {image_id} 尚未形成正式标注 Ground Truth；"
             "清洗完成不能替代人工/导入确认的标注或“已确认无目标”"
         )
-    if bool(boxes) != (state == "annotated"):
+    if not is_training_ground_truth(state, boxes):
         raise ValueError(f"训练素材 {image_id} 的正式标注状态与标注框不一致")
     return state
 
