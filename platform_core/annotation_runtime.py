@@ -204,8 +204,14 @@ def prepare_request(
         raise ValueError("AI_LABELS_REQUIRED: select annotation labels")
 
     catalog = [item for item in label_catalog(project) if item["code"] in labels]
-    if set(labels) != {item["code"] for item in catalog}:
-        raise ValueError("AI_LABEL_UNAVAILABLE: task labels are unavailable or inactive")
+    available_codes = {item["code"] for item in catalog}
+    if set(labels) != available_codes:
+        unknown = [label for label in labels if label not in available_codes]
+        raise ValueError(
+            "AI 标注标签必须显式使用当前标签库中的英文编码；"
+            "系统不会根据中文名、别名或历史映射自动选择标签："
+            + "、".join(unknown[:20])
+        )
 
     threshold = float(prepared.get("threshold", 0.45))
     if not math.isfinite(threshold) or not 0 <= threshold <= 1:

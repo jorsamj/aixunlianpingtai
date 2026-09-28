@@ -178,8 +178,16 @@ def test_storage_rescan_review_keeps_alias_as_fact_without_suggestion(
     assert "target_label_code" not in public["external_classes"][0]
 
 
-def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seeded_project):
+def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seeded_project, monkeypatch):
     project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "alias-test-model",
+        "name": "Alias Test Model",
+        "model_name": "vision-test",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://alias-test.local/v1",
+    }])
     updated = client.put(
         f"/api/v12/projects/{project_id}/labels/0",
         json={
@@ -195,7 +203,7 @@ def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seede
         json={
             "image_ids": [image["id"]],
             "labels_text": "huomiao1",
-            "provider_id": "alias-test-provider",
+            "model_config_id": "alias-test-model",
             "task_name": "alias input test",
         },
     )
@@ -207,7 +215,7 @@ def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seede
         json={
             "image_ids": [image["id"]],
             "labels_text": "fire",
-            "provider_id": "alias-test-provider",
+            "model_config_id": "alias-test-model",
             "task_name": "canonical input test",
         },
     )
