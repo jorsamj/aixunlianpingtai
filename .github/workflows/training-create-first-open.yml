@@ -106,6 +106,7 @@ jobs:
           grep -Fq "preferred_project_id" tests/browser/training-quality-reports.spec.mjs
           if grep -Fq "JSON.stringify({projectId, page" tests/browser/training-create-first-open.spec.mjs tests/browser/training-quality-reports.spec.mjs; then echo 'browser tests must not restore production localStorage project selection' >&2; exit 1; fi
           grep -Fq 'training target is the only automatic early-stop control' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq 'merged historical labels do not reappear in the next training dialog' tests/browser/training-create-first-open.spec.mjs
           test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
           stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
           benchmark_line="$(grep -nF 'async function loadTrainingBenchmarkReuseV1' static/app.js | head -1 | cut -d: -f1)"

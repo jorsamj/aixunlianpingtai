@@ -151,6 +151,114 @@ test('hard refresh algorithm list prewarms training configuration before the fir
 });
 
 
+
+test('merged historical labels do not reappear in the next training dialog', async ({page, request}) => {
+  const {project, algorithmId} = await seedProject(request);
+
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'merged-label-training',
+      name: 'Merged Label Training',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 20,
+        default_imgsz: 640,
+        default_batch: 4,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+    }]})
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
+    const body = route.request().postDataJSON();
+    const count = Array.isArray(body?.image_ids) ? body.image_ids.length : 0;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        requested_count: count,
+        matched_count: count,
+        selectable_count: count,
+        eligible_count: count,
+        pending_annotation_count: 0,
+        eligible_total: count,
+        box_count: count,
+        size_bytes: count * 1024,
+        label_codes: ['smoke'],
+        label_counts: {smoke: count},
+        repository_revision: 1,
+      }),
+    });
+  });
+
+  await selectIsolatedTestProject(page, project.id, '算法列表');
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+
+  await page.evaluate(({algorithmId}) => {
+    const algorithm = (state.algorithms || []).find(row => String(row?.id || '') === String(algorithmId));
+    if (!algorithm) throw new Error('algorithm missing from browser state');
+    algorithm.current_version_id = 'merged-label-version';
+    algorithm.versions = [{
+      id: 'merged-label-version',
+      version_name: '20260928180000',
+      training_status: 'SUCCEEDED',
+      artifact_verified: true,
+      trainable: true,
+      framework: 'ultralytics',
+      label_schema: [
+        {code: 'legacy_smoke', class_id: 0},
+        {code: 'smoke', class_id: 1},
+      ],
+    }];
+    const activeSmoke = (state.labels || []).find(row => String(row?.code || '') === 'smoke')
+      || {code: 'smoke', display_name: '烟雾', class_id: 0, status: 'active'};
+    state.labels = [{...activeSmoke, status: 'active'}];
+    state.labelGovernance414 = [
+      {...activeSmoke, status: 'active'},
+      {
+        code: 'legacy_smoke',
+        display_name: '旧烟雾',
+        class_id: 99,
+        status: 'merged',
+        merged_into: 'smoke',
+      },
+    ];
+    window.TrainingDraftRuntime.update({algorithmId});
+    window.TrainingDraftRuntime.setMaterialIds(['merged-label-material']);
+  }, {algorithmId});
+
+  const panel = dialog.locator('#trainingLabelContractPanel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('上一版本继承（按当前标签治理）');
+  await expect(panel.locator('.training-label-inherited')).toHaveCount(1);
+  await expect(panel.locator('.training-label-inherited')).toContainText('烟雾');
+  await expect(panel).toContainText('legacy_smoke → smoke');
+  await expect(panel).not.toContainText('继承 · 旧烟雾');
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('1 类');
+});
+
 test('training target is the only automatic early-stop control', async ({page, request}) => {
   const {project} = await seedProject(request);
 
