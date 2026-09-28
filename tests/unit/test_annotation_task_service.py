@@ -397,10 +397,10 @@ def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeyp
     assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)
 
 
-def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monkeypatch):
+@pytest.mark.parametrize("total", [1_000, 10_000, 20_000])
+def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monkeypatch, total):
     artifacts = ArtifactStore(tmp_path)
-    store = CandidateStore(artifacts, task_id="commit-scale", page_size=50)
-    total = 1001
+    store = CandidateStore(artifacts, task_id=f"commit-scale-{total}", page_size=50)
     store.initialize(labels=["fire"], total_images=total)
     store.append_items([
         {
@@ -462,24 +462,26 @@ def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monk
     monkeypatch.setattr(store, "record_commit_summaries", record_commits)
 
     result = commit_candidate_decisions(
-        "project-1", "commit-scale", store, overwrite=False,
+        "project-1", f"commit-scale-{total}", store, overwrite=False,
     )
 
-    expected = [200, 200, 200, 200, 200, 1]
+    expected = [200] * (total // 200)
+    if total % 200:
+        expected.append(total % 200)
     assert [len(batch) for batch in journal_reads] == expected
     assert [len(batch) for batch in formal_reads] == expected
     assert [len(batch) for batch in formal_writes] == expected
     assert [len(batch) for batch in journal_writes] == expected
     assert result["applied_images"] == total
     assert result["boxes_added"] == total
-    assert len(result["image_summaries"]) == 100
+    assert len(result["image_summaries"]) == min(total, 100)
 
     formal_reads.clear()
     formal_writes.clear()
     journal_reads.clear()
     journal_writes.clear()
     replay = commit_candidate_decisions(
-        "project-1", "commit-scale", store, overwrite=False,
+        "project-1", f"commit-scale-{total}", store, overwrite=False,
     )
     assert [len(batch) for batch in journal_reads] == expected
     assert formal_reads == []
