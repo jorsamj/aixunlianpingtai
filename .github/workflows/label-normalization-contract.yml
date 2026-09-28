@@ -157,6 +157,7 @@ jobs:
           annotation_repository = Path('platform_core/annotation_repository.py').read_text(encoding='utf-8')
           service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
           material_batches = Path('platform_core/material_batches.py').read_text(encoding='utf-8')
+          training_label_tasks = Path('platform_core/training_label_tasks.py').read_text(encoding='utf-8')
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
           zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
           server_import = Path('static/modules/server-material-import.js').read_text(encoding='utf-8')
@@ -313,6 +314,7 @@ jobs:
               'platform_core/annotation_repository.py': annotation_repository,
               'platform_core/annotation_task_service.py': service,
               'platform_core/material_batches.py': material_batches,
+              'platform_core/training_label_tasks.py': training_label_tasks,
               'platform_core/task_runtime/repository.py': repository,
               'static/modules/zip-import-runtime.js': zip_runtime,
               'static/modules/server-material-import.js': server_import,
