@@ -1,6 +1,123 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 主流程准确性 / 已清洗未标注训练候选语义收口（最新）
+
+- 本节写入前真实代码 HEAD：`f7d6ce10bd575f2eaa7fde51fdc775077b6b47f2`。
+- `VERSION.txt = 42.24.0`，未修改；未 merge main、未 tag、未 release、未 force push。
+- 用户最终确认的产品语义：
+  - **已清洗但未标注的素材，训练任务创建时必须允许选择**；
+  - **可选择 != 已成为 Ground Truth**；
+  - 未标注素材不能被静默写成空 YOLO 标签，否则会把未知目标误训练成负样本，直接伤准确率；
+  - 独立试验集仍必须具备正式 Ground Truth。
+- 本轮没有新增第二套 AnnotationRepository / Training runtime / Picker owner；全部沿用现有正式 owner。
+
+### 1. 训练选择与 Ground Truth 分层 — CLOSED
+
+当前链路已经拆成三层真相：
+
+1. **训练候选池**：`processing_status=processed` 的已清洗/已处理素材可进入 Picker；
+2. **本轮有效监督训练集**：只有正式 `annotated` / `confirmed_empty` Ground Truth；
+3. **待标注候选**：已清洗但 `unannotated` 的素材会保留在任务选择意图中，但不会进入本轮 Snapshot。
+
+训练提交新增 `TrainingSelectionResolution`：
+
+- `selected_train_image_ids`：用户实际选择的已清洗训练候选；
+- `effective_train_image_ids`：本轮真正进入监督训练的正式 GT；
+- `pending_annotation_image_ids`：已清洗待标注候选；
+- `input-freeze.json` 只冻结 effective Ground Truth；
+- pending IDs 同时写入任务 payload / job truth，不能丢失；
+- 若全部选择均未标注，则在 Web 提交阶段明确 409，不能制造一个必然失败的训练队列任务；
+- 独立试验素材含未标注时直接 fail-closed。
+
+示例：
+
+- 用户选择 10,000 张已清洗素材；
+- 其中 2,000 张已有正式 GT；
+- 当前训练 Snapshot = 2,000 张；
+- pending annotation = 8,000 张；
+- 8,000 张仍保留在该任务选择记录内，但**不生成空标签，不参与本轮监督训练**。
+
+### 2. Picker / 前端 / API 语义统一 — CLOSED
+
+`platform_core/training_material_picker_api.py`：
+
+- 列表与普通批量选择从 `annotated=true` 改为 `processing_status=processed`；
+- 独立试验集 bulk selection 继续要求 `annotated=true`；
+- selection summary 新增：
+  - `selectable_count / selectable_total`
+  - `eligible_count / eligible_total`
+  - `pending_annotation_count / pending_annotation_total`
+- `eligible` 仍表示可直接监督训练的正式 GT，不偷换语义。
+
+前端：
+
+- 已清洗未标注卡片显示“已清洗 · 待标注”；
+- 训练候选可勾选；
+- 独立试验集同一素材禁用并显示“试验集必须已标注”；
+- 创建页显示“可直接训练 X / 待标注 Y”；
+- 成功创建任务后提示“本轮有效 X 张 · 待标注 Y 张已保留”。
+
+### 3. 训练准确性相关同时收口
+
+本轮及紧邻提交已确认：
+
+- 清洗完成不再自动等同 `confirmed_empty`；
+- legacy `include_empty` 不能把 `unannotated` 重新绕回空标签训练；
+- active project class_id 与 training class_id 已隔离，训练导出重新压成连续 `0..N-1`，并保留 `canonical_project_class_id` 溯源；
+- 训练输入已经在**提交时**冻结 `input-freeze.json`，排队期间标注/标签变化不会篡改已经创建的任务；
+- 手工标注保存已经使用 AnnotationRepository 现有 `version` 做 optimistic concurrency， stale writer 返回 409，不能静默覆盖；
+- 训练所选素材读取已经 500/批；固定 Benchmark reservation 读取也改为 500/批，避免大批量 SQLite IN 变量上限风险。
+
+### 4. 永久测试
+
+新增/更新覆盖：
+
+- 已清洗未标注训练素材可出现在 Picker；
+- train role 可选、test role 禁用；
+- 选择 7 张（6 正式 GT + 1 待标注）：
+  - selected=7
+  - effective=6
+  - pending=1
+  - pending 不进入 `input-freeze.images`
+  - pending 不进入本轮 `train_image_ids`
+- 全 pending 在入队前 fail-closed；
+- 独立 test pending fail-closed；
+- 1001 张 training MaterialRepository 读取保持 500/500/1；
+- 手工标注 stale-write 409；
+- training class_id 连续化。
+
+### 5. CI 当前真实状态
+
+本节写入前，多次关键代码 SHA 的 20 个主 workflows 均仍处于 GitHub runner `queued`，尚未得到 completed 结果。
+
+因此当前只能写：
+
+- **代码已提交；**
+- **CI 待验证；**
+- **queued != success；**
+- 当前没有 completed failure 可读取日志；
+- 后续若出现 completed failure，必须先读真实 job log，再修，不允许为了 CI 放宽生产 Ground Truth / Snapshot / concurrency 合同。
+
+### 6. 下一步主流程优先级
+
+1. 等待 / 重新读取最新 HEAD 的 CI；先处理任何 completed failure。
+2. 在真实 NVIDIA Linux 节点验证：
+   - GPU assignment / reservation；
+   - auto batch + CUDA OOM 降档；
+   - 训练 Snapshot 与实际 dataset manifest 一致；
+   - 训练完成模型、外部发布、转换追加权重闭环。
+3. 用真实 20k / 50k 素材做大批量验证：
+   - Picker 首开 / 批量选择；
+   - SQLite WAL 峰值；
+   - OSS/S3 RTT；
+   - 训练准备时内存、磁盘 IOPS。
+4. pending annotation 素材如要真正进入下一轮监督训练，继续走现有：
+   - 手工标注；或
+   - AI Candidate -> 人工审核 -> Commit Ground Truth；
+   - 不新增“AI 自动直接入库”捷径。
+
+
 ## 2026-09-27 AI 大批审核 / Recovery 与训练大文件 I/O 收口（最新）
 
 - 写入前真实代码 HEAD：`7a04c91df48a09453146f086feb0ff6dde807033`。
