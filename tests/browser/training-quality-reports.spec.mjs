@@ -204,6 +204,9 @@ test('training submit sends the selected candidate pool and configured experimen
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
+  const fireLabel = dialog.locator('[data-training-label-code="fire"]');
+  await expect(fireLabel).toBeVisible();
+  await fireLabel.check();
   await dialog.locator('#tr429Priority').fill('0');
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');

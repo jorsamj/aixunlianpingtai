@@ -388,6 +388,75 @@ def test_retired_v47_annotation_routes_fail_closed(client, seeded_project):
 
 
 
+
+def test_retired_direct_prelabel_routes_fail_closed_before_provider_resolution(
+    client, seeded_project, monkeypatch,
+):
+    project_id, image = seeded_project
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("retired direct-prelabel routes must fail before provider/model resolution")
+
+    monkeypatch.setattr(app_module, "resolve_prelabel_config", forbidden)
+    direct = client.post(
+        f"/api/projects/{project_id}/prelabel/run",
+        json={"image_ids": [image["id"]], "detect_url": "http://legacy.invalid/detect"},
+    )
+    assert direct.status_code == 409
+    assert "候选区" in direct.json()["detail"]
+    assert "人工二次确认" in direct.json()["detail"]
+
+    v33 = client.post(
+        f"/api/v33/projects/{project_id}/prelabel-tasks",
+        json={"image_ids": [image["id"]], "detect_url": "http://legacy.invalid/detect"},
+    )
+    assert v33.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in v33.json()["detail"]
+
+    monkeypatch.setattr(app_module, "_v35_resolve_model_and_prompt", forbidden)
+    v35 = client.post(
+        f"/api/v35/projects/{project_id}/prelabel-tasks",
+        json={"image_ids": [image["id"]], "model_config_id": "legacy-model"},
+    )
+    assert v35.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in v35.json()["detail"]
+
+
+def test_retired_v42_prelabel_retry_cannot_revive_direct_writer(
+    client, seeded_project, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(
+        app_module,
+        "_v33_get_task",
+        lambda *_args, **_kwargs: {
+            "request_payload": {
+                "image_ids": [image["id"]],
+                "model_config_id": "legacy-model",
+                "target_label": "fire",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v35_resolve_model_and_prompt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "v42 retry must fail closed before legacy model resolution"
+        ),
+    )
+
+    response = client.post(
+        f"/api/v42/projects/{project_id}/prelabel-tasks/legacy-task/retry"
+    )
+    assert response.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in response.json()["detail"]
+
+
+def test_retired_direct_prelabel_workers_have_no_live_call_sites():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    assert source.count("_v33_run_prelabel_task(") == 1
+    assert source.count("_v35_run_prelabel_task(") == 1
+
 def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
     assert hasattr(app_module, "_annotation_label_catalog")
     assert not hasattr(app_module, "_annotation_runtime_provider")
