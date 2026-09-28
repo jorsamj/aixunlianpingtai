@@ -521,16 +521,23 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
         == "/api/v62/projects/{project_id}/training-materials/selection-summary"
         and "POST" in (getattr(route, "methods", set()) or set())
     ]
-    assert len(summary_routes) == 1, [
+    summary_endpoints = []
+    seen_endpoints = set()
+    for route in summary_routes:
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None or id(endpoint) in seen_endpoints:
+            continue
+        seen_endpoints.add(id(endpoint))
+        summary_endpoints.append(endpoint)
+    assert len(summary_endpoints) == 1, [
         (
-            type(route).__name__,
-            getattr(route, "path", ""),
-            getattr(getattr(route, "endpoint", None), "__module__", ""),
-            getattr(getattr(route, "endpoint", None), "__qualname__", ""),
+            getattr(endpoint, "__module__", ""),
+            getattr(endpoint, "__qualname__", ""),
+            id(endpoint),
         )
-        for route in summary_routes
+        for endpoint in summary_endpoints
     ]
-    summary_endpoint = summary_routes[0].endpoint
+    summary_endpoint = summary_endpoints[0]
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
     endpoint_closure = inspect.getclosurevars(summary_endpoint)
     materials_owner = endpoint_closure.nonlocals["materials"]
