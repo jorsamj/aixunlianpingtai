@@ -232,6 +232,59 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     assert written[0]["source_task_id"] == "commit-1"
 
 
+
+def test_cancel_arriving_after_formal_write_cannot_split_commit_journal(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-cancel-boundary", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{
+            "id": "candidate-1", "class_id": 0, "label": "fire",
+            "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+        }],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+
+    cancelled = False
+    formal = {}
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {"boxes": list(formal.get(str(image_id), []))}
+            for image_id in image_ids
+        },
+    )
+
+    def write_many(_project, rows):
+        nonlocal cancelled
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            formal[str(row["image_id"])] = list(row.get("boxes") or [])
+        # Simulate a user cancellation racing immediately after the formal GT
+        # transaction commits but before CandidateStore journaling starts.
+        cancelled = True
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-cancel-boundary",
+        store,
+        overwrite=False,
+        cancelled=lambda: cancelled,
+    )
+
+    assert result["boxes_added"] == 1
+    assert store.get_commit_summaries(["image-1"])["image-1"]["box_count"] == 1
+    assert formal["image-1"][0]["source_task_id"] == "commit-cancel-boundary"
+
 def test_candidate_label_revalidation_is_fail_closed_even_without_explicit_mapping(tmp_path):
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="catalog-revalidate", page_size=50)

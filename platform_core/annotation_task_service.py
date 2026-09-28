@@ -417,10 +417,12 @@ def commit_candidate_decisions(
         if to_write:
             write_formal_annotations(project_id, to_write)
         # Formal GT and CandidateStore are intentionally separate durable owners.
-        # Once a bounded formal batch is durable, journal it before observing the
-        # next cancellation boundary so replay can prove exactly what completed.
+        # Once a bounded formal batch is durable, its journal is mandatory catch-up:
+        # do not observe a newly-arrived user cancellation between these two commits.
+        # The next batch boundary will observe cancellation. This prevents the task
+        # from becoming CANCELLED with durable Ground Truth but no replay journal.
         if to_journal:
-            store.record_commit_summaries(to_journal, commit_guard=commit_guard)
+            store.record_commit_summaries(to_journal)
         boxes_added += batch_boxes_added
 
         for image_id in image_ids:
