@@ -1,5 +1,114 @@
 # Codex / 人工接管交接记录
 
+## 2026-09-28 训练主链 / RK3578 / 新畅联发布唤醒收口，代码 cutoff 63/63 全绿（最新）
+
+- 本节已验证代码 cutoff：`fcc8a3a75d9f6c94555de120ae08dc190849ee5c`（`fix: keep training core publish wake lightweight`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 该代码 cutoff 的 GitHub check 真相：**63 total / 63 success / 0 failure / 0 queued / 0 in_progress**。
+- 本节文档提交会产生新的 HEAD 与新一轮 CI；后续接手仍必须重新读取远端真实 HEAD / VERSION / checks，不能把本节 cutoff 当作未来最新 HEAD。
+- 本轮没有 merge main、tag、release、force push，没有删除/放宽测试，也没有新增第二套 Training / External Publish / Conversion owner。
+
+### 1. CLOSED：训练创建与冻结主链审计未发现新的架构断层
+
+本轮重新核对当前真正生效的 Durable Training 主链，继续保持：
+- v12 Durable Training creation 为正式入口，Paddle 在 durable dataset/runtime 未完整前继续 fail-closed；
+- external algorithm 训练资格仍以 authoritative detail 为准，只有 `status == 1 && analysisType == 1` 可训练；
+- submit-time 冻结 effective split / Ground Truth / Snapshot / Dataset Revision / label contract / base checkpoint；
+- Local / Remote 都使用 `resolve_frozen_training_base()` 与相同 frozen label schema；
+- 迭代版本通过 `attach_version_if_current()` stale-base CAS，避免两个任务同时从同一旧版本分叉并静默覆盖；
+- 新任务默认 `redact_excluded_objects_v2_preserve_selected`，历史 `redact_excluded_objects_v1` 继续支持 replay；
+- `confirmed_empty` 仍是正式负样本；清洗完成不能自动等价为负样本；partial negative scope 不能被 YOLO 空 label 静默扩大为全部负类。
+
+### 2. CLOSED：RK3578 从发布层贯通到 Durable/Agent 转换与实板验证合同
+
+本轮发现并修复了多个原先各自写死 RK3568/RK3576 的断层。当前 canonical 产品芯片集合收口到：
+
+`platform_core/conversion.py::SUPPORTED_ROCKCHIP_CHIPS = {"rk3568", "rk3578", "rk3576"}`
+
+语义：
+- 当前优先：RK3568、RK3578；
+- RK3576 保持兼容，后续继续使用；
+- **不新增 RK3588 产品支持**；相关单测 / workflow 继续把 RK3588 作为拒绝边界。
+
+已对齐：
+- external publish `chipCode` 规范化；
+- Agent portable RKNN 参数校验；
+- Agent 节点 capability / supported_chips 筛选；
+- 自动转换目标选择；
+- `deployment_worker.py`；
+- RKNN board preflight；
+- board evidence commit；
+- fallback/local RKNN 目标下拉；
+- Real Chrome / API / unit / workflow 永久 guards。
+
+关键提交：
+- `4b0499f33b67c2c733182fee18c87b5a2909f4c8` — `fix: normalize RK3578 external publish identity`
+- `38288cb1798fabc1c84cdf6d5bb19b4f80a1c661` — `fix: carry RK3578 through remote RKNN contracts`
+- `d5cbfab3afa1f67b20694d28eb9de0a834685f59` — `fix: unify RK3578 conversion product contract`
+
+### 3. CLOSED：Durable Local / Remote Training 成功后立即唤醒现有新畅联 publisher
+
+外部发布本身没有断链：`external_algorithm_publish` 的唯一 background owner 会定期恢复扫描所有：
+- external / ChangLian algorithm；
+- successful training status；
+- `artifact_verified == true`；
+
+并执行模型资产上传与发布同步。
+
+真实缺口是：Durable Local / Remote Training 在算法版本 CAS commit 成功后没有立即 wake publisher，只能等待恢复扫描间隔。
+
+现在：
+- Local `TrainingHandler._finalize_completed_job()` 在版本 attach / idempotent recovery 成功后调用现有 `request_external_auto_publish_if_enabled()`；
+- Remote `RemoteExecutionTransportService._commit_training_result()` 在新版本 attach 成功后、以及同 task/version 幂等恢复时调用同一 helper；
+- helper 仍只负责 marker + wake，不拥有第二套发布实现；
+- helper 失败返回 false，不把已经成功的训练错误降级为失败；30 秒恢复扫描仍是 durable fallback；
+- Remote 已上传的 verified model artifacts 与 Local 后续 model artifact scanner 继续由既有 ModelArtifact owner 管理。
+
+关键提交：
+- `04da021ce82d5f257750b8f624e0dba0eec087d7` — `fix: wake external publisher after durable training commit`
+
+### 4. CLOSED：训练核心不再被 external publish 重依赖污染
+
+上述即时 wake 初版把 `external_publish_request` 顶层 import 进 `training_tasks.py`，导致 training core 的轻量 JPEG/cache workflow 间接加载 `model_artifacts -> pydantic`，Ubuntu/Windows 均真实失败。
+
+没有通过给轻量 workflow 额外安装 pydantic 来掩盖依赖污染。
+
+当前修复：
+- `training_tasks.py` 顶层保持轻量；
+- 新增内部 lazy delegate `_request_external_publish_after_training()`；
+- 只有训练正式完成、算法版本已提交之后才加载 external publish helper；
+- 本地 recovery integration test 仍能 monkeypatch wrapper 验证调用次数 / algorithm_id / version_id；
+- Ubuntu + Windows `jpeg-cache-integrity` 均重新 completed success。
+
+关键提交：
+- `fcc8a3a75d9f6c94555de120ae08dc190849ee5c` — `fix: keep training core publish wake lightweight`
+
+### 5. 当前验证边界与下一步
+
+代码 cutoff `fcc8a3a7`：**63/63 checks success**，包括本轮真实暴露过的：
+- RK3578 control-plane / conversion contracts；
+- remote training contracts；
+- Ubuntu / Windows JPEG-cache integrity；
+- Real Chrome；
+- API / unit / recovery / transport contracts。
+
+仍未宣称真实环境 VERIFIED：
+- Linux/NVIDIA GPU 真实训练；
+- 正式 OSS；
+- 新畅联生产接口真实版本/权重创建；
+- RK3568/RK3578 实板转换与推理。
+
+下一步按既定主流程继续，不重构已 CLOSED 模块：
+1. 批量图片上传 1k/10k/20k 与 partial failure / resume / UI truth；
+2. ZIP 10k/20k 与服务端 progress / selected-tree / annotation parse；
+3. confirmed_empty / 人工标注；
+4. AI Candidate Review / Commit；
+5. 数据清洗与标签统一；
+6. 真实 OSS / 新畅联 / Linux GPU / RKNN 实板现场验收。
+
+原则继续是：**查真实 bug -> 修最小根因 -> 前端/后端/Worker/Durable truth 一致 -> 永久测试。**
+
+
 ## 2026-09-28 标签保存 page-scoped 主流程收口 / Browser 红灯关闭 / 代码 cutoff 59/59 全绿（最新）
 
 - 本节已验证代码 cutoff：`5954a7919608930aff5472206d492a277fa9cd54`（`test: lock nonblocking scoped refresh contracts`）。

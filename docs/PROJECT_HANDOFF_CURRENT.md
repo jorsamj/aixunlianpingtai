@@ -1,3 +1,21 @@
+<!-- LIVE_HANDOFF_2026_09_28_TRAINING_RK3578_GREEN -->
+> ## 2026-09-28 当前接手入口：训练主链 / RK3578 / 新畅联即时发布 wake 已收口，代码 cutoff 63/63 全绿（最高优先级）
+>
+> 已验证代码 cutoff：`fcc8a3a75d9f6c94555de120ae08dc190849ee5c`；`VERSION.txt=42.24.0`。该 cutoff **63 checks：63 success / 0 failure / 0 queued / 0 in_progress**。
+>
+> 本轮训练 P0 审计继续确认：v12 Durable Training 唯一创建 owner、effective split / Ground Truth / Snapshot / Dataset Revision / label contract / base checkpoint submit-time freeze、Local/Remote `resolve_frozen_training_base`、stale-base CAS、redaction v2 默认 + v1 replay 均保持。confirmed_empty 仍是显式 Ground Truth 负样本，清洗状态不能自动变成负样本。
+>
+> RK3578 已从 external publish chipCode 规范化贯通到 canonical conversion allowlist、Agent portable RKNN、服务节点 capability、deployment worker、自动转换、board preflight/evidence 与 UI/Browser contracts。canonical 产品集合为 `RK3568 / RK3578 / RK3576`；**没有新增 RK3588 支持**。
+>
+> Durable Local / Remote Training 在版本 CAS commit 成功后现在会调用既有 `request_external_auto_publish_if_enabled`，立即唤醒唯一 external publisher；失败不反向污染训练成功 truth，30 秒 recovery scan 继续兜底。为避免 training core 被 `model_artifacts/pydantic` 重依赖污染，Local 侧通过 lazy delegate 调用；真实 Ubuntu/Windows jpeg-cache 红灯已关闭。
+>
+> 关键提交：`4b0499f3`、`38288cb1`、`d5cbfab3`、`04da021c`、`fcc8a3a7`。
+>
+> 下一步进入批量图片上传 / ZIP 1k-20k / confirmed_empty / 人工标注 / AI Review / 清洗 / 标签统一的主流程审计。真实 Linux/NVIDIA GPU、正式 OSS、新畅联生产接口、RK3568/RK3578 实板仍未现场 VERIFIED。
+>
+> **注意：** 本文档提交本身会生成新的 HEAD 与新一轮 CI。任何新会话第一步仍必须重读远端 HEAD / VERSION / checks，不能把上面的代码 cutoff 当作未来最新 HEAD。
+>
+
 <!-- LIVE_HANDOFF_2026_09_28_LABEL_SAVE_GREEN -->
 > ## 2026-09-28 当前接手入口：标签保存主流程已收口，代码 cutoff 59/59 全绿（最高优先级）
 >
