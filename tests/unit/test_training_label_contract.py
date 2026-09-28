@@ -15,7 +15,7 @@ from platform_core.training_label_tasks import (
     resolve_training_label_contract,
     selected_material_label_codes,
 )
-from platform_core.training_tasks import materialize_portable_dataset
+from platform_core.training_tasks import materialize_portable_dataset, resolve_frozen_training_base
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:
@@ -205,6 +205,79 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     assert contract["base_training_mode"] == "previous_weights_init"
     assert contract["strict_resume"] is False
     assert contract["optimizer_state_resumed"] is False
+    assert contract["base_model_contract_schema_version"] == 1
+    assert contract["base_model_reference"] == str(model.resolve())
+    assert contract["base_model_size_bytes"] == model.stat().st_size
+    assert contract["base_model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    frozen_base = resolve_frozen_training_base({
+        "framework": "ultralytics",
+        "label_contract": contract,
+    })
+    assert frozen_base["base_version_id"] == "v1"
+    assert frozen_base["base_model_path"] == str(model.resolve())
+
+
+def test_frozen_iteration_base_fails_closed_if_checkpoint_changes(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    AnnotationRepository(project).upsert("a", [_box("fire")], annotation_state="annotated")
+    model = project / "previous.pt"
+    model.write_bytes(b"original-model")
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "version_name": "20260910010101",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": [{"code": "fire", "class_id": 0}],
+        }],
+    }
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {
+            "framework": "ultralytics",
+            "model": "yolo11n.pt",
+            "train_image_ids": ["a"],
+            "train_labels": [],
+        },
+        algorithm,
+    )
+    model.write_bytes(b"changed-model")
+
+    with pytest.raises(ValueError, match="size changed|SHA256 changed"):
+        resolve_frozen_training_base({
+            "framework": "ultralytics",
+            "label_contract": contract,
+        })
+
+
+def test_first_training_base_mode_stays_mother_model_reference(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    AnnotationRepository(project).upsert("a", [_box("fire")], annotation_state="annotated")
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {
+            "framework": "ultralytics",
+            "model": "yolo11n.pt",
+            "train_image_ids": ["a"],
+            "train_labels": ["fire"],
+        },
+        {"id": "alg", "versions": []},
+    )
+    assert contract["base_training_mode"] == "mother_model_init"
+    assert contract["base_version_id"] == ""
+    assert contract["base_model_reference"] == "yolo11n.pt"
+    frozen_base = resolve_frozen_training_base({
+        "framework": "ultralytics",
+        "label_contract": contract,
+    })
+    assert frozen_base["base_version_id"] is None
+    assert frozen_base["base_model_path"] == "yolo11n.pt"
 
 
 def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(tmp_path: Path):
