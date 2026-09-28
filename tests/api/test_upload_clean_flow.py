@@ -211,7 +211,7 @@ def test_retry_after_prepared_task_before_batch_publication_completes_once(clien
         f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
         json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    response.raise_for_status()
+    assert response.status_code == 200, response.text
 
     assert response.json()["clean_task_id"] == task_id
     durable = app_module.shared_task_repository().get(task_id)
@@ -274,12 +274,12 @@ def test_retry_starts_existing_prepared_task_exactly_once(client):
         f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
         json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    first.raise_for_status()
+    assert first.status_code == 200, first.text
     second = client.post(
         f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
         json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    second.raise_for_status()
+    assert second.status_code == 200, second.text
 
     assert first.json()["clean_task_id"] == second.json()["clean_task_id"] == task_id
     assert app_module.shared_task_repository().get(task_id) is not None
@@ -836,14 +836,12 @@ def test_background_annotation_index_cannot_remove_a_new_upload(client, monkeypa
     project_id = project["id"]
     first = upload_png(client, project_id, "before.png")
 
-    # New uploads already have an empty summary; remove it to model a legacy
-    # row that the background annotation index must backfill.
-    store = MaterialStore(app_module.project_dir(project_id) / "images.json")
-    store.mutate(
-        lambda rows: next(
-            row for row in rows if str(row.get("id")) == first["id"]
-        ).pop("annotation_summary_at", None)
-    )
+    # New uploads already have an empty summary; clear the current SQLite
+    # repository field to model a legacy row that the background annotation
+    # index must backfill. images.json is no longer the material owner.
+    app_module.material_store(project_id).patch({
+        first["id"]: {"annotation_summary_at": None}
+    })
     indexed = threading.Event()
     resume = threading.Event()
     original = app_module.read_annotation
