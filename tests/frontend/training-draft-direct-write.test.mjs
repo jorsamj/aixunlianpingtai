@@ -4,12 +4,12 @@ import {readFileSync} from 'node:fs';
 
 import {
   createTrainingDraft,
-  trainingInheritanceFromAlgorithm,
+  trainingBaseVersionFromAlgorithm,
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
 
 function dependencies() {
-  return {createTrainingDraft, trainingInheritanceFromAlgorithm};
+  return {createTrainingDraft, trainingBaseVersionFromAlgorithm};
 }
 
 function setupDom() {

@@ -274,7 +274,7 @@ test('same selected materials reload canonical labels after a completed label un
     const body = route.request().postDataJSON();
     const ids = Array.isArray(body?.image_ids) ? body.image_ids.map(String) : [];
     if (ids.includes('same-material-after-unify')) selectedSummaryCalls += 1;
-    const labels = unified ? ['smoke'] : ['legacy_smoke'];
+    const labels = unified ? ['smoke'] : ['fire'];
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -306,11 +306,17 @@ test('same selected materials reload canonical labels after a completed label un
   await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
 
   let panel = dialog.locator('#trainingLabelContractPanel');
-  await expect(panel).toContainText('legacy_smoke');
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(1);
+  await expect(panel).toContainText('明火');
+  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).not.toContainText('合并关系');
   await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(1);
 
   await page.evaluate(() => window.closeModal());
   unified = true;
+  await page.evaluate(() => {
+    state.labels = (state.labels || []).filter(row => String(row?.code || '') !== 'fire');
+  });
 
   card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -320,9 +326,11 @@ test('same selected materials reload canonical labels after a completed label un
 
   panel = dialog.locator('#trainingLabelContractPanel');
   await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(2);
-  await expect(panel).not.toContainText('legacy_smoke');
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(0);
   await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(1);
   await expect(panel).toContainText('烟雾');
+  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).not.toContainText('合并关系');
 });
 
 test('training target is the only automatic early-stop control', async ({page, request}) => {

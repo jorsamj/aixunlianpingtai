@@ -42,7 +42,7 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(summaryRuntime, /待标注/);
   assert.match(labelsRuntime, /materialSummaryRuntime\.summaryReadyFor/);
   assert.match(labelsRuntime, /materialSummaryRuntime\?\.invalidate\?\.\(\)/);
-  assert.match(labelsRuntime, /正在读取已选素材标签/);
+  assert.match(labelsRuntime, /正在读取素材标签/);
   assert.match(summaryRuntime, /function invalidate\(\)/);
   assert.match(summaryRuntime, /currentSignature = null/);
   assert.match(summaryRuntime, /summary = null/);
