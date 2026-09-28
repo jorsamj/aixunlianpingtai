@@ -37,12 +37,12 @@ test('available labels come only from selected materials', () => {
   assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), ['fire', 'smoke', 'person']);
 });
 
-test('confirmed empty scope contributes concrete labels and ignores legacy star', () => {
+test('confirmed empty scope never becomes selectable new-class evidence', () => {
   const materials = [
     {id: 'a', labels: [], annotation_scope: ['fire', 'smoke']},
     {id: 'b', labels: [], annotation_scope: ['*']},
   ];
-  assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), ['fire', 'smoke']);
+  assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), []);
 });
 
 test('training material ids come only from canonical draft even when historical state is polluted', () => {
@@ -134,6 +134,13 @@ test('legacy successful previous version is flagged for server-side snapshot rec
   assert.deepEqual(info.codes, []);
 });
 
+test('first training never auto-selects new labels for the user', () => {
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('return hasPreviousVersion ? [] : unique(selectable);'), false);
+  assert.equal(source.includes('if (!state.trainingLabelSelectionTouched && !hasPreviousVersion) return unique(selectable);'), false);
+  assert.match(source, /state\.trainingLabelAlgorithmId = algorithmId;[\s\S]{0,180}return \[\];/);
+});
+
 test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
   for (const token of [
@@ -178,7 +185,7 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
 });
 
 
-test('inactive previous labels are dropped and mark schema changed', () => {
+test('inactive previous labels remain inherited and do not change schema by themselves', () => {
   const algorithm = {
     versions: [successfulVersion({
       label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
@@ -188,10 +195,10 @@ test('inactive previous labels are dropped and mark schema changed', () => {
     materials: [{id: 'a', labels: ['fire']}],
     selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: [],
   });
-  assert.deepEqual(view.inherited, ['fire']);
-  assert.deepEqual(view.droppedInherited, ['legacy_smoke']);
-  assert.deepEqual(view.effectivePreview, ['fire']);
-  assert.equal(view.labelSchemaChanged, true);
+  assert.deepEqual(view.inherited, ['fire', 'legacy_smoke']);
+  assert.deepEqual(view.droppedInherited, []);
+  assert.deepEqual(view.effectivePreview, ['fire', 'legacy_smoke']);
+  assert.equal(view.labelSchemaChanged, false);
   assert.equal(view.strictResume, false);
   assert.equal(view.baseTrainingMode, 'previous_weights_init');
 });
