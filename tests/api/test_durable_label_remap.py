@@ -513,19 +513,28 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
         "client": ("testclient", 50000),
     }
     matched_routes = []
+    matched_route_truth = []
     for route in app_module.app.routes:
-        match, _child_scope = route.matches(request_scope)
+        match, child_scope = route.matches(request_scope)
         if getattr(match, "name", "") == "FULL":
             matched_routes.append(route)
-    assert len(matched_routes) == 1, [
-        (
-            getattr(route, "path", ""),
-            sorted(getattr(route, "methods", set()) or set()),
-            getattr(getattr(route, "endpoint", None), "__module__", ""),
-            getattr(getattr(route, "endpoint", None), "__qualname__", ""),
-        )
-        for route in matched_routes
-    ]
+            endpoint = getattr(route, "endpoint", None) or child_scope.get("endpoint")
+            matched_route_truth.append({
+                "route_type": f"{type(route).__module__}.{type(route).__name__}",
+                "path": getattr(route, "path", ""),
+                "path_format": getattr(route, "path_format", ""),
+                "methods": sorted(getattr(route, "methods", set()) or set()),
+                "name": getattr(route, "name", ""),
+                "endpoint_module": getattr(endpoint, "__module__", ""),
+                "endpoint_name": getattr(endpoint, "__qualname__", ""),
+                "child_scope": {
+                    key: str(value)
+                    for key, value in child_scope.items()
+                    if key in {"path", "root_path", "route", "endpoint", "app"}
+                },
+                "repr": repr(route),
+            })
+    assert len(matched_routes) == 1, matched_route_truth
     summary_routes = matched_routes
     summary_endpoint = summary_routes[0].endpoint
     assert summary_endpoint.__module__ == "platform_core.training_material_picker_api"
