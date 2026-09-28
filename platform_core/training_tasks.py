@@ -22,6 +22,7 @@ import yaml
 from PIL import Image, ImageDraw, ImageFile, ImageOps, ImageStat, UnidentifiedImageError
 
 from .annotations import atomic_write_json
+from .errors import PlatformError
 from .annotation_repository import AnnotationRepository
 from .algorithms import (
     attach_version,
@@ -2095,10 +2096,11 @@ class TrainingHandler:
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         if existing_task_version is None:
-            attach_version_if_current(
-                algorithms_path,
-                str(algorithm.get("id")),
-                {
+            try:
+                attach_version_if_current(
+                    algorithms_path,
+                    str(algorithm.get("id")),
+                    {
                     "id": uuid.uuid4().hex[:12],
                     "version_name": version_name,
                     "version_no": version_name,
@@ -2130,12 +2132,18 @@ class TrainingHandler:
                     "task_id": context.task.task_id,
                     "job_id": context.task.task_id,
                     "created_at": finished_at,
-                    "finished_at": finished_at,
-                },
-                expected_current_version_id=(
-                    expected_base_version_id or None
-                ),
-            )
+                        "finished_at": finished_at,
+                    },
+                    expected_current_version_id=(
+                        expected_base_version_id or None
+                    ),
+                )
+            except PlatformError as error:
+                if error.code == "ALGORITHM_VERSION_CONFLICT":
+                    raise RuntimeError(
+                        "TRAINING_BASE_VERSION_STALE: " + error.detail
+                    ) from error
+                raise
 
         # Seed the shared cache only after the official algorithm version has
         # been attached successfully. A task that fails before this point must
