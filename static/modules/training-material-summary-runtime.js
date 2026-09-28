@@ -173,6 +173,18 @@ export function installTrainingMaterialSummaryRuntime({
     }
   }
 
+  function invalidate() {
+    requestSequence += 1;
+    activeController?.abort?.();
+    activeController = null;
+    currentSignature = null;
+    pendingSignature = null;
+    summary = null;
+    lastError = '';
+    queueDecorate();
+    window.TrainingLabelRuntime?.queueRefresh?.();
+  }
+
   function syncSelection() {
     const ids = currentIds();
     const signature = trainingMaterialSelectionSignature(ids);
@@ -187,8 +199,9 @@ export function installTrainingMaterialSummaryRuntime({
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422501',
+    build: 'training-material-summary-runtime-422502',
     refresh,
+    invalidate,
     summaryReadyFor,
     summaryFor,
     selectedLabelCodes,

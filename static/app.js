@@ -4874,7 +4874,14 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     return setTimeout(()=>{if(['数据集','标签管理'].includes(state.page))run()},850);
   }
   window.armImportRemap414=armImportRemap414;
+  function invalidateTrainingMaterialSummaryAfterLabelMutation414(){
+    const runtime=window.TrainingMaterialSummaryRuntime;
+    runtime?.invalidate?.();
+    const ids=window.TrainingDraftRuntime?.materialIds?.()||[];
+    if(ids.length)void runtime?.refresh?.(ids,{force:true});
+  }
   async function refreshLabelSchemaAfterRemap414(task,source,target){
+    invalidateTrainingMaterialSummaryAfterLabelMutation414();
     await refreshLabels414(true);
     const progressVisible=!!document.getElementById('importRemapStage414');
     if(progressVisible)closeModal();
@@ -4885,6 +4892,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
 
   async function refreshImportReviewAfterRemap414(task,source,target){
+    invalidateTrainingMaterialSummaryAfterLabelMutation414();
     await refreshLabels414(false);
     if(state.page==='数据集')await window.reloadMaterialPage61?.();
     const jobId=state.import412?.job_id;

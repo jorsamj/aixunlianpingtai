@@ -404,7 +404,13 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
   const unsubscribeDraft = trainingDraftRuntime?.subscribe?.(event => {
     const state = getState?.();
-    if (event?.type === 'update' && startsTrainingSession(event.patch)) resetTaskLabelInteraction(state);
+    if (event?.type === 'update' && startsTrainingSession(event.patch)) {
+      resetTaskLabelInteraction(state);
+      // A new training session must not reuse a selected-material summary from
+      // before label unification/manual annotation changes merely because the
+      // image ids are identical.
+      materialSummaryRuntime?.invalidate?.();
+    }
     if (labelOnlyDraftUpdate(event)) {
       updateCount(state);
       return;
@@ -427,7 +433,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   queueRefresh();
 
   const runtime = {
-    build: 'module-422566',
+    build: 'module-422567',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),

@@ -3,7 +3,7 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422566';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422567';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422517';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
@@ -15,7 +15,7 @@ import {installExternalAlgorithmPublishRuntime} from './modules/external-algorit
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65008';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422578';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422548';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422501';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422502';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422563';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422509';
