@@ -34,7 +34,7 @@ from PIL import Image, ImageDraw
 from filelock import FileLock
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
-from platform_core.annotation_repository import AnnotationRepository
+from platform_core.annotation_repository import AnnotationConflictError, AnnotationRepository
 from platform_core.storage.import_confirmation import (
     IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
     confirm_import,
@@ -2902,6 +2902,7 @@ def _v50_material_annotation_patch(
 def write_annotation(
     project_id: str, image_id: str, boxes: List[Dict[str, Any]],
     annotation_state=None, annotation_origin: Optional[str] = None,
+    *, expected_version: Optional[int] = None,
 ):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
@@ -2910,11 +2911,16 @@ def write_annotation(
     if batch is not None:
         batch.get("deferred_annotations", {}).pop(str(image_id), None)
     saved = _v50_annotation_repository(project_id).upsert(
-        image_id, boxes, annotation_state, project_material=False
+        image_id,
+        boxes,
+        annotation_state,
+        project_material=False,
+        expected_version=expected_version,
     )
     patch = _v50_material_annotation_patch(saved, annotation_origin)
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
+    return saved
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
@@ -4892,6 +4898,7 @@ def get_annotation(project_id: str, image_id: str):
 class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
     annotation_state: Optional[Literal["annotated", "confirmed_empty"]] = None
+    expected_version: Optional[int] = None
 
 
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
@@ -4945,10 +4952,28 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             status_code=409,
         )
     annotation_state = "annotated" if clean_boxes else "confirmed_empty"
-    write_annotation(project_id, image_id, clean_boxes, annotation_state)
+    try:
+        saved_annotation = write_annotation(
+            project_id,
+            image_id,
+            clean_boxes,
+            annotation_state,
+            expected_version=payload.expected_version,
+        )
+    except AnnotationConflictError as error:
+        raise PlatformError(
+            code="ANNOTATION_CONCURRENT_MODIFICATION",
+            message="标注已被其他操作更新",
+            detail=(
+                f"当前图片标注已从版本 {error.expected_version} 更新为 "
+                f"{error.actual_version}，本次保存未覆盖最新标注。"
+            ),
+            solution="请刷新当前图片，核对最新标注后再保存。",
+            status_code=409,
+        ) from error
     refreshed = materials.get_many([str(image_id)])
     fresh = refreshed[0] if refreshed else img
-    return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
+    return {"ok": True, "image": fresh, "annotation": saved_annotation, "saved_boxes": len(clean_boxes)}
 
 
 class BuildDatasetReq(BaseModel):
