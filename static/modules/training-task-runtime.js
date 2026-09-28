@@ -65,14 +65,17 @@ function metricText(value, digits = 3) {
 }
 
 export function trainingProgressView(job = {}) {
+  const display = job.training_display_progress && typeof job.training_display_progress === 'object'
+    ? job.training_display_progress
+    : {};
   const progress = job.training_progress && typeof job.training_progress === 'object' ? job.training_progress : {};
-  const epoch = finiteNumber(progress.epoch) ?? finiteNumber(job.current_epoch) ?? 0;
-  const totalEpochs = finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
-  const currentBatch = finiteNumber(progress.current_batch) ?? finiteNumber(job.current_batch);
-  const totalBatches = finiteNumber(progress.total_batches) ?? finiteNumber(job.total_batches);
-  const elapsedSeconds = finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
-  const etaSeconds = finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
-  const throughput = finiteNumber(progress.images_per_second);
+  const epoch = finiteNumber(display.current_epoch) ?? finiteNumber(progress.epoch) ?? finiteNumber(job.current_epoch) ?? 0;
+  const totalEpochs = finiteNumber(display.total_epochs) ?? finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
+  const currentBatch = finiteNumber(display.current_batch) ?? finiteNumber(progress.current_batch) ?? finiteNumber(job.current_batch);
+  const totalBatches = finiteNumber(display.total_batches) ?? finiteNumber(progress.total_batches) ?? finiteNumber(job.total_batches);
+  const elapsedSeconds = finiteNumber(display.elapsed_seconds) ?? finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
+  const etaSeconds = finiteNumber(display.eta_seconds) ?? finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
+  const throughput = finiteNumber(display.throughput) ?? finiteNumber(progress.images_per_second);
   const losses = progress.losses || {};
   const metrics = progress.metrics || {};
   const learningRates = progress.learning_rates || {};
@@ -95,6 +98,30 @@ export function trainingProgressView(job = {}) {
   if (throughput !== null) parts.push(`${metricText(throughput, 1)} img/s`);
   if (primaryLr !== null) parts.push(`LR ${Number(primaryLr).toPrecision(3)}`);
   return {epoch, totalEpochs, currentBatch, totalBatches, elapsedSeconds, etaSeconds, metricLine: parts.join(' · ')};
+}
+
+export function trainingDisplayRevision(job = {}) {
+  const value = Number(job?.training_display_progress?.revision ?? job?.display_revision);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function mergeTrainingJobRows(currentRows = [], incomingRows = []) {
+  const currentById = new Map(
+    (Array.isArray(currentRows) ? currentRows : [])
+      .map(row => [String(row?.task_id || row?.id || ''), row])
+      .filter(([id]) => Boolean(id)),
+  );
+  return (Array.isArray(incomingRows) ? incomingRows : []).map(incoming => {
+    const id = String(incoming?.task_id || incoming?.id || '');
+    const current = currentById.get(id);
+    if (!current) return incoming;
+    const currentRevision = trainingDisplayRevision(current);
+    const incomingRevision = trainingDisplayRevision(incoming);
+    if (currentRevision !== null && incomingRevision !== null && incomingRevision < currentRevision) {
+      return current;
+    }
+    return incoming;
+  });
 }
 
 function statusText(status) {
@@ -357,6 +384,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       if (!isCurrent(startPage, startEpoch) || startPage !== TRAINING_PAGE) {
         return {stale: true, jobs: state().jobs || []};
       }
+      jobs = mergeTrainingJobRows(state().jobs, jobs);
       state().jobs = jobs;
       lastRefreshAt = Date.now();
       lastRefreshSource = String(source || 'direct');

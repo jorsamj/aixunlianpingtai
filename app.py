@@ -136,7 +136,11 @@ from platform_core.training_tasks import freeze_training_inputs, resolve_trainin
 from platform_core.training_label_tasks import project_training_rows, resolve_training_label_contract
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
-from platform_core.training_job_projection import apply_training_task_truth
+from platform_core.training_job_projection import (
+    apply_training_display_progress,
+    apply_training_task_truth,
+    build_training_display_progress,
+)
 from platform_core.task_runtime import (
     ArtifactStore,
     ProcessController,
@@ -1150,6 +1154,7 @@ def enrich_job_runtime(
     worker_error = str(job.get("error") or "").strip()
     worker_message = str(job.get("message") or "").strip()
     durable = repository.get(str(job_id)) if job_id else None
+    public_runtime = None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
             TaskStatus.QUEUED: "queued",
@@ -1277,51 +1282,62 @@ def enrich_job_runtime(
             status = "failed"
             job["message"] = "训练进程已结束，但没有写入成功结果，请查看训练日志"
             job.setdefault("finished_at", now_iso())
-    training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
-    try:
-        total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
-    except (TypeError, ValueError):
-        total = 0
-    try:
-        persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
-    except (TypeError, ValueError):
-        persisted_cur = 0
-    log_text = _job_log_text(project_id, job_id)
-    cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
-    if status in successful_terminal_statuses:
-        # 100% means the task lifecycle is terminal. It must not fabricate the
-        # final epoch number when training legitimately ended early.
-        progress = 100
-    elif status in ended_terminal_statuses:
-        progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+    if durable is not None and public_runtime is not None:
+        # Live Durable jobs use one canonical display projection. Do not scan
+        # logs or recompute elapsed/ETA on each GET.
+        apply_training_display_progress(job, public_runtime)
+        status = str(job.get("status") or status).strip().lower()
+        job["elapsed_text"] = _human_seconds(job.get("elapsed_seconds")) if job.get("elapsed_seconds") is not None else "-"
+        job["eta_text"] = _human_seconds(job.get("eta_seconds")) if job.get("eta_seconds") is not None else "估算中"
+        job["status_text"] = {"queued":"排队中", "waiting":"等待资源", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
     else:
-        progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
-    started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
-    finished = _parse_dt_value(job.get("finished_at")) if status in ended_terminal_statuses else None
-    clock = finished or datetime.now()
-    elapsed = int((clock - started).total_seconds()) if started else 0
-    # 暂停期间不计入真实训练耗时/ETA。
-    paused_seconds = int(job.get("paused_seconds") or 0)
-    if status == "paused" and job.get("paused_at"):
-        pdt = _parse_dt_value(job.get("paused_at"))
-        if pdt:
-            paused_seconds += max(0, int((datetime.now() - pdt).total_seconds()))
-    elapsed = max(0, elapsed - paused_seconds)
-    eta = None
-    if status == "running" and total and cur and elapsed > 0:
-        eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
-    elif status in ended_terminal_statuses:
-        eta = 0
-    elif status == "paused":
+        # Historical pre-Durable compatibility/recovery is the only path that
+        # may infer epoch/progress from an old training log.
+        training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+        try:
+            total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
+        except (TypeError, ValueError):
+            persisted_cur = 0
+        log_text = _job_log_text(project_id, job_id)
+        cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
+        if status in successful_terminal_statuses:
+            # 100% means the task lifecycle is terminal. It must not fabricate the
+            # final epoch number when training legitimately ended early.
+            progress = 100
+        elif status in ended_terminal_statuses:
+            progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+        else:
+            progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+        started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
+        finished = _parse_dt_value(job.get("finished_at")) if status in ended_terminal_statuses else None
+        clock = finished or datetime.now()
+        elapsed = int((clock - started).total_seconds()) if started else 0
+        # 暂停期间不计入真实训练耗时/ETA。
+        paused_seconds = int(job.get("paused_seconds") or 0)
+        if status == "paused" and job.get("paused_at"):
+            pdt = _parse_dt_value(job.get("paused_at"))
+            if pdt:
+                paused_seconds += max(0, int((datetime.now() - pdt).total_seconds()))
+        elapsed = max(0, elapsed - paused_seconds)
         eta = None
-    job["current_epoch"] = cur
-    job["total_epochs"] = total
-    job["progress_percent"] = progress
-    job["elapsed_seconds"] = elapsed
-    job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
-    job["eta_seconds"] = eta
-    job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
-    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
+        if status == "running" and total and cur and elapsed > 0:
+            eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
+        elif status in ended_terminal_statuses:
+            eta = 0
+        elif status == "paused":
+            eta = None
+        job["current_epoch"] = cur
+        job["total_epochs"] = total
+        job["progress_percent"] = progress
+        job["elapsed_seconds"] = elapsed
+        job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
+        job["eta_seconds"] = eta
+        job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
+        job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
     if (
         allow_version_archive
         and str(job.get("status") or "").lower() in successful_terminal_statuses
@@ -7522,11 +7538,37 @@ _TRAINING_STREAM_ACTIVE_STATUSES = (
 )
 
 
+def _training_event_row(project_id: str, task: TaskRecord) -> Dict[str, Any]:
+    """Build the same canonical training display truth used by HTTP reads."""
+    runtime = task_to_public(task)
+    job_file = project_dir(project_id) / "jobs" / task.task_id / "job.json"
+    worker_job = read_json(job_file, {}) if job_file.exists() else {}
+    display = build_training_display_progress(worker_job, runtime)
+    row = dict(runtime)
+    row.update(
+        progress_percent=display["overall_progress"],
+        current_item=display["message"] or runtime.get("current_item"),
+        current_epoch=display["current_epoch"],
+        total_epochs=display["total_epochs"],
+        current_batch=display["current_batch"],
+        total_batches=display["total_batches"],
+        elapsed_seconds=display["elapsed_seconds"],
+        eta_seconds=display["eta_seconds"],
+        phase_progress=display["phase_progress"],
+        telemetry_source=display["telemetry_source"],
+        display_revision=display["revision"],
+        training_display_progress=display,
+    )
+    if isinstance(worker_job.get("training_progress"), dict):
+        row["training_progress"] = worker_job["training_progress"]
+    return row
+
+
 def _training_event_rows(
     project_id: str,
     repository: Optional[TaskRepository] = None,
 ) -> List[Dict[str, Any]]:
-    """Return the small durable projection used by the live training stream."""
+    """Return canonical display truth for active Durable training tasks."""
     repo = repository or shared_task_repository()
     page = repo.list(
         project_id=project_id,
@@ -7534,7 +7576,7 @@ def _training_event_rows(
         statuses=_TRAINING_STREAM_ACTIVE_STATUSES,
         limit=100,
     )
-    return [task_to_public(task) for task in page.items]
+    return [_training_event_row(project_id, task) for task in page.items]
 
 
 def _training_event_signature(row: Mapping[str, Any]) -> Tuple[Any, ...]:
@@ -7549,6 +7591,13 @@ def _training_event_signature(row: Mapping[str, Any]) -> Tuple[Any, ...]:
         row.get("updated_at"),
         row.get("finished_at"),
         row.get("error"),
+        row.get("current_epoch"),
+        row.get("total_epochs"),
+        row.get("current_batch"),
+        row.get("total_batches"),
+        row.get("elapsed_seconds"),
+        row.get("eta_seconds"),
+        row.get("telemetry_source"),
     )
 
 
@@ -7604,7 +7653,7 @@ async def v64_training_events(project_id: str, request: Request):
                     and task.project_id == project_id
                     and task.kind is TaskKind.TRAINING
                 ):
-                    row = task_to_public(task)
+                    row = _training_event_row(project_id, task)
                     signature = _training_event_signature(row)
                     if signatures.get(task_id) != signature:
                         signatures[task_id] = signature

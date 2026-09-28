@@ -46,6 +46,9 @@ def test_training_event_rows_emit_only_active_training_truth(tmp_path):
     assert rows[0]["status"] == "RUNNING"
     assert rows[0]["progress_percent"] == 37.5
     assert rows[0]["current_item"] == "Epoch 11/30 · Batch 20/100"
+    assert rows[0]["training_display_progress"]["status"] == "RUNNING"
+    assert rows[0]["training_display_progress"]["overall_progress"] == 37.5
+    assert rows[0]["display_revision"] > 0
 
 
 def test_training_event_signature_changes_when_live_progress_changes():

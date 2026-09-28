@@ -39,6 +39,10 @@ export function canonicalTaskPhase(task = {}) {
 }
 
 export function canonicalTaskProgressPercent(task = {}) {
+  const display = task?.training_display_progress;
+  if (display?.overall_progress !== null && display?.overall_progress !== undefined && display?.overall_progress !== '') {
+    return clampPercent(display.overall_progress);
+  }
   if (task?.progress_percent !== null && task?.progress_percent !== undefined && task?.progress_percent !== '') {
     return clampPercent(task.progress_percent);
   }

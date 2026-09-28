@@ -44,3 +44,21 @@ test('training progress v2 omits unavailable metrics instead of manufacturing ze
   assert.doesNotMatch(html, /box loss/);
   assert.doesNotMatch(html, /img\/s/);
 });
+
+
+test('training progress view prefers canonical display projection over stale legacy aliases', () => {
+  const view = trainingProgressView({
+    current_epoch: 3, total_epochs: 30, elapsed_seconds: 999, eta_seconds: 999,
+    training_progress: {epoch: 3, total_epochs: 30, images_per_second: 7},
+    training_display_progress: {
+      revision: 700, current_epoch: 8, total_epochs: 30,
+      current_batch: 5, total_batches: 10,
+      elapsed_seconds: 120, eta_seconds: 330, throughput: 18.5, overall_progress: 38,
+    },
+  });
+  assert.equal(view.epoch, 8);
+  assert.equal(view.currentBatch, 5);
+  assert.equal(view.elapsedSeconds, 120);
+  assert.equal(view.etaSeconds, 330);
+  assert.match(view.metricLine, /18\.5 img\/s/);
+});

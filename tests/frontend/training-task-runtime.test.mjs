@@ -2,7 +2,7 @@ import {trainingApiErrorMessage} from '../../static/modules/training-task-runtim
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installTrainingTaskRuntime} from '../../static/modules/training-task-runtime.js';
+import {installTrainingTaskRuntime, mergeTrainingJobRows} from '../../static/modules/training-task-runtime.js';
 import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
@@ -784,3 +784,28 @@ test('training API error formatter keeps structured backend diagnostics', () => 
   assert.doesNotMatch(message, /\[object Object\]/);
 });
 
+
+
+test('HTTP refresh merge rejects a response older than the current SSE display revision', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 60, current_epoch: 18,
+    training_display_progress: {revision: 500, overall_progress: 60, current_epoch: 18},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 52, current_epoch: 15,
+    training_display_progress: {revision: 499, overall_progress: 52, current_epoch: 15},
+  }];
+  assert.deepEqual(mergeTrainingJobRows(current, incoming), current);
+});
+
+test('HTTP refresh merge accepts a newer canonical display revision', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 52,
+    training_display_progress: {revision: 499, overall_progress: 52},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 60,
+    training_display_progress: {revision: 500, overall_progress: 60},
+  }];
+  assert.deepEqual(mergeTrainingJobRows(current, incoming), incoming);
+});
