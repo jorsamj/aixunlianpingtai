@@ -34,8 +34,12 @@ test('training page stays paged and selected labels come from server summary', a
       body: JSON.stringify({
         requested_count: ids.length,
         matched_count: ids.length,
+        selectable_count: ids.length,
         eligible_count: ids.length,
-        eligible_total: 10_000,
+        pending_annotation_count: 0,
+        selectable_total: 10_000,
+        eligible_total: 8_000,
+        pending_annotation_total: 2_000,
         box_count: ids.length * 2,
         size_bytes: ids.length * 1024,
         label_codes: ids.length ? ['smoke', 'person'] : [],

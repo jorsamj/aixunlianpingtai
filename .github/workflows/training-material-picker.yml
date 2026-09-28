@@ -100,7 +100,9 @@ jobs:
           grep -Fq '@lru_cache(maxsize=128)' platform_core/training_material_picker_api.py
           grep -Fq '@router.post("/bulk-selection")' platform_core/training_material_picker_api.py
           grep -Fq 'include_total=first' platform_core/training_material_picker_api.py
-          grep -Fq 'annotated=True' platform_core/training_material_picker_api.py
+          grep -Fq 'processing_status="processed"' platform_core/training_material_picker_api.py
+          grep -Fq 'require_ground_truth=role == "test"' platform_core/training_material_picker_api.py
+          grep -Fq "m.processing_status = 'processed' AND m.annotated <> 0" platform_core/training_material_picker_api.py
           grep -Fq 'repository.list_page' platform_core/training_material_picker_api.py
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
           grep -Fq 'requested_training_material_ids' platform_core/training_material_picker_api.py
