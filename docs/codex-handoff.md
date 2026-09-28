@@ -1,6 +1,133 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 最终主流程发布链跨阶段验收 CLOSED（最新）
+
+- 本节代码 cutoff：`115b506f42bd730ff8694b64e6cbca3d72ae0416`（`test: stitch training and RKNN publish chain`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 本轮没有新增 Training / ModelArtifact / ExternalPublish / Conversion owner；只补跨阶段永久合同与 CI guard。
+- 没有 merge main、tag、release、force push，没有删除/放宽已有测试。
+
+### 1. 最终主流程代码 / CI 结论
+
+当前主流程：
+
+`素材 -> 清洗 -> 标签治理 -> 标注 -> 训练 -> 算法版本 -> 算法产物归档 -> 新畅联算法版本 + 原始权重 -> RKNN 转换 -> 转换权重追加`
+
+在代码与自动化层已经 **CLOSED**。
+
+此前各段已分别完成：
+- 普通图片 1k / 10k / 20k 上传：durable chunk idempotency + ambiguous-response recovery；
+- ZIP 10k genuine acceptance + 20k bounded contract；
+- 导入 → AnnotationRepository Ground Truth；
+- confirmed_empty / 人工标注；
+- AI Candidate Review / durable Commit；
+- 清洗 / 标签统一 / merged label iteration；
+- Training Input Integrity / Training Handler / remote training；
+- ModelArtifact 独立算法产物存储；
+- External Algorithm Publish；
+- Remote Conversion / RKNN board protocol。
+
+### 2. 本轮补的最后一个跨阶段接缝
+
+此前每个阶段已有大量单独合同，但缺少一个永久测试把“训练发布请求”和“转换晚到追加权重”通过**同一个 External Publish owner**串在一起。
+
+新增：
+
+`test_publish_owner_stitches_training_request_and_late_rknn_weight`
+
+它真实复用当前代码 owner，验证：
+
+1. 外部算法版本已具备成功训练模型；
+2. `request_external_auto_publish_if_enabled(...)` 写下训练完成 publish request；
+3. 现有 auto-publish owner 扫描该版本；
+4. 原始模型先进入 canonical ModelArtifact storage；
+5. 创建且只创建 1 个新畅联 algorithm version；
+6. 创建原始 `best.pt` weight；
+7. 后续 RK3568 转换产物到达；
+8. `request_external_auto_publish_for_conversion_if_enabled(...)` 再次唤醒同一个 owner；
+9. 再次自动发布时**不重复创建 algorithm version**；
+10. 只追加第二个 RKNN weight；
+11. 新 weight 的 `chipCode = RK3568`；
+12. 原始 weight 与 RKNN weight 均绑定同一个远端 `algoVersionId`；
+13. 完成后 `publication_requires_sync(...) = false`。
+
+Training Handler 是否发出 publish request、Conversion finalize 是否发出 conversion publish request，仍分别由原有 integration / unit tests 锁定；本轮没有复制它们的实现。
+
+### 3. 原始模型与转换模型发布语义再次确认
+
+当前正式语义：
+
+- 训练成功并成功 attach 本地算法版本后，才允许请求自动发布；
+- 新畅联算法版本创建前，原始模型必须先满足 ModelArtifact 长期存储 / public URL 可交付；
+- OSS / ModelArtifact 上传失败必须发生在远端 algorithm version 创建之前，避免“远端空版本”；
+- 转换仍在运行时，不阻塞训练版本和原始权重先发布；
+- RKNN 转换晚到后，通过同一 publication owner 对已发布版本追加 weight；
+- `blocked_by_hardware` 但已真实产出 RKNN 文件的转换成果仍可以作为转换 weight 追加，硬件板端验证状态不抹掉已完成转换产物；
+- `blocked_by_environment` 且没有成功转换产物时不会触发转换发布；
+- RKNN 当前支持芯片身份保持 `RK3568 / RK3578 / RK3576`，未加入 RK3588；
+- 多个具体 Rockchip 芯片的 artifact identity 包含 chip_code，同 SHA 也不会错误合并成一个芯片产物；
+- 重复 publish / timeout recovery 均不得重复创建远端版本或权重。
+
+### 4. 当前 cutoff 的真实 CI
+
+对 `115b506f42bd730ff8694b64e6cbca3d72ae0416`：
+
+- External Algorithm Publish push `36420891449`：success
+  - backend contract：success，日志 `151 passed in 8.78s`
+  - Real Chrome：success
+- External Algorithm Publish PR `36420898112`：success
+- Remote Training Runtime `36420897835`：success
+  - API success
+  - Ubuntu preparation success
+  - Windows preparation success
+  - Ultralytics loader contract success
+- Remote Conversion Runtime `36420897768`：success
+  - Ubuntu agent contract success
+  - Windows agent contract success
+  - control-plane success
+  - Real Chrome success
+- Remote RKNN Board Runtime Protocol `36420897750`：success
+  - API / Ubuntu / Windows / Real Chrome 全 success
+- Training Input Integrity `36420897845`：success
+  - Ubuntu / Windows JPEG-cache integrity 均 success
+
+因此，与最终发布链直接相关的当前 HEAD permanent gates 均为 completed / success。
+
+### 5. 验收边界：不要把 CI 模拟客户端写成真实现场已联通
+
+本节 CLOSED 指的是：
+- 代码 owner；
+- 持久化合同；
+- 幂等 / fail-closed；
+- 跨阶段 integration contract；
+- Linux / Windows / Real Chrome 自动化。
+
+它**不等于生产现场真实 OSS / 新畅联公网环境已经再次实网验收**。
+
+真实现场仍依赖：
+- 算法产物 OSS Endpoint / Bucket / AK/SK 权限；
+- 长期 public URL 可访问；
+- 新畅联登录 / token / OpenAPI 可访问；
+- computePlatformId 与当前主数据一致；
+- 生产 GPU / RKNN 转换节点在线。
+
+如果现场 OSS 仍是 AccessDenied，代码会按当前合同 fail-closed，不会创建远端空版本；需要先修现场权限后再做真实发布 smoke test。
+
+### 6. 当前主流程状态
+
+截至本节 cutoff，既定 P0 主流程的**代码与永久自动化验收已经全部收口**。
+
+后续不应再重构这些 CLOSED owner。接下来只做：
+1. 部署最新已验收 HEAD；
+2. 在生产配置真实算法产物 OSS；
+3. 用一个可训练的新畅联视觉算法做一次真实 smoke：
+   `训练成功 -> OSS 原始模型 -> 新畅联版本/原始权重 -> RK3568/RK3578 转换 -> 转换权重追加`；
+4. 核对新畅联只读数据页能看到同一 version 下的原始 + 转换 weights；
+5. 若现场失败，只按真实日志修环境或最小接缝，不重新设计主流程。
+
+
+
 ## 2026-09-28 主流程 P0：AI Candidate Review / Commit + 清洗 / 标签治理交叉验收 CLOSED（最新）
 
 - 本节代码 cutoff：`5ee96747ee30cb165e2ec874b706bbac4f4b2e9c`（`ci: gate AI review to formal GT`）。
