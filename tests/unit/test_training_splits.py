@@ -16,6 +16,8 @@ def image(image_id, dataset, content_hash, group, source="upload"):
         "group_id": group,
         "source_type": source,
         "processing_status": "processed",
+        "annotation_state": "annotated",
+        "annotated": True,
         "stored_name": f"{image_id}.jpg",
         "boxes": [{"label": "fire"}],
     }
