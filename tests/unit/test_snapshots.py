@@ -27,7 +27,7 @@ def test_snapshot_contains_only_processed_images_and_is_deterministic():
     assert first["images"][0]["annotation_scope"] == ["fire"]
 
 
-def test_unprocessed_selected_image_is_rejected():
+def test_legacy_snapshot_freezes_formal_ground_truth_without_owning_processing_admission():
     images = [{
         "id": "raw",
         "processing_status": "unprocessed",
@@ -37,12 +37,10 @@ def test_unprocessed_selected_image_is_rejected():
         "boxes": [{"label": "fire"}],
     }]
 
-    try:
-        build_snapshot(images, ["raw"], [], [{"code": "fire"}], seed=1)
-    except ValueError as error:
-        assert "未处理" in str(error)
-    else:
-        raise AssertionError("unprocessed training material must not enter a snapshot")
+    snapshot = build_snapshot(images, ["raw"], [], [{"code": "fire"}], seed=1)
+
+    assert snapshot["train_image_ids"] == ["raw"]
+    assert snapshot["images"][0]["annotation_state"] == "annotated"
 
 
 def test_v3_snapshot_contains_three_roles_provenance_content_hash_and_annotation_contract():
