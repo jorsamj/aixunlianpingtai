@@ -1,6 +1,157 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 主流程 P0：批量图片上传 / ZIP 10k+20k / 导入 GT / 人工标注验收（最新）
+
+- 本节代码验收 cutoff：`cdf10aa16fdf50991ee6fa76948704264ed50fbd`（`test: confirm ZIP labels in 10k acceptance`）。
+- `VERSION.txt = 42.24.0`，未修改。
+- 没有 merge main、tag、release、force push；没有删除/放宽测试；没有新建第二套 Upload / ZIP / Annotation owner。
+- 后续接手必须重新读取远端 HEAD / checks，本节 cutoff 只是本轮验收基线。
+
+### 1. 普通图片批量上传 1k / 10k / 20k：CLOSED
+
+本轮补齐两个此前未真正闭环的边界：
+
+1. **ambiguous chunk response 的安全恢复 / 幂等**
+   - 仍复用现有 `UploadBatchStore`，没有新增第二套 session DB。
+   - 每个浏览器 chunk 带稳定 `upload_request_id`。
+   - 服务端先写 `PROCESSING` durable receipt，完成后原位转 `SUCCEEDED`；失败为 `FAILED`。
+   - 相同 request ID + 相同 manifest：直接 replay 原 material IDs / failed truth。
+   - 相同 request ID + 不同文件/目标：409 fail-closed。
+   - 浏览器网络结果不明确时先查现有 `/api/v55/.../upload-batches/{id}`：
+     - SUCCEEDED：恢复已提交结果；
+     - PROCESSING：继续等待服务器真相；
+     - 404：才用同一个 request ID 重发；
+     - 不再盲目自动重传造成重复入库。
+
+2. **20k 浏览器状态有界**
+   - 分片仍保持 `64 files / 128 MiB`、严格顺序提交。
+   - 1k / 10k / 20k 永久合同已加入；20k 为 313 个 chunk，单 chunk 最大 64。
+   - 上传聚合状态只保留后续清洗决策需要的轻量 material 字段，不再把完整 server material 对象留在浏览器热状态。
+   - DOM 批量预览仍按 96 条分页。
+
+关键提交：
+- `09362cb582d45d84fc41d219882b62722b609fdd` — backend upload request idempotency
+- `b63af8d07808b8e1f972aa2599384d61e9ca33fa` — browser ambiguous recovery + 20k compact state
+- `0432938ebda066e9bf669f89039de15290076c8e` — permanent upload gates on long-lived branch
+- `2342a1b98dc7c659b7ff675918341fe31fe24c30` — Real Chrome test selects isolated project through bootstrap truth
+- `745e965c34a6a84cc3a48b85404e53721ddde6d0` — canonical CLEAN recovery + current AnnotationRepository race owner
+
+最终 CI：
+- Material Upload Chunking：frontend Ubuntu / Windows、api-idempotency、real-chrome-upload 全 success。
+- Material Upload Cleaning Performance：durable-api-flow、Ubuntu hot-path、Windows hot-path 全 success。
+- durable-api-flow 日志：`38 passed`。
+- 两个历史 400 根因已修：V47 clean compatibility 现在和 MaterialBatch 共用 `clean_options` canonicalization；真正改变 canonical option 仍 409 fail-closed。
+- annotation-index 并发回归已从旧 `images.json/read_annotation` owner 迁到当前 `MaterialRepository + AnnotationRepository.get_many` owner。
+
+### 2. ZIP 10k / 20k：CLOSED
+
+当前正式链并非旧文档中的“不可续传大请求”，而是：
+
+`8 MiB multipart parts -> concurrency=4 -> retries=2 -> fingerprint resume -> server merge -> verify/scan -> label confirmation -> background import`
+
+永久 lower-cost gate：
+- ZIP Import Durable Runtime 在当前长期分支 Ubuntu / Windows / backend-persistence / Real Chrome refresh 全 success。
+- 新增 **20,000 图片 ZIP 扫描有界合同**：
+  - `image_count = 20000`
+  - 创建预览固定最多 500；
+  - list 预览固定最多 300；
+  - detail 可请求有界 preview；
+  - 20k candidate manifest 外置；
+  - hot `job.json < 64 KiB`，不内嵌 20k images。
+
+genuine 10k 一次性完整验收：
+- Workflow：`ZIP Processing 10k Acceptance`
+- 最终 run：`36418333044`
+- job：`genuine-10k-processing` = success
+- 完整主链实际执行：
+  1. 真实 multipart 创建；
+  2. 首个分片落盘后用同 fingerprint 再次 create，确认恢复到同 `upload_id`；
+  3. 全部分片提交；
+  4. `/complete` 后台 server merge + verify + scan；
+  5. YOLO 外部标签明确要求人工确认；
+  6. acceptance 显式提交 `0 -> object`，没有自动映射；
+  7. background import 完成；
+  8. Material / Annotation / 文件 / manifest 全量核对。
+
+实测关键值：
+- `acceptance_passed = true`
+- `multipart_resume_verified = true`
+- `image_count = 10000`
+- `report_imported_images = 10000`
+- `material_total = 10000`
+- `annotation_total = 10000`
+- `annotation_boxes = 10000`
+- `terminal_status = done`
+- `terminal_progress = 100`
+- `server_processing_seconds = 48.6`
+- `images_per_second ~= 205.73`
+- `rss_peak_mb ~= 196.44`
+- `rss_growth_peak_mb ~= 79.31`
+- `sqlite_lock_busy_incidents = 0`
+- `poll_p95_ms ~= 4.18`
+- `job_json_bytes = 2201`
+
+前两次 genuine acceptance 红灯均为**旧验收脚本与当前产品合同脱节**，不是通过放宽生产规则解决：
+- 第一次：统一畅联登录后旧脚本未启用现有 test-only auth harness，401；
+- 第二次：当前标签治理禁止自动映射，旧脚本未提交外部 class 0 → canonical `object`，409；
+- 最终脚本改为遵守当前认证测试契约和显式标签映射后，完整 10k 主链 success。
+
+### 3. 导入 → Ground Truth：代码 / 自动化闭环
+
+当前唯一正式标注真相继续是 `AnnotationRepository`：
+- YOLO / COCO / VOC 导入经过用户确认的 label mapping 后，正式 annotation 批量写 `AnnotationRepository.upsert_many()`；
+- material annotation summary 只是 projection；
+- 正样本写 canonical label code + canonical project class_id；
+- 空 sidecar / 明确负样本写 `confirmed_empty`；
+- 没有有效正式标注的图片保持 `unannotated`，不会伪造 GT；
+- 导入不会自动创建/选择标签。
+
+`Remote Material Import` 在对应代码 cutoff 上：
+- Ubuntu success
+- Windows success
+- API success（日志 `20 passed`）
+- Real Chrome success
+
+永久集成测试明确锁定：
+- YOLO positive → annotated boxes；
+- YOLO empty txt → confirmed_empty；
+- 手工映射 external class → canonical platform label；
+- COCO / VOC 同样写 AnnotationRepository，并保留 source provenance。
+
+因此：**导入 → Ground Truth = CLOSED（自动化 / 代码层）**。
+
+### 4. confirmed_empty / 人工标注：已有完整永久闭环，无需重复开发
+
+现有 `tests/browser/material-workflows.spec.mjs` 已真实 Chrome 覆盖：
+- 单图框绘制 / 移动 / resize / zoom / 删除 / 撤销；
+- 保存后 API 回读；
+- reload 后 thumbnail/source truth；
+- dirty 关闭前保存，保存完成才关闭；
+- 批量连续标注两张，逐张点击“确认无目标”；
+- 两张 API 均回读 `annotation_state = confirmed_empty`；
+- 上一张 / 下一张自动保存；
+- late response 不得覆盖当前新图片；
+- 1366×768 核心按钮可见；
+- 20 次 open/close 稳定性。
+
+后端同时有：
+- `confirmed_empty` durable API contract；
+- expected_version 并发冲突保护；
+- AI provenance + manual edit 生成 mixed origin；
+- 单图 GET/save 禁止扫描全量素材库。
+
+该浏览器套件由 `Frontend Runtime Stabilization / browser-navigation` 永久执行，因此本轮不新增重复 owner/test。
+
+### 5. 下一步 P0
+
+继续按主流程顺序：
+1. AI Candidate Review / Commit 全链审计与真实浏览器确认；
+2. 清洗 / 标签统一最终交叉验收（避免和本轮 upload clean recovery 冲突）；
+3. 最终 E2E：素材 → 清洗 → 标签治理 → 标注 → 训练 → 算法版本 → OSS → 新畅联 → RKNN → 转换权重追加。
+
+
+
 ## 2026-09-28 标签统一 → 迭代训练不复活旧标签：CI / Real Chrome 验收 CLOSED（最新）
 
 - 本节验收代码 cutoff：`5b575dab8f8ea1177860031ea8dd4ee29e89a885`（`test: align training label browser build guard`）。
