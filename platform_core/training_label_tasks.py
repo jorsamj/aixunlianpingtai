@@ -543,18 +543,21 @@ def _persist_version_contract(project: Path, task_id: str, contract: Mapping[str
                 continue
             version["label_schema"] = [dict(item) for item in contract.get("effective_label_schema") or []]
             version["label_codes"] = list(contract.get("effective_label_codes") or [])
+            persisted_contract = {
+                key: value
+                for key, value in contract.items()
+                if key != "project_path"
+            }
+            previous_contract = (
+                dict(version.get("label_contract") or {})
+                if isinstance(version.get("label_contract"), Mapping)
+                else {}
+            )
             version["label_contract"] = {
-                "schema_version": int(contract.get("schema_version") or 1),
-                "requested_label_codes": list(contract.get("requested_label_codes") or []),
-                "inherited_label_codes": list(contract.get("inherited_label_codes") or []),
-                "retained_inherited_label_codes": list(contract.get("retained_inherited_label_codes") or []),
-                "dropped_inherited_label_codes": list(contract.get("dropped_inherited_label_codes") or []),
-                "label_schema_changed": bool(contract.get("label_schema_changed")),
-                "label_schema_change_reasons": list(contract.get("label_schema_change_reasons") or []),
-                "base_training_mode": contract.get("base_training_mode"),
+                **previous_contract,
+                **persisted_contract,
                 "strict_resume": False,
                 "optimizer_state_resumed": False,
-                "base_version_id": contract.get("base_version_id"),
                 "mother_model_labels_inherited": False,
             }
             changed = True
