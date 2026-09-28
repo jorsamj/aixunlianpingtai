@@ -95,6 +95,17 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         "eval_metric": "map50",
         "continue_threshold": 0.60,
         "stop_threshold": 0.90,
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-one",
+            "effective_label_codes": ["fire"],
+            "effective_label_schema": [
+                {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
     }
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
@@ -206,6 +217,12 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert versions[0]["external_analysis_id"] == "analysis-durable-1"
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert result["label_codes"] == ["fire"]
+    assert result["label_schema"][0]["code"] == "fire"
+    assert result["label_contract"]["algorithm_id"] == "algorithm-one"
+    assert versions[0]["label_codes"] == result["label_codes"]
+    assert versions[0]["label_schema"] == result["label_schema"]
+    assert versions[0]["label_contract"] == result["label_contract"]
     assert versions[0]["training_lineage"]["task_id"] == "task-one"
     assert versions[0]["training_lineage"]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["training_lineage"]["dataset_revision_id"] == result["dataset_revision_id"]
