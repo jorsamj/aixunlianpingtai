@@ -519,6 +519,19 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
         if getattr(match, "name", "") == "FULL":
             matched_routes.append(route)
             endpoint = getattr(route, "endpoint", None) or child_scope.get("endpoint")
+            original_router = getattr(route, "original_router", None)
+            original_routes = []
+            for child in getattr(original_router, "routes", []) or []:
+                child_endpoint = getattr(child, "endpoint", None)
+                original_routes.append({
+                    "type": f"{type(child).__module__}.{type(child).__name__}",
+                    "path": getattr(child, "path", ""),
+                    "path_format": getattr(child, "path_format", ""),
+                    "methods": sorted(getattr(child, "methods", set()) or set()),
+                    "name": getattr(child, "name", ""),
+                    "endpoint_module": getattr(child_endpoint, "__module__", ""),
+                    "endpoint_name": getattr(child_endpoint, "__qualname__", ""),
+                })
             matched_route_truth.append({
                 "route_type": f"{type(route).__module__}.{type(route).__name__}",
                 "path": getattr(route, "path", ""),
@@ -527,6 +540,8 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
                 "name": getattr(route, "name", ""),
                 "endpoint_module": getattr(endpoint, "__module__", ""),
                 "endpoint_name": getattr(endpoint, "__qualname__", ""),
+                "include_context": repr(getattr(route, "include_context", None)),
+                "original_routes": original_routes,
                 "child_scope": {
                     key: str(value)
                     for key, value in child_scope.items()
