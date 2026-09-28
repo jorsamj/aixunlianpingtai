@@ -26,6 +26,7 @@ from .training_tasks import (
     _label_schema,
     _selected_project_images,
     materialize_portable_dataset,
+    resolve_training_input_freeze,
 )
 from .snapshots import (
     build_snapshot,
@@ -201,11 +202,6 @@ class RemoteTrainingPrepareHandler:
             )
 
         materials = MaterialRepository(project)
-        images = _selected_project_images(
-            materials,
-            project,
-            (*train_image_ids, *test_image_ids),
-        )
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -213,15 +209,50 @@ class RemoteTrainingPrepareHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        schema = _label_schema(project)
         seed = int(payload.get("seed") or 0)
-        cache = TrainingBundleCache(self.data_dir, training_task.project_id)
-        split_manifest = None
-        snapshot = None
-        cache_entry = None
-
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
         self._heartbeat(context, 5, "locking_snapshot", "锁定远程训练数据快照")
-        if _indexed_content_identity_ready(images):
+        if freeze_ref:
+            frozen = context.artifacts.read_json(
+                training_task.task_id,
+                freeze_ref,
+                default={},
+            )
+            if not isinstance(frozen, Mapping):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_INPUT_FREEZE_INVALID",
+                    "training input freeze is invalid",
+                    target_status=TaskStatus.FAILED,
+                )
+            try:
+                images, schema, split_manifest, snapshot = resolve_training_input_freeze(
+                    frozen,
+                    split_request,
+                    seed=seed,
+                    supplement_candidate_set=payload.get("supplement_candidate_set"),
+                )
+            except (TypeError, ValueError) as error:
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_INPUT_FREEZE_INVALID",
+                    str(error),
+                    target_status=TaskStatus.FAILED,
+                ) from error
+            if str(frozen.get("input_freeze_id") or "") != str(
+                payload.get("input_freeze_id") or ""
+            ):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_INPUT_FREEZE_MISMATCH",
+                    "training payload freeze identity mismatch",
+                    target_status=TaskStatus.FAILED,
+                )
+        else:
+            # Compatibility only for tasks created before submit-time freezing.
+            images = _selected_project_images(
+                materials,
+                project,
+                (*train_image_ids, *test_image_ids),
+            )
+            schema = _label_schema(project)
             split_manifest = build_split_manifest(images, split_request, seed=seed)
             snapshot = build_snapshot(
                 images,
@@ -229,7 +260,12 @@ class RemoteTrainingPrepareHandler:
                 schema,
                 supplement_candidate_set=payload.get("supplement_candidate_set"),
             )
-            cache_entry = cache.resolve(str(snapshot["snapshot_id"]))
+        cache = TrainingBundleCache(self.data_dir, training_task.project_id)
+        cache_entry = (
+            cache.resolve(str(snapshot["snapshot_id"]))
+            if _indexed_content_identity_ready(images)
+            else None
+        )
 
         target_work = context.artifacts.artifact_path(training_task.task_id, "work")
         if cache_entry is not None:
@@ -259,8 +295,14 @@ class RemoteTrainingPrepareHandler:
                 target = self._target(context, training_task.task_id)
                 if target.status is not TaskStatus.QUEUED:
                     raise InterruptedError("target training task left queue during preparation")
+                frozen_sha256 = str(row.get("content_sha256") or "").strip().lower()
                 resolved = storage.materialize(row)
-                row["content_sha256"] = resolved.content_sha256
+                if str(resolved.content_sha256 or "").strip().lower() != frozen_sha256:
+                    raise RemoteTrainingPreparationError(
+                        "REMOTE_TRAINING_SOURCE_CHANGED",
+                        f"training source content changed after submit: {row.get('id')}",
+                        target_status=TaskStatus.FAILED,
+                    )
                 row["size_bytes"] = resolved.size_bytes
                 materialized[str(row.get("id"))] = Path(resolved.path).resolve()
                 if index == 1 or index == total or index % max(1, total // 50) == 0:
@@ -270,13 +312,6 @@ class RemoteTrainingPrepareHandler:
                         "materializing_sources",
                         f"校验训练素材 {index}/{total}",
                     )
-            split_manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(
-                images,
-                split_manifest,
-                schema,
-                supplement_candidate_set=payload.get("supplement_candidate_set"),
-            )
             self._heartbeat(context, 42, "materializing_bundle", "生成 portable 训练数据")
             bundle = materialize_portable_dataset(
                 target_work,
