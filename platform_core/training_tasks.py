@@ -887,6 +887,188 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
     return items
 
 
+_TRAINING_INPUT_FREEZE_SCHEMA_VERSION = 1
+_TRAINING_INPUT_FREEZE_FIELDS = (
+    "id",
+    "dataset_id",
+    "filename",
+    "stored_name",
+    "stored_path",
+    "path",
+    "source_type",
+    "source_ref",
+    "video_task_id",
+    "group_id",
+    "source_group_id",
+    "near_duplicate_group_id",
+    "sequence_group_id",
+    "camera_session_id",
+    "capture_session_id",
+    "camera_id",
+    "session_id",
+    "content_sha256",
+    "size_bytes",
+    "width",
+    "height",
+    "storage_source_id",
+    "storage_type",
+    "object_key",
+    "source_available",
+    "negative_origin",
+    "source_annotation_state",
+    "source_labels",
+    "external_annotation",
+    "external_annotation_needs_review",
+    "external_annotation_review_reason",
+    "annotation_state",
+    "annotation_scope",
+    "annotation_hash",
+    "annotated",
+    "boxes",
+)
+
+
+def _training_input_freeze_digest(value: Mapping[str, Any]) -> str:
+    payload = {
+        key: item
+        for key, item in value.items()
+        if key not in {"created_at", "input_freeze_id"}
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _frozen_training_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    frozen = {
+        key: row.get(key)
+        for key in _TRAINING_INPUT_FREEZE_FIELDS
+        if key in row
+    }
+    frozen["id"] = str(row.get("id") or "")
+    frozen["content_sha256"] = str(row.get("content_sha256") or "").strip().lower()
+    frozen["annotation_state"] = str(row.get("annotation_state") or "unannotated")
+    frozen["annotation_scope"] = list(row.get("annotation_scope") or [])
+    frozen["annotation_hash"] = str(row.get("annotation_hash") or "")
+    frozen["boxes"] = [dict(box) for box in (row.get("boxes") or [])]
+    return frozen
+
+
+def freeze_training_inputs(
+    project: Path,
+    split_request: SplitRequest,
+    *,
+    seed: int,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Freeze DB truth at submit time without reading/copying source image bytes."""
+    image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
+    images = _selected_project_images(
+        MaterialRepository(project),
+        project,
+        image_ids,
+    )
+    if not _indexed_content_identity_ready(images):
+        invalid = [
+            str(row.get("id") or "")
+            for row in images
+            if not _indexed_content_identity_ready([row])
+        ]
+        raise ValueError(
+            "训练素材缺少可冻结的 SHA256/size 身份: "
+            + ", ".join(invalid[:5])
+            + "；请先重新扫描/导入建立内容身份后再训练"
+        )
+    label_schema = _label_schema(project)
+    manifest = build_split_manifest(images, split_request, seed=int(seed))
+    snapshot = build_snapshot(
+        images,
+        manifest,
+        label_schema,
+        supplement_candidate_set=supplement_candidate_set,
+    )
+    split_truth = {
+        "mode": split_request.mode.value,
+        "train_image_ids": list(split_request.train_image_ids),
+        "test_image_ids": list(split_request.test_image_ids),
+        "experiment_percent": split_request.experiment_percent,
+        "validation_percent": split_request.validation_percent,
+        "seed": int(seed),
+    }
+    value = {
+        "schema_version": _TRAINING_INPUT_FREEZE_SCHEMA_VERSION,
+        "split": split_truth,
+        "images": [_frozen_training_row(row) for row in images],
+        "label_schema": [dict(item) for item in label_schema],
+        "snapshot_id": str(snapshot["snapshot_id"]),
+        "dataset_revision_id": str(snapshot["dataset_revision_id"]),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    value["input_freeze_id"] = _training_input_freeze_digest(value)
+    return value
+
+
+def resolve_training_input_freeze(
+    value: Mapping[str, Any],
+    split_request: SplitRequest,
+    *,
+    seed: int,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Any, dict[str, Any]]:
+    """Validate frozen submit truth and reproduce its split/snapshot deterministically."""
+    if int(value.get("schema_version") or 0) != _TRAINING_INPUT_FREEZE_SCHEMA_VERSION:
+        raise ValueError("training input freeze schema version is unsupported")
+    actual_freeze_id = str(value.get("input_freeze_id") or "").strip().lower()
+    expected_freeze_id = _training_input_freeze_digest(value)
+    if not actual_freeze_id or actual_freeze_id != expected_freeze_id:
+        raise ValueError("training input freeze digest mismatch")
+    expected_split = {
+        "mode": split_request.mode.value,
+        "train_image_ids": list(split_request.train_image_ids),
+        "test_image_ids": list(split_request.test_image_ids),
+        "experiment_percent": split_request.experiment_percent,
+        "validation_percent": split_request.validation_percent,
+        "seed": int(seed),
+    }
+    if dict(value.get("split") or {}) != expected_split:
+        raise ValueError("training payload no longer matches its frozen input selection")
+    images = [dict(row) for row in (value.get("images") or []) if isinstance(row, Mapping)]
+    expected_ids = tuple(dict.fromkeys(
+        str(item).strip()
+        for item in (*split_request.train_image_ids, *split_request.test_image_ids)
+        if str(item).strip()
+    ))
+    actual_ids = tuple(str(row.get("id") or "") for row in images)
+    if actual_ids != expected_ids:
+        raise ValueError("training input freeze image identity/order mismatch")
+    if not _indexed_content_identity_ready(images):
+        raise ValueError("training input freeze contains invalid content identity")
+    label_schema = [
+        dict(item)
+        for item in (value.get("label_schema") or [])
+        if isinstance(item, Mapping)
+    ]
+    manifest = build_split_manifest(images, split_request, seed=int(seed))
+    snapshot = build_snapshot(
+        images,
+        manifest,
+        label_schema,
+        supplement_candidate_set=supplement_candidate_set,
+    )
+    if str(snapshot.get("snapshot_id") or "") != str(value.get("snapshot_id") or ""):
+        raise ValueError("training input freeze snapshot identity mismatch")
+    if str(snapshot.get("dataset_revision_id") or "") != str(
+        value.get("dataset_revision_id") or ""
+    ):
+        raise ValueError("training input freeze dataset revision mismatch")
+    return images, label_schema, manifest, snapshot
+
+
 def _training_python(data_dir: Path) -> str:
     return training_python(data_dir)
 
@@ -1565,7 +1747,6 @@ class TrainingHandler:
         if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
             raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
         materials = MaterialRepository(project)
-        images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -1573,17 +1754,34 @@ class TrainingHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        label_schema = _label_schema(project)
         seed = int(payload.get("seed") or 0)
-        bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
-        manifest = None
-        snapshot = None
-        cache_entry = None
-
-        # A completed cache entry is itself the verified materialization of the
-        # indexed Snapshot. On a hit, do not re-read 10k source objects merely
-        # to rediscover the same content hashes.
-        if _indexed_content_identity_ready(images):
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        if freeze_ref:
+            frozen = context.artifacts.read_json(
+                context.task.task_id,
+                freeze_ref,
+                default={},
+            )
+            if not isinstance(frozen, Mapping):
+                raise ValueError("training input freeze is invalid")
+            images, label_schema, manifest, snapshot = resolve_training_input_freeze(
+                frozen,
+                split_request,
+                seed=seed,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
+            if str(frozen.get("input_freeze_id") or "") != str(
+                payload.get("input_freeze_id") or ""
+            ):
+                raise ValueError("training payload freeze identity mismatch")
+        else:
+            # Compatibility only for tasks created before submit-time freezing.
+            images = _selected_project_images(
+                materials,
+                project,
+                (*train_image_ids, *test_image_ids),
+            )
+            label_schema = _label_schema(project)
             manifest = build_split_manifest(images, split_request, seed=seed)
             snapshot = build_snapshot(
                 images,
@@ -1591,7 +1789,16 @@ class TrainingHandler:
                 label_schema,
                 supplement_candidate_set=payload.get("supplement_candidate_set"),
             )
-            cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
+        bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
+        cache_entry = (
+            bundle_cache.resolve(str(snapshot["snapshot_id"]))
+            if _indexed_content_identity_ready(images)
+            else None
+        )
+
+        # A completed cache entry is itself the verified materialization of the
+        # indexed Snapshot. On a hit, do not re-read 10k source objects merely
+        # to rediscover the same content hashes.
 
         materialized_paths: dict[str, Path] = {}
         if cache_entry is None:
@@ -1607,8 +1814,12 @@ class TrainingHandler:
             for index, row in enumerate(images, start=1):
                 if context.cancel_requested():
                     raise InterruptedError("training cancelled during material preparation")
+                frozen_sha256 = str(row.get("content_sha256") or "").strip().lower()
                 resolved = storage.materialize(row)
-                row["content_sha256"] = resolved.content_sha256
+                if str(resolved.content_sha256 or "").strip().lower() != frozen_sha256:
+                    raise ValueError(
+                        f"training source content changed after submit: {row.get('id')}"
+                    )
                 row["size_bytes"] = resolved.size_bytes
                 materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
                 if index == 1 or index == total_materials or index % material_progress_step == 0:
@@ -1620,13 +1831,6 @@ class TrainingHandler:
                         stage="preparing_materials",
                         current_item=f"校验训练素材 {index}/{total_materials}",
                     )
-            manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(
-                images,
-                manifest,
-                label_schema,
-                supplement_candidate_set=payload.get("supplement_candidate_set"),
-            )
 
         if manifest is None or snapshot is None:
             raise RuntimeError("training snapshot preparation did not produce a manifest")
