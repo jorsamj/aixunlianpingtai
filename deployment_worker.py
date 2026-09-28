@@ -9,7 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from platform_core.conversion import ConversionError, build_manifest, file_record, sha256_file, validate_target
+from platform_core.conversion import (
+    ConversionError,
+    SUPPORTED_ROCKCHIP_CHIPS,
+    build_manifest,
+    file_record,
+    sha256_file,
+    validate_target,
+)
 
 
 def now():
@@ -425,9 +432,8 @@ def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
             solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。',
         )
     chip = str(params.get('chip') or '').strip().lower()
-    supported = {'rk3568', 'rk3576'}
-    if chip not in supported:
-        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568 或 rk3576，且必须明确选择目标芯片')
+    if chip not in SUPPORTED_ROCKCHIP_CHIPS:
+        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568、rk3578 或 rk3576，且必须明确选择目标芯片')
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}
     dataset_txt = None

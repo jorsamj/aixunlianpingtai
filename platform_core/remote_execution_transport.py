@@ -26,6 +26,7 @@ from .algorithms import (
 )
 from filelock import FileLock, Timeout
 
+from .conversion import SUPPORTED_ROCKCHIP_CHIPS
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService, build_artifact_object_key
 from .remote_training_results import (
@@ -50,7 +51,7 @@ from .training_evaluation import build_evaluation_benchmark_scope, build_evaluat
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
-SUPPORTED_PORTABLE_RKNN_CHIPS = frozenset({"rk3568", "rk3578", "rk3576"})
+SUPPORTED_PORTABLE_RKNN_CHIPS = SUPPORTED_ROCKCHIP_CHIPS
 _REMOTE_PREFIX = "remote-execution"
 _SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 

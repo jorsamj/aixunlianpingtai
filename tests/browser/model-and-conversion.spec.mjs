@@ -228,7 +228,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
       mode: 'agent',
       status: 'ready',
       targets: ['rockchip'],
-      supported_chips: ['rk3568', 'rk3576'],
+      supported_chips: ['rk3568', 'rk3578', 'rk3576'],
       supported_precisions: ['fp16', 'int8'],
       agent_nodes: [{node_id: 'rknn-agent-01', display_name: 'RKNN Agent 01'}]
     }]})
@@ -272,6 +272,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await expect(createDialog.locator('#conv428Resource')).toContainText('RKNN 服务节点 Agent');
   await expect(createDialog.locator('#conv428Chip')).toHaveValue('rk3568');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3568');
+  await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3578');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3576');
 });
 
@@ -508,7 +509,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
       status: 'ready',
       targets: ['rockchip'],
       message: '检测到 1 个在线 Agent 可执行 RKNN 转换',
-      supported_chips: ['rk3568', 'rk3576'],
+      supported_chips: ['rk3568', 'rk3578', 'rk3576'],
       supported_precisions: ['fp16', 'int8'],
       agent_nodes: [{node_id: 'node-rknn', display_name: 'RKNN 转换节点'}]
     }]})
