@@ -168,7 +168,7 @@ def test_confirmed_empty_materializes_as_real_empty_yolo_label_file(tmp_path: Pa
     assert label.read_text(encoding="utf-8") == ""
 
 
-def test_snapshot_preserves_task_filtered_negative_origin():
+def test_snapshot_preserves_redacted_task_negative_projection_evidence():
     row = {
         "id": "task-negative",
         "content_sha256": "hash-task-negative",
@@ -178,9 +178,14 @@ def test_snapshot_preserves_task_filtered_negative_origin():
         "annotated": True,
         "processing_status": "processed",
         "boxes": [],
-        "negative_origin": "filtered_by_training_labels",
+        "negative_origin": "redacted_unselected_labels",
         "source_annotation_state": "annotated",
         "source_labels": ["people"],
+        "training_projection_policy": "redact_excluded_objects_v1",
+        "training_projection_digest": "a" * 64,
+        "training_excluded_boxes": [
+            {"label": "people", "x1": 1, "y1": 1, "x2": 10, "y2": 10}
+        ],
     }
     snapshot = build_snapshot(
         [row],
@@ -188,7 +193,10 @@ def test_snapshot_preserves_task_filtered_negative_origin():
         [{"code": "fire", "class_id": 0}],
     )
     locked = snapshot["images"][0]
-    assert locked["negative_origin"] == "filtered_by_training_labels"
+    assert locked["negative_origin"] == "redacted_unselected_labels"
     assert locked["source_annotation_state"] == "annotated"
     assert locked["source_labels"] == ["people"]
-    assert snapshot["negative_origin_counts"] == {"filtered_by_training_labels": 1}
+    assert locked["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert locked["training_projection_digest"] == "a" * 64
+    assert locked["training_excluded_label_count"] == 1
+    assert snapshot["negative_origin_counts"] == {"redacted_unselected_labels": 1}
