@@ -1,6 +1,191 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-28 训练基础权重冻结 / 本地远程版本原子提交闭环（最新）
+
+- 本节写入前真实代码 HEAD：`a384675928d9874d4c92c7abb18332eea022ec32`。
+- `VERSION.txt = 42.24.0`，未修改。
+- 当前最近 100 个分支 GitHub Actions 仍全部为 **queued**；该 HEAD 的 `Remote Training Runtime`、`Training Input Integrity` 等尚无 completed 结果，因此**不能宣称当前 HEAD 全绿**。
+- 本轮继续遵守：不 merge main、不 tag、不 release、不 force push、不删除测试、不为 CI 放宽训练准确性/数据血缘规则。
+
+### 1. 训练基础模型现在和标签/Snapshot 一样在 submit-time 冻结
+
+此前标签合同已经 server-authoritative 冻结，但 local worker / Remote Prepare 在真正执行时仍会重新读取算法当前版本，再选择“当时最新”的基础权重。
+
+这会产生严重错位：
+
+- 任务创建时继承 v3 的 label schema；
+- 排队期间算法产生 v4；
+- worker 启动时却重新选 v4 权重；
+- 最终可能出现 v3 schema + v4 checkpoint 的类别错位。
+
+当前已统一冻结完整 base model contract：
+
+- `base_model_contract_schema_version = 1`
+- `framework`
+- `base_training_mode`
+- `base_version_id / base_version_name`
+- `base_model_kind`
+- `base_model_reference`
+- `base_model_sha256`
+- `base_model_size_bytes`
+- `base_selection_reason`
+
+规则：
+
+- 迭代训练：submit-time 冻结当前 verified version 的确切 checkpoint path/SHA256/size；
+- 首训：冻结 `mother_model_init` 和精确 mother-model reference；
+- 排队后新增版本不能改变本任务 base；
+- checkpoint 文件丢失、size/SHA 改变、framework/suffix 不匹配均 fail-closed；
+- 历史 pre-contract task 才保留兼容重选逻辑。
+
+Local 与 Remote Prepare 均调用同一 `resolve_frozen_training_base(payload)`。
+
+相关提交：
+
+- `575e3cbb`：submit-time 冻结 base identity；
+- `19dcab3a`：local worker 使用 frozen base；
+- `38c487ff`：queued payload/job 持久化 base identity；
+- `befbe198`：Remote Prepare 使用 frozen base；
+- `7e3a2fd2`：versioned base contract；
+- `c8a23009` / `1b73cc79`：永久测试及真实 continue-training fixture。
+
+`input_freeze_id` 包含完整 label contract，因此不同 base SHA 的任务即使 dataset `snapshot_id` 相同，`input_freeze_id` 也不同；永久测试：`test_input_freeze_identity_changes_when_frozen_base_model_changes`。
+
+### 2. Durable Paddle 假能力已 fail-closed
+
+审计确认：
+
+- 生产 `TrainingHandler.run()` 只真正支持 Ultralytics；
+- 当前 Durable bundle 是 YOLO data.yaml；
+- 历史 `paddle_worker.py` 需要独立 COCO dataset/train-json/val-json/PaddleDetection config；
+- 但 production worker 曾广播 `training.paddle`，会造成“创建成功、执行阶段才失败”的假能力。
+
+当前：
+
+- v12 Durable Training 在算法/素材 IO 之前拒绝 `framework != ultralytics`，直接 409；
+- production worker capability 仅广播 `training.ultralytics`；
+- `paddle_worker.py` 保留，不删除，但在真正建立同一套 Durable COCO Snapshot / completion contract 前，不允许主流程宣称 Paddle 可训练。
+
+提交：`82b5105d`、`06e714d9`、`4d11c59f`、`5921f8be`、`3830f86b`。
+
+### 3. 成功算法版本从诞生时就带完整 frozen label lineage
+
+此前 local `base.TrainingHandler` 先 `attach_version()`，随后 LabelContract handler 再二次 patch label schema，存在“版本已成功落库、标签合同尚未补齐”的 crash window。
+
+当前 local finalization 在第一次正式创建版本时就原子携带：
+
+- `label_schema`
+- `label_codes`
+- 完整 `label_contract`
+
+来源严格为：
+
+- `snapshot.json.label_schema`
+- `input-freeze.json.label_contract`
+
+不重新读当前项目 catalog，不信任前端请求重算。
+
+`_persist_version_contract()` 只作为恢复/兼容 backfill，并且：
+
+- 保留完整 frozen base reference/SHA/size 等 lineage；
+- 改为 `update_algorithm_version(algorithm_id, version_id, patch)` 的目标版本事务 patch；
+- 禁止再用 `save_algorithms(path, algorithms)` 全量替换算法图，避免并发 attach 被旧 graph 覆盖。
+
+提交：
+
+- `d9bc1432`：版本初次 attach 即写 frozen label contract；
+- `27a851dd`：原子 lineage 回归；
+- `ab00308a` / `04b9c030`：backfill 保留完整 frozen lineage；
+- `4e6a10a8` / `8d433c14`：backfill 只 patch 目标版本，CI 禁止全图覆盖。
+
+### 4. Remote Agent 成功版本现在与本机保存同一份标签血缘
+
+此前 Remote Prepare 虽然复用 frozen Snapshot，但 `remote_execution.training` 没有携带 label lineage；远程结果 commit 创建算法版本时也没有 `label_schema / label_contract`。
+
+当前：
+
+1. Remote Prepare 把控制端 frozen `label_schema / label_codes / label_contract` 放入 execution contract；
+2. Agent 不拥有/修改标签决策；
+3. Remote commit 再次校验：
+   - execution label schema vs control-plane snapshot；
+   - label_contract.effective_label_codes vs frozen schema；
+4. 任一不一致直接 409；
+5. 远程成功版本与本机一样原子保存完整 frozen label lineage。
+
+提交：
+
+- `01f97771`：remote execution contract 携带 frozen lineage；
+- `3396af69`：remote version commit 持久化 frozen lineage；
+- `d0934f47` / `b67c5549`：Prepare/Result 永久测试；
+- `14336166`：Remote Training CI guard。
+
+### 5. 本机/远程迭代版本提交现在有 stale-base fence
+
+已先补应用层规则：
+
+- 同 task_id 已有版本 → crash recovery 幂等复用，不重复 attach；
+- 当前版本已从 frozen base v1 变成 v2 → 基于 v1 的旧任务结果不能晋升为新的 current version；
+- 首训任务创建后若算法已经产生第一个版本 → 旧首训不能覆盖它。
+
+提交：
+
+- `4c18a2a3`：local stale-base / same-task recovery fence；
+- `acd1aae2`：stale、首训竞争、同 task 恢复测试；
+- `5f522076`：CI 永久 guard。
+
+随后继续发现 check-then-attach 仍有 TOCTOU：
+
+两个任务都基于 v1，同时进入 finalization 时可能都在 v1 尚未变化前通过应用层检查。
+
+当前已把真正权威 fence 下沉到 `AlgorithmSqlStore`：
+
+`attach_version_if_current(..., expected_current_version_id=...)`
+
+在同一个 SQLite `BEGIN IMMEDIATE` 事务内：
+
+1. 先按 `training_job_id` 查同 task 幂等版本；
+2. 再比较 frozen base/current；
+3. 首训要求无 current 且版本表为空；
+4. legacy pointer 为空时，迭代只允许 frozen base 仍实际存在；
+5. 插入版本；
+6. 更新 `current_version_id`；
+7. commit。
+
+因此两个同时基于 v1 的训练，只能有一个成功晋升；后一个在事务内看到 current 已变化并报 `ALGORITHM_VERSION_CONFLICT`。
+
+Local / Remote 均使用该 CAS owner；Remote 转成 `REMOTE_TRAINING_BASE_VERSION_STALE`，Local 显式转成 `TRAINING_BASE_VERSION_STALE`。
+
+相关提交：
+
+- `2f622f46`：AlgorithmSqlStore 原子 compare-and-attach；
+- `5f546e2c`：公开训练版本 CAS wrapper；
+- `5c900854`：local finalization 使用 CAS；
+- `45ef07de`：remote commit 使用 CAS；
+- `d5c71c52`：真实双线程并发 CAS、同 task 幂等、legacy 首训冲突测试；
+- `e8a2a506`：现有 Remote Training Runtime 触发/compile/pytest 覆盖 SQL CAS owner；
+- `2880bcc9` / `26bc55a6`：Local race 错误语义与格式收尾；
+- `a3846759`：Remote commit 测试重新绑定真实 CAS owner，避免 monkeypatch 旧 owner 形成假保护。
+
+### 6. 当前下一步
+
+1. 每次继续前重新读取远端 HEAD；
+2. 当前 Actions 仍是 runner backlog，必须等 completed 后读取真实结果；
+3. 任何 completed failure 先读 job log，再修真实错误，禁止放宽 production contract；
+4. 当前训练 P0 静态审计已重点收口：
+   - 单 Durable creation owner；
+   - frozen Ground Truth / Snapshot；
+   - explicit new-label selection；
+   - excluded-object redaction；
+   - canonical/training class namespace；
+   - frozen base checkpoint；
+   - local/remote label lineage；
+   - unsupported Paddle fail-fast；
+   - local/remote stale-base CAS；
+5. 下一步继续审训练主链剩余高风险：任务创建幂等键、成功/失败状态真相、资源 AUTO 决策与实际 runtime 一致性、训练完成后的外部发布链；随后再转批量素材导入/空素材。
+
+
+
 ## 2026-09-28 训练创建单 Owner / 标签选择前后端一致性补充（最新）
 
 - 本节写入前真实代码 HEAD：`254fbb2f0964f52e0f4b5dfaca75a72a229cd0f3`。
