@@ -75,18 +75,75 @@ export function latestVersionLabelInfo(algorithm) {
   };
 }
 
+function resolveInheritedGovernance(codes, labelGovernance = []) {
+  const rows = new Map((labelGovernance || [])
+    .filter(item => String(item?.code || '').trim())
+    .map(item => [String(item.code).trim(), item]));
+  const retained = [];
+  const retainedSet = new Set();
+  const merged = {};
+  const dropped = [];
+  const blocked = [];
+
+  for (const source of unique(codes)) {
+    let current = source;
+    const visited = [];
+    let target = '';
+    while (true) {
+      if (visited.includes(current)) {
+        blocked.push(source);
+        break;
+      }
+      visited.push(current);
+      const row = rows.get(current);
+      if (!row) {
+        blocked.push(source);
+        break;
+      }
+      const status = String(row?.status || (row?.active === false ? 'inactive' : 'active')).trim().toLowerCase();
+      if (status === 'active' && row?.active !== false) {
+        target = current;
+        break;
+      }
+      if (status === 'merged') {
+        const next = String(row?.merged_into || '').trim();
+        if (!next) {
+          blocked.push(source);
+          break;
+        }
+        current = next;
+        continue;
+      }
+      blocked.push(source);
+      break;
+    }
+    if (!target) continue;
+    if (target !== source) {
+      merged[source] = target;
+      dropped.push(source);
+    }
+    if (!retainedSet.has(target)) {
+      retainedSet.add(target);
+      retained.push(target);
+    }
+  }
+  return {retained, merged, dropped: unique(dropped), blocked: unique(blocked)};
+}
+
 export function resolveClientTrainingLabels({
   materials,
   selectedIds,
   labelCatalog,
+  labelGovernance = null,
   algorithm,
   requestedCodes,
   availableCodes = null,
 }) {
+  const governance = Array.isArray(labelGovernance) ? labelGovernance : (labelCatalog || []);
   const available = availableCodes === null
     ? selectedMaterialLabelCodes(materials, selectedIds, labelCatalog)
     : sortedAvailableCodes(availableCodes, labelCatalog);
-  const catalogSet = new Set((labelCatalog || [])
+  const catalogSet = new Set([...(labelCatalog || []), ...governance]
     .filter(item => (
       item?.code
       && item?.active !== false
@@ -94,11 +151,9 @@ export function resolveClientTrainingLabels({
     ))
     .map(item => String(item.code)));
   const inherited = latestVersionLabelInfo(algorithm);
-  // Previous-version schema is immutable iteration lineage. Current catalog
-  // state only controls NEW selectable labels; it must not silently delete an
-  // inherited model output from the client preview.
-  const retainedInherited = unique(inherited.codes);
-  const droppedInherited = [];
+  const inheritance = resolveInheritedGovernance(inherited.codes, governance);
+  const retainedInherited = inheritance.retained;
+  const droppedInherited = inheritance.dropped;
   const inheritedSet = new Set(retainedInherited);
   const invalidAvailable = available.filter(code => !catalogSet.has(code) && !inheritedSet.has(code));
   const selectable = available.filter(code => catalogSet.has(code) && !inheritedSet.has(code));
@@ -108,9 +163,11 @@ export function resolveClientTrainingLabels({
     selectable,
     requested,
     inherited: retainedInherited,
+    mergedInherited: inheritance.merged,
     droppedInherited,
+    governanceBlockedInherited: inheritance.blocked,
     invalidAvailable,
-    labelSchemaChanged: Boolean(requested.length),
+    labelSchemaChanged: Boolean(requested.length || droppedInherited.length),
     strictResume: false,
     baseTrainingMode: inherited.hasVersion ? 'previous_weights_init' : 'mother_model_init',
     hasPreviousVersion: inherited.hasVersion,
@@ -136,7 +193,8 @@ function currentAlgorithm(state) {
 }
 
 function displayName(state, code) {
-  const item = (state?.labels || []).find(label => String(label?.code || '') === String(code));
+  const rows = [...(state?.labelGovernance414 || []), ...(state?.labels || [])];
+  const item = rows.find(label => String(label?.code || '') === String(code));
   return item?.display_name || item?.display_name_zh || item?.name || code;
 }
 
@@ -233,8 +291,13 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   };
 
   const resolveFor = (state, algorithm, ids, requestedCodes, availableCodes) => resolveClientTrainingLabels({
-    materials: state.images || [], selectedIds: ids, labelCatalog: state.labels || [], algorithm,
-    requestedCodes, availableCodes,
+    materials: state.images || [],
+    selectedIds: ids,
+    labelCatalog: state.labels || [],
+    labelGovernance: state.labelGovernance414 || state.labels || [],
+    algorithm,
+    requestedCodes,
+    availableCodes,
   });
 
   const updateCount = state => {
@@ -283,7 +346,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     const view = resolveFor(state, algorithm, ids, selectedCodes, availableCodes);
 
     const inheritedHtml = view.inherited.length
-      ? view.inherited.map(code => `<span class="training-label-inherited" title="来自上一算法版本，迭代时不可移除">继承 · ${esc(displayName(state, code))}</span>`).join('')
+      ? view.inherited.map(code => `<span class="training-label-inherited" title="来自上一算法版本，并已按当前 canonical 标签治理解析">继承 · ${esc(displayName(state, code))}</span>`).join('')
       : (view.previousVersionBlocked
         ? '<span class="pill err">已有版本但没有可用于迭代的成功模型，服务器将拒绝回退母模型</span>'
         : view.legacyPreviousVersion
@@ -302,13 +365,16 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
     const missingInherited = view.inherited.filter(code => !view.available.includes(code));
     const droppedInherited = view.droppedInherited || [];
+    const mergedInherited = view.mergedInherited || {};
+    const governanceBlockedInherited = view.governanceBlockedInherited || [];
     const invalidAvailable = view.invalidAvailable || [];
     panel.innerHTML = `
       <div class="training-label-contract-head"><div><b>本次训练标签</b><small>只显示当前已选素材实际携带的标签；项目标签库中的其他标签不会进入本次算法。</small></div><span class="training-label-contract-count">${view.effectivePreview.length || (view.legacyPreviousVersion ? '?' : 0)} 类</span></div>
-      <div class="training-label-contract-block"><span class="training-label-contract-title">上一版本自动继承</span><div class="training-label-contract-list">${inheritedHtml}</div></div>
+      <div class="training-label-contract-block"><span class="training-label-contract-title">上一版本继承（按当前标签治理）</span><div class="training-label-contract-list">${inheritedHtml}</div></div>
       <div class="training-label-contract-block"><span class="training-label-contract-title">本次素材标签（可选择）</span><div class="training-label-contract-list">${selectableHtml}</div></div>
       ${missingInherited.length ? `<div class="training-label-warning">继承标签 ${missingInherited.map(code => esc(displayName(state, code))).join('、')} 在本次素材中没有正样本，但仍会保留在本次 schema。</div>` : ''}
-      ${droppedInherited.length ? `<div class="training-label-warning">上一版本标签 ${droppedInherited.map(code => esc(code)).join('、')} 已不在当前有效标签库，本次会从 schema 剔除并重新连续编号。</div>` : ''}
+      ${droppedInherited.length ? `<div class="training-label-warning">历史版本保持不变；本次训练按已确认统一关系折叠：${Object.entries(mergedInherited).map(([source,target]) => `${esc(source)} → ${esc(target)}`).join('、')}。</div>` : ''}
+      ${governanceBlockedInherited.length ? `<div class="training-label-warning error">上一版本包含已停用/缺失且没有明确合并目标的标签：${governanceBlockedInherited.map(code => esc(code)).join('、')}。服务器会拒绝训练，请先在标签管理中明确统一。</div>` : ''}
       ${invalidAvailable.length ? `<div class="training-label-warning error">已选素材包含非当前有效标签：${invalidAvailable.map(code => esc(code)).join('、')}。服务器会拒绝训练，请先统一标签。</div>` : ''}
       ${view.labelSchemaChanged ? '<span class="training-label-schema-change">Label Schema Changed · 使用上一版本权重初始化，不做严格续训</span>' : ''}
     `;
@@ -361,7 +427,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   queueRefresh();
 
   const runtime = {
-    build: 'module-422513',
+    build: 'module-422566',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),

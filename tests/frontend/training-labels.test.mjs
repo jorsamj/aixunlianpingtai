@@ -160,7 +160,7 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
   assert.equal(checkboxHandler.includes('queueRefresh();'), false, 'label toggle must not replace its own DOM during click');
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422513'/);
+  assert.match(source, /build: 'module-422566'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
@@ -185,22 +185,49 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
 });
 
 
-test('inactive previous labels remain inherited and do not change schema by themselves', () => {
+test('merged previous labels collapse into the current canonical target in the client preview', () => {
   const algorithm = {
     versions: [successfulVersion({
       label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
     })],
   };
+  const governance = [
+    ...catalog,
+    {code: 'legacy_smoke', display_name: '旧烟雾', status: 'merged', merged_into: 'smoke'},
+  ];
   const view = resolveClientTrainingLabels({
-    materials: [{id: 'a', labels: ['fire']}],
-    selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: [],
+    materials: [{id: 'a', labels: ['fire', 'smoke']}],
+    selectedIds: ['a'], labelCatalog: catalog, labelGovernance: governance,
+    algorithm, requestedCodes: [],
   });
-  assert.deepEqual(view.inherited, ['fire', 'legacy_smoke']);
-  assert.deepEqual(view.droppedInherited, []);
-  assert.deepEqual(view.effectivePreview, ['fire', 'legacy_smoke']);
-  assert.equal(view.labelSchemaChanged, false);
+  assert.deepEqual(view.inherited, ['fire', 'smoke']);
+  assert.deepEqual(view.mergedInherited, {legacy_smoke: 'smoke'});
+  assert.deepEqual(view.droppedInherited, ['legacy_smoke']);
+  assert.deepEqual(view.governanceBlockedInherited, []);
+  assert.deepEqual(view.effectivePreview, ['fire', 'smoke']);
+  assert.equal(view.labelSchemaChanged, true);
   assert.equal(view.strictResume, false);
   assert.equal(view.baseTrainingMode, 'previous_weights_init');
+});
+
+test('inactive previous labels without merged_into are blocked instead of silently inherited', () => {
+  const algorithm = {
+    versions: [successfulVersion({
+      label_schema: [{code: 'fire', class_id: 0}, {code: 'legacy_smoke', class_id: 1}],
+    })],
+  };
+  const governance = [
+    ...catalog,
+    {code: 'legacy_smoke', display_name: '旧烟雾', status: 'inactive', active: false},
+  ];
+  const view = resolveClientTrainingLabels({
+    materials: [{id: 'a', labels: ['fire']}],
+    selectedIds: ['a'], labelCatalog: catalog, labelGovernance: governance,
+    algorithm, requestedCodes: [],
+  });
+  assert.deepEqual(view.inherited, ['fire']);
+  assert.deepEqual(view.governanceBlockedInherited, ['legacy_smoke']);
+  assert.deepEqual(view.effectivePreview, ['fire']);
 });
 
 test('inactive current-catalog labels are never selectable as new classes', () => {

@@ -769,7 +769,58 @@ def test_training_preflight_rejects_temp_class_even_if_catalog_contains_it(tmp_p
         selected_material_label_codes(project, {"train_image_ids": ["a"]})
 
 
-def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
+def test_iteration_collapses_merged_previous_labels_into_current_canonical_target(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    for row in meta["label_meta"]:
+        if row["code"] == "smoke":
+            row["status"] = "merged"
+            row["merged_into"] = "fire"
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    AnnotationRepository(project).upsert(
+        "a", [_box("fire")], annotation_state="annotated"
+    )
+    model = project / "previous.pt"
+    model.write_bytes(b"model")
+    previous_schema = [
+        {"code": "fire", "class_id": 0},
+        {"code": "smoke", "class_id": 1},
+    ]
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "created_at": "2026-09-10T01:01:01+00:00",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": previous_schema,
+        }],
+    }
+    contract = resolve_training_label_contract(
+        data_dir,
+        project,
+        {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
+        algorithm,
+    )
+    assert contract["inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["retained_inherited_label_codes"] == ["fire"]
+    assert contract["merged_inherited_label_codes"] == {"smoke": "fire"}
+    assert contract["dropped_inherited_label_codes"] == ["smoke"]
+    assert contract["effective_label_codes"] == ["fire"]
+    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0]
+    assert contract["label_schema_changed"] is True
+    assert contract["label_schema_change_reasons"] == ["merged_labels"]
+    assert contract["base_training_mode"] == "previous_weights_init"
+    assert contract["strict_resume"] is False
+    assert algorithm["versions"][0]["label_schema"] == previous_schema
+
+
+def test_iteration_rejects_inactive_previous_label_without_merge_target(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
     for row in meta["label_meta"]:
@@ -780,7 +831,7 @@ def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
         json.dumps(meta, ensure_ascii=False), encoding="utf-8"
     )
     AnnotationRepository(project).upsert(
-        "a", [_box("fire"), _box("smoke")], annotation_state="annotated"
+        "a", [_box("fire")], annotation_state="annotated"
     )
     model = project / "previous.pt"
     model.write_bytes(b"model")
@@ -800,22 +851,13 @@ def test_iteration_preserves_inactive_previous_label_identity(tmp_path: Path):
             ],
         }],
     }
-    contract = resolve_training_label_contract(
-        data_dir,
-        project,
-        {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
-        algorithm,
-    )
-    assert contract["available_material_label_codes"] == ["fire", "smoke"]
-    assert contract["inherited_label_codes"] == ["fire", "smoke"]
-    assert contract["retained_inherited_label_codes"] == ["fire", "smoke"]
-    assert contract["dropped_inherited_label_codes"] == []
-    assert contract["effective_label_codes"] == ["fire", "smoke"]
-    assert [row["class_id"] for row in contract["effective_label_schema"]] == [0, 1]
-    assert contract["label_schema_changed"] is False
-    assert contract["label_schema_change_reasons"] == []
-    assert contract["base_training_mode"] == "previous_weights_init"
-    assert contract["strict_resume"] is False
+    with pytest.raises(ValueError, match="已停用且没有明确 merged_into"):
+        resolve_training_label_contract(
+            data_dir,
+            project,
+            {"model": "yolo11n.pt", "train_image_ids": ["a"], "train_labels": []},
+            algorithm,
+        )
 
 
 def test_scoped_projection_reuses_frozen_rows_without_second_annotation_io(tmp_path: Path, monkeypatch):

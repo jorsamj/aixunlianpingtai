@@ -13,10 +13,14 @@ on:
       - 'static/modules/training-task-visibility-runtime.js'
       - 'static/modules/training-draft.js'
       - 'static/modules/training-submit.js'
+      - 'static/modules/training-labels.js'
+      - 'static/modules/training-labels.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
       - 'tests/frontend/training-submit-validation.test.mjs'
+      - 'tests/frontend/training-labels.test.mjs'
+      - 'tests/frontend/training-labels.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
       - 'tests/browser/navigation-stability.spec.mjs'
@@ -40,6 +44,7 @@ jobs:
           node --check static/modules/training-create-hydration.js &&
           node --check static/modules/training-draft.js &&
           node --check static/modules/training-submit.js &&
+          node --check static/modules/training-labels.js &&
           node --check static/main.mjs &&
           node --check tests/frontend/training-create-hydration.test.mjs &&
           node --check tests/frontend/training-submit-validation.test.mjs &&
@@ -51,6 +56,7 @@ jobs:
           tests/frontend/training-modal-device-probe.test.mjs
           tests/frontend/training-submit.test.mjs
           tests/frontend/training-submit-validation.test.mjs
+          tests/frontend/training-labels.test.mjs
       - name: Permanent first-open guards
         shell: bash
         run: |
@@ -71,6 +77,9 @@ jobs:
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
           grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
+          grep -Fq 'merged previous labels collapse into the current canonical target in the client preview' tests/frontend/training-labels.test.mjs
+          grep -Fq 'inactive previous labels without merged_into are blocked instead of silently inherited' tests/frontend/training-labels.test.mjs
+          grep -Fq 'labelGovernance414' static/modules/training-labels.js
           grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
           grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
           grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js

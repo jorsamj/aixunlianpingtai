@@ -15,6 +15,7 @@ on:
       - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
+      - 'platform_core/training_label_tasks.py'
       - 'platform_core/task_runtime/repository.py'
       - 'static/app.js'
       - 'static/modules/annotation-task-view.js'
@@ -51,6 +52,7 @@ on:
       - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
+      - 'platform_core/training_label_tasks.py'
       - 'platform_core/task_runtime/repository.py'
       - 'static/app.js'
       - 'static/modules/annotation-task-view.js'
@@ -107,6 +109,7 @@ jobs:
             platform_core/annotation_repository.py \
             platform_core/annotation_task_service.py \
             platform_core/material_batches.py \
+            platform_core/training_label_tasks.py \
             platform_core/task_runtime/repository.py
           node --check static/app.js
           node --check static/modules/annotation-task-view.js
@@ -225,6 +228,11 @@ jobs:
                   'def _run_annotation_remap(',
                   'REMAPPING_ANNOTATION_LABELS',
                   'ANNOTATION_CHANGED_DURING_REMAP',
+              ),
+              'platform_core/training_label_tasks.py': (
+                  'merged_inherited_label_codes',
+                  'previous_version_merged',
+                  '已停用且没有明确 merged_into',
               ),
               'platform_core/annotation_task_service.py': (
                   'def commit_confirmed_review(',
@@ -429,5 +437,9 @@ jobs:
           for token in ('ann420ConfirmEmpty', 'confirmEmptyAnnotation420', '暂无已结束训练可统计'):
               if token not in static_app:
                   missing.setdefault('static/app.js', []).append(token)
+          if 'test_multi_source_label_unify_is_one_durable_task_and_retires_sources' not in Path('tests/api/test_durable_label_remap.py').read_text(encoding='utf-8'):
+              missing.setdefault('tests/api/test_durable_label_remap.py', []).append(
+                  'label unify -> next iteration regression'
+              )
           if missing:
               raise SystemExit(f'missing label-normalization contracts: {missing}')

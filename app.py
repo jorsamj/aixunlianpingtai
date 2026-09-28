@@ -8656,7 +8656,12 @@ def v12_app_info():
 @app.get("/api/v12/projects/{project_id}/labels")
 def v12_list_labels(project_id: str):
     project = get_project(project_id)
-    return {"ok": True, "items": active_label_options(project_label_items(project))}
+    governance = project_label_items(project)
+    return {
+        "ok": True,
+        "items": active_label_options(governance),
+        "governance": governance,
+    }
 
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
@@ -20520,7 +20525,8 @@ def _v54_start_unify(project_id: str, source_class_ids, target_label: str):
 @app.get('/api/v54/projects/{project_id}/label-schema')
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
-    items = active_label_options(project_label_items(project))
+    governance = project_label_items(project)
+    items = active_label_options(governance)
     store = material_store(project_id)
     usage = store.label_usage()
     references = store.label_reference_usage()
@@ -20531,7 +20537,7 @@ def v54_label_schema(project_id: str):
         x['usage_boxes'] = int(usage.get(code, {}).get('boxes', 0))
         x['scope_images'] = int(ref.get('scope_images') or 0)
         x['affected_images'] = int(ref.get('affected_images') or x['usage_images'] + x['scope_images'])
-    return {'ok': True, 'items': items}
+    return {'ok': True, 'items': items, 'governance': governance}
 
 
 @app.post('/api/v54/projects/{project_id}/labels/unify/preview')

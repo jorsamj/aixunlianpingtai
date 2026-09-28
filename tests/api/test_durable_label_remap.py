@@ -12,6 +12,7 @@ from platform_core.task_runtime import (
     TaskKind,
     TaskRepository,
 )
+from platform_core.training_label_tasks import resolve_training_label_contract
 
 
 def _box(label="fire", class_id=0, x1=1):
@@ -460,8 +461,53 @@ def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
     assert stored["label_meta"][0]["merged_into"] == "person"
     assert stored["label_meta"][1]["status"] == "merged"
     assert stored["label_meta"][1]["merged_into"] == "person"
-    active = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    label_response = client.get(f"/api/v12/projects/{project_id}/labels").json()
+    active = label_response["items"]
     assert [row["code"] for row in active] == ["person"]
+    governance = {row["code"]: row for row in label_response["governance"]}
+    assert governance["fire"]["merged_into"] == "person"
+    assert governance["smoke"]["merged_into"] == "person"
+
+    model = tmp_path / "previous.pt"
+    model.write_bytes(b"model")
+    previous_schema = [
+        {"code": "fire", "class_id": 0},
+        {"code": "smoke", "class_id": 1},
+        {"code": "person", "class_id": 2},
+    ]
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "created_at": "2026-09-10T01:01:01+00:00",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": previous_schema,
+        }],
+    }
+    contract = resolve_training_label_contract(
+        app_module.DATA_DIR,
+        app_module.project_dir(project_id),
+        {
+            "framework": "ultralytics",
+            "model": "yolo11n.pt",
+            "train_image_ids": [image["id"]],
+            "train_labels": [],
+        },
+        algorithm,
+    )
+    assert contract["inherited_label_codes"] == ["fire", "smoke", "person"]
+    assert contract["retained_inherited_label_codes"] == ["person"]
+    assert contract["merged_inherited_label_codes"] == {
+        "fire": "person",
+        "smoke": "person",
+    }
+    assert contract["dropped_inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["effective_label_codes"] == ["person"]
+    assert algorithm["versions"][0]["label_schema"] == previous_schema
 
 
 def test_partial_multi_source_unify_does_not_retire_sources(

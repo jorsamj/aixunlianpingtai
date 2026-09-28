@@ -38,22 +38,148 @@ def _unique_codes(values: Sequence[Any] | None) -> list[str]:
     return result
 
 
-def _project_label_catalog(project: Path) -> tuple[list[str], dict[str, dict[str, Any]]]:
+def _project_label_governance(
+    project: Path,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Return the durable project label identities, including merged/inactive rows."""
+
     meta = base._json(project / "meta.json", {})
+    labels = list(meta.get("labels") or [])
+    metadata = list(meta.get("label_meta") or [])
     ordered: list[str] = []
-    catalog: dict[str, dict[str, Any]] = {}
-    for index, value in enumerate(meta.get("label_meta") or meta.get("labels") or []):
-        item = dict(value) if isinstance(value, dict) else {"code": str(value)}
-        code = str(item.get("code") or "").strip()
-        if not code or item.get("active") is False or item.get("status", "active") != "active":
+    governance: dict[str, dict[str, Any]] = {}
+    total = max(len(labels), len(metadata))
+    for index in range(total):
+        raw_label = labels[index] if index < len(labels) else ""
+        raw_meta = metadata[index] if index < len(metadata) else {}
+        item = dict(raw_meta) if isinstance(raw_meta, Mapping) else {}
+        if isinstance(raw_label, Mapping):
+            item = {**dict(raw_label), **item}
+            fallback_code = str(raw_label.get("code") or raw_label.get("name") or "")
+        else:
+            fallback_code = str(raw_label or "")
+        code = str(item.get("code") or fallback_code).strip()
+        if not code or code in governance:
             continue
-        if code in catalog:
-            continue
+        status = str(
+            item.get("status")
+            or ("inactive" if item.get("active") is False else "active")
+        ).strip().lower()
+        if item.get("active") is False and status == "active":
+            status = "inactive"
         item["code"] = code
+        item["status"] = status
+        item["merged_into"] = str(item.get("merged_into") or "").strip()
         item["project_class_id"] = int(item.get("class_id", index))
         ordered.append(code)
-        catalog[code] = item
-    return ordered, catalog
+        governance[code] = item
+    return ordered, governance
+
+
+def _project_label_catalog(project: Path) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    ordered, governance = _project_label_governance(project)
+    active_order: list[str] = []
+    catalog: dict[str, dict[str, Any]] = {}
+    for code in ordered:
+        item = governance[code]
+        if item.get("active") is False or str(item.get("status") or "active") != "active":
+            continue
+        active_order.append(code)
+        catalog[code] = dict(item)
+    return active_order, catalog
+
+
+def _resolve_inherited_label_governance(
+    project: Path,
+    inherited: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
+    """Project immutable historical outputs into the current canonical label graph.
+
+    Historical algorithm versions are never mutated. A user-confirmed project
+    merge is authoritative for NEW training tasks, so inherited merged labels
+    follow merged_into (including merge chains) and deduplicate at the active
+    target. Plain inactive/missing labels fail closed because there is no
+    user-approved target to infer.
+    """
+
+    _ordered, governance = _project_label_governance(project)
+    _active_order, active_catalog = _project_label_catalog(project)
+    retained: list[dict[str, Any]] = []
+    retained_by_code: dict[str, dict[str, Any]] = {}
+    merged: dict[str, str] = {}
+    dropped: list[str] = []
+
+    for historical in inherited:
+        source_code = str(historical.get("code") or "").strip()
+        current_code = source_code
+        visited: list[str] = []
+        while True:
+            if current_code in visited:
+                raise ValueError(
+                    "项目标签合并关系存在循环，无法安全创建迭代训练: "
+                    + " -> ".join([*visited, current_code])
+                )
+            visited.append(current_code)
+            row = governance.get(current_code)
+            if row is None:
+                raise ValueError(
+                    f"上一算法版本标签 {source_code} 已不在当前项目标签治理中；"
+                    "请先恢复该标签或在标签管理中明确统一到现有标签"
+                )
+            status = str(row.get("status") or "active").strip().lower()
+            if status == "active" and row.get("active") is not False:
+                target_code = current_code
+                break
+            if status == "merged":
+                target = str(row.get("merged_into") or "").strip()
+                if not target:
+                    raise ValueError(
+                        f"上一算法版本标签 {source_code} 已标记 merged 但缺少 merged_into；"
+                        "请先修复标签治理关系"
+                    )
+                current_code = target
+                continue
+            raise ValueError(
+                f"上一算法版本标签 {source_code} 已停用且没有明确 merged_into；"
+                "系统不会自动猜测替代标签，请先在标签管理中完成统一"
+            )
+
+        active = active_catalog.get(target_code)
+        if active is None:
+            raise ValueError(
+                f"上一算法版本标签 {source_code} 的合并目标 {target_code} 当前不可用；"
+                "请先修复标签治理关系"
+            )
+        if source_code != target_code:
+            merged[source_code] = target_code
+            dropped.append(source_code)
+
+        if target_code in retained_by_code:
+            sources = retained_by_code[target_code].setdefault("inherited_from_codes", [])
+            if source_code not in sources:
+                sources.append(source_code)
+            continue
+
+        normalized = dict(active)
+        canonical_project_class_id = int(
+            normalized.pop(
+                "project_class_id",
+                normalized.get("class_id", len(retained)),
+            )
+        )
+        normalized["code"] = target_code
+        normalized["canonical_project_class_id"] = canonical_project_class_id
+        normalized["class_id"] = len(retained)
+        normalized["source"] = (
+            "previous_version_merged"
+            if source_code != target_code
+            else "previous_version"
+        )
+        normalized["inherited_from_codes"] = [source_code]
+        retained.append(normalized)
+        retained_by_code[target_code] = normalized
+
+    return retained, merged, dropped
 
 
 def _temporary_or_unmapped_label(code: str) -> bool:
@@ -265,9 +391,10 @@ def resolve_training_label_contract(
     """Resolve the only label schema that may reach YOLO for this task.
 
     First training: user-selected labels from selected materials only.
-    Iteration: previous version schema is immutable and inherited; user-selected
-    material labels may append new classes. Mother-model classes never enter the
-    contract.
+    Iteration: the historical previous-version schema remains immutable, while
+    NEW task labels are resolved through current canonical governance. Explicit
+    merged_into decisions collapse inherited labels; plain inactive/missing
+    labels fail closed. Mother-model classes never enter the contract.
     """
 
     data_root = Path(data_dir).resolve()
@@ -312,26 +439,19 @@ def resolve_training_label_contract(
             )
 
     inherited_codes = [str(item["code"]) for item in inherited]
+    retained_inherited, merged_inherited, dropped_inherited = (
+        _resolve_inherited_label_governance(project_path, inherited)
+        if inherited
+        else ([], {}, [])
+    )
+    retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
+    retained_inherited_set = set(retained_inherited_codes)
     available = selected_material_label_codes(
         project_path,
         payload,
-        allowed_nonactive_codes=inherited_codes,
         positive_only=True,
     )
     available_set = set(available)
-    # A verified previous-version schema is immutable iteration lineage. Project
-    # label governance may later disable/remove a canonical label, but that must
-    # never silently renumber or delete an inherited model output. Only newly
-    # requested labels are required to be active in the current project catalog.
-    retained_inherited: list[dict[str, Any]] = []
-    for item in inherited:
-        normalized = dict(item)
-        normalized["class_id"] = len(retained_inherited)
-        normalized["source"] = "previous_version"
-        retained_inherited.append(normalized)
-    retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
-    retained_inherited_set = set(retained_inherited_codes)
-    dropped_inherited: list[str] = []
 
     invalid_requested = [
         code for code in requested
@@ -348,6 +468,8 @@ def resolve_training_label_contract(
 
     requested_new = [code for code in requested if code not in retained_inherited_set]
     schema_change_reasons = []
+    if merged_inherited:
+        schema_change_reasons.append("merged_labels")
     if requested_new:
         schema_change_reasons.append("added_labels")
     label_schema_changed = bool(schema_change_reasons)
@@ -380,6 +502,7 @@ def resolve_training_label_contract(
         "requested_label_codes": requested,
         "inherited_label_codes": inherited_codes,
         "retained_inherited_label_codes": retained_inherited_codes,
+        "merged_inherited_label_codes": merged_inherited,
         "dropped_inherited_label_codes": dropped_inherited,
         "effective_label_codes": [str(item["code"]) for item in effective],
         "effective_label_schema": effective,

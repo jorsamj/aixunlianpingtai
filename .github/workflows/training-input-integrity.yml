@@ -116,6 +116,10 @@ jobs:
           grep -Fq '"base_model_contract_schema_version": 1' platform_core/training_label_tasks.py
           grep -Fq 'test_input_freeze_identity_changes_when_frozen_base_model_changes' tests/unit/test_training_label_contract.py
           grep -Fq 'test_version_contract_backfill_preserves_full_frozen_base_lineage' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_iteration_collapses_merged_previous_labels_into_current_canonical_target' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_iteration_rejects_inactive_previous_label_without_merge_target' tests/unit/test_training_label_contract.py
+          grep -Fq 'merged_inherited_label_codes' platform_core/training_label_tasks.py
+          grep -Fq 'previous_version_merged' platform_core/training_label_tasks.py
           grep -Fq 'update_algorithm_version(' platform_core/training_label_tasks.py
           if grep -Fq 'save_algorithms(path, algorithms)' platform_core/training_label_tasks.py; then echo 'label lineage backfill must not replace the whole algorithm graph' >&2; exit 1; fi
           grep -Fq 'Task-derived negative addendum' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
