@@ -401,18 +401,39 @@ test('detail model exposes runtime resource telemetry from backend metrics truth
 
 
 
-test('failure detail source keeps the five diagnostic layers in fixed priority order', async () => {
+test('failure detail shows one backend primary reason and collapses secondary diagnostics', async () => {
   const {readFileSync} = await import('node:fs');
   const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
-  const positions = [
-    '1. Root cause',
-    '2. Failure stage',
-    '3. Process return code',
-    '4. Completion handshake',
-    '5. Checkpoint / Recovery',
-  ].map(label => source.indexOf(label));
-  assert.equal(positions.every(index => index >= 0), true);
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  assert.match(source, /recovery\?\.primary_message/);
+  assert.match(source, /<summary>查看技术详情<\/summary>/);
+  assert.doesNotMatch(source, /1\. Root cause/);
+  assert.doesNotMatch(source, /其他错误与失败证据/);
+});
+
+test('failed detail prefers backend primary failure contract over frontend heuristics', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-invalid',
+    status: 'failed',
+    task_status: 'FAILED',
+    error: 'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+    message: 'job status is not done',
+  }, {
+    primary_error_code: 'RESOURCE_MANUAL_INVALID',
+    primary_stage: 'resource_validation',
+    primary_message: '手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。',
+    secondary_diagnostics: [
+      'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+      'job status is not done',
+    ],
+  });
+
+  assert.equal(model.rootCause, '手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。');
+  assert.equal(model.primaryErrorCode, 'RESOURCE_MANUAL_INVALID');
+  assert.equal(model.failureStage, 'resource_validation');
+  assert.deepEqual(model.errors, [
+    'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+    'job status is not done',
+  ]);
 });
 
 test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {

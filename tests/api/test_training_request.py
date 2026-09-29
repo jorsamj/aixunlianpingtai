@@ -1,6 +1,7 @@
 import hashlib
 import io
 import re
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -45,6 +46,26 @@ def _upload_training_ready(client, project_id: str, name: str, color: tuple[int,
         data={"dataset_id": "default"},
     ).json()["uploaded"][0]
     return _mark_training_ready(client, project_id, image)
+
+
+def _freeze_admitted_training(app_module, task_id: str):
+    """Run only the TRAINING_PREPARE contract phase, without trainer startup."""
+    from platform_core.remote_training_tasks import TrainingPrepareHandler
+
+    target = app_module.shared_task_repository().get(task_id)
+    assert target is not None
+    payload = app_module.shared_task_artifacts().read_json(task_id, target.payload_ref)
+    handler = TrainingPrepareHandler(app_module.DATA_DIR)
+    context = SimpleNamespace(
+        artifacts=app_module.shared_task_artifacts(),
+        repository=app_module.shared_task_repository(),
+    )
+    frozen_payload = handler._freeze_request_contract(context, target, payload)
+    app_module.shared_task_artifacts().atomic_write_json(
+        task_id, target.payload_ref, frozen_payload,
+    )
+    handler._publish_prepared_job(target, frozen_payload)
+    return frozen_payload
 
 
 def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
@@ -389,8 +410,10 @@ def test_training_rejects_random_pool_with_missing_material_truth(client, seeded
         },
     )
 
-    assert response.status_code == 409
-    assert "所选素材不存在" in response.json()["detail"]
+    assert response.status_code == 202
+    task_id = response.json()["task"]["task_id"]
+    with pytest.raises(ValueError, match="所选素材不存在"):
+        _freeze_admitted_training(app_module, task_id)
 
 
 def test_product_training_submit_freezes_server_authoritative_label_contract(
@@ -421,15 +444,17 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
         f"/api/v12/projects/{project_id}/train/start",
         json=base_request,
     )
-    assert missing.status_code == 409
-    assert "首次训练必须" in missing.json()["detail"]
+    assert missing.status_code == 202
+    with pytest.raises(ValueError, match="首次训练必须"):
+        _freeze_admitted_training(app_module, missing.json()["task"]["task_id"])
 
     bypass = client.post(
         f"/api/v12/projects/{project_id}/train/start",
         json={**base_request, "train_labels": ["smoke"]},
     )
-    assert bypass.status_code == 409
-    assert "不在已选素材" in bypass.json()["detail"]
+    assert bypass.status_code == 202
+    with pytest.raises(ValueError, match="不在已选素材"):
+        _freeze_admitted_training(app_module, bypass.json()["task"]["task_id"])
 
     accepted = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -437,6 +462,7 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
     )
     assert accepted.status_code == 202, accepted.text
     task = accepted.json()["task"]
+    _freeze_admitted_training(app_module, task["id"])
     frozen = app_module.shared_task_artifacts().read_json(
         task["id"], "input-freeze.json", default={}
     )
@@ -530,10 +556,18 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert persisted.status is TaskStatus.QUEUED
     assert persisted.priority == 7
     payload = app_module.shared_task_artifacts().read_json(task["id"], "payload.json")
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
+    assert payload["training_input_state"] == "PREPARING"
+    assert payload["asset_algorithm_name"] == "异步训练请求"
     assert payload["train_image_ids"] == [train_a["id"], train_b["id"]]
     assert payload["test_image_ids"] == [test_a["id"]]
     assert not payload.get("train_dataset_ids")
+    prepare = app_module.shared_task_repository().get(
+        response.json()["preparation_task_id"]
+    )
+    assert prepare is not None and prepare.kind is TaskKind.TRAINING_PREPARE
+    assert persisted.stage == "training_input_pending"
+    assert persisted.required_capabilities == ("training.input.ready",)
 
 
 def test_explicit_remote_training_enqueues_durable_input_preparation_without_legacy_server_id(
@@ -592,7 +626,7 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
     assert "remote_execution" not in payload
     prep_payload = app_module.shared_task_artifacts().read_json(prep_id, "payload.json")
     assert prep_payload == {
-        "schema_version": 1,
+        "schema_version": 2,
         "training_task_id": training["id"],
         "project_id": project_id,
     }
@@ -933,7 +967,7 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
 
     job = app_module.read_json(app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {})
     assert job["confirmed_iteration_action"]["action_id"] == action["action_id"]
-    request = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    request = _freeze_admitted_training(app_module, task_id)
     assert request["iteration_action"] == context
     assert request["base_version_id"] == "v-current"
     assert request["base_model_reference"] == str(base_model.resolve())
@@ -1027,8 +1061,10 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         f"/api/v12/projects/{project_id}/train/start",
         json=base_request,
     )
-    assert missing.status_code == 409
-    assert "Candidate Set" in missing.text
+    assert missing.status_code == 202
+    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
+    with pytest.raises(RemoteTrainingPreparationError, match="Candidate Set"):
+        _freeze_admitted_training(app_module, missing.json()["task"]["task_id"])
 
     accepted = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -1039,7 +1075,7 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     )
     assert accepted.status_code == 202, accepted.text
     task_id = accepted.json()["task"]["task_id"]
-    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    payload = _freeze_admitted_training(app_module, task_id)
     assert payload["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
     assert payload["supplement_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
     job = app_module.read_json(
@@ -1162,7 +1198,7 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     )
     assert response.status_code == 202, response.text
     task_id = response.json()["task"]["id"]
-    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    payload = _freeze_admitted_training(app_module, task_id)
     assert payload["split_mode"] == "independent_test_set"
     assert payload["train_image_ids"] == [train_image["id"], train_image_2["id"]]
     assert payload["test_image_ids"] == [benchmark_image["id"]]
@@ -1184,12 +1220,20 @@ def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project,
     ).json()["algorithm"]
     seen = {}
 
-    def fake_resolve(_project_id, _algorithm, source_version_id="", observed_scope_id=""):
-        seen["source_version_id"] = source_version_id
-        seen["observed_scope_id"] = observed_scope_id
-        raise app_module.HTTPException(status_code=409, detail="Benchmark Scope 已变化")
+    from platform_core.remote_training_tasks import (
+        RemoteTrainingPreparationError,
+        TrainingPrepareHandler,
+    )
 
-    monkeypatch.setattr(app_module, "_training_reusable_benchmark", fake_resolve)
+    def fake_resolve(_self, _project, _algorithm, payload, split):
+        seen["source_version_id"] = payload.get("benchmark_source_version_id")
+        seen["observed_scope_id"] = payload.get("benchmark_scope_id")
+        raise RemoteTrainingPreparationError(
+            "TRAINING_BENCHMARK_SCOPE_CHANGED",
+            "Benchmark Scope 已变化",
+        )
+
+    monkeypatch.setattr(TrainingPrepareHandler, "_resolve_benchmark_reuse", fake_resolve)
     response = client.post(
         f"/api/v12/projects/{project_id}/train/start",
         json={
@@ -1203,8 +1247,9 @@ def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project,
             "benchmark_scope_id": "d" * 64,
         },
     )
-    assert response.status_code == 409
-    assert "Scope" in response.json()["detail"]
+    assert response.status_code == 202
+    with pytest.raises(RemoteTrainingPreparationError, match="Scope"):
+        _freeze_admitted_training(app_module, response.json()["task"]["task_id"])
     assert seen == {
         "source_version_id": "version-old",
         "observed_scope_id": "d" * 64,
@@ -1366,7 +1411,9 @@ def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
     )
 
     assert response.status_code == 202, response.text
-    selection = response.json()["selection"]
+    task_id = response.json()["task"]["task_id"]
+    payload = _freeze_admitted_training(app_module, task_id)
+    selection = payload["selection_counts"]
     assert selection == {
         "selected_train_count": 7,
         "effective_train_count": 6,
@@ -1374,8 +1421,6 @@ def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
         "test_count": 0,
     }
 
-    task_id = response.json()["task"]["task_id"]
-    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
     assert payload["selected_train_image_ids"] == selected_ids
     assert payload["pending_annotation_image_ids"] == [pending["id"]]
     assert pending["id"] not in payload["train_image_ids"]

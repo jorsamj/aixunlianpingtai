@@ -2239,6 +2239,32 @@ class TrainingHandler:
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
         if not isinstance(payload, dict):
             raise ValueError("training payload is invalid")
+        if str(payload.get("training_input_state") or "").upper() != "READY":
+            raise ValueError("TRAINING_PREPARE_REQUIRED: training input is not ready")
+        prepared_resources = context.artifacts.read_json(
+            context.task.task_id,
+            "resolved-resources.json",
+            default={},
+        )
+        if not (
+            isinstance(prepared_resources, Mapping)
+            and int(prepared_resources.get("resolved_batch") or 0) > 0
+            and int(
+                prepared_resources.get("resolved_workers")
+                if prepared_resources.get("resolved_workers") is not None else -1
+            ) >= 0
+            and str(prepared_resources.get("resource_strategy") or "")
+            == str(payload.get("resource_strategy") or "auto")
+        ):
+            raise ValueError(
+                "RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid"
+            )
+        payload = {
+            **payload,
+            "resolved_batch": int(prepared_resources["resolved_batch"]),
+            "resolved_workers": int(prepared_resources["resolved_workers"]),
+            "resolved_cache": prepared_resources.get("resolved_cache", False),
+        }
         if str(payload.get("target") or "local").lower() != "local":
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
@@ -2336,10 +2362,29 @@ class TrainingHandler:
                 label_schema,
                 supplement_candidate_set=payload.get("supplement_candidate_set"),
             )
+        prepared_bundle = None
+        prepared_ref = str(payload.get("prepared_input_ref") or "").strip()
+        if str(payload.get("training_input_state") or "").upper() == "READY" and prepared_ref:
+            prepared = context.artifacts.read_json(
+                context.task.task_id,
+                prepared_ref,
+                default={},
+            )
+            candidate = Path(str((prepared or {}).get("bundle_path") or "")).resolve()
+            expected_work = context.artifacts.artifact_path(
+                context.task.task_id, "work",
+            ).resolve()
+            if (
+                isinstance(prepared, Mapping)
+                and str(prepared.get("snapshot_id") or "") == str(snapshot.get("snapshot_id") or "")
+                and (candidate == expected_work or expected_work in candidate.parents)
+                and (candidate / "manifest.json").is_file()
+            ):
+                prepared_bundle = candidate
         bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
         cache_entry = (
             bundle_cache.resolve(str(snapshot["snapshot_id"]))
-            if _indexed_content_identity_ready(images)
+            if prepared_bundle is None and _indexed_content_identity_ready(images)
             else None
         )
 
@@ -2348,7 +2393,7 @@ class TrainingHandler:
         # to rediscover the same content hashes.
 
         materialized_paths: dict[str, Path] = {}
-        if cache_entry is None:
+        if cache_entry is None and prepared_bundle is None:
             credentials = SecretCredentialStore(KeyringSecretStore())
             storage = StorageManager(
                 data_dir=self.data_dir,
@@ -2400,7 +2445,19 @@ class TrainingHandler:
 
         bundle_progress_step = max(1, len(images) // 100) if images else 1
 
-        if cache_entry is not None:
+        if prepared_bundle is not None:
+            bundle = prepared_bundle
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": False,
+                    "prepared_input_reused": True,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "training_prepare_verified",
+                },
+            )
+        elif cache_entry is not None:
             context.repository.heartbeat(
                 context.task.task_id,
                 context.lease.lease_token,
@@ -2523,6 +2580,10 @@ class TrainingHandler:
             "status": "queued",
             "framework": framework,
             "asset_algorithm_id": algorithm.get("id"),
+            "algorithm_asset_id": algorithm.get("id"),
+            "asset_algorithm_name": str(
+                payload.get("asset_algorithm_name") or algorithm.get("name") or "已删除算法"
+            ),
             "algorithm_name": algorithm.get("name"),
             "model": model,
             "base_version_id": base.get("base_version_id"),
@@ -2551,6 +2612,8 @@ class TrainingHandler:
             "resource_strategy": payload.get("resource_strategy", "auto"),
             "resource_profile": payload.get("resource_profile", "balanced"),
             "precision": payload.get("precision", "auto"),
+            "requested_resources": payload.get("requested_resources") or {},
+            "resolved_resources": dict(prepared_resources),
             "max_train_hours": payload.get("time"),
             "quality_gate": {
                 "runtime_stop_policy": "target_only",

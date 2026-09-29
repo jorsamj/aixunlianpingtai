@@ -459,6 +459,7 @@ export function installTrainingSubmitRuntime({
 
       trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
         algorithmId: asset.id,
+        algorithmName: String(asset.name || '已删除算法'),
         framework: String(payload.framework || target.framework || ''),
         queuePriority: payload.queue_priority,
       });
@@ -497,7 +498,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422510',
+    build: 'training-submit-422511',
     submit,
     createTaskId: createCanonicalTrainingTaskId,
     isCanonicalTaskId: isCanonicalTrainingTaskId,

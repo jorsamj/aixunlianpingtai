@@ -11,6 +11,7 @@ import sys
 import time
 import threading
 import uuid
+from dataclasses import replace
 import zipfile
 import random
 import sqlite3
@@ -1157,6 +1158,22 @@ def enrich_job_runtime(
         return job
     repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
+    if not str(job.get("asset_algorithm_name") or "").strip():
+        algorithm_id = str(
+            job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or ""
+        ).strip()
+        if algorithm_id:
+            algorithm = next(
+                (
+                    row for row in list_algorithms_internal(project_id)
+                    if str(row.get("id") or "") == algorithm_id
+                ),
+                None,
+            )
+            job["asset_algorithm_name"] = (
+                str(algorithm.get("name") or "已删除算法")
+                if algorithm is not None else "已删除算法"
+            )
     worker_error = str(job.get("error") or "").strip()
     worker_message = str(job.get("message") or "").strip()
     worker_progress_truth = dict(job)
@@ -7215,102 +7232,25 @@ def _new_training_task_id() -> str:
 
 
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
-    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
-    benchmark_reuse = _training_reusable_benchmark(
-        project_id,
-        asset_algorithm,
-        str(payload.benchmark_source_version_id or ""),
-        str(payload.benchmark_scope_id or ""),
+    asset_algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(payload.algorithm_asset_id or "")
+        ),
+        None,
     )
-    benchmark_selected_training_count = 0
-    benchmark_reserved_training_count = 0
-    try:
-        if benchmark_reuse:
-            if payload.test_image_ids:
-                raise ValueError("复用固定评测基准时不能同时提交前端试验素材清单")
-            train_ids = tuple(dict.fromkeys(
-                str(value).strip()
-                for value in (payload.train_image_ids or ())
-                if str(value).strip()
-            ))
-            benchmark_selected_training_count = len(train_ids)
-            reservation_repository = MaterialRepository(project_dir(project_id))
-            reservation_ids = (*train_ids, *benchmark_reuse["test_image_ids"])
-            reservation_rows = []
-            for offset in range(0, len(reservation_ids), 500):
-                reservation_rows.extend(
-                    reservation_repository.get_many(reservation_ids[offset:offset + 500])
-                )
-            train_ids, reserved_training_ids = exclude_reserved_test_components(
-                reservation_rows,
-                train_ids,
-                benchmark_reuse["test_image_ids"],
-            )
-            benchmark_reserved_training_count = len(reserved_training_ids)
-            if not train_ids:
-                raise ValueError("所选训练候选全部属于固定评测保留范围，请补充其他训练素材")
-            split = SplitRequest(
-                mode=SplitMode.INDEPENDENT_TEST_SET,
-                train_image_ids=train_ids,
-                test_image_ids=tuple(benchmark_reuse["test_image_ids"]),
-                experiment_percent=None,
-                validation_percent=payload.validation_percent,
-            )
-        else:
-            split = _explicit_training_split(payload)
-    except (TypeError, ValueError) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    requested_split = split
-    try:
-        selection_resolution = resolve_training_selection(
-            project_dir(project_id),
-            requested_split,
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=409,
-            detail=f"训练素材选择无法形成监督训练输入：{error}",
-        ) from error
-    split = selection_resolution.effective_split
-    selection_truth = selection_resolution.truth()
-
-    supplement_candidate_set = _training_supplement_candidate_set(
-        project_id, asset_algorithm, payload, split,
-    )
-    confirmed_iteration_action = (
-        _validated_training_iteration_action(asset_algorithm, payload)
-        if asset_algorithm is not None and payload.iteration_action
-        else None
-    )
-    asset_algorithm = _refresh_external_training_algorithm(project_id, asset_algorithm)
-    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
-    external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
-    framework = str(payload.framework or "ultralytics").strip().lower()
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     try:
-        label_request = payload.model_dump(mode="json", exclude_none=True)
-        # Label admission must use the server-resolved effective training pool,
-        # not stale/raw request ids (for example benchmark-reserved test images).
-        label_request["train_image_ids"] = list(split.train_image_ids)
-        label_request["test_image_ids"] = list(split.test_image_ids)
-        label_request["selected_image_ids"] = list(split.train_image_ids)
-        label_contract = resolve_training_label_contract(
-            DATA_DIR,
-            project_dir(project_id),
-            label_request,
-            asset_algorithm,
-        )
-        projected_training_images = project_training_rows(
-            selection_resolution.effective_images,
-            label_contract,
-        )
-    except ValueError as error:
-        raise HTTPException(
-            status_code=409,
-            detail=f"训练标签合同无法冻结：{error}",
-        ) from error
+        requested_split = _explicit_training_split(payload)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    confirmed_iteration_action = (
+        _validated_training_iteration_action(asset_algorithm, payload)
+        if payload.iteration_action
+        else None
+    )
+    framework = str(payload.framework or "ultralytics").strip().lower()
     target = str(payload.target or "local").strip().lower()
     if target == "remote":
         # v42.25 control-plane scheduling replaces the legacy direct remote
@@ -7326,135 +7266,112 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     if requested_task_id and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested_task_id):
         raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
     task_id = requested_task_id or _new_training_task_id()
+    raw_request = payload.model_dump(mode="json", exclude_none=True)
+    request_identity = hashlib.sha256(
+        json.dumps(raw_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     if requested_task_id:
         existing_task = shared_task_repository().get(task_id)
         if existing_task is not None:
             if existing_task.project_id == project_id and existing_task.kind is TaskKind.TRAINING:
+                existing_payload = shared_task_artifacts().read_json(
+                    task_id, existing_task.payload_ref, default={},
+                )
+                if str((existing_payload or {}).get("request_identity") or "") != request_identity:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="训练任务 ID 已绑定其他请求，不能静默复用",
+                    )
                 return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
-    try:
-        input_freeze = freeze_training_inputs(
-            project_dir(project_id),
-            requested_split,
-            seed=int(payload.seed or 0),
-            supplement_candidate_set=supplement_candidate_set,
-            selection_resolution=selection_resolution,
-            effective_images=projected_training_images,
-            label_schema_override=label_contract["effective_label_schema"],
-            label_contract=label_contract,
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=409,
-            detail=f"训练输入无法冻结：{error}",
-        ) from error
-    input_freeze_ref = "input-freeze.json"
-    shared_task_artifacts().atomic_write_json(
-        task_id,
-        input_freeze_ref,
-        input_freeze,
-    )
-    request_payload = payload.model_dump(mode="json", exclude_none=True)
-    if supplement_candidate_set:
-        request_payload["supplement_candidate_set"] = supplement_candidate_set
-    if benchmark_reuse:
-        request_payload["benchmark_reuse"] = {
-            "source_algorithm_id": str(payload.algorithm_asset_id or ""),
-            "source_version_id": benchmark_reuse["source_version_id"],
-            "scope_id": benchmark_reuse["scope_id"],
-            "snapshot_id": benchmark_reuse["snapshot_id"],
-            "test_image_count": benchmark_reuse["test_image_count"],
-            "binding_level": benchmark_reuse["binding_level"],
-            "selected_training_candidate_count": benchmark_selected_training_count,
-            "reserved_training_candidate_count": benchmark_reserved_training_count,
-            "effective_training_candidate_count": len(split.train_image_ids),
-            "pending_annotation_candidate_count": len(selection_resolution.pending_annotation_image_ids),
-        }
     prepare_task_id = f"trainprep_{task_id}"
-    request_payload.update(
-        {
-            "split_mode": split.mode.value,
-            "train_image_ids": list(split.train_image_ids),
-            "test_image_ids": list(split.test_image_ids),
-            "selected_train_image_ids": list(selection_resolution.selected_train_image_ids),
-            "pending_annotation_image_ids": list(selection_resolution.pending_annotation_image_ids),
-            "selection_counts": {
-                "selected_train_count": selection_truth["selected_train_count"],
-                "effective_train_count": selection_truth["effective_train_count"],
-                "pending_annotation_count": selection_truth["pending_annotation_count"],
-                "test_count": selection_truth["test_count"],
-            },
-            "experiment_percent": split.experiment_percent,
-            "validation_percent": split.validation_percent,
-            "schema_version": 3,
-            "requested_device": payload.device,
-            "external_analysis_id": external_analysis_id,
-            "input_freeze_ref": input_freeze_ref,
-            "input_freeze_id": input_freeze["input_freeze_id"],
-            "snapshot_id": input_freeze["snapshot_id"],
-            "dataset_revision_id": input_freeze["dataset_revision_id"],
-            "input_quality": input_freeze["input_quality"],
-            "label_contract": input_freeze.get("label_contract") or {},
-            "base_version_id": label_contract.get("base_version_id") or None,
-            "base_version_name": label_contract.get("base_version_name") or "",
-            "base_training_mode": label_contract.get("base_training_mode") or "",
-            "base_model_reference": label_contract.get("base_model_reference") or "",
-            "base_model_sha256": label_contract.get("base_model_sha256") or "",
-            "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
-            "base_selection_reason": label_contract.get("base_selection_reason") or "",
-            **(
-                {
-                    "remote_input_state": "PREPARING",
-                    "remote_prepare_task_id": prepare_task_id,
-                }
-                if target == "remote"
-                else {}
-            ),
-        }
-    )
+    request_payload = {
+        **raw_request,
+        "schema_version": 4,
+        "request_identity": request_identity,
+        "admission_request": raw_request,
+        "training_input_state": "PREPARING",
+        "training_prepare_task_id": prepare_task_id,
+        "requested_split": {
+            "mode": requested_split.mode.value,
+            "train_image_ids": list(requested_split.train_image_ids),
+            "test_image_ids": list(requested_split.test_image_ids),
+            "experiment_percent": requested_split.experiment_percent,
+            "validation_percent": requested_split.validation_percent,
+        },
+        "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
+        "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+        "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
+        "algorithm_identity": {
+            "id": str(asset_algorithm.get("id") or ""),
+            "name": str(asset_algorithm.get("name") or "已删除算法"),
+            "source_type": str(asset_algorithm.get("source_type") or "LOCAL"),
+        },
+        "confirmed_iteration_action": confirmed_iteration_action,
+        "requested_device": payload.device,
+        "requested_resources": {
+            "strategy": str(payload.resource_strategy or "auto").lower(),
+            "batch": int(payload.batch),
+            "workers": int(payload.workers),
+            "precision": str(payload.precision or "auto").lower(),
+            "profile": str(payload.resource_profile or "balanced").lower(),
+            "gpu_policy": str(payload.gpu_policy or "auto").lower(),
+        },
+        "target_resource_key": resource_key,
+        "target_required_capabilities": [f"training.{framework}"],
+        **(
+            {
+                "remote_input_state": "PREPARING",
+                "remote_prepare_task_id": prepare_task_id,
+            }
+            if target == "remote" else {}
+        ),
+    }
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
     record = shared_task_repository().create(
-        TaskRecord.new(
+        replace(
+            TaskRecord.new(
             task_id,
             project_id,
             TaskKind.TRAINING,
             "payload.json",
             resource_key,
             priority=int(payload.queue_priority),
-            required_capabilities=(f"training.{framework}",),
+            required_capabilities=("training.input.ready",),
+            ),
+            stage="training_input_pending",
+            current_item="正在后台准备训练输入",
         )
     )
-    preparation_record = None
-    if target == "remote":
-        try:
-            shared_task_artifacts().atomic_write_json(
+    try:
+        shared_task_artifacts().atomic_write_json(
+            prepare_task_id,
+            "payload.json",
+            {
+                "schema_version": 2,
+                "training_task_id": task_id,
+                "project_id": project_id,
+            },
+        )
+        preparation_record = shared_task_repository().create(
+            TaskRecord.new(
                 prepare_task_id,
+                project_id,
+                TaskKind.TRAINING_PREPARE,
                 "payload.json",
-                {
-                    "schema_version": 1,
-                    "training_task_id": task_id,
-                    "project_id": project_id,
-                },
+                f"training-prepare:{project_id}",
+                priority=int(payload.queue_priority),
+                required_capabilities=("training.prepare",),
             )
-            preparation_record = shared_task_repository().create(
-                TaskRecord.new(
-                    prepare_task_id,
-                    project_id,
-                    TaskKind.TRAINING_PREPARE,
-                    "payload.json",
-                    f"training-prepare:{project_id}",
-                    priority=int(payload.queue_priority),
-                    required_capabilities=("training.prepare",),
-                )
-            )
-        except Exception as error:
-            shared_task_repository().fail_queued_precondition(
-                task_id,
-                f"REMOTE_TRAINING_PREP_TASK_CREATE_FAILED: {error}",
-                status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
-                stage="remote_input_preparation_failed",
-            )
-            raise
+        )
+    except Exception as error:
+        shared_task_repository().fail_queued_precondition(
+            task_id,
+            f"TRAINING_PREP_TASK_CREATE_FAILED: {error}",
+            status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+            stage="training_input_preparation_failed",
+        )
+        raise
     job_dir = project_dir(project_id) / "jobs" / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -7463,61 +7380,34 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "id": task_id,
             "task_id": task_id,
             "status": "queued",
-            "message": "已进入后台训练队列",
+            "task_stage": "training_input_pending",
+            "phase": "training_input_pending",
+            "message": "训练任务已创建，正在后台准备输入",
             "framework": framework,
             "target": target,
-            "asset_algorithm_id": payload.algorithm_asset_id,
-            "algorithm_asset_id": payload.algorithm_asset_id,
+            "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
+            "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+            "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
             "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
             "external_provider": (asset_algorithm or {}).get("provider_type", ""),
             "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
-            "external_analysis_id": external_analysis_id,
+            "external_analysis_id": str(payload.external_analysis_id or ""),
             "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
             "confirmed_iteration_action": confirmed_iteration_action,
-            "supplement_candidate_set_id": (
-                str(supplement_candidate_set.get("candidate_set_id") or "")
-                if supplement_candidate_set else ""
-            ),
-            "benchmark_reuse": (
-                {
-                    "source_version_id": benchmark_reuse["source_version_id"],
-                    "scope_id": benchmark_reuse["scope_id"],
-                    "snapshot_id": benchmark_reuse["snapshot_id"],
-                    "test_image_count": benchmark_reuse["test_image_count"],
-                    "selected_training_candidate_count": benchmark_selected_training_count,
-                    "reserved_training_candidate_count": benchmark_reserved_training_count,
-                    "effective_training_candidate_count": len(split.train_image_ids),
-                    "pending_annotation_candidate_count": len(selection_resolution.pending_annotation_image_ids),
-                }
-                if benchmark_reuse else None
-            ),
+            "supplement_candidate_set_id": str(payload.supplement_candidate_set_id or ""),
             "algorithm": payload.algorithm,
             "model": payload.model,
-            "base_version_id": label_contract.get("base_version_id") or None,
-            "base_version_name": label_contract.get("base_version_name") or "",
-            "base_training_mode": label_contract.get("base_training_mode") or "",
-            "base_model_reference": label_contract.get("base_model_reference") or "",
-            "base_model_sha256": label_contract.get("base_model_sha256") or "",
-            "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
-            "base_selection_reason": label_contract.get("base_selection_reason") or "",
             "queue_priority": int(payload.queue_priority),
             "resource_key": resource_key,
             "device": payload.device,
             "requested_device": payload.device,
             "assigned_device": None,
             "actual_device": None,
-            "split_mode": split.mode.value,
-            "requested_train_images": len(split.train_image_ids),
-            "requested_test_images": len(split.test_image_ids),
-            "selected_train_images": selection_truth["selected_train_count"],
-            "effective_train_images": selection_truth["effective_train_count"],
-            "pending_annotation_images": selection_truth["pending_annotation_count"],
-            "selection_truth": selection_truth,
+            "split_mode": requested_split.mode.value,
+            "requested_train_images": len(requested_split.train_image_ids),
+            "requested_test_images": len(requested_split.test_image_ids),
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
-            "input_freeze_id": input_freeze["input_freeze_id"],
-            "snapshot_id": input_freeze["snapshot_id"],
-            "dataset_revision_id": input_freeze["dataset_revision_id"],
-            "input_quality": input_freeze["input_quality"],
+            "requested_resources": request_payload["requested_resources"],
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "artifact_verified": False,
@@ -7529,20 +7419,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         content={
             "ok": True,
             "task": _public_task(record),
-            "selection": {
-                "selected_train_count": selection_truth["selected_train_count"],
-                "effective_train_count": selection_truth["effective_train_count"],
-                "pending_annotation_count": selection_truth["pending_annotation_count"],
-                "test_count": selection_truth["test_count"],
-            },
-            **(
-                {
-                    "preparation_task_id": preparation_record.task_id,
-                    "remote_input_state": "PREPARING",
-                }
-                if preparation_record is not None
-                else {}
-            ),
+            "preparation_task_id": preparation_record.task_id,
+            "training_input_state": "PREPARING",
+            **({"remote_input_state": "PREPARING"} if target == "remote" else {}),
         },
     )
 
@@ -7952,8 +7831,28 @@ def _training_job_index_rows(
     history_limit: int = 50,
 ) -> List[Dict[str, Any]]:
     """Retain every live task plus a bounded terminal history."""
+    canonical: Dict[str, Dict[str, Any]] = {}
+    for source in jobs:
+        if not isinstance(source, Mapping):
+            continue
+        row = dict(source)
+        task_id = str(row.get("task_id") or row.get("id") or "").strip()
+        if not task_id:
+            continue
+        current = canonical.get(task_id)
+        if current is None:
+            canonical[task_id] = row
+            continue
+        current_is_parent = str(current.get("id") or "") == task_id
+        row_is_parent = str(row.get("id") or "") == task_id
+        if row_is_parent and not current_is_parent:
+            canonical[task_id] = row
+        elif row_is_parent == current_is_parent and str(row.get("updated_at") or row.get("created_at") or "") > str(
+            current.get("updated_at") or current.get("created_at") or ""
+        ):
+            canonical[task_id] = row
     ordered = sorted(
-        (dict(job) for job in jobs if isinstance(job, Mapping)),
+        canonical.values(),
         key=lambda row: str(row.get("created_at") or ""),
         reverse=True,
     )

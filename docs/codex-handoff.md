@@ -3459,3 +3459,48 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 当前正式 multipart 后台化新增永久 API 测试，但本节写入时最新 HEAD 的 GitHub Actions 仍有 queued/in_progress；不得写成“全量 CI 已通过”。
 - 本轮没有真实跑 20,000 张生产数据、真实 OSS/S3 带标注 20k 导入，也没有 NVIDIA/A800 真机验收。已有 10k acceptance/合同测试不能替代这些真实环境验收。
 - 继续只修 completed failure 的真实 job log；queued/in_progress 不视为失败也不视为通过。
+
+## 2026-09-29 — 训练快速受理、后台 Prepare、素材完整性与资源合同收口
+
+当前基线分支仍为 `feature/external-algorithm-publishing`，`VERSION.txt = 42.24.0` 未修改。本节记录本轮代码与 targeted tests 的真实状态；GitHub Actions 在提交后仍须以最新 HEAD 的 terminal check 为准。
+
+### 训练正式生命周期
+
+- `POST /train/start` 只做轻量结构校验、算法身份冻结和 durable admission，返回一个正式 `TRAINING` parent；selection、标签合同、snapshot、bundle、duplicate gate 与资源决议不再阻塞创建请求。
+- 本地与远程训练统一由现有 Task runtime 中的 `TRAINING_PREPARE` / `TrainingPrepareHandler` 后台准备。Parent 在 prepare 成功前保持不可领取；成功后由 `TaskRepository.activate_prepared_training()` 原子切换到正式训练 capability。
+- 一个 submit 只创建一个可见 `TRAINING` parent。`TRAINING_PREPARE` 是内部 child，不进入训练任务主列表；前端 optimistic row 只临时补显示，刷新后由 durable parent 接管。
+- Parent 冻结 `asset_algorithm_id / asset_algorithm_name / source version`。历史算法已删除时显示“已删除算法”，不回退为未命名，也不由前端猜字段。
+- `train_worker.py` 不再二次执行资源规划，只消费 prepare 阶段已经写入的 `resolved-resources.json`。因此 MANUAL 非法资源在 Trainer process 启动前失败；AUTO 可按后端预算安全下调并把 requested/resolved/runtime 三层事实分别持久化。
+
+### 素材完整性与删除安全
+
+- 没有新增 repository 或 task runtime。项目级素材完整性复用唯一 `TaskKind.MATERIAL_BATCH`、`MaterialBatchHandler`、`TaskRepository`、artifact store 与 polling owner，操作名为 `AUDIT_MATERIAL_INTEGRITY`；它有专用 project-audit prepare 分支，不伪造普通素材 selection。
+- `material-integrity.sqlite3` 是诊断快照，不是第二业务真相。表为 `audit_metadata`、`issue_groups`、`issue_items`，保存 revisions、问题组、受影响 image IDs 与诊断详情；详情 API 展示时重新从现有 `AnnotationRepository` / 素材读取 owner 获取当前框与图片。
+- 当前问题类型：`DUPLICATE_IDENTICAL`、`DUPLICATE_ANNOTATION_CONFLICT`、`MATERIAL_OBJECT_MISSING`、`CONTENT_HASH_MISMATCH`、`INVALID_IMAGE`。重复候选使用现有 content hash 索引，Ground Truth 差异由 `AnnotationRepository` digest 判断；不在页面打开时重新全库 SHA256。
+- 删除继续走现有 durable `DELETE_INDEX / DELETE_SOURCE`。删除前在 HTTP admission 与 Worker 真正执行前都复核 active TRAINING 的 selection/input freeze；命中时 fail-closed。`DELETE_INDEX` 同步移除 Annotation/Material 索引但不误删共享物理对象；`DELETE_SOURCE` 遇到共享 object key 会拒绝。
+- UI 只落在“数据集/素材管理”的“重复与异常素材”，展示真实图片、bbox、标签、文件名和来源，并提供进入标注、单删、批量删、保留一条删除其他。系统不自动判断哪份 Ground Truth 正确。
+
+### 资源与失败展示合同
+
+- AUTO UI 只显示 Batch/Workers/Precision 自动与 GPU 自动调度；MANUAL 提供 recommendation、可证实的安全范围、`使用推荐值` 和即时超预算提示。提示不替代后台 authoritative validation。
+- 后端 `training_recovery_truth` 输出唯一 `primary_error_code / primary_stage / primary_message`，并把原始错误、process return code、completion handshake、checkpoint/recovery 作为 `secondary_diagnostics`/技术证据。
+- 失败详情默认只显示一个用户可理解的主因；二级诊断折叠在“查看技术详情”，工程日志继续单独折叠。前端不再根据一串原始异常自行决定最终主因。
+
+### Owner 自查
+
+- Training submit：仍为 `TrainingSubmitRuntime`。
+- Training durable state：仍为 `TaskRepository` + 正式 `TRAINING` parent。
+- Training prepare：唯一实现为 `TrainingPrepareHandler`；旧 `RemoteTrainingPrepareHandler` 仅保留 import alias，不是第二实现。
+- Training execution：仍沿用既有 `TrainingHandler` 继承链。
+- Material/Annotation：仍为现有 `MaterialRepository` / `AnnotationRepository`。
+- Material audit/delete：仍为 `MaterialBatchHandler`。
+- Polling：仍为 `PollRegistryRuntime`，未新增 `setInterval` 或第二 poll registry。
+- Resource planning：仍为现有 training metrics/resource resolver；Trainer 只消费 frozen resolution。
+
+### Targeted verification
+
+- Frontend runtime：最终直接相关组合 `100 passed`（Draft、资源 UI、失败详情、提交幂等、任务 runtime/可见性与 cache-owner guard）；素材完整性最小合同另有 `2 passed`。
+- Backend/API/unit：`68 passed`（训练受理、任务可见性、素材完整性、资源与 recovery contract）。
+- Training Prepare integration：`3 passed`。
+- `node --check` 已覆盖本轮修改的 `static/app.js` 与相关 training modules；`git diff --check` 通过。
+- 尚未执行生产大数据 smoke、真实 GPU 资源压测或全站 browser E2E；这些不能由 targeted contract tests 替代。

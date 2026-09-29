@@ -44,6 +44,32 @@ def test_training_job_index_treats_paused_and_cancel_requested_as_active():
     assert [row["id"] for row in rows] == ["paused", "cancel-requested"]
 
 
+def test_training_job_index_emits_one_row_per_canonical_training_task():
+    import app as app_module
+
+    rows = app_module._training_job_index_rows([
+        {
+            "id": "legacy-shadow",
+            "task_id": "train_0123456789abcdef",
+            "status": "queued",
+            "asset_algorithm_name": "旧投影",
+            "created_at": "2026-09-20T00:00:00Z",
+        },
+        {
+            "id": "train_0123456789abcdef",
+            "task_id": "train_0123456789abcdef",
+            "status": "running",
+            "task_status": "RUNNING",
+            "asset_algorithm_name": "正式算法",
+            "created_at": "2026-09-20T00:00:01Z",
+        },
+    ])
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "train_0123456789abcdef"
+    assert rows[0]["asset_algorithm_name"] == "正式算法"
+
+
 def test_cached_bootstrap_snapshot_overlays_live_jobs_without_mutating_core_cache(tmp_path, monkeypatch):
     import app as app_module
 

@@ -49,6 +49,9 @@ export function installTrainingDraftRuntime({
     const profile = inputValue('trV3ResourceProfile');
     const device = inputValue('trV3Device');
     const gpuPolicy = inputValue('trV3GpuPolicy');
+    const manualBatch = numericInput('trV3ManualBatch');
+    const manualWorkers = numericInput('trV3ManualWorkers');
+    const manualPrecision = inputValue('trV3ManualPrecision');
 
     return createTrainingDraft({
       ...draft,
@@ -61,6 +64,12 @@ export function installTrainingDraftRuntime({
         profile: profile ?? draft.resource?.profile,
         device: device ?? draft.resource?.device,
         gpuPolicy: gpuPolicy ?? draft.resource?.gpuPolicy,
+        batch: manualBatch ?? draft.resource?.batch,
+        workers: manualWorkers ?? draft.resource?.workers,
+      },
+      config: {
+        ...draft.config,
+        precision: manualPrecision ?? draft.config?.precision,
       },
     });
   }
@@ -176,7 +185,7 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422518',
+    build: 'training-draft-runtime-422519',
     sync,
     update,
     subscribe,

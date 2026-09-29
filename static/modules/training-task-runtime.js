@@ -319,7 +319,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     };
   }
 
-  function acceptCreatedTask(task, {algorithmId = '', framework = '', queuePriority = 50} = {}) {
+  function acceptCreatedTask(task, {algorithmId = '', algorithmName = '', framework = '', queuePriority = 50} = {}) {
     const taskId = String(task?.task_id || '').trim();
     if (!taskId) throw new Error('训练任务响应缺少 task_id');
     const status = String(task?.status || task?.persisted_status || 'QUEUED').trim().toLowerCase();
@@ -331,6 +331,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       task_status: String(task?.status || '').trim().toUpperCase(),
       asset_algorithm_id: String(algorithmId || task?.asset_algorithm_id || ''),
       algorithm_asset_id: String(algorithmId || task?.algorithm_asset_id || ''),
+      asset_algorithm_name: String(algorithmName || task?.asset_algorithm_name || task?.algorithm_name || '已删除算法'),
       framework: String(framework || task?.framework || ''),
       queue_priority: Number(task?.priority ?? queuePriority ?? 50),
       priority_scheme: 'lower_number_first',
@@ -595,7 +596,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   }
 
   const runtime = {
-    build: 'training-task-runtime-422508',
+    build: 'training-task-runtime-422509',
     refresh,
     acceptCreatedTask,
     batchAction,

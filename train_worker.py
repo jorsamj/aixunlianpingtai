@@ -926,7 +926,7 @@ def main():
         import ultralytics
         import torch
         from ultralytics import YOLO
-        from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
+        from platform_core.training_metrics import TrainingMetrics
         publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
@@ -950,18 +950,16 @@ def main():
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
         model = YOLO(actual_model)
-        publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)
-        resolved = resolve_resources({
-            **train_args,
-            "device": runtime_device,
-            "resource_strategy": args.resource_strategy,
-            "resource_profile": args.resource_profile,
-            "gpu_policy": args.gpu_policy,
-            "precision": precision,
-        }, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
+        resolved = read_json(resolution_path, {})
+        if not (
+            isinstance(resolved, dict)
+            and int(resolved.get("resolved_batch") or 0) > 0
+            and int(resolved.get("resolved_workers") if resolved.get("resolved_workers") is not None else -1) >= 0
+        ):
+            raise RuntimeError("RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid")
+        publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
-        persist_resolution(resolution_path, resolved)
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,

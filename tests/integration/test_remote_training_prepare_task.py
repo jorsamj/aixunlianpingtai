@@ -252,7 +252,7 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
 
     prep = repository.get(prep_id)
     target = repository.get(target_id)
-    assert prep is not None and prep.status is TaskStatus.SUCCEEDED
+    assert prep is not None and prep.status is TaskStatus.SUCCEEDED, prep.error if prep else "missing prep"
     assert target is not None and target.status is TaskStatus.QUEUED
 
     payload = artifacts.read_json(target_id, "payload.json")
@@ -329,7 +329,7 @@ def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_que
     assert prep is not None and prep.status is TaskStatus.FAILED
     assert target is not None
     assert target.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
-    assert target.stage == "remote_input_preparation_failed"
+    assert target.stage == "training_input_preparation_failed"
     assert "REMOTE_TRAINING_STORAGE_REQUIRED" in str(target.error)
     payload = artifacts.read_json(target_id, "payload.json")
     assert payload["remote_input_state"] == "PREPARING"

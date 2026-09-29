@@ -8,6 +8,7 @@ available for checkpoint-only revalidation.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,6 +16,12 @@ from .task_runtime import TaskKind, TaskStatus
 
 RECOVERY_ACTION_REVALIDATE = "revalidate_checkpoint"
 RECOVERABLE_FAILURE_STAGES = {"final_validation", "post_training"}
+_ERROR_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b")
+_WRAPPER_ERROR_CODES = {
+    "TRAINING_PREPARATION_FAILED",
+    "TRAINING_PROCESS_FAILED",
+    "TRAINING_FAILED",
+}
 
 
 def _best_checkpoint(failure: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -63,6 +70,87 @@ def _failure_reason(task, failure: Mapping[str, Any]) -> str:
     return str(getattr(task, "error", None) or getattr(task, "current_item", None) or "").strip()
 
 
+def _failure_diagnostics(task, failure: Mapping[str, Any]) -> list[str]:
+    values = [
+        failure.get("last_job_message"),
+        getattr(task, "error", None),
+        failure.get("recovery_error"),
+        failure.get("completion_error"),
+        getattr(task, "current_item", None),
+    ]
+    diagnostics: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in diagnostics:
+            diagnostics.append(text)
+    return diagnostics
+
+
+def _failure_stage_for_code(code: str, declared_stage: str) -> tuple[int, str]:
+    upper = str(code or "").upper()
+    if upper.startswith(("ADMISSION_", "TRAINING_ADMISSION_", "REQUEST_")):
+        return 1, "admission"
+    if upper.startswith(("DUPLICATE_", "MATERIAL_", "INPUT_", "DATASET_")):
+        return 2, "data_integrity"
+    if upper.startswith(("LABEL_", "GOVERNANCE_")):
+        return 3, "label_contract"
+    if upper.startswith(("RESOURCE_", "GPU_", "CUDA_")):
+        return 4, "resource_validation"
+    if upper.startswith(("PROCESS_", "WORKER_", "REMOTE_")):
+        return 5, "worker_process"
+    if upper.startswith(("TRAINER_", "ULTRALYTICS_")):
+        return 6, "trainer"
+    if upper.startswith(("VALIDATION_", "MODEL_VALIDATION_", "CHECKPOINT_")):
+        return 7, "final_validation"
+    if upper.startswith(("ARCHIVE_", "COMMIT_", "PUBLISH_")):
+        return 8, "archive"
+    normalized = str(declared_stage or "").strip().lower()
+    if normalized in {"training_input_pending", "training_input_preparation_failed", "materializing"}:
+        return 2, "training_input"
+    if normalized in {"resource_validation", "resources", "resources_ready"}:
+        return 4, "resource_validation"
+    if normalized in {"training_process", "worker_process"}:
+        return 5, "worker_process"
+    if normalized in {"training", "trainer"}:
+        return 6, "trainer"
+    if normalized in {"final_validation", "post_training"}:
+        return 7, "final_validation"
+    if normalized in {"archive", "finalizing_commit", "committed"}:
+        return 8, "archive"
+    return 9, normalized or "unknown"
+
+
+def _primary_failure(task, failure: Mapping[str, Any]) -> dict[str, Any]:
+    diagnostics = _failure_diagnostics(task, failure)
+    declared_stage = str(failure.get("failure_stage") or getattr(task, "stage", None) or "").strip()
+    candidates: list[tuple[int, int, str, str]] = []
+    for diagnostic_index, diagnostic in enumerate(diagnostics):
+        codes = _ERROR_CODE_RE.findall(diagnostic)
+        specific = [code for code in codes if code not in _WRAPPER_ERROR_CODES]
+        for code in specific or codes:
+            priority, stage = _failure_stage_for_code(code, declared_stage)
+            candidates.append((priority, diagnostic_index, code, stage))
+    if candidates:
+        _, diagnostic_index, code, stage = min(candidates)
+        raw = diagnostics[diagnostic_index]
+    else:
+        _, stage = _failure_stage_for_code("", declared_stage)
+        code = None
+        raw = diagnostics[0] if diagnostics else "训练任务失败"
+
+    messages = {
+        "DUPLICATE_ANNOTATION_CONFLICT": "发现重复图片存在不同标注，训练已在启动 Worker 前阻止。",
+        "RESOURCE_MANUAL_INVALID": "手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。",
+        "GPU_MEMORY_INSUFFICIENT": "当前 GPU 资源不足以安全启动训练，请调整配置或等待可用资源。",
+    }
+    return {
+        "primary_error_code": code,
+        "primary_stage": stage,
+        "primary_message": messages.get(str(code or ""), raw),
+        "secondary_diagnostics": diagnostics,
+    }
+
+
 def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = False) -> dict[str, Any]:
     """Project one task's durable recovery contract without mutating it."""
     if task.kind is not TaskKind.TRAINING:
@@ -93,6 +181,7 @@ def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = F
         and checkpoint_available
         and declared_action == RECOVERY_ACTION_REVALIDATE
     )
+    primary = _primary_failure(task, failure)
     return {
         "task_id": task.task_id,
         "project_id": task.project_id,
@@ -104,6 +193,7 @@ def training_recovery_truth(task, artifacts, *, verify_checkpoint_hash: bool = F
         "declared_recovery_action": declared_action,
         "failure_stage": failure_stage,
         "failure_reason": _failure_reason(task, failure),
+        **primary,
         "completion_handshake": str(
             failure.get("completion_handshake")
             or failure.get("completion_error")

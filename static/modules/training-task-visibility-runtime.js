@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422563';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422564';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';

@@ -176,3 +176,42 @@ def test_recovery_reason_prefers_worker_root_cause_over_completion_handshake(tmp
     assert truth["failure_reason"].startswith("训练失败：RESOURCE_RUNTIME_MISMATCH")
     assert truth["failure_reason"] != "job status is not done"
     assert truth["completion_handshake"] == "job status is not done"
+
+
+def test_manual_resource_failure_is_the_single_primary_failure_before_worker_start():
+    task = failed_training_task()
+    task.error = (
+        "TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: "
+        "requested batch=128 exceeds current GPU budget"
+    )
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+
+    assert truth["primary_error_code"] == "RESOURCE_MANUAL_INVALID"
+    assert truth["primary_stage"] == "resource_validation"
+    assert truth["primary_message"] == (
+        "手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。"
+    )
+    assert truth["process_returncode"] is None
+    assert truth["checkpoint_available"] is False
+    assert task.error in truth["secondary_diagnostics"]
+
+
+def test_data_integrity_failure_outranks_process_completion_diagnostics():
+    task = failed_training_task()
+    task.error = "DUPLICATE_ANNOTATION_CONFLICT: duplicate annotations disagree"
+    failure = {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "failure_stage": "training_process",
+        "completion_error": "job status is not done",
+        "process_returncode": 1,
+    }
+
+    truth = training_recovery_truth(task, FakeArtifacts(failure))
+
+    assert truth["primary_error_code"] == "DUPLICATE_ANNOTATION_CONFLICT"
+    assert truth["primary_stage"] == "data_integrity"
+    assert truth["primary_message"] == "发现重复图片存在不同标注，训练已在启动 Worker 前阻止。"
+    assert truth["completion_handshake"] == "job status is not done"
+    assert "job status is not done" in truth["secondary_diagnostics"]
