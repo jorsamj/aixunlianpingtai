@@ -129,7 +129,21 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     claimed = client.claim_assignment()
     assert claimed["assignment"]["assignment_lease_token"] == "assignment-secret"
     current = client.start_execution("task-1", "assignment-secret")
-    heartbeat = client.heartbeat(current, progress=25, stage="running")
+    heartbeat = client.heartbeat(
+        current,
+        progress=25,
+        stage="running",
+        resource_resolution={
+            "resource_strategy": "auto",
+            "resolved_batch": 32,
+            "resolved_workers": 4,
+            "resolved_cache": False,
+            "node_id": "node:1",
+            "execution_generation": 1,
+            "assigned_device": "cuda:0",
+            "gpu_uuid": "GPU-node-1",
+        },
+    )
     logged = client.append_log(current, "hello\n")
     prepared = client.prepare_result_upload(current, sha256="a" * 64, size_bytes=123)
     confirmed = client.confirm_result_upload(
@@ -156,6 +170,7 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[1]["url"].endswith("/assignments/task-1/start")
     assert session.calls[2]["json"]["execution_generation"] == 1
     assert session.calls[2]["json"]["execution_lease_token"] == "execution-secret"
+    assert session.calls[2]["json"]["resource_resolution"]["resolved_batch"] == 32
     assert session.calls[4]["url"].endswith("/executions/task-1/result-upload/prepare")
     assert session.calls[4]["json"]["sha256"] == "a" * 64
     assert session.calls[4]["json"]["size_bytes"] == 123

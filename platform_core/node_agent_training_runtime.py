@@ -341,11 +341,13 @@ class AgentTrainingRunner:
         progress: float,
         stage: str,
         current_item: str = "",
+        resource_resolution: Mapping[str, Any] | None = None,
     ) -> None:
         monitor.beat(
             progress=max(0.0, min(100.0, float(progress))),
             stage=str(stage),
             current_item=current_item or None,
+            resource_resolution=resource_resolution,
         )
         self._assert_active(monitor)
 
@@ -1224,10 +1226,22 @@ class AgentTrainingRunner:
                 f"[agent] starting training worker "
                 f"generation={lease.generation} snapshot={snapshot_id}\n",
             )
+            prepared_job = _read_json(job_file, {})
+            resource_resolution = (
+                prepared_job.get("resolved_resources")
+                if isinstance(prepared_job, Mapping)
+                else None
+            )
+            if not isinstance(resource_resolution, Mapping):
+                raise AgentTrainingRuntimeError(
+                    "RESOURCE_PREPARE_REQUIRED: remote resolved resource truth is missing before Trainer spawn"
+                )
             self._heartbeat(
                 monitor,
                 progress=15,
                 stage="REMOTE_TRAINING_STARTING_WORKER",
+                current_item="资源校验完成，准备启动训练器",
+                resource_resolution=resource_resolution,
             )
 
             env = {

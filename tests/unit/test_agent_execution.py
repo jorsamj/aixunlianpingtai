@@ -246,6 +246,50 @@ def test_cross_node_cannot_use_another_nodes_execution_lease(tmp_path):
     assert failure.value.status_code == 403
 
 
+def test_training_heartbeat_persists_fenced_resource_resolution(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    _nodes, token = create_node(repository)
+    service = execution_service(repository, artifacts)
+    claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
+    started = start(service, "train-agent", "gpu-agent", token, claimed)
+    lease = started["execution"]
+    resolution = {
+        "resource_strategy": "auto",
+        "resource_profile": "balanced",
+        "gpu_policy": "exclusive",
+        "precision": "auto",
+        "resolved_batch": 32,
+        "resolved_workers": 4,
+        "resolved_cache": False,
+        "node_id": "gpu-agent",
+        "execution_generation": lease["generation"],
+        "assigned_device": "cuda:0",
+        "gpu_uuid": "GPU-gpu-agent",
+        "gpu_name": "NVIDIA A800",
+        "gpu_free_bytes_at_assignment": 30 * 1024**3,
+        "sampled_at": "2026-09-29T14:00:00+00:00",
+    }
+
+    heartbeat = service.heartbeat_execution(
+        "gpu-agent",
+        token,
+        "train-agent",
+        lease["lease_token"],
+        lease["generation"],
+        progress=15,
+        stage="REMOTE_TRAINING_STARTING_WORKER",
+        resource_resolution=resolution,
+    )
+
+    assert heartbeat["resource_resolution_committed"] is True
+    assert artifacts.read_json(
+        "train-agent",
+        "resolved-resources.json",
+        default={},
+    ) == resolution
+
+
 def test_disabled_node_cannot_claim_new_work_but_can_finish_existing_execution(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "train-running")

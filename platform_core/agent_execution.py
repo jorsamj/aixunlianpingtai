@@ -33,6 +33,7 @@ from .task_runtime.repository import TERMINAL_STATUSES, _from_row
 DEFAULT_EXECUTION_LEASE_SECONDS = 30
 MAX_REMOTE_LOG_BYTES = 64 * 1024
 MAX_REMOTE_RESULT_METADATA_BYTES = 64 * 1024
+MAX_REMOTE_RESOURCE_RESOLUTION_BYTES = 64 * 1024
 
 
 class AgentExecutionError(RuntimeError):
@@ -68,6 +69,107 @@ def _json(value: object, fallback):
         return json.loads(str(value or ""))
     except (TypeError, ValueError):
         return fallback
+
+
+def _sanitize_training_resource_resolution(
+    value: object,
+    *,
+    node_id: str,
+    execution_generation: int,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must be an object",
+            422,
+        )
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        clean = json.loads(encoded.decode("utf-8"))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must contain finite JSON values",
+            422,
+        ) from error
+    if len(encoded) > MAX_REMOTE_RESOURCE_RESOLUTION_BYTES:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_TOO_LARGE",
+            "resource_resolution exceeds 64 KiB",
+            413,
+        )
+
+    stack = [clean]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for raw_key, item in current.items():
+                key = str(raw_key).strip().lower()
+                if any(
+                    marker in key
+                    for marker in (
+                        "authorization",
+                        "credential",
+                        "password",
+                        "secret",
+                        "token",
+                    )
+                ):
+                    raise AgentExecutionError(
+                        "REMOTE_RESOURCE_RESOLUTION_INVALID",
+                        "resource_resolution contains forbidden credential fields",
+                        422,
+                    )
+                stack.append(item)
+        elif isinstance(current, list):
+            stack.extend(current)
+
+    try:
+        generation = int(clean.get("execution_generation") or 0)
+        resolved_batch = int(clean.get("resolved_batch") or 0)
+        resolved_workers = int(
+            clean.get("resolved_workers")
+            if clean.get("resolved_workers") is not None
+            else -1
+        )
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution contains invalid numeric fields",
+            422,
+        ) from error
+
+    assigned_device = str(clean.get("assigned_device") or "").strip()
+    resolution_node = str(clean.get("node_id") or "").strip()
+    strategy = str(clean.get("resource_strategy") or "").strip().lower()
+    if (
+        generation != int(execution_generation)
+        or resolution_node != str(node_id)
+        or strategy not in {"auto", "manual"}
+        or not assigned_device
+        or resolved_batch <= 0
+        or resolved_workers < 0
+        or "resolved_cache" not in clean
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution does not match the current execution contract",
+            422,
+        )
+    if assigned_device.startswith("cuda:") and not str(clean.get("gpu_uuid") or "").strip():
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "CUDA resource_resolution must bind the selected GPU UUID",
+            422,
+        )
+    return clean
 
 
 def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
@@ -703,14 +805,26 @@ class AgentExecutionService:
         progress=None,
         stage=None,
         current_item=None,
+        resource_resolution=None,
     ) -> dict[str, Any]:
-        self._owned_execution(
+        current = self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
         )
+        resolution = _sanitize_training_resource_resolution(
+            resource_resolution,
+            node_id=node_id,
+            execution_generation=execution_generation,
+        )
+        if resolution is not None and current.kind is not TaskKind.TRAINING:
+            raise AgentExecutionError(
+                "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                "resource_resolution is only valid for TRAINING executions",
+                409,
+            )
         try:
             task = self.fenced.heartbeat(
                 task_id,
@@ -727,9 +841,32 @@ class AgentExecutionService:
                 "remote execution heartbeat lost ownership",
                 409,
             ) from error
+        if resolution is not None:
+            # Re-prove generation/node ownership immediately before publishing
+            # the Agent's already-resolved planning truth. This is a projection
+            # of the canonical planner result, never a second resource planner.
+            current = self._owned_execution(
+                node_id,
+                node_token,
+                task_id,
+                execution_lease_token,
+                execution_generation,
+            )
+            if current.kind is not TaskKind.TRAINING:
+                raise AgentExecutionError(
+                    "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                    "resource_resolution is only valid for TRAINING executions",
+                    409,
+                )
+            self.artifacts.atomic_write_json(
+                current.task_id,
+                "resolved-resources.json",
+                resolution,
+            )
         return {
             "task": _task_public(task),
             "cancel_requested": task.status is TaskStatus.CANCEL_REQUESTED,
+            "resource_resolution_committed": resolution is not None,
         }
 
     def append_log(
@@ -1899,6 +2036,7 @@ def agent_executor_router(
             progress=payload.get("progress"),
             stage=payload.get("stage"),
             current_item=payload.get("current_item"),
+            resource_resolution=payload.get("resource_resolution"),
         )
 
     @router.post("/executions/{task_id}/logs")

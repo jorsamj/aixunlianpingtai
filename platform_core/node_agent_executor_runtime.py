@@ -235,6 +235,7 @@ class NodeExecutorClient:
         progress: float | None = None,
         stage: str | None = None,
         current_item: str | None = None,
+        resource_resolution: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "execution_lease_token": lease.lease_token,
@@ -246,6 +247,8 @@ class NodeExecutorClient:
             payload["stage"] = str(stage)
         if current_item is not None:
             payload["current_item"] = str(current_item)
+        if resource_resolution is not None:
+            payload["resource_resolution"] = dict(resource_resolution)
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/heartbeat",
             payload,
@@ -746,7 +749,14 @@ class ExecutionLeaseMonitor:
             except Exception:
                 pass
 
-    def beat(self, *, progress=None, stage=None, current_item=None) -> dict[str, Any]:
+    def beat(
+        self,
+        *,
+        progress=None,
+        stage=None,
+        current_item=None,
+        resource_resolution: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self.fenced.is_set():
             raise RemoteExecutionFenced(self.last_error or "remote execution is fenced")
         try:
@@ -755,6 +765,7 @@ class ExecutionLeaseMonitor:
                 progress=progress,
                 stage=stage,
                 current_item=current_item,
+                resource_resolution=resource_resolution,
             )
         except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
             self._mark_fenced(error)

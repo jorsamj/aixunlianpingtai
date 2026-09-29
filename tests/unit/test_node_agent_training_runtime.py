@@ -728,6 +728,17 @@ def test_real_subprocess_remote_training_success(tmp_path):
         (heartbeat.get("stage") or "") == "first_batch"
         for heartbeat in client.heartbeats
     )
+    start_heartbeat = next(
+        heartbeat
+        for heartbeat in client.heartbeats
+        if (heartbeat.get("stage") or "") == "REMOTE_TRAINING_STARTING_WORKER"
+    )
+    resolution = start_heartbeat["resource_resolution"]
+    assert resolution["node_id"] == "gpu-agent"
+    assert resolution["execution_generation"] == current.generation
+    assert resolution["assigned_device"] == "cuda:1"
+    assert resolution["gpu_uuid"] == "GPU-agent-test"
+    assert resolution["resolved_batch"] == 2
 
 
 
