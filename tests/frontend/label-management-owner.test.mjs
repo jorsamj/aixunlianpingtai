@@ -40,7 +40,8 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /查看样例/);
   assert.match(app, /换一批/);
   assert.match(app, /历史 class_id 当前对应标签仅用于诊断身份错位，不代表旧标签真实语义/);
-  assert.match(app, /请先查看样例确认该历史标签真实语义，再选择目标标签/);
+  assert.match(app, /请查看样例确认历史标签真实语义，并手工选择目标标签/);
+  assert.match(app, /已根据历史合并关系预填当前目标，可与其他映射一起统一修复/);
   assert.match(app, /统一创建后台修复/);
   assert.match(app, /已配置.*未配置/);
   assert.match(app, /JSON\.stringify\(\{mappings/);

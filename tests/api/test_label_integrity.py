@@ -1,6 +1,7 @@
 import io
 import json
 import sqlite3
+import threading
 from contextlib import closing
 
 import app as app_module
@@ -620,3 +621,229 @@ def test_batch_repair_submits_only_configured_sources_and_keeps_external_cas(
     }
     current = annotations.get(image["id"])
     assert [box["label"] for box in current["boxes"]] == ["head", "unconfigured"]
+
+
+def test_repair_admission_holds_one_project_lock_through_freeze_and_create(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [{"label": "head", "class_id": 12}],
+        annotation_state="annotated",
+        annotation_scope=["head"],
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+
+    original_get_many = AnnotationRepository.get_many
+    first_inside_freeze = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+
+    def blocking_get_many(self, image_ids):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            ordinal = call_count
+        if ordinal == 1:
+            first_inside_freeze.set()
+            assert release_first.wait(3)
+        return original_get_many(self, image_ids)
+
+    monkeypatch.setattr(AnnotationRepository, "get_many", blocking_get_many)
+    responses = []
+
+    def submit(mark_done=None):
+        responses.append(client.post(
+            f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+            json={"source_label": "head", "target_label": "smoke"},
+        ))
+        if mark_done is not None:
+            mark_done.set()
+
+    first = threading.Thread(target=submit)
+    first.start()
+    assert first_inside_freeze.wait(3)
+    second = threading.Thread(target=submit, args=(second_finished,))
+    second.start()
+
+    assert second_finished.wait(0.2) is False
+    with call_lock:
+        assert call_count == 1
+
+    release_first.set()
+    first.join(3)
+    second.join(3)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert sorted(response.status_code for response in responses) == [202, 409]
+
+
+def test_repair_worker_treats_externally_resolved_stale_record_as_noop(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [{"label": "head", "class_id": 12}],
+        annotation_state="annotated",
+        annotation_scope=["head"],
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"source_label": "head", "target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+
+    resolved = annotations.upsert(
+        image["id"],
+        [{"label": "fire", "class_id": 0}],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+        project_material=True,
+    )
+
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["failed"] == 0
+    assert final["changed_images"] == 0
+    assert final["noop_resolved"] == 1
+    assert final["already_resolved"] == 1
+    current = annotations.get(image["id"])
+    assert current["version"] == resolved["version"]
+    assert current["boxes"] == resolved["boxes"]
+
+
+def test_merged_scope_fixture_repairs_once_and_stays_clean_across_full_audits(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, _image = seeded_project
+    project = app_module.get_project(project_id)
+    project["labels"] = [
+        "safetyhelmet", "NOT_safetyhelmet", "people",
+        "Helmet", "No_Helmet", "No_helmet_detected", "Persona",
+        "Safety_helmet_detected", "helmet", "safetyhelmet2",
+    ]
+    project["label_meta"] = [
+        {"status": "active"},
+        {"status": "active"},
+        {"status": "active"},
+        {"status": "merged", "merged_into": "safetyhelmet"},
+        {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+        {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+        {"status": "merged", "merged_into": "people"},
+        {"status": "merged", "merged_into": "safetyhelmet"},
+        {"status": "merged", "merged_into": "Helmet"},
+        {"status": "merged", "merged_into": "safetyhelmet"},
+    ]
+    app_module.save_project(project)
+    materials = app_module.material_store(project_id)
+    for image_id in ("empty-scope-history", "persisted-merged-scope"):
+        materials.upsert({
+            "id": image_id,
+            "filename": f"{image_id}.jpg",
+            "stored_name": f"{image_id}.jpg",
+            "object_key": f"uploads/{image_id}.jpg",
+            "processing_status": "processed",
+        })
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    active_scope = ["safetyhelmet", "NOT_safetyhelmet", "people"]
+    annotations.upsert(
+        "empty-scope-history",
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=active_scope,
+        project_material=True,
+    )
+    empty_payload = annotations._content_payload([], "confirmed_empty", [])
+    with closing(annotations._connect()) as database, database:
+        database.execute(
+            "UPDATE annotations SET scope_json='[]',content_digest=? WHERE image_id=?",
+            (empty_payload["content_digest"], "empty-scope-history"),
+        )
+    merged_sources = [
+        "Helmet", "No_Helmet", "No_helmet_detected", "Persona",
+        "Safety_helmet_detected", "helmet", "safetyhelmet2",
+    ]
+    annotations.upsert(
+        "persisted-merged-scope",
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=merged_sources,
+        project_material=True,
+    )
+    assert annotations.get("empty-scope-history")["annotation_scope"] == sorted(active_scope)
+
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    def full_audit():
+        created = client.post(
+            f"/api/v54/projects/{project_id}/labels/integrity/audits"
+        )
+        assert created.status_code == 202, created.text
+        assert scheduler.run_once() is True
+        issues = client.get(
+            f"/api/v54/projects/{project_id}/labels/integrity/audits/{created.json()['task_id']}/issues",
+            params={"limit": 500},
+        )
+        assert issues.status_code == 200, issues.text
+        return created.json(), issues.json()
+
+    first_audit, first_issues = full_audit()
+    incomplete = {
+        (item["image_id"], item["label_code"])
+        for item in first_issues["items"]
+        if item["issue_type"] == "INCOMPLETE_MERGE"
+    }
+    assert not any(image_id == "empty-scope-history" for image_id, _ in incomplete)
+    assert {
+        label for image_id, label in incomplete
+        if image_id == "persisted-merged-scope"
+    } == set(merged_sources)
+
+    mappings = [
+        {"source_label": "Helmet", "target_label": "safetyhelmet"},
+        {"source_label": "No_Helmet", "target_label": "NOT_safetyhelmet"},
+        {"source_label": "No_helmet_detected", "target_label": "NOT_safetyhelmet"},
+        {"source_label": "Persona", "target_label": "people"},
+        {"source_label": "Safety_helmet_detected", "target_label": "safetyhelmet"},
+        {"source_label": "helmet", "target_label": "safetyhelmet"},
+        {"source_label": "safetyhelmet2", "target_label": "safetyhelmet"},
+    ]
+    repair = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{first_audit['task_id']}/repairs",
+        json={"mappings": mappings},
+    )
+    assert repair.status_code == 202, repair.text
+    assert repair.json()["still_requires_repair"] == 1
+    assert scheduler.run_once() is True
+    repaired = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{repair.json()['task_id']}"
+    ).json()
+    assert repaired["status"] == "SUCCEEDED"
+    assert annotations.get("persisted-merged-scope")["annotation_scope"] == sorted(active_scope)
+
+    for _ in range(2):
+        _audit, issues = full_audit()
+        assert issues["summary"]["issue_count"] == 0
+        assert issues["groups"] == []
+        assert annotations.get("empty-scope-history")["annotation_scope"] == sorted(active_scope)
+        assert annotations.get("persisted-merged-scope")["annotation_scope"] == sorted(active_scope)

@@ -86,7 +86,11 @@ def _catalog(project_path: Path) -> tuple[dict[str, dict], str]:
         rows[code] = {
             "code": code,
             "class_id": class_id,
-            "status": str(info.get("status") or "active").strip().lower(),
+            "status": (
+                "inactive"
+                if info.get("active") is False
+                else str(info.get("status") or "active").strip().lower()
+            ),
             "merged_into": str(info.get("merged_into") or "").strip(),
         }
     fingerprint = hashlib.sha256(
@@ -387,6 +391,147 @@ def _active_integrity_repair(project_id, repository, artifacts):
         cursor = page.next_cursor
 
 
+def _freeze_orphan_repair(
+    project_id,
+    project_path,
+    repository,
+    artifacts,
+    audit_task_id,
+    frozen_mappings,
+    audit_path,
+):
+    """Freeze current GT and publish its task while the caller holds the project lock."""
+    from .material_batches import BatchSelection, SELECTION_REF
+
+    uri = audit_path.resolve().as_uri() + "?mode=ro"
+    sources = [item["source_label"] for item in frozen_mappings]
+    placeholders = ",".join("?" for _ in sources)
+    with closing(sqlite3.connect(uri, uri=True)) as database:
+        candidates = [
+            str(row[0])
+            for row in database.execute(
+                "SELECT DISTINCT r.image_id FROM annotation_references r "
+                f"WHERE r.label_code IN ({placeholders}) AND EXISTS ("
+                "SELECT 1 FROM issues i WHERE i.image_id=r.image_id AND i.label_code=r.label_code"
+                ") ORDER BY r.image_id",
+                sources,
+            ).fetchall()
+        ]
+
+    annotations = AnnotationRepository(project_path)
+    frozen: list[tuple[str, str]] = []
+    already_resolved = 0
+    for offset in range(0, len(candidates), 500):
+        chunk = candidates[offset:offset + 500]
+        current = annotations.get_many(chunk)
+        for image_id in chunk:
+            record = current[image_id]
+            references = _reference_map(record)
+            relevant = [
+                dict(mapping) for mapping in frozen_mappings
+                if mapping["source_label"] in references
+            ]
+            if not relevant:
+                already_resolved += 1
+                continue
+            source_digest = annotations.record_digest(record)
+            preview = annotations.plan_label_mappings(
+                record, mappings=relevant,
+            )
+            plan = {
+                "operation": "REMAP_ANNOTATION_LABELS",
+                "repair_mode": True,
+                "audit_task_id": str(audit_task_id),
+                "source_labels": [item["source_label"] for item in relevant],
+                "source_label": (
+                    relevant[0]["source_label"] if len(relevant) == 1 else ""
+                ),
+                "target_label": (
+                    relevant[0]["target_label"] if len(relevant) == 1 else ""
+                ),
+                "target_class_id": (
+                    relevant[0]["target_class_id"] if len(relevant) == 1 else None
+                ),
+                "mappings": relevant,
+                "target_canonical_identities": [
+                    {
+                        "label_code": item["target_label"],
+                        "class_id": item["target_class_id"],
+                    }
+                    for item in relevant
+                ],
+                "source_digest": source_digest,
+                "expected_digest": source_digest,
+                "result_digest": preview["content_digest"],
+                "changed_boxes": int(preview["changed_boxes"]),
+                "changed_scope": int(preview.get("changed_scope") or 0),
+                "planned_at": utc_now(),
+            }
+            frozen.append((
+                image_id,
+                json.dumps(plan, ensure_ascii=False, sort_keys=True),
+            ))
+
+    task_id = uuid.uuid4().hex
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    with closing(BatchSelection(selection_path)) as manifest:
+        with manifest.transaction():
+            manifest.database.executemany(
+                "INSERT INTO selection(image_id,tombstone_json) VALUES (?,?)",
+                frozen,
+            )
+            manifest.database.executemany(
+                "INSERT INTO meta(key,value) VALUES (?,?)",
+                (
+                    ("frozen", utc_now()),
+                    ("selection_kind", "label_integrity_repair"),
+                    ("audit_task_id", str(audit_task_id)),
+                    ("annotation_revision", str(annotations.current_revision())),
+                    ("mapping_count", str(len(frozen_mappings))),
+                ),
+            )
+        checkpoint = manifest.summary()
+    stats = {
+        "candidate": len(candidates),
+        "candidate_images": len(candidates),
+        "still_requires_repair": len(frozen),
+        "already_resolved": already_resolved,
+        "mapping_count": len(frozen_mappings),
+    }
+    request = {
+        "operation": "REMAP_ANNOTATION_LABELS",
+        "options": {
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
+            "target_label": (
+                frozen_mappings[0]["target_label"]
+                if len({item["target_label"] for item in frozen_mappings}) == 1
+                else ""
+            ),
+            "mappings": frozen_mappings,
+            "repair_mode": True,
+            "audit_task_id": str(audit_task_id),
+            "retire_sources_on_success": False,
+            **stats,
+        },
+        "selection_spec": {
+            "scope": "LABEL_INTEGRITY_REPAIR",
+            "audit_task_id": str(audit_task_id),
+        },
+    }
+    artifacts.atomic_write_json(task_id, "request.json", request)
+    artifacts.atomic_write_json(task_id, "checkpoints/worker.json", checkpoint)
+    task = TaskRecord.new(
+        task_id,
+        str(project_id),
+        TaskKind.MATERIAL_BATCH,
+        "request.json",
+        f"materials:{project_id}",
+        required_capabilities=("materials.batch",),
+    )
+    return repository.create(task, artifacts=artifacts), stats
+
+
 def create_orphan_repair(
     project_id,
     project_path,
@@ -396,7 +541,7 @@ def create_orphan_repair(
     mappings,
 ):
     """Freeze one multi-mapping repair after re-reading current GT."""
-    from .material_batches import BatchRequestError, BatchSelection, SELECTION_REF
+    from .material_batches import BatchRequestError
 
     normalized: list[dict] = []
     seen_sources: set[str] = set()
@@ -466,138 +611,15 @@ def create_orphan_repair(
                 "当前已有标签完整性修复任务运行中，请等待完成后重新 Full Audit。",
                 409,
             )
-    uri = audit_path.resolve().as_uri() + "?mode=ro"
-    sources = [item["source_label"] for item in frozen_mappings]
-    placeholders = ",".join("?" for _ in sources)
-    with closing(sqlite3.connect(uri, uri=True)) as database:
-        candidates = [
-            str(row[0])
-            for row in database.execute(
-                "SELECT DISTINCT r.image_id FROM annotation_references r "
-                f"WHERE r.label_code IN ({placeholders}) AND EXISTS ("
-                "SELECT 1 FROM issues i WHERE i.image_id=r.image_id AND i.label_code=r.label_code"
-                ") ORDER BY r.image_id",
-                sources,
-            ).fetchall()
-        ]
-
-    annotations = AnnotationRepository(project_path)
-    frozen: list[tuple[str, str]] = []
-    already_resolved = 0
-    for offset in range(0, len(candidates), 500):
-        chunk = candidates[offset:offset + 500]
-        current = annotations.get_many(chunk)
-        for image_id in chunk:
-            record = current[image_id]
-            references = _reference_map(record)
-            relevant = [
-                dict(mapping) for mapping in frozen_mappings
-                if mapping["source_label"] in references
-            ]
-            if not relevant:
-                already_resolved += 1
-                continue
-            source_digest = annotations.record_digest(record)
-            preview = annotations.plan_label_mappings(
-                record, mappings=relevant,
-            )
-            plan = {
-                "operation": "REMAP_ANNOTATION_LABELS",
-                "repair_mode": True,
-                "audit_task_id": str(audit_task_id),
-                "source_labels": [item["source_label"] for item in relevant],
-                "source_label": (
-                    relevant[0]["source_label"] if len(relevant) == 1 else ""
-                ),
-                "target_label": (
-                    relevant[0]["target_label"] if len(relevant) == 1 else ""
-                ),
-                "target_class_id": (
-                    relevant[0]["target_class_id"] if len(relevant) == 1 else None
-                ),
-                "mappings": relevant,
-                "target_canonical_identities": [
-                    {
-                        "label_code": item["target_label"],
-                        "class_id": item["target_class_id"],
-                    }
-                    for item in relevant
-                ],
-                "source_digest": source_digest,
-                "expected_digest": source_digest,
-                "result_digest": preview["content_digest"],
-                "changed_boxes": int(preview["changed_boxes"]),
-                "changed_scope": int(preview.get("changed_scope") or 0),
-                "planned_at": utc_now(),
-            }
-            frozen.append((image_id, json.dumps(plan, ensure_ascii=False, sort_keys=True)))
-
-    task_id = uuid.uuid4().hex
-    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
-    with closing(BatchSelection(selection_path)) as manifest:
-        with manifest.transaction():
-            manifest.database.executemany(
-                "INSERT INTO selection(image_id,tombstone_json) VALUES (?,?)",
-                frozen,
-            )
-            manifest.database.executemany(
-                "INSERT INTO meta(key,value) VALUES (?,?)",
-                (
-                    ("frozen", utc_now()),
-                    ("selection_kind", "label_integrity_repair"),
-                    ("audit_task_id", str(audit_task_id)),
-                    ("annotation_revision", str(annotations.current_revision())),
-                    ("mapping_count", str(len(frozen_mappings))),
-                ),
-            )
-        checkpoint = manifest.summary()
-    stats = {
-        "candidate": len(candidates),
-        "candidate_images": len(candidates),
-        "still_requires_repair": len(frozen),
-        "already_resolved": already_resolved,
-        "mapping_count": len(frozen_mappings),
-    }
-    request = {
-        "operation": "REMAP_ANNOTATION_LABELS",
-        "options": {
-            "source_labels": sources,
-            "source_label": sources[0] if len(sources) == 1 else "",
-            "target_label": (
-                frozen_mappings[0]["target_label"]
-                if len({item["target_label"] for item in frozen_mappings}) == 1
-                else ""
-            ),
-            "mappings": frozen_mappings,
-            "repair_mode": True,
-            "audit_task_id": str(audit_task_id),
-            "retire_sources_on_success": False,
-            **stats,
-        },
-        "selection_spec": {
-            "scope": "LABEL_INTEGRITY_REPAIR",
-            "audit_task_id": str(audit_task_id),
-        },
-    }
-    artifacts.atomic_write_json(task_id, "request.json", request)
-    artifacts.atomic_write_json(task_id, "checkpoints/worker.json", checkpoint)
-    task = TaskRecord.new(
-        task_id,
-        str(project_id),
-        TaskKind.MATERIAL_BATCH,
-        "request.json",
-        f"materials:{project_id}",
-        required_capabilities=("materials.batch",),
-    )
-    with repair_lock:
-        if _active_integrity_repair(project_id, repository, artifacts):
-            raise BatchRequestError(
-                "LABEL_INTEGRITY_REPAIR_ACTIVE",
-                "当前已有标签完整性修复任务运行中，请等待完成后重新 Full Audit。",
-                409,
-            )
-        task = repository.create(task, artifacts=artifacts)
-    return task, stats
+        return _freeze_orphan_repair(
+            project_id,
+            project_path,
+            repository,
+            artifacts,
+            audit_task_id,
+            frozen_mappings,
+            audit_path,
+        )
 
 
 def read_audit_issues(path: str | Path, *, cursor: int = 0, limit: int = 100) -> dict:

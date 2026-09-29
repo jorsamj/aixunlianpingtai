@@ -5,6 +5,12 @@
 
 本轮没有重做训练标签架构，也没有新增 TaskKind、Scheduler、Ground Truth 或轮询 owner。新增能力落在现有标签管理与 durable material-batch runtime：
 
+- 本次生产 `9 张 / 0 框 / INCOMPLETE_MERGE` 的代码级根因已经关闭：`_active_project_labels()` 曾采用“仅排除 disabled/inactive”的错误判断，把 `merged` 也放入 current active 集合；历史 `confirmed_empty + scope_json=[]` 因而通过 empty-scope fallback 动态重新得到 merged labels。现在统一复用 canonical active helper，只有 `status == active` 且兼容字段 `active != false` 的标签能进入 fallback；merged/inactive/deleted/orphan 均不会被重新制造；
+- Full Audit 对历史空 persisted scope 读取同一个 AnnotationRepository effective fallback；含真实 persisted merged scope 的记录仍会报告并可修复，但只由 fallback 生成的假 `INCOMPLETE_MERGE` 会直接消失；7-source fixture 覆盖 merged chain、一次 durable repair、修复后连续两次 Full Audit 为零；
+- label-integrity repair admission 的 `active repair check -> current GT reread/freeze -> artifact prepare -> TaskRepository.create` 现在全部位于同一个项目级 FileLock critical section，关闭 check/create 竞争窗口；普通 MaterialBatch 不受该 gate 影响；
+- worker 仍保留 digest CAS：digest 改变且任何本 task source 仍存在时继续 `ANNOTATION_CHANGED_DURING_REMAP`；如果重新只读当前 GT 后所有 task source 已不存在，则不写 Annotation、不覆盖当前 GT，记为 `noop_resolved` 并合并计入 `already_resolved`；
+- UI 对 `ORPHAN_LABEL` 继续要求查看样例并手工选择；对已有治理链的 `INCOMPLETE_MERGE` 明确说明目标来自历史合并关系，不再提示用户重新猜语义。
+
 - Full Audit operation：`AUDIT_LABEL_INTEGRITY`，继续使用 `TaskKind.MATERIAL_BATCH / MaterialBatchHandler / TaskRepository / ArtifactStore / Scheduler`；
 - Full Audit 是项目级审计，创建与运行都不生成 `selection.sqlite3`，也不伪造 `FILTERED=全部素材`；
 - 真相读取顺序固定为：`AnnotationRepository -> current label governance -> MaterialRepository projection`；

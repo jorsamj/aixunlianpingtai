@@ -50,6 +50,48 @@ def test_confirmed_empty_without_explicit_scope_persists_active_project_labels(t
     assert saved["annotation_scope"] == ["fire", "smoke"]
 
 
+def test_confirmed_empty_fallback_excludes_merged_and_compatibility_disabled_labels(
+    tmp_path: Path,
+):
+    (tmp_path / "meta.json").write_text(
+        """{
+          "labels": [
+            "safetyhelmet", "NOT_safetyhelmet", "people",
+            "Helmet", "No_Helmet", "No_helmet_detected", "Persona",
+            "Safety_helmet_detected", "helmet", "safetyhelmet2",
+            "compatibility_disabled"
+          ],
+          "label_meta": [
+            {"status": "active"},
+            {"status": "active"},
+            {"status": "active"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+            {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+            {"status": "merged", "merged_into": "people"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "merged", "merged_into": "Helmet"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "active", "active": false}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    repository = AnnotationRepository(tmp_path)
+
+    saved = repository.upsert(
+        "negative-merged-history",
+        [],
+        annotation_state="confirmed_empty",
+    )
+
+    assert saved["annotation_scope"] == [
+        "NOT_safetyhelmet",
+        "people",
+        "safetyhelmet",
+    ]
+
+
 def test_snapshot_expands_legacy_global_negative_to_locked_schema():
     row = {
         "id": "negative-1",

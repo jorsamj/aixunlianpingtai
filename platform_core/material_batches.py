@@ -395,7 +395,7 @@ class BatchSelection:
                 "selection_frozen": self.frozen()}
 
     def remap_result(self):
-        changed_images = changed_boxes = changed_scope_images = 0
+        changed_images = changed_boxes = changed_scope_images = noop_resolved = 0
         for row in self.database.execute(
             "SELECT tombstone_json FROM selection "
             "WHERE state='succeeded' AND tombstone_json IS NOT NULL"
@@ -405,6 +405,9 @@ class BatchSelection:
             except (TypeError, ValueError):
                 continue
             if plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value:
+                continue
+            if plan.get("noop_resolved"):
+                noop_resolved += 1
                 continue
             boxes = max(0, int(plan.get("changed_boxes") or 0))
             scope_changed = int(bool(plan.get("changed_scope")))
@@ -422,6 +425,7 @@ class BatchSelection:
             "changed_images": changed_images,
             "changed_boxes": changed_boxes,
             "changed_scope_images": changed_scope_images,
+            "noop_resolved": noop_resolved,
             "failure_reasons": failure_reasons,
         }
 
@@ -1235,6 +1239,29 @@ class MaterialBatchHandler:
                         (json.dumps(plan, ensure_ascii=False), image_id),
                     )
                 if current_digest not in {source_digest, result_digest}:
+                    current_references = {
+                        str(box.get("label") or box.get("code") or "").strip()
+                        for box in (current.get("boxes") or [])
+                        if str(box.get("label") or box.get("code") or "").strip()
+                    }
+                    current_references.update(
+                        str(value).strip()
+                        for value in (current.get("annotation_scope") or [])
+                        if str(value or "").strip()
+                    )
+                    if repair_mode and not (
+                        set(plan_sources) & current_references
+                    ):
+                        plan.update({
+                            "noop_resolved": True,
+                            "resolved_at": utc_now(),
+                        })
+                        manifest.database.execute(
+                            "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                            (json.dumps(plan, ensure_ascii=False), image_id),
+                        )
+                        manifest.transition([image_id], "succeeded")
+                        continue
                     failed.append((
                         image_id,
                         "ANNOTATION_CHANGED_DURING_REMAP",
@@ -1318,11 +1345,14 @@ class MaterialBatchHandler:
                 key: int(options.get(key) or 0)
                 for key in (
                     "candidate_images", "still_requires_repair",
-                    "already_resolved",
                 )
                 if options.get(key) is not None
             },
         })
+        summary["already_resolved"] = (
+            int(options.get("already_resolved") or 0)
+            + int(summary.get("noop_resolved") or 0)
+        )
         if (
             not summary["failed"]
             and bool(options.get("retire_sources_on_success"))
@@ -1471,12 +1501,12 @@ def public_batch(task, artifacts, repository=None):
         remap_target = str(options.get("target_label") or "").strip()
         retire_sources = bool(options.get("retire_sources_on_success"))
     repair_stats = {
-        key: int(options.get(key) or 0)
+        key: int(result.get(key, options.get(key)) or 0)
         for key in (
             "candidate", "candidate_images", "still_requires_repair",
-            "already_resolved", "mapping_count",
+            "already_resolved", "mapping_count", "noop_resolved",
         )
-        if options.get(key) is not None
+        if result.get(key, options.get(key)) is not None
     }
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
             "kind": task.kind.value, "operation": request.get("operation"),

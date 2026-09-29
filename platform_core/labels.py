@@ -73,7 +73,8 @@ def active_label_options(items: Sequence[Mapping]) -> list[dict]:
     return [
         dict(item)
         for item in items
-        if str(item.get("status") or "active") == "active"
+        if str(item.get("status") or "active").strip().lower() == "active"
+        and item.get("active") is not False
     ]
 
 

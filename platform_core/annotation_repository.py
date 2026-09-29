@@ -10,6 +10,8 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from .labels import active_label_options
+
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
 _SCHEMA_VERSION = 2
@@ -41,16 +43,16 @@ def _active_project_labels(project_path: Path) -> list[str]:
         return []
     labels = list(meta.get("labels") or [])
     metadata = list(meta.get("label_meta") or [])
-    active = []
+    catalog = []
     for index, value in enumerate(labels):
         code = str(value or "").strip()
         if not code:
             continue
         info = metadata[index] if index < len(metadata) and isinstance(metadata[index], dict) else {}
-        if str(info.get("status") or "active").strip().lower() in {"disabled", "inactive"}:
-            continue
-        active.append(code)
-    return _normalize_scope(active)
+        catalog.append({"code": code, **info})
+    return _normalize_scope(
+        item["code"] for item in active_label_options(catalog)
+    )
 
 
 class AnnotationConflictError(RuntimeError):
