@@ -17,7 +17,7 @@ _FINGERPRINT_FILES = (
 )
 
 
-_FORMAL_VERSION_PATTERN = re.compile(r"^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$")
+_FORMAL_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
 _MINIMUM_FORMAL_VERSION = (42, 24, 1)
 
 
