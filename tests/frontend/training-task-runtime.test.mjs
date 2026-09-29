@@ -798,6 +798,30 @@ test('HTTP refresh merge rejects a response older than the current SSE display r
   assert.deepEqual(mergeTrainingJobRows(current, incoming), current);
 });
 
+test('HTTP refresh merge defensively canonicalizes duplicate task ids only', () => {
+  const incoming = [
+    {
+      id: 'train-1', task_id: 'train-1', status: 'running',
+      training_display_progress: {revision: 500, overall_progress: 50},
+    },
+    {
+      id: 'train-1', task_id: 'train-1', status: 'running',
+      training_display_progress: {revision: 501, overall_progress: 51},
+    },
+    {
+      id: 'train-2', task_id: 'train-2', status: 'queued',
+      training_display_progress: {revision: 100, overall_progress: 0},
+    },
+  ];
+
+  const merged = mergeTrainingJobRows([], incoming);
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].task_id, 'train-1');
+  assert.equal(merged[0].training_display_progress.revision, 501);
+  assert.equal(merged[1].task_id, 'train-2');
+});
+
 test('HTTP refresh merge accepts a newer canonical display revision', () => {
   const current = [{
     id: 'train-1', task_id: 'train-1', progress_percent: 52,

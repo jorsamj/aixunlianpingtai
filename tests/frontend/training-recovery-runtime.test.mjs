@@ -372,6 +372,51 @@ test('detail model exposes live metrics resources and dataset evidence', () => {
   assert.match(model.metricLine, /92\.4 img\/s/);
 });
 
+test('detail model keeps requested resolved and runtime precision truth distinct', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-layers',
+    status: 'running',
+    task_status: 'RUNNING',
+    requested_resources: {
+      strategy: 'auto',
+      profile: 'performance',
+      gpu_policy: 'exclusive',
+      batch: 128,
+      workers: 0,
+      precision: 'auto',
+      cache: false,
+    },
+    resolved_resources: {
+      resource_strategy: 'auto',
+      resource_profile: 'performance',
+      resolved_batch: 32,
+      resolved_workers: 8,
+      resolved_precision: 'fp16',
+      resolved_cache: false,
+      gpu_name: 'RTX Test',
+      gpu_uuid: 'GPU-test',
+    },
+    runtime_resources: {
+      runtime_batch: 32,
+      runtime_workers: 8,
+      runtime_cache: false,
+      actual_precision: 'fp16',
+    },
+  }, {});
+
+  assert.equal(model.requestedBatch, 128);
+  assert.equal(model.requestedBatchText, '偏好 128');
+  assert.equal(model.requestedPrecision, 'auto');
+  assert.equal(model.requestedPrecisionText, '自动');
+  assert.equal(model.resolvedBatch, 32);
+  assert.equal(model.resolvedPrecision, 'fp16');
+  assert.equal(model.runtimeBatch, 32);
+  assert.equal(model.runtimePrecision, 'fp16');
+  assert.equal(model.precision, 'fp16');
+  assert.equal(model.gpuName, 'RTX Test');
+  assert.equal(model.gpuUuid, 'GPU-test');
+});
+
 test('detail model exposes runtime resource telemetry from backend metrics truth', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-live',

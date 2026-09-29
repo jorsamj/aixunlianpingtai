@@ -111,17 +111,38 @@ export function mergeTrainingJobRows(currentRows = [], incomingRows = []) {
       .map(row => [String(row?.task_id || row?.id || ''), row])
       .filter(([id]) => Boolean(id)),
   );
-  return (Array.isArray(incomingRows) ? incomingRows : []).map(incoming => {
+  const merged = [];
+  const positionById = new Map();
+  for (const incoming of (Array.isArray(incomingRows) ? incomingRows : [])) {
     const id = String(incoming?.task_id || incoming?.id || '');
     const current = currentById.get(id);
-    if (!current) return incoming;
-    const currentRevision = trainingDisplayRevision(current);
-    const incomingRevision = trainingDisplayRevision(incoming);
-    if (currentRevision !== null && incomingRevision !== null && incomingRevision < currentRevision) {
-      return current;
+    let candidate = incoming;
+    if (current) {
+      const currentRevision = trainingDisplayRevision(current);
+      const incomingRevision = trainingDisplayRevision(incoming);
+      if (currentRevision !== null && incomingRevision !== null && incomingRevision < currentRevision) {
+        candidate = current;
+      }
     }
-    return incoming;
-  });
+    if (!id) {
+      merged.push(candidate);
+      continue;
+    }
+    const existingPosition = positionById.get(id);
+    if (existingPosition === undefined) {
+      positionById.set(id, merged.length);
+      merged.push(candidate);
+      continue;
+    }
+    const existing = merged[existingPosition];
+    const existingRevision = trainingDisplayRevision(existing);
+    const candidateRevision = trainingDisplayRevision(candidate);
+    if (existingRevision !== null && candidateRevision !== null && candidateRevision < existingRevision) {
+      continue;
+    }
+    merged[existingPosition] = candidate;
+  }
+  return merged;
 }
 
 function statusText(status) {

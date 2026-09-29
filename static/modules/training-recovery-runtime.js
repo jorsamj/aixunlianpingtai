@@ -180,15 +180,45 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const resolved = job?.resolved_resources && typeof job.resolved_resources === 'object' ? job.resolved_resources : {};
   const runtime = job?.runtime_resources && typeof job.runtime_resources === 'object' ? job.runtime_resources : {};
   const actual = job?.actual_train_params && typeof job.actual_train_params === 'object' ? job.actual_train_params : {};
-  const requested = job?.requested_train_params && typeof job.requested_train_params === 'object' ? job.requested_train_params : {};
-  const resourceStrategy = String(resolved.resource_strategy || requested.resource_strategy || job?.resource_strategy || '').trim().toLowerCase();
+  const requestedContract = job?.requested_resources && typeof job.requested_resources === 'object' ? job.requested_resources : {};
+  const requestedTrainParams = job?.requested_train_params && typeof job.requested_train_params === 'object' ? job.requested_train_params : {};
+  const requested = {...requestedContract, ...requestedTrainParams};
+  const resourceStrategy = String(
+    resolved.resource_strategy
+    || requested.resource_strategy
+    || requested.strategy
+    || job?.resource_strategy
+    || ''
+  ).trim().toLowerCase();
   const selectedGpu = job?.selected_gpu && typeof job.selected_gpu === 'object'
     ? job.selected_gpu
     : (resolved?.selected_gpu && typeof resolved.selected_gpu === 'object' ? resolved.selected_gpu : {});
   const counts = job?.dataset_counts && typeof job.dataset_counts === 'object'
     ? job.dataset_counts
     : (job?.counts && typeof job.counts === 'object' ? job.counts : {});
-  const resourceProfile = String(actual.resource_profile || resolved.resource_profile || job?.resource_profile || requested.resource_profile || '').trim();
+  const resourceProfile = String(
+    actual.resource_profile
+    || resolved.resource_profile
+    || job?.resource_profile
+    || requested.resource_profile
+    || requested.profile
+    || ''
+  ).trim();
+  const requestedPrecision = String(requested.precision || job?.precision || '').trim().toLowerCase();
+  const resolvedPrecision = String(
+    resolved.resolved_precision
+    || job?.resolved_precision
+    || resolved.precision
+    || ''
+  ).trim().toLowerCase();
+  const runtimePrecision = String(
+    runtime.actual_precision
+    || runtime.runtime_precision
+    || actual.effective_precision
+    || actual.precision
+    || ''
+  ).trim().toLowerCase();
+  const requestedBatchValue = requested.batch ?? job?.batch ?? null;
   const runtimeMetrics = job?.runtime_metrics && typeof job.runtime_metrics === 'object' ? job.runtime_metrics : {};
   const latestRuntime = runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
   const metricNumber = value => {
@@ -237,14 +267,28 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     requestedDevice: String(job?.requested_device || requested.device || '').trim(),
     assignedDevice: String(job?.assigned_device || '').trim(),
     actualDevice: String(job?.actual_device || '').trim(),
-    gpuName: String(selectedGpu?.name || '').trim(),
-    gpuUuid: String(selectedGpu?.uuid || '').trim(),
-    resourceStrategy: String(actual.resource_strategy || resolved.resource_strategy || job?.resource_strategy || requested.resource_strategy || '').trim(),
+    gpuName: String(selectedGpu?.name || resolved.gpu_name || '').trim(),
+    gpuUuid: String(selectedGpu?.uuid || resolved.gpu_uuid || '').trim(),
+    resourceStrategy: String(
+      actual.resource_strategy
+      || resolved.resource_strategy
+      || job?.resource_strategy
+      || requested.resource_strategy
+      || requested.strategy
+      || ''
+    ).trim(),
     resourceProfile,
     resourceProfileLabel: resourceProfileLabel(resourceProfile),
     gpuPolicy: String(actual.gpu_policy || resolved.gpu_policy || job?.gpu_policy || requested.gpu_policy || '').trim(),
-    precision: String(actual.effective_precision || actual.precision || resolved.precision || job?.precision || requested.precision || '').trim(),
-    requestedBatch: requested.batch ?? job?.batch ?? null,
+    precision: runtimePrecision || resolvedPrecision || requestedPrecision,
+    requestedPrecision,
+    requestedPrecisionText: requestedPrecision === 'auto' ? '自动' : (requestedPrecision || '-'),
+    resolvedPrecision,
+    runtimePrecision,
+    requestedBatch: requestedBatchValue,
+    requestedBatchText: resourceStrategy === 'auto' && requestedBatchValue != null
+      ? '偏好 ' + requestedBatchValue
+      : requestedBatchValue,
     resolvedBatch: resolved.resolved_batch ?? null,
     runtimeBatch: runtime.runtime_batch ?? actual.batch ?? null,
     requestedWorkers: requested.workers ?? job?.workers ?? null,
@@ -356,9 +400,9 @@ function detailHtml(job, recovery, log = '') {
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
               <div class="training-recovery-kv"><span>Optimizer / lr0</span><b>${esc(`${model.optimizer || '-'} / ${model.lr0 ?? '-'}`)}</b></div>
               <div class="training-recovery-kv"><span>最大训练时长</span><b>${esc(model.timeLimit ? `${model.timeLimit} h` : '不限')}</b></div>
-              <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc(`Batch ${model.requestedBatch ?? '-'} · Workers ${model.requestedWorkersText ?? '-'} · Cache ${model.requestedCacheText ?? '-'}`)}</b></div>
-              <div class="training-recovery-kv"><span>自动资源决议</span><b>${esc(`Batch ${model.resolvedBatch ?? '-'} · Workers ${model.resolvedWorkers ?? '-'} · Cache ${model.resolvedCache ?? '-'}`)}</b></div>
-              <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc(`Batch ${model.runtimeBatch ?? '-'} · Workers ${model.runtimeWorkers ?? '-'} · Cache ${model.runtimeCache ?? '-'}`)}</b></div>
+              <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc('Batch ' + (model.requestedBatchText ?? '-') + ' · Workers ' + (model.requestedWorkersText ?? '-') + ' · Precision ' + (model.requestedPrecisionText ?? '-') + ' · Cache ' + (model.requestedCacheText ?? '-'))}</b></div>
+              <div class="training-recovery-kv"><span>${model.resourceStrategy === 'manual' ? '资源核验' : '自动资源决议'}</span><b>${esc('Batch ' + (model.resolvedBatch ?? '-') + ' · Workers ' + (model.resolvedWorkers ?? '-') + ' · Precision ' + (model.resolvedPrecision || '-') + ' · Cache ' + (model.resolvedCache ?? '-'))}</b></div>
+              <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`)}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
