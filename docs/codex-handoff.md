@@ -1,6 +1,97 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-29 训练创建标签语义 / 弹窗简化与继承标签横排（最新）
+
+详细交接见：
+
+`docs/CODEX_HANDOFF_2026-09-29_TRAINING_CREATE_LABELS.md`
+
+本节功能代码 cutoff：
+
+`dccff9f72ccef03b5937cad7dd29dfe94de60b0b`
+
+随后仅有测试 build/cache guard 对齐：
+
+- `9918f15ff5088ce1652d1bc30b6adccea42f7d62`
+- `ec4fca762f805442bcf55515292a730c37c79dd6`
+
+`VERSION.txt = 42.24.0`，未修改。
+
+### 用户最终产品要求
+
+1. 正式标签统一后，新训练任务真正使用的 schema 只能是统一后的 canonical target；已 merged 的历史 source 不得重新进入模型训练。
+2. 创建训练任务弹窗不承担素材标签历史审计；不展示 merge chain / merged_into / source history / dropped history。
+3. 首次训练无上一版本，不显示继承区。
+4. 迭代训练保留“上一版本继承”，由服务端返回 canonical inherited labels，自动继承、不可取消。
+5. “上一版本继承”改为横向 pill/chip + flex-wrap，不再纵向堆叠；UI 紧凑、对称、有层次。
+6. “本次素材标签”继续保留，但默认不选，由用户明确决定是否新增类别。
+7. 前端只展示服务端真相，不再实现第二套历史 merge resolver。
+
+### 当前实现真相
+
+后端 `platform_core/training_label_tasks.py` 是训练标签最终 owner：
+
+- previous verified version frozen `label_schema` 作为继承输入；
+- current label governance 对历史 merged label 做 `source -> target` canonical 投影；
+- 多 source 合一 target 时去重；
+- inactive/missing 且无明确 merge target 时 fail-closed；
+- effective schema = canonical inherited + 用户显式选择且由真实 selected training GT 证明的新标签；
+- training class_id 重新连续为 `0..N-1`；
+- canonical_project_class_id 独立保留；
+- schema 变化时仅上一版本权重初始化，不 strict resume optimizer；
+- 历史算法版本 schema 不修改。
+
+因此：**正式“标签统一”成功、source 已退休为 merged 后，新训练任务实际训练 schema 只使用统一后的 canonical target。**
+
+前端 `static/modules/training-labels.js` 当前：
+
+- 不再拥有 `resolveInheritedGovernance / merged_into / mergedInherited / droppedInherited / governanceBlockedInherited / inherited_from_codes` 等历史审计；
+- inherited preview 只调用服务端：
+  `/api/v62/projects/{project_id}/training-labels/inherited`
+- 迭代训练显示“上一版本继承”；
+- inherited labels 为横向 `.training-label-base-list` flex-wrap pills；
+- 本次素材标签默认不选；
+- 已被继承的标签不会重复要求用户选择。
+
+### 之前“统一后弹窗仍出现旧标签”的处理
+
+排查不是只修一个 UI cache：
+
+1. Training Material Picker 已收敛成单一 project-owned route：
+   `0ae6b8def40884e5ec00e81b125034bd7fa3a808`
+2. selected-material summary 的前端 cache 有 explicit invalidate；
+3. 新训练 session 与标签 mutation/unify 完成后都会失效旧 summary；
+4. Real Chrome 已有：
+   `same selected materials reload canonical labels after a completed label unification`
+5. 最终训练 schema 仍由 server-authoritative label contract 冻结，不信任浏览器 preview。
+
+### 当前 UI 关键提交
+
+- `de61947f...` — server owns training label inheritance
+- `d55dac1c...` — simplify training label creation UI
+- `d2eab79b...` — lock simple training label creation
+- `34c2a3d1...` — align simplified label UI
+- `b9ee4f60...` — expose canonical inherited labels
+- `aff49e44...` — polish inherited training labels
+- `dccff9f7...` — lock compact inherited training labels
+
+### 当前 CI 边界
+
+在 `dccff9f...` 上：
+
+- Training Material Picker contracts：completed success；
+- Training Create First Open Windows contract：completed success；
+- Training Create Real Chrome / Ubuntu 当时仍未全部终态；
+- Frontend Runtime Stabilization 的两个 failure 已确认只是 stale build/cache guard：
+  - `main.mjs 42.25.252 -> 42.25.253`
+  - `training-draft-runtime-422517 -> 422518`
+- 已分别由 `9918f15f...`、`ec4fca76...` 精确对齐；没有删除/放宽测试。
+
+文档提交会继续推进 HEAD。新会话开始时必须重新读取远端 HEAD / checks；queued/in_progress 不得当 success。
+
+
+
 ## 2026-09-28 最终主流程发布链跨阶段验收 CLOSED（最新）
 
 - 本节代码 cutoff：`115b506f42bd730ff8694b64e6cbca3d72ae0416`（`test: stitch training and RKNN publish chain`）。
