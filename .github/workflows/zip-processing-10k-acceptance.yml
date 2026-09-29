@@ -30,7 +30,7 @@ jobs:
       - name: Syntax and release boundary
         run: |
           python -m py_compile tools/accept_zip_processing_10k.py app.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
       - name: Real HTTP 10k YOLO processing acceptance
         run: |
@@ -60,4 +60,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Confirm formal version unchanged
-        run: test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+        run: python -m platform_core.build_identity --check-version-file VERSION.txt

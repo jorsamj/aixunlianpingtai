@@ -352,7 +352,7 @@ jobs:
           test ! -e tools/_one_shot_model_asset_integration.py
           test ! -e .github/workflows/_one_shot_model_asset_integration.yml
           grep -Fq 'PUBLICATION_SCHEMA_VERSION = 4' platform_core/external_algorithm_publish.py
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
 
 
   real-chrome:
@@ -381,4 +381,4 @@ jobs:
           grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

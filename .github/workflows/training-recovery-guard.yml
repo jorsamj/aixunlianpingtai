@@ -220,7 +220,7 @@ jobs:
               raise SystemExit("Missing permanent training recovery contract(s):\n- " + "\n- ".join(missing))
           print(f"Verified {sum(map(len, checks.values()))} permanent training recovery contracts")
           PY
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   real-chrome-recovery:

@@ -17,6 +17,37 @@ _FINGERPRINT_FILES = (
 )
 
 
+_FORMAL_VERSION_PATTERN = re.compile(r"^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$")
+_MINIMUM_FORMAL_VERSION = (42, 24, 1)
+
+
+def parse_formal_version(value: object) -> tuple[int, int, int]:
+    text = str(value or "").strip()
+    match = _FORMAL_VERSION_PATTERN.fullmatch(text)
+    if match is None:
+        raise ValueError("formal platform version must be MAJOR.MINOR.PATCH")
+    return tuple(int(part) for part in match.groups())
+
+
+def validate_formal_version(
+    value: object,
+    *,
+    minimum: tuple[int, int, int] = _MINIMUM_FORMAL_VERSION,
+) -> str:
+    text = str(value or "").strip()
+    version = parse_formal_version(text)
+    if version < tuple(int(part) for part in minimum):
+        floor = ".".join(str(part) for part in minimum)
+        raise ValueError(f"formal platform version must be >= {floor}")
+    return text
+
+
+def read_formal_version(path: str | Path) -> str:
+    return validate_formal_version(
+        Path(path).read_text(encoding="utf-8", errors="strict")
+    )
+
+
 def _git_revision(base_dir: Path) -> str:
     if not (base_dir / ".git").exists():
         return ""
@@ -70,3 +101,19 @@ def service_matches_build(
         and str(remote_version or "").strip() == str(local_version or "").strip()
         and remote_build_id == str(local_build_id or "").strip()
     )
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Validate the formal platform version contract")
+    parser.add_argument("--check-version-file", metavar="PATH")
+    args = parser.parse_args(argv)
+    if not args.check_version_file:
+        parser.error("--check-version-file is required")
+    print(read_formal_version(args.check_version_file))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

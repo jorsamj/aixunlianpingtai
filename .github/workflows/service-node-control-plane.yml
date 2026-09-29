@@ -74,5 +74,5 @@ jobs:
           grep -Fq 'service_node_router(task_repository)' platform_core/training_recovery_api.py
           grep -Fq 'MC_CONTROL_PLANE_URL' node_agent.py
           grep -Fq 'MC_NODE_AGENT_TOKEN' node_agent.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

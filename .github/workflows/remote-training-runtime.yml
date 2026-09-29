@@ -438,5 +438,5 @@ jobs:
           grep -Fq '"TRAINING",' platform_core/node_agent_executor_loop.py
           ! grep -Fq 'sqlite3' platform_core/remote_training_transport.py
           ! grep -Fq 'TaskRepository' platform_core/remote_training_transport.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

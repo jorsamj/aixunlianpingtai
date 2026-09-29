@@ -293,7 +293,7 @@ jobs:
           ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 

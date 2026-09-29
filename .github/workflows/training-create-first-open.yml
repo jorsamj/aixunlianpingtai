@@ -140,7 +140,7 @@ jobs:
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js
           grep -Fq "api('/api/v62/training-devices')" static/app.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   real-chrome:

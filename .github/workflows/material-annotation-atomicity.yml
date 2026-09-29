@@ -55,7 +55,7 @@ jobs:
             platform_core/material_repository.py \
             platform_core/material_repository_batch.py \
             platform_core/storage/source_repository.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
       - name: Annotation SQLite and material atomicity contracts
         run: >-

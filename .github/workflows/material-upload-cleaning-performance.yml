@@ -119,5 +119,5 @@ jobs:
             exit 1
           fi
           grep -Fq 'assert direct_stream_sources == [True] * 12' tests/api/test_upload_batch_performance_truth.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

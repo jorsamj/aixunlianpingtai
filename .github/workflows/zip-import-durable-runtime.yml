@@ -123,7 +123,7 @@ jobs:
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test ! -e tools/_one_shot_secret_gc_docs.py
           test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   backend-persistence:

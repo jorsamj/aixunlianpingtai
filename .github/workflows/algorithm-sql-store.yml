@@ -70,7 +70,7 @@ jobs:
           node --test tests/frontend/training-submit.test.mjs
       - name: Permanent invariants
         run: |
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           grep -q 'AlgorithmSqlStore' platform_core/algorithms.py
           grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
           grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
@@ -163,4 +163,4 @@ jobs:
           grep -Fq 'payload.iteration_action' static/modules/training-submit.js
           grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
           grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

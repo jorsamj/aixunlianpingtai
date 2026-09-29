@@ -326,7 +326,7 @@ jobs:
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test ! -e tools/_one_shot_secret_gc_docs.py
           test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
 
 
   real-chrome:
@@ -364,4 +364,4 @@ jobs:
           grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
           grep -Fq "本次训练分析方式" static/modules/external-algorithm-platform.js
           if grep -Fq 'data-external-endpoint=' static/modules/external-algorithm-platform.js; then echo "ChangLian canonical provider paths must not be user-editable" >&2; exit 1; fi
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

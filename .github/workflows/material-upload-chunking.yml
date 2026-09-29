@@ -56,7 +56,7 @@ jobs:
           grep -Fq 'material-upload-bootstrap.mjs?v=422533' static/index.html
           grep -Fq 'material-upload-runtime.js?v=422543' static/material-upload-bootstrap.mjs
           grep -Fq 'materialUploadRuntime = runtime' static/material-upload-bootstrap.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   api-idempotency:

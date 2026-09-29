@@ -170,5 +170,9 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
     assert "training_material_picker_router" not in runtime_source
 
 
-def test_production_runtime_mount_contract_keeps_formal_version_unchanged():
-    assert (ROOT / "VERSION.txt").read_text(encoding="utf-8").strip() == "42.24.0"
+def test_production_runtime_mount_contract_uses_supported_formal_version():
+    from platform_core.build_identity import read_formal_version
+
+    version = read_formal_version(ROOT / "VERSION.txt")
+    major, minor, patch = (int(part) for part in version.split("."))
+    assert (major, minor, patch) >= (42, 24, 1)

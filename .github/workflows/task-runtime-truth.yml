@@ -119,5 +119,5 @@ jobs:
         run: |
           grep -Fq "SUCCESS: 'SUCCEEDED'" static/modules/task-runtime-truth.js
           grep -Fq "all historical training success aliases canonicalize to terminal SUCCEEDED truth" tests/frontend/task-runtime-truth.test.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

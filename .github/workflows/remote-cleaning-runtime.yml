@@ -158,7 +158,7 @@ jobs:
           grep -Fq 'required_capabilities = (' platform_core/material_batches.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_cleaning_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_cleaning_runtime.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   api:
@@ -191,7 +191,7 @@ jobs:
           grep -Fq "def _v47_clean_agent_preflight" app.py
           grep -Fq "required_capabilities=_v47_clean_required_capabilities(request)" app.py
           grep -Fq '"execution_mode": "agent"' tests/api/test_clean_unified_execution_truth.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 
@@ -220,5 +220,5 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'execution_mode' tests/browser/remote-cleaning.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

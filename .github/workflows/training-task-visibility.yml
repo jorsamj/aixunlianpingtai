@@ -167,7 +167,7 @@ jobs:
             echo 'visibility runtime must not use delayed DOM reinsertion' >&2
             exit 1
           fi
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 

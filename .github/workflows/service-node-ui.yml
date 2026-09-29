@@ -75,7 +75,7 @@ jobs:
           grep -Fq "'deployment-test.rknn': '瑞芯微板端验证'" static/modules/service-node-runtime.js
           grep -Fq 'Rockchip 板端预检' static/modules/service-node-runtime.js
           grep -Fq 'tools/install_rockchip_agent.sh' static/modules/service-node-runtime.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   real-chrome:

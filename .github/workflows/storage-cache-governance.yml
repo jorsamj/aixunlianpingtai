@@ -106,4 +106,4 @@ jobs:
           grep -Fq 'storage-cache-runtime.js?v=422540' static/index.html
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq 'Worker 节点素材缓存' static/modules/storage-cache-runtime.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = '42.24.0'
+          python -m platform_core.build_identity --check-version-file VERSION.txt

@@ -120,7 +120,7 @@ jobs:
           node --check static/modules/label-mapping-review.js
           node --check static/main.mjs
           node --check static/zip-import-bootstrap.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
       - name: Backend label-normalization contracts
         run: >-

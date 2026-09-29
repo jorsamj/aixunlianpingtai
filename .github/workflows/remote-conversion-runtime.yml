@@ -247,7 +247,7 @@ jobs:
           ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_conversion_runtime.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 
@@ -286,5 +286,5 @@ jobs:
           grep -Fq 'RK3578' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'RK3576' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
