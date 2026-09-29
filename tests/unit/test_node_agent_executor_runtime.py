@@ -178,6 +178,39 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[5]["json"]["runtime_result"]["engine"] == "ultralytics"
 
 
+def test_executor_client_heartbeat_projects_live_training_runtime_resources():
+    current = lease("train-runtime", generation=7)
+    session = ScriptedSession(
+        FakeResponse(200, {"task": {"progress": 5}, "cancel_requested": False}),
+    )
+    client = NodeExecutorClient(
+        "https://control.example.test",
+        "node:1",
+        "node-secret",
+        session=session,
+        timeout=7,
+    )
+    runtime_resources = {
+        "node_id": "node:1",
+        "execution_generation": 7,
+        "actual_device": "cuda:0",
+        "actual_batch": 32,
+        "actual_workers": 4,
+        "actual_cache": False,
+        "actual_precision": "fp16",
+        "runtime_batch": 32,
+        "runtime_workers": 4,
+        "runtime_cache": False,
+    }
+
+    body = client.heartbeat(current, runtime_resources=runtime_resources)
+
+    assert body["cancel_requested"] is False
+    assert session.calls[0]["json"]["runtime_resources"] == runtime_resources
+    assert session.calls[0]["json"]["execution_generation"] == 7
+    assert session.calls[0]["json"]["execution_lease_token"] == "execution-secret"
+
+
 def test_executor_client_uses_fenced_training_model_upload_routes():
     current = lease("train-one", generation=4)
     current = RemoteExecutionLease(

@@ -391,3 +391,59 @@ def test_training_job_detail_failed_overlay_preserves_worker_root_cause_and_expo
     assert job["error"].startswith("RESOURCE_RUNTIME_MISMATCH")
     assert job["message"].startswith("训练失败：RESOURCE_RUNTIME_MISMATCH")
     assert "completion_handshake=job status is not done" in job["task_error"]
+
+def test_training_job_detail_projects_control_plane_runtime_resources(client, seeded_project):
+    import app as app_module
+
+    project_id, _image = seeded_project
+    task_id = f"train-runtime-truth-{uuid.uuid4().hex[:10]}"
+    repository = app_module.shared_task_repository()
+    artifacts = app_module.shared_task_artifacts()
+    repository.create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:gpu:0",
+        required_capabilities=("training.ultralytics",),
+    ))
+    artifacts.atomic_write_json(task_id, "payload.json", {"task_id": task_id})
+    artifacts.atomic_write_json(task_id, "resolved-resources.json", {
+        "resource_strategy": "auto",
+        "assigned_device": "cuda:0",
+        "resolved_batch": 32,
+        "resolved_workers": 4,
+        "resolved_cache": False,
+        "resolved_precision": "fp16",
+    })
+    artifacts.atomic_write_json(task_id, "runtime-resources.json", {
+        "node_id": "gpu-node-1",
+        "execution_generation": 1,
+        "actual_device": "cuda:0",
+        "actual_batch": 32,
+        "actual_workers": 4,
+        "actual_cache": False,
+        "actual_precision": "fp16",
+        "runtime_batch": 32,
+        "runtime_workers": 4,
+        "runtime_cache": False,
+    })
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    app_module.write_json(job_dir / "job.json", {
+        "id": task_id,
+        "task_id": task_id,
+        "status": "running",
+        "runtime_resources": {"actual_batch": 999},
+    })
+
+    response = client.get(f"/api/projects/{project_id}/jobs/{task_id}")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["resolved_resources"]["resolved_batch"] == 32
+    assert body["runtime_resources"]["actual_batch"] == 32
+    assert body["runtime_resources"]["actual_workers"] == 4
+    assert body["runtime_resources"]["actual_precision"] == "fp16"
+    assert body["runtime_resources"]["actual_device"] == "cuda:0"
+

@@ -822,6 +822,26 @@ test('HTTP refresh merge defensively canonicalizes duplicate task ids only', () 
   assert.equal(merged[1].task_id, 'train-2');
 });
 
+test('HTTP refresh merge carries newer live runtime resource truth into the canonical row', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1',
+    runtime_resources: {actual_batch: 16, actual_workers: 2, actual_precision: 'fp16'},
+    training_display_progress: {revision: 500, overall_progress: 50},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1',
+    runtime_resources: {actual_batch: 32, actual_workers: 4, actual_precision: 'fp16'},
+    training_display_progress: {revision: 501, overall_progress: 51},
+  }];
+
+  const merged = mergeTrainingJobRows(current, incoming);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].runtime_resources.actual_batch, 32);
+  assert.equal(merged[0].runtime_resources.actual_workers, 4);
+  assert.equal(merged[0].training_display_progress.revision, 501);
+});
+
 test('HTTP refresh merge accepts a newer canonical display revision', () => {
   const current = [{
     id: 'train-1', task_id: 'train-1', progress_percent: 52,
