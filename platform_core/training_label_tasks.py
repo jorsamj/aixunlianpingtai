@@ -303,6 +303,76 @@ def _legacy_snapshot_schema(data_dir: Path, version: Mapping[str, Any]) -> list[
     return _normalized_version_schema(snapshot.get("label_schema") or [])
 
 
+def inherited_training_label_preview(
+    data_dir: Path,
+    project: Path,
+    algorithm: Mapping[str, Any],
+    base_version_id: str = "",
+) -> dict[str, Any]:
+    """Return only canonical labels inherited by a new training task.
+
+    This is a read-only UI projection. It intentionally omits historical source
+    labels and merge audit details. Final task creation still recomputes and
+    freezes resolve_training_label_contract(), which remains the sole training
+    truth owner.
+    """
+
+    versions = list(algorithm.get("versions") or [])
+    requested_version_id = str(
+        base_version_id or algorithm.get("current_version_id") or ""
+    ).strip()
+    if not versions or not requested_version_id:
+        return {
+            "has_previous_version": False,
+            "base_version_id": "",
+            "base_version_name": "",
+            "labels": [],
+        }
+
+    previous = next(
+        (
+            row for row in versions
+            if str(row.get("id") or row.get("version_id") or "").strip()
+            == requested_version_id
+        ),
+        None,
+    )
+    if previous is None:
+        raise ValueError("上一算法版本已变化，请刷新算法列表后重试")
+
+    inherited = _normalized_version_schema(previous.get("label_schema") or [])
+    if not inherited:
+        inherited = _legacy_snapshot_schema(data_dir, previous)
+    if not inherited:
+        raise ValueError(
+            "上一算法版本缺少可验证的标签快照，无法展示继承标签"
+        )
+
+    retained, _merged, _dropped = _resolve_inherited_label_governance(
+        project,
+        inherited,
+    )
+    labels = []
+    for item in retained:
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        display_name = str(
+            item.get("display_name")
+            or item.get("display_name_zh")
+            or item.get("name")
+            or code
+        )
+        labels.append({"code": code, "display_name": display_name})
+
+    return {
+        "has_previous_version": True,
+        "base_version_id": requested_version_id,
+        "base_version_name": str(previous.get("version_name") or requested_version_id),
+        "labels": labels,
+    }
+
+
 def _iteration_base(
     algorithm: Mapping[str, Any],
     mother_model: str,

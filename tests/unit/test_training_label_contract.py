@@ -13,6 +13,7 @@ from platform_core.training_label_tasks import (
     _LABEL_CONTRACT,
     _persist_version_contract,
     _scoped_selected_project_images,
+    inherited_training_label_preview,
     resolve_training_label_contract,
     selected_material_label_codes,
 )
@@ -818,6 +819,64 @@ def test_iteration_collapses_merged_previous_labels_into_current_canonical_targe
     assert contract["base_training_mode"] == "previous_weights_init"
     assert contract["strict_resume"] is False
     assert algorithm["versions"][0]["label_schema"] == previous_schema
+
+
+def test_inherited_training_label_preview_returns_only_current_canonical_labels(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    for row in meta["label_meta"]:
+        if row["code"] == "smoke":
+            row["status"] = "merged"
+            row["merged_into"] = "fire"
+    (project / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    previous_schema = [
+        {"code": "fire", "class_id": 0},
+        {"code": "smoke", "class_id": 1},
+    ]
+    algorithm = {
+        "id": "alg",
+        "current_version_id": "v1",
+        "versions": [{
+            "id": "v1",
+            "version_name": "20260910010101",
+            "label_schema": previous_schema,
+        }],
+    }
+
+    preview = inherited_training_label_preview(
+        data_dir,
+        project,
+        algorithm,
+        "v1",
+    )
+
+    assert preview == {
+        "has_previous_version": True,
+        "base_version_id": "v1",
+        "base_version_name": "20260910010101",
+        "labels": [{"code": "fire", "display_name": "明火"}],
+    }
+    serialized = json.dumps(preview, ensure_ascii=False)
+    assert "smoke" not in serialized
+    assert "merged_into" not in serialized
+    assert "inherited_from_codes" not in serialized
+
+
+def test_inherited_training_label_preview_is_empty_for_first_training(tmp_path: Path):
+    data_dir, project = _project(tmp_path)
+    preview = inherited_training_label_preview(
+        data_dir,
+        project,
+        {"id": "alg", "versions": []},
+    )
+    assert preview == {
+        "has_previous_version": False,
+        "base_version_id": "",
+        "base_version_name": "",
+        "labels": [],
+    }
 
 
 def test_iteration_rejects_inactive_previous_label_without_merge_target(tmp_path: Path):

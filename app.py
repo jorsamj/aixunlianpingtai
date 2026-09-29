@@ -135,7 +135,11 @@ from platform_core.storage.zip_import import (
 from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
 from platform_core.training_lineage import build_training_lineage
 from platform_core.training_tasks import freeze_training_inputs, resolve_training_selection
-from platform_core.training_label_tasks import project_training_rows, resolve_training_label_contract
+from platform_core.training_label_tasks import (
+    inherited_training_label_preview,
+    project_training_rows,
+    resolve_training_label_contract,
+)
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import (
@@ -7188,6 +7192,33 @@ def _training_supplement_candidate_set(
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return dict(candidate_set)
+
+
+@app.get("/api/v62/projects/{project_id}/training-labels/inherited")
+def training_inherited_labels_preview(
+    project_id: str,
+    algorithm_id: str,
+    base_version_id: str = "",
+):
+    get_project(project_id)
+    algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id or "")
+        ),
+        None,
+    )
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在")
+    try:
+        return inherited_training_label_preview(
+            DATA_DIR,
+            project_dir(project_id),
+            algorithm,
+            base_version_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
