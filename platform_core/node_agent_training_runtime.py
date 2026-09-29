@@ -342,12 +342,14 @@ class AgentTrainingRunner:
         stage: str,
         current_item: str = "",
         resource_resolution: Mapping[str, Any] | None = None,
+        runtime_resources: Mapping[str, Any] | None = None,
     ) -> None:
         monitor.beat(
             progress=max(0.0, min(100.0, float(progress))),
             stage=str(stage),
             current_item=current_item or None,
             resource_resolution=resource_resolution,
+            runtime_resources=runtime_resources,
         )
         self._assert_active(monitor)
 
@@ -1289,6 +1291,31 @@ class AgentTrainingRunner:
                     self._terminate_active(strict=True)
                     raise
                 next_projection = 0.0
+                last_runtime_resources_signature = ""
+
+                def runtime_resources_projection(job: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
+                    raw = job.get("runtime_resources")
+                    if not isinstance(raw, Mapping) or not raw:
+                        return None, ""
+                    projection = {
+                        **dict(raw),
+                        "node_id": self.client.node_id,
+                        "execution_generation": lease.generation,
+                    }
+                    try:
+                        signature = json.dumps(
+                            projection,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (TypeError, ValueError, OverflowError) as error:
+                        raise AgentTrainingRuntimeError(
+                            "REMOTE_RUNTIME_RESOURCES_INVALID: Trainer runtime resources are not finite JSON"
+                        ) from error
+                    return projection, signature
+
                 try:
                     while launched.process.poll() is None:
                         self._assert_active(monitor)
@@ -1315,12 +1342,20 @@ class AgentTrainingRunner:
                                 if isinstance(job, Mapping)
                                 else ""
                             )
+                            runtime_projection, runtime_signature = runtime_resources_projection(
+                                job if isinstance(job, Mapping) else {}
+                            )
+                            if runtime_signature == last_runtime_resources_signature:
+                                runtime_projection = None
                             self._heartbeat(
                                 monitor,
                                 progress=progress,
                                 stage=stage,
                                 current_item=current_item,
+                                runtime_resources=runtime_projection,
                             )
+                            if runtime_projection is not None:
+                                last_runtime_resources_signature = runtime_signature
                             log_offset = self._forward_log_delta(
                                 lease,
                                 runtime_log,
@@ -1348,6 +1383,14 @@ class AgentTrainingRunner:
                 raise AgentTrainingRuntimeError(
                     "training worker produced no durable job result"
                 )
+            final_runtime_projection, final_runtime_signature = runtime_resources_projection(job)
+            if (
+                final_runtime_projection is not None
+                and final_runtime_signature != last_runtime_resources_signature
+            ):
+                monitor.beat(runtime_resources=final_runtime_projection)
+                self._assert_active(monitor)
+                last_runtime_resources_signature = final_runtime_signature
             if launched.process.returncode != 0:
                 error = str(job.get("error") or "").strip()
                 if not error:

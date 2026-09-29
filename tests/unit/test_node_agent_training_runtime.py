@@ -548,6 +548,16 @@ job.update({{
     "progress_percent": 42,
     "startup_stage": "first_batch",
     "current_item": "Epoch 1/3",
+    "runtime_resources": {{
+        "runtime_batch": int(args.batch),
+        "runtime_workers": int(args.workers),
+        "runtime_cache": False,
+        "actual_device": args.assigned_device,
+        "actual_batch": int(args.batch),
+        "actual_workers": int(args.workers),
+        "actual_cache": False,
+        "actual_precision": args.precision,
+    }},
 }})
 job_file.write_text(json.dumps(job), encoding="utf-8")
 print("fake training started", flush=True)
@@ -748,7 +758,19 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert resolution["assigned_device"] == "cuda:1"
     assert resolution["gpu_uuid"] == "GPU-agent-uuid"
     assert resolution["resolved_batch"] == 2
-
+    runtime_heartbeats = [
+        heartbeat for heartbeat in client.heartbeats
+        if isinstance(heartbeat.get("runtime_resources"), dict)
+    ]
+    assert len(runtime_heartbeats) == 1
+    runtime_resources = runtime_heartbeats[0]["runtime_resources"]
+    assert runtime_resources["node_id"] == "node-1"
+    assert runtime_resources["execution_generation"] == current.generation
+    assert runtime_resources["actual_device"] == "cuda:1"
+    assert runtime_resources["actual_batch"] == 2
+    assert runtime_resources["actual_workers"] == 0
+    assert runtime_resources["actual_cache"] is False
+    assert runtime_resources["actual_precision"] == "fp16"
 
 
 

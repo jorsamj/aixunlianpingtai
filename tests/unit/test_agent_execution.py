@@ -259,6 +259,7 @@ def test_training_heartbeat_persists_fenced_resource_resolution(tmp_path):
         "resource_profile": "balanced",
         "gpu_policy": "exclusive",
         "precision": "auto",
+        "resolved_precision": "fp16",
         "resolved_batch": 32,
         "resolved_workers": 4,
         "resolved_cache": False,
@@ -288,6 +289,51 @@ def test_training_heartbeat_persists_fenced_resource_resolution(tmp_path):
         "resolved-resources.json",
         default={},
     ) == resolution
+
+    runtime_resources = {
+        "node_id": "gpu-agent",
+        "execution_generation": lease["generation"],
+        "actual_device": "cuda:0",
+        "actual_batch": 32,
+        "actual_workers": 4,
+        "actual_cache": False,
+        "actual_precision": "fp16",
+        "runtime_batch": 32,
+        "runtime_workers": 4,
+        "runtime_cache": False,
+    }
+    runtime_heartbeat = service.heartbeat_execution(
+        "gpu-agent",
+        token,
+        "train-agent",
+        lease["lease_token"],
+        lease["generation"],
+        progress=20,
+        stage="first_batch",
+        runtime_resources=runtime_resources,
+    )
+    assert runtime_heartbeat["runtime_resources_committed"] is True
+    assert artifacts.read_json(
+        "train-agent",
+        "runtime-resources.json",
+        default={},
+    ) == runtime_resources
+
+    with pytest.raises(AgentExecutionError) as mismatch:
+        service.heartbeat_execution(
+            "gpu-agent",
+            token,
+            "train-agent",
+            lease["lease_token"],
+            lease["generation"],
+            runtime_resources={**runtime_resources, "actual_batch": 16, "runtime_batch": 16},
+        )
+    assert mismatch.value.code == "REMOTE_RUNTIME_RESOURCES_MISMATCH"
+    assert artifacts.read_json(
+        "train-agent",
+        "runtime-resources.json",
+        default={},
+    ) == runtime_resources
 
 
 def test_disabled_node_cannot_claim_new_work_but_can_finish_existing_execution(tmp_path):

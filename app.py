@@ -7689,7 +7689,17 @@ def job_status(project_id: str, job_id: str):
                     if task else job_file.parent / "training-metrics.sqlite3")
     response["runtime_metrics"] = read_metrics(metrics_path)
     if task:
-        response["resolved_resources"] = shared_task_artifacts().read_json(job_id, "resolved-resources.json", default={})
+        artifacts = shared_task_artifacts()
+        response["resolved_resources"] = artifacts.read_json(
+            job_id,
+            "resolved-resources.json",
+            default=response.get("resolved_resources") or {},
+        )
+        response["runtime_resources"] = artifacts.read_json(
+            job_id,
+            "runtime-resources.json",
+            default=response.get("runtime_resources") or {},
+        )
     return response
 
 
