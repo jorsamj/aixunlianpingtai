@@ -7221,6 +7221,13 @@ def training_inherited_labels_preview(
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
+_TRAINING_TASK_ID_PATTERN = re.compile(r"train_[0-9a-f]{16,32}")
+
+
+def _new_training_task_id() -> str:
+    return f"train_{uuid.uuid4().hex[:24]}"
+
+
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     benchmark_reuse = _training_reusable_benchmark(
@@ -7330,9 +7337,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         device = normalize_training_device(payload.device)
         resource_key = f"training:{device}"
     requested_task_id = str(payload.task_id or "").strip()
-    if requested_task_id and not re.fullmatch(r"train_[0-9a-f]{16,32}", requested_task_id):
+    if requested_task_id and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested_task_id):
         raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
-    task_id = requested_task_id or uuid.uuid4().hex[:12]
+    task_id = requested_task_id or _new_training_task_id()
     if requested_task_id:
         existing_task = shared_task_repository().get(task_id)
         if existing_task is not None:

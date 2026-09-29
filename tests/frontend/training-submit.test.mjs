@@ -517,6 +517,34 @@ test('confirmed iteration action lineage is injected only for matching current d
   cleanup(runtime);
 });
 
+test('invalid historical iteration task id fails closed before POST', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'legacy-task-id'},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let postCount=0;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async()=>{
+    postCount+=1;return{ok:true,async json(){return durableTask()}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(postCount,0);
+  assert.match(notices.at(-1),/历史迭代任务 ID 格式异常/);
+  assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});
+
 test('confirmed iteration action is not injected into unrelated version draft', async () => {
   const state=baseState();
   state.trainingIterationAction={

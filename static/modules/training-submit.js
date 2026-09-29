@@ -3,6 +3,50 @@ function required(value, message) {
   return value;
 }
 
+const TRAINING_TASK_ID_PATTERN = /^train_[0-9a-f]{16,32}$/;
+
+export function isCanonicalTrainingTaskId(value) {
+  return TRAINING_TASK_ID_PATTERN.test(String(value || '').trim());
+}
+
+export function createCanonicalTrainingTaskId({
+  cryptoSource = globalThis.crypto,
+  random = Math.random,
+} = {}) {
+  let suffix = '';
+  if (typeof cryptoSource?.randomUUID === 'function') {
+    try {
+      const uuidHex = String(cryptoSource.randomUUID() || '')
+        .replace(/-/g, '')
+        .toLowerCase();
+      if (/^[0-9a-f]{20,32}$/.test(uuidHex)) suffix = uuidHex.slice(0, 24);
+    } catch (_) {
+      suffix = '';
+    }
+  }
+  if (!suffix && typeof cryptoSource?.getRandomValues === 'function') {
+    try {
+      const bytes = new Uint8Array(12);
+      cryptoSource.getRandomValues(bytes);
+      suffix = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+      suffix = '';
+    }
+  }
+  if (!suffix) {
+    suffix = Array.from({length: 3}, () => {
+      const sampled = Number(random());
+      const normalized = Number.isFinite(sampled) ? Math.abs(sampled % 1) : 0;
+      return Math.floor(normalized * 0x100000000).toString(16).padStart(8, '0');
+    }).join('');
+  }
+  const taskId = `train_${suffix.slice(0, 24).toLowerCase()}`;
+  if (!isCanonicalTrainingTaskId(taskId)) {
+    throw new Error('训练任务 ID 生成失败，请刷新页面后重试');
+  }
+  return taskId;
+}
+
 export function normalizeTrainingPrecision(value) {
   const precision = String(value || 'auto').trim().toLowerCase();
   return ['auto', 'fp16', 'fp32'].includes(precision) ? precision : 'auto';
@@ -399,13 +443,21 @@ export function installTrainingSubmitRuntime({
           dataset_revision_id: String(iterationAction.source?.dataset_revision_id || ''),
           snapshot_id: String(iterationAction.source?.snapshot_id || ''),
         };
-        iterationTaskId = String(iterationAction.training_draft?.task_id || '');
+        iterationTaskId = String(iterationAction.training_draft?.task_id || '').trim();
+        if (!isCanonicalTrainingTaskId(iterationTaskId)) {
+          throw new Error('历史迭代任务 ID 格式异常');
+        }
       }
       const externalAnalysisId = window.ExternalAlgorithmPlatformRuntime?.selectedAnalysisId?.(asset.id) || '';
       if (externalAnalysisId) payload.external_analysis_id = externalAnalysisId;
       const plannedTaskId = String(document.getElementById('tr429TaskId')?.value || '').trim();
       if (iterationTaskId) payload.task_id = iterationTaskId;
-      else if (plannedTaskId) payload.task_id = plannedTaskId;
+      else {
+        if (!isCanonicalTrainingTaskId(plannedTaskId)) {
+          throw new Error('训练任务 ID 格式异常，请关闭训练窗口后重新打开');
+        }
+        payload.task_id = plannedTaskId;
+      }
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
@@ -470,8 +522,10 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422509',
+    build: 'training-submit-422510',
     submit,
+    createTaskId: createCanonicalTrainingTaskId,
+    isCanonicalTaskId: isCanonicalTrainingTaskId,
     updateReadiness,
     isSubmitting: () => submitting,
     state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError}),

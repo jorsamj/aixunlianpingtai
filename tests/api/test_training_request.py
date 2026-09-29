@@ -1,8 +1,18 @@
 import hashlib
 import io
+import re
 
 import pytest
 from PIL import Image
+
+
+def test_server_generated_training_task_id_uses_canonical_contract():
+    import app as app_module
+
+    generated = {app_module._new_training_task_id() for _ in range(8)}
+
+    assert len(generated) == 8
+    assert all(re.fullmatch(r"train_[0-9a-f]{16,32}", value) for value in generated)
 
 
 def _image_bytes(color: str | tuple[int, int, int]) -> bytes:

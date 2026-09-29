@@ -1,6 +1,16 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-29 训练 Task ID canonical contract（最新）
+
+- 根因：普通训练弹窗在 `crypto.randomUUID()` 不可用时仅执行一次 `Math.random().toString(16)`，生成的 suffix 可能不足 16 位；服务端却严格要求 `train_[0-9a-f]{16,32}`，同时服务端无请求 ID 时又生成裸 12 位 hex，形成前后端合同不一致；
+- 当前唯一语义：所有训练 Task ID 均为 `train_` 前缀加 16～32 位 lowercase hex；后端继续 fail-closed，不放宽正则；
+- 浏览器 canonical helper 优先 `crypto.randomUUID()`，其次 `crypto.getRandomValues()`，两者均不可用时拼接三个独立 32-bit `Math.random` 片段，最终统一生成 24 位 hex suffix，并用同一个 validator 自检；普通训练弹窗不再直接生成 ID；
+- 服务端自动生成统一为 `train_` 加 24 位 UUID hex，不再产生裸 12 位 task ID；
+- iteration action 原有固定幂等 ID 保持不变，但提交 owner 会用同一 validator 在 POST 前校验；历史 ID 不合法时明确提示“历史迭代任务 ID 格式异常”，不会向后端发送请求；
+- 永久前端合同覆盖 randomUUID、getRandomValues、最终 fallback，以及 iteration 非法 ID 的无网络 fail-closed；服务端合同覆盖自动生成 ID 的 canonical 格式。
+
+
 ## 2026-09-29 标签完整性 Full Audit / 批量 Repair（最新）
 
 本轮没有重做训练标签架构，也没有新增 TaskKind、Scheduler、Ground Truth 或轮询 owner。新增能力落在现有标签管理与 durable material-batch runtime：
