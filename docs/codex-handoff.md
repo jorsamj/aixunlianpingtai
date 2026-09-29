@@ -1,6 +1,40 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-29 训练标签创建交接补充（当前状态）
+
+详细交接已刷新：
+
+`docs/CODEX_HANDOFF_2026-09-29_TRAINING_CREATE_LABELS.md`
+
+本轮已按用户最终要求收口：
+
+- 正式标签统一后，新训练任务真正使用 canonical target，不让 merged source 重新进入 effective training schema；
+- 训练创建弹窗不再承担素材标签历史审计；
+- 首次训练不显示“上一版本继承”；
+- 迭代训练保留“上一版本继承”，数据来自服务端 canonical preview；
+- inherited labels 改为横向 pill/chip + flex-wrap，高级、紧凑、对称；
+- “本次素材标签”保留但默认不自动选择；
+- Training Material Picker 已收敛成单一 project-owned owner；
+- 标签统一/新训练 session 会失效旧 selected-material summary，避免同一批素材继续显示统一前旧标签。
+
+当前远端 HEAD 在本文补充提交前已推进到：
+`b46fa8fd5557cef2cef81e38b2074940cb08277b`
+（`docs: refresh training label handoff state`）
+
+`VERSION.txt = 42.24.0`，未修改。
+
+CI 边界：
+- Label Normalization Contract：当前相关 HEAD 已有 completed / success；
+- Training Input Integrity：当前相关 HEAD 已有 completed / success；
+- Frontend Runtime Stabilization：交接时仍有最新 run 在执行；
+- Training Create First Open：新会话必须重新读取最新 Ubuntu / Windows / Real Chrome 终态；
+- queued / in_progress 不得写成 success。
+
+新会话不要重新设计标签体系，也不要恢复 merge history audit 到训练弹窗；第一步先重读真实 HEAD / checks / failure logs。
+
+
+
 ## 2026-09-29 训练创建标签语义 / 弹窗简化与继承标签横排（最新）
 
 详细交接见：
