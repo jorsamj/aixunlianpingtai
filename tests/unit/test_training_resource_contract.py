@@ -42,6 +42,9 @@ class _Cuda:
     def device_count(self):
         return self._devices
 
+    def get_device_properties(self, _index):
+        return SimpleNamespace(uuid="GPU-test", name="Test GPU")
+
 
 class _Torch:
     def __init__(self, cuda):
@@ -153,6 +156,45 @@ def test_fp32_uses_more_conservative_activation_memory_budget_than_fp16(monkeypa
     assert fp32["activation_precision_factor"] == pytest.approx(2.0)
     assert fp32["resolved_batch"] < fp16["resolved_batch"]
 
+
+
+def test_auto_precision_is_frozen_before_trainer_start(monkeypatch):
+    _patch_host(monkeypatch)
+    fp16 = training_metrics.resolve_resources(
+        _request(precision="auto", amp=True),
+        _context(gpu_uuid="GPU-test", gpu_name="Scheduler GPU"),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    fp32 = training_metrics.resolve_resources(
+        _request(precision="auto", amp=False),
+        _context(gpu_uuid="GPU-test"),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert fp16["requested_precision"] == "auto"
+    assert fp16["resolved_precision"] == "fp16"
+    assert fp16["assigned_device"] == "cuda:0"
+    assert fp16["gpu_uuid"] == "GPU-test"
+    assert fp32["resolved_precision"] == "fp32"
+    assert fp32["activation_precision_factor"] == pytest.approx(2.0)
+
+
+def test_resource_resolution_rejects_changed_gpu_identity(monkeypatch):
+    _patch_host(monkeypatch)
+
+    class ChangedCuda(_Cuda):
+        def get_device_properties(self, _index):
+            return SimpleNamespace(uuid="GPU-other", name="Other GPU")
+
+    with pytest.raises(RuntimeError, match="GPU_IDENTITY_MISMATCH"):
+        training_metrics.resolve_resources(
+            _request(),
+            _context(gpu_uuid="GPU-assigned"),
+            _Model(),
+            _Torch(ChangedCuda()),
+        )
 
 def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatch):
     _patch_host(monkeypatch)

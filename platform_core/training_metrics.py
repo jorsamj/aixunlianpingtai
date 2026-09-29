@@ -126,12 +126,15 @@ def resolve_resources(request, context, model, torch):
     if gpu_policy not in {"auto", "exclusive"}:
         raise ValueError("GPU_POLICY_UNSUPPORTED: shared GPU scheduling is not enabled")
     precision = normalize_training_precision(request.get("precision") or "auto")
-    activation_precision_factor = (
-        2.0
-        if precision == "fp32"
-        or (precision == "auto" and request.get("amp") is False)
-        else 1.0
-    )
+    requested_device = str(request.get("device") or "").strip().lower()
+    resolved_precision = precision
+    if precision == "auto":
+        resolved_precision = (
+            "fp16"
+            if requested_device.startswith("cuda:") and request.get("amp") is not False
+            else "fp32"
+        )
+    activation_precision_factor = 2.0 if resolved_precision == "fp32" else 1.0
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -241,10 +244,31 @@ def resolve_resources(request, context, model, torch):
 
     estimated = None
     free = total = None
+    resolution_gpu_uuid = str(context.get("gpu_uuid") or "").strip() or None
+    resolution_gpu_name = str(context.get("gpu_name") or "").strip() or None
     if str(request.get("device", "")).startswith("cuda:"):
         index = int(request["device"].split(":")[1])
         torch.cuda.set_device(index)
         free, total = (int(value) for value in torch.cuda.mem_get_info(index))
+        properties_reader = getattr(torch.cuda, "get_device_properties", None)
+        if callable(properties_reader):
+            properties = properties_reader(index)
+            raw_uuid = getattr(properties, "uuid", None)
+            actual_uuid = str(raw_uuid).strip() if raw_uuid is not None else ""
+            if (
+                resolution_gpu_uuid
+                and actual_uuid
+                and resolution_gpu_uuid.lower().removeprefix("gpu-")
+                != actual_uuid.lower().removeprefix("gpu-")
+            ):
+                raise RuntimeError(
+                    "GPU_IDENTITY_MISMATCH: resource resolver GPU UUID differs from assignment"
+                )
+            if actual_uuid:
+                resolution_gpu_uuid = actual_uuid
+            actual_name = str(getattr(properties, "name", "") or "").strip()
+            if actual_name:
+                resolution_gpu_name = actual_name
         params = sum(int(value.numel()) for value in model.model.parameters())
         fixed = max(GIB, params * 24)
         per_image = int(
@@ -332,7 +356,7 @@ def resolve_resources(request, context, model, torch):
         gpu_policy=gpu_policy,
         precision=precision,
         requested_precision=precision,
-        resolved_precision=precision,
+        resolved_precision=resolved_precision,
         activation_precision_factor=activation_precision_factor,
         requested_batch=requested_batch,
         requested_workers=requested_workers,
@@ -348,6 +372,9 @@ def resolve_resources(request, context, model, torch):
         adjustments=adjustments,
         reasons=reasons,
         estimated_gpu_memory_bytes=estimated,
+        assigned_device=str(request.get("device") or "").strip() or None,
+        gpu_uuid=resolution_gpu_uuid,
+        gpu_name=resolution_gpu_name,
         gpu_free_bytes_at_resolution=free,
         gpu_total_bytes=total,
         target_gpu_memory_fraction=(float(profile_cfg["gpu_fraction"]) if strategy == "auto" else None),

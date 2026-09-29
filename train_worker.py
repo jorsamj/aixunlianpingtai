@@ -953,7 +953,14 @@ def main():
             and int(resolved.get("resolved_workers") if resolved.get("resolved_workers") is not None else -1) >= 0
         ):
             raise RuntimeError("RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid")
-        publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Cache", 25)
+        expected_precision = normalize_training_precision(
+            resolved.get("resolved_precision") or resolved.get("precision") or precision
+        )
+        if expected_precision != precision:
+            raise RuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: Trainer precision does not match frozen resource contract"
+            )
+        publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Precision / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)

@@ -776,6 +776,24 @@ class AgentTrainingRunner:
             if str(lease.worker_id).startswith("agent:")
             else ""
         )
+        resolved_precision = str(
+            resolved_resources.get("resolved_precision") or ""
+        ).strip().lower()
+        if resolved_precision not in {"fp16", "fp32"}:
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: remote precision was not resolved before Trainer startup"
+            )
+        expected_gpu_uuid = str(resource_context.get("gpu_uuid") or "").strip()
+        resolved_gpu_uuid = str(resolved_resources.get("gpu_uuid") or "").strip()
+        if (
+            expected_gpu_uuid
+            and resolved_gpu_uuid
+            and expected_gpu_uuid.lower().removeprefix("gpu-")
+            != resolved_gpu_uuid.lower().removeprefix("gpu-")
+        ):
+            raise AgentTrainingRuntimeError(
+                "GPU_IDENTITY_MISMATCH: resource resolution no longer matches assigned GPU"
+            )
         if not node_id:
             raise AgentTrainingRuntimeError(
                 "REMOTE_TRAINING_NODE_ID_MISSING: execution lease has no Agent node identity"
@@ -785,8 +803,8 @@ class AgentTrainingRunner:
             "node_id": node_id,
             "execution_generation": int(lease.generation),
             "assigned_device": selected_device,
-            "gpu_uuid": resource_context.get("gpu_uuid"),
-            "gpu_name": resource_context.get("gpu_name"),
+            "gpu_uuid": resolved_gpu_uuid or resource_context.get("gpu_uuid"),
+            "gpu_name": resolved_resources.get("gpu_name") or resource_context.get("gpu_name"),
             "gpu_index": resource_context.get("gpu_index"),
             "gpu_free_bytes_at_assignment": resource_context.get("gpu_free_bytes"),
             "gpu_total_bytes_at_assignment": resource_context.get("gpu_total_bytes"),
@@ -831,6 +849,7 @@ class AgentTrainingRunner:
                 "selected_gpu": gpu,
                 "gpu_policy": gpu_policy,
                 "precision": precision,
+                "resolved_precision": resolved_precision,
                 "concurrent_reservations": concurrent_reservations,
                 "runtime_stop_policy": runtime_stop_policy,
                 "requested_resources": {
@@ -907,7 +926,7 @@ class AgentTrainingRunner:
             "--gpu-policy",
             gpu_policy,
             "--precision",
-            precision,
+            resolved_precision,
             "--resource-context",
             str(resource_context_path),
             "--resource-resolution",
@@ -1210,7 +1229,7 @@ class AgentTrainingRunner:
                 monitor,
                 progress=13,
                 stage="REMOTE_TRAINING_RESOLVING_RESOURCES",
-                current_item="核验远程 GPU 的 Batch / Workers / Cache",
+                current_item="核验远程 GPU 的 Batch / Workers / Precision / Cache",
             )
             project, job_file, _worker, command = self._prepare_project(
                 lease,

@@ -613,6 +613,15 @@ def build_runner(
                 "resource_profile": str(request.get("resource_profile") or "balanced"),
                 "gpu_policy": str(request.get("gpu_policy") or "auto"),
                 "precision": str(request.get("precision") or "auto"),
+                "requested_precision": str(request.get("precision") or "auto"),
+                "resolved_precision": (
+                    "fp16"
+                    if str(request.get("precision") or "auto") == "auto"
+                    and str(request.get("device") or "").startswith("cuda:")
+                    else str(request.get("precision") or "fp32")
+                ),
+                "gpu_uuid": context.get("gpu_uuid"),
+                "gpu_name": context.get("gpu_name"),
                 "requested_batch": int(request.get("batch") or 1),
                 "requested_workers": int(request.get("workers") or 0),
                 "requested_cache": request.get("cache", False),
@@ -785,6 +794,20 @@ def test_subprocess_resource_resolver_preserves_canonical_failure_code(tmp_path,
             tmp_path / "resolved-resources.json",
         )
 
+
+
+def test_remote_auto_precision_is_frozen_before_training_worker(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    current.payload["params"]["precision"] = "auto"
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _workdirs = build_runner(tmp_path, client, transfer)
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "SUCCEEDED", outcome.error
+    args = json.loads((runtime_root / "worker-args.json").read_text(encoding="utf-8"))
+    assert args["precision"] == "fp16"
 
 def test_remote_manual_resource_validation_fails_before_training_worker(tmp_path):
     current, downloads = training_lease(tmp_path)

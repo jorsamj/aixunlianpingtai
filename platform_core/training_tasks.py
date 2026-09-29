@@ -1440,7 +1440,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
         "--resource-profile", str(payload.get("resource_profile") or "balanced"),
         "--gpu-policy", str(payload.get("gpu_policy") or "auto"),
-        "--precision", str(payload.get("precision") or "auto"),
+        "--precision", str(payload.get("resolved_precision") or payload.get("precision") or "auto"),
     ]
     value_options = {
         "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
@@ -2264,6 +2264,12 @@ class TrainingHandler:
             "resolved_batch": int(prepared_resources["resolved_batch"]),
             "resolved_workers": int(prepared_resources["resolved_workers"]),
             "resolved_cache": prepared_resources.get("resolved_cache", False),
+            "resolved_precision": str(
+                prepared_resources.get("resolved_precision")
+                or prepared_resources.get("precision")
+                or payload.get("precision")
+                or "auto"
+            ),
         }
         if str(payload.get("target") or "local").lower() != "local":
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
@@ -2612,6 +2618,7 @@ class TrainingHandler:
             "resource_strategy": payload.get("resource_strategy", "auto"),
             "resource_profile": payload.get("resource_profile", "balanced"),
             "precision": payload.get("precision", "auto"),
+            "resolved_precision": payload.get("resolved_precision", payload.get("precision", "auto")),
             "requested_resources": payload.get("requested_resources") or {},
             "resolved_resources": dict(prepared_resources),
             "max_train_hours": payload.get("time"),
