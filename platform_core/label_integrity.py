@@ -11,6 +11,7 @@ import sqlite3
 import uuid
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import quote
 
 from .annotation_repository import AnnotationRepository, _normalize_scope
 from .material_repository import MaterialRepository
@@ -20,6 +21,8 @@ from .task_runtime.models import utc_now
 
 AUDIT_OPERATION = "AUDIT_LABEL_INTEGRITY"
 AUDIT_REF = "label-integrity.sqlite3"
+DEFAULT_SAMPLE_LIMIT = 12
+MAX_SAMPLE_LIMIT = 24
 
 _AUDIT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_metadata (
@@ -513,6 +516,157 @@ def read_audit_issues(path: str | Path, *, cursor: int = 0, limit: int = 100) ->
     }
 
 
+def read_audit_sample_candidates(
+    path: str | Path,
+    *,
+    source_label: str,
+    cursor: str = "",
+    limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> dict:
+    source = str(source_label or "").strip()
+    if not source:
+        raise ValueError("source_label is required")
+    if not 1 <= int(limit) <= MAX_SAMPLE_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_SAMPLE_LIMIT}")
+    after = str(cursor or "")
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as database:
+        candidate_count = int(
+            database.execute(
+                "SELECT COUNT(DISTINCT r.image_id) FROM annotation_references r "
+                "WHERE r.label_code=? AND EXISTS ("
+                "SELECT 1 FROM issues i WHERE i.image_id=r.image_id AND i.label_code=r.label_code"
+                ")",
+                (source,),
+            ).fetchone()[0]
+        )
+        rows = database.execute(
+            "SELECT DISTINCT r.image_id FROM annotation_references r "
+            "WHERE r.label_code=? AND r.image_id>? AND EXISTS ("
+            "SELECT 1 FROM issues i WHERE i.image_id=r.image_id AND i.label_code=r.label_code"
+            ") ORDER BY r.image_id LIMIT ?",
+            (source, after, int(limit) + 1),
+        ).fetchall()
+    image_ids = [str(row[0]) for row in rows[: int(limit)]]
+    return {
+        "source_label": source,
+        "candidate_count": candidate_count,
+        "image_ids": image_ids,
+        "next_cursor": image_ids[-1] if len(rows) > int(limit) and image_ids else None,
+    }
+
+
+def build_audit_samples(
+    project_id: str,
+    project_path: str | Path,
+    material_repository: MaterialRepository,
+    audit_path: str | Path,
+    *,
+    source_label: str,
+    cursor: str = "",
+    limit: int = DEFAULT_SAMPLE_LIMIT,
+) -> dict:
+    page = read_audit_sample_candidates(
+        audit_path,
+        source_label=source_label,
+        cursor=cursor,
+        limit=limit,
+    )
+    image_ids = page.pop("image_ids")
+    annotations = AnnotationRepository(project_path)
+    current = annotations.get_many(image_ids)
+    materials = {
+        str(row.get("id") or ""): row
+        for row in material_repository.get_many(image_ids)
+    }
+    governance, _fingerprint = _catalog(Path(project_path))
+    governance_by_class_id = {
+        int(row["class_id"]): row for row in governance.values()
+    }
+    provenance_fields = (
+        "storage_source_id",
+        "storage_type",
+        "object_key",
+        "source_type",
+        "source_task_id",
+        "import_format",
+        "import_task_id",
+        "dataset_id",
+    )
+    items = []
+    for image_id in image_ids:
+        record = current.get(image_id) or {}
+        material = materials.get(image_id)
+        if material is None:
+            continue
+        source_boxes = []
+        historical_class_ids: set[int] = set()
+        for raw in record.get("boxes") or []:
+            label = str(raw.get("label") or raw.get("code") or "").strip()
+            if label != page["source_label"]:
+                continue
+            try:
+                class_id = int(raw.get("class_id"))
+                x1, y1, x2, y2 = (
+                    float(raw.get(key)) for key in ("x1", "y1", "x2", "y2")
+                )
+            except (TypeError, ValueError):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            historical_class_ids.add(class_id)
+            source_boxes.append(
+                {
+                    "label": page["source_label"],
+                    "class_id": class_id,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                }
+            )
+        if not source_boxes:
+            continue
+        current_identity = []
+        for class_id in sorted(historical_class_ids):
+            row = governance_by_class_id.get(class_id)
+            current_identity.append(
+                {
+                    "class_id": class_id,
+                    "label_code": str(row["code"]) if row else None,
+                    "status": str(row["status"]) if row else "missing",
+                }
+            )
+        encoded_project = quote(str(project_id), safe="")
+        encoded_image = quote(image_id, safe="")
+        provenance = {
+            key: material.get(key)
+            for key in provenance_fields
+            if material.get(key) not in (None, "")
+        }
+        items.append(
+            {
+                "image_id": image_id,
+                "filename": str(material.get("filename") or image_id),
+                "source_label": page["source_label"],
+                "historical_class_ids": sorted(historical_class_ids),
+                "current_schema_identity": current_identity,
+                "width": max(0, int(material.get("width") or 0)),
+                "height": max(0, int(material.get("height") or 0)),
+                "boxes": source_boxes,
+                "provenance": provenance,
+                "thumbnail_url": (
+                    f"/api/v62/projects/{encoded_project}/training-materials/"
+                    f"{encoded_image}/thumbnail?size=320"
+                ),
+                "content_url": (
+                    f"/api/v61/projects/{encoded_project}/materials/{encoded_image}/content"
+                ),
+            }
+        )
+    return {**page, "items": items, "read_only": True}
+
+
 def label_integrity_router(get_project, material_store, task_repository, task_artifacts):
     from fastapi import APIRouter, Body, HTTPException
     from .material_batches import BatchRequestError
@@ -546,6 +700,34 @@ def label_integrity_router(get_project, material_store, task_repository, task_ar
             raise HTTPException(409, detail="label integrity audit is not complete")
         try:
             return read_audit_issues(path, cursor=cursor, limit=limit)
+        except ValueError as error:
+            raise HTTPException(422, detail=str(error)) from error
+
+    @router.get("/audits/{task_id}/samples")
+    def samples(
+        project_id: str,
+        task_id: str,
+        source_label: str,
+        cursor: str = "",
+        limit: int = DEFAULT_SAMPLE_LIMIT,
+    ):
+        task = require_audit(project_id, task_id)
+        if task.status.value != "SUCCEEDED":
+            raise HTTPException(409, detail="label integrity audit is not complete")
+        path = task_artifacts().artifact_path(task_id, AUDIT_REF)
+        if not path.is_file():
+            raise HTTPException(409, detail="label integrity audit is not complete")
+        materials = material_store(project_id)
+        try:
+            return build_audit_samples(
+                project_id,
+                materials.project_path,
+                materials,
+                path,
+                source_label=source_label,
+                cursor=cursor,
+                limit=limit,
+            )
         except ValueError as error:
             raise HTTPException(422, detail=str(error)) from error
 

@@ -4571,8 +4571,33 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const box=document.getElementById('labelIntegrity414Body');if(!box)return;
     const summary=result?.summary||{},groups=labelIntegrityRepairGroups414(result);state.labelIntegrityGroups414=groups;
     const targets=labelUnifyRows414();
-    box.innerHTML=`<div class="label-integrity414-summary"><div><span>已审计</span><b>${Number(summary.scanned_images||0)}</b></div><div><span>异常素材</span><b>${Number(summary.affected_images||0)}</b></div><div><span>问题记录</span><b>${Number(summary.issue_count||0)}</b></div></div>${groups.length?`<div class="label-integrity414-list">${groups.map((group,index)=>`<div class="label-integrity414-row"><div><b>${esc(group.source_label)}</b><span>${group.image_count} 张 · ${group.box_count} 框 · ${group.issue_types.map(esc).join(' / ')}</span></div><select class="select" data-label-integrity-target="${index}"><option value="">由你选择当前 active 目标标签</option>${targets.filter(item=>String(item.code)!==group.source_label).map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select><button class="btn primary mini" onclick="startLabelIntegrityRepair414(${index})">创建后台修复</button></div>`).join('')}</div>`:'<div class="empty compact"><b>未发现需要人工映射的历史标签</b><span>审计快照仍保留 projection 与 canonical identity 对账详情。</span></div>'}`;
+    box.innerHTML=`<div class="label-integrity414-summary"><div><span>已审计</span><b>${Number(summary.scanned_images||0)}</b></div><div><span>异常素材</span><b>${Number(summary.affected_images||0)}</b></div><div><span>问题记录</span><b>${Number(summary.issue_count||0)}</b></div></div>${groups.length?`<div class="label-integrity414-list">${groups.map((group,index)=>`<div class="label-integrity414-row"><div><b>${esc(group.source_label)}</b><span>${group.image_count} 张 · ${group.box_count} 框 · ${group.issue_types.map(esc).join(' / ')}</span></div><select class="select" data-label-integrity-target="${index}"><option value="">由你选择当前 active 目标标签</option>${targets.filter(item=>String(item.code)!==group.source_label).map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select><div class="label-integrity414-actions"><div class="row"><button class="btn mini" onclick="openLabelIntegritySamples414(${index})">查看样例</button><button class="btn primary mini" onclick="startLabelIntegrityRepair414(${index})">创建后台修复</button></div><small>请先查看样例确认该历史标签真实语义，再选择目标标签。</small></div></div>`).join('')}</div>`:'<div class="empty compact"><b>未发现需要人工映射的历史标签</b><span>审计快照仍保留 projection 与 canonical identity 对账详情。</span></div>'}`;
   }
+  function labelIntegritySampleCard414(sample){
+    const width=Math.max(1,Number(sample?.width||1)),height=Math.max(1,Number(sample?.height||1)),source=String(sample?.source_label||'');
+    const boxes=(sample?.boxes||[]).map(box=>{const x1=Number(box?.x1||0),y1=Number(box?.y1||0),x2=Number(box?.x2||0),y2=Number(box?.y2||0);if(!Number.isFinite(x1+y1+x2+y2)||x2<=x1||y2<=y1)return'';return `<g><rect x="${x1}" y="${y1}" width="${x2-x1}" height="${y2-y1}" vector-effect="non-scaling-stroke"></rect><text x="${x1+3}" y="${Math.max(12,y1+14)}">${esc(source)}</text></g>`}).join('');
+    const historical=(sample?.historical_class_ids||[]).map(Number).filter(Number.isFinite),identity=(sample?.current_schema_identity||[]).map(item=>`${Number(item.class_id)} → ${esc(item.label_code||'当前 schema 无对应标签')} (${esc(item.status||'missing')})`).join('、');
+    const provenance=Object.entries(sample?.provenance||{}).map(([key,value])=>`${esc(key)}=${esc(value)}`).join(' · ');
+    const thumbnail=esc(sample?.thumbnail_url||sample?.content_url||''),content=esc(sample?.content_url||sample?.thumbnail_url||'');
+    return `<article class="label-integrity414-sample"><a class="label-integrity414-sample-image" href="${content}" target="_blank" rel="noopener noreferrer"><img src="${thumbnail}" data-fallback="${content}" onerror="if(this.dataset.fallback){this.onerror=null;this.src=this.dataset.fallback}" alt="${esc(source)} 历史样例"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-label="仅显示 ${esc(source)} 历史框">${boxes}</svg></a><div class="label-integrity414-sample-meta"><b>${esc(sample?.filename||sample?.image_id||'样例')}</b><span>image_id：${esc(sample?.image_id||'')}</span><span>source label：${esc(source)}</span><span>历史 class_id：${historical.length?historical.join('、'):'-'}</span><span>当前同 class_id schema：${identity||'无对应标签'}</span>${provenance?`<span class="label-integrity414-provenance">${provenance}</span>`:''}</div></article>`;
+  }
+  async function loadLabelIntegritySamples414(index,cursor=''){
+    const group=(state.labelIntegrityGroups414||[])[Number(index)],root=document.getElementById('labelIntegritySampleBody414');if(!group||!root)return;
+    root.innerHTML='<div class="loading">正在读取真实标注样例…</div>';
+    const auditTaskId=String(state.labelIntegrityAuditTask414?.task_id||'');
+    try{
+      const params=new URLSearchParams({source_label:group.source_label,limit:'12'});if(cursor)params.set('cursor',cursor);
+      const result=await api(`/api/v54/projects/${pid()}/labels/integrity/audits/${auditTaskId}/samples?${params}`),items=result.items||[];
+      state.labelIntegritySampleNextCursor414=result.next_cursor||'';
+      root.innerHTML=`<div class="alert warn"><b>仅供人工判断历史语义</b><span>历史 class_id 当前对应标签仅用于诊断身份错位，不代表旧标签真实语义。系统不会根据标签名、class_id 或别名推荐目标标签。</span></div>${items.length?`<div class="label-integrity414-samples">${items.map(labelIntegritySampleCard414).join('')}</div>`:`<div class="empty compact"><b>当前批次没有可显示的 bbox 样例</b><span>可能只有 annotation_scope 引用、素材图片已不可用，或该候选已被人工处理。</span></div>`}<div class="row between"><span class="item-sub">本批 ${items.length} 张 · audit 候选 ${Number(result.candidate_count||0)} 张</span><button class="btn" onclick="nextLabelIntegritySamples414(${Number(index)})" ${result.next_cursor?'':'disabled'}>换一批</button></div>`;
+    }catch(e){root.innerHTML=`<div class="alert err"><b>样例读取失败</b><span>${esc(e.message||e)}</span></div>`}
+  }
+  window.openLabelIntegritySamples414=function(index){
+    const group=(state.labelIntegrityGroups414||[])[Number(index)];if(!group)return;
+    modal(`历史样例 · ${group.source_label}`,`<div class="label-integrity414-sample-dialog"><div id="labelIntegritySampleBody414"><div class="loading">正在读取真实标注样例…</div></div></div>`,true);
+    void loadLabelIntegritySamples414(Number(index),'');
+  };
+  window.nextLabelIntegritySamples414=function(index){const cursor=String(state.labelIntegritySampleNextCursor414||'');if(cursor)void loadLabelIntegritySamples414(Number(index),cursor)};
   async function loadLabelIntegrityIssues414(taskId){
     const result=await api(`/api/v54/projects/${pid()}/labels/integrity/audits/${taskId}/issues?limit=500`);state.labelIntegrityAuditResult414=result;renderLabelIntegrityIssues414(result);return result;
   }

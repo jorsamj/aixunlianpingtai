@@ -17,6 +17,7 @@
 - target 必须在 repair 创建时仍为 active；worker 再次校验 target identity 与 annotation digest，变化即 fail-closed；
 - 普通 whole-label unify 自动退役 source 前，必须同时满足 AnnotationRepository boxes/scopes=0 与 MaterialRepository labels/scopes=0；任意一侧残留都阻止 `status=merged`；
 - 标签管理页原位增加“标签完整性”，不新增一级菜单；Full Audit 和 repair 都复用既有 PollRegistry/material-batch task truth；训练创建弹窗没有增加 audit/repair UI；
+- Full Audit 负责发现异常，样例预览辅助人工判断语义，系统永远不自动猜 target；样例候选来自 audit artifact 的 affected image IDs，但展示时只读当前 AnnotationRepository，并只叠加 source label 的历史 bbox，图片继续复用现有素材缩略图/content owner；
 - 训练 fail-closed 提示会引导用户前往“标签管理 → 标签完整性”。
 
 生产历史异常的安全处理顺序：

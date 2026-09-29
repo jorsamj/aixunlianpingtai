@@ -1,8 +1,10 @@
+import io
 import json
 import sqlite3
 from contextlib import closing
 
 import app as app_module
+from PIL import Image
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_batches import MaterialBatchHandler
@@ -118,6 +120,135 @@ def test_full_audit_cannot_be_created_with_a_fake_generic_selection(
 
     assert response.status_code == 422
     assert "LABEL_INTEGRITY_DEDICATED_PREPARE_REQUIRED" in response.text
+
+
+def test_audit_samples_use_current_annotation_truth_and_only_source_boxes(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, first = seeded_project
+    materials = app_module.material_store(project_id)
+    second_image = io.BytesIO()
+    Image.new("RGB", (128, 128), "navy").save(second_image, format="JPEG")
+    second = {"id": "label-integrity-second-sample"}
+    (app_module.project_dir(project_id) / "uploads" / "second-sample.jpg").write_bytes(
+        second_image.getvalue()
+    )
+    materials.upsert(
+        {
+            "id": second["id"],
+            "filename": "second-sample.jpg",
+            "stored_name": "second-sample.jpg",
+            "object_key": "uploads/second-sample.jpg",
+            "dataset_id": "sample-preview",
+            "width": 128,
+            "height": 128,
+            "processing_status": "processed",
+        }
+    )
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    for image_id in (first["id"], second["id"]):
+        annotations.upsert(
+            image_id,
+            [
+                {
+                    "label": "head",
+                    "class_id": 1,
+                    "x1": 10,
+                    "y1": 11,
+                    "x2": 60,
+                    "y2": 70,
+                },
+                {
+                    "label": "fire",
+                    "class_id": 0,
+                    "x1": 70,
+                    "y1": 71,
+                    "x2": 110,
+                    "y2": 120,
+                },
+            ],
+            annotation_state="annotated",
+            annotation_scope=["head", "fire"],
+            project_material=False,
+        )
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    for image_id in (first["id"], second["id"]):
+        annotations.upsert(
+            image_id,
+            [
+                {
+                    "label": "head",
+                    "class_id": 1,
+                    "x1": 20,
+                    "y1": 21,
+                    "x2": 61,
+                    "y2": 71,
+                },
+                {
+                    "label": "fire",
+                    "class_id": 0,
+                    "x1": 70,
+                    "y1": 71,
+                    "x2": 110,
+                    "y2": 120,
+                },
+            ],
+            annotation_state="annotated",
+            annotation_scope=["head", "fire"],
+            project_material=False,
+        )
+    annotation_revision = annotations.current_revision()
+    material_revision = materials.current_revision()
+
+    first_page = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/samples",
+        params={"source_label": "head", "limit": 1},
+    )
+
+    assert first_page.status_code == 200, first_page.text
+    body = first_page.json()
+    assert body["read_only"] is True
+    assert body["source_label"] == "head"
+    assert body["candidate_count"] == 2
+    assert body["next_cursor"]
+    assert len(body["items"]) == 1
+    sample = body["items"][0]
+    assert sample["image_id"] in {first["id"], second["id"]}
+    assert sample["filename"]
+    assert sample["historical_class_ids"] == [1]
+    assert sample["current_schema_identity"] == [
+        {"class_id": 1, "label_code": "smoke", "status": "active"}
+    ]
+    assert sample["thumbnail_url"].endswith("/thumbnail?size=320")
+    assert sample["content_url"].endswith(f"/materials/{sample['image_id']}/content")
+    assert sample["provenance"]["storage_source_id"] == "default_local"
+    assert sample["provenance"]["object_key"]
+    assert len(sample["boxes"]) == 1
+    assert sample["boxes"][0]["label"] == "head"
+    assert sample["boxes"][0]["class_id"] == 1
+    assert sample["boxes"][0]["x1"] == 20
+    assert "target_label" not in sample
+    assert "recommended_target" not in sample
+
+    second_page = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/samples",
+        params={
+            "source_label": "head",
+            "limit": 1,
+            "cursor": body["next_cursor"],
+        },
+    )
+    assert second_page.status_code == 200, second_page.text
+    second_body = second_page.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["items"][0]["image_id"] != sample["image_id"]
+    assert second_body["next_cursor"] is None
+    assert annotations.current_revision() == annotation_revision
+    assert materials.current_revision() == material_revision
 
 
 def test_orphan_repair_revalidates_current_gt_and_freezes_only_still_affected(
