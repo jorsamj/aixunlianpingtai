@@ -331,6 +331,8 @@ def resolve_resources(request, context, model, torch):
         resource_profile=profile,
         gpu_policy=gpu_policy,
         precision=precision,
+        requested_precision=precision,
+        resolved_precision=precision,
         activation_precision_factor=activation_precision_factor,
         requested_batch=requested_batch,
         requested_workers=requested_workers,

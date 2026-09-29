@@ -570,6 +570,15 @@ class AgentTrainingRunner:
             ) from error
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+            canonical_errors = re.findall(
+                r"\\b([A-Z][A-Z0-9_]{2,}):\\s*([^\\r\\n]+)",
+                detail,
+            )
+            if canonical_errors:
+                code, message = canonical_errors[-1]
+                raise AgentTrainingRuntimeError(
+                    f"{code}: {message.strip()}"
+                )
             raise AgentTrainingRuntimeError(
                 "RESOURCE_PREPARE_FAILED: " + detail[-4000:]
             )
@@ -760,6 +769,33 @@ class AgentTrainingRunner:
             model_argument,
             job_dir / "resolved-resources.json",
         )
+        node_id = (
+            str(lease.worker_id).split(":", 1)[1].strip()
+            if str(lease.worker_id).startswith("agent:")
+            else ""
+        )
+        if not node_id:
+            raise AgentTrainingRuntimeError(
+                "REMOTE_TRAINING_NODE_ID_MISSING: execution lease has no Agent node identity"
+            )
+        resolved_resources = {
+            **dict(resolved_resources),
+            "node_id": node_id,
+            "execution_generation": int(lease.generation),
+            "assigned_device": selected_device,
+            "gpu_uuid": resource_context.get("gpu_uuid"),
+            "gpu_name": resource_context.get("gpu_name"),
+            "gpu_index": resource_context.get("gpu_index"),
+            "gpu_free_bytes_at_assignment": resource_context.get("gpu_free_bytes"),
+            "gpu_total_bytes_at_assignment": resource_context.get("gpu_total_bytes"),
+            "gpu_utilization_percent_at_assignment": resource_context.get(
+                "gpu_utilization_percent"
+            ),
+        }
+        _atomic_write_json(
+            job_dir / "resolved-resources.json",
+            resolved_resources,
+        )
         run_name = f"remote_{lease.task_id}_{lease.generation}"
         runtime_stop_policy = str(
             self._parameter(payload, "runtime_stop_policy", "target_only") or "target_only"
@@ -833,7 +869,7 @@ class AgentTrainingRunner:
             "--imgsz",
             str(imgsz),
             "--batch",
-            str(batch),
+            str(int(resolved_resources["resolved_batch"])),
             "--device",
             selected_device,
             "--assigned-device",
@@ -847,7 +883,7 @@ class AgentTrainingRunner:
             "--patience",
             str(max(0, int(self._parameter(payload, "patience", 100)))),
             "--workers",
-            str(workers),
+            str(int(resolved_resources["resolved_workers"])),
             "--optimizer",
             str(self._parameter(payload, "optimizer", "auto") or "auto"),
             "--lr0",
@@ -861,7 +897,7 @@ class AgentTrainingRunner:
             "--mosaic",
             str(float(self._parameter(payload, "mosaic", 1.0))),
             "--cache",
-            str(self._parameter(payload, "cache", False)),
+            str(resolved_resources.get("resolved_cache", False)),
             "--resource-strategy",
             str(self._parameter(payload, "resource_strategy", "auto") or "auto"),
             "--resource-profile",

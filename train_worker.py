@@ -1023,6 +1023,14 @@ def main():
                 effective_precision = verify_effective_training_precision(
                     precision, getattr(trainer, "amp", False)
                 )
+                runtime_resources = {
+                    **runtime_resources,
+                    "actual_device": assigned,
+                    "actual_batch": runtime_resources["runtime_batch"],
+                    "actual_workers": runtime_resources["runtime_workers"],
+                    "actual_cache": runtime_resources["runtime_cache"],
+                    "actual_precision": effective_precision,
+                }
                 runtime_args["batch"] = runtime_resources["runtime_batch"]
                 runtime_args["workers"] = runtime_resources["runtime_workers"]
                 runtime_args["cache"] = runtime_resources["runtime_cache"]

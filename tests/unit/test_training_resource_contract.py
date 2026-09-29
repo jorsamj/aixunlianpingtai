@@ -207,6 +207,48 @@ def test_auto_batch_minus_one_remains_supported(monkeypatch):
     assert result["resolved_batch"] <= 128
 
 
+def test_auto_requested_batch_128_resolves_to_safe_batch_32(monkeypatch):
+    _patch_host(monkeypatch)
+    constrained_gpu = _Cuda(
+        free=int(14.2 * GIB),
+        total=24 * GIB,
+    )
+    result = training_metrics.resolve_resources(
+        _request(batch=128, resource_profile="balanced"),
+        _context(),
+        _Model(),
+        _Torch(constrained_gpu),
+    )
+
+    assert result["requested_batch"] == 128
+    assert result["resolved_batch"] == 32
+    assert constrained_gpu.selected == 0
+
+
+def test_manual_batch_128_over_same_gpu_budget_fails(monkeypatch):
+    _patch_host(monkeypatch)
+    constrained_gpu = _Cuda(
+        free=int(14.2 * GIB),
+        total=24 * GIB,
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget",
+    ):
+        training_metrics.resolve_resources(
+            _request(
+                resource_strategy="manual",
+                batch=128,
+                workers=4,
+                cache=False,
+                resource_profile="balanced",
+            ),
+            _context(),
+            _Model(),
+            _Torch(constrained_gpu),
+        )
+
+
 def test_manual_batch_minus_one_is_rejected(monkeypatch):
     _patch_host(monkeypatch)
     with pytest.raises(ValueError, match="RESOURCE_MANUAL_INVALID"):

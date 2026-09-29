@@ -491,6 +491,9 @@ parser.add_argument("--project-dir", required=True)
 parser.add_argument("--data", required=True)
 parser.add_argument("--model", required=True)
 parser.add_argument("--epochs", required=True)
+parser.add_argument("--batch", required=True)
+parser.add_argument("--workers", required=True)
+parser.add_argument("--cache", required=True)
 parser.add_argument("--device", required=True)
 parser.add_argument("--assigned-device", required=True)
 parser.add_argument("--requested-device", required=True)
@@ -513,6 +516,9 @@ runtime_root.joinpath("worker-args.json").write_text(
         "data": args.data,
         "model": args.model,
         "epochs": args.epochs,
+        "batch": args.batch,
+        "workers": args.workers,
+        "cache": args.cache,
         "device": args.device,
         "assigned_device": args.assigned_device,
         "requested_device": args.requested_device,
@@ -679,6 +685,9 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["resource_profile"] == "performance"
     assert args["gpu_policy"] == "exclusive"
     assert args["precision"] == "fp16"
+    assert args["batch"] == "2"
+    assert args["workers"] == "0"
+    assert args["cache"] == "False"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321
     assert args["dataset_bytes"] == 512 * 1024 * 1024
@@ -719,6 +728,49 @@ def test_real_subprocess_remote_training_success(tmp_path):
     )
 
 
+
+
+def test_subprocess_resource_resolver_preserves_canonical_failure_code(tmp_path, monkeypatch):
+    transfer = FakeTransferSession({})
+    client = FakeControlClient(transfer)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    runner = AgentTrainingRunner(
+        client,
+        workdirs,
+        runtime_root=tmp_path,
+        ultralytics_python=sys.executable,
+        transfer_session=transfer,
+        transfer_timeout=10,
+    )
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Traceback (most recent call last):\\n"
+                "ValueError: RESOURCE_MANUAL_INVALID: requested batch=128 "
+                "exceeds current GPU budget\\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AgentTrainingRuntimeError,
+        match=r"^RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget$",
+    ):
+        runner._resolve_resource_contract_subprocess(
+            {
+                "resource_strategy": "manual",
+                "batch": 128,
+                "workers": 8,
+            },
+            {"train_image_count": 100},
+            "yolo11n.pt",
+            tmp_path / "resolved-resources.json",
+        )
 
 
 def test_remote_manual_resource_validation_fails_before_training_worker(tmp_path):
@@ -813,7 +865,7 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(
         transfer,
-        cancel_at_heartbeat=6,
+        cancel_at_heartbeat=7,
     )
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
