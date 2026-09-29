@@ -405,6 +405,9 @@ jobs:
           grep -Fq 'confirmed_iteration_action' app.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq '"platform_core.training_metrics"' platform_core/node_agent_training_runtime.py
+          grep -Fq 'resolved-resources.json' platform_core/node_agent_training_runtime.py
+          grep -Fq 'test_remote_manual_resource_validation_fails_before_training_worker' tests/unit/test_node_agent_training_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
           grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
           grep -Fq 'training-models/prepare' platform_core/agent_execution.py

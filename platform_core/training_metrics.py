@@ -633,3 +633,32 @@ class TrainingMetrics:
 
 def persist_resolution(path, resolved):
     atomic_write_json(Path(path), resolved)
+
+
+def resource_resolution_cli(argv=None):
+    """Resolve one frozen resource contract in the selected training Python environment."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Resolve training resources before Trainer startup")
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--context", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+
+    request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+    context = json.loads(Path(args.context).read_text(encoding="utf-8"))
+    if not isinstance(request, dict) or not isinstance(context, dict):
+        raise ValueError("RESOURCE_PREPARE_REQUIRED: request/context must be JSON objects")
+
+    import torch
+    from ultralytics import YOLO
+
+    model = YOLO(str(args.model))
+    resolved = resolve_resources(request, context, model, torch)
+    atomic_write_json(Path(args.output), resolved)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(resource_resolution_cli())

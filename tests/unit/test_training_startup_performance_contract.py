@@ -219,12 +219,13 @@ def test_materialization_uses_construction_evidence_instead_of_full_image_rehash
     assert manifest["construction_verification"]["training_input_policy"] == "ultralytics_jpeg_repair_v1"
 
 
-def test_oom_retry_keeps_workers_independent_from_batch():
-    from train_worker import next_oom_retry_resources
+def test_runtime_oom_does_not_mutate_frozen_resource_contract():
+    source = Path("train_worker.py").read_text(encoding="utf-8")
 
-    assert next_oom_retry_resources(8, 8) == (4, 8)
-    assert next_oom_retry_resources(4, 8) == (2, 8)
-    assert next_oom_retry_resources(2, 3) == (1, 3)
+    assert "RESOURCE_RUNTIME_OOM" in source
+    assert "next_oom_retry_resources" not in source
+    assert "resolved.update(resolved_batch" not in source
+    assert "CUDA OOM retry" not in source
 
 
 def test_startup_stage_contract_persists_first_batch_truth(tmp_path):

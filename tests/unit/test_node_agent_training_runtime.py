@@ -502,6 +502,7 @@ parser.add_argument("--gpu-policy", required=True)
 parser.add_argument("--precision", required=True)
 parser.add_argument("--time", required=True)
 parser.add_argument("--resource-context", required=True)
+parser.add_argument("--resource-resolution", required=True)
 args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
@@ -526,6 +527,8 @@ runtime_root.joinpath("worker-args.json").write_text(
         "dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("dataset_bytes"),
         "decoded_dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("decoded_dataset_bytes"),
         "concurrent_reservations": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("concurrent_reservations"),
+        "resolved_batch": json.loads(Path(args.resource_resolution).read_text(encoding="utf-8")).get("resolved_batch"),
+        "resolved_workers": json.loads(Path(args.resource_resolution).read_text(encoding="utf-8")).get("resolved_workers"),
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -585,6 +588,7 @@ def build_runner(
     *,
     sleep_seconds=0.0,
     test_result_status="passed",
+    resource_resolver=None,
 ):
     runtime_root = tmp_path / "runtime"
     write_fake_train_worker(
@@ -593,6 +597,29 @@ def build_runner(
         test_result_status=test_result_status,
     )
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    if resource_resolver is None:
+        def resource_resolver(request, context, _model_argument, output_path):
+            resolved = {
+                "schema_version": 1,
+                "resource_strategy": str(request.get("resource_strategy") or "auto"),
+                "resource_profile": str(request.get("resource_profile") or "balanced"),
+                "gpu_policy": str(request.get("gpu_policy") or "auto"),
+                "precision": str(request.get("precision") or "auto"),
+                "requested_batch": int(request.get("batch") or 1),
+                "requested_workers": int(request.get("workers") or 0),
+                "requested_cache": request.get("cache", False),
+                "resolved_batch": 2,
+                "resolved_workers": 0,
+                "resolved_cache": False,
+                "reasons": ["test resource resolver"],
+                "adjustments": [],
+            }
+            Path(output_path).write_text(
+                json.dumps(resolved, sort_keys=True),
+                encoding="utf-8",
+            )
+            return resolved
+
     runner = AgentTrainingRunner(
         client,
         workdirs,
@@ -602,6 +629,7 @@ def build_runner(
         heartbeat_interval=1.0,
         process_poll_interval=0.05,
         transfer_timeout=10,
+        resource_resolver=resource_resolver,
     )
     return runner, runtime_root, workdirs
 
@@ -656,6 +684,8 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["dataset_bytes"] == 512 * 1024 * 1024
     assert args["decoded_dataset_bytes"] == 2 * 1024**3
     assert args["concurrent_reservations"] == 2
+    assert args["resolved_batch"] == 2
+    assert args["resolved_workers"] == 0
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
@@ -688,6 +718,38 @@ def test_real_subprocess_remote_training_success(tmp_path):
         for heartbeat in client.heartbeats
     )
 
+
+
+
+def test_remote_manual_resource_validation_fails_before_training_worker(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    current.payload["params"] = {
+        **dict(current.payload["params"]),
+        "resource_strategy": "manual",
+        "batch": 128,
+        "workers": 8,
+    }
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+
+    def reject_manual(_request, _context, _model_argument, _output_path):
+        raise AgentTrainingRuntimeError(
+            "RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget"
+        )
+
+    runner, runtime_root, _workdirs = build_runner(
+        tmp_path,
+        client,
+        transfer,
+        resource_resolver=reject_manual,
+    )
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "FAILED"
+    assert "RESOURCE_MANUAL_INVALID" in outcome.error
+    assert not (runtime_root / "started.marker").exists()
+    assert client.finish_calls[-1]["status"] == "FAILED"
 
 def test_remote_training_rejects_bf16_before_starting_worker(tmp_path):
     current, downloads = training_lease(tmp_path)

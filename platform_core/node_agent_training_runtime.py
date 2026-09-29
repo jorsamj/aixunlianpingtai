@@ -207,6 +207,7 @@ class AgentTrainingRunner:
         heartbeat_interval: float = 5.0,
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
+        resource_resolver=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -218,6 +219,7 @@ class AgentTrainingRunner:
         self.heartbeat_interval = max(1.0, float(heartbeat_interval))
         self.transfer_timeout = max(30.0, float(transfer_timeout))
         self.process_poll_interval = max(0.05, float(process_poll_interval))
+        self.resource_resolver = resource_resolver or self._resolve_resource_contract_subprocess
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
@@ -521,6 +523,72 @@ class AgentTrainingRunner:
             return default
         return _primitive(params.get(key), default)
 
+    def _resolve_resource_contract_subprocess(
+        self,
+        request: Mapping[str, Any],
+        context: Mapping[str, Any],
+        model_argument: str,
+        output_path: Path,
+    ) -> dict[str, Any]:
+        """Run the canonical resolver in the same Python environment as Ultralytics."""
+        output_path = Path(output_path)
+        request_path = output_path.with_name("resource-request.json")
+        context_path = output_path.with_name("resource-context.json")
+        _atomic_write_json(request_path, dict(request))
+        _atomic_write_json(context_path, dict(context))
+        command = [
+            str(self.ultralytics_python),
+            "-m",
+            "platform_core.training_metrics",
+            "--request",
+            str(request_path),
+            "--context",
+            str(context_path),
+            "--model",
+            str(model_argument),
+            "--output",
+            str(output_path),
+        ]
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.runtime_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=self.transfer_timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise AgentTrainingRuntimeError(
+                f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
+            ) from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_FAILED: " + detail[-4000:]
+            )
+        resolved = _read_json(output_path, {})
+        if not (
+            isinstance(resolved, dict)
+            and int(resolved.get("resolved_batch") or 0) > 0
+            and int(
+                resolved.get("resolved_workers")
+                if resolved.get("resolved_workers") is not None else -1
+            ) >= 0
+            and str(resolved.get("resource_strategy") or "")
+            == str(request.get("resource_strategy") or "auto")
+        ):
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: remote resource contract is missing or invalid"
+            )
+        return dict(resolved)
+
     def _prepare_project(
         self,
         lease: RemoteExecutionLease,
@@ -665,6 +733,33 @@ class AgentTrainingRunner:
         imgsz = max(128, int(self._parameter(payload, "imgsz", 640)))
         batch = int(self._parameter(payload, "batch", 4))
         workers = max(0, int(self._parameter(payload, "workers", 0)))
+        resource_request = {
+            **{
+                str(key): value
+                for key, value in (payload.get("params") or {}).items()
+                if value is None or isinstance(value, (str, int, float, bool))
+            },
+            "data": str(data_yaml),
+            "device": selected_device,
+            "batch": batch,
+            "workers": workers,
+            "cache": self._parameter(payload, "cache", False),
+            "imgsz": imgsz,
+            "resource_strategy": str(
+                self._parameter(payload, "resource_strategy", "auto") or "auto"
+            ),
+            "resource_profile": str(
+                self._parameter(payload, "resource_profile", "balanced") or "balanced"
+            ),
+            "gpu_policy": gpu_policy,
+            "precision": precision,
+        }
+        resolved_resources = self.resource_resolver(
+            resource_request,
+            resource_context,
+            model_argument,
+            job_dir / "resolved-resources.json",
+        )
         run_name = f"remote_{lease.task_id}_{lease.generation}"
         runtime_stop_policy = str(
             self._parameter(payload, "runtime_stop_policy", "target_only") or "target_only"
@@ -700,6 +795,16 @@ class AgentTrainingRunner:
                 "precision": precision,
                 "concurrent_reservations": concurrent_reservations,
                 "runtime_stop_policy": runtime_stop_policy,
+                "requested_resources": {
+                    "resource_strategy": resource_request["resource_strategy"],
+                    "resource_profile": resource_request["resource_profile"],
+                    "gpu_policy": gpu_policy,
+                    "precision": precision,
+                    "batch": batch,
+                    "workers": workers,
+                    "cache": resource_request["cache"],
+                },
+                "resolved_resources": resolved_resources,
                 "quality_gate": {
                     "runtime_stop_policy": runtime_stop_policy,
                     "eval_interval": max(0, int(self._parameter(payload, "eval_interval", 0))),
@@ -1062,6 +1167,12 @@ class AgentTrainingRunner:
                 payload,
                 workdir,
                 monitor,
+            )
+            self._heartbeat(
+                monitor,
+                progress=13,
+                stage="REMOTE_TRAINING_RESOLVING_RESOURCES",
+                current_item="核验远程 GPU 的 Batch / Workers / Cache",
             )
             project, job_file, _worker, command = self._prepare_project(
                 lease,

@@ -102,11 +102,6 @@ def parse_cache(v):
     raise ValueError("cache 只支持 False / True / ram / disk")
 
 
-def next_oom_retry_resources(batch, workers):
-    """Step batch down after CUDA OOM without re-coupling DataLoader workers."""
-    return max(1, int(batch) // 2), max(0, int(workers))
-
-
 def resolve_training_model(model_arg: str, pretrained: bool) -> str:
     """When 'pretrained' is off, do not silently keep training from an already-loaded .pt checkpoint."""
     if pretrained:
@@ -1071,47 +1066,29 @@ def main():
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
-        retries = 0
         training_start_monotonic = time.monotonic()
-        while True:
-            try:
-                evidence["effective_args"] = recorded_train_params(train_args)
-                update_job(job_file, device_evidence=evidence, actual_train_params=recorded_train_params(train_args))
-                train_result = model.train(**train_args)
-                break
-            except Exception as train_error:
-                is_oom = isinstance(train_error, torch.cuda.OutOfMemoryError) or "cuda out of memory" in str(train_error).lower()
-                is_oom = is_oom or "runtime changed batch; explicit worker retry required" in str(train_error)
-                if not is_oom:
-                    raise
+        try:
+            evidence["effective_args"] = recorded_train_params(train_args)
+            update_job(
+                job_file,
+                device_evidence=evidence,
+                actual_train_params=recorded_train_params(train_args),
+            )
+            train_result = model.train(**train_args)
+        except Exception as train_error:
+            is_oom = (
+                isinstance(train_error, torch.cuda.OutOfMemoryError)
+                or "cuda out of memory" in str(train_error).lower()
+                or "runtime changed batch; explicit worker retry required" in str(train_error).lower()
+            )
+            if is_oom:
                 telemetry.oom = True
-                if args.resource_strategy != "auto" or train_args["batch"] <= 1 or retries >= 6:
-                    raise
-                retries += 1
-                next_batch, next_workers = next_oom_retry_resources(
-                    train_args["batch"], train_args["workers"]
-                )
-                train_args["batch"] = next_batch
-                train_args["workers"] = next_workers
-                resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
-                resolved["reasons"].append(
-                    f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; "
-                    f"workers retained at {train_args['workers']}; same assigned GPU"
-                )
-                with telemetry.lock:
-                    telemetry.resolved = dict(resolved)
-                persist_resolution(resolution_path, resolved)
-                update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args))
-                print(f"[资源调整] CUDA OOM；第 {retries}/6 次重试，batch={train_args['batch']}", flush=True)
-            # Release traceback-held tensors before building the next bounded attempt.
-            del model
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-            model = YOLO(actual_model)
-            model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-            attach_resource_callbacks(model)
-            attach_training_batch_progress(model, job_file, int(args.epochs))
+                raise RuntimeError(
+                    "RESOURCE_RUNTIME_OOM: frozen resolved resource contract "
+                    f"batch={train_args['batch']} did not fit the assigned GPU at runtime; "
+                    "the Trainer will not mutate Batch/Workers after startup"
+                ) from train_error
+            raise
         first_run_dir=runs_dir/args.run_name
         if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
