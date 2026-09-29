@@ -122,8 +122,9 @@ jobs:
           node --check static/modules/training-submit.js
           grep -q "external_algorithm_platform_router" app.py
           grep -Fq 'def training_preflight(' platform_core/external_algorithm_platform.py
-          grep -Fq 'def _refresh_external_training_algorithm' app.py
-          test "$(grep -Fc '_refresh_external_training_algorithm(project_id, asset_algorithm)' app.py)" = "2"
+          grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
+          grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py
+          ! grep -Fq '_refresh_external_training_algorithm(' app.py
           grep -Fq 'test_training_create_has_one_external_truth_owner_plus_compatibility_delegate' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_REQUIRED' platform_core/external_algorithm_platform.py
           grep -Fq 'client.product_info(product_id)' platform_core/external_algorithm_platform.py
@@ -163,7 +164,7 @@ jobs:
           if grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js; then echo "ChangLian UI must not own an interval-based sync setting" >&2; exit 1; fi
           grep -Fq 'latest_due_slot' platform_core/external_algorithm_platform.py
           grep -Fq 'if str(item.get("sync_type") or "") == "auto"' platform_core/external_algorithm_platform.py
-          grep -Fq 'test_v12_training_entry_enforces_external_analysis_gate_before_durable_enqueue' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_v12_training_entry_defers_external_preflight_to_durable_prepare' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_uses_analysis_get_info_as_authoritative_training_truth' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_can_train_when_get_info_proves_enabled_visual_analysis' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_fails_closed_when_analysis_get_info_omits_status' tests/unit/test_external_algorithm_platform.py
@@ -174,7 +175,7 @@ jobs:
           grep -Fq 'def _analysis_detail_truth' platform_core/external_algorithm_platform.py
           grep -Fq 'client.analysis_info(analysis_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
-          grep -Fq '"external_analysis_id": external_analysis_id' app.py
+          grep -Fq '"external_analysis_id": external_analysis_id' platform_core/remote_training_tasks.py
           if grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py; then echo "Web/API auto-sync timer must stay retired" >&2; exit 1; fi
           grep -Fq '后台 Worker heartbeat hook 负责触发固定时段到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -Fq 'test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer' tests/unit/test_external_algorithm_auto_sync.py
@@ -260,7 +261,7 @@ jobs:
           grep -q '_request("POST", self.endpoints.test_sign, params=params)' platform_core/external_algorithm_platform.py
           grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
           if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
-          grep -q "resolve_external_training_analysis" app.py
+          grep -q "resolve_external_training_analysis" platform_core/remote_training_tasks.py
           if grep -Fq "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js; then echo "external platform must not own algorithm-list rendering decorators" >&2; exit 1; fi
           grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
           grep -q "def readiness(self" platform_core/external_algorithm_platform.py

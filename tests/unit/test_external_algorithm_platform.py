@@ -1235,52 +1235,59 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
     assert readiness["ready"] is False
 
 
-def test_v12_training_entry_enforces_external_analysis_gate_before_durable_enqueue():
+def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
     end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
-    refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
-    local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
-    analysis_gate = "resolve_external_training_analysis("
     split_gate = "if not payload.split_mode:"
     enqueue = "return _enqueue_explicit_training(project_id, payload)"
 
-    for marker in (refresh, local_gate, analysis_gate, split_gate, enqueue):
+    for marker in (split_gate, enqueue):
         assert marker in block
-    assert block.index(refresh) < block.index(local_gate)
-    assert block.index(local_gate) < block.index(analysis_gate)
-    assert block.index(analysis_gate) < block.index(split_gate)
     assert block.index(split_gate) < block.index(enqueue)
+    assert "_refresh_external_training_algorithm(" not in block
+    assert "assert_external_algorithm_master_data_current(" not in block
+    assert "resolve_external_training_analysis(" not in block
 
 
 def test_training_create_has_one_external_truth_owner_plus_compatibility_delegate():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
-    local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
 
     enqueue_start = source.index("def _enqueue_explicit_training(project_id: str, payload: TrainReq)")
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
     enqueue_block = source[enqueue_start:enqueue_end]
-    assert refresh in enqueue_block
-    assert local_gate in enqueue_block
-    assert "resolve_external_training_analysis(" in enqueue_block
-    assert enqueue_block.index(refresh) < enqueue_block.index(local_gate)
+    assert '"training_input_state": "PREPARING"' in enqueue_block
+    assert "TaskKind.TRAINING_PREPARE" in enqueue_block
+    assert "_refresh_external_training_algorithm(" not in enqueue_block
+    assert "assert_external_algorithm_master_data_current(" not in enqueue_block
+    assert "resolve_external_training_analysis(" not in enqueue_block
 
     v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
     v12_end = source.index("def _v48_resource_key", v12_start)
     v12_block = source[v12_start:v12_end]
-    assert refresh in v12_block
-    assert local_gate in v12_block
     assert "return _enqueue_explicit_training(project_id, payload)" in v12_block
+    assert "_refresh_external_training_algorithm(" not in v12_block
+    assert "assert_external_algorithm_master_data_current(" not in v12_block
+    assert "resolve_external_training_analysis(" not in v12_block
 
     compatibility_start = source.index('@app.post("/api/projects/{project_id}/train/start")')
     compatibility_end = source.index("def resolve_server", compatibility_start)
     compatibility_block = source[compatibility_start:compatibility_end]
     assert "return v12_start_train(project_id, payload)" in compatibility_block
-    assert refresh not in compatibility_block
-    assert local_gate not in compatibility_block
+    assert "_refresh_external_training_algorithm(" not in compatibility_block
+    assert "assert_external_algorithm_master_data_current(" not in compatibility_block
+
+    prepare = (
+        Path(__file__).resolve().parents[2] / "platform_core" / "remote_training_tasks.py"
+    ).read_text(encoding="utf-8")
+    owner_start = prepare.index("class TrainingPrepareHandler:")
+    owner_block = prepare[owner_start:]
+    assert "service.training_preflight(" in owner_block
+    assert "assert_external_algorithm_master_data_current(self.data_dir, algorithm)" in owner_block
+    assert "resolve_external_training_analysis(" in owner_block
+    assert "activate_prepared_training(" in owner_block
 
 
 class DetailOverridesSummaryClient(FakeChangLianClient):

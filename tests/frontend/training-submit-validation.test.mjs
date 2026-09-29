@@ -230,5 +230,8 @@ test('training form exposes bounded professional augmentation without fake GPU s
   assert.match(source, /translate:num\('ts428Translate'/);
   assert.match(source, /fliplr:num\('ts428FlipLR'/);
   assert.match(source, /rect:!!document\.getElementById\('ts428Rect'\)/);
-  assert.match(source, /若发生显存 OOM，会在同一张 GPU 上有界降低 Batch 后重试/);
+  assert.match(source, /Batch：自动/);
+  assert.match(source, /Workers：自动/);
+  assert.match(source, /推荐 \$\{recommendation\.batch\} · 当前估算安全范围 1 ~/);
+  assert.match(source, /手动模式是硬约束，不满足预算时会在启动 Trainer 前失败/);
 });

@@ -133,6 +133,6 @@ jobs:
           grep -Fq 'benchmark_source_version_id' app.py
           grep -Fq 'def _training_reusable_benchmark' app.py
           grep -Fq 'exclude_reserved_test_components' platform_core/training_splits.py
-          grep -Fq 'reserved_training_candidate_count' app.py
+          grep -Fq 'reserved_training_candidate_count' platform_core/remote_training_tasks.py
           grep -Fq 'test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids' tests/api/test_training_request.py
           test "$(cat VERSION.txt)" = "42.24.0"

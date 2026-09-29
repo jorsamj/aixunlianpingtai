@@ -76,6 +76,13 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     contentType: 'application/json',
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ok: true, recommendation: {
+      device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32,
+    }}),
+  }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
     await route.fulfill({
@@ -161,13 +168,13 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
-  await settings.locator('#ts428Batch').fill('16');
   await settings.getByText('高级训练参数', {exact: true}).click();
-  await settings.locator('#ts428Workers').fill('4');
   await settings.locator('#ts428Opt').selectOption('AdamW');
   await settings.locator('#ts428Cache').selectOption('False');
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
+  await dialog.locator('#trV3ManualBatch').fill('16');
+  await dialog.locator('#trV3ManualWorkers').fill('4');
   await expect(dialog.locator('#trainUiSummary')).toContainText('YOLO11n');
   await expect(dialog.locator('#trainUiSummary')).toContainText('30');
   await expect(dialog.locator('#trainUiSummary')).toContainText('16');

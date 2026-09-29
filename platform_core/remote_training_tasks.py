@@ -16,6 +16,7 @@ from .external_algorithm_platform import (
     assert_external_algorithm_master_data_current,
     resolve_external_training_analysis,
 )
+from .errors import PlatformError
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService
 from .remote_training_transport import (
@@ -206,11 +207,18 @@ class TrainingPrepareHandler:
             data_dir=self.data_dir,
             secret_store_factory=KeyringSecretStore,
         )
-        result = service.training_preflight(
-            project_id=project_id,
-            algorithms_path=self.data_dir / "projects" / project_id / "algorithms.json",
-            algorithm_id=str(algorithm.get("id") or ""),
-        )
+        try:
+            result = service.training_preflight(
+                project_id=project_id,
+                algorithms_path=self.data_dir / "projects" / project_id / "algorithms.json",
+                algorithm_id=str(algorithm.get("id") or ""),
+            )
+        except PlatformError as error:
+            raise RemoteTrainingPreparationError(
+                error.code,
+                error.message,
+                target_status=TaskStatus.FAILED,
+            ) from error
         fresh = result.get("algorithm") if isinstance(result, Mapping) else None
         if not isinstance(fresh, Mapping):
             raise RemoteTrainingPreparationError(

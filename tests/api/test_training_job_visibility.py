@@ -2,6 +2,90 @@ from __future__ import annotations
 
 import json
 
+from platform_core.task_runtime import TaskRepository
+
+
+def _empty_task_repository(tmp_path):
+    return TaskRepository(tmp_path / "tasks.sqlite3")
+
+
+def test_training_job_frozen_algorithm_name_never_reads_repository(tmp_path, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: _empty_task_repository(tmp_path))
+    monkeypatch.setattr(
+        app_module,
+        "list_algorithms_internal",
+        lambda _project_id: (_ for _ in ()).throw(AssertionError("frozen name must win")),
+    )
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": "training-frozen-name",
+        "status": "queued",
+        "asset_algorithm_id": "algorithm-1",
+        "asset_algorithm_name": "已冻结算法名称",
+    })
+
+    assert job["asset_algorithm_name"] == "已冻结算法名称"
+
+
+def test_training_job_historical_algorithm_id_resolves_current_name(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = _empty_task_repository(tmp_path)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+    monkeypatch.setattr(
+        app_module,
+        "list_algorithms_internal",
+        lambda _project_id: [{"id": "algorithm-1", "name": "当前算法名称"}],
+    )
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": "training-historical-id",
+        "status": "queued",
+        "asset_algorithm_id": "algorithm-1",
+    })
+
+    assert job["asset_algorithm_name"] == "当前算法名称"
+
+
+def test_training_job_deleted_algorithm_uses_safe_display_name(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = _empty_task_repository(tmp_path)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+    monkeypatch.setattr(app_module, "list_algorithms_internal", lambda _project_id: [])
+
+    job = app_module.enrich_job_runtime("project-1", {
+        "id": "training-deleted-algorithm",
+        "status": "queued",
+        "asset_algorithm_id": "algorithm-deleted",
+    })
+
+    assert job["asset_algorithm_name"] == "已删除算法"
+
+
+def test_training_job_missing_historical_project_does_not_break_projection(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = _empty_task_repository(tmp_path)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+    monkeypatch.setattr(
+        app_module,
+        "list_algorithms_internal",
+        lambda _project_id: (_ for _ in ()).throw(
+            app_module.HTTPException(status_code=404, detail="项目不存在")
+        ),
+    )
+
+    job = app_module.enrich_job_runtime("missing-project", {
+        "id": "training-missing-project",
+        "status": "queued",
+        "asset_algorithm_id": "algorithm-historical",
+    })
+
+    assert job["asset_algorithm_name"] == "已删除算法"
+
 
 def test_training_job_index_keeps_all_active_tasks_beyond_history_limit():
     import app as app_module

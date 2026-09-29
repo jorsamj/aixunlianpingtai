@@ -5,11 +5,17 @@ import json
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.errors import PlatformError
 from platform_core.material_repository import MaterialRepository
 from platform_core.online_feedback import build_supplement_candidate_set
-from platform_core.remote_training_tasks import RemoteTrainingPrepareHandler
+import platform_core.remote_training_tasks as remote_training_tasks_module
+from platform_core.remote_training_tasks import (
+    RemoteTrainingPreparationError,
+    RemoteTrainingPrepareHandler,
+)
 from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource, StorageSourceRepository
 from platform_core.task_runtime import (
@@ -25,6 +31,42 @@ from platform_core.task_runtime import (
 class FakeCredentials:
     def get(self, _reference):
         return {}
+
+
+def test_external_training_preflight_preserves_canonical_failure_code(tmp_path, monkeypatch):
+    class FailingService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def training_preflight(self, **_kwargs):
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_INACTIVE",
+                "该外部算法已停用，不能训练",
+                "algorithm-fire",
+                "请先在新畅联恢复算法。",
+                409,
+            )
+
+    monkeypatch.setattr(
+        remote_training_tasks_module,
+        "ExternalAlgorithmPlatformService",
+        FailingService,
+    )
+    handler = RemoteTrainingPrepareHandler(tmp_path / "data")
+
+    with pytest.raises(RemoteTrainingPreparationError) as captured:
+        handler._refresh_external_algorithm(
+            "project-1",
+            {
+                "id": "algorithm-fire",
+                "source_type": "EXTERNAL",
+                "provider_type": "CHANG_LIAN",
+            },
+        )
+
+    assert captured.value.code == "EXTERNAL_ALGORITHM_INACTIVE"
+    assert str(captured.value) == "该外部算法已停用，不能训练"
+    assert captured.value.target_status is TaskStatus.FAILED
 
 
 class FakeConfigRepository:

@@ -3504,3 +3504,31 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - Training Prepare integration：`3 passed`。
 - `node --check` 已覆盖本轮修改的 `static/app.js` 与相关 training modules；`git diff --check` 通过。
 - 尚未执行生产大数据 smoke、真实 GPU 资源压测或全站 browser E2E；这些不能由 targeted contract tests 替代。
+
+## 2026-09-29 — Durable Training CI 合同收口
+
+本节只记录 `5b84ab2267c29e5a075168d60ea46ca7729cddc2` 后 15 个 completed failure 的定向收口。`VERSION.txt` 继续保持 `42.24.0`；未扩展业务功能，未恢复旧 OOM retry，也未放宽 `TRAINING_PREPARE_REQUIRED`。
+
+### Stale tests / guards
+
+- cache guard 对齐既有生产引用，不再次 bump：`styles.css?v=42.24.45`、`material-upload-bootstrap.mjs?v=422533`、`material-upload-runtime.js?v=422543`。
+- 旧“同卡 OOM 后降低 Batch 重试”文案合同已由正式 AUTO/MANUAL 合同替代：AUTO 的最终资源以后端 prepare 解析为准；MANUAL 展示推荐值与安全范围，超预算在 Trainer 启动前失败。
+- browser fixture 中的 `Batch=2` 来自 fixture 明确给出的 CPU recommendation/default；旧用例误改已退役的高级配置 Batch/Workers 控件。用例现改为操作唯一正式 MANUAL owner，并验证用户输入 `16/4` 进入 Draft；生产 recommendation 逻辑未修改。
+- Remote Training integration 不再直接运行 `TrainingHandler`：先创建 `TRAINING` parent 与 `TRAINING_PREPARE` child，确认 input state 为 `READY` 且 input-freeze、snapshot、resolved-resources artifacts 存在后，才允许 Trainer 执行。
+- Remote Training、Training Input Integrity、Training Recovery 与 External Algorithm workflow 的永久 guard 已从旧函数名/旧位置更新为当前正式 owner/行为合同。
+
+### Production regressions fixed
+
+- 历史训练任务名称投影按 `asset_algorithm_name` → legacy `algorithm_name` → repository lookup 的顺序解析。只有兼容历史 ID 时才查 repository；项目/算法已删除的 404 降级为“已删除算法”，不再破坏整个任务列表；没有任何算法身份时才显示“未命名算法”。其他 HTTP 异常仍然抛出。
+- `/train/start` 不再同步访问畅联远端接口。外部算法 realtime preflight、当前主数据校验与 analysis eligibility 由唯一 `TrainingPrepareHandler` 在后台、Worker 启动前执行；canonical `PlatformError` 会保留 error code/message 并使 parent 在 `training_input_preparation_failed` 阶段失败。
+
+### Targeted verification
+
+- External Algorithm Platform + Algorithm SQL Store：`100 passed`。
+- Training job visibility：`11 passed`。
+- Durable prepare / training worker integration：`7 passed`。
+- Training request API：`36 passed`。
+- Training recovery detail/API：`10 passed`（另 `7 deselected`）。
+- Frontend cache + submit contracts：`22 passed`；recovery/task detail：`43 passed`。
+- 单个 training dialog Real Chrome 合同：`1 passed`。
+- 最新 HEAD 的 GitHub Actions 必须全部 terminal 且 failure/queued/in_progress/cancelled 均为 0 后，才能标记可部署。

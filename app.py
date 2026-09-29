@@ -1159,21 +1159,32 @@ def enrich_job_runtime(
     repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
     if not str(job.get("asset_algorithm_name") or "").strip():
-        algorithm_id = str(
-            job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or ""
-        ).strip()
-        if algorithm_id:
-            algorithm = next(
-                (
-                    row for row in list_algorithms_internal(project_id)
-                    if str(row.get("id") or "") == algorithm_id
-                ),
-                None,
-            )
-            job["asset_algorithm_name"] = (
-                str(algorithm.get("name") or "已删除算法")
-                if algorithm is not None else "已删除算法"
-            )
+        legacy_name = str(job.get("algorithm_name") or "").strip()
+        if legacy_name:
+            job["asset_algorithm_name"] = legacy_name
+        else:
+            algorithm_id = str(
+                job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or ""
+            ).strip()
+            if algorithm_id:
+                try:
+                    algorithm = next(
+                        (
+                            row for row in list_algorithms_internal(project_id)
+                            if str(row.get("id") or "") == algorithm_id
+                        ),
+                        None,
+                    )
+                except HTTPException as error:
+                    if error.status_code != 404:
+                        raise
+                    algorithm = None
+                job["asset_algorithm_name"] = (
+                    str(algorithm.get("name") or "已删除算法")
+                    if algorithm is not None else "已删除算法"
+                )
+            else:
+                job["asset_algorithm_name"] = "未命名算法"
     worker_error = str(job.get("error") or "").strip()
     worker_message = str(job.get("message") or "").strip()
     worker_progress_truth = dict(job)
@@ -9512,16 +9523,6 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
-    # Every training entry point must enforce the ChangLian analysis contract.
-    # Only status=1 AND analysisType=1 is trainable; legacy v12 calls may not
-    # bypass the durable-training preflight.
-    asset_algorithm = _refresh_external_training_algorithm(project_id, asset_algorithm)
-    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
-    external_analysis_id = resolve_external_training_analysis(
-        asset_algorithm,
-        payload.external_analysis_id,
-    )
-    confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
     if not payload.split_mode:
         raise HTTPException(
             status_code=409,
@@ -20568,9 +20569,7 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
 from platform_core.external_algorithm_platform import (
     ExternalAlgorithmPlatformService,
     assert_algorithm_mutable,
-    assert_external_algorithm_master_data_current,
     assert_local_algorithm_create_allowed,
-    resolve_external_training_analysis,
     external_algorithm_platform_router,
 )
 from platform_core.external_algorithm_publish import (
@@ -20587,30 +20586,6 @@ from platform_core.remote_execution_transport import (
     RemoteExecutionTransportService,
     SUPPORTED_PORTABLE_RKNN_CHIPS,
 )
-
-
-def _refresh_external_training_algorithm(project_id: str, asset_algorithm):
-    """Re-read ChangLian product/analysis truth at the final backend create boundary."""
-    if not isinstance(asset_algorithm, dict):
-        return asset_algorithm
-    if (
-        str(asset_algorithm.get("source_type") or "").upper() != "EXTERNAL"
-        or str(asset_algorithm.get("provider_type") or "").upper() != "CHANG_LIAN"
-    ):
-        return asset_algorithm
-    service = ExternalAlgorithmPlatformService(
-        data_dir=DATA_DIR,
-        secret_store_factory=_v35_secret_store,
-    )
-    result = service.training_preflight(
-        project_id=project_id,
-        algorithms_path=algorithms_file(project_id),
-        algorithm_id=str(asset_algorithm.get("id") or ""),
-    )
-    fresh = result.get("algorithm") if isinstance(result, dict) else None
-    if not isinstance(fresh, dict):
-        raise RuntimeError("external training preflight returned no algorithm truth")
-    return fresh
 
 
 def _remote_execution_transport_service():
