@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests

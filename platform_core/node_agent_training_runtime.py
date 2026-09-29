@@ -571,7 +571,7 @@ class AgentTrainingRunner:
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
             canonical_errors = re.findall(
-                r"\\b([A-Z][A-Z0-9_]{2,}):\\s*([^\\r\\n]+)",
+                r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)",
                 detail,
             )
             if canonical_errors:
