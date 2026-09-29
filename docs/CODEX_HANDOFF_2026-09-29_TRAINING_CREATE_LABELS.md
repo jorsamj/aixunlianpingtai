@@ -4,10 +4,12 @@
 
 - 仓库：`jorsamj/aixunlianpingtai`
 - 长期分支：`feature/external-algorithm-publishing`
-- 本文代码 cutoff：`ec4fca762f805442bcf55515292a730c37c79dd6`
-- cutoff 提交：`test: align current training draft build guard`
+- 2026-09-29 交接时远端真实 HEAD：`b3b6d82e3b6c6164e59beb81cb5bddc23410508a`
+- HEAD 提交：`docs: hand off simplified training label UI`
+- 本轮功能代码主要 cutoff：`dccff9f72ccef03b5937cad7dd29dfe94de60b0b`
+- 随后只有测试 guard / 文档交接提交推进 HEAD，没有重新设计标签架构。
 - `VERSION.txt = 42.24.0`，禁止修改。
-- 本文提交后远端 HEAD 会继续前进；新会话必须重新读取远端 HEAD / checks，不能把本文 cutoff 当成未来最新 HEAD。
+- 本文提交后远端 HEAD 会继续前进；新会话必须重新读取远端 HEAD / checks，不能把本文记录当成未来最新 HEAD。
 
 ## 2. 用户这轮的真实需求
 
@@ -232,43 +234,46 @@ Real Chrome 已有场景：
 - 必须再次请求服务端；
 - 旧 label 不得继续显示。
 
-## 8. 当前 CI 真相（交接时刻）
+## 8. 当前 CI 真相（2026-09-29 交接时刻）
 
-代码功能 cutoff：
+当前远端 HEAD：
 
-`dccff9f72ccef03b5937cad7dd29dfe94de60b0b`
+`b3b6d82e3b6c6164e59beb81cb5bddc23410508a`
 
-随后仅修正两个测试 cache/build guard：
+当前已确认：
 
-- `9918f15ff5088ce1652d1bc30b6adccea42f7d62`
-  - `clean-task-view.test.mjs`：`main.mjs 42.25.252 -> 42.25.253`
-- `ec4fca762f805442bcf55515292a730c37c79dd6`
-  - `training-label-selector.spec.mjs`：`training-draft-runtime-422517 -> 422518`
+- Label Normalization Contract：
+  - HEAD `b3b6d82...` PR run `36502523520`：completed / success。
+- Training Input Integrity：
+  - HEAD `b3b6d82...` PR run `36502523369`：completed / success。
+- Frontend Runtime Stabilization：
+  - HEAD `b3b6d82...` push run `36502518169`：交接时仍 in_progress，不能写成通过。
+- 上一轮 `ec4fca...` 的 Frontend Runtime failure 属于 cache/build guard 对齐问题，不代表训练标签产品语义失败；后续已有 `9918f15f...`、`ec4fca76...` 等 guard 对齐提交，当前 HEAD 正在重新验证。
+- Training Create First Open：
+  - 功能代码、永久 source guard、Real Chrome case 均已写入 workflow；
+  - 新会话必须重新读取最新 workflow run / jobs，确认 Ubuntu / Windows / Real Chrome 最终终态，不能根据本文静态代码直接宣告全绿。
 
-这两个修正都只是让 source/build guard 与当前生产 cache key 对齐：
-- 没有删测试；
-- 没有降低断言；
-- 没有改变训练标签产品逻辑。
+当前功能层已完成：
 
-在 `dccff9f...` 上已看到：
+1. 正式标签统一后，训练后端 effective schema 只保留 canonical target；
+2. 训练弹窗不再显示标签 merge 历史审计；
+3. 前端不再自行实现 merge-chain resolver；
+4. 首次训练不显示“上一版本继承”；
+5. 迭代训练由服务端返回 canonical inherited labels；
+6. inherited labels 横向 pills + flex-wrap，美观紧凑；
+7. “本次素材标签”默认不选；
+8. Training Material Picker 已收敛为单一 project-owned route；
+9. 同一批 material IDs 在标签统一后会失效旧 summary，不能继续复用统一前标签缓存。
 
-- Training Material Picker / contracts：completed success；
-- Training Create First Open / Windows contract：completed success；
-- Training Create First Open / Real Chrome：当时 in_progress；
-- Training Create First Open / Ubuntu：当时 queued；
-- Frontend Runtime Stabilization 当时两处 failure 都是上述 stale cache/build guard，不是训练产品逻辑 failure。
+仍需新会话第一步重新确认：
 
-最新 `ec4fca...` 上新一轮 CI 已重新排队。**queued / in_progress 不能写成通过。**
+- 真实 HEAD；
+- VERSION；
+- Training Create First Open 当前最新 run；
+- Frontend Runtime Stabilization 当前最新 run；
+- 所有 completed failure 的真实 job log；
+- queued / in_progress 不得当作 success。
 
-新会话第一步必须重新读取：
-1. 真实 HEAD；
-2. `VERSION.txt`；
-3. 最新 Training Create First Open；
-4. Training Material Picker；
-5. Frontend Runtime Stabilization；
-6. Label Normalization Contract；
-7. Training Input Integrity；
-8. 所有 completed failure 的真实 job log。
 
 ## 9. 下一会话禁止重复做的事情
 
