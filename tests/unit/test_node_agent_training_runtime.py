@@ -746,7 +746,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert resolution["node_id"] == "node-1"
     assert resolution["execution_generation"] == current.generation
     assert resolution["assigned_device"] == "cuda:1"
-    assert resolution["gpu_uuid"] == "GPU-agent-test"
+    assert resolution["gpu_uuid"] == "GPU-agent-uuid"
     assert resolution["resolved_batch"] == 2
 
 
