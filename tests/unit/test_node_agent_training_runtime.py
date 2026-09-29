@@ -734,7 +734,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
         if (heartbeat.get("stage") or "") == "REMOTE_TRAINING_STARTING_WORKER"
     )
     resolution = start_heartbeat["resource_resolution"]
-    assert resolution["node_id"] == "gpu-agent"
+    assert resolution["node_id"] == "node-1"
     assert resolution["execution_generation"] == current.generation
     assert resolution["assigned_device"] == "cuda:1"
     assert resolution["gpu_uuid"] == "GPU-agent-test"
@@ -763,9 +763,9 @@ def test_subprocess_resource_resolver_preserves_canonical_failure_code(tmp_path,
             returncode=1,
             stdout="",
             stderr=(
-                "Traceback (most recent call last):\\n"
+                "Traceback (most recent call last):\n"
                 "ValueError: RESOURCE_MANUAL_INVALID: requested batch=128 "
-                "exceeds current GPU budget\\n"
+                "exceeds current GPU budget\n"
             ),
         ),
     )
