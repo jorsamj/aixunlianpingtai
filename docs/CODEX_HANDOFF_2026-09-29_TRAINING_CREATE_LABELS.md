@@ -1,5 +1,20 @@
 # 2026-09-29 训练任务创建 / 标签统一 / 继承标签 UI 交接
 
+## 后续补充：标签完整性审计与 orphan repair
+
+生产历史数据证明，训练 fail-closed 仍可能正确发现 governance 之外的旧 source label。为避免再次用 MaterialRepository projection 反推 Ground Truth，当前补充以下正式边界：
+
+- AnnotationRepository 继续是唯一正式标注真相；MaterialRepository 只是训练检索与对账 projection。
+- Full Audit 使用现有 `MATERIAL_BATCH` durable runtime，但有独立的 `AUDIT_LABEL_INTEGRITY` prepare/run 分支，不创建普通素材 selection。
+- 审计覆盖 SQLite annotations、legacy `annotations/*.json` fallback、boxes，以及 annotated/confirmed_empty 等所有状态的 `annotation_scope`。
+- task artifact `label-integrity.sqlite3` 是带 annotation/material/governance fingerprint 的诊断快照，不是第二业务真相。
+- 用户从 audit 结果手工指定 `source -> current active target` 后，repair 创建逻辑会重新读取候选 image 的当前 AnnotationRepository truth；已经人工解决的记录被排除，仅冻结仍有 source 的 image 与 current expected digest。
+- repair worker 复用现有 `REMAP_ANNOTATION_LABELS` CAS/remap owner；不会根据旧 audit digest 直接写入。
+- ordinary unify 只有在 AnnotationRepository boxes/scopes 与 MaterialRepository labels/scopes 同时清零后才允许退休 source。
+- 训练创建弹窗继续保持本文件既定的简单结构；audit/repair 只出现在“标签管理 → 标签完整性”。
+
+因此，训练标签 contract 仍保持 fail-closed；历史异常的修复入口从“猜测/临时放宽训练”改为“Full Audit → 人工 mapping → 当前 GT 复核 → durable repair → 重新审计”。
+
 ## 1. 当前真实基线
 
 - 仓库：`jorsamj/aixunlianpingtai`

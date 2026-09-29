@@ -29,6 +29,14 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /openLabelBulkUnify414/);
   assert.match(app, /批量统一标签/);
   assert.match(app, /目标标签必须由你手工选择，系统不会自动推荐/);
+  assert.match(app, /标签完整性/);
+  assert.match(app, /AUDIT_LABEL_INTEGRITY/);
+  assert.match(app, /labels\/integrity\/audits/);
+  assert.match(app, /labels\/integrity\/audits\/\$\{taskId\}\/issues/);
+  assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/repairs/);
+  assert.match(app, /PollRegistryRuntime\?\.startTimeout\('label-integrity-audit'/);
+  assert.match(app, /由你选择当前 active 目标标签/);
+  assert.doesNotMatch(app, /setTimeout\([^)]*pollLabelIntegrity/);
   const saveStart = app.indexOf('window.saveLabel414=async function(classId)');
   const saveEnd = app.indexOf('\n  window.deleteLabel414=', saveStart);
   assert.ok(saveStart >= 0 && saveEnd > saveStart);

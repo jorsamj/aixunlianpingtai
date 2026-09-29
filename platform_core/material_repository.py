@@ -16,7 +16,7 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _INIT_LOCK_TIMEOUT = 30
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
@@ -267,6 +267,16 @@ class MaterialRepository:
                            ), 0)
                         """
                     )
+                if version < 4:
+                    database.execute("DELETE FROM material_annotation_scopes")
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO material_annotation_scopes(material_id, label_code)
+                        SELECT m.id, TRIM(CAST(scope.value AS TEXT))
+                          FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
+                         WHERE TRIM(CAST(scope.value AS TEXT)) <> ''
+                        """
+                    )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
@@ -348,15 +358,11 @@ class MaterialRepository:
                 for label in row["labels"]
             ),
         )
-        scopes = (
-            sorted({
-                str(label).strip()
-                for label in row.get("annotation_scope") or []
-                if str(label).strip()
-            })
-            if str(row.get("annotation_state") or "") == "confirmed_empty"
-            else []
-        )
+        scopes = sorted({
+            str(label).strip()
+            for label in row.get("annotation_scope") or []
+            if str(label).strip()
+        })
         database.execute(
             "DELETE FROM material_annotation_scopes WHERE material_id = ?",
             (row["id"],),
@@ -716,7 +722,7 @@ class MaterialRepository:
         }
 
     def label_reference_usage(self) -> dict[str, dict[str, int]]:
-        """Count positive and confirmed-empty references from normalized indexes."""
+        """Count positive and all-state scope references from normalized indexes."""
         with closing(self._connect()) as database:
             positive = {
                 str(row["label"]): int(row["images"] or 0)

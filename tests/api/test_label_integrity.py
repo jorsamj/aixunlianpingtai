@@ -1,0 +1,285 @@
+import json
+import sqlite3
+from contextlib import closing
+
+import app as app_module
+
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.material_batches import MaterialBatchHandler
+from platform_core.material_batches import BatchSelection
+from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRepository
+
+
+def _isolated_runtime(tmp_path, monkeypatch):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "label-integrity-worker",
+        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)},
+        {"materials.batch"},
+        lease_seconds=10,
+    )
+    return repository, artifacts, scheduler
+
+
+def test_full_audit_uses_annotation_truth_without_fake_material_selection(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [{"label": "head", "class_id": 12}],
+        annotation_state="annotated",
+        annotation_scope=["head"],
+        project_material=False,
+    )
+    repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    )
+
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    assert created.json()["operation"] == "AUDIT_LABEL_INTEGRITY"
+    assert not artifacts.artifact_path(task_id, "selection.sqlite3").exists()
+
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    )
+    assert final.status_code == 200, final.text
+    assert final.json()["status"] == "SUCCEEDED"
+    assert final.json()["selection_frozen"] is False
+    assert not artifacts.artifact_path(task_id, "selection.sqlite3").exists()
+
+    issues = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{task_id}/issues",
+        params={"limit": 100},
+    )
+    assert issues.status_code == 200, issues.text
+    body = issues.json()
+    assert body["metadata"]["truth_owner"] == "AnnotationRepository"
+    assert body["metadata"]["annotation_fingerprint"]
+    assert body["metadata"]["governance_fingerprint"]
+    assert body["metadata"]["material_revision"] >= 1
+    kinds = {(row["issue_type"], row["label_code"]) for row in body["items"]}
+    assert ("ORPHAN_LABEL", "head") in kinds
+    assert ("PROJECTION_DRIFT", "head") in kinds
+    assert body["summary"]["affected_images"] == 1
+    assert any(
+        row["issue_type"] == "ORPHAN_LABEL"
+        and row["label_code"] == "head"
+        and row["image_count"] == 1
+        for row in body["groups"]
+    )
+
+    audit_path = artifacts.artifact_path(task_id, "label-integrity.sqlite3")
+    with sqlite3.connect(audit_path) as database:
+        tables = {
+            row[0]
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        reference = database.execute(
+            "SELECT image_id,label_code,box_count,scope_ref,class_ids_json,annotation_digest "
+            "FROM annotation_references WHERE image_id=? AND label_code='head'",
+            (image["id"],),
+        ).fetchone()
+    assert {
+        "audit_metadata",
+        "audit_summary",
+        "issue_groups",
+        "issues",
+        "annotation_references",
+    } <= tables
+    assert reference[:4] == (image["id"], "head", 1, 1)
+    assert json.loads(reference[4]) == [12]
+    assert reference[5] == annotations.get(image["id"])["content_digest"]
+
+
+def test_full_audit_cannot_be_created_with_a_fake_generic_selection(
+    client, seeded_project
+):
+    project_id, _image = seeded_project
+    response = client.post(
+        f"/api/v62/projects/{project_id}/material-batches",
+        json={
+            "operation": "AUDIT_LABEL_INTEGRITY",
+            "selection_spec": {"scope": "FILTERED", "filters": {}},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "LABEL_INTEGRITY_DEDICATED_PREPARE_REQUIRED" in response.text
+
+
+def test_orphan_repair_revalidates_current_gt_and_freezes_only_still_affected(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, first = seeded_project
+    materials = app_module.material_store(project_id)
+    second_id = "orphan-second"
+    materials.upsert(
+        {
+            "id": second_id,
+            "filename": "orphan-second.jpg",
+            "stored_name": "orphan-second.jpg",
+            "object_key": "uploads/orphan-second.jpg",
+            "processing_status": "processed",
+        }
+    )
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    for image_id in (first["id"], second_id):
+        annotations.upsert(
+            image_id,
+            [{"label": "head", "class_id": 12}],
+            annotation_state="annotated",
+            annotation_scope=["head"],
+            project_material=False,
+        )
+    repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+
+    # One audit candidate is corrected by a human before repair creation.
+    annotations.upsert(
+        second_id,
+        [
+            {
+                "label": "smoke",
+                "class_id": 1,
+                "canonical_label_id": "smoke",
+                "canonical_project_class_id": 1,
+            }
+        ],
+        annotation_state="annotated",
+        annotation_scope=["smoke"],
+    )
+
+    repaired = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"source_label": "head", "target_label": "smoke"},
+    )
+    assert repaired.status_code == 202, repaired.text
+    body = repaired.json()
+    assert body["candidate"] == 2
+    assert body["still_requires_repair"] == 1
+    assert body["already_resolved"] == 1
+    assert body["source_labels"] == ["head"]
+    assert body["target_label"] == "smoke"
+
+    selection_path = artifacts.artifact_path(body["task_id"], "selection.sqlite3")
+    with closing(BatchSelection(selection_path)) as manifest:
+        rows = manifest.database.execute(
+            "SELECT image_id,tombstone_json FROM selection ORDER BY image_id"
+        ).fetchall()
+    assert [row["image_id"] for row in rows] == [first["id"]]
+    frozen = json.loads(rows[0]["tombstone_json"])
+    current = annotations.get(first["id"])
+    assert frozen["source_digest"] == annotations.record_digest(current)
+    assert frozen["target_label"] == "smoke"
+    assert frozen["target_class_id"] == 1
+    assert frozen["repair_mode"] is True
+
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{body['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 1
+    first_box = annotations.get(first["id"])["boxes"][0]
+    assert first_box["label"] == "smoke"
+    assert first_box["class_id"] == 1
+    assert first_box["canonical_label_id"] == "smoke"
+    assert first_box["canonical_project_class_id"] == 1
+    assert annotations.get(second_id)["boxes"][0]["label"] == "smoke"
+
+
+def test_full_audit_includes_legacy_fallback_and_annotated_scope_only(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    project_path = app_module.project_dir(project_id)
+    annotations = AnnotationRepository(project_path)
+    annotations.upsert(
+        image["id"],
+        [
+            {
+                "label": "fire",
+                "class_id": 0,
+                "canonical_label_id": "fire",
+                "canonical_project_class_id": 0,
+            }
+        ],
+        annotation_state="annotated",
+        annotation_scope=["fire", "scope_orphan"],
+        project_material=False,
+    )
+    legacy_dir = project_path / "annotations"
+    legacy_dir.mkdir(exist_ok=True)
+    (legacy_dir / "legacy-orphan.json").write_text(
+        json.dumps(
+            {
+                "image_id": "legacy-orphan",
+                "annotation_state": "annotated",
+                "boxes": [{"label": "legacy_head", "class_id": 12}],
+                "annotation_scope": ["legacy_head"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+
+    issues = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/issues",
+        params={"limit": 100},
+    ).json()
+    orphan_rows = {
+        (row["image_id"], row["label_code"]): row
+        for row in issues["items"]
+        if row["issue_type"] == "ORPHAN_LABEL"
+    }
+    assert orphan_rows[(image["id"], "scope_orphan")]["box_count"] == 0
+    assert orphan_rows[(image["id"], "scope_orphan")]["scope_ref"] == 1
+    assert orphan_rows[("legacy-orphan", "legacy_head")]["box_count"] == 1
+
+
+def test_orphan_repair_rejects_target_that_is_no_longer_active(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        image["id"],
+        [{"label": "head", "class_id": 12}],
+        annotation_state="annotated",
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+
+    project = app_module.get_project(project_id)
+    project["label_meta"][1]["status"] = "inactive"
+    app_module.save_project(project)
+    response = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"source_label": "head", "target_label": "smoke"},
+    )
+
+    assert response.status_code == 409
+    assert "LABEL_INTEGRITY_TARGET_UNAVAILABLE" in response.text

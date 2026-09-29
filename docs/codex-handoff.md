@@ -1,6 +1,35 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-29 标签完整性 Full Audit / Orphan Repair（最新）
+
+本轮没有重做训练标签架构，也没有新增 TaskKind、Scheduler、Ground Truth 或轮询 owner。新增能力落在现有标签管理与 durable material-batch runtime：
+
+- Full Audit operation：`AUDIT_LABEL_INTEGRITY`，继续使用 `TaskKind.MATERIAL_BATCH / MaterialBatchHandler / TaskRepository / ArtifactStore / Scheduler`；
+- Full Audit 是项目级审计，创建与运行都不生成 `selection.sqlite3`，也不伪造 `FILTERED=全部素材`；
+- 真相读取顺序固定为：`AnnotationRepository -> current label governance -> MaterialRepository projection`；
+- `AnnotationRepository` schema v2 增加 owner 内部派生引用索引 `annotation_label_references`，索引 boxes 与所有 annotation state 的 `annotation_scope`，并由 SQLite triggers 覆盖 upsert/remap/delete/restore；Full Audit 会显式 reconcile SQLite + legacy `annotations/*.json`；
+- `MaterialRepository` schema v4 将 annotated scope 也纳入 projection index，但它只用于对账和普通 unify selection，不充当 Annotation truth；
+- 审计快照：task artifact `label-integrity.sqlite3`，包含 `audit_metadata / audit_summary / annotation_references / issues / issue_groups`，保存 annotation revision/fingerprint、material revision、governance fingerprint、affected IDs、box/scope counts 与 class-id distributions；
+- 快照只用于 UI 与 repair candidate 范围，不是 repair authoritative truth；
+- 创建 Orphan Repair 时，服务端按 audit candidate IDs 重新读取当前 AnnotationRepository；只把当前仍引用 source 的 image 冻结进现有 `REMAP_ANNOTATION_LABELS` selection，并保存 `source_digest/expected_digest/target_label/target_class_id/result_digest`；
+- audit 后已经人工处理的记录计入 `already_resolved`，不会进入 selection，也不会被覆盖；
+- target 必须在 repair 创建时仍为 active；worker 再次校验 target identity 与 annotation digest，变化即 fail-closed；
+- 普通 whole-label unify 自动退役 source 前，必须同时满足 AnnotationRepository boxes/scopes=0 与 MaterialRepository labels/scopes=0；任意一侧残留都阻止 `status=merged`；
+- 标签管理页原位增加“标签完整性”，不新增一级菜单；Full Audit 和 repair 都复用既有 PollRegistry/material-batch task truth；训练创建弹窗没有增加 audit/repair UI；
+- 训练 fail-closed 提示会引导用户前往“标签管理 → 标签完整性”。
+
+生产历史异常的安全处理顺序：
+
+1. 在“标签管理 → 标签完整性”运行 Full Audit；
+2. 对每个 orphan/inactive/incomplete source 由用户手工选择当前 active target；
+3. 创建 repair 时系统重新校验当前 GT，并报告 `candidate / still_requires_repair / already_resolved`；
+4. durable remap 使用 expected digest 做 CAS；
+5. 完成后旧 audit 视为过期，必须重新运行 Full Audit，直到 Annotation truth、governance 与 material projection 对账清零。
+
+`VERSION.txt` 未修改。未 merge main、未 tag、未 release、未 force push。
+
+
 ## 2026-09-29 训练标签创建交接补充（当前状态）
 
 详细交接已刷新：

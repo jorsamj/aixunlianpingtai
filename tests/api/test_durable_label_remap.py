@@ -598,6 +598,48 @@ def test_partial_multi_source_unify_does_not_retire_sources(
     assert stored["label_meta"][1].get("status", "active") == "active"
 
 
+def test_unify_retirement_requires_annotation_and_material_references_both_zero(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, first = seeded_project
+    app_module.write_annotation(project_id, first["id"], [_box()])
+    second_id = "annotation-only-reference"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "annotation-only.jpg",
+        "stored_name": "annotation-only.jpg",
+        "object_key": "uploads/annotation-only.jpg",
+        "processing_status": "processed",
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [_box()],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 1
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "FAILED"
+    assert "ANNOTATION_REMAP_REFERENCES_REMAIN" in str(final["error_examples"])
+    stored = app_module.get_project(project_id)
+    assert stored["label_meta"][0].get("status", "active") == "active"
+    annotation_truth = AnnotationRepository(app_module.project_dir(project_id))
+    assert annotation_truth.label_reference_preview(["fire"])["affected_images"] == 1
+    assert app_module.material_store(project_id).label_reference_preview(["fire"])["affected_images"] == 0
+
+
 def test_active_material_batch_list_exposes_safe_remap_resume_truth(
     client, seeded_project, tmp_path, monkeypatch
 ):

@@ -46,6 +46,7 @@ class BatchOperation(str, Enum):
     ADD_LABELS = "ADD_LABELS"
     REMOVE_LABELS = "REMOVE_LABELS"
     REMAP_ANNOTATION_LABELS = "REMAP_ANNOTATION_LABELS"
+    AUDIT_LABEL_INTEGRITY = "AUDIT_LABEL_INTEGRITY"
     AI_ANNOTATE = "AI_ANNOTATE"
 
 
@@ -62,6 +63,12 @@ def parse_request(payload):
     if not isinstance(payload, dict):
         raise ValueError("material batch request must be an object")
     operation = BatchOperation(str(payload.get("operation") or "").upper())
+    if operation is BatchOperation.AUDIT_LABEL_INTEGRITY:
+        raise BatchRequestError(
+            "LABEL_INTEGRITY_DEDICATED_PREPARE_REQUIRED",
+            "标签完整性审计必须通过项目级专用入口创建，不能伪造普通素材 selection",
+            422,
+        )
     selection = MaterialSelectionSpec.from_mapping(payload.get("selection_spec"))
     explicit_limit = (
         MAX_LARGE_EXPLICIT_SELECTION
@@ -769,6 +776,15 @@ class MaterialBatchHandler:
         self.data_dir = Path(data_dir).resolve()
 
     def run(self, context):
+        payload = context.artifacts.read_json(
+            context.task.task_id, context.task.payload_ref, default={}
+        )
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.AUDIT_LABEL_INTEGRITY.value:
+            try:
+                return self._run_label_integrity_audit(context)
+            except BaseException as error:
+                append_task_log(context, "error", f"{type(error).__name__}: {error}")
+                raise
         selection_path = context.artifacts.artifact_path(context.task.task_id, SELECTION_REF)
         selection_path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(str(selection_path) + ".lock", timeout=60):
@@ -895,8 +911,69 @@ class MaterialBatchHandler:
         append_task_log(context, "finished", status.value)
         return status, RESULT_REF
 
+    def _run_label_integrity_audit(self, context):
+        from .label_integrity import AUDIT_REF, run_label_integrity_audit
+
+        project = str(context.task.project_id or "").strip()
+        if (
+            not project
+            or any(character in project for character in ("/", "\\"))
+            or not all(character.isalnum() or character in {"_", "-"} for character in project)
+        ):
+            raise ValueError("project id must be one safe path component")
+        projects_root = (self.data_dir / "projects").resolve()
+        project_path = (projects_root / project).resolve()
+        if project_path.parent != projects_root:
+            raise ValueError("project id escaped projects root")
+
+        append_task_log(context, "processing", "operation=AUDIT_LABEL_INTEGRITY scope=PROJECT")
+
+        def progress(scanned):
+            checkpoint = {
+                "total": None,
+                "processed": int(scanned),
+                "succeeded": int(scanned),
+                "failed": 0,
+                "selection_frozen": False,
+                "audit_ref": AUDIT_REF,
+            }
+            context.save_checkpoint(checkpoint)
+            _check_active(
+                context,
+                "AUDITING_LABEL_INTEGRITY",
+                f"已审计 {int(scanned)} 条标注真相",
+                50.0,
+            )
+
+        result = run_label_integrity_audit(
+            project_path,
+            context.artifacts.artifact_path(context.task.task_id, AUDIT_REF),
+            progress=progress,
+        )
+        checkpoint = {
+            "total": int(result["scanned_images"]),
+            "processed": int(result["scanned_images"]),
+            "succeeded": int(result["scanned_images"]),
+            "failed": 0,
+            "selection_frozen": False,
+            "audit_ref": AUDIT_REF,
+            "affected_images": int(result["affected_images"]),
+            "issue_count": int(result["issue_count"]),
+        }
+        context.save_checkpoint(checkpoint)
+        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
+        _check_active(
+            context,
+            "AUDITING_LABEL_INTEGRITY",
+            f"审计完成 · {result['affected_images']} 张素材存在问题",
+            99.0,
+        )
+        append_task_log(context, "finished", TaskStatus.SUCCEEDED.value)
+        return TaskStatus.SUCCEEDED, RESULT_REF
+
     def _run_annotation_remap(self, context, manifest, payload):
         options = dict((payload or {}).get("options") or {})
+        repair_mode = bool(options.get("repair_mode"))
         sources = list(dict.fromkeys(
             str(value).strip()
             for value in (
@@ -981,7 +1058,11 @@ class MaterialBatchHandler:
             ids = [str(row["image_id"]) for row in batch]
             manifest.transition(ids, "running")
             current_target_id = target_class_id()
-            existing = {str(item["id"]) for item in materials.get_many(ids)}
+            existing = (
+                set(ids)
+                if repair_mode
+                else {str(item["id"]) for item in materials.get_many(ids)}
+            )
             missing_ids = [image_id for image_id in ids if image_id not in existing]
             if missing_ids:
                 manifest.transition(missing_ids, "failed", "MATERIAL_NOT_FOUND")
@@ -1054,6 +1135,12 @@ class MaterialBatchHandler:
                     and planned_target_id is not None
                     and int(planned_target_id) != int(current_target_id)
                 ):
+                    if repair_mode:
+                        failed.append((
+                            image_id,
+                            "LABEL_INTEGRITY_TARGET_IDENTITY_CHANGED",
+                        ))
+                        continue
                     preview = annotations.plan_label_remap(
                         current,
                         source_labels=sources,
@@ -1151,13 +1238,24 @@ class MaterialBatchHandler:
             not summary["failed"]
             and bool(options.get("retire_sources_on_success"))
         ):
-            remaining = materials.label_reference_preview(sources)
-            if int(remaining.get("affected_images") or 0) != 0:
+            annotation_remaining = annotations.label_reference_preview(sources)
+            if int(annotation_remaining.get("affected_images") or 0) != 0:
                 raise BatchRequestError(
-                    "MATERIAL_REMAP_REFERENCES_REMAIN",
-                    "标签统一已处理完成，但仍检测到来源标签引用，已阻止自动退役",
+                    "ANNOTATION_REMAP_REFERENCES_REMAIN",
+                    "ANNOTATION_REMAP_REFERENCES_REMAIN: 标签统一已处理完成，但 AnnotationRepository 仍有来源标签引用，已阻止自动退役",
                     409,
                 )
+            material_remaining = materials.label_reference_preview(sources)
+            if int(material_remaining.get("affected_images") or 0) != 0:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_REFERENCES_REMAIN",
+                    "MATERIAL_REMAP_REFERENCES_REMAIN: 标签统一已处理完成，但 MaterialRepository 投影仍有来源标签引用，已阻止自动退役",
+                    409,
+                )
+            summary["retirement_verification"] = {
+                "annotation_repository": annotation_remaining,
+                "material_repository": material_remaining,
+            }
             summary["retired_source_labels"] = _retire_merged_source_labels(
                 self.data_dir, project, sources, target,
             )
@@ -1259,7 +1357,10 @@ def public_batch(task, artifacts, repository=None):
     request = artifacts.read_json(task.task_id, task.payload_ref, default={})
     result = (
         artifacts.read_json(task.task_id, RESULT_REF, default={})
-        if request.get("operation") == BatchOperation.REMAP_ANNOTATION_LABELS.value
+        if request.get("operation") in {
+            BatchOperation.REMAP_ANNOTATION_LABELS.value,
+            BatchOperation.AUDIT_LABEL_INTEGRITY.value,
+        }
         else {}
     )
     truth = task_to_public(task, repository) if repository is not None else None
@@ -1280,6 +1381,11 @@ def public_batch(task, artifacts, repository=None):
         ]
         remap_target = str(options.get("target_label") or "").strip()
         retire_sources = bool(options.get("retire_sources_on_success"))
+    repair_stats = {
+        key: int(options.get(key) or 0)
+        for key in ("candidate", "still_requires_repair", "already_resolved")
+        if options.get(key) is not None
+    }
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
             "kind": task.kind.value, "operation": request.get("operation"),
             "status": truth["status"] if truth else task.status.value,
@@ -1312,6 +1418,7 @@ def public_batch(task, artifacts, repository=None):
             "retire_sources_on_success": retire_sources,
             "changed_images": result.get("changed_images"),
             "changed_boxes": result.get("changed_boxes"),
+            **repair_stats,
             "log_available": available, "log_ref": task.log_ref if available else None,
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 
@@ -1430,8 +1537,12 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     # URLs untouched while composing the independent training recovery API at
     # that existing integration point instead of adding route side effects.
     from .training_recovery_api import training_recovery_router
+    from .label_integrity import label_integrity_router
     root = APIRouter()
     root.include_router(router)
+    root.include_router(label_integrity_router(
+        get_project, material_store, task_repository, task_artifacts,
+    ))
     root.include_router(training_recovery_router(get_project, task_repository, task_artifacts))
     return root
 

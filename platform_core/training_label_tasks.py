@@ -262,7 +262,7 @@ def selected_material_label_codes(
         raise ValueError(
             "训练素材包含未映射、已删除或已停用的标签: "
             + ", ".join(invalid[:10])
-            + "；请先在标签管理中统一后再训练"
+            + "；请先前往 标签管理 → 标签完整性 完成审计与人工映射后再训练"
         )
     temporary = [code for code in encountered if _temporary_or_unmapped_label(code)]
     if temporary:

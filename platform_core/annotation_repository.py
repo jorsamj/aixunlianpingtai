@@ -12,7 +12,7 @@ from filelock import FileLock
 
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -89,17 +89,47 @@ class AnnotationRepository:
         except sqlite3.Error:
             return None
 
+    def _reference_index_ready_fast(self) -> bool:
+        if not self.path.is_file():
+            return False
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as db:
+                db.execute("PRAGMA busy_timeout=250")
+                return db.execute(
+                    "SELECT 1 FROM annotation_meta "
+                    "WHERE key='index_rebuilt_at' LIMIT 1"
+                ).fetchone() is not None
+        except sqlite3.Error:
+            return False
+
     def _initialize(self) -> None:
-        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+        if (
+            self._read_schema_version_fast() == _SCHEMA_VERSION
+            and self._reference_index_ready_fast()
+        ):
             return
         lock = FileLock(
             str(self.path.resolve()) + ".init.lock",
             timeout=_INIT_LOCK_TIMEOUT,
         )
+        rebuild_references = False
         with lock:
             with closing(self._connect()) as db:
                 version = int(db.execute("PRAGMA user_version").fetchone()[0])
                 if version == _SCHEMA_VERSION:
+                    ready = db.execute(
+                        "SELECT 1 FROM annotation_meta "
+                        "WHERE key='index_rebuilt_at' LIMIT 1"
+                    ).fetchone()
+                    if ready is not None:
+                        return
+                    # Rebuild through a fresh writer connection. Closing this
+                    # schema probe first avoids retaining a stale read snapshot
+                    # while the derived index is reconciled.
+                    db.close()
+                    self.rebuild_reference_index()
                     return
                 if version > _SCHEMA_VERSION:
                     raise RuntimeError(
@@ -134,6 +164,105 @@ class AnnotationRepository:
                     );
                     CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
                         ON annotation_delete_backup(token, image_id);
+                    CREATE TABLE IF NOT EXISTS annotation_label_references (
+                        image_id TEXT NOT NULL,
+                        label_code TEXT NOT NULL,
+                        box_count INTEGER NOT NULL DEFAULT 0,
+                        scope_ref INTEGER NOT NULL DEFAULT 0,
+                        annotation_state TEXT NOT NULL,
+                        source_kind TEXT NOT NULL CHECK(source_kind IN ('sqlite','legacy')),
+                        PRIMARY KEY(image_id, label_code)
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_annotation_label_references_code
+                        ON annotation_label_references(label_code, image_id);
+                    CREATE TABLE IF NOT EXISTS annotation_meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                    INSERT OR IGNORE INTO annotation_meta(key, value)
+                        VALUES ('revision', '0');
+                    CREATE TRIGGER IF NOT EXISTS annotation_refs_after_insert
+                    AFTER INSERT ON annotations BEGIN
+                        DELETE FROM annotation_label_references
+                         WHERE image_id = NEW.image_id;
+                        INSERT INTO annotation_label_references
+                            (image_id, label_code, box_count, scope_ref,
+                             annotation_state, source_kind)
+                        SELECT NEW.image_id,
+                               COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               ),
+                               COUNT(*), 0, NEW.annotation_state, 'sqlite'
+                          FROM json_each(NEW.boxes_json)
+                         WHERE COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               ) IS NOT NULL
+                         GROUP BY COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               );
+                        INSERT INTO annotation_label_references
+                            (image_id, label_code, box_count, scope_ref,
+                             annotation_state, source_kind)
+                        SELECT NEW.image_id, TRIM(CAST(value AS TEXT)), 0, 1,
+                               NEW.annotation_state, 'sqlite'
+                          FROM json_each(NEW.scope_json)
+                         WHERE TRIM(CAST(value AS TEXT)) <> ''
+                        ON CONFLICT(image_id, label_code) DO UPDATE SET
+                            scope_ref=1,
+                            annotation_state=excluded.annotation_state,
+                            source_kind='sqlite';
+                        UPDATE annotation_meta
+                           SET value = CAST(value AS INTEGER) + 1
+                         WHERE key = 'revision';
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS annotation_refs_after_update
+                    AFTER UPDATE OF annotation_state, boxes_json, scope_json ON annotations BEGIN
+                        DELETE FROM annotation_label_references
+                         WHERE image_id = NEW.image_id;
+                        INSERT INTO annotation_label_references
+                            (image_id, label_code, box_count, scope_ref,
+                             annotation_state, source_kind)
+                        SELECT NEW.image_id,
+                               COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               ),
+                               COUNT(*), 0, NEW.annotation_state, 'sqlite'
+                          FROM json_each(NEW.boxes_json)
+                         WHERE COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               ) IS NOT NULL
+                         GROUP BY COALESCE(
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.label') AS TEXT)), ''),
+                                   NULLIF(TRIM(CAST(json_extract(value, '$.code') AS TEXT)), '')
+                               );
+                        INSERT INTO annotation_label_references
+                            (image_id, label_code, box_count, scope_ref,
+                             annotation_state, source_kind)
+                        SELECT NEW.image_id, TRIM(CAST(value AS TEXT)), 0, 1,
+                               NEW.annotation_state, 'sqlite'
+                          FROM json_each(NEW.scope_json)
+                         WHERE TRIM(CAST(value AS TEXT)) <> ''
+                        ON CONFLICT(image_id, label_code) DO UPDATE SET
+                            scope_ref=1,
+                            annotation_state=excluded.annotation_state,
+                            source_kind='sqlite';
+                        UPDATE annotation_meta
+                           SET value = CAST(value AS INTEGER) + 1
+                         WHERE key = 'revision';
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS annotation_refs_after_delete
+                    AFTER DELETE ON annotations BEGIN
+                        DELETE FROM annotation_label_references
+                         WHERE image_id = OLD.image_id;
+                        UPDATE annotation_meta
+                           SET value = CAST(value AS INTEGER) + 1
+                         WHERE key = 'revision';
+                    END;
                 """)
                 columns = {
                     str(row[1])
@@ -144,8 +273,11 @@ class AnnotationRepository:
                         "ALTER TABLE annotations "
                         "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
                     )
+                rebuild_references = version < 2
                 db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
                 db.commit()
+        if rebuild_references:
+            self.rebuild_reference_index()
 
     @staticmethod
     def _id(image_id):
@@ -304,10 +436,8 @@ class AnnotationRepository:
                 if 'code' in box:
                     box['code'] = target
                 box['class_id'] = int(target_class_id)
-                if 'canonical_label_id' in box:
-                    box['canonical_label_id'] = target
-                if 'canonical_project_class_id' in box:
-                    box['canonical_project_class_id'] = int(target_class_id)
+                box['canonical_label_id'] = target
+                box['canonical_project_class_id'] = int(target_class_id)
                 changed += 1
             boxes.append(box)
         original_scope = _normalize_scope(record.get('annotation_scope'))
@@ -324,11 +454,193 @@ class AnnotationRepository:
         return {
             **prepared,
             'changed_boxes': changed,
+            # Preserve the public metric's historical meaning: it counts
+            # confirmed-empty negative-scope changes. Annotated scopes are
+            # still remapped and indexed, but are not added to this counter.
             'changed_scope': int(
                 str(record.get('annotation_state') or '') == 'confirmed_empty'
                 and prepared['annotation_scope'] != original_scope
             ),
         }
+
+    @staticmethod
+    def _reference_rows(record: dict, source_kind: str) -> list[tuple]:
+        counts: dict[str, int] = {}
+        for box in record.get('boxes') or []:
+            code = str(box.get('label') or box.get('code') or '').strip()
+            if code:
+                counts[code] = counts.get(code, 0) + 1
+        scopes = set(_normalize_scope(record.get('annotation_scope')))
+        return [
+            (
+                str(record.get('image_id') or ''),
+                code,
+                int(counts.get(code) or 0),
+                int(code in scopes),
+                str(record.get('annotation_state') or 'unannotated'),
+                source_kind,
+            )
+            for code in sorted(set(counts) | scopes)
+            if code
+        ]
+
+    def rebuild_reference_index(self) -> dict[str, int]:
+        """Reconcile the derived lookup index from AnnotationRepository truth.
+
+        SQLite rows shadow same-named legacy JSON records. The index is a query
+        accelerator only; callers must continue to read annotations for writes.
+        """
+        legacy_dir = self.project_path / 'annotations'
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                db.execute('DELETE FROM annotation_label_references')
+                rows = db.execute('SELECT * FROM annotations ORDER BY image_id').fetchall()
+                persisted_ids = {str(row['image_id']) for row in rows}
+                reference_rows = []
+                for row in rows:
+                    reference_rows.extend(
+                        self._reference_rows(self._decode_persisted_row(row), 'sqlite')
+                    )
+                legacy_count = 0
+                if legacy_dir.is_dir():
+                    for path in sorted(legacy_dir.glob('*.json')):
+                        image_id = path.stem
+                        if image_id in persisted_ids:
+                            continue
+                        record = self._legacy_record(image_id)
+                        reference_rows.extend(self._reference_rows(record, 'legacy'))
+                        legacy_count += 1
+                db.executemany(
+                    'INSERT INTO annotation_label_references '
+                    '(image_id,label_code,box_count,scope_ref,annotation_state,source_kind) '
+                    'VALUES (?,?,?,?,?,?)',
+                    reference_rows,
+                )
+                db.execute(
+                    "INSERT OR REPLACE INTO annotation_meta(key,value) VALUES ('index_rebuilt_at',?)",
+                    (datetime.now(timezone.utc).isoformat(),),
+                )
+                db.execute('COMMIT')
+            except Exception:
+                db.execute('ROLLBACK')
+                raise
+        return {
+            'sqlite_records': len(persisted_ids),
+            'legacy_records': legacy_count,
+            'reference_rows': len(reference_rows),
+        }
+
+    def current_revision(self) -> int:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT value FROM annotation_meta WHERE key='revision'"
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def repository_fingerprint(self) -> str:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                'SELECT COUNT(*), COALESCE(MAX(updated_at), \'\') FROM annotations'
+            ).fetchone()
+        legacy_dir = self.project_path / 'annotations'
+        legacy_count = 0
+        legacy_latest = 0
+        if legacy_dir.is_dir():
+            for path in legacy_dir.glob('*.json'):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                legacy_count += 1
+                legacy_latest = max(legacy_latest, int(stat.st_mtime_ns))
+        payload = json.dumps(
+            {
+                'revision': self.current_revision(),
+                'sqlite_count': int(row[0] or 0),
+                'sqlite_latest': str(row[1] or ''),
+                'legacy_count': legacy_count,
+                'legacy_latest': legacy_latest,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+    def iter_records(self, batch_size: int = 500):
+        """Yield all current GT records, with SQLite shadowing legacy JSON."""
+        size = max(1, min(5000, int(batch_size)))
+        cursor = ''
+        persisted_ids: set[str] = set()
+        while True:
+            with closing(self._connect()) as db:
+                rows = db.execute(
+                    'SELECT * FROM annotations WHERE image_id>? '
+                    'ORDER BY image_id LIMIT ?',
+                    (cursor, size),
+                ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                image_id = str(row['image_id'])
+                persisted_ids.add(image_id)
+                yield self._decode_persisted_row(row)
+            cursor = str(rows[-1]['image_id'])
+        legacy_dir = self.project_path / 'annotations'
+        if legacy_dir.is_dir():
+            for path in sorted(legacy_dir.glob('*.json')):
+                if path.stem not in persisted_ids:
+                    yield self._legacy_record(path.stem)
+
+    def label_reference_preview(self, label_codes) -> dict[str, int]:
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != '*'
+        ))
+        if not codes:
+            return {
+                'positive_images': 0,
+                'scope_images': 0,
+                'affected_images': 0,
+                'boxes': 0,
+            }
+        if len(codes) > 100:
+            raise ValueError('annotation label reference preview is limited to 100 labels')
+        placeholders = ','.join('?' for _ in codes)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                f'SELECT '
+                f'COUNT(DISTINCT CASE WHEN box_count>0 THEN image_id END), '
+                f'COUNT(DISTINCT CASE WHEN scope_ref=1 THEN image_id END), '
+                f'COUNT(DISTINCT image_id), COALESCE(SUM(box_count),0) '
+                f'FROM annotation_label_references '
+                f'WHERE label_code IN ({placeholders})',
+                codes,
+            ).fetchone()
+        return {
+            'positive_images': int(row[0] or 0),
+            'scope_images': int(row[1] or 0),
+            'affected_images': int(row[2] or 0),
+            'boxes': int(row[3] or 0),
+        }
+
+    def reference_image_ids(self, label_codes) -> list[str]:
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != '*'
+        ))
+        if not codes:
+            return []
+        if len(codes) > 100:
+            raise ValueError('annotation label reference lookup is limited to 100 labels')
+        placeholders = ','.join('?' for _ in codes)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f'SELECT DISTINCT image_id FROM annotation_label_references '
+                f'WHERE label_code IN ({placeholders}) ORDER BY image_id',
+                codes,
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def remap_labels_if_digests(
         self, requests, *, source_label: str | None = None,

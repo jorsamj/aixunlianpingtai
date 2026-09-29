@@ -58,6 +58,81 @@ def test_annotated_scope_defaults_to_box_labels(tmp_path):
     assert saved["annotation_scope"] == ["cigarette"]
 
 
+def test_annotation_reference_index_covers_annotated_scope_and_material_projection(tmp_path):
+    materials = MaterialRepository(tmp_path)
+    materials.upsert(
+        {
+            "id": "scope-only",
+            "filename": "scope-only.jpg",
+            "stored_name": "scope-only.jpg",
+            "object_key": "uploads/scope-only.jpg",
+            "processing_status": "processed",
+        }
+    )
+    repository = AnnotationRepository(tmp_path)
+    repository.upsert(
+        "scope-only",
+        [{"label": "helmet", "class_id": 8}],
+        annotation_state="annotated",
+        annotation_scope=["head", "helmet"],
+    )
+
+    truth = repository.label_reference_preview(["head"])
+    projection = materials.label_reference_preview(["head"])
+
+    assert truth == {
+        "positive_images": 0,
+        "scope_images": 1,
+        "affected_images": 1,
+        "boxes": 0,
+    }
+    assert projection == truth
+
+
+def test_annotation_reference_index_rebuilds_legacy_fallback_and_tracks_mutations(tmp_path):
+    legacy_dir = tmp_path / "annotations"
+    legacy_dir.mkdir()
+    (legacy_dir / "legacy.json").write_text(
+        json.dumps(
+            {
+                "image_id": "legacy",
+                "annotation_state": "annotated",
+                "annotation_scope": ["head"],
+                "boxes": [
+                    {"label": "head", "class_id": 12},
+                    {"code": "head", "class_id": 12},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    repository = AnnotationRepository(tmp_path)
+
+    repository.rebuild_reference_index()
+    assert repository.label_reference_preview(["head"]) == {
+        "positive_images": 1,
+        "scope_images": 1,
+        "affected_images": 1,
+        "boxes": 2,
+    }
+    assert repository.reference_image_ids(["head"]) == ["legacy"]
+
+    current = repository.get("legacy")
+    applied = repository.remap_labels_if_digests(
+        [{"image_id": "legacy", "expected_digest": repository.record_digest(current)}],
+        source_label="head",
+        target_label="safetyhelmet",
+        target_class_id=8,
+        project_material=False,
+    )
+    assert applied[0]["status"] == "applied"
+    assert repository.label_reference_preview(["head"])["affected_images"] == 0
+    assert repository.label_reference_preview(["safetyhelmet"])["boxes"] == 2
+
+    repository.remove(["legacy"])
+    assert repository.label_reference_preview(["safetyhelmet"])["affected_images"] == 0
+
+
 def test_unannotated_never_keeps_scope(tmp_path):
     repository = AnnotationRepository(tmp_path)
     saved = repository.upsert(
