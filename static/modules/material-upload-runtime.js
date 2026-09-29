@@ -194,9 +194,7 @@ export function compactUploadedMaterial(item) {
 }
 
 function uploadRequestSeed() {
-  const random = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
-    || Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
-  return `up${Date.now().toString(36)}${random}`.slice(0, 54);
+  return globalThis.BrowserCapabilityRuntime.createClientId('up', 32);
 }
 
 function uploadRequestId(seed, chunkIndex) {
@@ -376,7 +374,7 @@ export function installMaterialUploadRuntime({
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
     const requestSeed = uploadRequestSeed();
     const chunkRequestIds = chunks.map((_, index) => uploadRequestId(requestSeed, index));
-    const uploadTaskId = `images:${Date.now()}:${Math.random().toString(16).slice(2,8)}`;
+    const uploadTaskId = globalThis.BrowserCapabilityRuntime.createClientId('images:', 32);
     const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
     const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
     const bytesBefore = chunkBytes.map((_,index)=>chunkBytes.slice(0,index).reduce((sum,value)=>sum+value,0));

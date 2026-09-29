@@ -2388,19 +2388,9 @@ def label_review_samples_v61(
 ):
     _task, _request, store = _label_review_candidate_store(project_id, task_id)
     samples = store.external_class_samples(class_id, limit=limit)
-    manager = storage_manager(project_id)
     result = []
     for sample in samples:
-        source_id = str(sample.get("storage_source_id") or "")
         object_key = str(sample.get("object_key") or "")
-        preview_url = None
-        try:
-            provider = manager.provider_for(source_id)
-            preview_url = provider.generate_preview_url(object_key, expires_seconds=300)
-        except StorageError:
-            # A short-lived direct preview is an optimization. The guarded
-            # same-origin content route remains available when presigning is not.
-            preview_url = None
         content_url = (
             f"/api/v61/projects/{quote(project_id, safe='')}/label-review/"
             f"{quote(task_id, safe='')}/classes/{quote(str(class_id), safe='')}/sample-content"
@@ -2418,7 +2408,7 @@ def label_review_samples_v61(
                 "h": float(sample.get("h") or 0),
                 "clipped": bool(sample.get("clipped")),
             },
-            "preview_url": str(preview_url or content_url),
+            "preview_url": content_url,
             "content_url": content_url,
         })
     return {
@@ -2514,10 +2504,6 @@ def material_content_v61(project_id: str, image_id: str):
     manager = storage_manager(project_id)
     row = manager.material(image_id)
     try:
-        if str(row.get("storage_type")) != "local":
-            signed = manager.preview_url(row)
-            if signed:
-                return RedirectResponse(signed, status_code=307)
         resolved = manager.materialize(row)
         return FileResponse(resolved.path)
     except StorageError as error:

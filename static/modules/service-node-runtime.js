@@ -513,6 +513,10 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     if (!root) return;
     root.querySelectorAll('[data-copy-target]').forEach(button => button.addEventListener('click', async () => {
       const text = document.getElementById(button.dataset.copyTarget)?.textContent || '';
+      if (!window.BrowserCapabilityRuntime?.has('clipboard')) {
+        notify?.('当前浏览器环境不支持自动复制，请手动选择文本复制');
+        return;
+      }
       try { await navigator.clipboard.writeText(text); notify?.('已复制'); }
       catch (_) { notify?.('浏览器未允许自动复制，请手动选择文本复制'); }
     }));

@@ -13,34 +13,9 @@ export function createCanonicalTrainingTaskId({
   cryptoSource = globalThis.crypto,
   random = Math.random,
 } = {}) {
-  let suffix = '';
-  if (typeof cryptoSource?.randomUUID === 'function') {
-    try {
-      const uuidHex = String(cryptoSource.randomUUID() || '')
-        .replace(/-/g, '')
-        .toLowerCase();
-      if (/^[0-9a-f]{20,32}$/.test(uuidHex)) suffix = uuidHex.slice(0, 24);
-    } catch (_) {
-      suffix = '';
-    }
-  }
-  if (!suffix && typeof cryptoSource?.getRandomValues === 'function') {
-    try {
-      const bytes = new Uint8Array(12);
-      cryptoSource.getRandomValues(bytes);
-      suffix = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
-    } catch (_) {
-      suffix = '';
-    }
-  }
-  if (!suffix) {
-    suffix = Array.from({length: 3}, () => {
-      const sampled = Number(random());
-      const normalized = Number.isFinite(sampled) ? Math.abs(sampled % 1) : 0;
-      return Math.floor(normalized * 0x100000000).toString(16).padStart(8, '0');
-    }).join('');
-  }
-  const taskId = `train_${suffix.slice(0, 24).toLowerCase()}`;
+  const taskId = globalThis.BrowserCapabilityRuntime?.createClientId?.(
+    'train_', 24, {cryptoSource, random},
+  );
   if (!isCanonicalTrainingTaskId(taskId)) {
     throw new Error('训练任务 ID 生成失败，请刷新页面后重试');
   }

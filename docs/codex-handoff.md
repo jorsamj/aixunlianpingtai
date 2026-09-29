@@ -1,6 +1,20 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-29 Platform Browser Runtime Contract（最新）
+
+- 平台核心浏览器流程同时支持 HTTP 与 HTTPS；核心业务不得以 secure context 为前提，HTTPS-only API 只能作为显式 capability-detected 增强能力；
+- 唯一浏览器能力与客户端随机 ID owner 为 `static/browser-runtime.js` / `window.BrowserCapabilityRuntime`，提供 `capabilities()`、`has()`、`browserRandomHex()`、`createClientId()`；随机优先级固定为 `crypto.randomUUID -> crypto.getRandomValues -> timestamp + monotonic counter + 多段 random fallback`；
+- 训练 task ID、手工标注框 ID、素材上传 durable request seed 与 UploadTaskCenter 本地 task ID 均复用该 owner；训练 ID 继续严格遵守 `^train_[0-9a-f]{16,32}$`，服务端 canonical generator/validator 不放宽；
+- 静态审计共发现 6 个 secure-context-sensitive 直接使用点：4 个 `randomUUID`（训练、素材上传、两个标注定义）与 2 个 `navigator.clipboard`。4 个随机 ID 调用已收口；2 个剪贴板调用明确降级为手工复制，不影响核心流程；`getRandomValues` 继续作为 HTTP 主 fallback；
+- `serviceWorker / getUserMedia / geolocation / Notification / showOpenFilePicker / showDirectoryPicker / SharedArrayBuffer` 在生产前端没有核心业务调用；runtime 只报告能力，不启用第二套业务流程；
+- 浏览器到平台的登录、训练、标注、上传、任务轮询与 SSE 继续使用同源相对 URL；训练 SSE 为 `/api/v64/.../training-events`，不写死 `http/https/ws/wss`；
+- mixed-content 收口：label-review 样例与普通远端素材 content 不再把浏览器直连/307 到 Provider 预签名地址；浏览器只访问同源 content route，由现有 StorageManager 在后端读取/缓存远端 HTTP、OSS 或其他 Provider；
+- Cookie 合同保持：直连 HTTP `Secure=false`，直连 HTTPS `Secure=true`，反代 `X-Forwarded-Proto=https` 时 `Secure=true`；没有为了 HTTP 支持而降低 HTTPS Cookie 安全位；登录与 session redirect 不重写协议，HTTP/HTTPS 切换使用当前 origin；
+- 永久合同：`tests/frontend/browser-runtime-compatibility.test.mjs`、`tests/unit/test_http_https_browser_contract.py`，并更新直接相关 training/material/annotation/cache guards 与 material content API tests；
+- `VERSION.txt` 仍为 `42.24.0`，未修改。
+
+
 ## 2026-09-29 训练 Task ID canonical contract（最新）
 
 - 根因：普通训练弹窗在 `crypto.randomUUID()` 不可用时仅执行一次 `Math.random().toString(16)`，生成的 suffix 可能不足 16 位；服务端却严格要求 `train_[0-9a-f]{16,32}`，同时服务端无请求 ID 时又生成裸 12 位 hex，形成前后端合同不一致；

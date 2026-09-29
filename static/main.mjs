@@ -12,7 +12,7 @@ import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
-import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65008';
+import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422578';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422548';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422502';
@@ -21,7 +21,7 @@ import {installTrainingProgressStream} from './modules/training-progress-stream.
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422518';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422566';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422567';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422555';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
@@ -44,7 +44,7 @@ import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
-import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 
 const UI_BUILD_VERSION = '42.25.0-dev';

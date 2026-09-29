@@ -124,7 +124,7 @@ def _seed_review(tmp_path, monkeypatch, project_id, *, provider):
     return task_id
 
 
-def test_label_review_samples_use_short_lived_provider_preview(client, seeded_project, tmp_path, monkeypatch):
+def test_label_review_samples_keep_browser_preview_same_origin(client, seeded_project, tmp_path, monkeypatch):
     project_id, _image = seeded_project
     task_id = _seed_review(
         tmp_path, monkeypatch, project_id, provider=_PreviewProvider()
@@ -140,9 +140,8 @@ def test_label_review_samples_use_short_lived_provider_preview(client, seeded_pr
     assert [row["object_key"] for row in body["samples"]] == [
         "images/a.jpg", "images/b.jpg",
     ]
-    assert body["samples"][0]["preview_url"].startswith(
-        "https://preview.example.invalid/"
-    )
+    assert body["samples"][0]["preview_url"] == body["samples"][0]["content_url"]
+    assert body["samples"][0]["preview_url"].startswith("/api/")
     assert body["samples"][0]["bbox"] == {
         "cx": 0.5,
         "cy": 0.5,

@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import '../../static/browser-runtime.js';
+
 import {
   MaterialUploadContractError,
   MaterialUploadInterruptedError,
@@ -154,7 +156,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
   const classic = index.match(/<script src="\/static\/app\.js\?v=([^"]+)"><\/script>/);
   const main = index.match(/<script type="module" src="\/static\/main\.mjs\?v=([^"]+)"><\/script>/);
-  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422532"><\/script>/);
+  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422533"><\/script>/);
   assert.ok(classic && main && upload, 'classic app, main runtime and upload bootstrap must all be loaded');
   assert.match(classic[1], /^\d+(?:\.\d+)+$/, 'classic app must carry a numeric cache-bust marker');
   assert.match(main[1], /^\d+(?:\.\d+)+$/, 'main runtime must carry a numeric cache-bust marker');
@@ -163,7 +165,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   assert.ok(index.indexOf(classic[0]) < index.indexOf(main[0]), 'main runtime must load after classic app');
   assert.ok(index.indexOf(main[0]) < index.indexOf(upload[0]), 'upload bootstrap must load after main runtime');
   assert.match(bootstrap, /installMaterialUploadRuntime/);
-  assert.match(bootstrap, /material-upload-runtime\.js\?v=422542/);
+  assert.match(bootstrap, /material-upload-runtime\.js\?v=422543/);
   assert.match(runtime, /window\.doUploadImages426 = input =>/);
   assert.match(runtime, /window\.uploadData424 = \(\) =>/);
   assert.match(runtime, /openRecentUploadBatch414\(\"ready\"\)/);
