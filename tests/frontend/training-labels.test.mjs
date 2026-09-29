@@ -65,7 +65,7 @@ test('first render never auto-selects material labels for the user', () => {
   assert.equal(source.includes('return unique(selectable);'), false);
 });
 
-test('training label UI has no historical inheritance or merge audit owner', () => {
+test('training label UI shows only server-resolved canonical inheritance without merge audit ownership', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
   for (const token of [
     'latestVersionLabelInfo',
@@ -75,15 +75,19 @@ test('training label UI has no historical inheritance or merge audit owner', () 
     'mergedInherited',
     'droppedInherited',
     'governanceBlockedInherited',
-    'training-label-inherited',
-    '上一版本继承',
+    'historicalLabelSchema',
     '历史版本保持不变',
     'Label Schema Changed',
   ]) {
     assert.equal(source.includes(token), false, `training create UI must not own history audit token: ${token}`);
   }
   assert.match(source, /labelHistoryOwner: false/);
-  assert.match(source, /迭代类别与标签合并由服务器自动处理/);
+  assert.match(source, /serverInheritancePreviewOwner: true/);
+  assert.match(source, /\/training-labels\/inherited\?algorithm_id=/);
+  assert.match(source, /上一版本继承/);
+  assert.match(source, /data-training-base-label/);
+  assert.match(source, /当前素材标签已由上一版本继承，无需重复选择/);
+  assert.equal(source.includes('inherited_from_codes'), false);
 });
 
 test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', () => {
@@ -100,7 +104,7 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422568'/);
+  assert.match(source, /build: 'module-422569'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {

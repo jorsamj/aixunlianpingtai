@@ -152,7 +152,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
 
 
 
-test('training dialog hides label history and only shows current material label choices', async ({page, request}) => {
+test('training dialog shows canonical inherited labels horizontally without historical audit', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
 
   await page.route('**/api/training_options**', route => route.fulfill({
@@ -176,6 +176,16 @@ test('training dialog hides label history and only shows current material label 
     status: 200, contentType: 'application/json',
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
+  await page.route('**/api/v62/projects/*/training-labels/inherited**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      has_previous_version: true,
+      base_version_id: 'merged-label-version',
+      base_version_name: '20260928180000',
+      labels: [{code: 'smoke', display_name: '烟雾'}],
+    }),
+  }));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
     const body = route.request().postDataJSON();
     const count = Array.isArray(body?.image_ids) ? body.image_ids.length : 0;
@@ -185,7 +195,7 @@ test('training dialog hides label history and only shows current material label 
         requested_count: count, matched_count: count, selectable_count: count,
         eligible_count: count, pending_annotation_count: 0, eligible_total: count,
         box_count: count, size_bytes: count * 1024,
-        label_codes: ['smoke'], label_counts: {smoke: count}, repository_revision: 1,
+        label_codes: ['fire', 'smoke'], label_counts: {fire: count, smoke: count}, repository_revision: 1,
       }),
     });
   });
@@ -210,29 +220,32 @@ test('training dialog hides label history and only shows current material label 
     }];
     const activeSmoke = (state.labels || []).find(row => String(row?.code || '') === 'smoke')
       || {code: 'smoke', display_name: '烟雾', class_id: 0, status: 'active'};
-    state.labels = [{...activeSmoke, status: 'active'}];
+    const activeFire = (state.labels || []).find(row => String(row?.code || '') === 'fire')
+      || {code: 'fire', display_name: '明火', class_id: 0, status: 'active'};
+    state.labels = [{...activeFire, status: 'active'}, {...activeSmoke, status: 'active'}];
     state.labelGovernance414 = [
       {...activeSmoke, status: 'active'},
       {code: 'legacy_smoke', display_name: '旧烟雾', class_id: 99, status: 'merged', merged_into: 'smoke'},
     ];
-    window.TrainingDraftRuntime.update({algorithmId});
+    window.TrainingDraftRuntime.update({algorithmId, baseVersionId: 'merged-label-version'});
     window.TrainingDraftRuntime.setMaterialIds(['merged-label-material']);
   }, {algorithmId});
 
   const panel = dialog.locator('#trainingLabelContractPanel');
   await expect(panel).toBeVisible();
   await expect(panel).toContainText('训练标签');
-  await expect(panel).toContainText('烟雾');
-  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(1);
-  await expect(panel.locator('.training-label-contract-count')).toHaveText('已选 0');
-  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).toContainText('上一版本继承');
+  await expect(panel.locator('[data-training-base-label="smoke"]')).toHaveCount(1);
+  await expect(panel.locator('.training-label-base-list')).toHaveCSS('display', 'flex');
+  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(0);
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(1);
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('新增 0');
   await expect(panel).not.toContainText('legacy_smoke');
   await expect(panel).not.toContainText('合并关系');
   await expect(panel).not.toContainText('Schema Changed');
-  await expect(panel.locator('.training-label-inherited')).toHaveCount(0);
 
-  await panel.locator('[data-training-label-code="smoke"]').check();
-  await expect(panel.locator('.training-label-contract-count')).toHaveText('已选 1');
+  await panel.locator('[data-training-label-code="fire"]').check();
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('新增 1');
 });
 
 test('same selected materials reload canonical labels after a completed label unification', async ({page, request}) => {

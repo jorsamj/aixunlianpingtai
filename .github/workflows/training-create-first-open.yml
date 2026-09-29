@@ -7,6 +7,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'static/index.html'
+      - 'app.py'
+      - 'platform_core/training_label_tasks.py'
       - 'static/main.mjs'
       - 'static/app.js'
       - 'static/modules/training-create-hydration.js'
@@ -24,6 +26,7 @@ on:
       - 'tests/frontend/training-submit-validation.test.mjs'
       - 'tests/frontend/training-labels.test.mjs'
       - 'tests/frontend/training-material-summary-runtime.test.mjs'
+      - 'tests/unit/test_training_label_contract.py'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
       - 'tests/browser/navigation-stability.spec.mjs'
@@ -84,14 +87,19 @@ jobs:
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
           grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
-          grep -Fq 'training label UI has no historical inheritance or merge audit owner' tests/frontend/training-labels.test.mjs
+          grep -Fq 'training label UI shows only server-resolved canonical inheritance without merge audit ownership' tests/frontend/training-labels.test.mjs
           grep -Fq 'labelHistoryOwner: false' static/modules/training-labels.js
           grep -Fq 'labelInheritanceOwner: false' static/modules/training-draft-runtime.js
-          if grep -Eq 'labelGovernance414|merged_into|inheritedLabelCodes|effectiveLabelCodes|inheritancePending|上一版本继承|Label Schema Changed' static/modules/training-labels.js static/modules/training-draft.js; then
+          if grep -Eq 'labelGovernance414|merged_into|inheritedLabelCodes|effectiveLabelCodes|inheritancePending|Label Schema Changed' static/modules/training-labels.js static/modules/training-draft.js; then
             echo 'training create frontend must not own label history or effective schema' >&2
             exit 1
           fi
           grep -Fq 'materialSummaryRuntime?.invalidate?.();' static/modules/training-labels.js
+          grep -Fq '/training-labels/inherited?algorithm_id=' static/modules/training-labels.js
+          grep -Fq 'serverInheritancePreviewOwner: true' static/modules/training-labels.js
+          grep -Fq 'def inherited_training_label_preview(' platform_core/training_label_tasks.py
+          grep -Fq '/api/v62/projects/{project_id}/training-labels/inherited' app.py
+          grep -Fq 'data-training-base-label' static/modules/training-labels.js
           grep -Fq 'function invalidate()' static/modules/training-material-summary-runtime.js
           grep -Fq 'invalidateTrainingMaterialSummaryAfterLabelMutation414' static/app.js
           grep -Fq 'same selected materials reload canonical labels after a completed label unification' tests/browser/training-create-first-open.spec.mjs
@@ -123,7 +131,7 @@ jobs:
           grep -Fq "preferred_project_id" tests/browser/training-quality-reports.spec.mjs
           if grep -Fq "JSON.stringify({projectId, page" tests/browser/training-create-first-open.spec.mjs tests/browser/training-quality-reports.spec.mjs; then echo 'browser tests must not restore production localStorage project selection' >&2; exit 1; fi
           grep -Fq 'training target is the only automatic early-stop control' tests/browser/training-create-first-open.spec.mjs
-          grep -Fq 'training dialog hides label history and only shows current material label choices' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq 'training dialog shows canonical inherited labels horizontally without historical audit' tests/browser/training-create-first-open.spec.mjs
           test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
           stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
           benchmark_line="$(grep -nF 'async function loadTrainingBenchmarkReuseV1' static/app.js | head -1 | cut -d: -f1)"
