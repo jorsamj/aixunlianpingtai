@@ -41,6 +41,13 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /换一批/);
   assert.match(app, /历史 class_id 当前对应标签仅用于诊断身份错位，不代表旧标签真实语义/);
   assert.match(app, /请先查看样例确认该历史标签真实语义，再选择目标标签/);
+  assert.match(app, /统一创建后台修复/);
+  assert.match(app, /已配置.*未配置/);
+  assert.match(app, /JSON\.stringify\(\{mappings/);
+  assert.match(app, /repair_defaults/);
+  assert.match(app, /merge_chain/);
+  assert.match(app, /本轮修复已完成，请重新运行 Full Audit 验证/);
+  assert.doesNotMatch(app, /startLabelIntegrityRepair414/);
   assert.doesNotMatch(app, /recommended_target|recommendTarget|自动推荐 target/);
   assert.doesNotMatch(app, /setTimeout\([^)]*pollLabelIntegrity/);
   const saveStart = app.indexOf('window.saveLabel414=async function(classId)');

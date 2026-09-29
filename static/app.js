@@ -4559,19 +4559,22 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   };
 
   function labelIntegrityRepairGroups414(result){
-    const repairable=new Set(['ORPHAN_LABEL','INCOMPLETE_MERGE','INACTIVE_REFERENCE']),groups=new Map();
+    const repairable=new Set(['ORPHAN_LABEL','INCOMPLETE_MERGE','INACTIVE_REFERENCE']),groups=new Map(),defaults=result?.repair_defaults||{};
     for(const issue of result?.groups||[]){
       const code=String(issue?.label_code||''),type=String(issue?.issue_type||'');if(!code||!repairable.has(type))continue;
       const row=groups.get(code)||{source_label:code,image_count:0,box_count:0,issue_types:new Set()};
       row.image_count=Math.max(row.image_count,Math.max(0,Number(issue.image_count||0)));row.box_count=Math.max(row.box_count,Math.max(0,Number(issue.box_count||0)));row.issue_types.add(type);groups.set(code,row);
     }
-    return [...groups.values()].map(row=>({...row,issue_types:[...row.issue_types]}));
+    return [...groups.values()].map(row=>{const known=defaults[row.source_label]||{};return {...row,issue_types:[...row.issue_types],default_target:String(known.target_label||''),merge_chain:Array.isArray(known.merge_chain)?known.merge_chain:[]}});
   }
+  function configuredLabelIntegrityMappings414(){return (state.labelIntegrityGroups414||[]).map((group,index)=>({source_label:group.source_label,target_label:String(document.querySelector(`[data-label-integrity-target="${index}"]`)?.value||'').trim()})).filter(item=>item.target_label)}
+  window.refreshLabelIntegrityBatchSummary414=function(){const found=(state.labelIntegrityGroups414||[]).length,configured=configuredLabelIntegrityMappings414().length;const box=document.getElementById('labelIntegrityBatchCount414');if(box)box.textContent=`已发现 ${found} 个异常标签 · 已配置 ${configured} 个 · 未配置 ${Math.max(0,found-configured)} 个`;const button=document.getElementById('labelIntegrityBatchButton414');if(button)button.disabled=!configured};
   function renderLabelIntegrityIssues414(result){
     const box=document.getElementById('labelIntegrity414Body');if(!box)return;
     const summary=result?.summary||{},groups=labelIntegrityRepairGroups414(result);state.labelIntegrityGroups414=groups;
     const targets=labelUnifyRows414();
-    box.innerHTML=`<div class="label-integrity414-summary"><div><span>已审计</span><b>${Number(summary.scanned_images||0)}</b></div><div><span>异常素材</span><b>${Number(summary.affected_images||0)}</b></div><div><span>问题记录</span><b>${Number(summary.issue_count||0)}</b></div></div>${groups.length?`<div class="label-integrity414-list">${groups.map((group,index)=>`<div class="label-integrity414-row"><div><b>${esc(group.source_label)}</b><span>${group.image_count} 张 · ${group.box_count} 框 · ${group.issue_types.map(esc).join(' / ')}</span></div><select class="select" data-label-integrity-target="${index}"><option value="">由你选择当前 active 目标标签</option>${targets.filter(item=>String(item.code)!==group.source_label).map(item=>`<option value="${esc(item.code)}">${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select><div class="label-integrity414-actions"><div class="row"><button class="btn mini" onclick="openLabelIntegritySamples414(${index})">查看样例</button><button class="btn primary mini" onclick="startLabelIntegrityRepair414(${index})">创建后台修复</button></div><small>请先查看样例确认该历史标签真实语义，再选择目标标签。</small></div></div>`).join('')}</div>`:'<div class="empty compact"><b>未发现需要人工映射的历史标签</b><span>审计快照仍保留 projection 与 canonical identity 对账详情。</span></div>'}`;
+    box.innerHTML=`<div class="label-integrity414-summary"><div><span>已审计</span><b>${Number(summary.scanned_images||0)}</b></div><div><span>异常素材</span><b>${Number(summary.affected_images||0)}</b></div><div><span>问题记录</span><b>${Number(summary.issue_count||0)}</b></div></div>${groups.length?`<div class="label-integrity414-list">${groups.map((group,index)=>`<div class="label-integrity414-row"><div><b>${esc(group.source_label)}</b><span>${group.image_count} 张 · ${group.box_count} 框 · ${group.issue_types.map(esc).join(' / ')}</span>${group.merge_chain.length>1?`<small class="muted-line">历史合并：${group.merge_chain.map(esc).join(' → ')}</small>`:''}</div><select class="select" data-label-integrity-target="${index}" onchange="refreshLabelIntegrityBatchSummary414()"><option value="">由你选择当前 active 目标标签</option>${targets.filter(item=>String(item.code)!==group.source_label).map(item=>`<option value="${esc(item.code)}" ${group.default_target===String(item.code)?'selected':''}>${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select><div class="label-integrity414-actions"><div class="row"><button class="btn mini" onclick="openLabelIntegritySamples414(${index})">查看样例</button></div><small>请先查看样例确认该历史标签真实语义，再选择目标标签。</small></div></div>`).join('')}</div><div class="label-integrity414-batch"><div><b id="labelIntegrityBatchCount414">已配置 0 个 · 未配置 ${groups.length} 个</b><span>只提交已明确配置的映射；同一图片由服务端聚合后仅写入一次。</span></div><button id="labelIntegrityBatchButton414" class="btn primary" onclick="startLabelIntegrityBatchRepair414()">统一创建后台修复</button></div>`:'<div class="empty compact"><b>未发现需要人工映射的历史标签</b><span>审计快照仍保留 projection 与 canonical identity 对账详情。</span></div>'}`;
+    window.refreshLabelIntegrityBatchSummary414();
   }
   function labelIntegritySampleCard414(sample){
     const width=Math.max(1,Number(sample?.width||1)),height=Math.max(1,Number(sample?.height||1)),source=String(sample?.source_label||'');
@@ -4625,14 +4628,19 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     try{const task=await api(`/api/v54/projects/${pid()}/labels/integrity/audits`,{method:'POST'});state.labelIntegrityAuditTask414=task;renderLabelIntegrityTask414(task);armLabelIntegrityAudit414(task.task_id)}
     catch(e){toast(e.message||e)}finally{if(button){button.disabled=false;button.textContent='运行 Full Audit'}}
   };
-  window.startLabelIntegrityRepair414=async function(index){
-    const group=(state.labelIntegrityGroups414||[])[Number(index)],select=document.querySelector(`[data-label-integrity-target="${Number(index)}"]`),target=String(select?.value||'').trim();
-    if(!group||!target)return toast('请手工选择当前 active 目标标签');
+  window.startLabelIntegrityBatchRepair414=function(){
+    const mappings=configuredLabelIntegrityMappings414();if(!mappings.length)return toast('请至少配置一个 source → active target');
+    state.labelIntegrityPendingMappings414=mappings;
+    const candidates=mappings.reduce((total,item)=>{const group=(state.labelIntegrityGroups414||[]).find(row=>row.source_label===item.source_label);return total+Number(group?.image_count||0)},0);
+    modal('确认批量标签修复',`<div class="label-integrity414-confirm"><div class="alert warn"><b>本次将创建一个 durable repair task</b><span>服务端会在提交时重新读取当前 AnnotationRepository 真相，按 image_id 聚合映射，同一图片只执行一次 CAS/write。</span></div><div class="label-integrity414-confirm-list">${mappings.map(item=>`<div><b>${esc(item.source_label)}</b><span>→</span><b>${esc(item.target_label)}</b></div>`).join('')}</div><p class="item-sub">${mappings.length} 个映射 · 审计候选最多 ${candidates} 张（服务端将按真实 image_id 去重并排除已解决项）</p><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmLabelIntegrityBatchRepair414()">确认创建后台修复</button></div></div>`,true);
+  };
+  window.confirmLabelIntegrityBatchRepair414=async function(){
+    const mappings=(state.labelIntegrityPendingMappings414||[]).map(item=>({...item}));if(!mappings.length)return toast('没有可提交的标签映射');
     const auditTaskId=String(state.labelIntegrityAuditTask414?.task_id||'');if(!auditTaskId)return toast('审计任务信息已失效，请重新运行 Full Audit');
     try{
-      const task=await api(`/api/v54/projects/${pid()}/labels/integrity/audits/${auditTaskId}/repairs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_label:group.source_label,target_label:target})});
-      state.import412RemapTask=task;state.import412RemapSource=group.source_label;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-integrity';
-      modal('历史标签安全修复',window.importRemapProgress414(task,group.source_label,target),false);window.armImportRemap414?.(task.task_id,group.source_label,target);
+      const task=await api(`/api/v54/projects/${pid()}/labels/integrity/audits/${auditTaskId}/repairs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mappings})});
+      const source=`${mappings.length} 个 source`,target='多个 active target';state.import412RemapTask=task;state.import412RemapSource=source;state.import412RemapTarget=target;state.annotationRemapOrigin414='label-integrity';
+      closeModal();modal('历史标签批量安全修复',window.importRemapProgress414(task,source,target),false);window.armImportRemap414?.(task.task_id,source,target);
       toast(`已重新核验：${Number(task.still_requires_repair||0)} 张进入修复，${Number(task.already_resolved||0)} 张已解决`);
     }catch(e){toast(e.message||e)}
   };
@@ -4997,7 +5005,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   async function refreshLabelIntegrityAfterRepair414(task,source,target){
     invalidateTrainingMaterialSummaryAfterLabelMutation414();state.labelIntegrityAuditResult414=null;
     if(document.getElementById('importRemapStage414'))closeModal();
-    const box=document.getElementById('labelIntegrity414Body');if(box)box.innerHTML='<div class="empty compact"><b>修复已完成，请重新运行 Full Audit</b><span>旧审计只是一份诊断快照，不会被当作后续修改依据。</span></div>';
+    const box=document.getElementById('labelIntegrity414Body');if(box)box.innerHTML='<div class="empty compact"><b>本轮修复已完成，请重新运行 Full Audit 验证</b><span>旧审计只是一份诊断快照，不会被当作后续修改依据。</span></div>';
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);toast(failed?`安全修复完成：${changed} 个框已更新，${failed} 张需人工复核`:`安全修复完成：${source} → ${target} · ${changed} 个框`);state.annotationRemapOrigin414='';
   }
   window.pollImportRemap414=async function(taskId,source,target){

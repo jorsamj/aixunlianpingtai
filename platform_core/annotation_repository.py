@@ -426,12 +426,55 @@ class AnnotationRepository:
         target = str(target_label or '').strip()
         if not sources or not target or target in sources:
             raise ValueError('source and target labels are required and must differ')
-        source_set = set(sources)
+        planned = self.plan_label_mappings(
+            record,
+            mappings=[
+                {
+                    'source_label': source,
+                    'target_label': target,
+                    'target_class_id': int(target_class_id),
+                }
+                for source in sources
+            ],
+        )
+        # Preserve the public metric's historical meaning for ordinary label
+        # unification. The multi-mapping integrity path reports any scope
+        # change because it repairs scopes for every annotation state.
+        planned['changed_scope'] = int(
+            str(record.get('annotation_state') or '') == 'confirmed_empty'
+            and planned['annotation_scope'] != _normalize_scope(
+                record.get('annotation_scope')
+            )
+        )
+        return planned
+
+    def plan_label_mappings(self, record, *, mappings) -> dict:
+        """Apply several source-to-target mappings to one GT record once."""
+        normalized = {}
+        for raw in mappings or []:
+            source = str(raw.get('source_label') or '').strip()
+            target = str(raw.get('target_label') or '').strip()
+            try:
+                target_class_id = int(raw.get('target_class_id'))
+            except (TypeError, ValueError):
+                raise ValueError('each label mapping requires a target class id')
+            if not source or not target or source == target:
+                raise ValueError(
+                    'source and target labels are required and must differ'
+                )
+            candidate = (target, target_class_id)
+            if source in normalized and normalized[source] != candidate:
+                raise ValueError('one source label cannot map to multiple targets')
+            normalized[source] = candidate
+        if not normalized:
+            raise ValueError('at least one label mapping is required')
         boxes, changed = [], 0
         for raw in record.get('boxes') or []:
             box = dict(raw)
             label = str(box.get('label') or box.get('code') or '').strip()
-            if label in source_set:
+            identity = normalized.get(label)
+            if identity is not None:
+                target, target_class_id = identity
                 box['label'] = target
                 if 'code' in box:
                     box['code'] = target
@@ -442,7 +485,7 @@ class AnnotationRepository:
             boxes.append(box)
         original_scope = _normalize_scope(record.get('annotation_scope'))
         scope = [
-            target if str(value).strip() in source_set else str(value).strip()
+            normalized.get(str(value).strip(), (str(value).strip(), None))[0]
             for value in (record.get('annotation_scope') or [])
             if str(value).strip()
         ]
@@ -454,12 +497,8 @@ class AnnotationRepository:
         return {
             **prepared,
             'changed_boxes': changed,
-            # Preserve the public metric's historical meaning: it counts
-            # confirmed-empty negative-scope changes. Annotated scopes are
-            # still remapped and indexed, but are not added to this counter.
             'changed_scope': int(
-                str(record.get('annotation_state') or '') == 'confirmed_empty'
-                and prepared['annotation_scope'] != original_scope
+                prepared['annotation_scope'] != original_scope
             ),
         }
 
@@ -644,8 +683,9 @@ class AnnotationRepository:
 
     def remap_labels_if_digests(
         self, requests, *, source_label: str | None = None,
-        source_labels=None, target_label: str,
-        target_class_id: int, project_material: bool = True,
+        source_labels=None, target_label: str | None = None,
+        target_class_id: int | None = None, mappings=None,
+        project_material: bool = True,
     ) -> list[dict]:
         requests = [dict(item) for item in requests or []]
         if len(requests) > 500:
@@ -679,13 +719,19 @@ class AnnotationRepository:
                             'current_digest': current_digest,
                         })
                         continue
-                    planned = self.plan_label_remap(
-                        current,
-                        source_label=source_label,
-                        source_labels=source_labels,
-                        target_label=target_label,
-                        target_class_id=target_class_id,
-                    )
+                    request_mappings = request.get('mappings') or mappings
+                    if request_mappings:
+                        planned = self.plan_label_mappings(
+                            current, mappings=request_mappings,
+                        )
+                    else:
+                        planned = self.plan_label_remap(
+                            current,
+                            source_label=source_label,
+                            source_labels=source_labels,
+                            target_label=target_label,
+                            target_class_id=target_class_id,
+                        )
                     changed_content = planned['content_digest'] != current_digest
                     if changed_content:
                         if row is not None:

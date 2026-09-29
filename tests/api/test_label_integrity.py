@@ -414,3 +414,209 @@ def test_orphan_repair_rejects_target_that_is_no_longer_active(
 
     assert response.status_code == 409
     assert "LABEL_INTEGRITY_TARGET_UNAVAILABLE" in response.text
+
+
+def test_batch_repair_aggregates_mappings_per_image_and_writes_once(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, first = seeded_project
+    materials = app_module.material_store(project_id)
+    second_id = "batch-scope-only"
+    materials.upsert(
+        {
+            "id": second_id,
+            "filename": "batch-scope-only.jpg",
+            "stored_name": "batch-scope-only.jpg",
+            "object_key": "uploads/batch-scope-only.jpg",
+            "processing_status": "processed",
+        }
+    )
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        first["id"],
+        [
+            {"label": "head", "code": "head", "class_id": 12},
+            {"label": "Helmet", "code": "Helmet", "class_id": 13},
+        ],
+        annotation_state="annotated",
+        annotation_scope=["head", "Helmet", "No_Helmet"],
+        project_material=False,
+    )
+    annotations.upsert(
+        second_id,
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["Persona", "No_Helmet"],
+        project_material=False,
+    )
+    first_version = annotations.get(first["id"])["version"]
+    repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    mappings = [
+        {"source_label": "head", "target_label": "smoke"},
+        {"source_label": "Helmet", "target_label": "smoke"},
+        {"source_label": "No_Helmet", "target_label": "fire"},
+        {"source_label": "Persona", "target_label": "fire"},
+    ]
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"mappings": mappings},
+    )
+
+    assert created.status_code == 202, created.text
+    body = created.json()
+    assert body["mapping_count"] == 4
+    assert body["candidate_images"] == 2
+    assert body["still_requires_repair"] == 2
+    selection_path = artifacts.artifact_path(body["task_id"], "selection.sqlite3")
+    with closing(BatchSelection(selection_path)) as manifest:
+        rows = manifest.database.execute(
+            "SELECT image_id,tombstone_json FROM selection ORDER BY image_id"
+        ).fetchall()
+    assert len(rows) == 2
+    plans = {row["image_id"]: json.loads(row["tombstone_json"]) for row in rows}
+    assert len(plans[first["id"]]["mappings"]) == 3
+    assert len(plans[second_id]["mappings"]) == 2
+    assert plans[first["id"]]["expected_digest"]
+    assert plans[first["id"]]["result_digest"]
+
+    duplicate = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"mappings": [mappings[0]]},
+    )
+    assert duplicate.status_code == 409
+    assert "LABEL_INTEGRITY_REPAIR_ACTIVE" in duplicate.text
+
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{body['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["mapping_count"] == 4
+    assert final["candidate_images"] == 2
+    assert final["succeeded"] == 2
+    assert final["failed"] == 0
+    assert final["changed_images"] == 2
+    assert final["changed_boxes"] == 2
+    assert final["result"]["changed_scope_images"] == 2
+    assert final["result"]["candidate_images"] == 2
+    assert final["result"]["mapping_count"] == 4
+    assert final["result"]["failure_reasons"] == {}
+    first_after = annotations.get(first["id"])
+    assert first_after["version"] == first_version + 1
+    assert [box["label"] for box in first_after["boxes"]] == ["smoke", "smoke"]
+    assert all(box["class_id"] == 1 for box in first_after["boxes"])
+    assert all(box["canonical_label_id"] == "smoke" for box in first_after["boxes"])
+    assert first_after["annotation_scope"] == ["fire", "smoke"]
+    assert annotations.get(second_id)["annotation_scope"] == ["fire"]
+    assert annotations.label_reference_preview(
+        ["head", "Helmet", "No_Helmet", "Persona"]
+    )["affected_images"] == 0
+
+
+def test_audit_exposes_final_active_merge_target_but_never_defaults_orphan(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    project = app_module.get_project(project_id)
+    project["labels"].extend(["Helmet", "helmet_alias"])
+    project["label_meta"].extend(
+        [
+            {"status": "merged", "merged_into": "helmet_alias"},
+            {"status": "merged", "merged_into": "smoke"},
+        ]
+    )
+    app_module.save_project(project)
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        image["id"],
+        [
+            {"label": "Helmet", "class_id": 2},
+            {"label": "head", "class_id": 12},
+        ],
+        annotation_state="annotated",
+        annotation_scope=["Helmet", "head"],
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+
+    issues = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/issues",
+        params={"limit": 100},
+    ).json()
+
+    assert issues["repair_defaults"]["Helmet"] == {
+        "target_label": "smoke",
+        "merge_chain": ["Helmet", "helmet_alias", "smoke"],
+    }
+    assert "head" not in issues["repair_defaults"]
+
+
+def test_batch_repair_submits_only_configured_sources_and_keeps_external_cas(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [
+            {"label": "head", "class_id": 12},
+            {"label": "unconfigured", "class_id": 13},
+        ],
+        annotation_state="annotated",
+        annotation_scope=["head", "unconfigured"],
+        project_material=False,
+    )
+    _repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{audit['task_id']}/repairs",
+        json={"mappings": [{"source_label": "head", "target_label": "smoke"}]},
+    )
+    assert created.status_code == 202, created.text
+    selection_path = artifacts.artifact_path(
+        created.json()["task_id"], "selection.sqlite3"
+    )
+    with closing(BatchSelection(selection_path)) as manifest:
+        frozen = json.loads(
+            manifest.database.execute(
+                "SELECT tombstone_json FROM selection"
+            ).fetchone()[0]
+        )
+    assert [item["source_label"] for item in frozen["mappings"]] == ["head"]
+    annotations.upsert(
+        image["id"],
+        [
+            {"label": "head", "class_id": 12, "x1": 1},
+            {"label": "unconfigured", "class_id": 13},
+        ],
+        annotation_state="annotated",
+        annotation_scope=["head", "unconfigured"],
+        project_material=False,
+    )
+
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "FAILED"
+    assert final["failed"] == 1
+    assert any(
+        item["error"] == "ANNOTATION_CHANGED_DURING_REMAP"
+        for item in final["error_examples"]
+    )
+    assert final["result"]["failure_reasons"] == {
+        "ANNOTATION_CHANGED_DURING_REMAP": 1
+    }
+    current = annotations.get(image["id"])
+    assert [box["label"] for box in current["boxes"]] == ["head", "unconfigured"]

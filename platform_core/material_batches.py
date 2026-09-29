@@ -411,10 +411,18 @@ class BatchSelection:
             changed_boxes += boxes
             changed_scope_images += scope_changed
             changed_images += int(boxes > 0 or scope_changed)
+        failure_reasons = {
+            str(row[0]): int(row[1])
+            for row in self.database.execute(
+                "SELECT error,COUNT(*) FROM selection "
+                "WHERE state='failed' AND error IS NOT NULL GROUP BY error"
+            )
+        }
         return {
             "changed_images": changed_images,
             "changed_boxes": changed_boxes,
             "changed_scope_images": changed_scope_images,
+            "failure_reasons": failure_reasons,
         }
 
 
@@ -974,16 +982,32 @@ class MaterialBatchHandler:
     def _run_annotation_remap(self, context, manifest, payload):
         options = dict((payload or {}).get("options") or {})
         repair_mode = bool(options.get("repair_mode"))
+        mapping_options = [
+            dict(item) for item in (options.get("mappings") or [])
+            if isinstance(item, dict)
+        ]
+        multi_mapping_mode = repair_mode and bool(mapping_options)
         sources = list(dict.fromkeys(
             str(value).strip()
             for value in (
-                options.get("source_labels")
+                [item.get("source_label") for item in mapping_options]
+                if multi_mapping_mode
+                else options.get("source_labels")
                 or [options.get("source_label")]
             )
             if str(value or "").strip()
         ))
         target = str(options.get("target_label") or "").strip()
-        if not sources or not target or target in sources:
+        if (
+            not sources
+            or (not multi_mapping_mode and (not target or target in sources))
+            or any(
+                not str(item.get("target_label") or "").strip()
+                or str(item.get("target_label") or "").strip()
+                == str(item.get("source_label") or "").strip()
+                for item in mapping_options
+            )
+        ):
             raise BatchRequestError(
                 "MATERIAL_REMAP_INVALID",
                 "标签变换任务的来源标签和目标标签无效",
@@ -1024,7 +1048,19 @@ class MaterialBatchHandler:
             f"operation={BatchOperation.REMAP_ANNOTATION_LABELS.value} total={total}",
         )
 
-        def target_class_id():
+        expected_targets = {
+            str(item.get("source_label") or "").strip():
+            str(item.get("target_label") or "").strip()
+            for item in mapping_options
+        }
+        if multi_mapping_mode and len(expected_targets) != len(mapping_options):
+            raise BatchRequestError(
+                "MATERIAL_REMAP_INVALID",
+                "同一个来源标签不能在一个修复任务中映射到多个目标",
+                409,
+            )
+
+        def target_class_ids(targets):
             meta_path = project_path / "meta.json"
             if not meta_path.is_file():
                 raise BatchRequestError(
@@ -1035,29 +1071,36 @@ class MaterialBatchHandler:
             project_meta = json.loads(meta_path.read_text(encoding="utf-8"))
             labels = list(project_meta.get("labels") or [])
             metadata = list(project_meta.get("label_meta") or [])
+            wanted = set(targets)
+            resolved = {}
             for index, code in enumerate(labels):
-                if str(code) != target:
+                code = str(code)
+                if code not in wanted:
                     continue
                 info = (
                     metadata[index]
                     if index < len(metadata) and isinstance(metadata[index], dict)
                     else {}
                 )
-                if str(info.get("status") or "active").lower() != "active":
-                    break
-                return index
-            raise BatchRequestError(
-                "MATERIAL_REMAP_TARGET_UNAVAILABLE",
-                "目标标签已不存在或已停用，请重新确认标签映射",
-                409,
-            )
+                if str(info.get("status") or "active").lower() == "active":
+                    resolved[code] = index
+            if set(resolved) != wanted:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                    "目标标签已不存在或已停用，请重新确认标签映射",
+                    409,
+                )
+            return resolved
 
         while batch := manifest.rows():
             _check_active(context, "REMAPPING_ANNOTATION_LABELS")
             batch = list(batch[:REMAP_BATCH_SIZE])
             ids = [str(row["image_id"]) for row in batch]
             manifest.transition(ids, "running")
-            current_target_id = target_class_id()
+            target_ids = target_class_ids(
+                set(expected_targets.values()) if multi_mapping_mode else {target}
+            )
+            current_target_id = target_ids.get(target)
             existing = (
                 set(ids)
                 if repair_mode
@@ -1090,6 +1133,9 @@ class MaterialBatchHandler:
                     except (TypeError, ValueError):
                         plan = None
                 if not isinstance(plan, dict):
+                    if multi_mapping_mode:
+                        failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
+                        continue
                     preview = annotations.plan_label_remap(
                         current,
                         source_labels=sources,
@@ -1120,27 +1166,56 @@ class MaterialBatchHandler:
                     )
                     if str(value or "").strip()
                 ))
+                plan_mappings = [
+                    dict(item) for item in (plan.get("mappings") or [])
+                    if isinstance(item, dict)
+                ]
+                if multi_mapping_mode:
+                    plan_targets = {
+                        str(item.get("source_label") or "").strip():
+                        str(item.get("target_label") or "").strip()
+                        for item in plan_mappings
+                    }
+                    plan_valid = bool(plan_mappings) and all(
+                        expected_targets.get(source) == mapped_target
+                        for source, mapped_target in plan_targets.items()
+                    ) and set(plan_sources) == set(plan_targets)
+                else:
+                    plan_valid = (
+                        plan_sources == sources
+                        and str(plan.get("target_label") or "") == target
+                    )
                 if (
                     plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value
-                    or plan_sources != sources
-                    or str(plan.get("target_label") or "") != target
+                    or not plan_valid
                 ):
                     failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
                     continue
                 source_digest = str(plan.get("source_digest") or "")
                 result_digest = str(plan.get("result_digest") or "")
-                planned_target_id = plan.get("target_class_id")
-                if (
-                    current_digest == source_digest
-                    and planned_target_id is not None
-                    and int(planned_target_id) != int(current_target_id)
-                ):
-                    if repair_mode:
-                        failed.append((
-                            image_id,
-                            "LABEL_INTEGRITY_TARGET_IDENTITY_CHANGED",
-                        ))
-                        continue
+                try:
+                    if multi_mapping_mode:
+                        target_identity_changed = any(
+                            int(item.get("target_class_id"))
+                            != int(target_ids.get(str(item.get("target_label") or "")))
+                            for item in plan_mappings
+                        )
+                    else:
+                        planned_target_id = plan.get("target_class_id")
+                        target_identity_changed = (
+                            planned_target_id is not None
+                            and int(planned_target_id) != int(current_target_id)
+                        )
+                except (TypeError, ValueError):
+                    failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
+                    continue
+                if target_identity_changed and repair_mode:
+                    failed.append((
+                        image_id,
+                        "LABEL_INTEGRITY_TARGET_IDENTITY_CHANGED",
+                    ))
+                    continue
+                if current_digest == source_digest and target_identity_changed:
                     preview = annotations.plan_label_remap(
                         current,
                         source_labels=sources,
@@ -1169,6 +1244,7 @@ class MaterialBatchHandler:
                 executable.append({
                     "image_id": image_id,
                     "expected_digest": current_digest,
+                    **({"mappings": plan_mappings} if multi_mapping_mode else {}),
                 })
 
             if executable:
@@ -1211,6 +1287,9 @@ class MaterialBatchHandler:
                 99.0, round(processed * 99.0 / max(1, total), 1)
             )
             current_item = (
+                f"正在批量修复标签 {processed}/{max(1, total)} · "
+                f"{len(mapping_options)} 个映射"
+                if multi_mapping_mode else
                 f"正在批量统一标签 {processed}/{max(1, total)} · "
                 f"{source_text} → {target}"
             )
@@ -1233,6 +1312,16 @@ class MaterialBatchHandler:
             "source_labels": sources,
             "source_label": sources[0] if len(sources) == 1 else "",
             "target_label": target,
+            "mappings": mapping_options if multi_mapping_mode else [],
+            "mapping_count": len(mapping_options) if multi_mapping_mode else 1,
+            **{
+                key: int(options.get(key) or 0)
+                for key in (
+                    "candidate_images", "still_requires_repair",
+                    "already_resolved",
+                )
+                if options.get(key) is not None
+            },
         })
         if (
             not summary["failed"]
@@ -1383,7 +1472,10 @@ def public_batch(task, artifacts, repository=None):
         retire_sources = bool(options.get("retire_sources_on_success"))
     repair_stats = {
         key: int(options.get(key) or 0)
-        for key in ("candidate", "still_requires_repair", "already_resolved")
+        for key in (
+            "candidate", "candidate_images", "still_requires_repair",
+            "already_resolved", "mapping_count",
+        )
         if options.get(key) is not None
     }
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
@@ -1415,6 +1507,7 @@ def public_batch(task, artifacts, repository=None):
             "result": result if result else None,
             "source_labels": remap_sources,
             "target_label": remap_target,
+            "mappings": list(options.get("mappings") or []),
             "retire_sources_on_success": retire_sources,
             "changed_images": result.get("changed_images"),
             "changed_boxes": result.get("changed_boxes"),

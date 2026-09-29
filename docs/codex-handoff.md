@@ -1,7 +1,7 @@
 # Codex / 人工接管交接记录
 
 
-## 2026-09-29 标签完整性 Full Audit / Orphan Repair（最新）
+## 2026-09-29 标签完整性 Full Audit / 批量 Repair（最新）
 
 本轮没有重做训练标签架构，也没有新增 TaskKind、Scheduler、Ground Truth 或轮询 owner。新增能力落在现有标签管理与 durable material-batch runtime：
 
@@ -12,21 +12,25 @@
 - `MaterialRepository` schema v4 将 annotated scope 也纳入 projection index，但它只用于对账和普通 unify selection，不充当 Annotation truth；
 - 审计快照：task artifact `label-integrity.sqlite3`，包含 `audit_metadata / audit_summary / annotation_references / issues / issue_groups`，保存 annotation revision/fingerprint、material revision、governance fingerprint、affected IDs、box/scope counts 与 class-id distributions；
 - 快照只用于 UI 与 repair candidate 范围，不是 repair authoritative truth；
-- 创建 Orphan Repair 时，服务端按 audit candidate IDs 重新读取当前 AnnotationRepository；只把当前仍引用 source 的 image 冻结进现有 `REMAP_ANNOTATION_LABELS` selection，并保存 `source_digest/expected_digest/target_label/target_class_id/result_digest`；
+- 标签完整性 UI 允许一次配置多组 `source -> active target`，只提交已配置项，并统一创建一个 `REMAP_ANNOTATION_LABELS` durable task；不会为每个 source 创建并发任务；
+- 创建 Repair 时，服务端按 audit candidate IDs 重新读取当前 AnnotationRepository；按 `image_id` 聚合该图仍相关的全部 mappings，同一 image 只写一条 selection，并保存 `source_digest/expected_digest/mappings/target_canonical_identities/result_digest/planned_at/audit_task_id`；
+- worker 对每个 image 一次应用全部 bbox/scope mappings、一次 CAS、一次 AnnotationRepository write；多个 source 指向同一 target 时 scope 由 owner 归一去重，随后同步 MaterialRepository projection；
 - audit 后已经人工处理的记录计入 `already_resolved`，不会进入 selection，也不会被覆盖；
-- target 必须在 repair 创建时仍为 active；worker 再次校验 target identity 与 annotation digest，变化即 fail-closed；
+- target 必须在 repair 创建时仍为 active；worker 再次校验每个 target identity 与 annotation digest，变化即 fail-closed；
+- 项目级 label-integrity repair gate 只阻止同项目第二个 active repair，不阻塞其他 MaterialBatch；外部人工并发仍以 `ANNOTATION_CHANGED_DURING_REMAP` 失败关闭；
 - 普通 whole-label unify 自动退役 source 前，必须同时满足 AnnotationRepository boxes/scopes=0 与 MaterialRepository labels/scopes=0；任意一侧残留都阻止 `status=merged`；
 - 标签管理页原位增加“标签完整性”，不新增一级菜单；Full Audit 和 repair 都复用既有 PollRegistry/material-batch task truth；训练创建弹窗没有增加 audit/repair UI；
-- Full Audit 负责发现异常，样例预览辅助人工判断语义，系统永远不自动猜 target；样例候选来自 audit artifact 的 affected image IDs，但展示时只读当前 AnnotationRepository，并只叠加 source label 的历史 bbox，图片继续复用现有素材缩略图/content owner；
+- Full Audit 负责发现异常，样例预览辅助人工判断语义，系统永远不自动猜 ORPHAN_LABEL target；样例候选来自 audit artifact 的 affected image IDs，但展示时只读当前 AnnotationRepository，并只叠加 source label 的历史 bbox，图片继续复用现有素材缩略图/content owner；
+- `INCOMPLETE_MERGE` 在 issues API 中由服务端沿历史 `merged_into` chain 解析到最终 active target，UI 可见并默认预填最终 target 与历史链；`ORPHAN_LABEL` 始终保持未选择，必须人工结合样例判断；
 - 训练 fail-closed 提示会引导用户前往“标签管理 → 标签完整性”。
 
 生产历史异常的安全处理顺序：
 
 1. 在“标签管理 → 标签完整性”运行 Full Audit；
-2. 对每个 orphan/inactive/incomplete source 由用户手工选择当前 active target；
-3. 创建 repair 时系统重新校验当前 GT，并报告 `candidate / still_requires_repair / already_resolved`；
-4. durable remap 使用 expected digest 做 CAS；
-5. 完成后旧 audit 视为过期，必须重新运行 Full Audit，直到 Annotation truth、governance 与 material projection 对账清零。
+2. 一次性配置所有要处理的 source：ORPHAN_LABEL 由用户人工决定 target，INCOMPLETE_MERGE 默认使用历史 `merged_into` chain 的最终 active target；未配置项可留到下一轮；
+3. 点击“统一创建后台修复”，服务端重新读取当前 GT，并报告 `candidate_images / still_requires_repair / already_resolved / mapping_count`；
+4. 服务端按 image_id 聚合 mappings，一个 durable task 对每张图只做一次 expected-digest CAS/write，再同步 projection；
+5. 完成后 UI 明确要求重新运行 Full Audit；旧 audit 视为过期，直到 Annotation truth、governance 与 material projection 对账清零。
 
 `VERSION.txt` 未修改。未 merge main、未 tag、未 release、未 force push。
 

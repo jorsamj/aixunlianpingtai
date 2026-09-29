@@ -13,9 +13,11 @@ from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
 
+from filelock import FileLock
+
 from .annotation_repository import AnnotationRepository, _normalize_scope
 from .material_repository import MaterialRepository
-from .task_runtime import TaskKind, TaskRecord
+from .task_runtime import TaskKind, TaskRecord, TaskStatus
 from .task_runtime.models import utc_now
 
 
@@ -334,35 +336,115 @@ def create_label_integrity_audit(project_id, repository, artifacts):
     return repository.create(task, artifacts=artifacts)
 
 
+def _resolved_merge_default(governance: dict[str, dict], source: str):
+    chain, seen, current = [source], {source}, source
+    while True:
+        info = governance.get(current)
+        if info is None:
+            return None
+        status = str(info.get("status") or "active")
+        if status == "active":
+            return {
+                "target_label": current,
+                "merge_chain": chain,
+            } if len(chain) > 1 else None
+        if status != "merged":
+            return None
+        target = str(info.get("merged_into") or "").strip()
+        if not target or target in seen:
+            return None
+        chain.append(target)
+        seen.add(target)
+        current = target
+
+
+def _active_integrity_repair(project_id, repository, artifacts):
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=str(project_id),
+            kinds=(TaskKind.MATERIAL_BATCH,),
+            statuses=(
+                TaskStatus.QUEUED,
+                TaskStatus.RUNNING,
+                TaskStatus.CANCEL_REQUESTED,
+            ),
+            limit=100,
+            cursor=cursor,
+        )
+        for task in page.items:
+            request = artifacts.read_json(
+                task.task_id, task.payload_ref, default={},
+            )
+            options = dict(request.get("options") or {})
+            if (
+                request.get("operation") == "REMAP_ANNOTATION_LABELS"
+                and bool(options.get("repair_mode"))
+            ):
+                return task
+        if not page.next_cursor:
+            return None
+        cursor = page.next_cursor
+
+
 def create_orphan_repair(
     project_id,
     project_path,
     repository,
     artifacts,
     audit_task_id,
-    source_label,
-    target_label,
+    mappings,
 ):
-    """Re-read current GT and freeze only audit candidates still needing repair."""
-    from .material_batches import BatchRequestError, BatchSelection, RESULT_REF, SELECTION_REF
+    """Freeze one multi-mapping repair after re-reading current GT."""
+    from .material_batches import BatchRequestError, BatchSelection, SELECTION_REF
 
-    source = str(source_label or "").strip()
-    target = str(target_label or "").strip()
-    if not source or not target or source == target:
+    normalized: list[dict] = []
+    seen_sources: set[str] = set()
+    if not isinstance(mappings, list):
         raise BatchRequestError(
             "LABEL_INTEGRITY_MAPPING_INVALID",
-            "来源标签和目标标签必须明确且不同",
+            "mappings 必须是标签映射数组",
+            422,
+        )
+    for raw in mappings or []:
+        if not isinstance(raw, dict):
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_MAPPING_INVALID",
+                "每个 mappings 项都必须是标签映射对象",
+                422,
+            )
+        source = str(raw.get("source_label") or "").strip()
+        target = str(raw.get("target_label") or "").strip()
+        if not source or not target or source == target or source in seen_sources:
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_MAPPING_INVALID",
+                "每个来源标签必须且只能映射到一个不同的目标标签",
+                422,
+            )
+        seen_sources.add(source)
+        normalized.append({"source_label": source, "target_label": target})
+    if not normalized or len(normalized) > 50:
+        raise BatchRequestError(
+            "LABEL_INTEGRITY_MAPPING_INVALID",
+            "一次必须提交 1 到 50 个明确的标签映射",
             422,
         )
     project_path = Path(project_path)
     governance, _fingerprint = _catalog(project_path)
-    target_info = governance.get(target)
-    if target_info is None or target_info["status"] != "active":
-        raise BatchRequestError(
-            "LABEL_INTEGRITY_TARGET_UNAVAILABLE",
-            "目标标签已不存在或不是 active，请刷新后重新映射",
-            409,
-        )
+    frozen_mappings = []
+    for mapping in normalized:
+        target_info = governance.get(mapping["target_label"])
+        if target_info is None or target_info["status"] != "active":
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_TARGET_UNAVAILABLE",
+                "目标标签已不存在或不是 active，请刷新后重新映射",
+                409,
+            )
+        frozen_mappings.append({
+            **mapping,
+            "target_class_id": int(target_info["class_id"]),
+            "target_canonical_label_id": mapping["target_label"],
+        })
     audit_path = artifacts.artifact_path(audit_task_id, AUDIT_REF)
     if not audit_path.is_file():
         raise BatchRequestError(
@@ -370,16 +452,32 @@ def create_orphan_repair(
             "完整性审计尚未完成",
             409,
         )
+    repair_lock = FileLock(
+        str(repository.path.resolve())
+        + ".label-integrity-"
+        + hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:16]
+        + ".lock",
+        timeout=30,
+    )
+    with repair_lock:
+        if _active_integrity_repair(project_id, repository, artifacts):
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_REPAIR_ACTIVE",
+                "当前已有标签完整性修复任务运行中，请等待完成后重新 Full Audit。",
+                409,
+            )
     uri = audit_path.resolve().as_uri() + "?mode=ro"
+    sources = [item["source_label"] for item in frozen_mappings]
+    placeholders = ",".join("?" for _ in sources)
     with closing(sqlite3.connect(uri, uri=True)) as database:
         candidates = [
             str(row[0])
             for row in database.execute(
                 "SELECT DISTINCT r.image_id FROM annotation_references r "
-                "WHERE r.label_code=? AND EXISTS ("
+                f"WHERE r.label_code IN ({placeholders}) AND EXISTS ("
                 "SELECT 1 FROM issues i WHERE i.image_id=r.image_id AND i.label_code=r.label_code"
                 ") ORDER BY r.image_id",
-                (source,),
+                sources,
             ).fetchall()
         ]
 
@@ -392,29 +490,44 @@ def create_orphan_repair(
         for image_id in chunk:
             record = current[image_id]
             references = _reference_map(record)
-            if source not in references:
+            relevant = [
+                dict(mapping) for mapping in frozen_mappings
+                if mapping["source_label"] in references
+            ]
+            if not relevant:
                 already_resolved += 1
                 continue
             source_digest = annotations.record_digest(record)
-            preview = annotations.plan_label_remap(
-                record,
-                source_label=source,
-                target_label=target,
-                target_class_id=int(target_info["class_id"]),
+            preview = annotations.plan_label_mappings(
+                record, mappings=relevant,
             )
             plan = {
                 "operation": "REMAP_ANNOTATION_LABELS",
                 "repair_mode": True,
                 "audit_task_id": str(audit_task_id),
-                "source_labels": [source],
-                "source_label": source,
-                "target_label": target,
+                "source_labels": [item["source_label"] for item in relevant],
+                "source_label": (
+                    relevant[0]["source_label"] if len(relevant) == 1 else ""
+                ),
+                "target_label": (
+                    relevant[0]["target_label"] if len(relevant) == 1 else ""
+                ),
+                "target_class_id": (
+                    relevant[0]["target_class_id"] if len(relevant) == 1 else None
+                ),
+                "mappings": relevant,
+                "target_canonical_identities": [
+                    {
+                        "label_code": item["target_label"],
+                        "class_id": item["target_class_id"],
+                    }
+                    for item in relevant
+                ],
                 "source_digest": source_digest,
                 "expected_digest": source_digest,
                 "result_digest": preview["content_digest"],
                 "changed_boxes": int(preview["changed_boxes"]),
                 "changed_scope": int(preview.get("changed_scope") or 0),
-                "target_class_id": int(target_info["class_id"]),
                 "planned_at": utc_now(),
             }
             frozen.append((image_id, json.dumps(plan, ensure_ascii=False, sort_keys=True)))
@@ -434,22 +547,28 @@ def create_orphan_repair(
                     ("selection_kind", "label_integrity_repair"),
                     ("audit_task_id", str(audit_task_id)),
                     ("annotation_revision", str(annotations.current_revision())),
-                    ("source_label", source),
-                    ("target_label", target),
+                    ("mapping_count", str(len(frozen_mappings))),
                 ),
             )
         checkpoint = manifest.summary()
     stats = {
         "candidate": len(candidates),
+        "candidate_images": len(candidates),
         "still_requires_repair": len(frozen),
         "already_resolved": already_resolved,
+        "mapping_count": len(frozen_mappings),
     }
     request = {
         "operation": "REMAP_ANNOTATION_LABELS",
         "options": {
-            "source_labels": [source],
-            "source_label": source,
-            "target_label": target,
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
+            "target_label": (
+                frozen_mappings[0]["target_label"]
+                if len({item["target_label"] for item in frozen_mappings}) == 1
+                else ""
+            ),
+            "mappings": frozen_mappings,
             "repair_mode": True,
             "audit_task_id": str(audit_task_id),
             "retire_sources_on_success": False,
@@ -470,7 +589,15 @@ def create_orphan_repair(
         f"materials:{project_id}",
         required_capabilities=("materials.batch",),
     )
-    return repository.create(task, artifacts=artifacts), stats
+    with repair_lock:
+        if _active_integrity_repair(project_id, repository, artifacts):
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_REPAIR_ACTIVE",
+                "当前已有标签完整性修复任务运行中，请等待完成后重新 Full Audit。",
+                409,
+            )
+        task = repository.create(task, artifacts=artifacts)
+    return task, stats
 
 
 def read_audit_issues(path: str | Path, *, cursor: int = 0, limit: int = 100) -> dict:
@@ -699,7 +826,23 @@ def label_integrity_router(get_project, material_store, task_repository, task_ar
         if not path.is_file():
             raise HTTPException(409, detail="label integrity audit is not complete")
         try:
-            return read_audit_issues(path, cursor=cursor, limit=limit)
+            result = read_audit_issues(path, cursor=cursor, limit=limit)
+            materials = material_store(project_id)
+            governance, _fingerprint = _catalog(materials.project_path)
+            issue_types: dict[str, set[str]] = {}
+            for group in result.get("groups") or []:
+                code = str(group.get("label_code") or "")
+                issue_types.setdefault(code, set()).add(
+                    str(group.get("issue_type") or "")
+                )
+            defaults = {}
+            for code, types in issue_types.items():
+                if "INCOMPLETE_MERGE" not in types or "ORPHAN_LABEL" in types:
+                    continue
+                resolved = _resolved_merge_default(governance, code)
+                if resolved:
+                    defaults[code] = resolved
+            return {**result, "repair_defaults": defaults}
         except ValueError as error:
             raise HTTPException(422, detail=str(error)) from error
 
@@ -738,14 +881,21 @@ def label_integrity_router(get_project, material_store, task_repository, task_ar
             raise HTTPException(409, detail="label integrity audit is not complete")
         try:
             get_project(project_id)
+            mappings = payload.get("mappings")
+            if mappings is None and (
+                payload.get("source_label") or payload.get("target_label")
+            ):
+                mappings = [{
+                    "source_label": payload.get("source_label"),
+                    "target_label": payload.get("target_label"),
+                }]
             task, stats = create_orphan_repair(
                 project_id,
                 material_store(project_id).project_path,
                 task_repository(),
                 task_artifacts(),
                 task_id,
-                payload.get("source_label"),
-                payload.get("target_label"),
+                mappings,
             )
         except BatchRequestError as error:
             raise HTTPException(
