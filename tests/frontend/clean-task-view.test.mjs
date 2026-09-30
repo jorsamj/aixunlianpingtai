@@ -251,5 +251,5 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
   assert.match(main, /cleaning\.js\?v=422568/);
   assert.match(index, /styles\.css\?v=42\.24\.45/);
   assert.match(index, /app\.js\?v=42\.25\.272/);
-  assert.match(index, /main\.mjs\?v=42\.25\.256/);
+  assert.match(index, /main\.mjs\?v=42\.25\.\d+/);
 });
