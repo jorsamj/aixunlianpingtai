@@ -775,6 +775,20 @@ class StorageImportHandler:
         label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
                      if i >= len(project_meta.get('label_meta') or [])
                      or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
+        confirmed_label_mapping = {
+            str(source): str(target).strip()
+            for source, target in dict(confirmation.get('label_mapping') or {}).items()
+            if str(source).strip() and str(target).strip()
+        }
+        imported_annotation_scope = sorted(set(confirmed_label_mapping.values()))
+        inactive_scope = [
+            code for code in imported_annotation_scope if code not in label_ids
+        ]
+        if inactive_scope:
+            raise ValueError(
+                'confirmed platform label is no longer active; resolve the label before retrying: '
+                + ', '.join(inactive_scope[:10])
+            )
         external_label_names = {
             str(item.get('class_id')): str(item.get('name') or '')
             for item in confirmation.get('external_classes') or []
@@ -861,7 +875,7 @@ class StorageImportHandler:
                     record['imported_split'] = candidate['split']
                     boxes = []
                     for box in candidate['boxes']:
-                        code = (confirmation.get('label_mapping') or {}).get(str(box['class_id']))
+                        code = confirmed_label_mapping.get(str(box['class_id']))
                         if code not in label_ids:
                             raise ValueError('confirmed platform label is no longer active; resolve the label before retrying')
                         width, height = float(row['width']), float(row['height'])
@@ -889,9 +903,27 @@ class StorageImportHandler:
                             'confirmed_at': confirmation.get('confirmed_at'),
                         })
                     state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
+                    # A structured annotation is exhaustive only for the source
+                    # dataset classes that the user explicitly mapped. Never let
+                    # AnnotationRepository widen an empty sidecar to every active
+                    # project label, because that would create false negatives for
+                    # unrelated classes in later multi-class training.
+                    if state in {'annotated', 'confirmed_empty'} and not imported_annotation_scope:
+                        raise ValueError(
+                            'structured annotation has no confirmed platform label scope'
+                        )
                     # A missing/invalid sidecar cannot erase an existing annotation.
                     if boxes or state == 'confirmed_empty' or not current:
-                        annotation_rows.append({'image_id': row['image_id'], 'boxes': boxes, 'annotation_state': state})
+                        annotation_rows.append({
+                            'image_id': row['image_id'],
+                            'boxes': boxes,
+                            'annotation_state': state,
+                            'annotation_scope': (
+                                list(imported_annotation_scope)
+                                if state in {'annotated', 'confirmed_empty'}
+                                else []
+                            ),
+                        })
                         record.update(annotation_summary(boxes, state))
                         record['annotation_summary_at'] = confirmation['confirmed_at']
                         if state != 'unannotated':

@@ -533,10 +533,11 @@ def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     platform_labels = [
         {"code": "smoke", "display_name": "吸烟", "status": "active"},
         {"code": "fire", "display_name": "烟火", "status": "active"},
+        {"code": "helmet", "display_name": "安全帽", "status": "active"},
     ]
     (project / "meta.json").write_text(
         json.dumps({
-            "labels": ["smoke", "fire"],
+            "labels": ["smoke", "fire", "helmet"],
             "label_meta": platform_labels,
         }, ensure_ascii=False),
         encoding="utf-8",
@@ -727,6 +728,8 @@ def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     negative_ann = annotations.get(negative["id"])
     assert positive_ann is not None
     assert positive_ann["annotation_state"] == "annotated"
+    assert positive_ann["annotation_scope"] == ["fire", "smoke"]
+    assert "helmet" not in positive_ann["annotation_scope"]
     assert [(box["label"], box["class_id"]) for box in positive_ann["boxes"]] == [
         ("smoke", 0),
         ("fire", 1),
@@ -742,6 +745,8 @@ def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     assert negative_ann is not None
     assert negative_ann["annotation_state"] == "confirmed_empty"
     assert negative_ann["boxes"] == []
+    assert negative_ann["annotation_scope"] == ["fire", "smoke"]
+    assert "helmet" not in negative_ann["annotation_scope"]
     assert positive["imported_split"] == "train"
     assert negative["imported_split"] == "val"
 
