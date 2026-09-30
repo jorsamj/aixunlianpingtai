@@ -431,9 +431,16 @@ test('formal version marker stays stable across final render owners and delayed 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
+  const backendVersion = await page.evaluate(async () => {
+    const response = await fetch('/api/system/version');
+    const body = await response.json();
+    return String(body.version || '');
+  });
+  expect(backendVersion).not.toBe('');
+
   const expectFormalVersion = async () => {
-    await expect(page.locator('#versionBadge')).toHaveText('v42.24.0');
-    await expect(page.locator('.nav-footer b')).toHaveText('v42.24.0');
+    await expect(page.locator('#versionBadge')).toHaveText(`v${backendVersion}`);
+    await expect(page.locator('.nav-footer b')).toHaveText(`v${backendVersion}`);
   };
 
   await expectFormalVersion();

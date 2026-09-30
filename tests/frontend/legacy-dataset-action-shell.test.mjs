@@ -27,7 +27,8 @@ test('R20j preserves the canonical dataset owner and bounded renderer delegate',
   assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
 });
 
-test('R20j keeps the formal visible version independent from internal cache bumps', () => {
-  assert.match(index, /id="versionBadge" class="version-badge">v42\.24\.0</);
+test('R20j keeps formal version truth independent from internal cache bumps', () => {
+  assert.match(index, /id="versionBadge" class="version-badge">v—</);
   assert.match(index, /<script src="\/static\/app\.js\?v=42\.25\.\d+"><\/script>/);
+  assert.match(app, /state\.versionInfo=\{version:String\(s\.platform_version\|\|''\)\.trim\(\)\|\|'—'/);
 });
