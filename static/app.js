@@ -990,8 +990,7 @@ window.installUsability417=function(){
   };
 
   renderTraining=function renderTrainingCompatibility(){
-    return window.TrainingTaskVisibilityRuntime?.render?.()
-      ?? window.renderTraining423?.();
+    return window.TrainingTaskVisibilityRuntime?.render?.();
   };
 
   
@@ -3353,7 +3352,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const DONE428=new Set(['done','finished','completed','succeeded','success','failed','stopped','cancelled','canceled']);
   const ACTIVE428=new Set(['queued','waiting','pending','starting','running','pausing','paused','resuming','stopping','cancel_requested']);
   const TARGET_NAMES428={ascend:'华为 Atlas / Ascend OM',rockchip:'瑞芯微 RKNN',sophon:'算能 Sophon / BModel',onnx:'ONNX',tensorrt:'NVIDIA TensorRT',paddle_inference:'Paddle Inference'};
-  state.train428Tab=state.train428Tab||'active';
   state.alg428Expanded=state.alg428Expanded||{};
 
   const dt428=v=>v?String(v).replace('T',' ').replace('Z','').slice(0,19):'-';
@@ -3527,20 +3525,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function priorityValue428(j){const raw=Number(j?.queue_priority??50);if(j?.priority_scheme==='lower_number_first')return Math.max(1,Math.min(999,Number.isFinite(raw)?raw:50));const legacy={100:1,80:20,50:50};return legacy[raw]??Math.max(1,Math.min(999,101-(Number.isFinite(raw)?raw:50)))}
   function queueOrder428(a,b){const sameResource=String(a?.resource_key||'')===String(b?.resource_key||''),ap=Number(a?.resource_queue_position),bp=Number(b?.resource_queue_position),hasExactPosition=sameResource&&a?.resource_queue_position_exact===true&&b?.resource_queue_position_exact===true&&Number.isFinite(ap)&&ap>0&&Number.isFinite(bp)&&bp>0;if(hasExactPosition&&ap!==bp)return ap-bp;const priority=priorityValue428(a)-priorityValue428(b);if(priority)return priority;const ar=Number(a?.queue_rank),br=Number(b?.queue_rank),hasDurableRank=Number.isFinite(ar)&&Number.isFinite(br)&&(ar!==0||br!==0);if(hasDurableRank&&ar!==br)return br-ar;const at=Number(a?.priority_tiebreaker),bt=Number(b?.priority_tiebreaker),hasLegacyTie=Number.isFinite(at)&&Number.isFinite(bt)&&(at!==0||bt!==0);if(hasLegacyTie&&at!==bt)return at-bt;const ad=Date.parse(a?.queued_at||a?.created_at||''),bd=Date.parse(b?.queued_at||b?.created_at||'');if(Number.isFinite(ad)&&Number.isFinite(bd)&&ad!==bd)return ad-bd;return String(a?.queued_at||a?.created_at||'').localeCompare(String(b?.queued_at||b?.created_at||''))||String(a?.id||'').localeCompare(String(b?.id||''))}
   function queuePosition428(j){if(j.status!=='queued')return'';const same=(state.jobs||[]).filter(x=>x.status==='queued'&&(x.resource_key||'')===(j.resource_key||'')).sort(queueOrder428);const i=same.findIndex(x=>x.id===j.id);return i>=0?`队列第 ${i+1} 位`:''}
-  function trainActions428(j){if(j.status==='queued')return`<button class="btn mini" onclick="promoteTrain428('${j.id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;if(j.status==='running')return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button><button class="btn mini" onclick="pauseTrain428('${j.id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;if(j.status==='paused')return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button><button class="btn mini primary" onclick="resumeTrain428('${j.id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button>${j.auto_version_id?`<button class="btn mini primary" onclick="trainingReport425('${j.id}')">训练报告</button>`:''}<button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`}
-  function trainRows428(rows){
-    const ordered=[...rows].sort((a,b)=>{const ar=a.status==='running'?0:a.status==='paused'?1:a.status==='queued'?2:3,br=b.status==='running'?0:b.status==='paused'?1:b.status==='queued'?2:3;return ar-br||(ar===2?queueOrder428(a,b):String(b.started_at||b.created_at||'').localeCompare(String(a.started_at||a.created_at||'')))});
-    return ordered.map(j=>{
-      const algorithm=j.asset_algorithm_name||j.algorithm_name||j.asset_algorithm_id||j.algorithm_asset_id||'-';
-      const task=j.task_name||j.run_name||j.auto_version_name||j.id;
-      const framework=j.framework==='paddle'?'PaddleDetection':'Ultralytics / YOLO';
-      const stage=j.current_item||j.phase||j.task_stage||j.stage||statusText428(j.status);
-      return `<tr><td><div class="train428-taskname"><b>${esc(algorithm)}</b><span>${esc(j.asset_algorithm_id||j.algorithm_asset_id||'')}</span></div></td><td><div class="train428-taskname"><b>${esc(task)}</b><span>${esc(j.id)}</span></div></td><td>${statusPill428(j.status)}</td><td><b>${priorityValue428(j)}</b>${queuePosition428(j)?`<small class="queuepos428">${queuePosition428(j)}</small>`:''}</td><td><div class="train428-resource"><b>${esc(framework)}</b><span>${esc(resourceName428(j))}</span></div></td><td><div class="progress424"><i style="width:${Math.max(0,Math.min(100,Number(j.progress_percent||0)))}%"></i></div><span class="train428-progress-txt">${j.current_epoch||0}/${j.total_epochs||j.epochs||'-'} · ${Number(j.progress_percent||0).toFixed(0)}%</span></td><td>${fmtTime424(j.elapsed_seconds)}</td><td>${fmtTime424(j.eta_seconds)}</td><td><span class="train428-stage-text">${esc(stage)}</span></td><td>${dt428(j.started_at||j.created_at)}</td><td><div class="row wrap">${trainActions428(j)}</div></td></tr>`;
-    }).join('')||'<tr><td colspan="11" class="empty-row">暂无记录</td></tr>'
-  }
-  window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){const active=(state.jobs||[]).filter(j=>ACTIVE428.has(j.status)),history=(state.jobs||[]).filter(j=>DONE428.has(j.status));const rows=state.train428Tab==='active'?active:history;document.getElementById('view').innerHTML=`<section class="train428-page"><div class="train428-tabs"><button class="${state.train428Tab==='active'?'on':''}" onclick="setTrainTab428('active')">进行中 <span>${active.length}</span></button><button class="${state.train428Tab==='history'?'on':''}" onclick="setTrainTab428('history')">历史记录 <span>${history.length}</span></button><button class="train428-refresh" onclick="refreshTrainPage428()">刷新</button></div><section class="panel"><div class="table-wrap"><table class="table train428-table"><thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>执行框架</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead><tbody>${trainRows428(rows)}</tbody></table></div></section></section>`;window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};
-  window.setTrainTab428=function(t){state.train428Tab=t;renderTraining423()};
-  window.refreshTrainPage428=async function(){await loadRelated();renderTraining423();toast('训练任务已刷新')};
+  window.renderTraining425=window.renderTraining424=window.renderTraining423=function renderTrainingLegacyBridge(){
+    return window.TrainingTaskVisibilityRuntime?.render?.();
+  };
   window.promoteTrain428=async function(id){try{await api(`/api/v48/projects/${pid()}/jobs/${id}/promote`,{method:'POST'});await loadRelated();renderTraining423();toast('任务已插到当前资源队列最前')}catch(e){toast(e.message||e)}};
   window.pauseTrain428=async function(id){try{await api(`/api/v48/projects/${pid()}/jobs/${id}/pause`,{method:'POST'});await loadRelated();renderTraining423();toast('训练已暂停')}catch(e){toast(e.message||e)}};
   window.resumeTrain428=async function(id){try{await api(`/api/v48/projects/${pid()}/jobs/${id}/resume`,{method:'POST'});await loadRelated();renderTraining423();toast('训练已继续')}catch(e){toast(e.message||e)}};

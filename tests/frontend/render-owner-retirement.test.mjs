@@ -29,24 +29,27 @@ test('algorithm and dataset navigation are canonical owners', () => {
   assert.match(main, /registerPageOwner\('数据集'/);
 });
 
-test('shadowed v424 and v425 training-task renderers are physically retired', () => {
+test('shadowed v423 v424 and v425 training-task UI renderers are physically retired', () => {
   assert.equal(app.includes('window.renderTraining424=function(){'), false);
   assert.equal(app.includes('window.renderTraining424=window.renderTraining425=function(){'), false);
-  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
+  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function renderTrainingLegacyBridge\(\)/);
+  assert.equal(app.includes('function trainActions428('), false);
+  assert.equal(app.includes('function trainRows428('), false);
+  assert.equal(app.includes('state.train428Tab'), false);
+  assert.equal(app.includes('window.refreshTrainPage428='), false);
 });
 
 test('shadowed classic renderTraining declarations are physically retired', () => {
   assert.equal((app.match(/\\bfunction renderTraining\\(\\)/g) || []).length, 0);
 });
 
-test('classic training renderer is a bounded compatibility delegate only', () => {
+test('classic training renderer is a canonical visibility delegate only', () => {
   const start = app.indexOf('renderTraining=function renderTrainingCompatibility()');
   const end = app.indexOf('\n  };', start);
   assert.ok(start >= 0 && end > start);
   const owner = app.slice(start, end);
   assert.match(owner, /TrainingTaskVisibilityRuntime\?\.render\?\.\(\)/);
-  assert.match(owner, /window\.renderTraining423\?\.\(\)/);
-  assert.doesNotMatch(owner, /trainPollHint|trainJobRowsHtml|创建训练任务|任务列表/);
+  assert.doesNotMatch(owner, /renderTraining423|trainPollHint|trainJobRowsHtml|创建训练任务|任务列表/);
 });
 
 test('training navigation is a canonical owner', () => {
