@@ -18,7 +18,7 @@ from platform_core.training_label_tasks import (
     resolve_training_label_contract,
     selected_material_label_codes,
 )
-from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
 from platform_core.training_tasks import (
     TrainingSelectionResolution,
     TRAINING_PROJECTION_POLICY_V1,
@@ -296,6 +296,69 @@ def test_input_freeze_identity_changes_when_frozen_base_model_changes(tmp_path: 
     assert first["snapshot_id"] == second["snapshot_id"]
     assert first["dataset_revision_id"] == second["dataset_revision_id"]
     assert first["input_freeze_id"] != second["input_freeze_id"]
+
+
+def test_input_freeze_reserves_new_label_positive_in_train_split(tmp_path: Path):
+    _data_dir, project = _project(tmp_path)
+    images = tuple(
+        {
+            "id": f"image-{index}",
+            "dataset_id": "pool",
+            "filename": f"image-{index}.jpg",
+            "stored_name": f"image-{index}.jpg",
+            "content_sha256": hashlib.sha256(f"rare-{index}".encode()).hexdigest(),
+            "size_bytes": 100 + index,
+            "width": 100,
+            "height": 100,
+            "processing_status": "processed",
+            "annotation_state": "annotated",
+            "annotation_scope": ["smoke" if index == 0 else "fire"],
+            "annotated": True,
+            "group_id": f"group-{index}",
+            "boxes": [_box("smoke" if index == 0 else "fire")],
+        }
+        for index in range(12)
+    )
+    split = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in images),
+        experiment_percent=25,
+        validation_percent=25,
+    )
+    seed = next(
+        candidate
+        for candidate in range(100)
+        if "image-0" not in build_split_manifest(
+            images, split, seed=candidate,
+        ).ids["train"]
+    )
+    resolution = TrainingSelectionResolution(
+        requested_split=split,
+        effective_split=split,
+        effective_images=images,
+        selected_train_image_ids=split.train_image_ids,
+        pending_annotation_image_ids=(),
+    )
+    schema = [
+        {"code": "fire", "class_id": 0, "canonical_project_class_id": 0},
+        {"code": "smoke", "class_id": 1, "canonical_project_class_id": 1},
+    ]
+
+    frozen = freeze_training_inputs(
+        project,
+        split,
+        seed=seed,
+        selection_resolution=resolution,
+        effective_images=images,
+        label_schema_override=schema,
+        label_contract={
+            "effective_label_schema": schema,
+            "requested_new_label_codes": ["smoke"],
+        },
+    )
+
+    assert frozen["input_quality"]["role_label_counts"]["train"]["smoke"] == 1
+    assert frozen["input_quality"]["active_labels_without_train_positive"] == []
 
 
 def test_version_contract_backfill_preserves_full_frozen_base_lineage(tmp_path: Path):

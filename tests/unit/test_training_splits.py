@@ -58,6 +58,63 @@ def test_mode_b_draws_test_first_then_validation_without_leakage():
     assert build_split_manifest(rows, request, seed=42).ids == manifest.ids
 
 
+def test_required_train_label_reserves_positive_component_from_random_split():
+    rows = [
+        image(str(index), "source", f"h{index}", f"g{index}")
+        for index in range(12)
+    ]
+    rows[0]["boxes"] = [{"label": "smoke"}]
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(str(index) for index in range(12)),
+        experiment_percent=25,
+        validation_percent=25,
+    )
+
+    chosen_seed = None
+    for seed in range(100):
+        plain = build_split_manifest(rows, request, seed=seed)
+        if "0" not in plain.ids["train"]:
+            chosen_seed = seed
+            break
+    assert chosen_seed is not None
+
+    protected = build_split_manifest(
+        rows,
+        request,
+        seed=chosen_seed,
+        required_train_labels=("smoke",),
+    )
+
+    assert "0" in protected.ids["train"]
+    assert protected.requested["required_train_labels"] == ["smoke"]
+    assert protected.requested["reserved_train_component_count"] == 1
+    assert not set(protected.ids["train"]) & set(protected.ids["validation"])
+    assert not set(protected.ids["train"]) & set(protected.ids["test"])
+
+
+def test_required_train_label_cannot_be_satisfied_only_by_independent_test_data():
+    rows = [
+        image(str(index), "source", f"h{index}", f"g{index}")
+        for index in range(6)
+    ]
+    rows[-1]["boxes"] = [{"label": "smoke"}]
+    request = SplitRequest(
+        mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(str(index) for index in range(5)),
+        test_image_ids=("5",),
+        validation_percent=20,
+    )
+
+    with pytest.raises(ValueError, match="新增训练标签.*没有正样本"):
+        build_split_manifest(
+            rows,
+            request,
+            seed=7,
+            required_train_labels=("smoke",),
+        )
+
+
 def test_large_random_split_keeps_exact_component_counts_at_20k_scale():
     rows = [
         image(str(index), "source", f"h{index}", f"g{index}")

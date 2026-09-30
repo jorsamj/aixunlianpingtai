@@ -1200,6 +1200,18 @@ def _frozen_training_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return frozen
 
 
+def _requested_new_training_labels(
+    label_contract: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(code).strip()
+        for code in (
+            (label_contract or {}).get("requested_new_label_codes") or []
+        )
+        if str(code).strip()
+    ))
+
+
 def _training_split_quality(
     images: Sequence[Mapping[str, Any]],
     manifest: Any,
@@ -1235,13 +1247,7 @@ def _training_split_quality(
         code for code in active_codes
         if role_label_counts["train"].get(code, 0) <= 0
     ]
-    requested_new = tuple(dict.fromkeys(
-        str(code).strip()
-        for code in (
-            (label_contract or {}).get("requested_new_label_codes") or []
-        )
-        if str(code).strip()
-    ))
+    requested_new = _requested_new_training_labels(label_contract)
     unknown_requested_new = [
         code for code in requested_new if code not in set(active_codes)
     ]
@@ -1331,7 +1337,12 @@ def freeze_training_inputs(
     )
     if not label_schema:
         raise ValueError("training label schema is empty")
-    manifest = build_split_manifest(images, effective_split, seed=int(seed))
+    manifest = build_split_manifest(
+        images,
+        effective_split,
+        seed=int(seed),
+        required_train_labels=_requested_new_training_labels(label_contract),
+    )
     input_quality = _training_split_quality(
         images, manifest, label_schema, label_contract=label_contract,
     )
@@ -1420,7 +1431,14 @@ def resolve_training_input_freeze(
         ]
         if contract_schema != label_schema:
             raise ValueError("training input freeze label contract/schema mismatch")
-    manifest = build_split_manifest(images, split_request, seed=int(seed))
+    manifest = build_split_manifest(
+        images,
+        split_request,
+        seed=int(seed),
+        required_train_labels=_requested_new_training_labels(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        ),
+    )
     input_quality = _training_split_quality(
         images,
         manifest,
