@@ -435,13 +435,16 @@ def commit_candidate_decisions(
                     "source_task_id": task_id,
                     "source": "ai_candidate_confirmed",
                 })
+            overwrite_changed = False
             if overwrite:
                 reviewed_labels = set(review_scope_codes)
+                previous_count = len(previous)
                 previous = [
                     box for box in previous
                     if str(box.get("label") or box.get("code") or "").strip()
                     not in reviewed_labels
                 ]
+                overwrite_changed = len(previous) != previous_count
             final_boxes = previous + incoming
             source_values = [str(box.get("source") or "").strip().lower() for box in final_boxes]
             is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
@@ -460,7 +463,7 @@ def commit_candidate_decisions(
             # formal GT commit and CandidateStore journaling. AnnotationRepository
             # will keep the same content digest, while MaterialRepository projection
             # is repaired in the same batch helper.
-            if incoming or not final_boxes or task_boxes_present:
+            if incoming or not final_boxes or task_boxes_present or overwrite_changed:
                 to_write.append({
                     "image_id": image_id,
                     "boxes": final_boxes,
