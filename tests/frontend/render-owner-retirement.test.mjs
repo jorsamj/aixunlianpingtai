@@ -35,6 +35,10 @@ test('shadowed v424 and v425 training-task renderers are physically retired', ()
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
 });
 
+test('shadowed classic renderTraining declarations are physically retired', () => {
+  assert.equal((app.match(/\\bfunction renderTraining\\(\\)/g) || []).length, 0);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
