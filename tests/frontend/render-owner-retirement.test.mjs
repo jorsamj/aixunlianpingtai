@@ -52,6 +52,16 @@ test('classic training renderer is a canonical visibility delegate only', () => 
   assert.doesNotMatch(owner, /renderTraining423|trainPollHint|trainJobRowsHtml|创建训练任务|任务列表/);
 });
 
+test('classic single-task mutation owners are physically retired from app.js', () => {
+  for (const token of [
+    'window.promoteTrain428=async function',
+    'window.pauseTrain428=async function',
+    'window.resumeTrain428=async function',
+    'window.stopTrain428=async function',
+    'window.deleteTrain428=async function',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
