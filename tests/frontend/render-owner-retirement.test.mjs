@@ -62,6 +62,22 @@ test('classic single-task mutation owners are physically retired from app.js', (
   ]) assert.equal(app.includes(token), false, token);
 });
 
+test('v423 v424 and v425 legacy task-list generations stay physically retired', () => {
+  for (const token of [
+    'trainTaskRows423',
+    'renderTrainingLegacy423_1',
+    'window.filterTrain423=',
+    'window.refreshTrain423=async function',
+    'window.stopJob423=',
+    'window.deleteJob423=',
+    'state.train424Expanded',
+    'function trainStatus424(',
+    'function jobRows424(',
+    'window.toggleTrain424=',
+    'function rowsTrain425(',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
