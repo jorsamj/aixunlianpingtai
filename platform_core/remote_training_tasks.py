@@ -563,12 +563,10 @@ class TrainingPrepareHandler:
         images,
         split_manifest,
     ):
-        """Resolve the canonical resource contract before TRAINING can claim a GPU."""
+        """Prepare AUTO admission evidence or resolve non-deferred local resources."""
         from ultralytics import YOLO
-        import torch
         from .gpu_resources import sample_gpus
         from .training_devices import normalize_training_device
-        from .training_metrics import resolve_resources
 
         project = self.data_dir / "projects" / target.project_id
         algorithms = list_algorithms(project / "algorithms.json")
@@ -631,6 +629,9 @@ class TrainingPrepareHandler:
                     target.task_id, "training-metrics.sqlite3",
                 )),
             }
+
+        import torch
+        from .training_metrics import resolve_resources
 
         resolution_device = requested_device
         selected_gpu = None

@@ -566,9 +566,24 @@ class GPUResourceManager:
             # Deferred AUTO prefers absolute headroom among idle cards so a
             # 48G card is not tied with a similarly-empty 24G card by ratio.
             headroom = max(0, free - reserved - self.config.safety_bytes)
-            capacity_score = headroom if deferred_auto else headroom / total
-            score = (count == 0, -count, capacity_score,
-                     -gpu["utilization"], -int(gpu["physical_index"] or 0))
+            if deferred_auto:
+                low_pressure = gpu["utilization"] <= self.config.shared_utilization_limit
+                score = (
+                    count == 0,
+                    -count,
+                    low_pressure,
+                    headroom,
+                    -gpu["utilization"],
+                    -int(gpu["physical_index"] or 0),
+                )
+            else:
+                score = (
+                    count == 0,
+                    -count,
+                    headroom / total,
+                    -gpu["utilization"],
+                    -int(gpu["physical_index"] or 0),
+                )
             candidates.append((score, gpu, requested, eligible))
         if not candidates:
             return False, reasons[0] if reasons else f"GPU_NOT_AVAILABLE: waiting for {device}"

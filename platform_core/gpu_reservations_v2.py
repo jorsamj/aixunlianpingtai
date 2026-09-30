@@ -508,14 +508,24 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
                     )
                     continue
             headroom = max(0, free - reserved - self.config.safety_bytes)
-            capacity_score = headroom if deferred_auto else headroom / total
-            score = (
-                count == 0,
-                -count,
-                capacity_score,
-                -gpu["utilization"],
-                -int(physical_index),
-            )
+            if deferred_auto:
+                low_pressure = gpu["utilization"] <= self.config.shared_utilization_limit
+                score = (
+                    count == 0,
+                    -count,
+                    low_pressure,
+                    headroom,
+                    -gpu["utilization"],
+                    -int(physical_index),
+                )
+            else:
+                score = (
+                    count == 0,
+                    -count,
+                    headroom / total,
+                    -gpu["utilization"],
+                    -int(physical_index),
+                )
             candidates.append((score, gpu, physical_index, logical_index, requested, eligible))
 
         if not candidates:
