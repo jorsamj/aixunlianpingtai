@@ -17,16 +17,24 @@ _FINGERPRINT_FILES = (
 )
 
 
-_FORMAL_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")
 _MINIMUM_FORMAL_VERSION = (42, 24, 1)
 
 
 def parse_formal_version(value: object) -> tuple[int, int, int]:
     text = str(value or "").strip()
-    match = _FORMAL_VERSION_PATTERN.fullmatch(text)
-    if match is None:
+    parts = text.split(".")
+    if (
+        len(parts) != 3
+        or any(
+            not part
+            or not part.isascii()
+            or not part.isdigit()
+            or (len(part) > 1 and part.startswith("0"))
+            for part in parts
+        )
+    ):
         raise ValueError("formal platform version must be MAJOR.MINOR.PATCH")
-    return tuple(int(part) for part in match.groups())
+    return tuple(int(part) for part in parts)
 
 
 def validate_formal_version(

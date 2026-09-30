@@ -94,6 +94,7 @@ class FakeControlClient:
         cancel_when=None,
         fence_when=None,
     ):
+        self.node_id = "node-1"
         self.transfer = transfer
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
