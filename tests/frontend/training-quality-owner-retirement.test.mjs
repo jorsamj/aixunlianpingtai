@@ -25,3 +25,11 @@ test('training picker and quality use latest explicit training-draft paths',()=>
   assert.match(app,/window\.trainQuality429=async function\(\)/);
   assert.match(app,/训练素材 · 数据质量/);
 });
+
+
+test('training report renders canonical random-stage wording without delayed DOM rewrite', () => {
+  assert.match(app, /每次随机试验样本/);
+  assert.equal(app.includes('固定试验样本'), false);
+  assert.equal(app.includes('trainingReportCanonical428'), false);
+  assert.match(app, /window\.trainingReport425=window\.trainingReport424=window\.trainingReportCore425/);
+});
