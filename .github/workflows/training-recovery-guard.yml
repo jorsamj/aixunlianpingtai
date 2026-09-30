@@ -90,6 +90,10 @@ jobs:
           grep -Fq 'Training task detail: single visual owner' static/styles.css
           if grep -Fq 'function ensureStyles' static/modules/training-recovery-runtime.js; then echo 'Training detail CSS must stay in the global stylesheet, not a runtime style owner' >&2; exit 1; fi
           grep -Fq "window.showTrainLog423 = taskId => openDetail(taskId, {focus: 'log'});" static/modules/training-recovery-runtime.js
+          if grep -Eq 'showTrainLogLegacy423_[1-4]|refreshTrainLog423|refreshTrainLog426|refreshTrainLog428|metricFromLog426' static/app.js; then
+            echo 'legacy training log modal owners must stay physically retired' >&2
+            exit 1
+          fi
           grep -Fq 'window.PollRegistryRuntime?.startTimeout?.(' static/modules/training-recovery-runtime.js
           grep -Fq 'window.TrainingRecoveryRuntime?.acceptLiveTask?.(next);' static/modules/training-progress-stream.js
           grep -Fq 'allow_version_archive=False' app.py

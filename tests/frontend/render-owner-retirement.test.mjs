@@ -98,6 +98,21 @@ test('pre-canonical v423 training create modal stays physically retired', () => 
   assert.match(app, /window\.startAlgorithmTraining423=window\.openTrainingCreateCanonical429/);
 });
 
+test('legacy training log modal generations stay physically retired', () => {
+  for (const token of [
+    'showTrainLogLegacy423_1',
+    'showTrainLogLegacy423_2',
+    'showTrainLogLegacy423_3',
+    'showTrainLogLegacy423_4',
+    'refreshTrainLog423',
+    'refreshTrainLog426',
+    'refreshTrainLog428',
+    'metricFromLog426',
+    'DONE428',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.match(app, /const ACTIVE428=new Set\(/);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
