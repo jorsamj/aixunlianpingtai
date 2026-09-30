@@ -1490,6 +1490,42 @@ def _resolve_resource_contract_subprocess(
     return dict(resolved)
 
 
+def _freeze_deferred_resource_contract(
+    context,
+    *,
+    python_executable: str,
+    payload: Mapping[str, Any],
+    resource_context: Mapping[str, Any],
+    model_argument: str,
+    bundle: Path,
+    assigned_device: str,
+) -> dict[str, Any]:
+    """Resolve once against the owned assignment, then fenced-publish truth."""
+    context.heartbeat(
+        progress=19,
+        stage="resolving_resources",
+        current_item="按已分配 GPU 冻结 Batch / Workers / Precision / Cache",
+    )
+    request = {
+        **payload,
+        "data": str(Path(bundle) / "manifest.json"),
+        "device": assigned_device,
+        "assigned_device": assigned_device,
+    }
+    resolved = _resolve_resource_contract_subprocess(
+        python_executable,
+        request,
+        resource_context,
+        model_argument,
+    )
+    context.artifacts.atomic_write_json(
+        context.task.task_id,
+        "resolved-resources.json",
+        resolved,
+    )
+    return resolved
+
+
 def _bool(value: Any) -> str:
     return "true" if bool(value) else "false"
 
@@ -2680,27 +2716,14 @@ class TrainingHandler:
             context.task.task_id, "resolved-resources.json",
         )
         if deferred_resource_resolution:
-            context.heartbeat(
-                progress=19,
-                stage="resolving_resources",
-                current_item="按已分配 GPU 冻结 Batch / Workers / Precision / Cache",
-            )
-            request = {
-                **payload,
-                "data": str(bundle / "manifest.json"),
-                "device": assigned_device,
-                "assigned_device": assigned_device,
-            }
-            prepared_resources = _resolve_resource_contract_subprocess(
-                python_executable,
-                request,
-                resource_context,
-                model,
-            )
-            context.artifacts.atomic_write_json(
-                context.task.task_id,
-                "resolved-resources.json",
-                prepared_resources,
+            prepared_resources = _freeze_deferred_resource_contract(
+                context,
+                python_executable=python_executable,
+                payload=payload,
+                resource_context=resource_context,
+                model_argument=model,
+                bundle=bundle,
+                assigned_device=assigned_device,
             )
             payload = {
                 **payload,
