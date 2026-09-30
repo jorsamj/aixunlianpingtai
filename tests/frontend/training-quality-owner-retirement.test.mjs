@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
 const app=await readFile(new URL('../../static/app.js',import.meta.url),'utf8');
+const trainingVisibility=await readFile(new URL('../../static/modules/training-task-visibility-runtime.js',import.meta.url),'utf8');
 
 test('training, quality and legacy auto-label public owners are unique',()=>{
-  for(const name of ['openAutoLabelModal','startPrelabelTask','renderQualityCenter424','openTrain424','renderTraining423','trainingReport424','renderTrainPicker429','trainQuality429']){
+  for(const name of ['openAutoLabelModal','startPrelabelTask','renderQualityCenter424','openTrain424','trainingReport424','renderTrainPicker429','trainQuality429']){
     assert.equal((app.match(new RegExp('window\\.'+name+'\\s*=','g'))||[]).length,1,name);
   }
+  assert.equal((app.match(/window\.renderTraining423\s*=/g)||[]).length,0,'app.js must not own training list aliases');
+  assert.equal((trainingVisibility.match(/window\.renderTraining423\s*=\s*renderTraining/g)||[]).length,1,'visibility runtime must solely own renderTraining423');
 });
 
 test('quality center keeps cached non-blocking owner',()=>{

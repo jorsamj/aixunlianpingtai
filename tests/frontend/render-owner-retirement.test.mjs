@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const trainingVisibility = fs.readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
 
 test('historical render assignment chain is physically retired', () => {
   assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
@@ -113,9 +114,14 @@ test('legacy training log modal generations stay physically retired', () => {
   assert.match(app, /const ACTIVE428=new Set\(/);
 });
 
-test('training navigation is a canonical owner', () => {
+test('training navigation is canonical and visibility runtime solely owns compatibility aliases', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
-  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
+  assert.equal(app.includes('window.renderTraining423'), false);
+  assert.equal(app.includes('window.renderTraining424'), false);
+  assert.equal(app.includes('window.renderTraining425'), false);
+  for (const name of ['renderTraining423', 'renderTraining424', 'renderTraining425']) {
+    assert.equal((trainingVisibility.match(new RegExp('window\\.' + name + '\\s*=\\s*renderTraining', 'g')) || []).length, 1, name);
+  }
 });
 
 test('auto-label cleanup navigation is a canonical owner', () => {

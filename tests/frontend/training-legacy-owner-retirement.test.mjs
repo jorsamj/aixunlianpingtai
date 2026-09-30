@@ -18,10 +18,11 @@ test('legacy training settings compose explicit cores instead of previous-owner 
   assert.match(app, /window\.saveTrainSettings425=function saveTrainSettingsCanonical427\(\)/);
 });
 
-test('training report has an explicit core and one canonical compatibility owner', () => {
+test('training report has one explicit core and direct compatibility aliases only', () => {
   assert.equal(app.includes('const report425Base428=window.trainingReport425;'), false);
+  assert.equal(app.includes('trainingReportCanonical428'), false);
   assert.match(app, /window\.trainingReportCore425=async function\(id\)/);
-  assert.match(app, /window\.trainingReport425=window\.trainingReport424=async function trainingReportCanonical428\(id\)/);
+  assert.match(app, /window\.trainingReport425=window\.trainingReport424=window\.trainingReportCore425/);
 });
 
 test('training material picker has one public owner plus one decorator', () => {

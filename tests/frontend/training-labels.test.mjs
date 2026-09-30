@@ -110,13 +110,18 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const algorithmList = readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const visibility = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
   assert.match(algorithmList, /data-algorithm-train="\$\{esc\(algorithm\.id\)\}"/);
   assert.match(algorithmList, /onclick="startAlgorithmTraining429\('\$\{esc\(algorithm\.id\)\}'\)"/);
   assert.equal(algorithmList.includes('startAlgorithmTraining423'), false);
 
-  const finalTaskRenderer = app.lastIndexOf('window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){');
+  assert.equal(app.includes('window.renderTraining423'), false);
+  for (const name of ['renderTraining423', 'renderTraining424', 'renderTraining425']) {
+    assert.equal((visibility.match(new RegExp('window\\.' + name + '\\s*=\\s*renderTraining', 'g')) || []).length, 1, name);
+  }
+  const finalTaskRenderer = visibility.indexOf('const renderTraining = () => {');
   assert.ok(finalTaskRenderer >= 0);
-  const taskSource = app.slice(finalTaskRenderer, finalTaskRenderer + 5000);
+  const taskSource = visibility.slice(finalTaskRenderer, finalTaskRenderer + 2500);
   assert.equal(taskSource.includes('openTrain425()'), false);
   assert.equal(taskSource.includes('▶ 开始训练'), false);
 });
