@@ -5,6 +5,7 @@ import fs from 'node:fs';
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 const trainingVisibility = fs.readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+const pollRegistrySource = fs.readFileSync(new URL('../../static/modules/poll-registry.js', import.meta.url), 'utf8');
 
 test('historical render assignment chain is physically retired', () => {
   assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
@@ -44,13 +45,15 @@ test('shadowed classic renderTraining declarations are physically retired', () =
   assert.equal((app.match(/\\bfunction renderTraining\\(\\)/g) || []).length, 0);
 });
 
-test('classic training renderer is a canonical visibility delegate only', () => {
-  const start = app.indexOf('renderTraining=function renderTrainingCompatibility()');
-  const end = app.indexOf('\n  };', start);
-  assert.ok(start >= 0 && end > start);
-  const owner = app.slice(start, end);
-  assert.match(owner, /TrainingTaskVisibilityRuntime\?\.render\?\.\(\)/);
-  assert.doesNotMatch(owner, /renderTraining423|trainPollHint|trainJobRowsHtml|创建训练任务|任务列表/);
+test('pre-canonical training page and refresh compatibility owners stay physically retired', () => {
+  for (const token of [
+    'renderTrainingCompatibility',
+    'trainJobRowsHtml',
+    'window.updateTrainingJobTable=',
+    'window.refreshJobsOnly=',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.equal(pollRegistrySource.includes('refreshJobsOnly'), false);
+  assert.match(main, /navigationStabilityRuntime\.registerPageOwner\('训练任务', \(\) => trainingTaskVisibilityRuntime\.render\(\)\)/);
 });
 
 test('classic single-task mutation owners are physically retired from app.js', () => {

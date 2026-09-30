@@ -147,8 +147,6 @@ export function installPollRegistry({getState} = {}) {
         try {
           if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
             await window.TrainingTaskRuntime.refresh({render: true, source: 'poll'});
-          } else if (typeof window.refreshJobsOnly === 'function') {
-            await window.refreshJobsOnly();
           }
         } catch (_) {
           // Keep the last truthful state. A still-dynamic task may retry next cycle.
@@ -279,11 +277,8 @@ export function installPollRegistry({getState} = {}) {
     if (page === trainingOwner) {
       registry.clear('training-jobs');
       try {
-        if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
-          await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'visibility'});
-        } else if (typeof window.refreshJobsOnly === 'function') {
-          await window.refreshJobsOnly();
-        }
+        if (typeof window.TrainingTaskRuntime?.refresh !== 'function') return false;
+        await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'visibility'});
       } finally {
         replaceTrainingJobTimer();
         syncTrainingClockTimer();

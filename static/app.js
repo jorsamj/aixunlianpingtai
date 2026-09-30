@@ -965,39 +965,6 @@ window.installUsability417=function(){
   window.__m4TestModelConfig=window.testModelConfigM4;
 })();
 
-// ===== v26 overrides: 飞桨COCO评估开关 + 训练页无侵入轮询 =====
-(function(){
-  function trainJobRowsHtml(){
-    return (state.jobs||[]).map(j=>`<tr><td><div class="item-title">${esc(j.algorithm_name||j.id)}</div><div class="item-sub">${esc(j.framework||'')} · ${esc(j.run_name||'')}</div></td><td><span class="pill ${statusPillClass(j.status)}">${esc(j.status_text||statusName(j.status))}</span><div class="item-sub">${esc(j.message||'')}</div></td><td>${renderJobProgress(j)}</td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td><div class="row"><button class="btn small" onclick="showLog('${j.id}')">日志</button><button class="btn small danger" onclick="stopJob('${j.id}')">停止</button><button class="btn small danger" onclick="deleteJob('${j.id}')">删除</button></div></td></tr>`).join('')||'<tr><td colspan="5">暂无训练任务</td></tr>';
-  }
-  window.updateTrainingJobTable=function(){
-    const body=$('#trainJobRows');
-    if(body) body.innerHTML=trainJobRowsHtml();
-    const hint=$('#trainPollHint');
-    if(hint) hint.textContent='任务状态自动刷新中，不刷新左侧表单';
-    const live=$('#trainLiveBadge');
-    if(live){
-      const n=(state.jobs||[]).filter(j=>['queued','running','waiting','pending'].includes(j.status)).length;
-      live.textContent=n?`运行中 ${n}`:'无运行任务';
-      live.className='pill '+(n?'warn':'ok');
-    }
-  };
-  window.refreshJobsOnly=async function(){
-    const rows=await safe(api(`/api/projects/${pid()}/jobs`));
-    if(Array.isArray(rows)) state.jobs=rows;
-    updateTrainingJobTable();
-    if(state.activeLogJob) await pollActiveLog();
-  };
-
-  renderTraining=function renderTrainingCompatibility(){
-    return window.TrainingTaskVisibilityRuntime?.render?.();
-  };
-
-  
-
-  
-})();
-
 // ===== v28 overrides: 检测台/测试发布空DOM防崩溃 + 友好错误提示 =====
 (function(){
   function q(id){ return document.getElementById(id); }

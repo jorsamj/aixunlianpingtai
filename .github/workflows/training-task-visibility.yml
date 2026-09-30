@@ -112,6 +112,10 @@ jobs:
             echo 'legacy training task-list generations must stay physically retired' >&2
             exit 1
           fi
+          if grep -Eq 'renderTrainingCompatibility|trainJobRowsHtml|updateTrainingJobTable|refreshJobsOnly' static/app.js || grep -Fq 'refreshJobsOnly' static/modules/poll-registry.js; then
+            echo 'pre-canonical training render/refresh fallback must stay physically retired' >&2
+            exit 1
+          fi
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-visibility-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js

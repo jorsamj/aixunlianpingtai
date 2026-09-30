@@ -135,6 +135,42 @@ test('training polling is a PollRegistry-managed one-shot that follows latest ba
   }
 });
 
+test('training polling never falls back to legacy refreshJobsOnly without canonical runtime', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timeouts = new Map();
+  let nextTimer = 350;
+  let legacyCalls = 0;
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [{id: 'j1', status: 'running'}],
+  };
+  globalThis.window = {
+    refreshJobsOnly: async () => { legacyCalls += 1; },
+  };
+
+  let runtime;
+  try {
+    runtime = installPollRegistry({getState: () => state});
+    const firstTimer = Math.max(...timeouts.keys());
+    await timeouts.get(firstTimer).callback();
+    assert.equal(legacyCalls, 0);
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), true);
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
+});
+
 test('paused-only and every supported terminal training state leave no pending timer', () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
