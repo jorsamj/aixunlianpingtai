@@ -213,3 +213,105 @@ def test_v19_explicit_canonical_label_creation_then_mapping_is_supported(client)
     assert by_code["helmet_new"]["display_name"] == "安全头盔"
     assert by_code["helmet_new"]["aliases"] == ["toukui1", "toukui2"]
 
+
+
+
+def _scoped_yolo_zip():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data.yaml", "names:\n  0: external_smoke\n  1: external_fire\n")
+        archive.writestr("images/train/positive.jpg", _jpg_bytes())
+        archive.writestr("images/train/empty.jpg", _jpg_bytes())
+        archive.writestr("labels/train/positive.txt", "0 0.5 0.5 0.4 0.4\n")
+        archive.writestr("labels/train/empty.txt", "")
+    return payload.getvalue()
+
+
+def _plain_image_zip():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("images/train/plain.jpg", _jpg_bytes())
+    return payload.getvalue()
+
+
+def test_v19_structured_import_uses_only_confirmed_mapping_scope(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-bounded-annotation-scope",
+        "labels": [
+            {"code": "smoke", "display_name": "烟雾"},
+            {"code": "fire", "display_name": "明火"},
+            {"code": "helmet", "display_name": "安全头盔"},
+        ],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("bounded-scope.zip", _scoped_yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["label_confirmation_required"] is True
+
+    started = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={"label_mapping": {"0": "smoke", "1": "fire"}},
+    )
+    assert started.status_code == 200, started.text
+    final = _wait_job(client, project["id"], job["id"])
+    assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+
+    review = client.get(
+        f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review"
+    ).json()
+    assert len(review["image_ids"]) == 2
+    annotations = [
+        client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()
+        for image_id in review["image_ids"]
+    ]
+    assert {row["annotation_state"] for row in annotations} == {
+        "annotated", "confirmed_empty"
+    }
+    for annotation in annotations:
+        assert annotation["annotation_scope"] == ["fire", "smoke"]
+        assert "helmet" not in annotation["annotation_scope"]
+
+    positive = next(row for row in annotations if row["annotation_state"] == "annotated")
+    assert {box["label"] for box in positive["boxes"]} == {"smoke"}
+    empty = next(row for row in annotations if row["annotation_state"] == "confirmed_empty")
+    assert empty["boxes"] == []
+
+
+def test_v19_plain_image_zip_stays_unannotated_and_does_not_create_label(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-plain-images",
+        "labels": [],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("plain-images.zip", _plain_image_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["label_confirmation_required"] is False
+    assert job["external_classes"] == []
+
+    started = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={},
+    )
+    assert started.status_code == 200, started.text
+    final = _wait_job(client, project["id"], job["id"])
+    assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+
+    review = client.get(
+        f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review"
+    ).json()
+    assert len(review["image_ids"]) == 1
+    annotation = client.get(
+        f"/api/projects/{project['id']}/annotations/{review['image_ids'][0]}"
+    ).json()
+    assert annotation["annotation_state"] == "unannotated"
+    assert annotation["annotation_scope"] == []
+    assert annotation["boxes"] == []
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    assert labels == []

@@ -3055,6 +3055,7 @@ def add_image_record(
     storage_source_id: str = "default_local", annotation_builder=None,
     content_sha256: Optional[str] = None,
     defer_unannotated_annotation: bool = False,
+    annotation_scope=None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     path_source = isinstance(src, (str, Path))
@@ -3157,6 +3158,7 @@ def add_image_record(
                 write_annotation(
                     project_id, img_id, prepared_annotation_boxes,
                     annotation_origin="imported" if structured_import else None,
+                    annotation_scope=annotation_scope,
                 )
             elif batch and defer_unannotated_annotation:
                 batch["deferred_annotations"][str(img_id)] = {
@@ -11529,6 +11531,18 @@ def _v18_resolve_import_label_id(
     return labels.index(target)
 
 
+def _v18_confirmed_import_scope(
+    label_mapping: Optional[Dict[str, str]],
+) -> Optional[List[str]]:
+    if label_mapping is None:
+        return None
+    return sorted({
+        str(target).strip()
+        for target in label_mapping.values()
+        if str(target).strip()
+    })
+
+
 def _v19_import_box_provenance(
     import_context: Optional[Dict[str, Any]],
     *,
@@ -11574,6 +11588,7 @@ def _v18_import_coco(
     if not json_files:
         return False
     project = get_project(project_id)
+    import_scope = _v18_confirmed_import_scope(label_mapping)
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     total_expected=sum(len(coco.get('images',[])) for _,coco in json_files) or 1
     progress_done=0
@@ -11642,6 +11657,7 @@ def _v18_import_coco(
             rec = add_image_record(
                 project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
                 annotation_builder=build_final_annotation,
+                annotation_scope=import_scope,
             )
             if not rec:
                 report['skipped_images'] += 1
@@ -11679,6 +11695,7 @@ def _v18_import_voc(
         return False
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     project = get_project(project_id)
+    import_scope = _v18_confirmed_import_scope(label_mapping)
     any_imported = False
     total_expected=max(1,len(xml_files)); progress_done=0
     for xp in xml_files:
@@ -11735,6 +11752,7 @@ def _v18_import_voc(
         rec = add_image_record(
             project_id, src, src.name, 'imported_voc', dataset_id,
             annotation_builder=build_final_annotation,
+            annotation_scope=import_scope,
         )
         if not rec:
             report['skipped_images'] += 1
@@ -11773,11 +11791,12 @@ def _v18_import_yolo(
         return False
     names = _v18_collect_class_names(root, label_files)
     project = get_project(project_id)
+    import_scope = _v18_confirmed_import_scope(label_mapping)
     if label_mapping is None:
         if names:
             for n in names:
                 ensure_label(project, n)
-        elif not project.get('labels'):
+        elif label_files and not project.get('labels'):
             ensure_label(project, 'object')
             names = ['object']
     imported_names = names or project.get('labels', [])
@@ -11796,8 +11815,10 @@ def _v18_import_yolo(
             label_file = next((x for x in same_split if any(part.lower()=='labels' for part in x.parts)), same_split[0] if same_split else cands[0])
         boxes=[]
 
+        has_label_truth = bool(label_file and label_file.exists())
+
         def build_final_annotation(record):
-            if label_file and label_file.exists():
+            if has_label_truth:
                 for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
                     box = yolo_line_to_box(line, record['width'], record['height'])
                     if not box:
@@ -11840,14 +11861,19 @@ def _v18_import_yolo(
                         canonical_project_class_id=new_cls,
                     ))
                     boxes.append(box)
-            else:
-                report['unmatched_labels'] += 1
             return boxes
 
-        rec = add_image_record(
-            project_id, img, img.name, 'imported_yolo', dataset_id,
-            annotation_builder=build_final_annotation,
-        )
+        if has_label_truth:
+            rec = add_image_record(
+                project_id, img, img.name, 'imported_yolo', dataset_id,
+                annotation_builder=build_final_annotation,
+                annotation_scope=import_scope,
+            )
+        else:
+            report['unmatched_labels'] += 1
+            rec = add_image_record(
+                project_id, img, img.name, 'imported_yolo', dataset_id,
+            )
         if not rec:
             report['skipped_images'] += 1
             continue

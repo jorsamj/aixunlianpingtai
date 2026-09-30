@@ -39,7 +39,8 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     import app as app_module
 
     project = client.post(
-        "/api/projects", json={"name": "p2c-coco", "labels": []}
+        "/api/projects",
+        json={"name": "p2c-coco", "labels": ["target", "unrelated"]},
     ).json()
     project_id = project["id"]
     app_module.ensure_default_datasets(project_id)
@@ -95,7 +96,16 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     committed = False
     try:
         assert app_module._v18_import_coco(
-            project_id, root, "default", report
+            project_id,
+            root,
+            "default",
+            report,
+            label_mapping={"7": "target"},
+            import_context={
+                "import_batch_id": "p2c-coco",
+                "source_task_id": "p2c-coco",
+                "confirmed_at": "2026-09-30T00:00:00+00:00",
+            },
         ) is True
         app_module._v50_end_image_batch(save=True)
         committed = True
@@ -117,6 +127,7 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
         record = rows[filename]
         annotation = repository.get(record["id"])
         assert annotation["version"] == 1
+        assert annotation["annotation_scope"] == ["target"]
         if index in annotated_indexes:
             assert annotation["annotation_state"] == "annotated"
             assert len(annotation["boxes"]) == 1
@@ -161,7 +172,8 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     import app as app_module
 
     project = client.post(
-        "/api/projects", json={"name": "p2c-voc", "labels": []}
+        "/api/projects",
+        json={"name": "p2c-voc", "labels": ["target", "unrelated"]},
     ).json()
     project_id = project["id"]
     app_module.ensure_default_datasets(project_id)
@@ -188,7 +200,16 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     committed = False
     try:
         assert app_module._v18_import_voc(
-            project_id, root, "default", report
+            project_id,
+            root,
+            "default",
+            report,
+            label_mapping={"target": "target"},
+            import_context={
+                "import_batch_id": "p2c-voc",
+                "source_task_id": "p2c-voc",
+                "confirmed_at": "2026-09-30T00:00:00+00:00",
+            },
         ) is True
         app_module._v50_end_image_batch(save=True)
         committed = True
@@ -210,6 +231,7 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
         record = rows[filename]
         annotation = repository.get(record["id"])
         assert annotation["version"] == 1
+        assert annotation["annotation_scope"] == ["target"]
         if index in annotated_indexes:
             assert annotation["annotation_state"] == "annotated"
             assert len(annotation["boxes"]) == 1
