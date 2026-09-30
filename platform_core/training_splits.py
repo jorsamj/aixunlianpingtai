@@ -360,15 +360,42 @@ def _select_grouped(
     sizes = [len(grouped[key]) for key in keys]
     target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
 
-    choices: dict[int, tuple[int, ...]] = {0: ()}
+    # Exact subset-sum with O(number_of_rows) Python-side state.
+    #
+    # The previous implementation stored the complete selected-index tuple for
+    # every reachable total. With thousands of singleton components that means
+    # sum(1..N) tuple entries and can consume quadratic memory before training
+    # even starts. A Python integer is an efficient reachability bitset; each
+    # total is discovered at most once, while predecessor arrays reconstruct the
+    # exact same first-reached subset semantics as the old DP.
+    max_total = len(rows) - 1
+    reachable = 1  # bit 0
+    mask = (1 << (max_total + 1)) - 1
+    parent_total = [-1] * (max_total + 1)
+    parent_group = [-1] * (max_total + 1)
+    selected_counts = [-1] * (max_total + 1)
+    selected_counts[0] = 0
+
     for index, size in enumerate(sizes):
-        for total, selected in list(choices.items())[::-1]:
-            candidate = total + size
-            if candidate < len(rows) and candidate not in choices:
-                choices[candidate] = (*selected, index)
+        shifted = (reachable << size) & mask
+        newly_reachable = shifted & ~reachable
+        pending = newly_reachable
+        while pending:
+            bit = pending & -pending
+            total = bit.bit_length() - 1
+            previous = total - size
+            parent_total[total] = previous
+            parent_group[total] = index
+            selected_counts[total] = selected_counts[previous] + 1
+            pending ^= bit
+        reachable |= shifted
+
+    max_selected_groups = len(grouped) - int(min_remaining_groups)
     allowed_totals = [
-        total for total, selected in choices.items()
-        if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
+        total
+        for total in range(1, max_total + 1)
+        if ((reachable >> total) & 1)
+        and 0 < selected_counts[total] <= max_selected_groups
     ]
     if not allowed_totals:
         raise ValueError("所选不可拆分数据组件不足以划分训练、验证和试验数据")
@@ -376,7 +403,17 @@ def _select_grouped(
         allowed_totals,
         key=lambda total: (abs(total - target), total > target, total),
     )
-    selected_keys = {keys[index] for index in choices[selected_total]}
+
+    selected_indexes: set[int] = set()
+    cursor = selected_total
+    while cursor:
+        index = parent_group[cursor]
+        previous = parent_total[cursor]
+        if index < 0 or previous < 0 or previous >= cursor:
+            raise RuntimeError("split subset predecessor chain is invalid")
+        selected_indexes.add(index)
+        cursor = previous
+    selected_keys = {keys[index] for index in selected_indexes}
     selected = [
         row for row in rows
         if component_keys[str(row.get("id") or "")] in selected_keys

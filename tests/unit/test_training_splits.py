@@ -58,6 +58,29 @@ def test_mode_b_draws_test_first_then_validation_without_leakage():
     assert build_split_manifest(rows, request, seed=42).ids == manifest.ids
 
 
+def test_large_random_split_keeps_exact_component_counts_at_20k_scale():
+    rows = [
+        image(str(index), "source", f"h{index}", f"g{index}")
+        for index in range(20_000)
+    ]
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(str(index) for index in range(20_000)),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+
+    manifest = build_split_manifest(rows, request, seed=42)
+
+    assert manifest.counts == {
+        "train": 12_800,
+        "validation": 3_200,
+        "test": 4_000,
+        "total": 20_000,
+    }
+    assert len(set().union(*(set(ids) for ids in manifest.ids.values()))) == 20_000
+
+
 def test_content_hash_crossing_splits_is_rejected():
     rows = [
         image("a", "train", "same", "group-a"),
