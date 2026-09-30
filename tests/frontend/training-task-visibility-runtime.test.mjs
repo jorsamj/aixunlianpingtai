@@ -96,6 +96,24 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
   return {state, dom, runtime, calls, listeners, pollRearms: () => pollRearms};
 }
 
+
+test('main owns visibility installation before canonical training page registration', () => {
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422578';");
+  const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
+  const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
+
+  assert.ok(importAt >= 0);
+  assert.ok(installAt > importAt);
+  assert.ok(ownerAt > installAt);
+  assert.equal(main.includes('return window.renderTraining423?.();'), false);
+  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js'), false);
+  assert.equal(source.includes("if (typeof window !== 'undefined') {\n  installTrainingTaskVisibilityRuntime({"), false);
+});
+
 test('visibility leaves broad loadRelated ownership untouched', async () => {
   const fixture = installFixture({page: '数据集'});
   let legacyCalls = 0;

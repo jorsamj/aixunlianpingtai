@@ -733,11 +733,3 @@ export function installTrainingTaskVisibilityRuntime({
   return visibilityRuntime;
 }
 
-if (typeof window !== 'undefined') {
-  installTrainingTaskVisibilityRuntime({
-    getState: () => state,
-    trainingTaskRuntime: window.PlatformCore?.runtime?.trainingTaskRuntime || window.TrainingTaskRuntime,
-    pollRegistry: window.PollRegistryRuntime,
-    notify: message => window.toast?.(message),
-  });
-}

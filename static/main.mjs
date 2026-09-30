@@ -17,6 +17,7 @@ import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtim
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422548';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422502';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422564';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422578';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422519';
@@ -249,6 +250,15 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
 });
 window.PlatformCore.runtime.trainingCreateHydrationRuntime = trainingCreateHydrationRuntime;
 
+const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({
+  getState: () => state,
+  trainingTaskRuntime,
+  pollRegistry,
+  notify,
+});
+if (!trainingTaskVisibilityRuntime) throw new Error('训练任务视图运行时初始化失败');
+window.PlatformCore.runtime.trainingTaskVisibilityRuntime = trainingTaskVisibilityRuntime;
+
 const autoLabelPollRuntime = installAutoLabelPollRuntime({
   getState: () => state,
   pollRegistry,
@@ -302,6 +312,8 @@ function renderNavigationChrome() {
     });
     const project = nav.querySelector('.nav-project-v');
     if (project) project.textContent = state.project?.name || '默认空间';
+    const version = nav.querySelector('.nav-footer b');
+    if (version) version.textContent = `v${String(state.versionInfo?.version || '—')}`;
   }
   window.renderTop?.();
   window.renderSummary?.();
@@ -457,10 +469,7 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
 const canonicalPageOwnerDisposers = [
   ...canonicalWindowPageOwners,
   navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),
-  navigationStabilityRuntime.registerPageOwner('训练任务', () => {
-    if (window.TrainingTaskVisibilityRuntime?.render) return window.TrainingTaskVisibilityRuntime.render();
-    return window.renderTraining423?.();
-  }),
+  navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render()),
   navigationStabilityRuntime.registerPageOwner('数据集', () => window.renderDatasets424?.()),
   navigationStabilityRuntime.registerPageOwner('自动标注及清洗', () => {
     if (typeof window.renderOps427 === 'function') return window.renderOps427();
