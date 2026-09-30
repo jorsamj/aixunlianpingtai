@@ -1,144 +1,182 @@
 # Codex / 人工接管交接记录
 
 
-## 2026-09-30 训练资源真相 / Live Runtime / 版本治理收口（最新）
+## 2026-09-30 训练资源真相 / Local AUTO / 前端 Owner / 版本治理最终收口（最新）
 
 本节生产代码 cutoff：
 
-`1fd10ed2a39ea036774c6a5867cbdbc7ac134641`
+`f9ed2e0857ab52938ba057e1a185d96a4fb30edd`
 
-本节文档提交后正式版本从 `42.24.7` 继续按最小 patch 递增；不要再恢复“VERSION.txt 永远固定 42.24.0”的旧约束。
+该 cutoff 的正式版本为 `42.24.37`，GitHub Actions 已确认 **21 / 21 workflows 全部 success**，failure / queued / in_progress 均为 0。
+
+本交接文档提交后，`VERSION.txt` 继续按用户要求以最小 patch 递增到 `42.24.38`。后续每个正式提交继续递增 patch；不要再恢复“VERSION.txt 永远固定 42.24.0”的旧约束。
 
 ### 1. T0 CLOSED：训练资源只有一个 planner，Trainer 不得二次规划
 
-当前正式 owner：
+正式 owner：
 
 - TRAINING parent：用户可见训练生命周期真相；
-- TRAINING_PREPARE：输入 / 标签 / snapshot / resource preparation；
+- TRAINING_PREPARE：输入 / 标签 / snapshot / resource admission；
 - Scheduler：节点 / GPU assignment；
 - canonical planner：`platform_core.training_metrics.resolve_resources`；
-- remote Agent：在真实节点 / 真实 GPU assignment 后调用 canonical planner；
+- remote Agent：在真实节点 / 真实 GPU assignment 后调用同一个 canonical planner；
+- local TrainingHandler：仅在需要 deferred AUTO 时，于 concrete assignment + reservation 后调用同一个 canonical planner；
 - `train_worker.py`：只消费 frozen resolved contract，禁止再次决定 Batch / Workers / Cache / Precision。
 
-远程链已经收口为：
+远程链：
 
 `Scheduler assignment -> Agent 真实 GPU identity -> canonical resolve_resources -> resolved-resources.json -> fenced heartbeat 投影控制端 -> Trainer spawn`
 
-MANUAL 是硬约束；AUTO 请求值只是 preference，可安全向下决议。训练启动后不再存在隐藏 OOM Batch retry / 二次 planner；若 frozen contract 在 Trainer runtime 不成立，必须 fail-closed。
+本地 AUTO 链：
 
-GPU identity 由 assigned device + GPU UUID + execution generation 约束；precision 也在 pre-spawn freeze，AUTO 在 CUDA 通常解析为 fp16（受 AMP /实际环境合同约束），CPU 为 fp32。
+`TRAINING_PREPARE resource admission -> Scheduler concrete GPU assignment/reservation -> TrainingHandler assignment fence -> canonical resolve_resources -> fenced resolved-resources.json -> Trainer spawn`
+
+MANUAL 始终是硬约束；AUTO 请求值只是 preference，可安全向下决议。训练启动后不存在隐藏 OOM Batch retry / 第二 planner / Trainer runtime auto-replan。
 
 ### 2. T1 CLOSED：运行中实际 Runtime 资源实时回到控制端
 
-此前真实缺口是：Agent 本地 `job.json` 已有 `runtime_resources`，但运行中的 heartbeat 只传 progress / stage，因此控制端详情页无法实时得到实际 Batch / Workers / Cache / Precision / Device。
+Agent 在 Trainer 已启动并得到真实 runtime resource 后，通过现有 fenced execution heartbeat 投影：
 
-现在继续复用现有 fenced execution heartbeat，没有新增 endpoint / repository / polling owner：
+- Batch；
+- Workers；
+- Cache；
+- Precision；
+- Device；
+- node_id；
+- execution_generation。
 
-- Agent 首次观察到或 runtime resources 发生变化时才投影，不每个 heartbeat 重复写同一 payload；
-- 控制端校验 node_id / execution_generation；
-- runtime Batch / Workers / Cache / Precision / Device 必须与 frozen resolved contract 完全一致；
-- 不一致返回 `REMOTE_RUNTIME_RESOURCES_MISMATCH`，不得静默继续；
-- 控制端持久化 `runtime-resources.json`；
-- 训练详情 API 用 task-owned artifact 覆盖陈旧 worker snapshot；
-- 前端已经按三层真相显示：用户请求 -> resolved plan -> actual runtime。
+控制端要求 runtime truth 与 frozen resolved contract 完全一致；不一致返回 `REMOTE_RUNTIME_RESOURCES_MISMATCH`，不得静默继续。
 
-因此当前正式资源语义是：
+控制端持久化：
 
-`requested_resources != resolved_resources == runtime_resources`
+- `resolved-resources.json`；
+- `runtime-resources.json`。
 
-AUTO 可以出现 requested Batch 128 -> resolved Batch 32 -> runtime Batch 32；绝不能出现 resolved 32、Trainer 自己偷偷跑 16。
+训练详情 API 以 task-owned artifact 覆盖陈旧 worker snapshot；前端明确区分：
 
-### 3. 版本治理已从固定死值改为可持续 patch 版本
+`requested_resources -> resolved_resources -> runtime_resources`
 
-用户要求从本轮开始版本号持续递增，已经执行：
+AUTO 允许 requested Batch 128 -> resolved Batch 32 -> runtime Batch 32；绝不能出现 resolved 32、Trainer 私自变成 16。
 
-- `42.24.0 -> 42.24.1 -> ... -> 42.24.7`；
-- workflow / 测试里原先 30+ 处 `VERSION.txt == 42.24.0` 固定守卫已移除；
-- 正式版本 validator 归入现有 `platform_core.build_identity`，只接受 `MAJOR.MINOR.PATCH` 三段数字，并禁止回退到旧 floor；
-- 不再把下一个 patch 版本重新写死进每个 workflow，因此 `42.24.8 / 42.24.9 / 42.25.0` 可自然前进。
+### 3. T2 CLOSED：Local AUTO 已改为具体 GPU assignment 后单次 freeze
 
-注意：
+旧债“本地 AUTO 在 scheduler 选定具体 GPU 前按保守 GPU 规划”已经关闭。
 
-- `VERSION.txt` / backend `APP_VERSION` = 正式平台版本；
-- `static/main.mjs::UI_BUILD_VERSION = 42.25.0-dev` = 前端 build metadata，不是正式版本，不要混用；
-- cache-bust query（例如 `?v=422xxx` 或历史 `?v=42.xx`）也不是正式版本号。
+当前行为：
 
-### 4. 可见版本已经改为 backend single source of truth
+- Local TRAINING_PREPARE 对 scheduler-owned AUTO 不再提前生成最终 `resolved-resources.json`；
+- prepare 只冻结 admission 证据与候选 GPU 范围；
+- TrainingHandler 拿到具体 assignment 后，先验证：
+  - assignment task / worker / lease；
+  - GPU reservation task / lease；
+  - assigned GPU UUID；
+  - 当前真实 CUDA device UUID；
+- 验证通过后才调用同一个 `training_metrics.resolve_resources`；
+- resolved artifact 通过 fenced artifact store 发布，stale execution 不能覆盖新 generation；
+- Scheduler 在 handler 执行期间有独立 lease-renewal heartbeat；GPU reservation 由 task heartbeat trigger 同步续期，因此 resolver 较慢时不会因为默认 lease 到期丢 reservation；
+- GPU AUTO assignment 已按 idle / low-pressure / capacity 选择，不再简单被最小显存 GPU 永久限制吞吐。
 
-旧实现会把顶部和侧边栏永久显示成 `42.24.0`，即使 `VERSION.txt` 已经升级。
+这项优化没有新增第二 planner、第二 GPU reservation owner 或 Trainer runtime replan。
 
-现在：
+### 4. T2 CLOSED：训练前端只剩 canonical owner
 
-- `/api/v53/bootstrap/snapshot` 带 `platform_version=APP_VERSION` 和 `build_id=BUILD_ID`；
-- 前端 `state.versionInfo` 从 snapshot 读取；
-- 顶部 version badge 与 sidebar footer 都读取 `state.versionInfo.version`；
-- `static/index.html` 只用 `v—` 作为加载前占位；
-- 测试环境允许 `MC_PLATFORM_VERSION` 显式覆盖，所以测试合同只要求 bootstrap 与 runtime `APP_VERSION` 一致，不强制测试环境等于 VERSION.txt。
+当前唯一训练页面与运行时 owner：
 
-### 5. T2 明确保留的两项技术债，不是当前正确性阻断
+- 页面导航：`main.mjs NavigationStability`；
+- 页面 renderer：`TrainingTaskVisibilityRuntime.render()`；
+- HTTP refresh / task mutation：`TrainingTaskRuntime`；
+- polling / elapsed clock：`PollRegistry`；
+- 训练详情 / 日志 / recovery：`TrainingRecoveryRuntime`；
+- 创建弹窗：`openTrainingCreateCanonical429 -> openTrainingCreateDialog429 -> TrainingDraftRuntime`。
 
-**A. 本地 AUTO 在 scheduler 选定具体 GPU 前做保守资源决议**
+已物理退役并加 source guard 的历史实现包括：
 
-当前 Local TRAINING_PREPARE 在 AUTO 时会采样可用 GPU，并按最受限 GPU 生成安全 frozen plan；后续 TrainingHandler 仍验证实际 assignment / reservation / GPU UUID。
+- v423 / v424 / v425 多代 training task-list renderer；
+- 旧 training create modal / submit alias；
+- 多代 training log modal；
+- `renderTrainingCompatibility`；
+- `trainJobRowsHtml / updateTrainingJobTable / refreshJobsOnly`；
+- PollRegistry 对 `refreshJobsOnly` 的 fallback；
+- 早期 `stopJob / deleteJob / showLog / pollActiveLog`；
+- `fillTrainLegacy / applyAlgLegacy / showLogLegacy`；
+- 最后的 `curTarget / fillTrain / applyAlg` 经典训练表单 helper。
 
-结论：
+现行训练算法选择直接写入 `TrainingDraftRuntime.update({algorithmId})`，不再依赖旧 `#alg / #model / #epochs / #paddle_eval` DOM。
 
-- 正确性安全；
-- 不会因为换到更小 GPU 而 OOM；
-- 但混合 24G / 48G GPU 时，若最终调度到 48G，Batch 仍可能保持按 24G 规划的较小值；
-- 影响吞吐 / GPU 利用率，不影响训练标签、数据或模型正确性。
+### 5. 前端首屏旧导航 repaint 已关闭
 
-后续若优化，必须把“本地具体 GPU assignment 后再 resolve”设计成同一个 planner 的单次延迟决议；禁止引入第二 planner 或 Trainer runtime auto-replan。
+历史 `navs` 假导航库存已经没有消费者，但曾在启动时：
 
-**B. `static/app.js` 仍存在多代早期 `renderTraining()`**
+- 追加“检测台”；
+- 追加“视频切帧”；
+- 通过 `setTimeout(...renderNav(), 0)` 强制再绘制一次导航。
 
-当前真实页面 owner 已是：
+这套状态与 0ms repaint 已物理删除。最终菜单仍由 canonical navigation owner 渲染。
 
-`main.mjs NavigationStability -> TrainingTaskVisibilityRuntime`
+Real Chrome 回归已验证删除后首开、导航、训练任务页等行为正常。
 
-visibility runtime 会把 `window.renderTraining423/424/425` 覆盖为 canonical renderer。
+### 6. 版本治理已可持续
 
-但该 visibility 模块当前在 `main.mjs` 后作为自安装 module 加载，并依赖 main 先建立 TrainingTaskRuntime / PollRegistry，因此启动极短窗口仍需要旧 `renderTraining423` fallback。
+当前规则：
 
-所以：
+- `VERSION.txt / backend APP_VERSION` = 正式平台版本；
+- `static/main.mjs::UI_BUILD_VERSION = 42.25.0-dev` = UI build metadata，不是正式版本；
+- cache-bust query 也不是正式版本号；
+- workflow / 测试不再写死 `VERSION.txt == 42.24.0`；
+- `platform_core.build_identity` 校验正式版本必须为三段 `MAJOR.MINOR.PATCH`，并禁止退回旧 floor；
+- 顶部 version badge 与 sidebar footer 从 backend bootstrap `platform_version` 获取，不再静态写死。
 
-- 不要直接删除所有 legacy training renderer；
-- 当前 canonical navigation / polling owner 已唯一；
-- 早期四代 `renderTraining()` 属于可清理历史代码，但清理前必须先解决 module 初始化时序，并保留 Real Chrome 首开 / 刷新 / 页面导航 guard；
-- 这项债目前不阻断训练正确性，也不新增第二 task owner。
+本轮正式版本已经从 `42.24.0` 连续推进到 `42.24.37`；本交接提交继续到 `42.24.38`。
 
-### 6. 本轮 CI 真实边界
+### 7. 当前 CI 真实边界
 
-在 `42.24.5` 生产资源合同 cutoff 上已真实确认：
+生产代码 cutoff `f9ed2e0857ab52938ba057e1a185d96a4fb30edd`：
 
-- Remote Training Runtime push：success；
-  - API success；
-  - Ubuntu preparation success；
-  - Windows preparation success；
-  - Ultralytics loader contract success。
-- Node Agent Executor push：success；
-  - API success；
-  - Ubuntu contract success；
-  - Windows contract success。
-- Task Runtime Truth：success；
-- GPU Runtime Truth：success；
-- Frontend Runtime Stabilization：同轮无生产资源合同 failure。
+- workflows：21；
+- success：21；
+- failure：0；
+- queued：0；
+- in_progress：0。
 
-`42.24.6` 的版本显示改动首次触发 Label Normalization 红灯，真实原因只是新增测试错误地把测试环境 `APP_VERSION=test` 与 VERSION.txt 强制相等；生产逻辑没有失败。
+重点已确认 success：
 
-`42.24.7` 已修正为 runtime override contract，Label Normalization Contract 当前 push 已完整 success。
+- Frontend Runtime Stabilization：
+  - Frontend unit tests success；
+  - Real Chrome runtime regressions success；
+- Remote Training Runtime success；
+- Node Agent Executor success；
+- Task Runtime Truth success；
+- GPU Runtime Truth success；
+- Central Node Assignment success；
+- Training Input Integrity success；
+- Label Normalization Contract success；
+- Remote Conversion Runtime success；
+- External Algorithm Publish success；
+- External Algorithm Platform success；
+- Remote Material Import success。
 
-后续仍必须重新读取最新 HEAD / workflow 终态；queued / in_progress 不能写成 success。
+前几轮红灯均已定位为过期测试合同，而不是生产回归；最终 cutoff 已重新跑到全绿。
 
-### 7. 下一步
+### 8. 仍需注意的边界
 
-优先级：
+训练主链 T0 / T1 / T2 当前没有已知 correctness blocker。
 
-1. 不再重做 T0/T1；
-2. 继续观察当前 HEAD 全部 CI，completed failure 必须读真实 job log；
-3. T2 若继续开发，优先解决 legacy training module 初始化顺序，再删除早期 renderer；
-4. 本地混合 GPU 利用率优化单独开性能 scope，不和正确性链混做；
+仍然存在的工程现实：
+
+- `static/app.js` 历史体积仍大，其他非训练页面还有 legacy helper；不要为了“清文件”做大规模重写；
+- 继续遵守 owner-by-owner、先证明 zero-reference 再删除的方式；
+- 不要重新引入第二 PollRegistry、第二 TrainingTaskRuntime、第二 planner、第二 scheduler 或第二 task owner；
+- 不要把 UI build version 当正式版本；
+- queued / in_progress 永远不能写成 success。
+
+### 9. 后续优先级
+
+1. 不再重做 T0 / T1 / T2；
+2. 后续训练问题优先查 canonical task truth、assignment/reservation fence、TrainingTaskRuntime / PollRegistry；
+3. 继续主流程质量时，优先训练准确性、素材导入、清洗、标注、AI 审核、新畅联发布链；
+4. 老前端技术债只按真实调用链小步清理，不做大爆炸式重构；
 5. 不 merge main、不 tag、不 release、不 force push。
+
 
 ## 2026-09-29 Platform Browser Runtime Contract（最新）
 
