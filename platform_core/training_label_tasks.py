@@ -655,6 +655,9 @@ def project_training_rows(
             if str(box.get("label") or box.get("code") or "").strip()
         })
         row["source_annotation_state"] = state
+        source_annotation_hash = str(row.get("annotation_hash") or row.get("content_digest") or "").strip().lower()
+        if source_annotation_hash:
+            row["source_annotation_hash"] = source_annotation_hash
         row["source_labels"] = present
 
         if excluded_boxes:

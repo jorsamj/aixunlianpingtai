@@ -1078,6 +1078,15 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     payload = _freeze_admitted_training(app_module, task_id)
     assert payload["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
     assert payload["supplement_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
+    frozen = app_module.shared_task_artifacts().read_json(
+        task_id, "input-freeze.json", default={},
+    )
+    frozen_candidate = next(
+        row for row in frozen["snapshot"]["images"]
+        if row["image_id"] == candidate_image["id"]
+    )
+    assert frozen_candidate["source_annotation_hash"] == annotation["content_digest"]
+    assert frozen_candidate["source_annotation_state"] == annotation["annotation_state"]
     job = app_module.read_json(
         app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {}
     )

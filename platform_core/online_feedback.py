@@ -396,13 +396,18 @@ def build_supplement_training_provenance(
             raise ValueError(f"supplement material {material_id} content changed after candidate freeze")
         annotation_hash = _sha(raw.get("annotation_hash"), "annotation_hash")
         current_annotation_hash = _sha(
-            truth.get("annotation_hash") or truth.get("content_digest"),
+            truth.get("source_annotation_hash")
+            or truth.get("annotation_hash")
+            or truth.get("content_digest"),
             "current annotation_hash",
         )
         if current_annotation_hash != annotation_hash:
             raise ValueError(f"supplement material {material_id} annotation changed after candidate freeze")
         annotation_state = _text(raw.get("annotation_state"), 100)
-        current_state = _text(truth.get("annotation_state"), 100)
+        current_state = _text(
+            truth.get("source_annotation_state") or truth.get("annotation_state"),
+            100,
+        )
         if current_state != annotation_state:
             raise ValueError(f"supplement material {material_id} annotation state changed after candidate freeze")
         adopted.append({
