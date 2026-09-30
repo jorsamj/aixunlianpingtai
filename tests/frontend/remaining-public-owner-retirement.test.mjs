@@ -7,7 +7,7 @@ const recovery=await readFile(new URL('../../static/modules/training-recovery-ru
 
 test('remaining compatibility actions expose one public owner each',()=>{
   for(const name of [
-    'fillTrain','applyAlg','assignVersion','saveAssign',
+    'assignVersion','saveAssign',
     'openExportModel','submitExportModel','openAuditConnect42',
     'openPolicy42','runPolicy42','renderIterationV42',
   ]){
@@ -19,7 +19,7 @@ test('remaining compatibility actions expose one public owner each',()=>{
 
 test('retired training implementations stay removed instead of surviving as compatibility owners',()=>{
   for(const name of [
-    'fillTrainLegacy','applyAlgLegacy','showLogLegacy',
+    'fillTrain','applyAlg','fillTrainLegacy','applyAlgLegacy','showLogLegacy',
   ]) assert.equal(app.includes('window.'+name+'='),false,name);
 });
 

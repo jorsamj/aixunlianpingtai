@@ -58,6 +58,9 @@ test('pre-canonical training page and refresh compatibility owners stay physical
 
 test('zero-reference pre-canonical training helpers stay physically retired', () => {
   for (const token of [
+    'function curTarget(){',
+    'window.fillTrain=',
+    'window.applyAlg=',
     'window.fillTrainLegacy=',
     'window.applyAlgLegacy=',
     'window.showLogLegacy=',

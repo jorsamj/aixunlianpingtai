@@ -120,6 +120,10 @@ jobs:
             echo 'zero-reference pre-canonical training helpers must stay physically retired' >&2
             exit 1
           fi
+          if grep -Eq 'function curTarget\(\)|window\.fillTrain=|window\.applyAlg=' static/app.js; then
+            echo 'dead classic training form helpers must stay physically retired' >&2
+            exit 1
+          fi
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-visibility-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js

@@ -74,7 +74,6 @@ window.prevImage=async()=>{const i=imgIndex();if(i>0){if(state.annDirty)await sa
 window.nextImage=async()=>{const i=imgIndex();if(i>=0&&i<state.images.length-1){if(state.annDirty)await saveAnn(true);openAnnotation(state.images[i+1].id)}};
 document.addEventListener('keydown',e=>{if(!state.activeImage)return;const locked=!!state.annotationHydrating420||!!state.annotationLoadError420;if(!locked&&e.key>='1'&&e.key<='9'){const hit=state.labels.find(l=>l.hotkey===e.key)||state.labels[+e.key-1];if(hit){state.activeLabel=hit.class_id;renderAnnSide();toast(`当前标签：${hit.display_name}`)}}if(!locked&&e.key==='Delete')deleteActiveBox();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!locked)saveAnn(false)}if(e.key==='ArrowLeft'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Prev')?.click();else prevImage()}if(e.key==='ArrowRight'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Next')?.click();else nextImage()}});
 
-function curTarget(){return state.targets.find(t=>t.id===$('#target')?.value)||state.targets[0]}
 
 window.syncTestModelByEnv=()=>{
   const envSel=$('#inferEnv'), modelSel=$('#testModel'); if(!envSel||!modelSel)return;
@@ -318,37 +317,6 @@ window.testPaddle=async()=>{const body={name:'本机飞桨',python_path:$('#ppy'
 window.detectPaddleLegacy_2=async()=>{const body={name:'本机飞桨',python_path:$('#ppy').value,paddledet_dir:$('#pdet').value,paddlex_dir:$('#pxdir').value};await safe(api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));await testPaddle();await loadAll();render();toast('已保存飞桨环境，并扫描可训练算法')};
 window.quickPaddleDetectLegacy_2=async()=>{const r=await safe(api('/api/paddle_env/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}));const env=(r?.candidates||[])[0];if(!env)return toast('未检测到飞桨环境，请手动填写 Python 路径');await safe(api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(env)}));await loadAll();render();toast(`已启用飞桨环境，识别到 ${env.algorithm_scan?.total||0} 个算法配置`)};
 
-window.fillTrain=()=>{const t=curTarget(),a=$('#alg'),m=$('#model');if(!t||!a||!m)return;const algs=t.algorithms||[];const groups=groupAlgos(algs);a.innerHTML=Object.entries(groups).map(([fam,items])=>`<optgroup label="${esc(fam)}">${items.map(x=>`<option value="${esc(x.key)}">${esc(x.name)}${x.recommended?'（推荐）':''}</option>`).join('')}</optgroup>`).join('')||'<option value="">无可用算法</option>';m.innerHTML=(t.base_models||[]).map(x=>`<option value="${esc(x.value||'')}" data-note="${esc(x.source||'')}">${esc(x.label||x.value||'默认权重')}</option>`).join('')||'<option value="">默认权重</option>';applyAlg()};
-window.applyAlg=function applyAlgorithmSelectionCanonical26(){
-  const t=curTarget&&curTarget();
-  const alg=(t?.algorithms||[]).find(x=>x.key===$('#alg')?.value);
-  if(alg){
-    $('#epochs').value=alg.default_epochs||$('#epochs').value;
-    $('#imgsz').value=alg.default_imgsz||$('#imgsz').value;
-    $('#batch').value=alg.default_batch||$('#batch').value;
-    const meta=$('#algMeta');
-    if(meta)meta.textContent=alg.config_relpath?`配置：${alg.config_relpath}；${algoBadge(alg)}`:(alg.description||'');
-    const mm=$('#modelMeta');
-    if(mm)mm.textContent=(t.framework==='paddle')?'留空表示使用配置默认预训练权重/自动下载；选择 .pdparams 可作为 pretrain_weights。':'请选择 .pt 训练权重。';
-    const m=$('#model');
-    const hit=m?[...m.options].find(o=>(o.value||o.textContent).toLowerCase().includes(String(alg.base_model||'').toLowerCase())):null;
-    if(hit)m.value=hit.value;
-    if(t.framework==='paddle'){
-      if($('#device')) $('#device').value='cpu';
-      if($('#lr0')) $('#lr0').value='0.001';
-      if($('#workers')) $('#workers').value='0';
-      if($('#optimizer')) $('#optimizer').value='auto';
-      if(m) m.value='';
-      if(mm) mm.textContent='飞桨默认使用配置内置预训练权重并自动下载；只有本地 .pdparams 才需要手动选择。';
-      if(meta) meta.textContent=(alg.config_relpath?`配置：${alg.config_relpath}；`: '') + '平台会自动覆盖类别数、数据集路径和安全学习率，避免 COCO 原配置导致 KeyError/NaN。';
-    }
-  }
-  const evalBox=$('#paddle_eval');
-  if(evalBox){
-    evalBox.disabled=!(t&&t.framework==='paddle');
-    if(!(t&&t.framework==='paddle')) evalBox.checked=false;
-  }
-};
 
 
 // -----------------------------
