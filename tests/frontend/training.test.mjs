@@ -148,11 +148,13 @@ test('report presentation keeps algorithm and version reports distinct', () => {
 });
 
 
-test('training algorithm selection has one canonical owner instead of legacy wrapper chaining', () => {
+test('training algorithm selection is owned by the canonical training draft', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /window\.applyAlg=function applyAlgorithmSelectionCanonical26\(\)/);
-  assert.match(source, /if\(t\.framework==='paddle'\)/);
-  assert.match(source, /const evalBox=\$\('#paddle_eval'\)/);
+  assert.equal(source.includes('window.applyAlg='), false);
+  assert.equal(source.includes('window.fillTrain='), false);
+  assert.equal(source.includes("const evalBox=$('#paddle_eval')"), false);
+  assert.match(source, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
+  assert.match(source, /window\.TrainingDraftRuntime\?\.update\?\.\(\{algorithmId\}\)/);
   assert.equal(source.includes('const oldApplyAlg = window.applyAlg;'), false);
   assert.equal(source.includes('const oldApplyAlgV26 = window.applyAlg;'), false);
 });
