@@ -568,7 +568,7 @@ class TrainingPrepareHandler:
         import torch
         from .gpu_resources import sample_gpus
         from .training_devices import normalize_training_device
-        from .training_metrics import persist_resolution, resolve_resources
+        from .training_metrics import resolve_resources
 
         project = self.data_dir / "projects" / target.project_id
         algorithms = list_algorithms(project / "algorithms.json")
@@ -696,7 +696,9 @@ class TrainingPrepareHandler:
         resolution_path = context.artifacts.artifact_path(
             target.task_id, "resolved-resources.json",
         )
-        persist_resolution(resolution_path, resolved)
+        context.artifacts.atomic_write_json(
+            target.task_id, "resolved-resources.json", resolved,
+        )
         context.artifacts.atomic_write_json(
             target.task_id, "resource-context.json", resource_context,
         )

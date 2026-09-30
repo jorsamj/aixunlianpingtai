@@ -1422,11 +1422,6 @@ def _resolve_resource_contract_subprocess(
     output_path: Path,
 ) -> dict[str, Any]:
     """Run the one canonical resolver in the selected Ultralytics runtime."""
-    output_path = Path(output_path)
-    request_path = output_path.with_name("resource-request.json")
-    context_path = output_path.with_name("resource-context.json")
-    atomic_write_json(request_path, dict(request))
-    atomic_write_json(context_path, dict(resource_context))
     root = Path(__file__).resolve().parent.parent
     env = {
         **os.environ,
@@ -1437,38 +1432,51 @@ def _resolve_resource_contract_subprocess(
     env["PYTHONPATH"] = (
         str(root) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
     )
-    try:
-        completed = subprocess.run(
-            [
-                str(python_executable),
-                "-m",
-                "platform_core.training_metrics",
-                "--request", str(request_path),
-                "--context", str(context_path),
-                "--model", str(model_argument),
-                "--output", str(output_path),
-            ],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
+    with tempfile.TemporaryDirectory(prefix="training-resource-resolve-") as temporary:
+        private_root = Path(temporary)
+        request_path = private_root / "resource-request.json"
+        context_path = private_root / "resource-context.json"
+        private_output = private_root / "resolved-resources.json"
+        request_path.write_text(
+            json.dumps(dict(request), ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
-            errors="replace",
-            timeout=300,
-            check=False,
         )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(
-            f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
-        ) from error
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
-        canonical = re.findall(r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)", detail)
-        if canonical:
-            code, message = canonical[-1]
-            raise RuntimeError(f"{code}: {message.strip()}")
-        raise RuntimeError("RESOURCE_PREPARE_FAILED: " + detail[-4000:])
-    resolved = json.loads(output_path.read_text(encoding="utf-8"))
+        context_path.write_text(
+            json.dumps(dict(resource_context), ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    str(python_executable),
+                    "-m",
+                    "platform_core.training_metrics",
+                    "--request", str(request_path),
+                    "--context", str(context_path),
+                    "--model", str(model_argument),
+                    "--output", str(private_output),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(
+                f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
+            ) from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+            canonical = re.findall(r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)", detail)
+            if canonical:
+                code, message = canonical[-1]
+                raise RuntimeError(f"{code}: {message.strip()}")
+            raise RuntimeError("RESOURCE_PREPARE_FAILED: " + detail[-4000:])
+        resolved = json.loads(private_output.read_text(encoding="utf-8"))
     if not (
         isinstance(resolved, dict)
         and int(resolved.get("resolved_batch") or 0) > 0
@@ -2661,9 +2669,7 @@ class TrainingHandler:
             context.task.task_id, "resolved-resources.json",
         )
         if deferred_resource_resolution:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=19,
                 stage="resolving_resources",
                 current_item="按已分配 GPU 冻结 Batch / Workers / Precision / Cache",
@@ -2680,6 +2686,11 @@ class TrainingHandler:
                 resource_context,
                 model,
                 resolution_path,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "resolved-resources.json",
+                prepared_resources,
             )
             payload = {
                 **payload,
