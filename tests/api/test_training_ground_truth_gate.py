@@ -339,6 +339,44 @@ def test_training_input_freeze_requires_indexed_content_identity(monkeypatch, tm
         training_tasks.freeze_training_inputs(tmp_path, split, seed=17)
 
 
+def test_training_split_quality_requires_train_positive_for_new_labels_only():
+    import platform_core.training_tasks as training_tasks
+
+    images = [
+        {"id": "train-fire", "boxes": [{"label": "fire"}]},
+        {"id": "validation-smoke", "boxes": [{"label": "smoke"}]},
+        {"id": "test-fire", "boxes": [{"label": "fire"}]},
+    ]
+    manifest = type("Manifest", (), {
+        "ids": {
+            "train": ("train-fire",),
+            "validation": ("validation-smoke",),
+            "test": ("test-fire",),
+        }
+    })()
+    schema = [
+        {"code": "fire", "class_id": 0},
+        {"code": "smoke", "class_id": 1},
+    ]
+
+    with pytest.raises(ValueError, match="本次新增训练标签.*smoke"):
+        training_tasks._training_split_quality(
+            images,
+            manifest,
+            schema,
+            label_contract={"requested_new_label_codes": ["smoke"]},
+        )
+
+    inherited_only = training_tasks._training_split_quality(
+        images,
+        manifest,
+        schema,
+        label_contract={"requested_new_label_codes": []},
+    )
+    assert inherited_only["active_labels_without_train_positive"] == ["smoke"]
+    assert any("smoke" in warning for warning in inherited_only["warnings"])
+
+
 def test_training_input_freeze_rejects_all_negative_detection_training(monkeypatch, tmp_path):
     import platform_core.training_tasks as training_tasks
     from platform_core.training_splits import SplitRequest

@@ -1204,6 +1204,7 @@ def _training_split_quality(
     images: Sequence[Mapping[str, Any]],
     manifest: Any,
     label_schema: Sequence[Mapping[str, Any]],
+    label_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     by_id = {str(row.get("id") or ""): row for row in images}
     role_box_counts: dict[str, int] = {}
@@ -1234,6 +1235,31 @@ def _training_split_quality(
         code for code in active_codes
         if role_label_counts["train"].get(code, 0) <= 0
     ]
+    requested_new = tuple(dict.fromkeys(
+        str(code).strip()
+        for code in (
+            (label_contract or {}).get("requested_new_label_codes") or []
+        )
+        if str(code).strip()
+    ))
+    unknown_requested_new = [
+        code for code in requested_new if code not in set(active_codes)
+    ]
+    if unknown_requested_new:
+        raise ValueError(
+            "训练标签合同包含不在有效 schema 中的新增标签: "
+            + ", ".join(unknown_requested_new[:20])
+        )
+    missing_requested_new = [
+        code for code in requested_new
+        if role_label_counts["train"].get(code, 0) <= 0
+    ]
+    if missing_requested_new:
+        raise ValueError(
+            "本次新增训练标签在训练集没有正样本: "
+            + ", ".join(missing_requested_new[:20])
+            + "；请增加对应正样本或调整训练/验证/试验划分后重试"
+        )
     train_labels = {
         code for code, count in role_label_counts["train"].items()
         if count > 0
@@ -1306,7 +1332,9 @@ def freeze_training_inputs(
     if not label_schema:
         raise ValueError("training label schema is empty")
     manifest = build_split_manifest(images, effective_split, seed=int(seed))
-    input_quality = _training_split_quality(images, manifest, label_schema)
+    input_quality = _training_split_quality(
+        images, manifest, label_schema, label_contract=label_contract,
+    )
     snapshot = build_snapshot(
         images,
         manifest,
@@ -1393,7 +1421,14 @@ def resolve_training_input_freeze(
         if contract_schema != label_schema:
             raise ValueError("training input freeze label contract/schema mismatch")
     manifest = build_split_manifest(images, split_request, seed=int(seed))
-    input_quality = _training_split_quality(images, manifest, label_schema)
+    input_quality = _training_split_quality(
+        images,
+        manifest,
+        label_schema,
+        label_contract=(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        ),
+    )
     if dict(value.get("input_quality") or {}) != input_quality:
         raise ValueError("training input freeze quality evidence mismatch")
     snapshot = build_snapshot(

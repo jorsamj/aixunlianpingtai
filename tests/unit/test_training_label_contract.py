@@ -71,6 +71,7 @@ def test_first_training_uses_only_user_selected_material_labels(tmp_path: Path):
 
     assert contract["available_material_label_codes"] == ["fire", "smoke", "person"]
     assert contract["requested_label_codes"] == ["smoke", "fire"]
+    assert contract["requested_new_label_codes"] == ["smoke", "fire"]
     assert contract["inherited_label_codes"] == []
     assert contract["effective_label_codes"] == ["smoke", "fire"]
     assert [item["class_id"] for item in contract["effective_label_schema"]] == [0, 1]
@@ -207,6 +208,7 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
         algorithm,
     )
     assert contract["inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["requested_new_label_codes"] == ["cigarette"]
     assert contract["effective_label_codes"] == ["fire", "smoke", "cigarette"]
     assert [item["class_id"] for item in contract["effective_label_schema"]] == [0, 1, 2]
     assert contract["base_version_id"] == "v1"
@@ -433,6 +435,7 @@ def test_iteration_can_continue_with_inherited_labels_without_adding_new_labels(
         algorithm,
     )
     assert contract["effective_label_codes"] == ["fire", "smoke"]
+    assert contract["requested_new_label_codes"] == []
     assert contract["label_schema_changed"] is False
     assert contract["dropped_inherited_label_codes"] == []
 

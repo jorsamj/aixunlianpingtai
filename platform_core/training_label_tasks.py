@@ -570,6 +570,7 @@ def resolve_training_label_contract(
         "algorithm_id": str(algorithm.get("id") or ""),
         "available_material_label_codes": available,
         "requested_label_codes": requested,
+        "requested_new_label_codes": requested_new,
         "inherited_label_codes": inherited_codes,
         "retained_inherited_label_codes": retained_inherited_codes,
         "merged_inherited_label_codes": merged_inherited,
