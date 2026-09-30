@@ -315,3 +315,83 @@ def test_v19_plain_image_zip_stays_unannotated_and_does_not_create_label(client)
 
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     assert labels == []
+
+
+
+def _empty_yolo_without_schema_zip():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("images/train/empty.jpg", _jpg_bytes())
+        archive.writestr("labels/train/empty.txt", "")
+    return payload.getvalue()
+
+
+def _empty_voc_without_schema_zip():
+    payload = io.BytesIO()
+    xml = """<annotation>
+  <filename>empty.jpg</filename>
+  <size><width>80</width><height>60</height><depth>3</depth></size>
+</annotation>
+"""
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("JPEGImages/empty.jpg", _jpg_bytes())
+        archive.writestr("Annotations/empty.xml", xml)
+    return payload.getvalue()
+
+
+def _empty_coco_without_schema_zip():
+    payload = io.BytesIO()
+    annotation = {
+        "images": [{"id": 1, "file_name": "images/empty.jpg", "width": 80, "height": 60}],
+        "annotations": [],
+        "categories": [],
+    }
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("images/empty.jpg", _jpg_bytes())
+        archive.writestr("annotations/instances.json", json.dumps(annotation))
+    return payload.getvalue()
+
+
+def test_v19_empty_structured_sidecar_without_confirmed_schema_stays_unannotated(client):
+    cases = [
+        ("empty-yolo.zip", _empty_yolo_without_schema_zip()),
+        ("empty-voc.zip", _empty_voc_without_schema_zip()),
+        ("empty-coco.zip", _empty_coco_without_schema_zip()),
+    ]
+    for zip_name, payload in cases:
+        project = client.post("/api/projects", json={
+            "name": f"no-scope-{zip_name}",
+            "labels": [],
+        }).json()
+        created = client.post(
+            f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+            files={"file": (zip_name, payload, "application/zip")},
+        )
+        assert created.status_code == 200, created.text
+        job = created.json()
+        assert job["label_confirmation_required"] is False
+        assert job["external_classes"] == []
+
+        started = client.post(
+            f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+            json={},
+        )
+        assert started.status_code == 200, started.text
+        final = _wait_job(client, project["id"], job["id"])
+        assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+
+        review = client.get(
+            f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review"
+        ).json()
+        assert len(review["image_ids"]) == 1
+        annotation = client.get(
+            f"/api/projects/{project['id']}/annotations/{review['image_ids'][0]}"
+        ).json()
+        assert annotation["annotation_state"] == "unannotated"
+        assert annotation["annotation_scope"] == []
+        assert annotation["boxes"] == []
+
+        labels = client.get(
+            f"/api/v12/projects/{project['id']}/labels"
+        ).json()["items"]
+        assert labels == []

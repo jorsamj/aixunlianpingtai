@@ -11595,6 +11595,8 @@ def _v18_import_coco(
     for ann_json, coco in json_files:
         split = _v18_split_from_path(ann_json)
         cats = sorted(coco.get('categories', []), key=lambda c: int(c.get('id', 0)))
+        if import_context is not None and not import_scope and cats:
+            raise ValueError("structured annotation has no confirmed platform label scope")
         cat_to_class = {}
         cat_source_names = {}
         for c in cats:
@@ -11654,11 +11656,18 @@ def _v18_import_coco(
                     })
                 return boxes
 
-            rec = add_image_record(
-                project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
-                annotation_builder=build_final_annotation,
-                annotation_scope=import_scope,
-            )
+            if import_context is not None and not import_scope:
+                if image_annotations:
+                    raise ValueError("structured annotation has no confirmed platform label scope")
+                rec = add_image_record(
+                    project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                )
+            else:
+                rec = add_image_record(
+                    project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                    annotation_builder=build_final_annotation,
+                    annotation_scope=import_scope,
+                )
             if not rec:
                 report['skipped_images'] += 1
                 continue
@@ -11711,6 +11720,8 @@ def _v18_import_voc(
         split = _v18_split_from_path(xp)
         boxes=[]
         objects = list(r.findall('object'))
+        if import_context is not None and not import_scope and objects:
+            raise ValueError("structured annotation has no confirmed platform label scope")
 
         def build_final_annotation(record):
             for obj in objects:
@@ -11749,11 +11760,16 @@ def _v18_import_voc(
                 })
             return boxes
 
-        rec = add_image_record(
-            project_id, src, src.name, 'imported_voc', dataset_id,
-            annotation_builder=build_final_annotation,
-            annotation_scope=import_scope,
-        )
+        if import_context is not None and not import_scope:
+            rec = add_image_record(
+                project_id, src, src.name, 'imported_voc', dataset_id,
+            )
+        else:
+            rec = add_image_record(
+                project_id, src, src.name, 'imported_voc', dataset_id,
+                annotation_builder=build_final_annotation,
+                annotation_scope=import_scope,
+            )
         if not rec:
             report['skipped_images'] += 1
             continue
@@ -11792,7 +11808,9 @@ def _v18_import_yolo(
     names = _v18_collect_class_names(root, label_files)
     project = get_project(project_id)
     import_scope = _v18_confirmed_import_scope(label_mapping)
-    if label_mapping is None:
+    if import_context is not None and not import_scope and names:
+        raise ValueError("structured annotation has no confirmed platform label scope")
+    if label_mapping is None and import_context is None:
         if names:
             for n in names:
                 ensure_label(project, n)
@@ -11816,10 +11834,18 @@ def _v18_import_yolo(
         boxes=[]
 
         has_label_truth = bool(label_file and label_file.exists())
+        label_text = (
+            label_file.read_text(encoding='utf-8', errors='ignore')
+            if has_label_truth else ""
+        )
+        if import_context is not None and has_label_truth and not import_scope:
+            if label_text.strip():
+                raise ValueError("structured annotation has no confirmed platform label scope")
+            has_label_truth = False
 
         def build_final_annotation(record):
             if has_label_truth:
-                for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
+                for line in label_text.splitlines():
                     box = yolo_line_to_box(line, record['width'], record['height'])
                     if not box:
                         report['invalid_boxes'] += 1
