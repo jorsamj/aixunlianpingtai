@@ -284,7 +284,13 @@ jobs:
           done
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
-          grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
+          if grep -Fq 'replaceTrainingJobTimer' static/app.js; then
+            echo 'classic app.js must not own training polling lifecycle' >&2
+            exit 1
+          fi
+          grep -Fq 'pollRegistry?.replaceTrainingJobTimer?.();' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();' static/main.mjs
+          grep -Fq 'window.refreshJobsOnly = focusedRefresh;' static/modules/training-task-runtime.js
       - name: Retired navigation setPage guard
         run: |
           for token in set423Base setBase424 oldSetV39 oldSet42 set422Base; do
