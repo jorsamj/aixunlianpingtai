@@ -655,11 +655,26 @@ def project_training_rows(
             for box in boxes
             if str(box.get("label") or box.get("code") or "").strip()
         })
-        row["source_annotation_state"] = state
-        source_annotation_hash = str(row.get("annotation_hash") or row.get("content_digest") or "").strip().lower()
+        source_annotation_state = str(
+            row.get("source_annotation_state") or state
+        )
+        row["source_annotation_state"] = source_annotation_state
+        source_annotation_hash = str(
+            row.get("source_annotation_hash")
+            or row.get("annotation_hash")
+            or row.get("content_digest")
+            or ""
+        ).strip().lower()
         if source_annotation_hash:
             row["source_annotation_hash"] = source_annotation_hash
-        row["source_labels"] = present
+        if "source_labels" in row:
+            row["source_labels"] = sorted({
+                str(value).strip()
+                for value in (row.get("source_labels") or [])
+                if str(value).strip()
+            })
+        else:
+            row["source_labels"] = present
 
         if excluded_boxes:
             row["training_excluded_boxes"] = excluded_boxes

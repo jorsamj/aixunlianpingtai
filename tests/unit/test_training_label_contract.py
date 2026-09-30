@@ -14,6 +14,7 @@ from platform_core.training_label_tasks import (
     _persist_version_contract,
     _scoped_selected_project_images,
     inherited_training_label_preview,
+    project_training_rows,
     resolve_training_label_contract,
     selected_material_label_codes,
 )
@@ -543,8 +544,18 @@ def test_projection_turns_only_unselected_labels_into_task_negative_without_muta
     assert projected["training_projection_policy"] == "redact_excluded_objects_v2_preserve_selected"
     assert len(projected["training_projection_digest"]) == 64
 
-    # The task projection must never rewrite material-library Ground Truth.
+    # Source Ground Truth identity is immutable provenance. Re-projecting an
+    # already task-local row must not reinterpret the synthetic negative as
+    # the original annotation truth.
     source = annotations.get("a")
+    assert projected["source_annotation_hash"] == source["content_digest"]
+    reprojected = project_training_rows([projected], contract)[0]
+    assert reprojected["annotation_state"] == "confirmed_empty"
+    assert reprojected["source_annotation_state"] == "annotated"
+    assert reprojected["source_annotation_hash"] == source["content_digest"]
+    assert reprojected["source_labels"] == ["person"]
+
+    # The task projection must never rewrite material-library Ground Truth.
     assert source["annotation_state"] == "annotated"
     assert [box["label"] for box in source["boxes"]] == ["person"]
 
