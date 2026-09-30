@@ -99,3 +99,21 @@ def test_algorithm_mutation_invalidates_only_bootstrap_algorithm_overlay(client,
     assert algorithm_id in {
         row["id"] for row in app_module._V53_BOOTSTRAP_SNAPSHOT["algorithms"]
     }
+
+
+def test_bootstrap_snapshot_carries_canonical_platform_identity(client):
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "bootstrap-version-truth",
+            "labels": [],
+        },
+    ).json()
+
+    snapshot = app_module._v53_build_snapshot(project["id"])
+
+    assert snapshot["platform_version"] == app_module.APP_VERSION
+    assert snapshot["build_id"] == app_module.BUILD_ID
+    assert snapshot["platform_version"] == (
+        app_module.BASE_DIR / "VERSION.txt"
+    ).read_text(encoding="utf-8").strip()

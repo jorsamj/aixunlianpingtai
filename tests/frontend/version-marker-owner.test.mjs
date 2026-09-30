@@ -5,9 +5,11 @@ import fs from 'node:fs';
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 const index = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+const formalVersion = fs.readFileSync(new URL('../../VERSION.txt', import.meta.url), 'utf8').trim();
 
-test('visible version marker starts at the formal release version', () => {
-  assert.equal(index.includes('<span id="versionBadge" class="version-badge">v42.24.0</span>'), true);
+test('visible version marker waits for backend formal version truth', () => {
+  assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
+  assert.equal(index.includes(`<span id="versionBadge" class="version-badge">v${formalVersion}</span>`), false);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v42.25.0-dev</span>'), false);
 });
 
@@ -27,23 +29,23 @@ test('legacy delayed visible version writers cannot return', () => {
   assert.equal(app.includes('[120,600,1600].forEach'), false);
 });
 
-test('canonical chrome owners keep the formal badge and footer values', () => {
-  assert.match(app, /const V413='42\.24\.0'/);
-  assert.match(app, /renderTop=function renderTopCanonical413\(\)/);
+test('canonical chrome reads formal version from bootstrap state only', () => {
+  assert.equal(app.includes("const V413='42.24.0'"), false);
+  assert.equal(app.includes("const V414='42.24.0'"), false);
+  assert.match(app, /state\.versionInfo=\{version:String\(s\.platform_version\|\|''\)\.trim\(\)\|\|'—'/);
+
   const topStart = app.indexOf('renderTop=function renderTopCanonical413()');
   const topEnd = app.indexOf('\n})();', topStart);
   assert.ok(topStart >= 0 && topEnd > topStart);
-  assert.match(app.slice(topStart, topEnd), /v\.textContent='v'\+V413/);
+  assert.match(app.slice(topStart, topEnd), /state\.versionInfo\?\.version/);
 
-  assert.match(app, /const V414='42\.24\.0'/);
   const navStart = app.indexOf('const icon414=');
   const navEnd = app.indexOf('window.renderLabelManagement414=', navStart);
   assert.ok(navStart >= 0 && navEnd > navStart);
-  assert.match(app.slice(navStart, navEnd), /<b>v\$\{V414\}<\/b>/);
+  assert.match(app.slice(navStart, navEnd), /state\.versionInfo\?\.version/);
 });
 
-
-test('entry bundles advance cache-bust markers without changing the formal release badge', () => {
+test('entry bundles use cache-bust markers independently from formal release truth', () => {
   assert.match(index, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
@@ -58,13 +60,17 @@ test('entry bundles advance cache-bust markers without changing the formal relea
   assert.equal(main.includes("./modules/material-batches.js?v=422403"), true);
   assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=422543'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
-  assert.equal(index.includes('<span id="versionBadge" class="version-badge">v42.24.0</span>'), true);
+  assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
+});
+
+test('formal platform version is not re-embedded into visible static chrome', () => {
+  assert.equal(app.includes(`'${formalVersion}'`), false);
+  assert.equal(index.includes(`v${formalVersion}</span>`), false);
 });
 
 test('negative sample runtime is cache-busted with canonical owner retirement', () => {
   assert.equal(main.includes("./modules/negative-samples.js?v=422544"), true);
 });
-
 
 test('training material picker canonical confirm asset is current', () => {
   assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422548"), true);

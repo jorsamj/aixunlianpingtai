@@ -20390,7 +20390,7 @@ def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,
     jobs=_v53_live_jobs(project_id)
     model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
     generated_at=now_iso()
-    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"algorithm_revision":algorithm_revision,"algorithms_generated_at":generated_at,"jobs":jobs,"model_configs":model_configs,"generated_at":generated_at,"jobs_generated_at":generated_at}
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"algorithm_revision":algorithm_revision,"algorithms_generated_at":generated_at,"jobs":jobs,"model_configs":model_configs,"platform_version":APP_VERSION,"build_id":BUILD_ID,"generated_at":generated_at,"jobs_generated_at":generated_at}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
