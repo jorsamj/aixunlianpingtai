@@ -18,9 +18,12 @@ from pathlib import Path
 
 from .annotations import atomic_write_json
 from .gpu_resources import sample_gpus
-from .training_precision import normalize_training_precision
-
-GIB = 1024 ** 3
+from .training_resource_policy import (
+    GIB,
+    model_memory_components,
+    precision_policy,
+    resource_profile_config,
+)
 
 
 def host_resources():
@@ -125,16 +128,11 @@ def resolve_resources(request, context, model, torch):
     gpu_policy = str(request.get("gpu_policy") or "auto").strip().lower()
     if gpu_policy not in {"auto", "exclusive"}:
         raise ValueError("GPU_POLICY_UNSUPPORTED: shared GPU scheduling is not enabled")
-    precision = normalize_training_precision(request.get("precision") or "auto")
     requested_device = str(request.get("device") or "").strip().lower()
-    resolved_precision = precision
-    if precision == "auto":
-        resolved_precision = (
-            "fp16"
-            if requested_device.startswith("cuda:") and request.get("amp") is not False
-            else "fp32"
-        )
-    activation_precision_factor = 2.0 if resolved_precision == "fp32" else 1.0
+    precision_truth = precision_policy(request, device=requested_device)
+    precision = str(precision_truth["requested_precision"])
+    resolved_precision = str(precision_truth["resolved_precision"])
+    activation_precision_factor = float(precision_truth["activation_precision_factor"])
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -150,26 +148,7 @@ def resolve_resources(request, context, model, torch):
         if requested_workers < 0:
             raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
 
-    profile_cfg = {
-        "stability": {
-            "gpu_fraction": 0.58,
-            "worker_cap": 4,
-            "ram_fraction": 0.22,
-            "batch_cap": 64,
-        },
-        "balanced": {
-            "gpu_fraction": 0.70,
-            "worker_cap": 8,
-            "ram_fraction": 0.35,
-            "batch_cap": 128,
-        },
-        "performance": {
-            "gpu_fraction": 0.82,
-            "worker_cap": 12,
-            "ram_fraction": 0.50,
-            "batch_cap": 256,
-        },
-    }[profile]
+    profile_cfg = resource_profile_config(profile)
 
     cores, ram = host_resources()
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
@@ -269,15 +248,9 @@ def resolve_resources(request, context, model, torch):
             actual_name = str(getattr(properties, "name", "") or "").strip()
             if actual_name:
                 resolution_gpu_name = actual_name
-        params = sum(int(value.numel()) for value in model.model.parameters())
-        fixed = max(GIB, params * 24)
-        per_image = int(
-            256 * 1024 ** 2
-            * max(1.0, (params / 3_000_000) ** 0.55)
-            * (int(request["imgsz"]) / 640) ** 2
-            * (1 + float(request.get("multi_scale") or 0)) ** 2
-            * activation_precision_factor
-        )
+        memory = model_memory_components(request, model, device=requested_device)
+        fixed = int(memory["fixed_bytes"])
+        per_image = int(memory["per_image_bytes"])
         other = max(0, int(context.get("other_reserved_bytes") or 0))
         reserve_floor = max(GIB, int(total * 0.05))
         available_after_other = max(0, free - other - reserve_floor)

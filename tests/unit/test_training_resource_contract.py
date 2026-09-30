@@ -4,6 +4,7 @@ import pytest
 
 import platform_core.training_metrics as training_metrics
 import platform_core.training_devices as training_devices
+import platform_core.training_resource_policy as resource_policy
 
 
 GIB = 1024 ** 3
@@ -433,3 +434,54 @@ def test_manual_rejects_values_that_ultralytics_loader_would_change(monkeypatch)
             _Model(),
             _Torch(_Cuda()),
         )
+
+
+
+def test_deferred_auto_admission_only_estimates_batch_one_floor():
+    evidence = resource_policy.auto_admission_evidence(
+        _request(device="auto", batch=128, resource_profile="balanced"),
+        _Model(),
+    )
+
+    memory = evidence["memory_model"]
+    assert evidence["mode"] == "deferred_auto_assignment"
+    assert evidence["gpu_memory_floor_bytes"] == (
+        memory["fixed_bytes"] + memory["per_image_bytes"]
+    )
+    assert evidence["target_gpu_memory_fraction"] == pytest.approx(0.70)
+    assert "resolved_batch" not in evidence
+    assert memory["resolved_precision"] == "fp16"
+
+
+def test_deferred_auto_reservation_scales_with_candidate_gpu_headroom():
+    payload = {
+        "resource_resolution_deferred": True,
+        "resource_strategy": "auto",
+        "resource_profile": "balanced",
+        "gpu_memory_floor_bytes": 2 * GIB,
+    }
+    small = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=24 * GIB,
+        free_bytes=22 * GIB,
+        already_reserved_bytes=0,
+        active_count=0,
+    )
+    large = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=48 * GIB,
+        free_bytes=44 * GIB,
+        already_reserved_bytes=0,
+        active_count=0,
+    )
+
+    assert small and large
+    assert large > small > payload["gpu_memory_floor_bytes"]
+    shared = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=48 * GIB,
+        free_bytes=44 * GIB,
+        already_reserved_bytes=4 * GIB,
+        active_count=1,
+    )
+    assert shared == payload["gpu_memory_floor_bytes"]

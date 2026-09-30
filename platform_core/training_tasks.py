@@ -4,6 +4,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1413,6 +1414,75 @@ def _training_python(data_dir: Path) -> str:
     return training_python(data_dir)
 
 
+def _resolve_resource_contract_subprocess(
+    python_executable: str,
+    request: Mapping[str, Any],
+    resource_context: Mapping[str, Any],
+    model_argument: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Run the one canonical resolver in the selected Ultralytics runtime."""
+    output_path = Path(output_path)
+    request_path = output_path.with_name("resource-request.json")
+    context_path = output_path.with_name("resource-context.json")
+    atomic_write_json(request_path, dict(request))
+    atomic_write_json(context_path, dict(resource_context))
+    root = Path(__file__).resolve().parent.parent
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+    env["PYTHONPATH"] = (
+        str(root) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+    )
+    try:
+        completed = subprocess.run(
+            [
+                str(python_executable),
+                "-m",
+                "platform_core.training_metrics",
+                "--request", str(request_path),
+                "--context", str(context_path),
+                "--model", str(model_argument),
+                "--output", str(output_path),
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+        canonical = re.findall(r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)", detail)
+        if canonical:
+            code, message = canonical[-1]
+            raise RuntimeError(f"{code}: {message.strip()}")
+        raise RuntimeError("RESOURCE_PREPARE_FAILED: " + detail[-4000:])
+    resolved = json.loads(output_path.read_text(encoding="utf-8"))
+    if not (
+        isinstance(resolved, dict)
+        and int(resolved.get("resolved_batch") or 0) > 0
+        and int(
+            resolved.get("resolved_workers")
+            if resolved.get("resolved_workers") is not None else -1
+        ) >= 0
+        and str(resolved.get("resource_strategy") or "")
+        == str(request.get("resource_strategy") or "auto")
+    ):
+        raise RuntimeError("RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid")
+    return dict(resolved)
+
+
 def _bool(value: Any) -> str:
     return "true" if bool(value) else "false"
 
@@ -2241,36 +2311,49 @@ class TrainingHandler:
             raise ValueError("training payload is invalid")
         if str(payload.get("training_input_state") or "").upper() != "READY":
             raise ValueError("TRAINING_PREPARE_REQUIRED: training input is not ready")
+        deferred_resource_resolution = payload.get("resource_resolution_deferred") is True
         prepared_resources = context.artifacts.read_json(
             context.task.task_id,
             "resolved-resources.json",
             default={},
         )
-        if not (
-            isinstance(prepared_resources, Mapping)
-            and int(prepared_resources.get("resolved_batch") or 0) > 0
-            and int(
-                prepared_resources.get("resolved_workers")
-                if prepared_resources.get("resolved_workers") is not None else -1
-            ) >= 0
-            and str(prepared_resources.get("resource_strategy") or "")
-            == str(payload.get("resource_strategy") or "auto")
-        ):
-            raise ValueError(
-                "RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid"
-            )
-        payload = {
-            **payload,
-            "resolved_batch": int(prepared_resources["resolved_batch"]),
-            "resolved_workers": int(prepared_resources["resolved_workers"]),
-            "resolved_cache": prepared_resources.get("resolved_cache", False),
-            "resolved_precision": str(
-                prepared_resources.get("resolved_precision")
-                or prepared_resources.get("precision")
-                or payload.get("precision")
-                or "auto"
-            ),
-        }
+        if not deferred_resource_resolution:
+            if not (
+                isinstance(prepared_resources, Mapping)
+                and int(prepared_resources.get("resolved_batch") or 0) > 0
+                and int(
+                    prepared_resources.get("resolved_workers")
+                    if prepared_resources.get("resolved_workers") is not None else -1
+                ) >= 0
+                and str(prepared_resources.get("resource_strategy") or "")
+                == str(payload.get("resource_strategy") or "auto")
+            ):
+                raise ValueError(
+                    "RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid"
+                )
+            payload = {
+                **payload,
+                "resolved_batch": int(prepared_resources["resolved_batch"]),
+                "resolved_workers": int(prepared_resources["resolved_workers"]),
+                "resolved_cache": prepared_resources.get("resolved_cache", False),
+                "resolved_precision": str(
+                    prepared_resources.get("resolved_precision")
+                    or prepared_resources.get("precision")
+                    or payload.get("precision")
+                    or "auto"
+                ),
+            }
+        else:
+            if (
+                str(payload.get("resource_strategy") or "auto").strip().lower() != "auto"
+                or normalize_training_device(
+                    payload.get("requested_device", payload.get("device"))
+                ) != "auto"
+            ):
+                raise ValueError(
+                    "RESOURCE_DEFERRED_STRATEGY_INVALID: only local AUTO device/AUTO resources may defer resolution"
+                )
+            prepared_resources = {}
         if str(payload.get("target") or "local").lower() != "local":
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
@@ -2574,9 +2657,51 @@ class TrainingHandler:
             "remote_cache_ready": True,  # All selected objects have been verified in the local portable bundle.
         }
         context.artifacts.atomic_write_json(context.task.task_id, "resource-context.json", resource_context)
-        payload.update(resource_context=str(context.artifacts.artifact_path(context.task.task_id, "resource-context.json")),
-                       resource_resolution=str(context.artifacts.artifact_path(context.task.task_id, "resolved-resources.json")),
-                       metrics_db=str(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")))
+        resolution_path = context.artifacts.artifact_path(
+            context.task.task_id, "resolved-resources.json",
+        )
+        if deferred_resource_resolution:
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=19,
+                stage="resolving_resources",
+                current_item="按已分配 GPU 冻结 Batch / Workers / Precision / Cache",
+            )
+            request = {
+                **payload,
+                "data": str(bundle / "manifest.json"),
+                "device": assigned_device,
+                "assigned_device": assigned_device,
+            }
+            prepared_resources = _resolve_resource_contract_subprocess(
+                python_executable,
+                request,
+                resource_context,
+                model,
+                resolution_path,
+            )
+            payload = {
+                **payload,
+                "resolved_batch": int(prepared_resources["resolved_batch"]),
+                "resolved_workers": int(prepared_resources["resolved_workers"]),
+                "resolved_cache": prepared_resources.get("resolved_cache", False),
+                "resolved_precision": str(
+                    prepared_resources.get("resolved_precision")
+                    or prepared_resources.get("precision")
+                    or payload.get("precision")
+                    or "auto"
+                ),
+            }
+        payload.update(
+            resource_context=str(context.artifacts.artifact_path(
+                context.task.task_id, "resource-context.json",
+            )),
+            resource_resolution=str(resolution_path),
+            metrics_db=str(context.artifacts.artifact_path(
+                context.task.task_id, "training-metrics.sqlite3",
+            )),
+        )
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"

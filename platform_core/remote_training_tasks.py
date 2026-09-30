@@ -31,6 +31,7 @@ from .storage.source_repository import StorageSourceRepository
 from .task_runtime import TaskKind, TaskStatus
 from .training_bundle_cache import TrainingBundleCache
 from .training_label_tasks import project_training_rows, resolve_training_label_contract
+from .training_resource_policy import auto_admission_evidence
 from .training_splits import (
     SplitMode,
     SplitRequest,
@@ -595,6 +596,42 @@ class TrainingPrepareHandler:
             payload.get("requested_device", payload.get("device")),
         )
         sampled = [row for row in sample_gpus() if row.get("telemetry_available")]
+        strategy = str(payload.get("resource_strategy") or "auto").strip().lower()
+        gpu_policy = str(payload.get("gpu_policy") or "auto").strip().lower()
+        if (
+            requested_device == "auto"
+            and strategy == "auto"
+            and gpu_policy in {"auto", "exclusive"}
+            and sampled
+        ):
+            model = YOLO(model_path)
+            admission = auto_admission_evidence(payload, model)
+            admission.update({
+                "candidate_gpu_count": len(sampled),
+                "candidate_gpu_uuids": [
+                    str(row.get("gpu_uuid") or "")
+                    for row in sampled
+                    if str(row.get("gpu_uuid") or "")
+                ],
+            })
+            context.artifacts.atomic_write_json(
+                target.task_id, "resource-admission.json", admission,
+            )
+            resolution_path = context.artifacts.artifact_path(
+                target.task_id, "resolved-resources.json",
+            )
+            return {
+                **payload,
+                "resource_resolution_deferred": True,
+                "resource_admission_ref": "resource-admission.json",
+                "gpu_memory_floor_bytes": int(admission["gpu_memory_floor_bytes"]),
+                "estimated_gpu_memory_bytes": None,
+                "resource_resolution": str(resolution_path),
+                "metrics_db": str(context.artifacts.artifact_path(
+                    target.task_id, "training-metrics.sqlite3",
+                )),
+            }
+
         resolution_device = requested_device
         selected_gpu = None
         if requested_device == "auto" and sampled:
