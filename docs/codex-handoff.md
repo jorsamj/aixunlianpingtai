@@ -1,6 +1,231 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-09-30 标注 Ground Truth / 训练投影 / Split 准确性收口（最新）
+
+本节生产代码 cutoff：
+
+`86e629f0293cee2a42f56d9978158880d79e653a`
+
+该 cutoff 正式版本为 `42.24.50`。当前 HEAD 对应 GitHub Actions 已确认 **25 / 25 runs 全部 completed success**，failure / queued / in_progress 均为 0。
+
+本交接文档提交本身不改生产逻辑，只更新文档与正式版本；`VERSION.txt` 按用户要求继续以最小 patch 递增到 `42.24.51`。
+
+### 1. 不再重做：训练资源 T0 / T1 / T2 与训练前端 owner 已 CLOSED
+
+上一节已经收口并保持成立：
+
+- TRAINING / TRAINING_PREPARE / Scheduler / canonical resource planner owner 唯一；
+- Remote 与 Local AUTO 都在 concrete GPU assignment 后冻结真实 resolved contract；
+- Trainer 不再二次规划 Batch / Workers / Cache / Precision；
+- live `runtime_resources` 已通过 fenced heartbeat 回到控制端；
+- 前端训练任务页、HTTP refresh、polling、recovery、创建弹窗均已有 canonical owner；
+- 多代历史 training renderer / refresh / log / classic form helper 已物理退役。
+
+本轮 `42.24.39 ~ 42.24.50` 的新增工作不是重新设计上述链路，而是继续收口 **Annotation Ground Truth、训练投影和 split 准确性**。
+
+### 2. CLOSED：AI 人工审核现在保存明确 annotation_scope
+
+AI Candidate -> 人工审核 -> Commit 到正式 AnnotationRepository 时，正式 scope 不再靠“当前项目全部标签”隐式推断。
+
+当前合同：
+
+- review scope 优先来自 task request，缺失时读取 candidate manifest 的 labels；
+- scope 会先经过本次 label mapping 映射到当前 canonical active label；
+- mapping 后目标已失效则 fail-closed；
+- 正式写入时持久化 `annotation_scope`；
+- 非 overwrite 时：保留旧 GT scope，并与本次 review scope 做并集；
+- overwrite 时：只替换**本次 review scope 内**的历史框，不得误删其他类别；
+- 即使本次 AI 结果为空，只要用户确认了该 scope，也必须持久化“该 scope 已审核为空”的正式真相；
+- overwrite 把某个 review scope 的旧框删空时，也必须实际写回 AnnotationRepository，不能因为最终没有 incoming box 就漏掉删除。
+
+因此现在“AI 没检测到 fire”只代表已审核的 fire scope 为负，不再错误扩展成“所有平台标签都为负”。
+
+### 3. CLOSED：结构化导入只对用户确认映射过的标签负责
+
+YOLO / COCO / VOC 等结构化导入完成标签映射后：
+
+- `annotation_scope` = 用户明确确认的 platform target labels；
+- 不再把“项目当前所有 active labels”写成该导入图片的审核范围；
+- 正样本与 `confirmed_empty` 都保存相同的 bounded imported scope；
+- mapping target 在 commit 时若已不是 active label，任务 fail-closed；
+- 结构化标注若没有任何已确认 platform scope，不允许伪造正式 annotated / confirmed_empty 真相。
+
+例如项目有 `smoke / fire / helmet`，某次数据集只映射了 `smoke / fire`，则导入负样本 scope 只能是 `[smoke, fire]`，不能把 `helmet` 自动当成负样本。
+
+### 4. CLOSED：人工标注显式冻结人工审核范围
+
+手工标注保存已把 `annotation_scope` 作为 AnnotationRepository 正式字段传入：
+
+- 正常有框保存：scope 与当前人工审核标签集合一致；
+- “确认无目标”：同样保存明确 scope；
+- API reload / Material projection 与正式 AnnotationRepository 保持一致。
+
+这避免后续训练、清洗、统一标签时把“框为空”误读成“对任意未来标签都确认无目标”。
+
+### 5. CLOSED：Source GT 与 Training Projection 已彻底分离
+
+训练允许“图片继续参与，但某些标签本次训练不让模型知晓”。因此 task-local training projection 可能把 source GT 中被排除标签的框隐藏，甚至把本次训练视角投影成 synthetic negative。
+
+现在正式区分：
+
+- `annotation_state / boxes / annotation_hash`：当前训练投影视角；
+- `source_annotation_state`：投影前真实 GT 状态；
+- `source_annotation_hash`：投影前真实 AnnotationRepository identity；
+- `source_labels`：投影前真实标签集合；
+- `training_projection_policy / training_projection_digest`：本次训练投影证据。
+
+关键规则：
+
+- 第一次 projection 先冻结 source identity；
+- 对已经投影过的 task-local row 再次 projection，不得把 synthetic negative 反过来当成 source GT；
+- input freeze 必须继续携带 `source_annotation_hash`；
+- online feedback / supplement provenance 校验优先比对 source annotation identity，而不是误拿训练投影 hash；
+- training projection 永远不得反写 Material / AnnotationRepository Ground Truth。
+
+因此“本次训练不选择 person”只影响本次训练输入，不会把素材库真实 person 标注删除或改成负样本。
+
+### 6. CLOSED：本次新增训练标签必须在 train split 中有正样本
+
+标签合同现在显式记录：
+
+`requested_new_label_codes`
+
+语义：
+
+- 首次训练时，用户本次选中的标签都属于 new labels；
+- 迭代训练时，只有本次相对 inherited schema 新增的标签属于 new labels；
+- inherited-only label 不强制每次都必须有 train positive，但会保留质量 warning。
+
+最初已增加 fail-closed gate：若 new label 最终只落在 validation/test，没有 train positive，则训练拒绝启动。
+
+当前 HEAD 又进一步优化为**在 split 生成阶段主动保护 new-label positive component**：
+
+- 在候选训练池中先为每个 required new label 找到正样本 component；
+- 这些 component 被保留在 train，不参加 validation/test 抽取；
+- 多标签同一 component 时优先用能覆盖更多尚未满足标签的 component；
+- 仍然遵守 group / duplicate component 不可拆分约束，避免数据泄漏；
+- 若 new label 的正样本根本不存在，或只存在于独立 test set，则明确 fail-closed；
+- split manifest 记录 `required_train_labels` 与 `reserved_train_component_count`，便于审计。
+
+结果：不会再出现“用户刚新增 smoke 标签，但唯一 smoke 正样本随机被划到 validation/test，导致模型训练阶段完全看不到 smoke”的情况。
+
+### 7. CLOSED：20k 规模随机 split 内存已收口
+
+旧 grouped split 为每个 reachable total 保存完整 selected-index tuple。大量 singleton component 时会形成接近二次增长的 Python tuple 状态，在 1 万～2 万素材规模下会放大训练前内存与延迟。
+
+当前实现改为：
+
+- Python integer bitset 保存 reachable totals；
+- predecessor arrays 保存首次到达路径；
+- 最终只对选中的 total 回溯 component；
+- 仍保持 exact grouped subset semantics、目标比例选择规则和不可拆分 component 约束。
+
+因此 split 计算的 Python-side 状态已改为受控的近线性内存，不再为每个 reachable total 复制整条索引 tuple。
+
+### 8. CLOSED：清洗标注审计统一使用 canonical active-label 语义
+
+`annotation_quality` 不再自己维护“disabled/inactive”简化判断，而是复用 canonical `active_label_options`。
+
+现在以下标签都会被视为非 active：
+
+- `merged`；
+- `deleted`；
+- `active=false` 的兼容历史数据；
+- 其他 canonical helper 判定为非 active 的状态。
+
+这与标签治理、训练 preflight、统一标签语义保持一致，避免清洗审计把已合并/删除标签继续当成有效类别。
+
+### 9. 版本推进记录
+
+本轮从上一生产 cutoff 后连续推进：
+
+- `42.24.39`：AI review annotation scope；
+- `42.24.40`：structured import annotation scope；
+- `42.24.41`：manual annotation review scope；
+- `42.24.42`：20k training split memory；
+- `42.24.43`：source GT / training projection truth 分离；
+- `42.24.44`：input freeze 携带 source annotation identity；
+- `42.24.45`：new label train-positive gate；
+- `42.24.46`：重复 training projection 保持 source GT；
+- `42.24.47`：AI overwrite 按 review scope 替换；
+- `42.24.48`：cleaning audit active-label truth；
+- `42.24.49`：AI overwrite 删除到空也正式持久化；
+- `42.24.50`：split 主动保留 new-label train positives；
+- 本交接提交：`42.24.51`。
+
+不要恢复任何“版本固定不动”的旧测试合同。
+
+### 10. 当前 CI 真实边界
+
+生产代码 cutoff：
+
+`86e629f0293cee2a42f56d9978158880d79e653a`
+
+当前该 HEAD 共触发 25 个 workflow runs，全部 completed success：
+
+- Frontend Runtime Stabilization；
+- Training Input Integrity（push + PR）；
+- Training Create First Open；
+- Remote Training Runtime（push + PR）；
+- Node Agent Executor；
+- Task Runtime Truth；
+- GPU Runtime Truth；
+- Label Normalization Contract（push + PR）；
+- AI Annotation Recovery；
+- Remote Material Import；
+- Remote Cleaning Runtime；
+- Remote Conversion Runtime；
+- Remote RKNN Board Runtime Protocol；
+- Central Node Assignment；
+- Resource Discovery SQLite Stability；
+- Online Feedback Runtime；
+- Storage Cache Governance；
+- External Algorithm Publish（push + PR）；
+- External Algorithm Platform；
+- ChangLian Login Auth；
+- Portable Deployment；
+- Video Frame Recovery。
+
+当前 failure / queued / in_progress 均为 0。
+
+### 11. 下一会话从这里继续
+
+新会话第一步必须重新读取：
+
+1. `origin/feature/external-algorithm-publishing` 当前真实 HEAD；
+2. `VERSION.txt`；
+3. 最近至少 20 commits；
+4. 当前 HEAD GitHub Actions / check-runs；
+5. 所有 completed failure 的真实 job log；
+6. `docs/codex-handoff.md` 最顶部本节；
+7. 本轮涉及的 AnnotationRepository / annotation_scope / training projection / split 代码与测试。
+
+不要重新做已 CLOSED 的 T0 / T1 / T2。
+
+后续优先继续检查主流程正确性与性能：
+
+- 批量素材导入 -> 正式 annotation_scope 是否始终准确；
+- 人工标注 / AI 标注 / AI 审核是否始终只写 AnnotationRepository 正式 GT；
+- 标签统一 / merged label / cleaning audit 是否和 active-label canonical helper 一致；
+- 训练 label contract -> projection -> split -> input freeze -> snapshot 是否前后一致；
+- 首次训练与迭代训练的新标签正样本、继承标签、负样本语义是否正确；
+- 1k / 10k / 20k 数据规模下 split、annotation read、freeze 的内存与延迟；
+- 新畅联发布链、转换结果追加权重、OSS 归档继续保持既有 owner。
+
+约束继续保持：
+
+- 不 merge main；
+- 不 tag；
+- 不 release；
+- 不 force push；
+- 不新增第二套 planner / scheduler / TaskRepository / PollRegistry / TrainingTaskRuntime / Annotation Ground Truth owner；
+- 不删除或放宽测试；
+- queued / in_progress 不得写成 success；
+- 每个正式提交继续最小 patch 递增版本号。
+
+
+
 ## 2026-09-30 训练资源真相 / Local AUTO / 前端 Owner / 版本治理最终收口（最新）
 
 本节生产代码 cutoff：
