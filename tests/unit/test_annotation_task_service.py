@@ -284,6 +284,77 @@ def test_ai_review_commit_preserves_bounded_annotation_scope(tmp_path, monkeypat
     assert captured[0]["expected_version"] == 3
 
 
+def test_ai_review_overwrite_replaces_review_scope_even_when_final_class_is_empty(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-overwrite-empty", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1",
+        "status": "empty",
+        "boxes": [],
+    }])
+    store.apply_decisions([
+        CandidateDecision(image_id="image-1", accepted=True),
+    ])
+
+    captured = []
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _image_ids: {
+            "image-1": {
+                "version": 7,
+                "annotation_scope": ["fire", "smoke"],
+                "boxes": [
+                    {
+                        "id": "old-fire",
+                        "class_id": 0,
+                        "label": "fire",
+                        "x1": 1,
+                        "y1": 1,
+                        "x2": 20,
+                        "y2": 20,
+                        "source": "manual",
+                    },
+                    {
+                        "id": "old-smoke",
+                        "class_id": 1,
+                        "label": "smoke",
+                        "x1": 30,
+                        "y1": 30,
+                        "x2": 60,
+                        "y2": 60,
+                        "source": "manual",
+                    },
+                ],
+            }
+        },
+    )
+
+    def write_many(_project, rows):
+        captured.extend(dict(row) for row in rows)
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-overwrite-empty",
+        store,
+        overwrite=True,
+        review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(captured) == 1
+    assert captured[0]["expected_version"] == 7
+    assert captured[0]["annotation_state"] == "annotated"
+    assert captured[0]["annotation_scope"] == ["fire", "smoke"]
+    assert [box["label"] for box in captured[0]["boxes"]] == ["smoke"]
+
+
 def test_ai_review_scope_is_canonicalized_and_fail_closed():
     assert _canonical_review_scope(
         ["old-fire", "smoke", "old-fire"],

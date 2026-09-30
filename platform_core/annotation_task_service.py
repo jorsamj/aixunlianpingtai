@@ -435,9 +435,13 @@ def commit_candidate_decisions(
                     "source_task_id": task_id,
                     "source": "ai_candidate_confirmed",
                 })
-            if overwrite and incoming:
-                replaced_classes = {box.get("class_id") for box in incoming}
-                previous = [box for box in previous if box.get("class_id") not in replaced_classes]
+            if overwrite:
+                reviewed_labels = set(review_scope_codes)
+                previous = [
+                    box for box in previous
+                    if str(box.get("label") or box.get("code") or "").strip()
+                    not in reviewed_labels
+                ]
             final_boxes = previous + incoming
             source_values = [str(box.get("source") or "").strip().lower() for box in final_boxes]
             is_ai_source = lambda source: source.startswith("ai_") or source in {"auto", "semi-auto"}
