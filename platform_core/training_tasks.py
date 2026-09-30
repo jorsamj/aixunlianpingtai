@@ -1153,6 +1153,7 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "source_available",
     "negative_origin",
     "source_annotation_state",
+    "source_annotation_hash",
     "source_labels",
     "training_excluded_boxes",
     "training_projection_policy",

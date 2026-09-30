@@ -1082,8 +1082,8 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         task_id, "input-freeze.json", default={},
     )
     frozen_candidate = next(
-        row for row in frozen["snapshot"]["images"]
-        if row["image_id"] == candidate_image["id"]
+        row for row in frozen["images"]
+        if row["id"] == candidate_image["id"]
     )
     assert frozen_candidate["source_annotation_hash"] == annotation["content_digest"]
     assert frozen_candidate["source_annotation_state"] == annotation["annotation_state"]
