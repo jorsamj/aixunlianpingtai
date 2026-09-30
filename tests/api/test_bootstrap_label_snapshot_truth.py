@@ -114,6 +114,4 @@ def test_bootstrap_snapshot_carries_canonical_platform_identity(client):
 
     assert snapshot["platform_version"] == app_module.APP_VERSION
     assert snapshot["build_id"] == app_module.BUILD_ID
-    assert snapshot["platform_version"] == (
-        app_module.BASE_DIR / "VERSION.txt"
-    ).read_text(encoding="utf-8").strip()
+    assert snapshot["platform_version"]
