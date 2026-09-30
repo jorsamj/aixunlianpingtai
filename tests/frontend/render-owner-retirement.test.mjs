@@ -29,10 +29,10 @@ test('algorithm and dataset navigation are canonical owners', () => {
   assert.match(main, /registerPageOwner\('数据集'/);
 });
 
-test('shadowed v423 v424 and v425 training-task UI renderers are physically retired', () => {
-  assert.equal(app.includes('window.renderTraining424=function(){'), false);
-  assert.equal(app.includes('window.renderTraining424=window.renderTraining425=function(){'), false);
-  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function renderTrainingLegacyBridge\(\)/);
+test('shadowed v423 v424 and v425 training-task render aliases are absent from app.js', () => {
+  for (const token of ['window.renderTraining423', 'window.renderTraining424', 'window.renderTraining425', 'renderTrainingLegacyBridge']) {
+    assert.equal(app.includes(token), false, token);
+  }
   assert.equal(app.includes('function trainActions428('), false);
   assert.equal(app.includes('function trainRows428('), false);
   assert.equal(app.includes('state.train428Tab'), false);
