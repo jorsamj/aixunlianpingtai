@@ -78,6 +78,26 @@ test('v423 v424 and v425 legacy task-list generations stay physically retired', 
   ]) assert.equal(app.includes(token), false, token);
 });
 
+test('pre-canonical v423 training create modal stays physically retired', () => {
+  for (const token of [
+    'openTrainTask423',
+    'startAlgorithmTrainingLegacy423_1',
+    'trainAssetChanged423',
+    'trainTargetChanged423',
+    'toggleTrainConfig423',
+    'syncTrainConfigSummary423',
+    'eligibleTargets423',
+    'selectedAsset423',
+    'lockTrain423',
+    'train423AlgorithmId',
+    'train423Edit',
+    'startTrain423()',
+    'startAlgorithmTraining428=window.startAlgorithmTraining423',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.match(app, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
+  assert.match(app, /window\.startAlgorithmTraining423=window\.openTrainingCreateCanonical429/);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);

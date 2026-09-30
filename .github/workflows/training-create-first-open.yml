@@ -78,6 +78,10 @@ jobs:
             exit 1
           fi
           grep -Fq 'training task create uses hydration truth even when training resource navigation is hidden' tests/browser/navigation-stability.spec.mjs
+          if grep -Eq 'openTrainTask423|startAlgorithmTrainingLegacy423_1|startTrain423\(\)' static/app.js; then
+            echo 'pre-canonical v423 training create modal must stay retired' >&2
+            exit 1
+          fi
           grep -Fq "build: 'training-create-hydration-" static/modules/training-create-hydration.js
           grep -Fq 'const hydrateOptions = async' static/modules/training-create-hydration.js
           grep -Fq 'const hydrateRecommendation = async' static/modules/training-create-hydration.js
@@ -113,7 +117,7 @@ jobs:
           if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
           grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
           grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
-          grep -Fq 'legacy training shell uses same-scope status helper before final visibility runtime takes ownership' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq 'canonical training visibility uses its same-scope status helper' tests/frontend/training-submit-validation.test.mjs
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs

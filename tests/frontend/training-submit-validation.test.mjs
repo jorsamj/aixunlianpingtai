@@ -106,13 +106,13 @@ test('external ChangLian training re-reads algorithm truth in hydration before c
   assert.match(recoveryRuntime, /训练已完成/);
 });
 
-test('legacy training shell uses same-scope status helper before final visibility runtime takes ownership', () => {
-  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const start = source.indexOf('function trainRows428(rows){');
-  const end = source.indexOf('window.renderTraining425=window.renderTraining424=window.renderTraining423', start);
+test('canonical training visibility uses its same-scope status helper', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  const start = source.indexOf('export function trainingTaskPresentationRow(');
+  const end = source.indexOf('export function tickTrainingClockRows', start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
-  assert.match(block, /statusText428\(j\.status\)/);
+  assert.match(block, /statusText\(status, job\)/);
   assert.doesNotMatch(block, /status429\(/);
 });
 
