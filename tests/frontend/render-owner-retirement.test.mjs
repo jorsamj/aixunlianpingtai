@@ -56,6 +56,23 @@ test('pre-canonical training page and refresh compatibility owners stay physical
   assert.match(main, /navigationStabilityRuntime\.registerPageOwner\('训练任务', \(\) => trainingTaskVisibilityRuntime\.render\(\)\)/);
 });
 
+test('zero-reference pre-canonical training helpers stay physically retired', () => {
+  for (const token of [
+    'window.fillTrainLegacy=',
+    'window.applyAlgLegacy=',
+    'window.showLogLegacy=',
+    'window.stopJob=',
+    'window.deleteJob=',
+    'state.activeLogJob',
+    'function statusPillClass(',
+    'function jobEtaText(',
+    'function renderJobProgress(',
+    'function hasLiveJob(',
+    'function pollActiveLog(',
+    'window.showLog=',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
 test('classic single-task mutation owners are physically retired from app.js', () => {
   for (const token of [
     'window.promoteTrain428=async function',

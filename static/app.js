@@ -76,11 +76,6 @@ window.nextImage=async()=>{const i=imgIndex();if(i>=0&&i<state.images.length-1){
 document.addEventListener('keydown',e=>{if(!state.activeImage)return;const locked=!!state.annotationHydrating420||!!state.annotationLoadError420;if(!locked&&e.key>='1'&&e.key<='9'){const hit=state.labels.find(l=>l.hotkey===e.key)||state.labels[+e.key-1];if(hit){state.activeLabel=hit.class_id;renderAnnSide();toast(`当前标签：${hit.display_name}`)}}if(!locked&&e.key==='Delete')deleteActiveBox();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!locked)saveAnn(false)}if(e.key==='ArrowLeft'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Prev')?.click();else prevImage()}if(e.key==='ArrowRight'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Next')?.click();else nextImage()}});
 
 function curTarget(){return state.targets.find(t=>t.id===$('#target')?.value)||state.targets[0]}
-window.fillTrainLegacy=()=>{const t=curTarget(),a=$('#alg'),m=$('#model');if(!t||!a||!m){return}a.innerHTML=(t.algorithms||[]).map(x=>`<option value="${x.key}">${esc(x.name)}</option>`).join('')||'<option value="">无可用算法</option>';m.innerHTML=(t.base_models||[]).map(x=>`<option value="${esc(x.value||'')}">${esc(x.label||x.value||'默认权重')}</option>`).join('')||'<option value="">默认权重</option>';applyAlg()};
-window.applyAlgLegacy=()=>{const t=curTarget();const alg=(t?.algorithms||[]).find(x=>x.key===$('#alg')?.value);if(!alg)return;$('#epochs').value=alg.default_epochs||$('#epochs').value;$('#imgsz').value=alg.default_imgsz||$('#imgsz').value;$('#batch').value=alg.default_batch||$('#batch').value;const m=$('#model');const hit=[...m.options].find(o=>(o.value||o.textContent).toLowerCase().includes(String(alg.base_model||'').toLowerCase()));if(hit)m.value=hit.value};
-window.showLogLegacy=async id=>{$('#log').textContent=await safe(api(`/api/projects/${pid()}/jobs/${id}/log`))||'暂无日志'};
-window.stopJob=async id=>{await safe(api(`/api/projects/${pid()}/jobs/${id}/stop`,{method:'POST'}));await reload();toast('已请求停止')};
-window.deleteJob=async id=>{if(!confirm('确认删除训练任务？'))return;await safe(api(`/api/v12/projects/${pid()}/jobs/${id}`,{method:'DELETE'}));await reload();toast('已删除')};
 
 window.syncTestModelByEnv=()=>{
   const envSel=$('#inferEnv'), modelSel=$('#testModel'); if(!envSel||!modelSel)return;
@@ -358,25 +353,9 @@ window.applyAlg=function applyAlgorithmSelectionCanonical26(){
 
 
 // -----------------------------
-// v23 训练状态实时刷新 + 独立检测台
+// v23 独立检测台
 // -----------------------------
 if (!navs.includes('检测台')) navs.push('检测台');
-state.activeLogJob = state.activeLogJob || null;
-
-function statusPillClass(s){return ['done','finished'].includes(s)?'ok':s==='failed'?'err':s==='stopped'?'blue':s==='running'?'warn':'warn'}
-function jobEtaText(j){if(['done','finished'].includes(j.status))return '已完成'; if(j.status==='failed')return '失败'; if(j.status==='stopped')return '已停止'; return j.eta_text||'估算中'}
-function renderJobProgress(j){
-  const pct=Math.max(0,Math.min(100,Number(j.progress_percent||0)));
-  const cur=Number(j.current_epoch||0), total=Number(j.total_epochs||j.epochs||0);
-  const ep=total?`${cur||0}/${total}轮`:'-';
-  return `<div class="job-progress"><div class="job-progress-top"><span>${ep}</span><span>${pct}%</span></div><div class="bar"><i style="width:${pct}%"></i></div><div class="item-sub">已用 ${esc(j.elapsed_text||'-')} · 剩余 ${esc(jobEtaText(j))}</div></div>`;
-}
-function hasLiveJob(){return (state.jobs||[]).some(j=>['queued','running','waiting','pending'].includes(j.status));}
-async function pollActiveLog(){if(!state.activeLogJob)return;const el=$('#log');if(!el)return;const txt=await safe(api(`/api/projects/${pid()}/jobs/${state.activeLogJob}/log`));if(txt!=null)el.textContent=txt||'暂无日志';el.scrollTop=el.scrollHeight;}
-
-
-window.showLog=async(id,silent=false)=>{state.activeLogJob=id;const el=$('#log');if(el){el.textContent=await safe(api(`/api/projects/${pid()}/jobs/${id}/log`))||'暂无日志';el.scrollTop=el.scrollHeight;}if(!silent)toast('已打开日志，后续自动刷新')};
-
 function modelOptionsHtml(selectedIndex=0){return (state.testModels||[]).map((m,i)=>`<option value="${i}" data-fw="${esc(m.framework||'ultralytics')}">${esc(m.label)}</option>`).join('')||'<option value="">暂无可测试模型</option>'}
 function pickEnvForFramework(fw){return (state.inferenceEnvs||[]).find(e=>e.framework===fw&&e.status==='ready') || (state.inferenceEnvs||[]).find(e=>e.status==='ready') || {};}
 function renderDetectionResult(r,title){return `<div class="compare-card"><div class="compare-head"><b>${esc(title)}</b><span>${esc(r.engine||'')} · ${esc(r.elapsed_ms||0)}ms · ${esc((r.detections||[]).length)}个结果</span></div>${r.image_url?`<img class="result-img" src="${r.image_url}">`:''}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${(r.detections||[]).map(d=>`<tr><td>${esc(d.label)}</td><td>${esc(d.confidence)}</td><td>${esc(d.x1)},${esc(d.y1)},${esc(d.x2)},${esc(d.y2)}</td></tr>`).join('')||'<tr><td colspan="3">无结果</td></tr>'}</tbody></table></div>`}
