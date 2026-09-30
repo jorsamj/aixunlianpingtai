@@ -9,6 +9,7 @@ from platform_core.annotation_candidates import CandidateDecision, CandidateStor
 from platform_core.annotation_task_service import (
     _prepare_runtime_request,
     _public_error,
+    _canonical_review_scope,
     commit_candidate_decisions,
     load_task_images,
     run_ai_annotation,
@@ -231,6 +232,71 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"
 
+
+
+def test_ai_review_commit_preserves_bounded_annotation_scope(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-scope", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1",
+        "status": "empty",
+        "boxes": [],
+    }])
+    store.apply_decisions([
+        CandidateDecision(image_id="image-1", accepted=True),
+    ])
+
+    captured = []
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {
+                "version": 3,
+                "boxes": [],
+                "annotation_scope": ["smoke"],
+            }
+            for image_id in image_ids
+        },
+    )
+
+    def write_many(_project, rows):
+        captured.extend(dict(row) for row in rows)
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-scope",
+        store,
+        overwrite=False,
+        review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(captured) == 1
+    assert captured[0]["annotation_state"] == "confirmed_empty"
+    assert captured[0]["annotation_scope"] == ["fire", "smoke"]
+    assert captured[0]["expected_version"] == 3
+
+
+def test_ai_review_scope_is_canonicalized_and_fail_closed():
+    assert _canonical_review_scope(
+        ["old-fire", "smoke", "old-fire"],
+        {"old-fire": "fire"},
+        {"fire": 4, "smoke": 7},
+    ) == ["fire", "smoke"]
+
+    with pytest.raises(ValueError, match="scope label is unavailable"):
+        _canonical_review_scope(
+            ["retired-label"],
+            {},
+            {"fire": 4},
+        )
 
 
 def test_cancel_arriving_after_formal_write_cannot_split_commit_journal(tmp_path, monkeypatch):

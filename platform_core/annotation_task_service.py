@@ -311,6 +311,34 @@ def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
+def _canonical_review_scope(
+    labels: Iterable[str],
+    mapping: dict[str, str],
+    label_ids: dict[str, int],
+) -> list[str]:
+    """Resolve the labels this human-confirmed AI task actually reviewed."""
+    resolved: list[str] = []
+    normalized_mapping = {
+        str(source).strip(): str(target).strip()
+        for source, target in dict(mapping or {}).items()
+        if str(source).strip() and str(target).strip()
+    }
+    for value in labels or ():
+        source = str(value or "").strip()
+        if not source:
+            continue
+        target = normalized_mapping.get(source, source)
+        if target not in label_ids:
+            raise ValueError(
+                f"annotation review scope label is unavailable: {source}"
+            )
+        if target not in resolved:
+            resolved.append(target)
+    if not resolved:
+        raise ValueError("annotation review has no canonical label scope")
+    return resolved
+
+
 def commit_candidate_decisions(
     project_id: str,
     task_id: str,
@@ -319,9 +347,24 @@ def commit_candidate_decisions(
     overwrite: bool,
     progress: Callable[[int, int, str], Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    review_scope: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
+    if review_scope is None:
+        manifest = store.artifacts.read_json(
+            task_id, "candidates/manifest.json", default={},
+        )
+        review_scope = (
+            manifest.get("labels") or []
+            if isinstance(manifest, dict)
+            else []
+        )
+    review_scope_codes = tuple(dict.fromkeys(
+        str(value).strip() for value in review_scope if str(value).strip()
+    ))
+    if not review_scope_codes:
+        raise ValueError("AI annotation review scope is required before formal commit")
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
     accepted_total = max(0, int(store.summary().get("accepted") or 0))
@@ -361,6 +404,22 @@ def commit_candidate_decisions(
             previous_row = previous_by_id.get(image_id) or {}
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
+            previous_scope = {
+                str(value).strip()
+                for value in (previous_row.get("annotation_scope") or [])
+                if str(value).strip()
+            }
+            previous_scope.update(
+                str(box.get("label") or box.get("code") or "").strip()
+                for box in previous
+                if str(box.get("label") or box.get("code") or "").strip()
+            )
+            if "*" in previous_scope:
+                annotation_scope = ["*"]
+            else:
+                annotation_scope = sorted(
+                    previous_scope | set(review_scope_codes)
+                )
             existing = {
                 (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
                 for box in previous
@@ -402,6 +461,7 @@ def commit_candidate_decisions(
                     "image_id": image_id,
                     "boxes": final_boxes,
                     "annotation_state": annotation_state,
+                    "annotation_scope": annotation_scope,
                     "annotation_origin": annotation_origin,
                     "expected_version": expected_version,
                 })
@@ -478,8 +538,18 @@ def commit_confirmed_review(context):
         str(item["code"]): int(item["class_id"])
         for item in _annotation_label_catalog(get_project(context.task.project_id))
     }
+    mapping = dict(confirmation.get("label_mapping") or {})
+    manifest = context.artifacts.read_json(
+        context.task.task_id, "candidates/manifest.json", default={},
+    )
+    raw_review_labels = list((request or {}).get("labels") or [])
+    if not raw_review_labels and isinstance(manifest, dict):
+        raw_review_labels = list(manifest.get("labels") or [])
     try:
-        store.remap_labels(dict(confirmation.get("label_mapping") or {}), label_ids)
+        review_scope = _canonical_review_scope(
+            raw_review_labels, mapping, label_ids,
+        )
+        store.remap_labels(mapping, label_ids)
     except ValueError as error:
         raise RuntimeError(
             "confirmed annotation label mapping is no longer valid: " + str(error)
@@ -505,8 +575,8 @@ def commit_confirmed_review(context):
         overwrite=bool((request or {}).get("overwrite")),
         progress=update_progress,
         cancelled=context.cancel_requested,
+        review_scope=review_scope,
     )
-    mapping = dict(confirmation.get("label_mapping") or {})
     if mapping:
         try:
             from app import remember_project_label_aliases
