@@ -4,7 +4,6 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&
 const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>el.classList.add('hidden'),2600)};
 async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
 const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
-const navs=['算法列表','训练资源','数据集','训练任务','测试发布'];
 function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
 function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase;
@@ -355,16 +354,12 @@ window.applyAlg=function applyAlgorithmSelectionCanonical26(){
 // -----------------------------
 // v23 独立检测台
 // -----------------------------
-if (!navs.includes('检测台')) navs.push('检测台');
 function modelOptionsHtml(selectedIndex=0){return (state.testModels||[]).map((m,i)=>`<option value="${i}" data-fw="${esc(m.framework||'ultralytics')}">${esc(m.label)}</option>`).join('')||'<option value="">暂无可测试模型</option>'}
 function pickEnvForFramework(fw){return (state.inferenceEnvs||[]).find(e=>e.framework===fw&&e.status==='ready') || (state.inferenceEnvs||[]).find(e=>e.status==='ready') || {};}
 function renderDetectionResult(r,title){return `<div class="compare-card"><div class="compare-head"><b>${esc(title)}</b><span>${esc(r.engine||'')} · ${esc(r.elapsed_ms||0)}ms · ${esc((r.detections||[]).length)}个结果</span></div>${r.image_url?`<img class="result-img" src="${r.image_url}">`:''}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${(r.detections||[]).map(d=>`<tr><td>${esc(d.label)}</td><td>${esc(d.confidence)}</td><td>${esc(d.x1)},${esc(d.y1)},${esc(d.x2)},${esc(d.y2)}</td></tr>`).join('')||'<tr><td colspan="3">无结果</td></tr>'}</tbody></table></div>`}
 async function benchPredictOne(selectId,file,conf){const m=state.testModels[+$(selectId).value];if(!m)throw new Error('请选择模型');const fw=m.framework||($(selectId).selectedOptions[0]?.dataset.fw)||'ultralytics';const env=pickEnvForFramework(fw);const fd=new FormData();fd.append('file',file);fd.append('model_name',m.model_name||'');fd.append('model_source',m.model_source||'project');fd.append('local_path',m.path||'');fd.append('algorithm_id',m.algorithm_id||'');fd.append('version_id',m.version_id||'');fd.append('conf',conf);fd.append('inference_framework',fw);fd.append('inference_env_id',env.id||'');const r=await api(`/api/v12/projects/${pid()}/predict`,{method:'POST',body:fd});return {r,m,env};}
 window.benchSingleLegacy=async(selectId)=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">检测中...</div>';try{const {r,m}=await benchPredictOne(selectId,file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(r,m.label||m.model_name||'模型检测')}catch(e){toast(e.message||e);out.innerHTML=''}};
 window.benchCompareLegacy1=async()=>{const file=$('#benchFile')?.files?.[0];if(!file)return toast('请选择测试图片');const out=$('#benchResult');out.innerHTML='<div class="loading">两个模型检测中...</div>';try{const a=await benchPredictOne('benchModelA',file,$('#benchConf').value||0.25);const b=await benchPredictOne('benchModelB',file,$('#benchConf').value||0.25);out.innerHTML=renderDetectionResult(a.r,a.m.label||'原始模型')+renderDetectionResult(b.r,b.m.label||'新模型')}catch(e){toast(e.message||e);out.innerHTML=''}};
-
-// 初次加载后若脚本后续追加了检测台，再重绘一次导航。
-setTimeout(()=>{try{renderNav()}catch(e){}},0);
 
 // ===== v24 overrides: Paddle安全训练参数 + 更完整检测台 =====
 (function(){
@@ -1221,10 +1216,6 @@ window.installUsability417=function(){
 
 // ===== v33: 视频切帧任务 + 素材库自动标注任务 =====
 (function(){
-  if(!navs.includes('视频切帧')){
-    const idx=navs.indexOf('数据集');
-    navs.splice(idx>=0?idx+1:2,0,'视频切帧');
-  }
   state.videoTasks=[];
   state.prelabelTasks=[];
   state.prelabelServices=[];
