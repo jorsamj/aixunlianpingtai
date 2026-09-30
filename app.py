@@ -2946,7 +2946,7 @@ def _v50_material_annotation_patch(
 def write_annotation(
     project_id: str, image_id: str, boxes: List[Dict[str, Any]],
     annotation_state=None, annotation_origin: Optional[str] = None,
-    *, expected_version: Optional[int] = None,
+    *, annotation_scope=None, expected_version: Optional[int] = None,
 ):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
@@ -2958,6 +2958,7 @@ def write_annotation(
         image_id,
         boxes,
         annotation_state,
+        annotation_scope=annotation_scope,
         project_material=False,
         expected_version=expected_version,
     )
@@ -5070,6 +5071,7 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             image_id,
             clean_boxes,
             annotation_state,
+            annotation_scope=sorted(label_ids),
             expected_version=payload.expected_version,
         )
     except AnnotationConflictError as error:

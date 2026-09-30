@@ -11,6 +11,7 @@ def test_save_reload_and_thumbnail_summary_match(client, seeded_project):
     assert material["labels"] == ["fire"]
     assert material["box_count"] == 1
     assert material["annotation_status"] == "annotated"
+    assert saved.json()["annotation"]["annotation_scope"] == ["fire", "smoke"]
     reloaded = client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()
     assert reloaded["boxes"] == saved.json()["annotation"]["boxes"]
     listed = client.get(f"/api/projects/{pid}/images?dataset_id=default").json()
@@ -47,6 +48,7 @@ def test_empty_annotation_requires_explicit_no_target_confirmation(client, seede
     assert body["saved_boxes"] == 0
     assert body["annotation"]["boxes"] == []
     assert body["annotation"]["annotation_state"] == "confirmed_empty"
+    assert body["annotation"]["annotation_scope"] == ["fire", "smoke"]
 
 
 
