@@ -1419,7 +1419,6 @@ def _resolve_resource_contract_subprocess(
     request: Mapping[str, Any],
     resource_context: Mapping[str, Any],
     model_argument: str,
-    output_path: Path,
 ) -> dict[str, Any]:
     """Run the one canonical resolver in the selected Ultralytics runtime."""
     root = Path(__file__).resolve().parent.parent
@@ -2650,8 +2649,20 @@ class TrainingHandler:
                 artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
             )
         model = str(base.get("base_model_path") or mother)
+        assignment_node = str(assignment.get("node_id") or "").strip()
+        active_at = datetime.now(timezone.utc).isoformat()
         with context.repository._connect() as database:
-            reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()
+            if assignment_node:
+                reservations = database.execute(
+                    "SELECT * FROM gpu_reservations WHERE node_id=? AND expires_at>?",
+                    (assignment_node, active_at),
+                ).fetchall()
+            else:
+                # Compatibility for pre-node-scoped local runtimes.
+                reservations = database.execute(
+                    "SELECT * FROM gpu_reservations WHERE expires_at>?",
+                    (active_at,),
+                ).fetchall()
         resource_context = {
             "gpu_uuid": assignment.get("gpu_uuid"),
             "reserved_bytes": assignment.get("reserved_bytes"),
@@ -2685,7 +2696,6 @@ class TrainingHandler:
                 request,
                 resource_context,
                 model,
-                resolution_path,
             )
             context.artifacts.atomic_write_json(
                 context.task.task_id,
