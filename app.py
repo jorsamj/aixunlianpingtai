@@ -82,6 +82,7 @@ from platform_core.changlian_login_auth import (
 from platform_core.labels import (
     active_label_options,
     confirmed_alias_updates,
+    label_governance_lock_path,
     label_identity_values,
     normalize_label_aliases,
 )
@@ -4292,6 +4293,13 @@ class AddLabelReq(BaseModel):
 
 @app.post("/api/projects/{project_id}/labels")
 def add_label(project_id: str, payload: AddLabelReq):
+    with FileLock(
+        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
+    ):
+        return _add_label_locked(project_id, payload)
+
+
+def _add_label_locked(project_id: str, payload: AddLabelReq):
     project = get_project(project_id)
     normalized_code = normalize_label(payload.label)
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code):
@@ -8517,6 +8525,19 @@ def remember_project_label_aliases(
     external_classes,
     label_mapping,
 ) -> Dict[str, List[str]]:
+    with FileLock(
+        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
+    ):
+        return _remember_project_label_aliases_locked(
+            project_id, external_classes, label_mapping,
+        )
+
+
+def _remember_project_label_aliases_locked(
+    project_id: str,
+    external_classes,
+    label_mapping,
+) -> Dict[str, List[str]]:
     project = get_project(project_id)
     updates = confirmed_alias_updates(
         external_classes or [],
@@ -8677,6 +8698,13 @@ def v12_list_labels(project_id: str):
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
+    with FileLock(
+        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
+    ):
+        return _v12_update_label_locked(project_id, class_id, payload)
+
+
+def _v12_update_label_locked(project_id: str, class_id: int, payload: LabelUpdateReq):
     project = get_project(project_id)
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
@@ -8741,6 +8769,13 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
 
 @app.delete("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_delete_label(project_id: str, class_id: int):
+    with FileLock(
+        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
+    ):
+        return _v12_delete_label_locked(project_id, class_id)
+
+
+def _v12_delete_label_locked(project_id: str, class_id: int):
     project = get_project(project_id)
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
@@ -12473,6 +12508,33 @@ def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _v19_assert_frozen_mapping_targets_active(
+    project_id: str,
+    label_mapping: Optional[Dict[str, str]],
+) -> None:
+    targets = sorted({
+        str(value).strip()
+        for value in dict(label_mapping or {}).values()
+        if str(value).strip()
+    })
+    if not targets:
+        return
+    active = {
+        str(item.get("code") or "").strip()
+        for item in active_label_options(project_label_items(get_project(project_id)))
+        if str(item.get("code") or "").strip()
+    }
+    unavailable = [code for code in targets if code not in active]
+    if unavailable:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "ZIP 标签映射目标已失效，请恢复标签后重试或重新创建导入任务："
+                + "、".join(unavailable[:10])
+            ),
+        )
+
+
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
     processing_started = time.time()
@@ -12482,10 +12544,12 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
     selected_paths = [v19_normalize_zip_path(x) for x in selected_paths if x]
     total_selected = len(selected_paths) or int(job.get("image_count", 0) or 0)
     report = v19_build_report_base(job)
+    frozen_mapping = dict(job.get("label_mapping") or {}) or None
     lock = _v50_project_import_lock(project_id)
     try:
         # 同一项目的压缩包导入串行执行，避免大型导入争用磁盘与任务状态。
         with lock:
+            _v19_assert_frozen_mapping_targets_active(project_id, frozen_mapping)
             _v50_begin_image_batch(project_id)
             try:
                 extract_started = time.time()
@@ -12543,7 +12607,6 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 )
                 parse_root = extracted
                 imported = False
-                frozen_mapping = dict(job.get("label_mapping") or {}) or None
                 import_context = {
                     "import_batch_id": job_id,
                     "source_task_id": job_id,
@@ -12639,7 +12702,19 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
                     message="解析完成，正在一次性提交素材索引与标注投影",
                 )
-                _v50_end_image_batch(save=True)
+                try:
+                    with FileLock(
+                        str(label_governance_lock_path(project_dir(project_id))),
+                        timeout=60,
+                    ):
+                        _v19_assert_frozen_mapping_targets_active(
+                            project_id, frozen_mapping,
+                        )
+                        _v50_end_image_batch(save=True)
+                except BaseException:
+                    if _v50_active_image_batch(project_id):
+                        _v50_end_image_batch(save=False)
+                    raise
                 metrics = _v19_phase_metrics("DB_COMMIT", commit_total, commit_total, started_at=commit_started)
                 v19_update_job(
                     project_id, job_id,
@@ -16797,12 +16872,15 @@ def v42_create_algorithm_blueprint(project_id: str, payload: V42AlgorithmBluepri
         name=payload.name.strip(), remark=payload.remark or '', industry=payload.industry or '',
         algorithm_type=payload.algorithm_type or 'yolo_ultralytics'
     ))
-    project = get_project(project_id)
-    for raw in payload.labels or []:
-        code = normalize_label(raw)
-        if code:
-            ensure_label(project, code)
-            project = get_project(project_id)
+    with FileLock(
+        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
+    ):
+        project = get_project(project_id)
+        for raw in payload.labels or []:
+            code = normalize_label(raw)
+            if code:
+                ensure_label(project, code)
+                project = get_project(project_id)
     blueprints = _v42_list(project_id, 'algorithm_blueprints')
     item = {
         "id": uuid.uuid4().hex[:12], "algorithm_id": alg.get("id"), "name": payload.name.strip(),

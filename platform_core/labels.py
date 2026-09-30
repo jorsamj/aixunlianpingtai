@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 
@@ -76,6 +77,11 @@ def active_label_options(items: Sequence[Mapping]) -> list[dict]:
         if str(item.get("status") or "active").strip().lower() == "active"
         and item.get("active") is not False
     ]
+
+
+def label_governance_lock_path(project_path) -> Path:
+    """Cross-process fence for project label-schema read/check/write decisions."""
+    return Path(project_path) / ".label-governance.lock"
 
 
 def labels_match_any(image_labels: Iterable[str], selected: set[str]) -> bool:

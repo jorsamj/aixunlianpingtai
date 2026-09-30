@@ -3,6 +3,7 @@ import json
 import time
 import zipfile
 
+import app as app_module
 from PIL import Image
 
 
@@ -395,3 +396,53 @@ def test_v19_empty_structured_sidecar_without_confirmed_schema_stays_unannotated
             f"/api/v12/projects/{project['id']}/labels"
         ).json()["items"]
         assert labels == []
+
+
+
+def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_back(
+    client, monkeypatch
+):
+    project = client.post("/api/projects", json={
+        "name": "zip-label-final-fence",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("labels-final-fence.zip", _yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+
+    original = app_module._v19_assert_frozen_mapping_targets_active
+    calls = {"count": 0}
+
+    def change_label_before_final_check(project_id, mapping):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            current = app_module.get_project(project_id)
+            current["label_meta"][0]["status"] = "inactive"
+            current["label_meta"][0]["active"] = False
+            app_module.save_project(current)
+        return original(project_id, mapping)
+
+    monkeypatch.setattr(
+        app_module,
+        "_v19_assert_frozen_mapping_targets_active",
+        change_label_before_final_check,
+    )
+    started = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={"label_mapping": {"0": "helmet", "1": "helmet"}},
+    )
+    assert started.status_code == 200, started.text
+    final = _wait_job(client, project["id"], job["id"])
+    assert final["status"] == "failed"
+    assert calls["count"] >= 2
+    assert "标签映射目标已失效" in str(final.get("error") or final.get("message") or "")
+
+    imported_ids = list((final.get("report") or {}).get("imported_image_ids") or [])
+    assert imported_ids
+    assert app_module.material_store(project["id"]).get_many(imported_ids) == []
+    assert app_module.AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).get_many(imported_ids) == {}

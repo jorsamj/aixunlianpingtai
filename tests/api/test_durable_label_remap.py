@@ -1,11 +1,17 @@
 import sqlite3
+import threading
+import time
 
 import app as app_module
+from filelock import FileLock
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.labels import label_governance_lock_path
 from platform_core.material_batches import (
+    BatchRequestError,
     BatchSelection,
     MaterialBatchHandler,
+    _retire_merged_source_labels,
     create_annotation_remap_batch,
 )
 from platform_core.task_runtime import (
@@ -669,3 +675,144 @@ def test_active_material_batch_list_exposes_safe_remap_resume_truth(
     assert row["status"] == "QUEUED"
     assert "options" not in row
     assert "selection_spec" not in row
+
+
+
+def test_label_delete_rechecks_references_after_governance_lock_wait(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = FileLock(
+        str(label_governance_lock_path(app_module.project_dir(project_id))),
+        timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def delete_label():
+        started.set()
+        try:
+            outcome["result"] = app_module.v12_delete_label(project_id, 1)
+        except BaseException as error:
+            outcome["error"] = error
+
+    gate.acquire()
+    try:
+        worker = threading.Thread(target=delete_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    finally:
+        gate.release()
+
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert getattr(error, "status_code", None) == 400
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"
+
+
+def test_label_code_edit_rechecks_references_after_governance_lock_wait(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = FileLock(
+        str(label_governance_lock_path(app_module.project_dir(project_id))),
+        timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def edit_label():
+        started.set()
+        try:
+            outcome["result"] = app_module.v12_update_label(
+                project_id,
+                1,
+                app_module.LabelUpdateReq(code="smoke_renamed"),
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    gate.acquire()
+    try:
+        worker = threading.Thread(target=edit_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    finally:
+        gate.release()
+
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert getattr(error, "status_code", None) == 409
+    current = app_module.get_project(project_id)
+    assert current["labels"][1] == "smoke"
+
+
+def test_label_retirement_rechecks_new_references_under_governance_lock(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = FileLock(
+        str(label_governance_lock_path(app_module.project_dir(project_id))),
+        timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def retire_label():
+        started.set()
+        try:
+            outcome["result"] = _retire_merged_source_labels(
+                app_module.DATA_DIR,
+                project_id,
+                ["smoke"],
+                "fire",
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    gate.acquire()
+    try:
+        worker = threading.Thread(target=retire_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    finally:
+        gate.release()
+
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert isinstance(error, BatchRequestError)
+    assert error.code == "ANNOTATION_REMAP_REFERENCES_REMAIN"
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"
+    assert not current["label_meta"][1].get("merged_into")

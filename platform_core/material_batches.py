@@ -19,6 +19,7 @@ from .cleaning import DurableHashIndex, clean_options
 from .cleaning import ImageDecodeError
 from .cleaning_analysis_runtime import CleaningAnalysisRuntime
 from .cleaning_batches import clean_batch
+from .labels import label_governance_lock_path
 from .material_repository import MaterialRepository
 from .material_repository_batch import _transform_many
 from .material_selection import MaterialSelectionSpec, SelectionScope
@@ -846,79 +847,97 @@ def _retire_merged_source_labels(
     project_path = data_dir / "projects" / project_id
     meta_path = project_path / "meta.json"
     projects_path = data_dir / "projects.json"
-    with FileLock(str(projects_path) + ".lock", timeout=60):
-        with FileLock(str(meta_path) + ".lock", timeout=60):
-            project = json.loads(meta_path.read_text(encoding="utf-8"))
-            labels = list(project.get("labels") or [])
-            metadata = project.setdefault("label_meta", [])
-            while len(metadata) < len(labels):
-                metadata.append({})
-            if target not in labels:
-                raise BatchRequestError(
-                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
-                    "目标标签已不存在，不能完成来源标签退役",
-                    409,
-                )
-            target_index = labels.index(target)
-            target_meta = (
-                metadata[target_index]
-                if isinstance(metadata[target_index], dict)
-                else {}
+    with FileLock(str(label_governance_lock_path(project_path)), timeout=60):
+        annotation_remaining = AnnotationRepository(project_path).label_reference_preview(
+            sources
+        )
+        if int(annotation_remaining.get("affected_images") or 0) != 0:
+            raise BatchRequestError(
+                "ANNOTATION_REMAP_REFERENCES_REMAIN",
+                "ANNOTATION_REMAP_REFERENCES_REMAIN: 标签统一完成后又出现新的 AnnotationRepository 来源标签引用，已阻止来源标签退役",
+                409,
             )
-            metadata[target_index] = target_meta
-            if str(target_meta.get("status") or "active").lower() != "active":
-                raise BatchRequestError(
-                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
-                    "目标标签已停用，不能完成来源标签退役",
-                    409,
+        material_remaining = MaterialRepository(project_path).label_reference_preview(
+            sources
+        )
+        if int(material_remaining.get("affected_images") or 0) != 0:
+            raise BatchRequestError(
+                "MATERIAL_REMAP_REFERENCES_REMAIN",
+                "MATERIAL_REMAP_REFERENCES_REMAIN: 标签统一完成后又出现新的 MaterialRepository 来源标签引用，已阻止来源标签退役",
+                409,
+            )
+        with FileLock(str(projects_path) + ".lock", timeout=60):
+            with FileLock(str(meta_path) + ".lock", timeout=60):
+                project = json.loads(meta_path.read_text(encoding="utf-8"))
+                labels = list(project.get("labels") or [])
+                metadata = project.setdefault("label_meta", [])
+                while len(metadata) < len(labels):
+                    metadata.append({})
+                if target not in labels:
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                        "目标标签已不存在，不能完成来源标签退役",
+                        409,
+                    )
+                target_index = labels.index(target)
+                target_meta = (
+                    metadata[target_index]
+                    if isinstance(metadata[target_index], dict)
+                    else {}
                 )
-            retired = []
-            merged_at = utc_now()
-            for source in sources:
-                if source not in labels:
+                metadata[target_index] = target_meta
+                if str(target_meta.get("status") or "active").lower() != "active":
                     raise BatchRequestError(
-                        "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
-                        f"来源标签 {source} 已从标签配置中消失",
+                        "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                        "目标标签已停用，不能完成来源标签退役",
                         409,
                     )
-                index = labels.index(source)
-                row = metadata[index] if isinstance(metadata[index], dict) else {}
-                metadata[index] = row
-                status = str(row.get("status") or "active").lower()
-                if status == "merged" and str(row.get("merged_into") or "") == target:
+                retired = []
+                merged_at = utc_now()
+                for source in sources:
+                    if source not in labels:
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                            f"来源标签 {source} 已从标签配置中消失",
+                            409,
+                        )
+                    index = labels.index(source)
+                    row = metadata[index] if isinstance(metadata[index], dict) else {}
+                    metadata[index] = row
+                    status = str(row.get("status") or "active").lower()
+                    if status == "merged" and str(row.get("merged_into") or "") == target:
+                        retired.append(source)
+                        continue
+                    if status != "active":
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                            f"来源标签 {source} 状态已变化，请人工复核",
+                            409,
+                        )
+                    row["status"] = "merged"
+                    row["merged_into"] = target
+                    row["merged_at"] = merged_at
                     retired.append(source)
-                    continue
-                if status != "active":
-                    raise BatchRequestError(
-                        "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
-                        f"来源标签 {source} 状态已变化，请人工复核",
-                        409,
-                    )
-                row["status"] = "merged"
-                row["merged_into"] = target
-                row["merged_at"] = merged_at
-                retired.append(source)
-            project["updated_at"] = merged_at
-            _atomic_write_json_file(meta_path, project)
+                project["updated_at"] = merged_at
+                _atomic_write_json_file(meta_path, project)
 
-            projects = []
-            if projects_path.is_file():
-                try:
-                    value = json.loads(projects_path.read_text(encoding="utf-8"))
-                    projects = value if isinstance(value, list) else []
-                except Exception:
-                    projects = []
-            replaced = False
-            for index, item in enumerate(projects):
-                if str(item.get("id") or "") == str(project_id):
-                    projects[index] = project
-                    replaced = True
-                    break
-            if not replaced:
-                projects.append(project)
-            _atomic_write_json_file(projects_path, projects)
-    return retired
-
+                projects = []
+                if projects_path.is_file():
+                    try:
+                        value = json.loads(projects_path.read_text(encoding="utf-8"))
+                        projects = value if isinstance(value, list) else []
+                    except Exception:
+                        projects = []
+                replaced = False
+                for index, item in enumerate(projects):
+                    if str(item.get("id") or "") == str(project_id):
+                        projects[index] = project
+                        replaced = True
+                        break
+                if not replaced:
+                    projects.append(project)
+                _atomic_write_json_file(projects_path, projects)
+        return retired
 
 class MaterialBatchHandler:
     def __init__(self, data_dir):
