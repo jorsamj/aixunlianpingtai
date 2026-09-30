@@ -87,6 +87,75 @@ def test_annotation_quality_audit_is_warning_only_and_uses_formal_ground_truth(t
     assert after["boxes"] == before["boxes"]
 
 
+def test_annotation_quality_treats_merged_deleted_and_active_false_labels_as_inactive(tmp_path):
+    (tmp_path / "meta.json").write_text(
+        json.dumps({
+            "labels": ["active", "merged", "deleted", "legacy-active-false"],
+            "label_meta": [
+                {"code": "active", "status": "active", "active": True},
+                {"code": "merged", "status": "merged", "active": False},
+                {"code": "deleted", "status": "deleted", "active": False},
+                {"code": "legacy-active-false", "status": "active", "active": False},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(tmp_path)
+    materials.upsert({
+        "id": "image", "filename": "image.jpg", "stored_name": "image.jpg",
+        "object_key": "uploads/image.jpg", "processing_status": "processed",
+        "width": 1000, "height": 1000,
+    })
+    annotations = AnnotationRepository(tmp_path)
+    annotations.upsert(
+        "image",
+        [
+            {"label": "active", "class_id": 0, "x1": 10, "y1": 10, "x2": 100, "y2": 100},
+            {"label": "merged", "class_id": 1, "x1": 120, "y1": 10, "x2": 220, "y2": 100},
+            {"label": "deleted", "class_id": 2, "x1": 240, "y1": 10, "x2": 340, "y2": 100},
+            {"label": "legacy-active-false", "class_id": 3, "x1": 360, "y1": 10, "x2": 460, "y2": 100},
+        ],
+        annotation_state="annotated",
+    )
+    manifest = BatchSelection(tmp_path / "selection.sqlite3")
+    try:
+        with manifest.transaction():
+            manifest.database.execute(
+                "INSERT INTO selection(image_id,state) VALUES ('image','succeeded')"
+            )
+            manifest.database.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES ('frozen','now')"
+            )
+            manifest.database.execute(
+                """CREATE TABLE IF NOT EXISTS clean_results (
+                    image_id TEXT PRIMARY KEY,
+                    result_json TEXT NOT NULL,
+                    flagged INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            manifest.database.execute(
+                "INSERT INTO clean_results(image_id,result_json,flagged) VALUES (?,?,0)",
+                ("image", json.dumps({
+                    "image_id": "image",
+                    "metrics": {"width": 1000, "height": 1000},
+                    "issues": [],
+                })),
+            )
+
+        summary = audit_cleaning_annotations(
+            tmp_path, manifest.database, materials, enabled=True,
+        )
+        assert summary["review_images"] == 1
+        item = read_annotation_audit(manifest.database)["items"][0]
+        inactive = [
+            issue for issue in item["issues"]
+            if issue["code"] == "label_disabled"
+        ]
+        assert sum(int(issue["count"]) for issue in inactive) == 3
+    finally:
+        manifest.close()
+
+
 def test_annotation_quality_audit_can_be_disabled_without_touching_ground_truth(tmp_path):
     materials = MaterialRepository(tmp_path)
     materials.upsert({

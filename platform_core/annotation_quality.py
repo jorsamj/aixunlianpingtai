@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from .annotation_repository import AnnotationRepository
 from .annotations import annotation_summary
+from .labels import active_label_options
 from .material_repository import MaterialRepository
 
 
@@ -35,16 +36,24 @@ def _label_catalog(project_path: Path) -> tuple[set[str], set[str]]:
         return set(), set()
     labels = list(meta.get("labels") or [])
     label_meta = list(meta.get("label_meta") or [])
-    known, disabled = set(), set()
+    items = []
     for index, raw in enumerate(labels):
         code = str(raw or "").strip()
         if not code:
             continue
-        known.add(code)
-        info = label_meta[index] if index < len(label_meta) and isinstance(label_meta[index], dict) else {}
-        if str(info.get("status") or "active").strip().lower() in {"disabled", "inactive"}:
-            disabled.add(code)
-    return known, disabled
+        info = (
+            dict(label_meta[index])
+            if index < len(label_meta) and isinstance(label_meta[index], dict)
+            else {}
+        )
+        items.append({"code": code, **info})
+    known = {str(item["code"]) for item in items}
+    active = {
+        str(item.get("code") or "").strip()
+        for item in active_label_options(items)
+        if str(item.get("code") or "").strip()
+    }
+    return known, known - active
 
 
 def _finite_box(box: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
