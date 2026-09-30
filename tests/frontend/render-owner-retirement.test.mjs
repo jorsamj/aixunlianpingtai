@@ -39,6 +39,16 @@ test('shadowed classic renderTraining declarations are physically retired', () =
   assert.equal((app.match(/\\bfunction renderTraining\\(\\)/g) || []).length, 0);
 });
 
+test('classic training renderer is a bounded compatibility delegate only', () => {
+  const start = app.indexOf('renderTraining=function renderTrainingCompatibility()');
+  const end = app.indexOf('\n  };', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /TrainingTaskVisibilityRuntime\?\.render\?\.\(\)/);
+  assert.match(owner, /window\.renderTraining423\?\.\(\)/);
+  assert.doesNotMatch(owner, /trainPollHint|trainJobRowsHtml|创建训练任务|任务列表/);
+});
+
 test('training navigation is a canonical owner', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
   assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
