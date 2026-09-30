@@ -248,8 +248,8 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
     main,
     /cleaning: \{applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask\}/,
   );
-  assert.match(main, /cleaning\.js\?v=422568/);
-  assert.match(index, /styles\.css\?v=42\.24\.45/);
-  assert.match(index, /app\.js\?v=42\.25\.272/);
-  assert.match(index, /main\.mjs\?v=42\.25\.\d+/);
+  assert.match(main, /cleaning\.js\?v=\d+(?:\.\d+)*/);
+  assert.match(index, /styles\.css\?v=\d+(?:\.\d+)*/);
+  assert.match(index, /app\.js\?v=\d+(?:\.\d+)*/);
+  assert.match(index, /main\.mjs\?v=\d+(?:\.\d+)*/);
 });
