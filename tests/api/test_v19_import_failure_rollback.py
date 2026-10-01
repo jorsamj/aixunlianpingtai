@@ -16,7 +16,7 @@ def _png_bytes() -> bytes:
 def _project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": "v19-failure-rollback", "description": "", "labels": []},
+        json={"name": "v19-failure-rollback", "description": "", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
