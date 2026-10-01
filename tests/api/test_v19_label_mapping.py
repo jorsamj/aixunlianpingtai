@@ -447,6 +447,5 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
 
     assert captured_image_ids
     assert app_module.material_store(project["id"]).get_many(captured_image_ids) == []
-    assert app_module.AnnotationRepository(
-        app_module.project_dir(project["id"])
-    ).get_many(captured_image_ids) == {}
+    annotations = app_module.AnnotationRepository(app_module.project_dir(project["id"]))
+    assert all(not annotations.exists(image_id) for image_id in captured_image_ids)
