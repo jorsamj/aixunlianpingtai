@@ -553,12 +553,30 @@ def test_legacy_iteration_recovers_schema_from_previous_snapshot(tmp_path: Path)
     assert contract["effective_label_codes"] == ["fire", "smoke", "cigarette"]
 
 
-def test_selected_material_codes_include_scoped_negatives_but_not_legacy_star(tmp_path: Path):
+def test_selected_material_codes_include_explicit_and_default_negative_scopes(tmp_path: Path):
     _, project = _project(tmp_path)
     annotations = AnnotationRepository(project)
-    annotations.upsert("a", [], annotation_state="confirmed_empty", annotation_scope=["fire", "smoke"])
-    annotations.upsert("b", [], annotation_state="confirmed_empty")
-    assert selected_material_label_codes(project, {"train_image_ids": ["a", "b"]}) == ["fire", "smoke"]
+    annotations.upsert(
+        "a",
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["fire", "smoke"],
+    )
+    default_negative = annotations.upsert(
+        "b",
+        [],
+        annotation_state="confirmed_empty",
+    )
+    assert default_negative["annotation_scope"] == [
+        "cigarette",
+        "fire",
+        "helmet",
+        "person",
+        "smoke",
+    ]
+    assert selected_material_label_codes(
+        project, {"train_image_ids": ["a", "b"]}
+    ) == ["fire", "smoke", "person", "helmet", "cigarette"]
 
 
 def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_path: Path):
