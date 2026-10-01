@@ -82,7 +82,7 @@ from platform_core.changlian_login_auth import (
 from platform_core.labels import (
     active_label_options,
     confirmed_alias_updates,
-    label_governance_lock_path,
+    label_governance_fence,
     label_identity_values,
     normalize_label_aliases,
 )
@@ -4293,9 +4293,7 @@ class AddLabelReq(BaseModel):
 
 @app.post("/api/projects/{project_id}/labels")
 def add_label(project_id: str, payload: AddLabelReq):
-    with FileLock(
-        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
-    ):
+    with label_governance_fence(project_dir(project_id)):
         return _add_label_locked(project_id, payload)
 
 
@@ -8423,6 +8421,7 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": m.get("type") or "bbox",
             "hotkey": m.get("hotkey") or (str(i+1) if i < 9 else ""),
             "status": m.get("status") or "active",
+            "active": m.get("active", True),
             "merged_into": str(m.get("merged_into") or ""),
             "merged_at": str(m.get("merged_at") or ""),
             "aliases": normalize_label_aliases(m.get("aliases") or []),
@@ -8525,9 +8524,7 @@ def remember_project_label_aliases(
     external_classes,
     label_mapping,
 ) -> Dict[str, List[str]]:
-    with FileLock(
-        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
-    ):
+    with label_governance_fence(project_dir(project_id)):
         return _remember_project_label_aliases_locked(
             project_id, external_classes, label_mapping,
         )
@@ -8698,9 +8695,7 @@ def v12_list_labels(project_id: str):
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
-    with FileLock(
-        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
-    ):
+    with label_governance_fence(project_dir(project_id)):
         return _v12_update_label_locked(project_id, class_id, payload)
 
 
@@ -8737,9 +8732,9 @@ def _v12_update_label_locked(project_id: str, class_id: int, payload: LabelUpdat
         if code != labels[class_id] and code in labels:
             raise HTTPException(status_code=400, detail="标签编码已存在")
         if code != labels[class_id]:
-            references = material_store(project_id).label_reference_usage().get(
-                str(labels[class_id]), {}
-            )
+            references = AnnotationRepository(
+                project_dir(project_id)
+            ).label_reference_preview([str(labels[class_id])])
             if int(references.get("affected_images") or 0) > 0:
                 raise HTTPException(
                     status_code=409,
@@ -8769,9 +8764,7 @@ def _v12_update_label_locked(project_id: str, class_id: int, payload: LabelUpdat
 
 @app.delete("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_delete_label(project_id: str, class_id: int):
-    with FileLock(
-        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
-    ):
+    with label_governance_fence(project_dir(project_id)):
         return _v12_delete_label_locked(project_id, class_id)
 
 
@@ -8781,7 +8774,9 @@ def _v12_delete_label_locked(project_id: str, class_id: int):
     if class_id < 0 or class_id >= len(labels):
         raise HTTPException(status_code=404, detail="标签不存在")
     code = str(labels[class_id])
-    references = material_store(project_id).label_reference_usage().get(code, {})
+    references = AnnotationRepository(
+        project_dir(project_id)
+    ).label_reference_preview([code])
     if int(references.get("affected_images") or 0) > 0:
         raise HTTPException(
             status_code=400,
@@ -12703,10 +12698,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     message="解析完成，正在一次性提交素材索引与标注投影",
                 )
                 try:
-                    with FileLock(
-                        str(label_governance_lock_path(project_dir(project_id))),
-                        timeout=60,
-                    ):
+                    with label_governance_fence(project_dir(project_id)):
                         _v19_assert_frozen_mapping_targets_active(
                             project_id, frozen_mapping,
                         )
@@ -16872,9 +16864,7 @@ def v42_create_algorithm_blueprint(project_id: str, payload: V42AlgorithmBluepri
         name=payload.name.strip(), remark=payload.remark or '', industry=payload.industry or '',
         algorithm_type=payload.algorithm_type or 'yolo_ultralytics'
     ))
-    with FileLock(
-        str(label_governance_lock_path(project_dir(project_id))), timeout=60,
-    ):
+    with label_governance_fence(project_dir(project_id)):
         project = get_project(project_id)
         for raw in payload.labels or []:
             code = normalize_label(raw)

@@ -449,3 +449,28 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
     assert app_module.material_store(project["id"]).get_many(captured_image_ids) == []
     annotations = app_module.AnnotationRepository(app_module.project_dir(project["id"]))
     assert all(not annotations.exists(image_id) for image_id in captured_image_ids)
+
+
+
+def test_v19_mapping_rejects_legacy_active_false_target(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-active-false-target",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+    current = app_module.get_project(project["id"])
+    current["label_meta"][0]["status"] = "active"
+    current["label_meta"][0]["active"] = False
+    app_module.save_project(current)
+
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("active-false.zip", _yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    rejected = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={"label_mapping": {"0": "helmet", "1": "helmet"}},
+    )
+    assert rejected.status_code == 409
+    assert "当前有效标签" in rejected.text

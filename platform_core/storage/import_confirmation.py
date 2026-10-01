@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from platform_core.labels import active_label_options
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -33,8 +35,7 @@ def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels
         raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
     active = {
         str(label['code']): label
-        for label in labels
-        if label.get('status', 'active') == 'active'
+        for label in active_label_options(labels)
     }
     resolved = {}
     for item in classes:
@@ -49,8 +50,8 @@ def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels
                 '目标标签必须来自当前有效标签库'
             )
         if sum(
-            1 for label in labels
-            if label.get('code') == code and label.get('status', 'active') == 'active'
+            1 for label in active_label_options(labels)
+            if label.get('code') == code
         ) > 1:
             raise ValueError(f'ambiguous platform label for external class {external_id}')
         resolved[external_id] = code

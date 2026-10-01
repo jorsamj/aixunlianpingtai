@@ -3,10 +3,8 @@ import threading
 import time
 
 import app as app_module
-from filelock import FileLock
-
 from platform_core.annotation_repository import AnnotationRepository
-from platform_core.labels import label_governance_lock_path
+from platform_core.labels import label_governance_fence
 from platform_core.material_batches import (
     BatchRequestError,
     BatchSelection,
@@ -682,9 +680,8 @@ def test_label_delete_rechecks_references_after_governance_lock_wait(
     seeded_project,
 ):
     project_id, image = seeded_project
-    gate = FileLock(
-        str(label_governance_lock_path(app_module.project_dir(project_id))),
-        timeout=5,
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
     )
     outcome = {}
     started = threading.Event()
@@ -696,8 +693,7 @@ def test_label_delete_rechecks_references_after_governance_lock_wait(
         except BaseException as error:
             outcome["error"] = error
 
-    gate.acquire()
-    try:
+    with gate:
         worker = threading.Thread(target=delete_label, daemon=True)
         worker.start()
         assert started.wait(1)
@@ -710,9 +706,6 @@ def test_label_delete_rechecks_references_after_governance_lock_wait(
             annotation_state="confirmed_empty",
             annotation_scope=["smoke"],
         )
-    finally:
-        gate.release()
-
     worker.join(5)
     assert not worker.is_alive()
     error = outcome.get("error")
@@ -725,9 +718,8 @@ def test_label_code_edit_rechecks_references_after_governance_lock_wait(
     seeded_project,
 ):
     project_id, image = seeded_project
-    gate = FileLock(
-        str(label_governance_lock_path(app_module.project_dir(project_id))),
-        timeout=5,
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
     )
     outcome = {}
     started = threading.Event()
@@ -743,8 +735,7 @@ def test_label_code_edit_rechecks_references_after_governance_lock_wait(
         except BaseException as error:
             outcome["error"] = error
 
-    gate.acquire()
-    try:
+    with gate:
         worker = threading.Thread(target=edit_label, daemon=True)
         worker.start()
         assert started.wait(1)
@@ -757,9 +748,6 @@ def test_label_code_edit_rechecks_references_after_governance_lock_wait(
             annotation_state="confirmed_empty",
             annotation_scope=["smoke"],
         )
-    finally:
-        gate.release()
-
     worker.join(5)
     assert not worker.is_alive()
     error = outcome.get("error")
@@ -772,9 +760,8 @@ def test_label_retirement_rechecks_new_references_under_governance_lock(
     seeded_project,
 ):
     project_id, image = seeded_project
-    gate = FileLock(
-        str(label_governance_lock_path(app_module.project_dir(project_id))),
-        timeout=5,
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
     )
     outcome = {}
     started = threading.Event()
@@ -791,8 +778,7 @@ def test_label_retirement_rechecks_new_references_under_governance_lock(
         except BaseException as error:
             outcome["error"] = error
 
-    gate.acquire()
-    try:
+    with gate:
         worker = threading.Thread(target=retire_label, daemon=True)
         worker.start()
         assert started.wait(1)
@@ -805,9 +791,6 @@ def test_label_retirement_rechecks_new_references_under_governance_lock(
             annotation_state="confirmed_empty",
             annotation_scope=["smoke"],
         )
-    finally:
-        gate.release()
-
     worker.join(5)
     assert not worker.is_alive()
     error = outcome.get("error")
@@ -816,3 +799,26 @@ def test_label_retirement_rechecks_new_references_under_governance_lock(
     current = app_module.get_project(project_id)
     assert current["label_meta"][1].get("status", "active") == "active"
     assert not current["label_meta"][1].get("merged_into")
+
+
+
+def test_label_delete_uses_annotation_repository_truth_not_material_projection(
+    client, seeded_project,
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["smoke"],
+        project_material=False,
+    )
+    material = app_module.material_store(project_id).get(image["id"])
+    assert "smoke" not in set(material.get("annotation_scope") or [])
+
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert deleted.status_code == 400
+    assert "confirmed_empty" in deleted.text
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"

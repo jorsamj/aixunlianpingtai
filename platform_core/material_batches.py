@@ -19,7 +19,7 @@ from .cleaning import DurableHashIndex, clean_options
 from .cleaning import ImageDecodeError
 from .cleaning_analysis_runtime import CleaningAnalysisRuntime
 from .cleaning_batches import clean_batch
-from .labels import label_governance_lock_path
+from .labels import label_governance_fence
 from .material_repository import MaterialRepository
 from .material_repository_batch import _transform_many
 from .material_selection import MaterialSelectionSpec, SelectionScope
@@ -847,7 +847,7 @@ def _retire_merged_source_labels(
     project_path = data_dir / "projects" / project_id
     meta_path = project_path / "meta.json"
     projects_path = data_dir / "projects.json"
-    with FileLock(str(label_governance_lock_path(project_path)), timeout=60):
+    with label_governance_fence(project_path):
         annotation_remaining = AnnotationRepository(project_path).label_reference_preview(
             sources
         )
@@ -886,7 +886,10 @@ def _retire_merged_source_labels(
                     else {}
                 )
                 metadata[target_index] = target_meta
-                if str(target_meta.get("status") or "active").lower() != "active":
+                if (
+                    str(target_meta.get("status") or "active").lower() != "active"
+                    or target_meta.get("active") is False
+                ):
                     raise BatchRequestError(
                         "MATERIAL_REMAP_TARGET_UNAVAILABLE",
                         "目标标签已停用，不能完成来源标签退役",
@@ -905,6 +908,8 @@ def _retire_merged_source_labels(
                     row = metadata[index] if isinstance(metadata[index], dict) else {}
                     metadata[index] = row
                     status = str(row.get("status") or "active").lower()
+                    if row.get("active") is False and status == "active":
+                        status = "inactive"
                     if status == "merged" and str(row.get("merged_into") or "") == target:
                         retired.append(source)
                         continue
@@ -1469,7 +1474,10 @@ class MaterialBatchHandler:
                     if index < len(metadata) and isinstance(metadata[index], dict)
                     else {}
                 )
-                if str(info.get("status") or "active").lower() == "active":
+                if (
+                    str(info.get("status") or "active").lower() == "active"
+                    and info.get("active") is not False
+                ):
                     resolved[code] = index
             if set(resolved) != wanted:
                 raise BatchRequestError(

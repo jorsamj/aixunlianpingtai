@@ -1,5 +1,9 @@
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+
+from filelock import FileLock
 
 
 def normalize_label_aliases(values) -> list[str]:
@@ -39,8 +43,7 @@ def confirmed_alias_updates(
 ) -> dict[str, list[str]]:
     active = {
         str(item.get("code")): item
-        for item in labels
-        if str(item.get("status") or "active") == "active"
+        for item in active_label_options(labels)
     }
     resolved_rows: list[tuple[str, str]] = []
     source_targets: dict[str, set[str]] = {}
@@ -82,6 +85,28 @@ def active_label_options(items: Sequence[Mapping]) -> list[dict]:
 def label_governance_lock_path(project_path) -> Path:
     """Cross-process fence for project label-schema read/check/write decisions."""
     return Path(project_path) / ".label-governance.lock"
+
+
+_LABEL_GOVERNANCE_HELD: ContextVar[frozenset[str]] = ContextVar(
+    "label_governance_held",
+    default=frozenset(),
+)
+
+
+@contextmanager
+def label_governance_fence(project_path, *, timeout: float = 60):
+    """Serialize label-governance decisions and allow same-context re-entry."""
+    lock_path = str(label_governance_lock_path(project_path).resolve())
+    held = _LABEL_GOVERNANCE_HELD.get()
+    if lock_path in held:
+        yield
+        return
+    with FileLock(lock_path, timeout=timeout):
+        token = _LABEL_GOVERNANCE_HELD.set(held | {lock_path})
+        try:
+            yield
+        finally:
+            _LABEL_GOVERNANCE_HELD.reset(token)
 
 
 def labels_match_any(image_labels: Iterable[str], selected: set[str]) -> bool:
