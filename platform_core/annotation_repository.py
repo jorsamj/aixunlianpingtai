@@ -10,7 +10,7 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from .labels import active_label_options, label_governance_fence
+from .labels import active_project_label_ids, label_governance_fence
 
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
@@ -86,40 +86,9 @@ def _normalize_scope(values) -> list[str]:
     return sorted({str(value).strip() for value in values if str(value).strip()})
 
 
-def _active_project_label_catalog(project_path: Path) -> dict[str, int] | None:
-    """Return active canonical label codes, or None for standalone legacy stores."""
-    path = project_path / "meta.json"
-    if not path.is_file():
-        return None
-    try:
-        meta = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as error:
-        raise ValueError("project label catalog is unreadable") from error
-    labels = list(meta.get("labels") or [])
-    metadata = list(meta.get("label_meta") or [])
-    catalog = []
-    for index, value in enumerate(labels):
-        if isinstance(value, dict):
-            code = str(value.get("code") or value.get("name") or "").strip()
-        else:
-            code = str(value or "").strip()
-        if not code:
-            continue
-        info = (
-            metadata[index]
-            if index < len(metadata) and isinstance(metadata[index], dict)
-            else {}
-        )
-        catalog.append({**info, "code": code, "class_id": index})
-    return {
-        str(item["code"]): int(item["class_id"])
-        for item in active_label_options(catalog)
-    }
-
-
 def _active_project_labels(project_path: Path) -> list[str]:
     """Return the concrete active label codes known when an empty GT is confirmed."""
-    catalog = _active_project_label_catalog(project_path)
+    catalog = active_project_label_ids(project_path)
     return sorted(catalog) if catalog is not None else []
 
 
@@ -374,7 +343,7 @@ class AnnotationRepository:
         return _active_project_labels(self.project_path) or ["*"]
 
     def _assert_active_label_codes(self, values) -> None:
-        catalog = _active_project_label_catalog(self.project_path)
+        catalog = active_project_label_ids(self.project_path)
         if catalog is None:
             return
         referenced = {

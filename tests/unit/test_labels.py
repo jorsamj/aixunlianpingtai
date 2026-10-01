@@ -1,5 +1,8 @@
+import json
+
 from platform_core.labels import (
     active_label_options,
+    active_project_label_ids,
     label_governance_fence,
     labels_match_any,
 )
@@ -31,3 +34,24 @@ def test_label_governance_fence_is_reentrant_in_same_context(tmp_path):
     with label_governance_fence(project):
         with label_governance_fence(project):
             assert True
+
+
+
+def test_active_project_label_ids_supports_label_meta_only_legacy_shape(tmp_path):
+    project = tmp_path / "project-meta-only"
+    project.mkdir()
+    (project / "meta.json").write_text(
+        json.dumps({
+            "label_meta": [
+                {"code": "fire", "class_id": 3, "active": True},
+                {
+                    "code": "smoke",
+                    "class_id": 7,
+                    "status": "inactive",
+                    "active": False,
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    assert active_project_label_ids(project) == {"fire": 3}

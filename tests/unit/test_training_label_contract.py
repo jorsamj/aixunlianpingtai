@@ -55,6 +55,22 @@ def _box(label: str) -> dict:
     return {"label": label, "x1": 1, "y1": 1, "x2": 20, "y2": 20}
 
 
+def _seed_historical_annotation(project: Path, image_id: str, labels) -> None:
+    """Seed pre-governance GT so fail-closed preflight can audit old bad data."""
+    directory = project / "annotations"
+    directory.mkdir(parents=True, exist_ok=True)
+    boxes = [_box(label) for label in labels]
+    (directory / f"{image_id}.json").write_text(
+        json.dumps({
+            "image_id": image_id,
+            "annotation_state": "annotated",
+            "annotation_scope": list(labels),
+            "boxes": boxes,
+        }),
+        encoding="utf-8",
+    )
+
+
 def test_first_training_uses_only_user_selected_material_labels(tmp_path: Path):
     data_dir, project = _project(tmp_path)
     annotations = AnnotationRepository(project)
@@ -819,9 +835,7 @@ def test_legacy_v1_redaction_remains_replayable_without_v2_pixel_restore(tmp_pat
 
 def test_training_preflight_rejects_dangling_material_label(tmp_path: Path):
     data_dir, project = _project(tmp_path)
-    AnnotationRepository(project).upsert(
-        "a", [_box("external_only")], annotation_state="annotated"
-    )
+    _seed_historical_annotation(project, "a", ["external_only"])
     with pytest.raises(ValueError, match="未映射、已删除或已停用"):
         resolve_training_label_contract(
             data_dir,
