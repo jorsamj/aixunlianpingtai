@@ -35,7 +35,11 @@ from PIL import Image, ImageDraw
 from filelock import FileLock
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
-from platform_core.annotation_repository import AnnotationConflictError, AnnotationRepository
+from platform_core.annotation_repository import (
+    AnnotationConflictError,
+    AnnotationLabelStateError,
+    AnnotationRepository,
+)
 from platform_core.storage.import_confirmation import (
     IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
     confirm_import,
@@ -5091,6 +5095,14 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
                 f"{error.actual_version}，本次保存未覆盖最新标注。"
             ),
             solution="请刷新当前图片，核对最新标注后再保存。",
+            status_code=409,
+        ) from error
+    except AnnotationLabelStateError as error:
+        raise PlatformError(
+            code=error.code,
+            message="标签状态已变化，标注未保存",
+            detail=str(error),
+            solution="请刷新当前图片和标签列表，确认当前有效标签后重新保存。",
             status_code=409,
         ) from error
     refreshed = materials.get_many([str(image_id)])

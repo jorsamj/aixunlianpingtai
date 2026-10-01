@@ -232,3 +232,29 @@ def test_manual_annotation_get_and_save_do_not_scan_full_material_library(client
     assert saved.status_code == 200, saved.text
     assert saved.json()["image"]["id"] == image["id"]
     assert saved.json()["image"]["box_count"] == 1
+
+
+
+def test_manual_save_returns_conflict_if_label_changes_before_gt_commit(
+    client, seeded_project, monkeypatch,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationLabelStateError
+
+    pid, image = seeded_project
+
+    def reject_stale_label(*_args, **_kwargs):
+        raise AnnotationLabelStateError(["fire"])
+
+    monkeypatch.setattr(app_module, "write_annotation", reject_stale_label)
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [
+                {"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}
+            ]
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "ANNOTATION_LABEL_STATE_CHANGED"
