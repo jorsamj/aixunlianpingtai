@@ -415,10 +415,15 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
 
     original = app_module._v19_assert_frozen_mapping_targets_active
     calls = {"count": 0}
+    captured_image_ids = []
 
     def change_label_before_final_check(project_id, mapping):
         calls["count"] += 1
         if calls["count"] == 2:
+            batch = app_module._v50_active_image_batch(project_id)
+            captured_image_ids.extend(
+                sorted(str(image_id) for image_id in (batch or {}).get("records", {}))
+            )
             current = app_module.get_project(project_id)
             current["label_meta"][0]["status"] = "inactive"
             current["label_meta"][0]["active"] = False
@@ -440,9 +445,8 @@ def test_v19_worker_revalidates_frozen_mapping_before_final_commit_and_rolls_bac
     assert calls["count"] >= 2
     assert "标签映射目标已失效" in str(final.get("error") or final.get("message") or "")
 
-    imported_ids = list((final.get("report") or {}).get("imported_image_ids") or [])
-    assert imported_ids
-    assert app_module.material_store(project["id"]).get_many(imported_ids) == []
+    assert captured_image_ids
+    assert app_module.material_store(project["id"]).get_many(captured_image_ids) == []
     assert app_module.AnnotationRepository(
         app_module.project_dir(project["id"])
-    ).get_many(imported_ids) == {}
+    ).get_many(captured_image_ids) == {}
