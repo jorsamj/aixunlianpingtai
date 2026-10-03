@@ -161,12 +161,12 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _encode_cursor(created_at: str, image_id: str) -> str:
+def encode_material_cursor(created_at: str, image_id: str) -> str:
     raw = json.dumps([created_at, image_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[str, str]:
+def decode_material_cursor(cursor: str) -> tuple[str, str]:
     try:
         padded = str(cursor) + "=" * (-len(str(cursor)) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
@@ -175,6 +175,12 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
         return str(value[0]), str(value[1])
     except Exception as error:
         raise ValueError("invalid material cursor") from error
+
+
+# Backward-compatible internal aliases. New cross-module consumers should use
+# the public names so cursor ordering has one canonical codec.
+_encode_cursor = encode_material_cursor
+_decode_cursor = decode_material_cursor
 
 
 class MaterialRepository:

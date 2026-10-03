@@ -317,3 +317,39 @@ def test_training_picker_summary_and_test_bulk_ignore_stale_material_annotation_
     assert body["total"] == 230
     assert "m0000" not in body["items"]
     assert "m0250" in body["items"]
+
+    label_page = client.get(
+        "/api/v62/projects/p1/training-materials",
+        params=[("limit", "120"), ("label", "smoke")],
+    )
+    assert label_page.status_code == 200, label_page.text
+    label_page_body = label_page.json()
+    label_page_ids = {item["id"] for item in label_page_body["items"]}
+    assert label_page_body["total"] == 115
+    assert "m0000" not in label_page_ids
+    assert "m0250" in label_page_ids
+
+    label_ids = client.get(
+        "/api/v62/projects/p1/training-materials/ids",
+        params=[("limit", "500"), ("label", "smoke")],
+    )
+    assert label_ids.status_code == 200, label_ids.text
+    label_ids_body = label_ids.json()
+    assert label_ids_body["total"] == 115
+    assert "m0000" not in label_ids_body["items"]
+    assert "m0250" in label_ids_body["items"]
+
+    label_bulk = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={
+            "query": "",
+            "labels": ["smoke"],
+            "all_available": False,
+            "role": "train",
+        },
+    )
+    assert label_bulk.status_code == 200, label_bulk.text
+    label_bulk_body = label_bulk.json()
+    assert label_bulk_body["total"] == 115
+    assert "m0000" not in label_bulk_body["items"]
+    assert "m0250" in label_bulk_body["items"]

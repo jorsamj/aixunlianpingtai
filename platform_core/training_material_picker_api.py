@@ -7,6 +7,7 @@ aggregated inside SQLite, and thumbnails are created lazily on demand.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
@@ -19,7 +20,11 @@ from filelock import FileLock
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import MaterialRepository
+from .material_repository import (
+    MaterialRepository,
+    decode_material_cursor,
+    encode_material_cursor,
+)
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
 
@@ -94,6 +99,121 @@ def _normalize_labels(values: object) -> tuple[str, ...]:
     if not isinstance(values, list):
         raise ValueError("labels must be a list")
     return tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+
+
+def _gt_material_filter_page(
+    repository: MaterialRepository,
+    annotations: AnnotationRepository,
+    *,
+    cursor: str | None = None,
+    limit: int,
+    query: str = "",
+    labels: tuple[str, ...] = (),
+    require_ground_truth: bool = False,
+    include_payload: bool = False,
+) -> dict:
+    """Page processed materials while label/GT predicates come from formal GT.
+
+    The query attaches AnnotationRepository read-only truth to the material
+    connection, so cursor rows and totals are computed from one SQLite read
+    transaction without hydrating annotation JSON or trusting material labels.
+    """
+    bounded = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(limit)))
+    selected_labels = tuple(dict.fromkeys(
+        str(value or "").strip() for value in labels if str(value or "").strip()
+    ))
+    base_clauses = ["m.processing_status='processed'"]
+    base_params: list[object] = []
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        base_clauses.append("m.filename LIKE ? COLLATE NOCASE")
+        base_params.append(f"%{normalized_query}%")
+    if selected_labels:
+        placeholders = ",".join("?" for _ in selected_labels)
+        base_clauses.append(
+            "EXISTS (SELECT 1 FROM annotation_gt.annotation_label_references gt "
+            "WHERE gt.image_id=m.id AND gt.annotation_state='annotated' "
+            "AND gt.box_count>0 AND gt.label_code IN (" + placeholders + "))"
+        )
+        base_params.extend(selected_labels)
+    elif require_ground_truth:
+        base_clauses.append(
+            "EXISTS (SELECT 1 FROM annotation_gt.annotation_label_references gt "
+            "WHERE gt.image_id=m.id AND ("
+            "(gt.annotation_state='annotated' AND gt.box_count>0) OR "
+            "(gt.annotation_state='confirmed_empty' AND gt.scope_ref=1)))"
+        )
+
+    base_where = " WHERE " + " AND ".join(base_clauses)
+    with closing(sqlite3.connect(repository.path, timeout=30)) as database:
+        database.row_factory = sqlite3.Row
+        database.execute("PRAGMA busy_timeout=30000")
+        database.execute("PRAGMA temp_store=FILE")
+        database.execute(
+            "ATTACH DATABASE ? AS annotation_gt",
+            (str(annotations.path),),
+        )
+        database.execute("BEGIN")
+        try:
+            total = int(database.execute(
+                "SELECT COUNT(*) FROM materials m" + base_where,
+                base_params,
+            ).fetchone()[0])
+            clauses = list(base_clauses)
+            params = list(base_params)
+            if cursor:
+                created_at, image_id = decode_material_cursor(cursor)
+                clauses.append(
+                    "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+                )
+                params.extend((created_at, created_at, image_id))
+            where = " WHERE " + " AND ".join(clauses)
+            columns = (
+                "m.id, m.created_at, m.payload_json"
+                if include_payload else
+                "m.id, m.created_at"
+            )
+            rows = database.execute(
+                f"SELECT {columns} FROM materials m"
+                + where
+                + " ORDER BY m.created_at, m.id LIMIT ?",
+                [*params, bounded + 1],
+            ).fetchall()
+            material_revision = int(database.execute(
+                "SELECT value FROM material_meta WHERE key='revision'"
+            ).fetchone()[0])
+            annotation_revision_row = database.execute(
+                "SELECT value FROM annotation_gt.annotation_meta "
+                "WHERE key='revision'"
+            ).fetchone()
+            annotation_revision = (
+                int(annotation_revision_row[0])
+                if annotation_revision_row is not None else 0
+            )
+            database.execute("COMMIT")
+        except Exception:
+            database.execute("ROLLBACK")
+            raise
+
+    visible = rows[:bounded]
+    next_cursor = None
+    if len(rows) > bounded and visible:
+        next_cursor = encode_material_cursor(
+            str(visible[-1]["created_at"]),
+            str(visible[-1]["id"]),
+        )
+    items = (
+        [json.loads(row["payload_json"]) for row in visible]
+        if include_payload else
+        [str(row["id"]) for row in visible]
+    )
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+        "total": total,
+        "material_revision": material_revision,
+        "annotation_revision": annotation_revision,
+    }
 
 
 @lru_cache(maxsize=128)
@@ -222,15 +342,29 @@ def _bulk_filtered_ids(
     labels: tuple[str, ...] = (),
     require_ground_truth: bool = False,
 ) -> tuple[list[str], int]:
-    """Resolve a large filtered selection server-side with one HTTP request.
+    """Resolve a large filtered selection server-side with one HTTP request."""
+    if labels or require_ground_truth:
+        page = _gt_material_filter_page(
+            repository,
+            annotations,
+            limit=MAX_SELECTION_SUMMARY_IDS,
+            query=query,
+            labels=labels,
+            require_ground_truth=require_ground_truth,
+            include_payload=False,
+        )
+        total = max(0, int(page["total"]))
+        if total > MAX_SELECTION_SUMMARY_IDS:
+            raise ValueError(
+                f"筛选结果共 {total} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+            )
+        return [str(value) for value in page["items"]], total
 
-    MaterialRepository intentionally exposes bounded cursor pages. We keep that
-    safety boundary internally, but avoid making the browser perform 20+ HTTP
-    round-trips just to select a 10k-image filtered result.
-    """
+    # No GT predicate is needed for the unfiltered training pool. Keep the
+    # canonical MaterialRepository cursor path instead of inventing a second
+    # material paging owner.
     filters = {
         "query": str(query or "").strip(),
-        "labels": labels,
         "processing_status": "processed",
     }
     cursor = None
@@ -253,15 +387,12 @@ def _bulk_filtered_ids(
             first = False
         ids.extend(str(value) for value in page.items)
         if len(ids) > MAX_SELECTION_SUMMARY_IDS:
-            raise ValueError(f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
+            raise ValueError(
+                f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+            )
         cursor = page.next_cursor
         if not cursor:
             break
-    if require_ground_truth:
-        truth = annotations.training_ground_truth_summary(ids)
-        eligible = set(str(value) for value in truth["eligible_ids"])
-        ids = [image_id for image_id in ids if image_id in eligible]
-        total = len(ids)
     return ids, total if total >= 0 else len(ids)
 
 
@@ -357,18 +488,41 @@ def training_material_picker_router(
         if not 1 <= int(limit) <= MAX_PAGE_SIZE:
             raise HTTPException(status_code=422, detail=f"limit must be between 1 and {MAX_PAGE_SIZE}")
         repository = materials(project_id)
+        annotation_repository = annotation_repository_for_path(
+            str(repository.project_path)
+        )
+        selected_labels = tuple(label or ())
         try:
-            page = repository.list_page(
-                cursor=cursor,
-                limit=int(limit),
-                query=str(query or "").strip(),
-                labels=tuple(label or ()),
-                processing_status="processed",
-            )
+            if selected_labels:
+                page = _gt_material_filter_page(
+                    repository,
+                    annotation_repository,
+                    cursor=cursor,
+                    limit=int(limit),
+                    query=str(query or "").strip(),
+                    labels=selected_labels,
+                    include_payload=True,
+                )
+                rows = [dict(row) for row in page["items"]]
+                next_cursor = page["next_cursor"]
+                total = int(page["total"])
+                repository_revision = int(page["material_revision"])
+                annotation_revision = int(page["annotation_revision"])
+            else:
+                material_page = repository.list_page(
+                    cursor=cursor,
+                    limit=int(limit),
+                    query=str(query or "").strip(),
+                    processing_status="processed",
+                )
+                rows = [dict(row) for row in material_page.items]
+                next_cursor = material_page.next_cursor
+                total = material_page.total
+                repository_revision = repository.current_revision()
+                annotation_revision = annotation_repository.current_revision()
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        rows = [dict(row) for row in page.items]
-        annotations = annotation_repository_for_path(str(repository.project_path)).get_many(
+        annotations = annotation_repository.get_many(
             [str(row.get("id") or "") for row in rows]
         )
         return {
@@ -376,14 +530,18 @@ def training_material_picker_router(
                 _public_picker_material(
                     project_id,
                     row,
-                    annotations.get(str(row.get("id") or ""), {"annotation_state": "unannotated", "boxes": []}),
+                    annotations.get(
+                        str(row.get("id") or ""),
+                        {"annotation_state": "unannotated", "boxes": []},
+                    ),
                 )
                 for row in rows
             ],
-            "next_cursor": page.next_cursor,
-            "total": page.total,
+            "next_cursor": next_cursor,
+            "total": total,
             "limit": int(limit),
-            "repository_revision": repository.current_revision(),
+            "repository_revision": repository_revision,
+            "annotation_revision": annotation_revision,
         }
 
     @router.get("/ids")
@@ -397,24 +555,49 @@ def training_material_picker_router(
         if not 1 <= int(limit) <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         repository = materials(project_id)
+        annotation_repository = annotation_repository_for_path(
+            str(repository.project_path)
+        )
+        selected_labels = tuple(label or ())
         try:
-            page = repository.iter_filtered_ids(
-                {
-                    "query": str(query or "").strip(),
-                    "labels": tuple(label or ()),
-                    "processing_status": "processed",
-                },
-                cursor=cursor,
-                limit=int(limit),
-                include_total=True,
-            )
+            if selected_labels:
+                page = _gt_material_filter_page(
+                    repository,
+                    annotation_repository,
+                    cursor=cursor,
+                    limit=int(limit),
+                    query=str(query or "").strip(),
+                    labels=selected_labels,
+                    include_payload=False,
+                )
+                items = page["items"]
+                next_cursor = page["next_cursor"]
+                total = int(page["total"])
+                repository_revision = int(page["material_revision"])
+                annotation_revision = int(page["annotation_revision"])
+            else:
+                material_page = repository.iter_filtered_ids(
+                    {
+                        "query": str(query or "").strip(),
+                        "processing_status": "processed",
+                    },
+                    cursor=cursor,
+                    limit=int(limit),
+                    include_total=True,
+                )
+                items = material_page.items
+                next_cursor = material_page.next_cursor
+                total = material_page.total
+                repository_revision = repository.current_revision()
+                annotation_revision = annotation_repository.current_revision()
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
-            "items": page.items,
-            "next_cursor": page.next_cursor,
-            "total": page.total,
-            "repository_revision": repository.current_revision(),
+            "items": items,
+            "next_cursor": next_cursor,
+            "total": total,
+            "repository_revision": repository_revision,
+            "annotation_revision": annotation_revision,
         }
 
     @router.post("/bulk-selection")
