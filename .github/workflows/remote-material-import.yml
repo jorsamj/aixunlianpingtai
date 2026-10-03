@@ -28,6 +28,8 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/labels.py'
       - 'platform_core/storage/import_candidates.py'
       - 'platform_core/storage/rescan_tasks.py'
       - 'tests/unit/storage/test_rescan_tasks.py'
@@ -69,6 +71,8 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/labels.py'
       - 'platform_core/storage/import_candidates.py'
       - 'platform_core/storage/rescan_tasks.py'
       - 'tests/unit/storage/test_rescan_tasks.py'
@@ -116,6 +120,8 @@ jobs:
           platform_core/storage/detection_import.py
           platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
+          platform_core/annotation_repository.py
+          platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
           task_worker.py
@@ -188,6 +194,8 @@ jobs:
           platform_core/external_publish_request.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
+          platform_core/annotation_repository.py
+          platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
       - name: Remote material import API contract
@@ -268,6 +276,9 @@ jobs:
           grep -Fq 'def _commit_yolo_review_annotations' platform_core/remote_material_import.py
           grep -Fq 'store.annotation_batch(states, boxes, issues)' platform_core/remote_material_import.py
           grep -Fq "annotations = AnnotationRepository" platform_core/storage/import_tasks.py
+          grep -Fq 'with label_governance_fence(project_path):' platform_core/storage/import_tasks.py
+          grep -Fq '_confirmed_import_label_ids' platform_core/storage/import_tasks.py
+          grep -Fq 'test_confirmed_import_rechecks_label_governance_before_material_commit' tests/integration/test_storage_import_worker.py
           grep -Fq "confirmation.get('label_mapping')" platform_core/storage/import_tasks.py
           grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
           grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py

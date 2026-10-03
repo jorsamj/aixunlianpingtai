@@ -16,6 +16,7 @@ from PIL import Image, UnidentifiedImageError
 from platform_core.material_repository import MaterialRepository
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.annotations import annotation_summary
+from platform_core.labels import active_project_label_ids, label_governance_fence
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 
@@ -38,6 +39,26 @@ from .zip_import import (
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MANIFEST_REF = "scan/candidates.sqlite3"
+
+
+def _confirmed_import_label_ids(
+    project_path: Path, annotation_scope: Iterable[str],
+) -> dict[str, int]:
+    label_ids = active_project_label_ids(project_path) or {}
+    inactive = [
+        str(code).strip()
+        for code in annotation_scope
+        if str(code).strip() and str(code).strip() not in label_ids
+    ]
+    if inactive:
+        raise ValueError(
+            "confirmed platform label is no longer active; "
+            "resolve the label before retrying: "
+            + ", ".join(sorted(set(inactive))[:10])
+        )
+    return label_ids
+
+
 SCAN_RESULT_REF = "scan/result.json"
 FINAL_RESULT_REF = "scan/final.json"
 ERROR_RESULT_REF = "scan/error.json"
@@ -766,29 +787,18 @@ class StorageImportHandler:
         store.assign_image_ids(context.task.task_id, batch_size=BATCH_SIZE)
         if context.cancel_requested():
             return TaskStatus.CANCELLED, None
-        materials = MaterialRepository(
-            self.data_dir / "projects" / context.task.project_id
-        )
-        annotations = AnnotationRepository(self.data_dir / 'projects' / context.task.project_id)
-        project_meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
-        project_meta = json.loads(project_meta_path.read_text(encoding='utf-8'))
-        label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
-                     if i >= len(project_meta.get('label_meta') or [])
-                     or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
+        project_path = self.data_dir / "projects" / context.task.project_id
+        materials = MaterialRepository(project_path)
+        annotations = AnnotationRepository(project_path)
         confirmed_label_mapping = {
             str(source): str(target).strip()
             for source, target in dict(confirmation.get('label_mapping') or {}).items()
             if str(source).strip() and str(target).strip()
         }
         imported_annotation_scope = sorted(set(confirmed_label_mapping.values()))
-        inactive_scope = [
-            code for code in imported_annotation_scope if code not in label_ids
-        ]
-        if inactive_scope:
-            raise ValueError(
-                'confirmed platform label is no longer active; resolve the label before retrying: '
-                + ', '.join(inactive_scope[:10])
-            )
+        label_ids = _confirmed_import_label_ids(
+            project_path, imported_annotation_scope,
+        )
         external_label_names = {
             str(item.get('class_id')): str(item.get('name') or '')
             for item in confirmation.get('external_classes') or []
@@ -861,6 +871,9 @@ class StorageImportHandler:
             skipped = store.skipped_boxes_for_keys(row['object_key'] for row in resolved)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
+            label_ids = _confirmed_import_label_ids(
+                project_path, imported_annotation_scope,
+            )
             records, annotation_rows = [], []
             for row in resolved:
                 current = by_id.get(row['image_id'])
@@ -931,11 +944,10 @@ class StorageImportHandler:
                         row.update(annotations_written=int(state != 'unannotated'),
                                    boxes_imported=len(boxes), negative_samples=int(state == 'confirmed_empty'))
                 records.append(record)
-            # Material identity is durable before annotation writes. Replaying the
-            # same deterministic boxes preserves annotation version/content digest.
+            # Material identity remains first for replay compatibility, but the
+            # durable pair is fenced so cancellation/label mutation cannot split it.
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            materials.upsert_many(records)
             context.repository.heartbeat(
                 context.task.task_id, context.lease.lease_token,
                 progress=(50.0 if selected_count <= 0 else min(98.5, 50.0 + 49.0 * (indexed_at_least + len(batch) * 0.55) / selected_count)),
@@ -944,7 +956,24 @@ class StorageImportHandler:
             )
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            annotations.upsert_many(annotation_rows)
+            with label_governance_fence(project_path):
+                commit_label_ids = _confirmed_import_label_ids(
+                    project_path, imported_annotation_scope,
+                )
+                for annotation in annotation_rows:
+                    for box in annotation.get("boxes") or []:
+                        code = str(box.get("label") or "").strip()
+                        class_id = commit_label_ids.get(code)
+                        if class_id is None:
+                            raise ValueError(
+                                "confirmed platform label is no longer active; "
+                                "resolve the label before retrying"
+                            )
+                        box["class_id"] = class_id
+                        if "canonical_project_class_id" in box:
+                            box["canonical_project_class_id"] = class_id
+                materials.upsert_many(records)
+                annotations.upsert_many(annotation_rows)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
             store.record_annotation_outcomes(resolved)

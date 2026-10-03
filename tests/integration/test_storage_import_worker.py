@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import zipfile
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from platform_core.material_repository import MaterialRepository
 from platform_core.storage import LocalStorageProvider, StorageSourceRepository
 from platform_core.storage.import_candidates import ImportCandidateStore
 from platform_core.storage.import_confirmation import confirm_import
+import platform_core.storage.import_tasks as import_tasks_module
 from platform_core.storage.import_tasks import StorageImportHandler, commit_storage_import
 from platform_core.remote_material_import import (
     REMOTE_MATERIAL_STAGING_REF,
@@ -971,3 +973,108 @@ def test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository(t
         ]
         box = annotation["boxes"][0]
         assert (box["x1"], box["y1"], box["x2"], box["y2"]) == case["expected_box"]
+
+
+
+def test_confirmed_import_rechecks_label_governance_before_material_commit(
+    tmp_path, monkeypatch,
+):
+    env = runtime(tmp_path, {"incoming/a.jpg": jpg("red")})
+    _data, project, _provider, repository, artifacts, task, scheduler = env
+    platform_labels = [
+        {
+            "code": "smoke",
+            "class_id": 0,
+            "display_name": "吸烟",
+            "status": "active",
+            "active": True,
+        }
+    ]
+    (project / "meta.json").write_text(
+        json.dumps({
+            "labels": ["smoke"],
+            "label_meta": platform_labels,
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert scheduler.run_once() is True
+    waiting = repository.get(task.task_id)
+    assert waiting is not None
+    assert waiting.status is TaskStatus.AWAITING_CONFIRMATION
+
+    store = ImportCandidateStore(
+        artifacts.artifact_path(task.task_id, "scan/candidates.sqlite3")
+    )
+    candidate = next(store.iter_status("IMPORTABLE"))
+    object_key = candidate["object_key"]
+    store.manifest_many([{
+        "object_key": object_key,
+        "split": "train",
+        "yaml_key": "data.yaml",
+    }])
+    store.set_label_mapping({0: "cigarette"})
+    store.annotation_batch(
+        [{
+            "object_key": object_key,
+            "label_key": "labels/a.txt",
+            "annotation_status": "annotated",
+            "box_count": 1,
+        }],
+        [{
+            "object_key": object_key,
+            "line_number": 1,
+            "class_id": 0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "w": 0.5,
+            "h": 0.5,
+            "clipped": False,
+        }],
+        [],
+    )
+    confirmation = confirm_import(
+        store,
+        artifacts,
+        task.task_id,
+        object_keys=[object_key],
+        label_mapping={"0": "smoke"},
+        create_labels=[],
+        accept_quality_report=True,
+        labels=platform_labels,
+        create_label=lambda code: code,
+    )
+    assert confirmation["label_mapping"] == {"0": "smoke"}
+    repository.resume_after_confirmation(task.task_id)
+
+    real_fence = import_tasks_module.label_governance_fence
+    changed = {"done": False}
+
+    @contextmanager
+    def retire_before_commit(project_path, **kwargs):
+        if not changed["done"]:
+            changed["done"] = True
+            meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+            meta["label_meta"][0]["status"] = "inactive"
+            meta["label_meta"][0]["active"] = False
+            (project / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        with real_fence(project_path, **kwargs):
+            yield
+
+    monkeypatch.setattr(
+        import_tasks_module,
+        "label_governance_fence",
+        retire_before_commit,
+    )
+    assert scheduler.run_once() is True
+
+    failed = repository.get(task.task_id)
+    assert failed is not None
+    assert failed.status is TaskStatus.FAILED
+    assert changed["done"] is True
+    assert "confirmed platform label is no longer active" in str(failed.error or "")
+    assert MaterialRepository(project).count() == 0
+    assert AnnotationRepository(project).summary()["total"] == 0
