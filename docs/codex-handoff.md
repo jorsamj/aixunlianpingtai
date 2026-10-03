@@ -1,6 +1,158 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-10-03 Dataset Revision v2 / Source GT 身份 / 发布链复核（最新）
+
+本节生产代码 cutoff：
+
+`9c70c4939f3bd72596cc50139a43deb96f37fd80`
+
+正式版本：
+
+`42.24.74`
+
+该 cutoff 已确认 GitHub Actions **23 / 23 workflow runs 全部 completed success**，failure / queued / in_progress 均为 0。
+
+本交接提交本身只更新 `docs/codex-handoff.md` 并把正式版本最小 patch 递增到 `42.24.75`；不修改训练、调度、标注、发布、转换或存储生产逻辑。
+
+### 1. CLOSED：Dataset Revision identity 纳入 Source Annotation identity
+
+审计发现旧 `dataset_revision_schema_version = 1` 的 canonical identity 已包含：
+
+- material content SHA256；
+- training projection annotation_hash；
+- annotation_scope；
+- training_projection_digest；
+- external annotation provenance；
+
+但遗漏了已经在 Snapshot / input freeze 中持久化的：
+
+`source_annotation_hash`
+
+这会导致一种审计歧义：
+
+Source Ground Truth 已变化，但本次训练 projection 恰好保持相同，则 Dataset Revision v1 可能保持不变。
+
+`42.24.74` 已升级为：
+
+`dataset_revision_schema_version = 2`
+
+v2 canonical fields 显式加入：
+
+`source_annotation_hash`
+
+因此新的 Dataset Revision 同时绑定：
+
+Source GT identity
+→ Training Projection identity
+→ material bytes
+→ label schema
+→ external annotation provenance
+
+### 2. CLOSED：历史 Dataset Revision v1 保持兼容
+
+没有直接修改 v1 identity 规则。
+
+当前行为：
+
+- 已存在且声明/推断为 v1 的 Dataset Revision：继续按 v1 字段重算和验证；
+- 新 Snapshot：使用 v2；
+- 没有 dataset_revision_id 的 legacy snapshot：确定性补齐当前 revision；
+- `dataset_revision_document()` 按 snapshot 自己的 revision schema 生成文档；
+- 历史 v1 不会因为升级到 v2 被误判 tampered。
+
+新增回归明确验证：
+
+- 只修改 `source_annotation_hash`、保持 `annotation_hash` 和 `training_projection_digest` 不变时，v2 Dataset Revision 必须变化；
+- 历史 v1 revision ID 仍能通过 `ensure_dataset_revision()` 和 revision document 校验。
+
+### 3. 训练结果 provenance 复核通过
+
+训练完成链当前继续成立：
+
+`snapshot_id`
+→ `dataset_revision_id`
+→ portable dataset manifest
+→ verified model artifact
+→ `model_sha256 + size_bytes + verified=True`
+→ training lineage / evaluation truth
+→ algorithm version
+
+完成阶段会再次校验 portable bundle 的：
+
+- snapshot_id；
+- dataset_revision_id；
+
+并阻止已有 task version 绑定到不同 snapshot / dataset revision。
+
+因此最终算法版本不是只保存模型文件路径，而保留 Dataset Revision 与模型内容 SHA256 的可追溯关系。
+
+### 4. 新畅联发布 / 转换 / OSS 复核结论
+
+本轮继续审计以下链路：
+
+训练成功原始模型
+→ immutable artifact object key
+→ OSS / configured model storage upload
+→ size / SHA256 校验
+→ stable public_url
+→ URL Range GET probe
+→ 创建/恢复新畅联 Version
+→ 创建/同步 original Weight
+→ ONNX / RKNN 转换权重追加到同一 Version
+
+当前没有发现新的 P0/P1 owner 或准确性缺口。
+
+已确认：
+
+1. 原始模型必须先上传并得到可访问长期 URL，才创建远端 Version；
+2. Version + original Weight 完成后才标 PUBLISHED；
+3. 转换产物只追加 Weight，不重复创建 Version；
+4. public_url 来自 StorageSource 的长期 public_base_url + immutable object_key，不使用临时 signed URL；
+5. URL probe 使用 GET + Range，接受 200 / 206；
+6. artifact object key 包含 project / algorithm / version / target / chip / SHA256，禁止内容不一致的同名覆盖；
+7. original 通用模型允许空 chipCode，Rockchip/RKNN 继续要求真实 chipCode；
+8. `blocked_by_hardware / converted_unverified` RKNN 当前合同是“转换产物已生成、板端验证状态另行保留”，仓库有显式回归允许其归档/追加 Weight；本轮不改变该既有合同。
+
+### 5. 当前完整绿基线
+
+生产代码：
+
+- HEAD：`9c70c4939f3bd72596cc50139a43deb96f37fd80`
+- VERSION：`42.24.74`
+- workflows：23 / 23 success
+- failure / queued / in_progress：0
+
+上一轮 Training Picker GT 收口继续保持：
+
+- list label filter → AnnotationRepository GT；
+- filtered IDs → AnnotationRepository GT；
+- bulk label selection → AnnotationRepository GT；
+- test eligibility → annotated / confirmed_empty formal GT；
+- MaterialRepository 不重新成为 Ground Truth owner。
+
+### 6. 下一轮建议继续审计
+
+从当前绿基线继续时，不重做已 CLOSED 项。
+
+建议继续沿：
+
+`conversion artifact identity`
+→ `board validation result`
+→ `external weight reconciliation`
+→ `rollback/delete external version`
+→ `local version rollback`
+→ `artifact GC / orphan cleanup`
+
+重点检查：
+
+- RKNN 板端验证后是否只提升既有 artifact/weight 状态，不生成第二 artifact identity；
+- 远端删除/回退是否与本地算法版本、训练成果、转换成果一致；
+- GC 是否不会删除仍被算法版本 / publication / conversion 引用的不可变产物；
+- 所有失败恢复继续 fail-closed / idempotent；
+- 每个正式提交继续从远端真实 VERSION 最小 patch +1。
+
+
 ## 2026-10-03 Training Material Picker / Annotation GT 筛选最终收口（最新）
 
 本节生产代码 cutoff：
