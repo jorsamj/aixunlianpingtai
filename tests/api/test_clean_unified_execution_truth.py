@@ -24,7 +24,7 @@ def _png_bytes() -> bytes:
 
 
 def _create_project(client, name: str) -> str:
-    response = client.post("/api/projects", json={"name": name, "labels": []})
+    response = client.post("/api/projects", json={"name": name, "labels": ["target"]})
     response.raise_for_status()
     return response.json()["id"]
 

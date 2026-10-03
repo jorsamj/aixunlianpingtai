@@ -10,7 +10,7 @@ def test_annotation_quality_audit_is_warning_only_and_uses_formal_ground_truth(t
     (tmp_path / "meta.json").write_text(
         json.dumps({
             "labels": ["smoke", "legacy"],
-            "label_meta": [{"status": "active"}, {"status": "disabled"}],
+            "label_meta": [{"status": "active"}, {"status": "active"}],
         }),
         encoding="utf-8",
     )
@@ -35,6 +35,13 @@ def test_annotation_quality_audit_is_warning_only_and_uses_formal_ground_truth(t
     annotations.upsert("negative", [], annotation_state="confirmed_empty", annotation_scope=["smoke"])
     annotations.upsert("plain", [], annotation_state="unannotated")
     before = annotations.get("annotated")
+    (tmp_path / "meta.json").write_text(
+        json.dumps({
+            "labels": ["smoke", "legacy"],
+            "label_meta": [{"status": "active"}, {"status": "disabled"}],
+        }),
+        encoding="utf-8",
+    )
 
     manifest = BatchSelection(tmp_path / "selection.sqlite3")
     try:
@@ -93,9 +100,9 @@ def test_annotation_quality_treats_merged_deleted_and_active_false_labels_as_ina
             "labels": ["active", "merged", "deleted", "legacy-active-false"],
             "label_meta": [
                 {"code": "active", "status": "active", "active": True},
-                {"code": "merged", "status": "merged", "active": False},
-                {"code": "deleted", "status": "deleted", "active": False},
-                {"code": "legacy-active-false", "status": "active", "active": False},
+                {"code": "merged", "status": "active", "active": True},
+                {"code": "deleted", "status": "active", "active": True},
+                {"code": "legacy-active-false", "status": "active", "active": True},
             ],
         }),
         encoding="utf-8",
@@ -116,6 +123,18 @@ def test_annotation_quality_treats_merged_deleted_and_active_false_labels_as_ina
             {"label": "legacy-active-false", "class_id": 3, "x1": 360, "y1": 10, "x2": 460, "y2": 100},
         ],
         annotation_state="annotated",
+    )
+    (tmp_path / "meta.json").write_text(
+        json.dumps({
+            "labels": ["active", "merged", "deleted", "legacy-active-false"],
+            "label_meta": [
+                {"code": "active", "status": "active", "active": True},
+                {"code": "merged", "status": "merged", "active": False},
+                {"code": "deleted", "status": "deleted", "active": False},
+                {"code": "legacy-active-false", "status": "active", "active": False},
+            ],
+        }),
+        encoding="utf-8",
     )
     manifest = BatchSelection(tmp_path / "selection.sqlite3")
     try:
