@@ -7,6 +7,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - app.py
+      - platform_core/labels.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotations.py
@@ -27,6 +28,7 @@ on:
   pull_request:
     paths:
       - app.py
+      - platform_core/labels.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotations.py
@@ -144,4 +146,6 @@ jobs:
         shell: bash
         run: |
           python -m platform_core.build_identity --check-version-file VERSION.txt
+          grep -Fq "for item in active_label_options(project_label_items(project))" app.py
+          grep -Fq "test_canonical_annotation_catalog_excludes_all_inactive_label_shapes" tests/api/test_annotation_task_runtime.py
           git diff --check

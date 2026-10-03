@@ -19243,26 +19243,19 @@ def _v47_default_annotation_model() -> Dict[str, Any]:
 
 
 def _annotation_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
-    meta_by_code = {
-        str(item.get('code')): item
-        for item in project.get('label_meta', [])
-        if isinstance(item, dict) and str(item.get('status') or 'active') == 'active'
-    }
-    result = []
-    for index, item in enumerate(project.get('labels', [])):
-        code = normalize_label(item.get('code') if isinstance(item, dict) else item)
-        if not code:
-            continue
-        meta = item if isinstance(item, dict) else meta_by_code.get(code, {})
-        if str(meta.get('status') or 'active') != 'active':
-            continue
-        result.append({
-            'code': code,
-            'class_id': index,
-            'display_name_zh': str(meta.get('display_name_zh') or meta.get('display_name') or code),
-            'aliases': normalize_label_aliases(meta.get('aliases') or []),
-        })
-    return result
+    return [
+        {
+            'code': str(item['code']),
+            'class_id': int(item['class_id']),
+            'display_name_zh': str(
+                item.get('display_name_zh')
+                or item.get('display_name')
+                or item['code']
+            ),
+            'aliases': normalize_label_aliases(item.get('aliases') or []),
+        }
+        for item in active_label_options(project_label_items(project))
+    ]
 
 
 def _v47_build_annotation_prompt(

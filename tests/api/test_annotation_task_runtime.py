@@ -688,3 +688,44 @@ def test_canonical_annotation_create_uses_shared_model_snapshot_owner():
     assert "prepare_annotation_request(" in block
     assert "_v35_resolve_model_and_prompt" not in block
     assert "_annotation_runtime_provider" not in source
+
+
+
+def test_canonical_annotation_catalog_excludes_all_inactive_label_shapes():
+    project = {
+        "labels": ["fire", "legacy", "merged", "deleted"],
+        "label_meta": [
+            {
+                "code": "fire",
+                "display_name": "火焰",
+                "status": "active",
+                "active": True,
+                "aliases": ["flame"],
+            },
+            {
+                "code": "legacy",
+                "display_name": "旧标签",
+                "status": "active",
+                "active": False,
+            },
+            {
+                "code": "merged",
+                "display_name": "已合并",
+                "status": "merged",
+                "active": False,
+            },
+            {
+                "code": "deleted",
+                "display_name": "已删除",
+                "status": "deleted",
+                "active": False,
+            },
+        ],
+    }
+
+    assert app_module._annotation_label_catalog(project) == [{
+        "code": "fire",
+        "class_id": 0,
+        "display_name_zh": "火焰",
+        "aliases": ["flame"],
+    }]
