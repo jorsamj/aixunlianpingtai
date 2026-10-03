@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from PIL import Image
@@ -589,3 +591,73 @@ def test_feedback_candidate_freeze_rejects_stale_annotation_and_excludes_pending
     )
     assert stale.status_code == 409
     assert "已经变化" in stale.text
+
+
+
+def test_feedback_label_retirement_before_truth_commit_rolls_back_new_material(
+    client, monkeypatch,
+):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"],
+        algorithm_id,
+        version,
+        detections=[{
+            "class_id": 0,
+            "label": "smoke",
+            "confidence": 0.93,
+            "x1": 10,
+            "y1": 8,
+            "x2": 60,
+            "y2": 52,
+        }],
+        suffix="label-race",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    before_materials = app_module.material_store(project["id"]).count()
+    before_annotations = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).summary()["total"]
+
+    real_fence = app_module.label_governance_fence
+    changed = {"done": False}
+
+    @contextmanager
+    def retire_before_truth(project_path, **kwargs):
+        if not changed["done"]:
+            changed["done"] = True
+            meta_path = app_module.project_dir(project["id"]) / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["label_meta"][0]["status"] = "active"
+            meta["label_meta"][0]["active"] = False
+            meta_path.write_text(
+                json.dumps(meta, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        with real_fence(project_path, **kwargs):
+            yield
+
+    monkeypatch.setattr(
+        app_module,
+        "label_governance_fence",
+        retire_before_truth,
+    )
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert changed["done"] is True
+    assert "无法唯一映射到当前项目标签" in response.text
+    assert app_module.material_store(project["id"]).count() == before_materials
+    assert AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).summary()["total"] == before_annotations
+    pending = app_module._online_feedback_repository(project["id"]).get(staged["id"])
+    assert pending["status"] == "pending_review"

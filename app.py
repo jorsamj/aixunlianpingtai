@@ -10954,10 +10954,7 @@ def _online_feedback_box_signature(boxes: List[Dict[str, Any]]) -> List[Tuple[in
 
 
 def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[str, Any]):
-    active = [
-        item for item in project_label_items(project)
-        if str(item.get("status") or "active") == "active"
-    ]
+    active = active_label_options(project_label_items(project))
     by_code = {str(item["code"]): item for item in active}
     by_display: Dict[str, List[Dict[str, Any]]] = {}
     for item in active:
@@ -11210,62 +11207,120 @@ def confirm_online_feedback(
         if dataset_id not in {str(row.get("id") or "") for row in ensure_default_datasets(project_id)}:
             raise ValueError("目标数据集不存在")
 
+        feedback_type = str(staged["feedback_type"])
+        truth_feedback = feedback_type in {"correct", "false_positive"}
+        if feedback_type == "correct":
+            preview_boxes, _ = _online_feedback_prediction_boxes(project, evidence)
+            if not preview_boxes:
+                raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
+        elif feedback_type == "false_positive":
+            if not payload.confirm_all_labels_absent:
+                raise ValueError("请明确确认画面中不存在当前启用标签目标")
+            _, preview_scope = _online_feedback_prediction_boxes(project, {
+                **evidence, "detections": [],
+            })
+            if not preview_scope:
+                raise ValueError("项目没有可用于负样本确认的启用标签")
+
         materials = material_store(project_id)
         material = materials.get_by_content_sha256(evidence["input_sha256"])
         reused = material is not None
-        if material is None:
-            material = add_image_record(
-                project_id,
-                input_path,
-                evidence.get("original_filename") or input_path.name,
-                "online_feedback",
-                dataset_id,
-                "default_local",
-                content_sha256=evidence["input_sha256"],
-            )
+        image_batch_open = False
+        try:
             if material is None:
-                raise ValueError("反馈图片无法写入素材库")
-        material_id = str(material["id"])
-        annotations = AnnotationRepository(project_dir(project_id))
-        current = annotations.get(material_id)
-        annotation_action = "manual_review"
-        if staged["feedback_type"] == "correct":
-            boxes, _ = _online_feedback_prediction_boxes(project, evidence)
-            if not boxes:
-                raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
-            current_state = str(current.get("annotation_state") or "unannotated")
-            if current_state == "unannotated":
-                annotations.upsert(material_id, boxes, "annotated")
-                annotation_action = "prediction_confirmed_as_truth"
-            elif (
-                current_state == "annotated"
-                and _online_feedback_box_signature(current.get("boxes") or [])
-                == _online_feedback_box_signature(boxes)
-            ):
-                # Recovery/idempotency: annotation truth may have been written
-                # immediately before feedback finalization failed. Matching
-                # truth is safe to acknowledge; differing truth stays fenced.
-                annotation_action = "prediction_matches_existing_truth"
-            else:
-                raise ValueError("该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth")
-        elif staged["feedback_type"] == "false_positive":
-            if not payload.confirm_all_labels_absent:
-                raise ValueError("请明确确认画面中不存在当前启用标签目标")
-            _, active_codes = _online_feedback_prediction_boxes(project, {
-                **evidence, "detections": [],
-            })
-            if not active_codes:
-                raise ValueError("项目没有可用于负样本确认的启用标签")
-            state = str(current.get("annotation_state") or "unannotated")
-            if state == "annotated":
-                raise ValueError("该素材已有正式目标标注，不能直接改成负样本")
-            if state != "confirmed_empty":
-                annotations.upsert(
-                    material_id, [], "confirmed_empty", annotation_scope=active_codes
+                if truth_feedback:
+                    if _v50_active_image_batch(project_id) is not None:
+                        raise RuntimeError("online feedback cannot nest image batches")
+                    _v50_begin_image_batch(project_id)
+                    image_batch_open = True
+                material = add_image_record(
+                    project_id,
+                    input_path,
+                    evidence.get("original_filename") or input_path.name,
+                    "online_feedback",
+                    dataset_id,
+                    "default_local",
+                    content_sha256=evidence["input_sha256"],
+                    defer_unannotated_annotation=image_batch_open,
                 )
-            annotation_action = "confirmed_empty"
-        else:
-            annotation_action = "manual_annotation_required"
+                if material is None:
+                    raise ValueError("反馈图片无法写入素材库")
+            material_id = str(material["id"])
+            annotation_action = "manual_review"
+
+            if truth_feedback:
+                with label_governance_fence(project_dir(project_id)):
+                    # Re-read after acquiring the governance fence. Human review
+                    # freezes intent, not a stale active-label catalog/class id.
+                    current_project = get_project(project_id)
+                    annotations = AnnotationRepository(project_dir(project_id))
+                    current = annotations.get(material_id)
+                    if feedback_type == "correct":
+                        boxes, _ = _online_feedback_prediction_boxes(
+                            current_project, evidence,
+                        )
+                        if not boxes:
+                            raise ValueError(
+                                "当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本"
+                            )
+                        current_state = str(
+                            current.get("annotation_state") or "unannotated"
+                        )
+                        if current_state == "unannotated":
+                            write_annotation(
+                                project_id, material_id, boxes, "annotated",
+                            )
+                            annotation_action = "prediction_confirmed_as_truth"
+                        elif (
+                            current_state == "annotated"
+                            and _online_feedback_box_signature(
+                                current.get("boxes") or []
+                            )
+                            == _online_feedback_box_signature(boxes)
+                        ):
+                            # Recovery/idempotency: formal truth may have been
+                            # committed immediately before feedback finalization
+                            # failed. Matching truth is safe to acknowledge.
+                            annotation_action = "prediction_matches_existing_truth"
+                        else:
+                            raise ValueError(
+                                "该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth"
+                            )
+                    else:
+                        _, active_codes = _online_feedback_prediction_boxes(
+                            current_project, {**evidence, "detections": []},
+                        )
+                        if not active_codes:
+                            raise ValueError(
+                                "项目没有可用于负样本确认的启用标签"
+                            )
+                        state = str(
+                            current.get("annotation_state") or "unannotated"
+                        )
+                        if state == "annotated":
+                            raise ValueError(
+                                "该素材已有正式目标标注，不能直接改成负样本"
+                            )
+                        if state != "confirmed_empty":
+                            write_annotation(
+                                project_id,
+                                material_id,
+                                [],
+                                "confirmed_empty",
+                                annotation_scope=active_codes,
+                            )
+                        annotation_action = "confirmed_empty"
+
+                if image_batch_open:
+                    _v50_end_image_batch(save=True)
+                    image_batch_open = False
+            else:
+                annotation_action = "manual_annotation_required"
+        except Exception:
+            if image_batch_open and _v50_active_image_batch(project_id) is not None:
+                _v50_end_image_batch(save=False)
+                image_batch_open = False
+            raise
 
         confirmed_at = now_iso()
         latest_material = materials.get(material_id) or material
