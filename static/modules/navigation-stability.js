@@ -21,7 +21,13 @@ export class NavigationEpochGuard {
 
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
-  return requested === '自动标注' ? '自动标注及清洗' : requested;
+  if (requested === '工作台') return '总览';
+  if (requested === '自动标注') return '自动标注及清洗';
+  if (requested === '测试发布' || requested === '检测台') return '质量中心';
+  if (requested === '部署转换' || requested === '部署产物') return '算法列表';
+  if (requested === '部署资源' || requested === '部署插件') return '模型配置';
+  if (requested === '新建算法' || requested === '自动迭代') return '算法列表';
+  return requested;
 }
 
 const OWNER_FUNCTIONS = {
@@ -38,7 +44,6 @@ const OWNER_FUNCTIONS = {
     'retryAiTask60', 'showAiTask60'
   ],
   '视频切帧': ['refreshVideoTasksOnly', 'refreshVideo424Delta', 'stopVideo424'],
-  '部署转换': ['loadDeployData', 'refreshDeployTasks'],
 };
 
 const PAGE_RENDERERS = {
@@ -49,12 +54,15 @@ const PAGE_RENDERERS = {
   '素材接入': ['renderSources422'],
   '自动标注及清洗': ['renderAutoLabel422', 'renderAutoLabel424', 'renderOps427'],
   '视频切帧': ['renderVideoFrameTasks', 'renderVideo424'],
-  '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
 };
+
+const KNOWN_PAGE_NAMES = new Set([
+  ...Object.keys(PAGE_RENDERERS),
+  '质量中心', '标签管理', '存储配置',
+]);
 
 function ownersFor(page) {
   if (page === '自动标注及清洗') return ['自动标注', '自动标注及清洗'];
-  if (page === '训练任务') return ['训练任务', '检测台'];
   return [page];
 }
 
@@ -67,6 +75,7 @@ export function installNavigationStability({
   waitForNavigationReady,
   beforeInvokeNavigation,
   performNavigation,
+  knownPages,
 } = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
@@ -75,7 +84,14 @@ export function installNavigationStability({
   const state = getState?.();
   const guard = new NavigationEpochGuard(normalizeNavigationPage(state?.page || ''));
   const pending = new Map();
-  const rebindTimers = [];
+  const pageOwners = new Map();
+  const suppliedKnownPages = knownPages && typeof knownPages[Symbol.iterator] === 'function'
+    ? [...knownPages]
+    : [];
+  const knownPageNames = new Set([
+    ...KNOWN_PAGE_NAMES,
+    ...suppliedKnownPages.map(normalizeNavigationPage).filter(Boolean),
+  ]);
   let tokenSeq = 0;
   let destroyed = false;
 
@@ -234,16 +250,36 @@ export function installNavigationStability({
     });
   }
 
-  // app.js contains historical override layers; some functions are assigned late.
-  // Re-check briefly so the final implementation, not an earlier override, is guarded.
+  // app.js is fully evaluated before main.mjs installs navigation ownership.
+  // Late ES-module owners explicitly rebind after installation; timer-based
+  // re-wrapping made renderer ownership timing-dependent.
   wrapKnownFunctions();
-  for (const delay of [50, 250, 800, 1800]) {
-    rebindTimers.push(setTimeout(() => wrapKnownFunctions(), delay));
-  }
 
   const api = {
     guard,
     pending,
+    registerPageOwner(page, renderer) {
+      const normalized = normalizeNavigationPage(page);
+      if (!normalized || typeof renderer !== 'function') throw new Error('page owner requires a page and renderer');
+      pageOwners.set(normalized, renderer);
+      return () => {
+        if (pageOwners.get(normalized) === renderer) pageOwners.delete(normalized);
+      };
+    },
+    hasPageOwner(page) {
+      return pageOwners.has(normalizeNavigationPage(page));
+    },
+    renderPage(page, context) {
+      const renderer = pageOwners.get(normalizeNavigationPage(page));
+      return renderer ? renderer(context) : false;
+    },
+    isKnownPage(page) {
+      const normalized = normalizeNavigationPage(page);
+      return knownPageNames.has(normalized) || pageOwners.has(normalized);
+    },
+    currentPage() {
+      return normalizeNavigationPage(currentState().page || '');
+    },
     normalizePage: normalizeNavigationPage,
     isCurrent(token) {
       return guard.isCurrent(token, normalizeNavigationPage(currentState().page));
@@ -252,6 +288,7 @@ export function installNavigationStability({
       return guard.token(normalizeNavigationPage(ownerPage || currentState().page));
     },
     wrapKnownFunctions,
+    rebindOwners: wrapKnownFunctions,
     action(ownerPage = currentState().page) {
       const normalizedOwner = normalizeNavigationPage(ownerPage || currentState().page || '');
       const token = guard.token(normalizedOwner);
@@ -273,9 +310,8 @@ export function installNavigationStability({
     },
     destroy() {
       destroyed = true;
-      for (const timer of rebindTimers) clearTimeout(timer);
-      rebindTimers.length = 0;
       pending.clear();
+      pageOwners.clear();
       if (typeof window !== 'undefined') {
         window.__navigationStabilityInstalled = false;
         if (window.NavigationStability === api) window.NavigationStability = null;

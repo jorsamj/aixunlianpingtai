@@ -27,6 +27,20 @@ async function readJson(response, fallback) {
   return body || {};
 }
 
+export function trainingMaterialSelectionPatch({role = 'train', selectedIds = [], materialIds = [], testMaterialIds = []} = {}) {
+  const selected = uniqueIds(selectedIds);
+  const selectedSet = new Set(selected);
+  return role === 'test'
+    ? {
+      materialIds: uniqueIds(materialIds).filter(id => !selectedSet.has(id)),
+      testMaterialIds: selected,
+    }
+    : {
+      materialIds: selected,
+      testMaterialIds: uniqueIds(testMaterialIds).filter(id => !selectedSet.has(id)),
+    };
+}
+
 export function buildTrainingMaterialQuery({cursor = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = []} = {}) {
   const params = new URLSearchParams();
   params.set('limit', String(pageSize));
@@ -34,6 +48,49 @@ export function buildTrainingMaterialQuery({cursor = null, pageSize = DEFAULT_PA
   if (String(query || '').trim()) params.set('query', String(query).trim());
   uniqueIds(labels).forEach(label => params.append('label', label));
   return params.toString();
+}
+
+function annotationColor(label) {
+  const palette = ['#ef4444', '#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#db2777', '#65a30d'];
+  const text = String(label || '目标');
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  return palette[Math.abs(hash) % palette.length];
+}
+
+function finiteCoordinate(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+export function renderTrainingMaterialPreview(row = {}, {loading = 'lazy', priority = 'low'} = {}) {
+  const width = Math.max(1, finiteCoordinate(row.width));
+  const height = Math.max(1, finiteCoordinate(row.height));
+  const state = ['annotated', 'confirmed_empty'].includes(String(row.annotation_state || ''))
+    ? String(row.annotation_state)
+    : 'unannotated';
+  const boxes = state === 'annotated' && Array.isArray(row.boxes) ? row.boxes : [];
+  const shapes = boxes.map(box => {
+    const x1 = finiteCoordinate(box.x1), y1 = finiteCoordinate(box.y1);
+    const x2 = finiteCoordinate(box.x2), y2 = finiteCoordinate(box.y2);
+    if (x2 <= x1 || y2 <= y1) return '';
+    const label = String(box.label || box.code || '目标');
+    const color = annotationColor(label);
+    const textY = Math.max(12, y1 + 14);
+    return `<g><rect data-label="${esc(label)}" x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"><title>${esc(label)}</title></rect><text x="${x1 + 3}" y="${textY}" fill="${color}" font-size="12" font-weight="700">${esc(label)}</text></g>`;
+  }).join('');
+  const overlay = shapes
+    ? `<svg class="train-v3-box-layer" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${shapes}</svg>`
+    : '';
+  const status = state === 'annotated'
+    ? `已标注 · ${boxes.length} 框`
+    : state === 'confirmed_empty'
+      ? '已确认无目标'
+      : String(row.processing_status || '') === 'processed'
+        ? '已清洗 · 待标注'
+        : '未标注';
+  const thumbnail = row.thumbnail_url || row.content_url || '';
+  return `<div class="train-v3-preview" data-annotation-state="${state}"><img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">${overlay}<span class="train-v3-annotation-state ${state}" data-annotation-state="${state}">${status}</span></div>`;
 }
 
 export function installTrainingMaterialPickerRuntime({
@@ -50,7 +107,6 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   const state = () => getState() || {};
-  const legacyConfirm = window.confirmTrainMaterialPickerV3;
   let picker = null;
   let requestSequence = 0;
   let searchTimer = null;
@@ -69,11 +125,17 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
       .train-v3-picker.server-paged .train-v3-card.on{border-color:#4f7cff;box-shadow:0 0 0 2px rgba(79,124,255,.12),0 8px 20px rgba(15,23,42,.08)}
       .train-v3-picker.server-paged .train-v3-card>input[type="checkbox"]{position:absolute;top:14px;right:14px;z-index:3;width:18px;height:18px;margin:0;accent-color:#2563eb;box-shadow:0 1px 4px rgba(15,23,42,.22)}
-      .train-v3-picker.server-paged .train-v3-card img{display:block!important;width:100%!important;height:auto!important;min-height:0;aspect-ratio:4/3!important;flex:none;background:#eef2f7;object-fit:cover;border-radius:9px}
+      .train-v3-picker.server-paged .train-v3-preview{position:relative;width:100%;aspect-ratio:4/3;flex:none;background:#eef2f7;border-radius:9px;overflow:hidden}
+      .train-v3-picker.server-paged .train-v3-card img{position:absolute;inset:0;display:block!important;width:100%!important;height:100%!important;min-height:0;aspect-ratio:4/3!important;background:#eef2f7;object-fit:contain;border-radius:9px}
+      .train-v3-picker.server-paged .train-v3-box-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+      .train-v3-picker.server-paged .train-v3-box-layer text{paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}
+      .train-v3-picker.server-paged .train-v3-annotation-state{position:absolute;left:6px;bottom:6px;display:block;min-height:0;padding:2px 6px;border-radius:6px;background:rgba(15,23,42,.78);color:#fff;font-size:10px;line-height:16px;z-index:2}
+      .train-v3-picker.server-paged .train-v3-annotation-state.confirmed_empty{background:rgba(22,163,74,.88)}
+      .train-v3-picker.server-paged .train-v3-annotation-state.unannotated{background:rgba(100,116,139,.88)}
       .train-v3-picker.server-paged .train-v3-card b{display:block;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:20px;color:#172033}
       .train-v3-picker.server-paged .train-v3-card span{display:block;min-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;color:#64748b}
       .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
-      .train-v3-picker.server-paged .train-v3-card.blocked:after{content:'已用于另一素材集';position:absolute;left:14px;top:14px;padding:3px 7px;border-radius:7px;background:rgba(15,23,42,.82);color:#fff;font-size:10px;z-index:2}
+      .train-v3-picker.server-paged .train-v3-card.blocked:after{content:attr(data-block-reason);position:absolute;left:14px;top:14px;padding:3px 7px;border-radius:7px;background:rgba(15,23,42,.82);color:#fff;font-size:10px;z-index:2}
       .train-v3-picker.server-paged .train-v3-skeleton{height:210px;border:1px solid #e5eaf2;border-radius:14px;background:linear-gradient(100deg,#f1f5f9 20%,#f8fafc 45%,#f1f5f9 70%);background-size:220% 100%;animation:trainPickerShimmer 1.1s linear infinite}
       .train-v3-picker.server-paged .train-v3-page-meta{color:#64748b;font-size:11px}
       .train-v3-picker.server-paged .train-v3-loading{pointer-events:none;opacity:.65}
@@ -125,8 +187,11 @@ export function installTrainingMaterialPickerRuntime({
     const chips = (state().labels || []).map(row => (
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
+    const rule = role === 'train'
+      ? '已清洗素材都可选；待标注素材会保留在任务中，但不会被当作空标签进入本轮监督训练'
+      : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
-      <header><div><b>${title}</b><span>服务端分页 · 滚动后按需加载更多缩略图 · 批量选择由服务器解析</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
+      <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <div id="trV3Grid" class="train-v3-grid"></div>
@@ -227,17 +292,20 @@ export function installTrainingMaterialPickerRuntime({
     grid.innerHTML = picker.items.map((row, index) => {
       const id = String(row.id || '');
       const selected = picker.selected.has(id);
-      const unavailable = blocked.has(id);
-      const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、') || '无标签';
+      const crossRoleBlocked = blocked.has(id);
+      const missingTestTruth = picker.role === 'test' && String(row.annotation_state || '') === 'unannotated';
+      const unavailable = crossRoleBlocked || missingTestTruth;
+      const blockReason = crossRoleBlocked ? '已用于另一素材集' : (missingTestTruth ? '试验集必须已标注' : '');
+      const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、')
+        || (String(row.annotation_state || '') === 'unannotated' ? '待标注' : '无标签');
       const loading = index < THUMBNAIL_EAGER_COUNT ? 'eager' : 'lazy';
       const priority = index < THUMBNAIL_EAGER_COUNT ? 'high' : 'low';
-      const thumbnail = row.thumbnail_url || row.content_url || '';
-      return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}">
+      return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}" data-block-reason="${esc(blockReason)}">
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
-        <img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">
+        ${renderTrainingMaterialPreview(row, {loading, priority})}
         <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span title="${esc(labelText)}">${esc(labelText)}</span>
       </label>`;
-    }).join('') || '<div class="empty">没有符合筛选条件的可训练图片</div>';
+    }).join('') || '<div class="empty">没有符合筛选条件的已清洗素材</div>';
     updateCounts();
     const pager = document.getElementById('trV3Pager');
     if (pager) pager.innerHTML = `<button class="btn mini" ${picker.pageIndex <= 0 ? 'disabled' : ''} onclick="trainMaterialPageV3(-1)">上一页</button><span>第 ${picker.pageIndex + 1} 页</span><button class="btn mini" ${picker.nextCursor ? '' : 'disabled'} onclick="trainMaterialPageV3(1)">下一页</button>`;
@@ -316,6 +384,7 @@ export function installTrainingMaterialPickerRuntime({
         all_available: Boolean(allAvailable),
         query: allAvailable ? '' : (picker?.query || ''),
         labels: allAvailable ? [] : [...(picker?.labels || [])],
+        role: picker?.role || 'train',
       }),
     });
     const body = await readJson(response, '训练素材批量选择读取失败');
@@ -393,7 +462,11 @@ export function installTrainingMaterialPickerRuntime({
   function toggle(id, on, checkbox) {
     if (!picker) return;
     const value = String(id || '');
-    if (blockedIds(picker.role).has(value)) {
+    const row = (picker.items || []).find(item => String(item?.id || '') === value);
+    if (
+      blockedIds(picker.role).has(value)
+      || (picker.role === 'test' && String(row?.annotation_state || '') === 'unannotated')
+    ) {
       if (checkbox) checkbox.checked = false;
       return;
     }
@@ -424,14 +497,23 @@ export function installTrainingMaterialPickerRuntime({
   window.toggleTrainMaterialV3 = toggle;
   window.trainMaterialSelectV3 = bulkAction;
   window.trainMaterialPageV3 = page;
-  if (typeof legacyConfirm === 'function') window.confirmTrainMaterialPickerV3 = function confirmPicker() {
-    const result = legacyConfirm.apply(this, arguments);
-    queueMicrotask(() => window.refreshTrainingCreateUi?.());
-    return result;
+  window.confirmTrainMaterialPickerV3 = function confirmPicker() {
+    if (!picker) return false;
+    const current = draft();
+    const patch = trainingMaterialSelectionPatch({
+      role: picker.role,
+      selectedIds: [...picker.selected],
+      materialIds: current.materialIds || [],
+      testMaterialIds: current.testMaterialIds || [],
+    });
+    trainingDraftRuntime.update(patch);
+    window.closeModal?.();
+    window.refreshTrainingMaterialSelectionUiV3?.();
+    return true;
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422504',
+    build: 'training-material-picker-runtime-422506',
     open,
     loadPage,
     bulkAction,

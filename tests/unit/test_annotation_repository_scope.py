@@ -1,7 +1,15 @@
 import json
 import sqlite3
+import threading
+import time
 
-from platform_core.annotation_repository import AnnotationRepository
+import pytest
+
+from platform_core.annotation_repository import (
+    AnnotationLabelStateError,
+    AnnotationRepository,
+)
+from platform_core.labels import label_governance_fence
 from platform_core.material_repository import MaterialRepository
 
 
@@ -56,6 +64,81 @@ def test_annotated_scope_defaults_to_box_labels(tmp_path):
     )
 
     assert saved["annotation_scope"] == ["cigarette"]
+
+
+def test_annotation_reference_index_covers_annotated_scope_and_material_projection(tmp_path):
+    materials = MaterialRepository(tmp_path)
+    materials.upsert(
+        {
+            "id": "scope-only",
+            "filename": "scope-only.jpg",
+            "stored_name": "scope-only.jpg",
+            "object_key": "uploads/scope-only.jpg",
+            "processing_status": "processed",
+        }
+    )
+    repository = AnnotationRepository(tmp_path)
+    repository.upsert(
+        "scope-only",
+        [{"label": "helmet", "class_id": 8}],
+        annotation_state="annotated",
+        annotation_scope=["head", "helmet"],
+    )
+
+    truth = repository.label_reference_preview(["head"])
+    projection = materials.label_reference_preview(["head"])
+
+    assert truth == {
+        "positive_images": 0,
+        "scope_images": 1,
+        "affected_images": 1,
+        "boxes": 0,
+    }
+    assert projection == truth
+
+
+def test_annotation_reference_index_rebuilds_legacy_fallback_and_tracks_mutations(tmp_path):
+    legacy_dir = tmp_path / "annotations"
+    legacy_dir.mkdir()
+    (legacy_dir / "legacy.json").write_text(
+        json.dumps(
+            {
+                "image_id": "legacy",
+                "annotation_state": "annotated",
+                "annotation_scope": ["head"],
+                "boxes": [
+                    {"label": "head", "class_id": 12},
+                    {"code": "head", "class_id": 12},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    repository = AnnotationRepository(tmp_path)
+
+    repository.rebuild_reference_index()
+    assert repository.label_reference_preview(["head"]) == {
+        "positive_images": 1,
+        "scope_images": 1,
+        "affected_images": 1,
+        "boxes": 2,
+    }
+    assert repository.reference_image_ids(["head"]) == ["legacy"]
+
+    current = repository.get("legacy")
+    applied = repository.remap_labels_if_digests(
+        [{"image_id": "legacy", "expected_digest": repository.record_digest(current)}],
+        source_label="head",
+        target_label="safetyhelmet",
+        target_class_id=8,
+        project_material=False,
+    )
+    assert applied[0]["status"] == "applied"
+    assert repository.label_reference_preview(["head"])["affected_images"] == 0
+    assert repository.label_reference_preview(["safetyhelmet"])["boxes"] == 2
+
+    repository.remove(["legacy"])
+    assert repository.label_reference_preview(["safetyhelmet"])["affected_images"] == 0
 
 
 def test_unannotated_never_keeps_scope(tmp_path):
@@ -145,3 +228,119 @@ def test_existing_annotation_database_is_migrated_without_rebuild(tmp_path):
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
     assert "scope_json" in columns
+
+
+
+def _write_project_labels(project, *, smoke_active=True):
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "meta.json").write_text(
+        json.dumps({
+            "labels": ["fire", "smoke"],
+            "label_meta": [
+                {"code": "fire", "status": "active", "active": True},
+                {
+                    "code": "smoke",
+                    "status": "active" if smoke_active else "inactive",
+                    "active": bool(smoke_active),
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_annotation_upsert_rechecks_active_labels_after_governance_wait(tmp_path):
+    project = tmp_path / "project"
+    _write_project_labels(project, smoke_active=True)
+    repository = AnnotationRepository(project)
+    started = threading.Event()
+    outcome = {}
+
+    def writer():
+        started.set()
+        try:
+            repository.upsert(
+                "race-image",
+                [{"label": "smoke", "class_id": 1}],
+                annotation_state="annotated",
+                annotation_scope=["smoke"],
+                project_material=False,
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    with label_governance_fence(project, timeout=5):
+        worker = threading.Thread(target=writer, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        _write_project_labels(project, smoke_active=False)
+
+    worker.join(5)
+    assert not worker.is_alive()
+    assert isinstance(outcome.get("error"), AnnotationLabelStateError)
+    assert not repository.exists("race-image")
+
+
+def test_remap_rejects_target_that_became_inactive(tmp_path):
+    project = tmp_path / "project"
+    _write_project_labels(project, smoke_active=True)
+    repository = AnnotationRepository(project)
+    repository.upsert(
+        "image-1",
+        [{"label": "fire", "class_id": 0}],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+        project_material=False,
+    )
+    current = repository.get("image-1")
+    digest = repository.record_digest(current)
+    _write_project_labels(project, smoke_active=False)
+
+    with pytest.raises(AnnotationLabelStateError, match="smoke"):
+        repository.remap_labels_if_digests(
+            [{"image_id": "image-1", "expected_digest": digest}],
+            source_label="fire",
+            target_label="smoke",
+            target_class_id=1,
+            project_material=False,
+        )
+
+    assert repository.get("image-1")["boxes"][0]["label"] == "fire"
+
+
+def test_delete_backup_remains_label_reference_and_restore_fails_closed(tmp_path):
+    project = tmp_path / "project"
+    _write_project_labels(project, smoke_active=True)
+    repository = AnnotationRepository(project)
+    repository.upsert(
+        "delete-me",
+        [{"label": "smoke", "class_id": 1}],
+        annotation_state="annotated",
+        annotation_scope=["smoke"],
+        project_material=False,
+    )
+    token = "delete-token"
+    assert repository.prepare_delete(token, ["delete-me"]) == 1
+    assert repository.finalize_delete(token) == 1
+    assert not repository.exists("delete-me")
+
+    assert repository.label_reference_preview(["smoke"]) == {
+        "positive_images": 1,
+        "scope_images": 1,
+        "affected_images": 1,
+        "boxes": 1,
+    }
+    assert repository.reference_image_ids(["smoke"]) == ["delete-me"]
+
+    _write_project_labels(project, smoke_active=False)
+    with pytest.raises(AnnotationLabelStateError, match="smoke"):
+        repository.restore_delete(token)
+    assert repository.delete_backup_count(token) == 1
+    assert not repository.exists("delete-me")
+
+    _write_project_labels(project, smoke_active=True)
+    assert repository.restore_delete(token) == 1
+    assert repository.exists("delete-me")
+    assert repository.delete_backup_count(token) == 0

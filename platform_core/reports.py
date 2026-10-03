@@ -39,6 +39,13 @@ def build_version_report(record: Mapping[str, Any]) -> dict:
         "requested_train_params": dict(record.get("requested_train_params") or {}),
         "actual_train_params": dict(record.get("actual_train_params") or {}),
         "gate_events": list(training_report.get("gate_events") or record.get("gate_events") or []),
+        "evaluation": dict(
+            record.get("evaluation")
+            if isinstance(record.get("evaluation"), Mapping)
+            else training_report.get("test_result")
+            if isinstance(training_report.get("test_result"), Mapping)
+            else {}
+        ),
         "error_samples": list(training_report.get("error_samples") or []),
         "artifacts": list(record.get("verified_models") or record.get("models") or []),
         "artifact_verified": bool(record.get("artifact_verified")),

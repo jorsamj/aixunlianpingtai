@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 import train_worker_safe
+from platform_core import training_checkpoint_resume_tasks as checkpoint_resume
 from platform_core import training_hardened_tasks as hardened
 from platform_core import training_recovery_tasks as recovery
+from platform_core import training_runtime_tasks as runtime
 from platform_core.task_runtime import TaskKind
 from platform_core.worker_registry import resolve_worker_registration
 
@@ -399,12 +401,13 @@ def test_success_manifest_reconciliation_rejects_checkpoint_mismatch(tmp_path):
     assert hardened.base._json(job_file, {})["status"] == "failed"
 
 
-def test_training_role_uses_checkpoint_recovery_hardened_handler(tmp_path):
+def test_training_role_uses_production_checkpoint_recovery_hardened_handler(tmp_path):
     registration = resolve_worker_registration(tmp_path, {"training"})
     handler = registration.handlers[TaskKind.TRAINING]
 
-    assert handler.__class__.__name__ == "RecoveryHardenedLabelContractTrainingHandler"
-    assert handler.__class__.__module__ == "platform_core.training_recovery_tasks"
+    assert type(handler) is runtime.ProductionTrainingHandler
+    assert isinstance(handler, checkpoint_resume.CheckpointResumeRecoveryHandler)
+    assert isinstance(handler, recovery.RecoveryHardenedLabelContractTrainingHandler)
     assert isinstance(handler, hardened.HardenedLabelContractTrainingHandler)
     assert handler.process_runner is recovery._run_hardened_training_process_with_reconciliation
     assert handler.process_runner is not hardened.base._run_training_process

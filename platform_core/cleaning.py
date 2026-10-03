@@ -13,6 +13,7 @@ DEFAULT_OPTIONS = {
     "blur_check": True, "blur_min_laplacian": 45.0,
     "brightness_check": False, "brightness_min": 15.0, "brightness_max": 245.0,
     "corrupt_check": True,
+    "annotation_audit": True,
 }
 # Cleaning is a quality scan, not model training. Extremely large decoded images
 # must not monopolize one Materials Worker just to compute blur/brightness. Keep

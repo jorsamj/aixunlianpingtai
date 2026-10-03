@@ -12,7 +12,7 @@ function sliceFrom(startToken, endToken) {
   return app.slice(start, end);
 }
 
-const modelDelete = sliceFrom('window.deleteModelConfigV35=async function(id){', 'window.testModelConfigV35=async function(id)');
+const modelDelete = sliceFrom('window.deleteModelConfigV35=async function(id){', 'window.testModelConfigLegacyV35=async function(id)');
 const promptSave = sliceFrom("window.savePromptTemplateV35=async function(id=''){", 'window.deletePromptTemplateV35=async function(id)');
 const promptDelete = sliceFrom('window.deletePromptTemplateV35=async function(id){', '// ---------- Auto labeling ----------');
 

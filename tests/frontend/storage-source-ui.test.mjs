@@ -25,14 +25,16 @@ test('storage source helpers keep physical source separate from material identit
 
 test('storage configuration separates secrets from ordinary config', () => {
   const payload = buildStorageSourcePayload({
-    name: 'MinIO', type: 's3', endpoint: 'http://minio:9000', region: 'us-east-1',
-    bucket: 'materials', prefix: 'vision', access_key_id: 'user', secret_access_key: 'secret', use_ssl: false,
+    name: 'OSS', type: 'oss', endpoint: 'oss-cn-hangzhou.aliyuncs.com',
+    bucket: 'materials', public_base_url: 'https://materials.oss-cn-hangzhou.aliyuncs.com',
+    prefix: 'vision', access_key_id: 'user', access_key_secret: 'secret',
   });
   assert.deepEqual(payload.config, {
-    endpoint: 'http://minio:9000', region: 'us-east-1', bucket: 'materials', prefix: 'vision', use_ssl: false,
+    endpoint: 'oss-cn-hangzhou.aliyuncs.com', bucket: 'materials',
+    public_base_url: 'https://materials.oss-cn-hangzhou.aliyuncs.com', prefix: 'vision',
     protect_existing_objects: true,
   });
-  assert.deepEqual(payload.credentials, {access_key_id: 'user', secret_access_key: 'secret'});
+  assert.deepEqual(payload.credentials, {access_key_id: 'user', access_key_secret: 'secret'});
   assert.equal(JSON.stringify(payload.config).includes('secret'), false);
 });
 
@@ -61,7 +63,14 @@ test('storage UI is appended only to expanded resource configuration', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('v42.22 multi-source material storage UI'));
   assert.match(block, /state\.v427Advanced/);
-  assert.match(block, /素材存储配置/);
+  assert.match(block, /存储配置/);
+  assert.match(block, /素材存储/);
+  assert.match(block, /外网地址/);
+  assert.match(block, /public_base_url/);
+  assert.match(block, /只用于素材 Provider/);
+  assert.match(block, /modelArtifactStorageMount/);
+  assert.match(block, /ModelArtifactRuntime\?\.refresh\?\.\(\{rerender:false,force\}\)/);
+  assert.match(block, /STORAGE_SOURCE_CACHE_TTL_MS=2\*60\*1000/);
   assert.match(block, /storage_source_id/);
   assert.match(block, /storage-imports\/scan/);
   assert.match(block, /浏览器上传/);

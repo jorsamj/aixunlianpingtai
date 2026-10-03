@@ -1,0 +1,881 @@
+import sqlite3
+import threading
+import time
+
+import app as app_module
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.labels import label_governance_fence
+from platform_core.material_batches import (
+    BatchRequestError,
+    BatchSelection,
+    MaterialBatchHandler,
+    _retire_merged_source_labels,
+    create_annotation_remap_batch,
+)
+from platform_core.task_runtime import (
+    ArtifactStore,
+    Scheduler,
+    TaskKind,
+    TaskRepository,
+)
+from platform_core.training_label_tasks import resolve_training_label_contract
+
+
+def _box(label="fire", class_id=0, x1=1):
+    return {
+        "id": "box-1",
+        "class_id": class_id,
+        "label": label,
+        "x1": x1,
+        "y1": 1,
+        "x2": 30,
+        "y2": 30,
+    }
+
+
+def _isolated_runtime(tmp_path, monkeypatch):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "label-remap-worker",
+        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)},
+        {"materials.batch"},
+        lease_seconds=10,
+    )
+    return repository, artifacts, scheduler
+
+
+def test_v52_label_remap_is_durable_and_mutates_only_in_worker(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    assert created.json()["operation"] == "REMAP_ANNOTATION_LABELS"
+    assert created.json()["total"] == 1
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "fire"
+
+    assert scheduler.run_once() is True
+    task = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert task["status"] == "SUCCEEDED"
+    assert task["processed"] == 1
+    assert task["changed_images"] == 1
+    assert task["changed_boxes"] == 1
+    assert task["result"]["changed_scope_images"] == 0
+    assert task["progress_percent"] == 100
+
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert formal["boxes"][0]["label"] == "smoke"
+    assert formal["boxes"][0]["class_id"] == 1
+    material = app_module.material_store(project_id).get_many([image["id"]])[0]
+    assert material["labels"] == ["smoke"]
+    assert repository.get(task_id).result_ref == "result.json"
+
+
+def test_label_remap_fails_closed_if_target_is_disabled_before_worker(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    project = app_module.get_project(project_id)
+    project["label_meta"][1]["status"] = "inactive"
+    app_module.save_project(project)
+
+    assert scheduler.run_once() is True
+    task = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert task["status"] == "FAILED"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "fire"
+
+
+def test_label_remap_does_not_write_orphan_annotation_if_material_is_removed(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    app_module.material_store(project_id).remove_many([image["id"]])
+    assert scheduler.run_once() is True
+    task = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert task["status"] == "FAILED"
+    assert task["failed"] == 1
+    assert task["error_examples"][0]["error"] == "MATERIAL_NOT_FOUND"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "fire"
+
+
+def test_label_remap_does_not_overwrite_concurrent_human_annotation(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    original = AnnotationRepository.remap_labels_if_digests
+    injected = {"done": False}
+
+    def race(self, requests, **kwargs):
+        if not injected["done"]:
+            injected["done"] = True
+            app_module.write_annotation(project_id, image["id"], [_box(x1=7)])
+        return original(self, requests, **kwargs)
+
+    monkeypatch.setattr(AnnotationRepository, "remap_labels_if_digests", race)
+    assert scheduler.run_once() is True
+
+    task = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert task["status"] == "FAILED"
+    assert task["failed"] == 1
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert formal["boxes"][0]["label"] == "fire"
+    assert formal["boxes"][0]["x1"] == 7
+
+
+def test_label_remap_retry_is_idempotent_after_ground_truth_commit(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    original_transition = BatchSelection.transition
+    failed_once = {"done": False}
+
+    def interrupt_after_write(self, ids, state, error=None):
+        if state == "succeeded" and not failed_once["done"]:
+            failed_once["done"] = True
+            raise RuntimeError("simulated checkpoint boundary crash")
+        return original_transition(self, ids, state, error)
+
+    monkeypatch.setattr(BatchSelection, "transition", interrupt_after_write)
+    assert scheduler.run_once() is True
+    assert repository.get(task_id).status.value == "FAILED"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "smoke"
+
+    monkeypatch.setattr(BatchSelection, "transition", original_transition)
+    repository.retry(task_id)
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 1
+    assert final["changed_boxes"] == 1
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "smoke"
+
+
+def test_specialized_remap_selection_can_freeze_more_than_generic_explicit_limit(
+    client, tmp_path, monkeypatch
+):
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "large-remap-selection",
+            "labels": [
+                {"code": "fire", "display_name": "明火"},
+                {"code": "smoke", "display_name": "烟雾"},
+            ],
+        },
+    ).json()
+    project_id = project["id"]
+    materials = app_module.material_store(project_id)
+    rows = [
+        {"id": f"bulk-{index:04d}", "filename": f"{index:04d}.jpg"}
+        for index in range(1501)
+    ]
+    materials.upsert_many(rows)
+
+    repository = TaskRepository(tmp_path / "large-tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "large-artifacts")
+    task = create_annotation_remap_batch(
+        project_id,
+        materials,
+        repository,
+        artifacts,
+        [row["id"] for row in rows],
+        "fire",
+        "smoke",
+    )
+    checkpoint = artifacts.read_json(
+        task.task_id, "checkpoints/worker.json", default={}
+    )
+    assert checkpoint["selection_frozen"] is True
+    assert checkpoint["total"] == 1501
+    assert repository.get(task.task_id).status.value == "QUEUED"
+
+
+def test_label_schema_unify_includes_confirmed_empty_scope(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        image["id"],
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["fire"],
+    )
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    schema = client.get(f"/api/v54/projects/{project_id}/label-schema").json()
+    fire = next(row for row in schema["items"] if row["code"] == "fire")
+    assert fire["scope_images"] == 1
+    assert fire["affected_images"] == 1
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 1
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 1
+    assert final["changed_boxes"] == 0
+    assert final["result"]["changed_scope_images"] == 1
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert formal["annotation_state"] == "confirmed_empty"
+    assert formal["annotation_scope"] == ["smoke"]
+
+
+def test_used_label_code_edit_fails_fast_instead_of_scanning_annotations(
+    client, seeded_project, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("used label edit must not scan all materials")
+        ),
+    )
+    response = client.put(
+        f"/api/v12/projects/{project_id}/labels/0",
+        json={"code": "fire_renamed"},
+    )
+    assert response.status_code == 409
+    assert "统一标签" in response.text
+
+
+def test_unused_label_delete_is_soft_and_preserves_other_class_ids(
+    client, seeded_project, monkeypatch
+):
+    project_id, image = seeded_project
+    project = app_module.get_project(project_id)
+    app_module.add_label(
+        project_id,
+        app_module.AddLabelReq(label="person", display_name="人员"),
+    )
+    app_module.write_annotation(
+        project_id,
+        image["id"],
+        [{
+            "id": "person-box",
+            "class_id": 2,
+            "label": "person",
+            "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+        }],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("soft label delete must not scan all materials")
+        ),
+    )
+
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert deleted.status_code == 200, deleted.text
+    assert [row["code"] for row in deleted.json()["items"]] == ["fire", "person"]
+
+    stored = app_module.get_project(project_id)
+    assert stored["labels"] == ["fire", "smoke", "person"]
+    assert stored["label_meta"][1]["status"] == "inactive"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["class_id"] == 2
+
+    recreated = client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "smoke", "display_name": "烟雾"},
+    )
+    assert recreated.status_code == 200, recreated.text
+    assert recreated.json()["class_id"] == 1
+    active = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    assert [row["code"] for row in active] == ["fire", "smoke", "person"]
+
+
+def test_multi_source_label_unify_is_one_durable_task_and_retires_sources(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    created_label = client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "person", "display_name": "人员"},
+    )
+    assert created_label.status_code == 200, created_label.text
+    app_module.write_annotation(
+        project_id,
+        image["id"],
+        [
+            {
+                **_box(label="fire", class_id=0),
+                "source": "imported",
+                "source_class_id": "7",
+                "source_label_name": "external_fire",
+                "canonical_label_id": "fire",
+                "canonical_project_class_id": 0,
+            },
+            _box(label="smoke", class_id=1, x1=30),
+        ],
+    )
+    app_module.material_store(project_id).patch({
+        image["id"]: {"processing_status": "processed"}
+    })
+    second_id = "negative-multi-source"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "negative.jpg",
+        "stored_name": "negative.jpg",
+        "object_key": "uploads/negative.jpg",
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["fire", "smoke"],
+    )
+    # Sync the material projection for the explicit confirmed-empty fixture.
+    app_module.material_store(project_id).patch({
+        second_id: {
+            "annotation_state": "confirmed_empty",
+            "annotation_scope": ["fire", "smoke"],
+            "annotated": True,
+            "processing_status": "processed",
+            "labels": [],
+            "label_counts": {},
+            "box_count": 0,
+        }
+    })
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    preview = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify/preview",
+        json={"source_class_ids": [0, 1]},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["affected_images"] == 2
+    assert preview.json()["boxes"] == 2
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify",
+        json={"source_class_ids": [0, 1], "target_label": "person"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 2
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_boxes"] == 2
+    assert final["result"]["changed_scope_images"] == 1
+    assert final["result"]["source_labels"] == ["fire", "smoke"]
+    assert final["result"]["retired_source_labels"] == ["fire", "smoke"]
+
+    formal = app_module.read_annotation(project_id, image["id"])
+    assert [box["label"] for box in formal["boxes"]] == ["person", "person"]
+    assert {box["class_id"] for box in formal["boxes"]} == {2}
+    imported = formal["boxes"][0]
+    assert imported["source_class_id"] == "7"
+    assert imported["source_label_name"] == "external_fire"
+    assert imported["canonical_label_id"] == "person"
+    assert imported["canonical_project_class_id"] == 2
+    negative = app_module.read_annotation(project_id, second_id)
+    assert negative["annotation_scope"] == ["person"]
+
+    stored = app_module.get_project(project_id)
+    assert stored["labels"] == ["fire", "smoke", "person"]
+    assert stored["label_meta"][0]["status"] == "merged"
+    assert stored["label_meta"][0]["merged_into"] == "person"
+    assert stored["label_meta"][1]["status"] == "merged"
+    assert stored["label_meta"][1]["merged_into"] == "person"
+    label_response = client.get(f"/api/v12/projects/{project_id}/labels").json()
+    active = label_response["items"]
+    assert [row["code"] for row in active] == ["person"]
+    governance = {row["code"]: row for row in label_response["governance"]}
+    assert governance["fire"]["merged_into"] == "person"
+    assert governance["smoke"]["merged_into"] == "person"
+
+    projected_positive = app_module.material_store(project_id).get(image["id"])
+    assert projected_positive["processing_status"] == "processed"
+    assert projected_positive["annotated"] is True
+    assert projected_positive["labels"] == ["person"]
+    assert projected_positive["label_counts"] == {"person": 2}
+    direct_materials = app_module.material_store(project_id)
+    with sqlite3.connect(direct_materials.path) as database:
+        database.row_factory = sqlite3.Row
+        indexed_material = database.execute(
+            "SELECT processing_status, annotated, box_count FROM materials WHERE id=?",
+            (image["id"],),
+        ).fetchone()
+        indexed_labels = database.execute(
+            "SELECT label_code, box_count FROM material_labels WHERE material_id=? ORDER BY label_code",
+            (image["id"],),
+        ).fetchall()
+    assert dict(indexed_material) == {
+        "processing_status": "processed",
+        "annotated": 1,
+        "box_count": 2,
+    }
+    assert [dict(row) for row in indexed_labels] == [
+        {"label_code": "person", "box_count": 2}
+    ]
+    direct_revision = direct_materials.current_revision()
+
+    training_summary = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/selection-summary",
+        json={"image_ids": [image["id"], second_id]},
+    )
+    assert training_summary.status_code == 200, training_summary.text
+    summary_body = training_summary.json()
+    assert summary_body["repository_revision"] == direct_revision
+    assert summary_body["label_codes"] == ["person"]
+    assert summary_body["label_counts"] == {"person": 1}
+    assert "fire" not in summary_body["label_codes"]
+    assert "smoke" not in summary_body["label_codes"]
+
+    model = tmp_path / "previous.pt"
+    model.write_bytes(b"model")
+    previous_schema = [
+        {"code": "fire", "class_id": 0},
+        {"code": "smoke", "class_id": 1},
+        {"code": "person", "class_id": 2},
+    ]
+    algorithm = {
+        "id": "alg",
+        "versions": [{
+            "id": "v1",
+            "created_at": "2026-09-10T01:01:01+00:00",
+            "stored_path": str(model),
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "label_schema": previous_schema,
+        }],
+    }
+    contract = resolve_training_label_contract(
+        app_module.DATA_DIR,
+        app_module.project_dir(project_id),
+        {
+            "framework": "ultralytics",
+            "model": "yolo11n.pt",
+            "train_image_ids": [image["id"]],
+            "train_labels": [],
+        },
+        algorithm,
+    )
+    assert contract["inherited_label_codes"] == ["fire", "smoke", "person"]
+    assert contract["retained_inherited_label_codes"] == ["person"]
+    assert contract["merged_inherited_label_codes"] == {
+        "fire": "person",
+        "smoke": "person",
+    }
+    assert contract["dropped_inherited_label_codes"] == ["fire", "smoke"]
+    assert contract["effective_label_codes"] == ["person"]
+    assert algorithm["versions"][0]["label_schema"] == previous_schema
+
+
+def test_partial_multi_source_unify_does_not_retire_sources(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    client.post(
+        f"/api/projects/{project_id}/labels",
+        json={"label": "person", "display_name": "人员"},
+    )
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    second_id = "will-disappear"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "gone.jpg",
+        "stored_name": "gone.jpg",
+        "object_key": "uploads/gone.jpg",
+        "labels": ["smoke"],
+        "label_counts": {"smoke": 1},
+        "box_count": 1,
+        "annotated": True,
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [_box(label="smoke", class_id=1)],
+        annotation_state="annotated",
+    )
+    repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify",
+        json={"source_class_ids": [0, 1], "target_label": "person"},
+    )
+    assert created.status_code == 202, created.text
+    app_module.material_store(project_id).remove_many([second_id])
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "PARTIAL_SUCCESS"
+    stored = app_module.get_project(project_id)
+    assert stored["label_meta"][0].get("status", "active") == "active"
+    assert stored["label_meta"][1].get("status", "active") == "active"
+
+
+def test_unify_retirement_requires_annotation_and_material_references_both_zero(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, first = seeded_project
+    app_module.write_annotation(project_id, first["id"], [_box()])
+    second_id = "annotation-only-reference"
+    app_module.material_store(project_id).upsert({
+        "id": second_id,
+        "filename": "annotation-only.jpg",
+        "stored_name": "annotation-only.jpg",
+        "object_key": "uploads/annotation-only.jpg",
+        "processing_status": "processed",
+    })
+    AnnotationRepository(app_module.project_dir(project_id)).upsert(
+        second_id,
+        [_box()],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+        project_material=False,
+    )
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    schema = client.get(
+        f"/api/v54/projects/{project_id}/label-schema"
+    )
+    assert schema.status_code == 200, schema.text
+    fire = next(
+        row for row in schema.json()["items"] if row["code"] == "fire"
+    )
+    assert fire["usage_images"] == 2
+    assert fire["usage_boxes"] == 2
+    assert fire["affected_images"] == 2
+
+    preview = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify/preview",
+        json={"source_class_ids": [0]},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["positive_images"] == 2
+    assert preview.json()["boxes"] == 2
+    assert preview.json()["affected_images"] == 2
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["total"] == 2
+    assert scheduler.run_once() is True
+
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
+    ).json()
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 2
+    assert final["changed_boxes"] == 2
+    stored = app_module.get_project(project_id)
+    assert stored["label_meta"][0]["status"] == "merged"
+    assert stored["label_meta"][0]["merged_into"] == "smoke"
+
+    annotation_truth = AnnotationRepository(app_module.project_dir(project_id))
+    assert annotation_truth.label_reference_preview(["fire"])["affected_images"] == 0
+    assert app_module.material_store(project_id).label_reference_preview(["fire"])["affected_images"] == 0
+    second_truth = annotation_truth.get(second_id)
+    assert second_truth["boxes"][0]["label"] == "smoke"
+    projected = app_module.material_store(project_id).get(second_id)
+    assert projected["labels"] == ["smoke"]
+
+
+def test_active_material_batch_list_exposes_safe_remap_resume_truth(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, _scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    listed = client.get(
+        f"/api/v62/projects/{project_id}/material-batches",
+        params={"active_only": "true", "limit": 100},
+    )
+    assert listed.status_code == 200, listed.text
+    row = next(item for item in listed.json()["items"] if item["task_id"] == created.json()["task_id"])
+    assert row["operation"] == "REMAP_ANNOTATION_LABELS"
+    assert row["source_labels"] == ["fire"]
+    assert row["target_label"] == "smoke"
+    assert row["status"] == "QUEUED"
+    assert "options" not in row
+    assert "selection_spec" not in row
+
+
+
+def test_label_delete_rechecks_references_after_governance_lock_wait(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def delete_label():
+        started.set()
+        try:
+            outcome["result"] = app_module.v12_delete_label(project_id, 1)
+        except BaseException as error:
+            outcome["error"] = error
+
+    with gate:
+        worker = threading.Thread(target=delete_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert getattr(error, "status_code", None) == 400
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"
+
+
+def test_label_code_edit_rechecks_references_after_governance_lock_wait(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def edit_label():
+        started.set()
+        try:
+            outcome["result"] = app_module.v12_update_label(
+                project_id,
+                1,
+                app_module.LabelUpdateReq(code="smoke_renamed"),
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    with gate:
+        worker = threading.Thread(target=edit_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert getattr(error, "status_code", None) == 409
+    current = app_module.get_project(project_id)
+    assert current["labels"][1] == "smoke"
+
+
+def test_label_retirement_rechecks_new_references_under_governance_lock(
+    seeded_project,
+):
+    project_id, image = seeded_project
+    gate = label_governance_fence(
+        app_module.project_dir(project_id), timeout=5,
+    )
+    outcome = {}
+    started = threading.Event()
+
+    def retire_label():
+        started.set()
+        try:
+            outcome["result"] = _retire_merged_source_labels(
+                app_module.DATA_DIR,
+                project_id,
+                ["smoke"],
+                "fire",
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    with gate:
+        worker = threading.Thread(target=retire_label, daemon=True)
+        worker.start()
+        assert started.wait(1)
+        time.sleep(0.05)
+        assert worker.is_alive()
+        app_module.write_annotation(
+            project_id,
+            image["id"],
+            [],
+            annotation_state="confirmed_empty",
+            annotation_scope=["smoke"],
+        )
+    worker.join(5)
+    assert not worker.is_alive()
+    error = outcome.get("error")
+    assert isinstance(error, BatchRequestError)
+    assert error.code == "ANNOTATION_REMAP_REFERENCES_REMAIN"
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"
+    assert not current["label_meta"][1].get("merged_into")
+
+
+
+def test_label_delete_uses_annotation_repository_truth_not_material_projection(
+    client, seeded_project,
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        image["id"],
+        [],
+        annotation_state="confirmed_empty",
+        annotation_scope=["smoke"],
+        project_material=False,
+    )
+    material = app_module.material_store(project_id).get(image["id"])
+    assert "smoke" not in set(material.get("annotation_scope") or [])
+
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert deleted.status_code == 400
+    assert "confirmed_empty" in deleted.text
+    current = app_module.get_project(project_id)
+    assert current["label_meta"][1].get("status", "active") == "active"
+
+
+
+def test_whole_label_unify_freeze_records_annotation_repository_owner(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, artifacts, _scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    request = artifacts.read_json(task_id, "request.json")
+    assert request["selection_spec"]["reference_owner"] == "annotation_repository"
+    assert isinstance(request["selection_spec"]["annotation_revision"], int)
+
+    manifest = BatchSelection(
+        artifacts.artifact_path(task_id, "selection.sqlite3")
+    )
+    try:
+        owner = manifest.database.execute(
+            "SELECT value FROM meta WHERE key='reference_owner'"
+        ).fetchone()
+        assert owner[0] == "annotation_repository"
+    finally:
+        manifest.close()

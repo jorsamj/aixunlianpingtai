@@ -1,5 +1,40 @@
 # Repository Agent Handoff
 
+## 2026-09-23 permanent architecture constraint — one owner, one truth, one call chain
+
+一个能力一个 final owner，一份状态一个 canonical truth，一条正式调用链。修改功能前必须先确认 final owner、canonical truth、现有 wrapper 的必要性以及是否已经存在同功能实现；已有 final owner 时直接修改它，或让调用方直接路由到它。
+
+前端禁止同功能 page owner / wrapper runtime / legacy helper / fallback 并存，禁止重复 shell、renderer、patcher 和多份状态 truth。兼容层只允许 `normalize / redirect / delegate`，不得重新实现业务逻辑。页面视觉层级保持 `Page → Surface → Content`，不做卡片、容器和组件套娃。
+
+后端禁止无意义的 API/service/adapter/helper/repository 重复包装、同一任务的并行 handler/scheduler/repository、旁路写入，以及 Task、JSON、SQLite、缓存之间的多份业务 truth。ModelArtifact、Annotation、Durable Task、External Publication 必须继续使用各自 canonical truth。历史套娃只在调用关系和 fallback 责任已证实时逐步收口，不做无证据的大重构。
+
+## 2026-09-21 live override — OSS 第二批 Connection / Artifact Binding 收口
+
+第二批已完成：`StorageSource` 持有 endpoint、bucket、`public_base_url` 与 Secret Store 引用；Artifact Binding 只持有 `storage_source_id + root_prefix`。算法产物统一 builder 生成最终 Bucket-relative `object_key`，上传时不再叠加素材 Provider `prefix`。存储测试执行 PUT→STAT→READ→DELETE，并在配置长期地址时做 Range GET；DELETE 或 URL 校验失败均 fail closed。畅联发布在任何远端 Version/Weight mutation 前验证实际 artifact URL。
+
+定向证据：Python 20 passed、frontend 9 passed、Real Chrome storage smoke 1 passed。真实 OSS/畅联生产 E2E 仍 OPEN。下一步第三批前必须先给字段 owner/migration 表，禁止直接 DROP、长期 dual-write，`external_weight_id` 仍属于 provider-specific publication mapping。`VERSION.txt` 仍为 `42.24.0`。
+
+## 2026-09-21 live override — OSS/新畅联第一批 Version/Weight 合同收口
+
+当前工作仍在 `feature/external-algorithm-publishing`。远端紧急修复 `2ff431a7` 已先安全同步；该修复只隔离 keyring DBus 测试中的既有 Headless Secret fallback，不得重复修改生产 Keyring 逻辑。
+
+OSS + 新畅联 durable publish 第一批只收紧 Version/Weight 合同：`versionNo` 来自本地 durable `version_no`；UNKNOWN 恢复必须同时匹配 `versionName + versionNo + 已绑定 analysisId`，product/analysis list 只作为查询路径；候选多条或字段不完整时置 UNKNOWN 并禁止 POST。Weight 创建五字段缺一不可；恢复严格匹配 `fileName + computePlatformId + 非空 chipCode`，远端有 `filePath` 时还要匹配长期 URL。Weight 前置字段在远端 Version 创建前检查，避免留下空 Version。`code=0` 是主合同，`code=200/SUCCESS` 继续保留为 legacy compatibility / OPEN。
+
+最小验证：新增合同 15 passed（含 product/analysis 同 ID 去重与 FAILED 修复后重试）；直接影响回归 9 passed；AST/whitespace 检查通过。未跑全量 pytest、integration、浏览器或 Actions。第二批状态以上方最新覆盖为准；第三批仍受字段 owner/migration gate 约束。
+
+最高优先级细节见 `docs/CODEX_HANDOFF_2026-09-21.md` 顶部最新节；`VERSION.txt` 仍为 `42.24.0`。
+
+## 2026-09-21 live override — cache-first page loading closed locally
+
+当前长期分支是 `feature/external-algorithm-publishing`；接手时仍需先核对远端 HEAD。最新性能闭环提交：
+
+- `9fff42df`：`/api/v53/bootstrap/snapshot` 普通缓存命中不再计算 project counts；authoritative rebuild 同一请求每项目只计算一次 counts 并替换 `_V53_BOOTSTRAP_SNAPSHOT`。标签管理 GET 改为 `MaterialRepository.label_usage()` 对既有 `label_counts` 做 SQLite 只读聚合，不再全量水合素材、逐图读 annotation 或在 GET 中 patch。
+- `2e3a726b`：启动只消费一次预构建 snapshot；仅显式刷新使用 `refresh=true`。`extras412()` 不再重复 jobs/model_configs；算法、训练任务、数据集、服务节点继续由各自 runtime/PollRegistry 刷新。数据集 v61 当前 48 条先提交并绘制，状态 totals 后补；不加载全量素材。
+
+浏览器同场景实测：冷启动 `10 requests / 2 snapshots / refresh=true / ~998ms` → fresh cache `4 / 1 / false / ~542ms`，snapshot 过期触发页面 owner SWR 时 `8 / 1 / false / ~353ms`；数据集 `6 requests / ~145ms` → `4 / ~27–30ms`；服务节点保持单一 `/api/v63/service-nodes`。定向 API 5/5、前端 12/12、Network/分页/导航 browser smoke 4/4 通过。未跑全量 pytest/integration，未等待 Actions，未 merge/tag/release/deploy，`VERSION.txt` 仍为 `42.24.0`。
+
+本节与 `docs/CODEX_HANDOFF_2026-09-21.md` 顶部最新节优先于本文后面的历史 branch/NEXT。不要恢复普通导航的 broad snapshot refresh，也不要新增第二套 cache/polling/truth。
+
 本仓库由 Codex、ChatGPT 和人工开发共同维护。开始修改前必须先读取实际分支/HEAD，不得只根据 README 或 `VERSION.txt` 推断开发状态。
 
 ## 必读顺序

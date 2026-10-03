@@ -1,4 +1,5 @@
 import json
+import asyncio
 import base64
 import hashlib
 import math
@@ -10,53 +11,87 @@ import sys
 import time
 import threading
 import uuid
+from dataclasses import replace
 import zipfile
 import random
 import sqlite3
-from contextlib import contextmanager
+import mimetypes
+from urllib.parse import quote
+from contextlib import closing, contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 
 import requests
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
+from filelock import FileLock
 
-from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
-from platform_core.annotation_repository import AnnotationRepository
-from platform_core.storage.import_confirmation import confirm_import, public_quality
+from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
+from platform_core.annotation_repository import (
+    AnnotationConflictError,
+    AnnotationLabelStateError,
+    AnnotationRepository,
+)
+from platform_core.storage.import_confirmation import (
+    IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
+    confirm_import,
+    external_label_facts,
+    public_quality,
+    resolve_external_label_mapping,
+)
 from platform_core.algorithms import (
+    algorithm_store_revision,
     attach_version as attach_algorithm_version,
     choose_algorithm_iteration_base,
     choose_iteration_base,
     delete_algorithm_version,
     is_trainable_version,
     project_current_version,
+    resolve_current_version_id,
     rollback_algorithm_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
-    save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
     update_algorithm_version,
 )
 from platform_core import auto_label as auto_label_core
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.annotation_task_service import commit_candidate_decisions
+from platform_core.annotation_runtime import prepare_request as prepare_annotation_request
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
-from platform_core.labels import active_label_options
+from platform_core.changlian_login_auth import (
+    DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
+    DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS,
+    DEFAULT_SESSION_IDLE_TTL_SECONDS,
+    DEFAULT_SESSION_RENEW_WINDOW_SECONDS,
+    SESSION_COOKIE_NAME,
+    ChangLianLoginClient,
+    ChangLianLoginError,
+    SignedSessionManager,
+    auth_guard_decision,
+)
+from platform_core.labels import (
+    active_label_options,
+    confirmed_alias_updates,
+    label_governance_fence,
+    label_identity_values,
+    normalize_label_aliases,
+)
 from platform_core.material_store import MaterialStore
+from platform_core.model_artifacts import ModelArtifactService
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
@@ -76,6 +111,12 @@ from platform_core.resource_discovery.tasks import (
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
 )
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
+from platform_core.service_nodes import ServiceNodeRepository
+from platform_core.task_node_assignments import (
+    CentralTaskAllocator,
+    NodeAssignmentError,
+    task_preemptible,
+)
 from platform_core.storage import (
     StorageError,
     StorageManager,
@@ -85,20 +126,33 @@ from platform_core.storage import (
     StorageType,
     redact_storage_error,
 )
-from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.import_candidates import ImportCandidateStore, RescanCandidateStore
 from platform_core.storage.import_tasks import (
     MANIFEST_REF as STORAGE_IMPORT_MANIFEST_REF,
     load_legacy_candidates,
     server_import_dir,
 )
+from platform_core.zip_multipart import ZipMultipartRepository
 from platform_core.storage.zip_import import (
     ServerZipImportError,
     resolve_server_zip,
     safe_member_path,
 )
-from platform_core.snapshots import build_snapshot, persist_snapshot
+from platform_core.snapshots import build_snapshot, is_training_ground_truth, persist_snapshot
+from platform_core.training_lineage import build_training_lineage
+from platform_core.training_tasks import freeze_training_inputs, resolve_training_selection
+from platform_core.training_label_tasks import (
+    inherited_training_label_preview,
+    project_training_rows,
+    resolve_training_label_contract,
+)
+from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
-from platform_core.training_job_projection import apply_training_task_truth
+from platform_core.training_job_projection import (
+    apply_training_display_progress,
+    apply_training_task_truth,
+    build_training_display_progress,
+)
 from platform_core.task_runtime import (
     ArtifactStore,
     ProcessController,
@@ -111,13 +165,17 @@ from platform_core.task_runtime import (
     task_to_public,
     training_queue_truth,
 )
-from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_splits import SplitMode, SplitRequest, exclude_reserved_test_components
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_truth
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 from platform_core.material_batches import (
     BatchOperation as MaterialBatchOperation,
+    BatchRequestError as MaterialBatchRequestError,
     SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
+    create_annotation_remap_batch,
+    create_annotation_remap_by_label,
+    create_annotation_remap_by_labels,
     estimate_batch as estimate_material_batch,
     prepare_batch as prepare_material_batch,
     publish_prepared_batch as publish_prepared_material_batch,
@@ -148,6 +206,11 @@ def _default_data_dir() -> Path:
     return resolve_data_dir(base_dir=BASE_DIR)
 
 DATA_DIR = _default_data_dir()
+DEFAULT_PROJECT_ID = "f1fb1e6fa373"
+DEFAULT_PROJECT_NAME = "默认空间"
+ALLOW_MULTIPLE_PROJECTS_FOR_TESTS = os.environ.get(
+    "MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", ""
+).strip() == "1"
 
 _SHARED_TASK_REPOSITORY: Optional[TaskRepository] = None
 _SHARED_TASK_ARTIFACTS: Optional[ArtifactStore] = None
@@ -205,6 +268,132 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
+
+_CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
+    "MC_CHANGLIAN_LOGIN_BASE_URL",
+    DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
+).strip() or DEFAULT_CHANGLIAN_LOGIN_BASE_URL
+_CHANGLIAN_LOGIN_CLIENT = ChangLianLoginClient(base_url=_CHANGLIAN_LOGIN_BASE_URL)
+
+
+def _auth_env_seconds(name: str, default: int, *, minimum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return max(int(minimum), int(raw))
+    except ValueError:
+        return int(default)
+
+
+_CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(
+    DATA_DIR / "auth",
+    idle_ttl_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_IDLE_SECONDS",
+        DEFAULT_SESSION_IDLE_TTL_SECONDS,
+        minimum=300,
+    ),
+    absolute_ttl_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_ABSOLUTE_SECONDS",
+        DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS,
+        minimum=300,
+    ),
+    renew_window_seconds=_auth_env_seconds(
+        "MC_AUTH_SESSION_RENEW_WINDOW_SECONDS",
+        DEFAULT_SESSION_RENEW_WINDOW_SECONDS,
+        minimum=60,
+    ),
+)
+
+
+def _auth_request_is_secure(request: Request) -> bool:
+    forwarded = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return forwarded == "https" or request.url.scheme == "https"
+
+
+def _set_auth_cookie(response: Response, request: Request, token: str, claims: Mapping[str, Any]) -> None:
+    try:
+        remaining = max(1, int(claims.get("exp") or 0) - int(time.time()))
+    except (TypeError, ValueError):
+        remaining = _CHANGLIAN_AUTH_SESSIONS.idle_ttl_seconds
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=remaining,
+        httponly=True,
+        secure=_auth_request_is_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _public_auth_session(claims: Mapping[str, Any]) -> Dict[str, Any]:
+    now = int(time.time())
+    expires_at = int(claims.get("exp") or 0)
+    hard_expires_at = int(
+        claims.get("hard_exp")
+        or (
+            int(claims.get("created_at") or claims.get("iat") or now)
+            + _CHANGLIAN_AUTH_SESSIONS.absolute_ttl_seconds
+        )
+    )
+    upstream_exp = claims.get("upstream_exp")
+    return {
+        "authenticated": True,
+        "user": {"username": str(claims.get("username") or "")},
+        "expires_at": expires_at,
+        "remaining_seconds": max(0, expires_at - now),
+        "absolute_expires_at": hard_expires_at,
+        "absolute_remaining_seconds": max(0, hard_expires_at - now),
+        "idle_ttl_seconds": _CHANGLIAN_AUTH_SESSIONS.idle_ttl_seconds,
+        "renew_window_seconds": _CHANGLIAN_AUTH_SESSIONS.renew_window_seconds,
+        "upstream_token_expires_at": int(upstream_exp) if upstream_exp else None,
+        "upstream_token_expiry_source": str(
+            claims.get("upstream_expiry_source") or "undocumented"
+        ),
+    }
+
+
+def _auth_test_bypass_enabled() -> bool:
+    # Some focused browser harnesses import app.py before their environment
+    # bootstrap completes. Re-read the existing test-only flag at request time
+    # so authentication never breaks unrelated isolated regression suites.
+    return (
+        ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
+        or os.environ.get("MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", "").strip() == "1"
+    )
+
+
+@app.middleware("http")
+async def changlian_login_guard(request: Request, call_next):
+    if _auth_test_bypass_enabled():
+        return await call_next(request)
+
+    decision = auth_guard_decision(
+        request.url.path,
+        authorization=request.headers.get("authorization"),
+    )
+    if decision in {"public", "machine"}:
+        return await call_next(request)
+
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is not None:
+        request.state.changlian_user = claims
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        error = PlatformError(
+            code="AUTH_REQUIRED",
+            message="请先登录畅联云账号",
+            detail="当前浏览器会话未登录或登录已过期。",
+            solution="请重新登录后继续操作。",
+            status_code=401,
+        )
+        return JSONResponse(status_code=401, content=error_body(error))
+
+    return RedirectResponse(url="/login?next=%2F", status_code=307)
 
 
 def fast_json_response(content: Any) -> Response:
@@ -272,6 +461,140 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
         status_code=422,
     )
     return JSONResponse(status_code=422, content=error_body(error))
+
+class ChangLianLoginReq(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+    code: Optional[str] = Field(default=None, max_length=128)
+    uuid: Optional[str] = Field(default=None, max_length=256)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def changlian_login_page(request: Request):
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is not None:
+        return RedirectResponse(url="/", status_code=303)
+    return HTMLResponse(
+        (STATIC_DIR / "login.html").read_text(encoding="utf-8"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/api/auth/session")
+def changlian_auth_session(request: Request):
+    if _auth_test_bypass_enabled():
+        now = int(time.time())
+        return {
+            "authenticated": True,
+            "user": {"username": "isolated-test-runtime"},
+            "expires_at": now + 60 * 60,
+            "remaining_seconds": 60 * 60,
+            "absolute_expires_at": now + 60 * 60,
+            "absolute_remaining_seconds": 60 * 60,
+            "idle_ttl_seconds": 60 * 60,
+            "renew_window_seconds": 10 * 60,
+            "upstream_token_expires_at": None,
+            "upstream_token_expiry_source": "test_bypass",
+            "test_bypass": True,
+        }
+
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+        request.cookies.get(SESSION_COOKIE_NAME, "")
+    )
+    if claims is None:
+        return {"authenticated": False, "user": None}
+
+    renewed_token = _CHANGLIAN_AUTH_SESSIONS.renew(claims)
+    if renewed_token:
+        renewed_claims = _CHANGLIAN_AUTH_SESSIONS.verify(renewed_token)
+        if renewed_claims is not None:
+            claims = renewed_claims
+
+    response = JSONResponse(_public_auth_session(claims))
+    response.headers["Cache-Control"] = "no-store"
+    if renewed_token:
+        _set_auth_cookie(response, request, renewed_token, claims)
+    return response
+
+
+@app.post("/api/auth/login")
+def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
+    username = str(payload.username or "").strip()
+    if not username:
+        raise PlatformError(
+            code="LOGIN_USERNAME_REQUIRED",
+            message="请输入畅联云用户名",
+            detail="username 不能为空。",
+            solution="请输入畅联云账号后重试。",
+            status_code=422,
+        )
+    try:
+        result = _CHANGLIAN_LOGIN_CLIENT.login(
+            username=username,
+            password=payload.password,
+            code=payload.code,
+            uuid=payload.uuid,
+        )
+    except ChangLianLoginError as error:
+        raise PlatformError(
+            code=error.code,
+            message=error.message,
+            detail=error.detail,
+            solution=error.solution,
+            status_code=error.status_code,
+        ) from error
+
+    token = _CHANGLIAN_AUTH_SESSIONS.issue(
+        username,
+        upstream_expires_at=result.get("upstream_expires_at"),
+        upstream_expiry_source=str(
+            result.get("upstream_expiry_source") or "undocumented"
+        ),
+    )
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(token)
+    if claims is None:
+        raise PlatformError(
+            code="AUTH_SESSION_CREATE_FAILED",
+            message="登录成功但会话创建失败",
+            detail="本平台未能创建安全登录会话。",
+            solution="请刷新页面后重新登录；若持续失败，请检查服务器时间。",
+            status_code=500,
+        )
+    response = JSONResponse(
+        {
+            "ok": True,
+            "provider": "changlian",
+            **_public_auth_session(claims),
+            "upstream": {
+                "code": result.get("code"),
+                "message": result.get("message", ""),
+                "token_present": bool(result.get("token_present")),
+                "expires_in": result.get("upstream_expires_in"),
+                "expires_at": result.get("upstream_expires_at"),
+                "expiry_source": result.get("upstream_expiry_source"),
+            },
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    _set_auth_cookie(response, request, token, claims)
+    return response
+
+
+@app.post("/api/auth/logout")
+def changlian_auth_logout():
+    response = JSONResponse({"ok": True, "authenticated": False})
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+    )
+    return response
+
 
 @app.get("/api/system/version")
 def system_version():
@@ -834,12 +1157,44 @@ def enrich_job_runtime(
     repository=None,
     worker_runtime=None,
     queued_candidates=None,
+    allow_version_archive: bool = True,
 ) -> Dict[str, Any]:
     if not job:
         return job
     repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
+    if not str(job.get("asset_algorithm_name") or "").strip():
+        legacy_name = str(job.get("algorithm_name") or "").strip()
+        if legacy_name:
+            job["asset_algorithm_name"] = legacy_name
+        else:
+            algorithm_id = str(
+                job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or ""
+            ).strip()
+            if algorithm_id:
+                try:
+                    algorithm = next(
+                        (
+                            row for row in list_algorithms_internal(project_id)
+                            if str(row.get("id") or "") == algorithm_id
+                        ),
+                        None,
+                    )
+                except HTTPException as error:
+                    if error.status_code != 404:
+                        raise
+                    algorithm = None
+                job["asset_algorithm_name"] = (
+                    str(algorithm.get("name") or "已删除算法")
+                    if algorithm is not None else "已删除算法"
+                )
+            else:
+                job["asset_algorithm_name"] = "未命名算法"
+    worker_error = str(job.get("error") or "").strip()
+    worker_message = str(job.get("message") or "").strip()
+    worker_progress_truth = dict(job)
     durable = repository.get(str(job_id)) if job_id else None
+    public_runtime = None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
             TaskStatus.QUEUED: "queued",
@@ -868,17 +1223,70 @@ def enrich_job_runtime(
         job.update(
             result_ref=durable.result_ref or job.get("result_ref"),
             queue_priority=int(durable.priority),
+            queue_rank=int(durable.queue_rank),
             priority_scheme="lower_number_first",
         )
+        snapshot_truth = shared_task_artifacts().read_json(
+            durable.task_id,
+            "snapshot.json",
+            default={},
+        )
+        if isinstance(snapshot_truth, dict):
+            snapshot_id = str(snapshot_truth.get("snapshot_id") or "").strip()
+            revision_id = str(snapshot_truth.get("dataset_revision_id") or "").strip()
+            if snapshot_id:
+                job["snapshot_id"] = snapshot_id
+            if revision_id:
+                job["dataset_revision_id"] = revision_id
+        if durable.result_ref:
+            durable_result = shared_task_artifacts().read_json(
+                durable.task_id,
+                durable.result_ref,
+                default={},
+            )
+            if isinstance(durable_result, dict):
+                dataset_manifest_ref = str(
+                    durable_result.get("dataset_manifest_ref") or ""
+                ).strip()
+                if dataset_manifest_ref:
+                    # Training version archival consumes this exact task-owned
+                    # evidence. Keep the overlay deliberately whitelisted:
+                    # legacy job JSON must not become a second copy of result truth.
+                    job["dataset_manifest_ref"] = dataset_manifest_ref
         if durable.error:
-            job["error"] = durable.error
-            job["message"] = durable.error
+            if durable.status in {
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                TaskStatus.BLOCKED_BY_HARDWARE,
+            }:
+                # Durable task error is lifecycle evidence. Preserve the
+                # worker-owned job error/message as the root cause when they
+                # exist instead of overwriting them with completion-handshake
+                # or scheduler wrappers.
+                job["task_error"] = durable.error
+                job["error"] = worker_error or durable.error
+                job["message"] = worker_message or worker_error or durable.error
+            elif durable.status is TaskStatus.PARTIAL_SUCCESS:
+                # PARTIAL_SUCCESS is a completed training lifecycle with a
+                # non-fatal post-training/evaluation warning. Never project it
+                # as the current fatal error or overwrite the successful
+                # completion message.
+                job["warning_message"] = durable.error
+                job.pop("error", None)
+            elif durable.status is TaskStatus.SUCCEEDED:
+                # A retry/recovery may leave historical task.error evidence on
+                # the durable record. Successful terminal truth wins.
+                job.pop("error", None)
+        elif durable.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+            job.pop("error", None)
         if durable.finished_at:
             # Keep the worker's own finished_at when present so started/finished use
             # the same clock representation; durable UTC is the recovery fallback.
             job.setdefault("finished_at", durable.finished_at)
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
-    status = job.get("status") or "queued"
+    successful_terminal_statuses = {"done", "finished", "completed", "succeeded", "success"}
+    ended_terminal_statuses = successful_terminal_statuses | {"failed", "stopped", "cancelled", "canceled"}
+    status = str(job.get("status") or "queued").strip().lower()
     if proc:
         code = proc.poll()
         if code is None and status in {"queued", "waiting", "pending"}:
@@ -892,9 +1300,11 @@ def enrich_job_runtime(
             # Re-read after poll() observes exit so a stale in-flight request cannot
             # overwrite that successful result with an inferred failure.
             persisted = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
-            if persisted.get("status") in {"done", "finished", "completed", "failed", "stopped"}:
+            persisted_status = str(persisted.get("status") or "").strip().lower()
+            if persisted_status in ended_terminal_statuses:
                 job = persisted
-                status = job.get("status") or status
+                worker_progress_truth = dict(persisted)
+                status = persisted_status
             if status in {"queued", "running", "waiting", "pending"}:
                 # 正常情况下 worker 会写 done/failed；如果服务刚好轮询到进程已退但文件未回写，则兜底。
                 job["status"] = "done" if code == 0 else "failed"
@@ -913,52 +1323,72 @@ def enrich_job_runtime(
             status = "failed"
             job["message"] = "训练进程已结束，但没有写入成功结果，请查看训练日志"
             job.setdefault("finished_at", now_iso())
-    training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
-    try:
-        total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
-    except (TypeError, ValueError):
-        total = 0
-    try:
-        persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
-    except (TypeError, ValueError):
-        persisted_cur = 0
-    log_text = _job_log_text(project_id, job_id)
-    cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
-    if status in {"done", "finished", "completed"}:
-        # 100% means the task lifecycle is terminal. It must not fabricate 300/300
-        # when Ultralytics legitimately stopped at 180/300.
-        progress = 100
-    elif status in {"failed", "stopped"}:
-        progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+    if durable is not None and public_runtime is not None:
+        # Live Durable jobs use one canonical display projection. Do not scan
+        # logs or recompute elapsed/ETA on each GET.
+        apply_training_display_progress(
+            job,
+            public_runtime,
+            telemetry_job=worker_progress_truth,
+        )
+        status = str(job.get("status") or status).strip().lower()
+        job["elapsed_text"] = _human_seconds(job.get("elapsed_seconds")) if job.get("elapsed_seconds") is not None else "-"
+        job["eta_text"] = _human_seconds(job.get("eta_seconds")) if job.get("eta_seconds") is not None else "估算中"
+        job["status_text"] = {"queued":"排队中", "waiting":"等待资源", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
     else:
-        progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
-    started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
-    finished = _parse_dt_value(job.get("finished_at")) if status in {"done", "finished", "completed", "failed", "stopped"} else None
-    clock = finished or datetime.now()
-    elapsed = int((clock - started).total_seconds()) if started else 0
-    # 暂停期间不计入真实训练耗时/ETA。
-    paused_seconds = int(job.get("paused_seconds") or 0)
-    if status == "paused" and job.get("paused_at"):
-        pdt = _parse_dt_value(job.get("paused_at"))
-        if pdt:
-            paused_seconds += max(0, int((datetime.now() - pdt).total_seconds()))
-    elapsed = max(0, elapsed - paused_seconds)
-    eta = None
-    if status == "running" and total and cur and elapsed > 0:
-        eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
-    elif status in {"done", "finished", "completed", "failed", "stopped"}:
-        eta = 0
-    elif status == "paused":
+        # Historical pre-Durable compatibility/recovery is the only path that
+        # may infer epoch/progress from an old training log.
+        training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+        try:
+            total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
+        except (TypeError, ValueError):
+            persisted_cur = 0
+        log_text = _job_log_text(project_id, job_id)
+        cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
+        if status in successful_terminal_statuses:
+            # 100% means the task lifecycle is terminal. It must not fabricate the
+            # final epoch number when training legitimately ended early.
+            progress = 100
+        elif status in ended_terminal_statuses:
+            progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+        else:
+            progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
+        started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
+        finished = _parse_dt_value(job.get("finished_at")) if status in ended_terminal_statuses else None
+        clock = finished or datetime.now()
+        elapsed = int((clock - started).total_seconds()) if started else 0
+        # 暂停期间不计入真实训练耗时/ETA。
+        paused_seconds = int(job.get("paused_seconds") or 0)
+        if status == "paused" and job.get("paused_at"):
+            pdt = _parse_dt_value(job.get("paused_at"))
+            if pdt:
+                paused_seconds += max(0, int((datetime.now() - pdt).total_seconds()))
+        elapsed = max(0, elapsed - paused_seconds)
         eta = None
-    job["current_epoch"] = cur
-    job["total_epochs"] = total
-    job["progress_percent"] = progress
-    job["elapsed_seconds"] = elapsed
-    job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
-    job["eta_seconds"] = eta
-    job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
-    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "failed":"失败", "stopped":"已停止"}.get(status, status)
-    if job.get("status") in {"done","finished","completed","failed","stopped"} and job.get("asset_algorithm_id"):
+        if status == "running" and total and cur and elapsed > 0:
+            eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
+        elif status in ended_terminal_statuses:
+            eta = 0
+        elif status == "paused":
+            eta = None
+        job["current_epoch"] = cur
+        job["total_epochs"] = total
+        job["progress_percent"] = progress
+        job["elapsed_seconds"] = elapsed
+        job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
+        job["eta_seconds"] = eta
+        job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
+        job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止", "cancelled":"已取消", "canceled":"已取消"}.get(status, status)
+    if (
+        allow_version_archive
+        and str(job.get("status") or "").lower() in successful_terminal_statuses
+        and not job.get("never_started")
+        and job.get("asset_algorithm_id")
+    ):
         try:
             _v48_archive_training_version(project_id, job)
         except Exception as archive_error:
@@ -993,17 +1423,48 @@ def get_project(project_id: str) -> Dict[str, Any]:
 
 def save_project(project: Dict[str, Any]):
     project["updated_at"] = now_iso()
-    write_json(project_dir(project["id"]) / "meta.json", project)
-    projects = read_json(PROJECTS_FILE, [])
-    found = False
-    for i, item in enumerate(projects):
-        if item["id"] == project["id"]:
-            projects[i] = project
-            found = True
-            break
-    if not found:
-        projects.append(project)
-    write_json(PROJECTS_FILE, projects)
+    meta_path = project_dir(project["id"]) / "meta.json"
+    with FileLock(str(PROJECTS_FILE) + ".lock", timeout=60):
+        with FileLock(str(meta_path) + ".lock", timeout=60):
+            atomic_write_json(meta_path, project)
+            projects = read_json(PROJECTS_FILE, [])
+            found = False
+            for i, item in enumerate(projects):
+                if item["id"] == project["id"]:
+                    projects[i] = project
+                    found = True
+                    break
+            if not found:
+                projects.append(project)
+            atomic_write_json(PROJECTS_FILE, projects)
+
+    # Keep the ready startup snapshot coherent with authoritative project
+    # metadata. Label creation/disable/merge is a project mutation, and a
+    # browser refresh must never resurrect labels from an older bootstrap
+    # snapshot. Publish a replacement snapshot atomically instead of mutating
+    # the shared object field by field.
+    snapshot = globals().get("_V53_BOOTSTRAP_SNAPSHOT")
+    if (
+        isinstance(snapshot, dict)
+        and str((snapshot.get("project") or {}).get("id") or "")
+        == str(project.get("id") or "")
+    ):
+        refreshed = dict(snapshot)
+        refreshed["project"] = dict(project)
+        refreshed["labels"] = project_label_items(project)
+        if isinstance(snapshot.get("projects"), list):
+            refreshed_projects = []
+            for item in snapshot["projects"]:
+                if str((item or {}).get("id") or "") != str(project.get("id") or ""):
+                    refreshed_projects.append(item)
+                    continue
+                replacement = dict(project)
+                if isinstance(item, dict) and "bootstrap_counts" in item:
+                    replacement["bootstrap_counts"] = item["bootstrap_counts"]
+                refreshed_projects.append(replacement)
+            refreshed["projects"] = refreshed_projects
+        refreshed["generated_at"] = now_iso()
+        globals()["_V53_BOOTSTRAP_SNAPSHOT"] = refreshed
 
 
 def safe_filename(filename: str) -> str:
@@ -1072,6 +1533,14 @@ def public_material(project_id: str, value: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(value)
     row.setdefault("storage_source_id", "default_local")
     row.setdefault("storage_type", "local")
+    source_type = str(row.get("source_type") or "").strip().lower()
+    annotation_state = str(row.get("annotation_state") or row.get("annotation_status") or "").strip().lower()
+    if (
+        source_type.startswith("imported_")
+        and annotation_state in {"annotated", "confirmed_empty"}
+        and not str(row.get("annotation_origin") or "").strip()
+    ):
+        row["annotation_origin"] = "imported"
     if not row.get("object_key") and row.get("stored_name"):
         row["object_key"] = f"uploads/{Path(str(row['stored_name'])).name}"
     row["url"] = material_content_url(project_id, str(row.get("id") or ""))
@@ -1105,6 +1574,7 @@ class StorageSourceUpdateReq(BaseModel):
 
 class StorageImportScanReq(BaseModel):
     mode: Literal["storage_scan", "directory_scan", "server_zip"] = "storage_scan"
+    execution_mode: Literal["local", "agent"] = "local"
     storage_source_id: str
     prefix: str = ""
     recursive: bool = True
@@ -1115,16 +1585,32 @@ class StorageImportScanReq(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_fields(self):
-        if self.import_format in {'coco', 'voc'}:
-            raise ValueError('服务器导入暂不支持 COCO/VOC；请使用 YOLO 或明确选择仅图片')
+        if self.import_format in {'coco', 'voc'} and not (
+            self.execution_mode == "agent"
+            and self.mode in {"storage_scan", "server_zip"}
+        ):
+            raise ValueError('COCO/VOC 当前仅支持远程 Agent 的对象存储目录或服务器 ZIP 导入')
         if self.dataset_yaml:
             value = self.dataset_yaml.replace('\\', '/')
             if value.startswith('/') or ':' in value or '..' in value.split('/'):
                 raise ValueError('dataset_yaml 必须是存储源内的相对路径')
-            if self.import_format == 'images':
-                raise ValueError('仅图片模式不能提交 dataset_yaml')
+            if self.import_format != 'yolo':
+                raise ValueError('只有 YOLO 模式可以提交 dataset_yaml')
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
+        if self.execution_mode == "agent":
+            if self.mode not in {"server_zip", "storage_scan"}:
+                raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
+            allowed_formats = {"images", "yolo", "coco", "voc"}
+            if self.import_format not in allowed_formats:
+                raise ValueError("Agent 当前模式不支持所选素材格式")
+            if self.import_format == "images" and self.dataset_yaml:
+                raise ValueError("Agent 仅图片模式不接受 dataset_yaml")
+            if self.dataset_yaml:
+                try:
+                    safe_member_path(str(self.dataset_yaml)).as_posix()
+                except ServerZipImportError as error:
+                    raise ValueError("Agent dataset_yaml 必须是扫描目录或 ZIP 根内的安全相对路径") from error
         if self.mode == "server_zip":
             if not zip_path:
                 raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
@@ -1157,6 +1643,9 @@ def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) ->
             missing.append("Endpoint")
         if not str(config.get("bucket") or "").strip():
             missing.append("Bucket")
+        public_base_url = str(config.get("public_base_url") or "").strip()
+        if public_base_url and not public_base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="外网地址必须以 http:// 或 https:// 开头")
     elif normalized == "s3":
         if not str(config.get("bucket") or "").strip():
             missing.append("Bucket")
@@ -1263,25 +1752,38 @@ def test_storage_source(source_id: str):
     source = repository.get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="存储源不存在")
-    secret = storage_credentials().get(source.secret_ref) if source.secret_ref else {}
     try:
-        provider = StorageProviderFactory(
-            data_dir=DATA_DIR, project_dir=DATA_DIR / "projects",
-            credentials={source.id: secret or {}},
-        ).create(source)
-        health = provider.health_check()
+        result = ModelArtifactService(
+            data_dir=DATA_DIR,
+            project_dir=project_dir,
+            algorithms_file=algorithms_file,
+            storage_sources_factory=storage_source_repository,
+            storage_credentials_factory=storage_credentials,
+        ).test_storage(source_id)
     except StorageError as error:
         repository.record_health(source_id, ok=False, message=str(error))
         _raise_storage_error(error)
-    repository.record_health(source_id, ok=health.ok, message=health.message)
-    if not health.ok:
+    except PlatformError as error:
+        repository.record_health(source_id, ok=False, message=str(error.message or error))
         raise PlatformError(
-            code="STORAGE_HEALTH_CHECK_FAILED", message="素材存储连接检测失败",
-            detail=health.message,
-            solution="请检查 Endpoint、Bucket、凭据、网络和访问权限。",
-            status_code=503,
-        )
-    return {"ok": True, "health": {"ok": health.ok, "status": health.status, "message": health.message, "details": dict(health.details)}, "source": _public_storage_source(repository.get(source_id))}
+            "STORAGE_HEALTH_CHECK_FAILED",
+            "存储连接或完整读写测试失败",
+            str(error.detail or error.message or error),
+            str(error.solution or "请检查存储源配置和权限后重试。"),
+            int(error.status_code or 503),
+        ) from error
+    message = str(result.get("message") or "存储连接与读写删除测试通过")
+    repository.record_health(source_id, ok=True, message=message)
+    return {
+        "ok": True,
+        "health": {
+            "ok": True,
+            "status": "AVAILABLE",
+            "message": message,
+            "details": dict(result.get("stages") or {}),
+        },
+        "source": _public_storage_source(repository.get(source_id)),
+    }
 
 
 @app.delete("/api/v61/storage-sources/{source_id}")
@@ -1329,7 +1831,7 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(raw, (int, float)):
             public[key] = max(0, raw)
-    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
+    for key in ("stage", "mode", "execution_mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
         raw = value.get(key)
         if isinstance(raw, str):
             public[key] = _public_storage_import_text(raw)
@@ -1356,6 +1858,9 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
 
 def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     artifacts = shared_task_artifacts()
+    request = _public_storage_import_mapping(
+        artifacts.read_json(task.task_id, task.payload_ref, default=None)
+    ) or {}
     result = None
     if task.result_ref:
         result = _public_storage_import_mapping(
@@ -1365,6 +1870,11 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         task.task_id, "checkpoints/worker.json", default=None,
     )
     metrics = _public_storage_import_mapping(checkpoint) or {}
+    if isinstance(result, dict):
+        import_format = str(request.get("import_format") or result.get("import_format") or "images")
+        external_classes = list(result.get("external_classes") or [])
+        if import_format in {"yolo", "coco", "voc"} and external_classes:
+            result["external_classes"] = external_label_facts(external_classes)
     if isinstance(checkpoint, dict):
         zip_import = checkpoint.get("zip_import")
         if isinstance(zip_import, dict):
@@ -1393,15 +1903,40 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
+        "mode": request.get("mode"),
+        "execution_mode": request.get("execution_mode") or "local",
+        "storage_source_id": request.get("storage_source_id"),
+        "import_format": request.get("import_format"),
+        "prefix": request.get("prefix"),
+        "recursive": request.get("recursive"),
         "metrics": metrics,
         "result": result,
     }
+
+
+class StorageRescanCreateReq(BaseModel):
+    execution_mode: Literal["local", "agent"] = "local"
+    import_format: Literal["images", "yolo", "coco", "voc"] = "images"
+    dataset_yaml: str = ""
+
+    @model_validator(mode="after")
+    def validate_rescan_format(self):
+        self.dataset_yaml = str(self.dataset_yaml or "").strip().replace("\\", "/")
+        if self.import_format != "yolo" and self.dataset_yaml:
+            raise ValueError("dataset_yaml 仅适用于 YOLO 重新扫描")
+        return self
 
 
 class StorageRescanConfirmReq(BaseModel):
     new: Literal['import', 'ignore'] = 'import'
     missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
     changed: Literal['update', 'ignore'] = 'update'
+    annotation_changed: Literal['update', 'ignore'] = 'update'
+    annotation_removed: Literal['clear', 'keep'] = 'keep'
+    annotation_conflicts: Literal['overwrite', 'keep'] = 'keep'
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
+    accept_quality_report: bool = False
 
 
 def _storage_rescan_task(project_id: str, task_id: str):
@@ -1417,34 +1952,205 @@ def _storage_rescan_task(project_id: str, task_id: str):
 
 def _public_storage_rescan(task):
     artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
     result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
     checkpoint = artifacts.read_json(task.task_id, 'checkpoints/worker.json', default={})
     summary = result if 'counts' in result else checkpoint
-    return {'task_id': task.task_id, 'project_id': task.project_id, 'status': task.status.value,
-            'stage': task.stage, 'accepted': task.accepted,
-            'current_item': _public_storage_import_text(task.current_item or ''),
-            'error': _public_storage_import_mapping(result).get('error') if result else None,
-            'counts': {key: max(0, int(value)) for key, value in summary.get('counts', {}).items()
-                       if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}},
-            'examples': {key: [_public_storage_import_text(value) for value in values[:20]]
-                         for key, values in summary.get('examples', {}).items()},
-            'applied': max(0, int(summary.get('applied') or 0))}
+    public_error = _public_storage_import_mapping(result).get('error') if result else None
+    annotation_counts = {
+        key: max(0, int(value))
+        for key, value in (summary.get('annotation_counts') or {}).items()
+        if key in {
+            'ANNOTATION_NEW', 'ANNOTATION_CHANGED', 'ANNOTATION_REMOVED',
+            'ANNOTATION_UNCHANGED', 'ANNOTATION_CONFLICT', 'ANNOTATION_INVALID',
+        }
+    }
+    annotation_examples = {
+        key: [_public_storage_import_text(value) for value in values[:20]]
+        for key, values in (summary.get('annotation_examples') or {}).items()
+    }
+    quality_view = public_quality(summary, _public_storage_import_text)
+    external_classes = quality_view.get('external_classes', [])
+    import_format = str(request.get('import_format') or summary.get('import_format') or 'images')
+    if import_format in {'yolo', 'coco', 'voc'} and external_classes:
+        external_classes = external_label_facts(external_classes)
+    return {
+        'task_id': task.task_id,
+        'project_id': task.project_id,
+        'status': task.status.value,
+        'stage': task.stage,
+        'accepted': task.accepted,
+        'execution_mode': str(request.get('execution_mode') or 'local'),
+        'import_format': import_format,
+        'dataset_yaml': str(summary.get('dataset_yaml') or request.get('dataset_yaml') or ''),
+        'worker_id': str(task.worker_id or ''),
+        'resource_wait_reason': _public_storage_import_text(task.resource_wait_reason or ''),
+        'current_item': _public_storage_import_text(task.current_item or ''),
+        'error': public_error,
+        'counts': {
+            key: max(0, int(value))
+            for key, value in summary.get('counts', {}).items()
+            if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}
+        },
+        'examples': {
+            key: [_public_storage_import_text(value) for value in values[:20]]
+            for key, values in summary.get('examples', {}).items()
+        },
+        'annotation_counts': annotation_counts,
+        'annotation_examples': annotation_examples,
+        'annotation_applied': max(0, int(summary.get('annotation_applied') or 0)),
+        'quality': quality_view.get('quality'),
+        'external_classes': external_classes,
+        'applied': max(0, int(summary.get('applied') or 0)),
+    }
+
+
+def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str, Any]:
+    get_project(project_id)
+    source = storage_source_repository().get(source_id)
+    if source is None:
+        return {'agent_available': False, 'reason': '存储源不存在', 'eligible_nodes': []}
+    if not source.enabled:
+        return {'agent_available': False, 'reason': '存储源已停用', 'eligible_nodes': []}
+    try:
+        source_type = StorageType.parse(source.type)
+    except ValueError:
+        return {'agent_available': False, 'reason': '存储源类型无效', 'eligible_nodes': []}
+    if source_type not in {StorageType.OSS, StorageType.S3}:
+        return {
+            'agent_available': False,
+            'reason': '远程重扫描仅支持 OSS / S3 / MinIO 对象存储',
+            'eligible_nodes': [],
+        }
+    nodes = [
+        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'material-import' in set(node.get('effective_capabilities') or [])
+    ]
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权素材导入能力的 Agent 节点',
+            'eligible_nodes': [],
+        }
+    try:
+        _remote_execution_transport_service().stage_material_storage_scan(
+            project_id=project_id,
+            task_id='storage-rescan-preflight',
+            storage_source_id=source_id,
+            prefix='',
+            recursive=True,
+            import_format='images',
+            allow_root=True,
+            intent='storage_rescan',
+        )
+    except RemoteExecutionTransportError as error:
+        return {'agent_available': False, 'reason': str(error), 'eligible_nodes': []}
+    return {
+        'agent_available': True,
+        'reason': '',
+        'agent_supported_formats': ['images', 'yolo', 'coco', 'voc'],
+        'local_supported_formats': ['images', 'yolo', 'coco', 'voc'],
+        'eligible_nodes': [
+            {
+                'node_id': str(node.get('node_id') or ''),
+                'display_name': str(node.get('display_name') or ''),
+                'build_id': str(node.get('build_id') or ''),
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.get('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight')
+def storage_rescan_preflight(project_id: str, source_id: str):
+    result = _storage_rescan_agent_preflight(project_id, source_id)
+    result.setdefault('agent_supported_formats', [])
+    result.setdefault('local_supported_formats', ['images', 'yolo', 'coco', 'voc'])
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **result,
+    }
 
 
 @app.post('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', status_code=202)
-def create_storage_rescan(project_id: str, source_id: str):
+def create_storage_rescan(
+    project_id: str,
+    source_id: str,
+    payload: Optional[StorageRescanCreateReq] = None,
+):
     get_project(project_id)
     source = storage_source_repository().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail='存储源不存在')
     if not source.enabled:
         raise HTTPException(status_code=409, detail='存储源已停用')
+    request = payload or StorageRescanCreateReq()
+    execution_mode = str(request.execution_mode or 'local')
     task_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(task_id, 'request.json', {
-        'mode': 'storage_rescan', 'storage_source_id': source_id})
+    import_format = str(request.import_format or 'images')
+    request_payload: Dict[str, Any] = {
+        'mode': 'storage_rescan',
+        'execution_mode': execution_mode,
+        'storage_source_id': source_id,
+        'import_format': import_format,
+        'dataset_yaml': str(request.dataset_yaml or ''),
+    }
+    capabilities = ('storage.rescan',)
+    resource_key = f'storage:{source_id}'
+    if execution_mode == 'agent':
+        preflight = _storage_rescan_agent_preflight(project_id, source_id)
+        if not preflight.get('agent_available'):
+            raise HTTPException(
+                status_code=409,
+                detail=str(preflight.get('reason') or '远程重扫描当前不可用'),
+            )
+        try:
+            request_payload['remote_execution'] = (
+                _remote_execution_transport_service().stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source_id,
+                    prefix='',
+                    recursive=True,
+                    import_format=import_format,
+                    dataset_yaml=str(request.dataset_yaml or ''),
+                    allow_root=True,
+                    intent='storage_rescan',
+                )
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message='远程存储重扫描准备失败',
+                detail=str(error),
+                solution='请检查对象存储连接和远程素材节点后重试。',
+                status_code=error.status_code,
+            ) from error
+        capabilities = ('agent.remote',)
+        resource_key = f'material-rescan:agent:{source_id}'
+
+    manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    store = RescanCandidateStore(manifest)
+    store.set_meta(
+        'source_fingerprint',
+        hashlib.sha256(json.dumps(
+            [source.id, source.type, source.config],
+            sort_keys=True,
+        ).encode()).hexdigest(),
+    )
+    material_store(project_id).snapshot_storage_references(manifest, source_id)
+    shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
     task = shared_task_repository().create(TaskRecord.new(
-        task_id, project_id, TaskKind.MATERIAL_IMPORT, 'request.json',
-        f'storage:{source_id}', required_capabilities=('storage.rescan',)))
+        task_id,
+        project_id,
+        TaskKind.MATERIAL_IMPORT,
+        'request.json',
+        resource_key,
+        required_capabilities=capabilities,
+    ))
     return _public_storage_rescan(task)
 
 
@@ -1459,9 +2165,62 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
     task = _storage_rescan_task(project_id, task_id)
     if task.status is not TaskStatus.AWAITING_CONFIRMATION and task.accepted is not True:
         raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    import_format = str(request.get('import_format') or 'images')
+    policy = {
+        'new': payload.new,
+        'missing': payload.missing,
+        'changed': payload.changed,
+        'annotation_changed': payload.annotation_changed,
+        'annotation_removed': payload.annotation_removed,
+        'annotation_conflicts': payload.annotation_conflicts,
+    }
+    annotation_confirmation = None
     try:
-        confirm_rescan(shared_task_artifacts(), task_id, payload.model_dump())
-        task = shared_task_repository().resume_after_confirmation(task_id)
+        if payload.create_labels:
+            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
+        if import_format in {'yolo', 'coco', 'voc'}:
+            manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+            store = RescanCandidateStore(manifest)
+            quality = store.quality_summary()
+            if quality.get('issues') and not payload.accept_quality_report:
+                raise ValueError('请先确认并接受标注数据质量报告')
+            project = get_project(project_id)
+            external_classes = store.external_classes()
+            resolved, _ = resolve_external_label_mapping(
+                external_classes,
+                label_mapping=payload.label_mapping,
+                create_labels=[],
+                labels=project_label_items(project),
+            )
+            annotation_confirmation = {
+                'label_mapping': resolved,
+                'create_labels': [],
+                'external_classes': [
+                    {'class_id': str(row.get('class_id')), 'name': str(row.get('name') or '')}
+                    for row in external_classes
+                ],
+                'accept_quality_report': payload.accept_quality_report,
+            }
+        elif payload.label_mapping:
+            raise ValueError('仅标注重新扫描允许提交外部类别映射')
+        confirm_rescan(
+            artifacts,
+            task_id,
+            policy,
+            annotation_confirmation=annotation_confirmation,
+        )
+        if annotation_confirmation:
+            remember_project_label_aliases(
+                project_id,
+                annotation_confirmation.get('external_classes') or [],
+                annotation_confirmation.get('label_mapping') or {},
+            )
+        task = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=('storage.rescan',),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_rescan(task)
@@ -1481,16 +2240,27 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         raise HTTPException(status_code=404, detail="存储源不存在")
     if not source.enabled:
         raise HTTPException(status_code=409, detail="存储源已停用")
-    if payload.mode in {"directory_scan", "server_zip"} and StorageType.parse(source.type) is not StorageType.LOCAL:
-        raise HTTPException(status_code=422, detail="目录扫描和服务器 ZIP 导入只能使用已启用的本地存储")
+    source_type = StorageType.parse(source.type)
+    if payload.mode == "directory_scan" and source_type is not StorageType.LOCAL:
+        raise HTTPException(status_code=422, detail="目录扫描只能使用已启用的本地存储")
+    if (
+        payload.mode == "server_zip"
+        and payload.execution_mode == "local"
+        and source_type is not StorageType.LOCAL
+    ):
+        raise HTTPException(status_code=422, detail="本地服务器 ZIP 导入只能使用本地目标存储")
+    if (
+        payload.execution_mode == "agent"
+        and payload.mode in {"server_zip", "storage_scan"}
+        and source_type not in {StorageType.OSS, StorageType.S3}
+    ):
+        raise HTTPException(status_code=422, detail="Agent 素材导入必须选择 OSS/S3/MinIO 对象存储")
     request_payload = payload.model_dump(mode="json")
+    resolved_zip = None
     if payload.mode == "server_zip":
         relative_zip = str(payload.zip_path or "").strip()
         try:
-            # Resolve now so an unsafe/out-of-root/missing request cannot create
-            # a durable task which is guaranteed to fail later. Only the caller's
-            # relative value is persisted; the resolved server path is discarded.
-            resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
+            resolved_zip = resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
             target_prefix = safe_member_path(
                 str(payload.target_prefix or "").strip()
             ).as_posix()
@@ -1507,10 +2277,50 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         request_payload["zip_path"] = relative_zip
         request_payload["target_prefix"] = target_prefix
     task_id = uuid.uuid4().hex[:12]
+    if payload.execution_mode == "agent":
+        try:
+            transport = _remote_execution_transport_service()
+            if payload.mode == "storage_scan":
+                request_payload["remote_execution"] = transport.stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source.id,
+                    prefix=str(payload.prefix or ""),
+                    recursive=bool(payload.recursive),
+                    import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
+                )
+            else:
+                request_payload["remote_execution"] = transport.stage_material_import(
+                    project_id=project_id,
+                    task_id=task_id,
+                    archive_path=resolved_zip,
+                    storage_source_id=source.id,
+                    target_prefix=request_payload["target_prefix"],
+                    import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
+                )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="远程素材导入准备失败",
+                detail=str(error),
+                solution="请检查目标对象存储、服务器 ZIP 文件和访问凭据后重试。",
+                status_code=error.status_code,
+            ) from error
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
     task = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
-        f"storage:{source.id}", required_capabilities=("storage.import",),
+        (
+            f"material-import:agent:{source.id}"
+            if payload.execution_mode == "agent"
+            else f"storage:{source.id}"
+        ),
+        required_capabilities=(
+            ("agent.remote",)
+            if payload.execution_mode == "agent"
+            else ("storage.import",)
+        ),
     ))
     return _public_storage_import_task(task)
 
@@ -1555,21 +2365,132 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
     candidate_store = ImportCandidateStore(manifest)
     load_legacy_candidates(artifacts, task_id, candidate_store)
     try:
+        if payload.create_labels:
+            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
         project = get_project(project_id)
-        if any(normalize_label(code) != code for code in payload.create_labels):
-            raise ValueError('新建标签必须使用规范的平台标签编码')
-        def create_import_label(code):
-            current = get_project(project_id)
-            ensure_label(current, code)
-            return code
-        confirm_import(candidate_store, artifacts, task_id,
+        confirmation = confirm_import(candidate_store, artifacts, task_id,
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
-            create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
-            labels=project_label_items(project), create_label=create_import_label)
-        updated = shared_task_repository().resume_after_confirmation(task_id)
+            create_labels=[], accept_quality_report=payload.accept_quality_report,
+            labels=project_label_items(project), create_label=None)
+        remember_project_label_aliases(
+            project_id,
+            confirmation.get('external_classes') or [],
+            confirmation.get('label_mapping') or {},
+        )
+        updated = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=("storage.import",),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_import_task(updated)
+
+
+def _label_review_candidate_store(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail="标签审查任务不存在")
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    mode = str(request.get("mode") or "storage_scan")
+    if mode not in {"storage_scan", "directory_scan", "server_zip", "storage_rescan"}:
+        raise HTTPException(status_code=404, detail="标签审查任务不存在")
+    manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    if not manifest.is_file():
+        scan_result = artifacts.read_json(task_id, "scan/result.json", default={})
+        if isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list):
+            store = ImportCandidateStore(manifest)
+            load_legacy_candidates(artifacts, task_id, store)
+        else:
+            raise HTTPException(status_code=409, detail="标签审查候选清单尚未就绪")
+    return task, request, ImportCandidateStore(manifest)
+
+
+def _label_sample_content_type(filename: str) -> str:
+    detected = mimetypes.guess_type(str(filename or ""))[0] or "application/octet-stream"
+    return detected if detected.startswith("image/") else "application/octet-stream"
+
+
+@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/samples")
+def label_review_samples_v61(
+    project_id: str,
+    task_id: str,
+    class_id: str,
+    limit: int = Query(default=8, ge=1, le=12),
+):
+    _task, _request, store = _label_review_candidate_store(project_id, task_id)
+    samples = store.external_class_samples(class_id, limit=limit)
+    result = []
+    for sample in samples:
+        object_key = str(sample.get("object_key") or "")
+        content_url = (
+            f"/api/v61/projects/{quote(project_id, safe='')}/label-review/"
+            f"{quote(task_id, safe='')}/classes/{quote(str(class_id), safe='')}/sample-content"
+            f"?object_key={quote(object_key, safe='')}"
+        )
+        result.append({
+            "object_key": object_key,
+            "filename": str(sample.get("filename") or Path(object_key).name),
+            "width": max(0, int(sample.get("width") or 0)),
+            "height": max(0, int(sample.get("height") or 0)),
+            "bbox": {
+                "cx": float(sample.get("cx") or 0),
+                "cy": float(sample.get("cy") or 0),
+                "w": float(sample.get("w") or 0),
+                "h": float(sample.get("h") or 0),
+                "clipped": bool(sample.get("clipped")),
+            },
+            "preview_url": content_url,
+            "content_url": content_url,
+        })
+    return {
+        "task_id": task_id,
+        "class_id": str(class_id),
+        "count": len(result),
+        "samples": result,
+    }
+
+
+@app.get("/api/v61/projects/{project_id}/label-review/{task_id}/classes/{class_id}/sample-content")
+def label_review_sample_content_v61(
+    project_id: str,
+    task_id: str,
+    class_id: str,
+    object_key: str = Query(..., min_length=1, max_length=4096),
+):
+    _task, _request, store = _label_review_candidate_store(project_id, task_id)
+    sample = store.external_class_sample(class_id, object_key)
+    if sample is None:
+        raise HTTPException(status_code=404, detail="该对象不属于当前外部标签样本")
+    try:
+        provider = storage_manager(project_id).provider_for(
+            str(sample.get("storage_source_id") or "")
+        )
+        stream = provider.open_reader(str(sample["object_key"]))
+    except StorageError as error:
+        _raise_storage_error(
+            error,
+            status_code=404 if error.code == "STORAGE_OBJECT_NOT_FOUND" else 503,
+        )
+
+    def body():
+        try:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+
+    return StreamingResponse(
+        body(),
+        media_type=_label_sample_content_type(str(sample.get("filename") or "")),
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @app.get("/api/v61/projects/{project_id}/materials")
@@ -1616,10 +2537,6 @@ def material_content_v61(project_id: str, image_id: str):
     manager = storage_manager(project_id)
     row = manager.material(image_id)
     try:
-        if str(row.get("storage_type")) != "local":
-            signed = manager.preview_url(row)
-            if signed:
-                return RedirectResponse(signed, status_code=307)
         resolved = manager.materialize(row)
         return FileResponse(resolved.path)
     except StorageError as error:
@@ -1641,10 +2558,20 @@ def ensure_label(project: Dict[str, Any], label: str) -> int:
     labels = project.setdefault("labels", [])
     for i, item in enumerate(labels):
         if item == label:
+            if _prune_canonical_label_alias_conflicts(project):
+                save_project(project)
             return i
     labels.append(label)
     meta = project.setdefault("label_meta", [])
-    meta.append({"code": label, "display_name": label, "color": default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
+    meta.append({
+        "code": label,
+        "display_name": label,
+        "color": default_label_color(len(labels)-1),
+        "type": "bbox",
+        "hotkey": str(len(labels)) if len(labels) <= 9 else "",
+        "aliases": [],
+    })
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     return len(labels) - 1
 
@@ -1762,10 +2689,10 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
-        # New-image annotations are buffered with the material rows and
-        # committed once per request/import batch. Existing-image writes
-        # stay immediate so their independent update semantics do not change.
-        "annotations": {},
+        # Plain multi-image uploads may defer only their initial unannotated
+        # placeholders so one SQLite upsert_many persists the batch. Structured
+        # imports already know final GT and persist that truth immediately once.
+        "deferred_annotations": {},
         "annotation_repository": None,
         # Storage source schema/provider/credential setup is request-scoped,
         # not image-scoped. Reuse one manager across the whole import batch.
@@ -1852,8 +2779,8 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
-    annotations = [
-        dict(row) for row in batch.get("annotations", {}).values()
+    deferred_annotations = [
+        dict(row) for row in batch.get("deferred_annotations", {}).values()
     ]
     if not save:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
@@ -1862,23 +2789,23 @@ def _v50_end_image_batch(save: bool = True):
                 "批量导入回滚失败：" + "; ".join(cleanup_errors)
             )
         return []
-    if not records and not patches and not annotations:
+    if not records and not patches and not deferred_annotations:
         return []
 
     try:
-        if annotations:
+        records_by_id = {
+            str(record.get("id")): record for record in records
+        }
+        if deferred_annotations:
             annotation_repository = (
                 batch.get("annotation_repository")
                 or AnnotationRepository(project_dir(project_id))
             )
             saved_annotations = annotation_repository.upsert_many(
-                annotations,
+                deferred_annotations,
                 project_material=False,
                 return_rows=True,
             )
-            records_by_id = {
-                str(record.get("id")): record for record in records
-            }
             for saved in saved_annotations:
                 image_id = str(saved.get("image_id") or "")
                 patch = _v50_material_annotation_patch(saved)
@@ -1888,9 +2815,6 @@ def _v50_end_image_batch(save: bool = True):
                 else:
                     patches.setdefault(image_id, {}).update(patch)
 
-        records_by_id = {
-            str(record.get("id")): record for record in records
-        }
         for image_id in list(patches):
             record = records_by_id.get(image_id)
             if record is not None:
@@ -1960,12 +2884,60 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
+def _annotation_box_source_fallback(material: Optional[Dict[str, Any]] = None) -> str:
+    row = material or {}
+    origin = str(row.get("annotation_origin") or "").strip().lower()
+    if origin == "ai_confirmed":
+        return "ai_candidate_confirmed"
+    if origin == "imported":
+        return "imported"
+    if origin == "manual":
+        return "manual"
+    if str(row.get("source_type") or "").strip().lower().startswith("imported_"):
+        return "imported"
+    return "manual"
+
+def _annotation_summary_for_material_index(
+    boxes: List[Dict[str, Any]],
+    annotation_state: Optional[str],
+    material: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Rebuild material annotation summary without erasing durable provenance.
+
+    Box-level provenance is authoritative when present. Legacy annotations may
+    predate box provenance, so index migration may fall back to the material's
+    durable origin or structured-import source type only when every box lacks
+    an explicit source.
+    """
+    summary = annotation_summary(boxes, annotation_state)
+    if summary.get("annotation_state") not in {"annotated", "confirmed_empty"}:
+        return summary
+    explicit_sources = [
+        str(box.get("source") or "").strip().lower()
+        for box in boxes
+        if str(box.get("source") or "").strip()
+    ]
+    if explicit_sources:
+        return summary
+    row = material or {}
+    durable_origin = str(row.get("annotation_origin") or "").strip().lower()
+    if durable_origin in {"manual", "ai_confirmed", "mixed", "imported"}:
+        summary["annotation_origin"] = durable_origin
+    elif str(row.get("source_type") or "").strip().lower().startswith("imported_"):
+        summary["annotation_origin"] = "imported"
+    return summary
+
+def _v50_material_annotation_patch(
+    saved: Dict[str, Any], annotation_origin: Optional[str] = None,
+) -> Dict[str, Any]:
     boxes = list(saved.get("boxes") or [])
     state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
     updated = str(saved.get("updated_at") or now_iso())
+    summary = annotation_summary(boxes, state)
+    if annotation_origin:
+        summary["annotation_origin"] = str(annotation_origin)
     patch = {
-        **annotation_summary(boxes, state),
+        **summary,
         "annotation_scope": list(saved.get("annotation_scope") or []),
         "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
@@ -1976,29 +2948,87 @@ def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
     return patch
 
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+def write_annotation(
+    project_id: str, image_id: str, boxes: List[Dict[str, Any]],
+    annotation_state=None, annotation_origin: Optional[str] = None,
+    *, annotation_scope=None, expected_version: Optional[int] = None,
+):
+    # AnnotationRepository is the ground-truth owner. Persist explicit/final
+    # truth immediately. If this image had only a deferred plain-upload
+    # unannotated placeholder, cancel that placeholder before writing final GT.
     batch = _v50_active_image_batch(project_id)
-    normalized_id = str(image_id)
-    if batch is not None and normalized_id in batch.get("records", {}):
-        batch.setdefault("annotations", {})[normalized_id] = {
-            "image_id": normalized_id,
-            "boxes": [dict(box) for box in boxes],
-            "annotation_state": annotation_state,
-        }
-        return
-
-    # Existing-image writes remain immediately durable. New images inside
-    # an import/upload batch are persisted together by _v50_end_image_batch.
+    if batch is not None:
+        batch.get("deferred_annotations", {}).pop(str(image_id), None)
     saved = _v50_annotation_repository(project_id).upsert(
-        image_id, boxes, annotation_state, project_material=False
+        image_id,
+        boxes,
+        annotation_state,
+        annotation_scope=annotation_scope,
+        project_material=False,
+        expected_version=expected_version,
     )
-    patch = _v50_material_annotation_patch(saved)
+    patch = _v50_material_annotation_patch(saved, annotation_origin)
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
+    return saved
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
     return _v50_annotation_repository(project_id).get(image_id)
+
+
+def read_annotations_many(project_id: str, image_ids) -> Dict[str, Dict[str, Any]]:
+    """Bounded formal Ground Truth read through the canonical repository owner."""
+    ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
+    if len(ids) > 500:
+        raise ValueError("annotation batch lookup is limited to 500 image ids")
+    return _v50_annotation_repository(project_id).get_many(ids)
+
+
+def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
+    """Persist a bounded formal-GT batch and update material projections once.
+
+    AnnotationRepository remains the only Ground Truth owner. MaterialRepository
+    receives only the derived searchable projection, matching write_annotation().
+    """
+    incoming = [dict(row) for row in rows or []]
+    if len(incoming) > 500:
+        raise ValueError("annotation batch write is limited to 500 image ids")
+    if not incoming:
+        return []
+    seen = set()
+    origins = {}
+    prepared = []
+    batch = _v50_active_image_batch(project_id)
+    for row in incoming:
+        image_id = str(row.get("image_id") or "")
+        if not image_id or image_id in seen:
+            raise ValueError("annotation batch image ids must be present and unique")
+        seen.add(image_id)
+        if batch is not None:
+            batch.get("deferred_annotations", {}).pop(image_id, None)
+        origins[image_id] = str(row.get("annotation_origin") or "").strip() or None
+        prepared.append({
+            "image_id": image_id,
+            "boxes": list(row.get("boxes") or []),
+            "annotation_state": row.get("annotation_state"),
+            "annotation_scope": row.get("annotation_scope"),
+            "expected_version": row.get("expected_version"),
+        })
+    saved_rows = _v50_annotation_repository(project_id).upsert_many(
+        prepared,
+        project_material=False,
+        return_rows=True,
+    )
+    pending_patches = {}
+    for saved in saved_rows:
+        image_id = str(saved.get("image_id") or "")
+        patch = _v50_material_annotation_patch(saved, origins.get(image_id))
+        if not _v50_queue_image_patch(project_id, image_id, patch):
+            pending_patches[image_id] = patch
+    if pending_patches:
+        material_store(project_id).patch(pending_patches)
+    return saved_rows
 
 
 class _NonClosingImageStream:
@@ -2029,6 +3059,8 @@ def add_image_record(
     source_type: str = "raw", dataset_id: str = "default",
     storage_source_id: str = "default_local", annotation_builder=None,
     content_sha256: Optional[str] = None,
+    defer_unannotated_annotation: bool = False,
+    annotation_scope=None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     path_source = isinstance(src, (str, Path))
@@ -2105,8 +3137,14 @@ def add_image_record(
     batch = None
     try:
         prepared_annotation_boxes = None
+        structured_import = bool(annotation_builder is not None and str(source_type).startswith("imported_"))
         if annotation_builder is not None:
             prepared_annotation_boxes = list(annotation_builder(dict(record)) or [])
+            if structured_import:
+                prepared_annotation_boxes = restore_box_provenance(
+                    prepared_annotation_boxes, [],
+                    existing_source_fallback="imported", new_source="imported",
+                )
         with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
             batch = _v50_active_image_batch(project_id)
@@ -2122,9 +3160,19 @@ def add_image_record(
             if prepared_annotation_boxes is not None:
                 # Structured import paths already know the final GT. Persist it once
                 # before returning instead of durable unannotated -> final double writes.
-                write_annotation(project_id, img_id, prepared_annotation_boxes)
+                write_annotation(
+                    project_id, img_id, prepared_annotation_boxes,
+                    annotation_origin="imported" if structured_import else None,
+                    annotation_scope=annotation_scope,
+                )
+            elif batch and defer_unannotated_annotation:
+                batch["deferred_annotations"][str(img_id)] = {
+                    "image_id": str(img_id),
+                    "boxes": [],
+                    "annotation_state": "unannotated",
+                }
             elif not annotation_path.exists():
-                write_annotation(project_id, img_id, [], 'unannotated')
+                write_annotation(project_id, img_id, [], "unannotated")
     except Exception:
         annotation_path.unlink(missing_ok=True)
         _v50_annotation_repository(project_id).remove([img_id])
@@ -2174,12 +3222,28 @@ class ProjectUpdate(BaseModel):
 
 @app.get("/api/projects")
 def list_projects():
-    return read_json(PROJECTS_FILE, [])
+    projects = read_json(PROJECTS_FILE, [])
+    projects = projects if isinstance(projects, list) else []
+    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        return projects
+    canonical = next(
+        (item for item in projects if str(item.get("id") or "") == DEFAULT_PROJECT_ID),
+        projects[0] if projects else None,
+    )
+    if not canonical:
+        return []
+    return [{**canonical, "name": DEFAULT_PROJECT_NAME}]
 
 
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdate):
     project = get_project(project_id)
+    if (
+        not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
+        and payload.name is not None
+        and payload.name.strip() != DEFAULT_PROJECT_NAME
+    ):
+        raise HTTPException(status_code=409, detail="当前仅支持固定的默认空间")
     if payload.name is not None:
         if not payload.name.strip():
             raise HTTPException(status_code=400, detail="项目名称不能为空")
@@ -2192,6 +3256,8 @@ def update_project(project_id: str, payload: ProjectUpdate):
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str):
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        raise HTTPException(status_code=409, detail="默认空间不允许删除")
     projects = read_json(PROJECTS_FILE, [])
     if not any(p.get("id") == project_id for p in projects):
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -2223,19 +3289,41 @@ def list_datasets(project_id: str):
     get_project(project_id)
     datasets = ensure_default_datasets(project_id)
     images = load_images(project_id)
-    result = []
-    for ds in datasets:
-        dsid = ds.get("id") or "default"
-        imgs = [x for x in images if x.get("dataset_id", "default") == dsid]
-        annotated = 0; boxes = 0
-        for img in imgs:
-            ann = read_annotation(project_id, img["id"])
-            cnt = len(ann.get("boxes", []))
-            boxes += cnt
-            if cnt:
-                annotated += 1
-        result.append({**ds, "images": len(imgs), "annotated_images": annotated, "boxes": boxes})
-    return {"ok": True, "items": result}
+    image_ids = [
+        str(image.get("id") or "")
+        for image in images
+        if str(image.get("id") or "")
+    ]
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(image_ids), 500):
+        annotations.update(
+            read_annotations_many(project_id, image_ids[offset:offset + 500])
+        )
+    stats: Dict[str, Dict[str, int]] = {}
+    for image in images:
+        dataset_id = str(image.get("dataset_id") or "default")
+        row = stats.setdefault(
+            dataset_id, {"images": 0, "annotated_images": 0, "boxes": 0}
+        )
+        row["images"] += 1
+        annotation = annotations.get(str(image.get("id") or "")) or {}
+        count = len(annotation.get("boxes") or [])
+        row["boxes"] += count
+        if count:
+            row["annotated_images"] += 1
+    return {
+        "ok": True,
+        "items": [
+            {
+                **dataset,
+                **stats.get(
+                    str(dataset.get("id") or "default"),
+                    {"images": 0, "annotated_images": 0, "boxes": 0},
+                ),
+            }
+            for dataset in datasets
+        ],
+    }
 
 
 @app.post("/api/projects/{project_id}/datasets")
@@ -2639,7 +3727,7 @@ def _v50_restore_dataset_delete_files(
         source = Path(item["source"])
         staged = Path(item["staged"])
         try:
-            if staged.exists() and not source.exists():
+            if item.get("existed") and staged.exists() and not source.exists():
                 _v50_stage_material_file(staged, source)
             if item.get("existed") and not source.exists():
                 errors.append(f"{item['image_id']}:{item['kind']} 恢复文件缺失")
@@ -3122,40 +4210,61 @@ def system_recommendation():
 
 @app.post("/api/projects")
 def create_project(payload: ProjectCreate):
+    existing_projects = read_json(PROJECTS_FILE, [])
+    existing_projects = existing_projects if isinstance(existing_projects, list) else []
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and existing_projects:
+        raise HTTPException(status_code=409, detail="系统仅支持一个默认空间")
     labels = []
     label_meta = []
     raw_label_meta = payload.label_meta or []
     for idx, x in enumerate(payload.labels or []):
         display_name = ""
         color = ""
+        aliases: List[str] = []
         if isinstance(x, dict):
             code = normalize_label(x.get("code") or x.get("name") or x.get("label") or "")
             display_name = str(x.get("display_name") or x.get("zh") or x.get("name") or code)
             color = str(x.get("color") or "")
+            try:
+                aliases = normalize_label_aliases(x.get("aliases") or [])
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
         else:
             code = normalize_label(x)
             if idx < len(raw_label_meta) and isinstance(raw_label_meta[idx], dict):
                 display_name = str(raw_label_meta[idx].get("display_name") or raw_label_meta[idx].get("name") or code)
                 color = str(raw_label_meta[idx].get("color") or "")
+                try:
+                    aliases = normalize_label_aliases(raw_label_meta[idx].get("aliases") or [])
+                except ValueError as error:
+                    raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
             else:
                 display_name = code
         if code and code not in labels:
             labels.append(code)
-            label_meta.append({"code": code, "display_name": display_name or code, "color": color or default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
-    if not payload.name.strip():
+            label_meta.append({
+                "code": code,
+                "display_name": display_name or code,
+                "color": color or default_label_color(len(labels)-1),
+                "type": "bbox",
+                "hotkey": str(len(labels)) if len(labels) <= 9 else "",
+                "aliases": aliases,
+            })
+    if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and not payload.name.strip():
         raise HTTPException(status_code=400, detail="项目名称不能为空")
     # 项目创建不再强制填写标签；标签在数据集/标注环节维护。
-    pid = uuid.uuid4().hex[:12]
+    pid = uuid.uuid4().hex[:12] if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_ID
     ensure_project_dirs(pid)
     project = {
         "id": pid,
-        "name": payload.name.strip(),
+        "name": payload.name.strip() if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else DEFAULT_PROJECT_NAME,
         "description": payload.description or "",
         "labels": labels,
         "label_meta": label_meta,
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     material_store(pid).mutate(lambda rows: rows.clear())
     return project
@@ -3183,41 +4292,139 @@ class AddLabelReq(BaseModel):
     label: str
     display_name: Optional[str] = ""
     color: Optional[str] = ""
+    aliases: Optional[List[str]] = None
 
 
 @app.post("/api/projects/{project_id}/labels")
 def add_label(project_id: str, payload: AddLabelReq):
+    with label_governance_fence(project_dir(project_id)):
+        return _add_label_locked(project_id, payload)
+
+
+def _add_label_locked(project_id: str, payload: AddLabelReq):
     project = get_project(project_id)
-    idx = ensure_label(project, payload.label)
+    normalized_code = normalize_label(payload.label)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code):
+        raise HTTPException(
+            status_code=422,
+            detail="标签编码只允许英文、数字、_、-，且必须以英文字母开头",
+        )
+    try:
+        aliases = (
+            _validate_label_aliases(
+                project,
+                payload.aliases,
+                target_class_id=None,
+                target_code=normalized_code,
+                target_display_name=payload.display_name or normalized_code,
+            )
+            if payload.aliases is not None else None
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    idx = ensure_label(project, normalized_code)
     project = get_project(project_id)
     meta = project.setdefault("label_meta", [])
     while len(meta) < len(project.get("labels", [])):
         code = project["labels"][len(meta)]
         meta.append({"code": code, "display_name": code, "color": default_label_color(len(meta)), "type": "bbox", "hotkey": str(len(meta)+1) if len(meta) < 9 else ""})
     if idx < len(meta):
+        # Explicit creation of a previously soft-deleted canonical label
+        # reactivates the same project class id instead of allocating a new one.
+        meta[idx]["status"] = "active"
+        meta[idx]["active"] = True
+        meta[idx].pop("deleted_at", None)
         if payload.display_name:
             meta[idx]["display_name"] = payload.display_name
         if payload.color:
             meta[idx]["color"] = payload.color
+        if aliases is not None:
+            _set_project_label_aliases(
+                project, project["labels"][idx], aliases, replace=True,
+            )
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
-    return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
+    return {
+        "ok": True,
+        "class_id": idx,
+        "labels": project["labels"],
+        "label_meta": project.get("label_meta", []),
+        "items": active_label_options(project_label_items(project)),
+    }
+
+
+def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
+    manifest = []
+    for file in files:
+        filename = safe_filename(file.filename or "image.jpg")
+        raw_size = getattr(file, "size", None)
+        if raw_size is None:
+            stream = file.file
+            position = stream.tell()
+            stream.seek(0, os.SEEK_END)
+            raw_size = stream.tell()
+            stream.seek(position)
+        manifest.append({
+            "name": filename,
+            "size": max(0, int(raw_size or 0)),
+            "content_type": str(file.content_type or ""),
+        })
+    return manifest
+
+
+def _plain_upload_replay_response(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
+    image_ids = [str(item.get("image_id") or "") for item in (batch.get("items") or []) if str(item.get("image_id") or "")]
+    indexed = {str(row.get("id")): row for row in material_store(project_id).get_many(image_ids)}
+    uploaded = [dict(indexed[image_id]) for image_id in image_ids if image_id in indexed]
+    failed = [dict(item) for item in (batch.get("upload_failed") or [])]
+    return {
+        "batch_id": str(batch.get("id") or ""),
+        "uploaded": uploaded, "failed": failed,
+        "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
+        "uploaded_count": len(uploaded), "failed_count": len(failed),
+        "elapsed_seconds": float(batch.get("upload_elapsed_seconds") or 0.0),
+        "total": int(batch.get("upload_material_total") or material_store(project_id).count()),
+        "replayed": True,
+    }
 
 
 @app.post("/api/projects/{project_id}/images")
 async def upload_images(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
+    upload_request_id: Optional[str] = Form(None),
 ):
     get_project(project_id)
-    p = project_dir(project_id)
     uploaded, failed = [], []
-    batch_id = uuid.uuid4().hex[:12]
+    store = upload_batch_store(project_id)
+    request_id = str(upload_request_id or "").strip()
+    batch_id = request_id or uuid.uuid4().hex[:12]
+    receipt_created = False
+    if request_id:
+        try:
+            receipt, receipt_created = store.begin_upload_request(
+                request_id, created_at=now_iso(), manifest=_plain_upload_manifest(files),
+                dataset_id=dataset_id, storage_source_id=storage_source_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if not receipt_created:
+            request_status = str(receipt.get("upload_request_status") or "").upper()
+            if request_status == "SUCCEEDED":
+                return _plain_upload_replay_response(project_id, receipt)
+            if request_status == "PROCESSING":
+                raise HTTPException(status_code=409, detail={
+                    "code": "UPLOAD_REQUEST_IN_PROGRESS",
+                    "message": "该上传批次仍在服务器处理中，请查询批次状态后恢复",
+                })
+            raise HTTPException(status_code=409, detail={
+                "code": "UPLOAD_REQUEST_FAILED",
+                "message": str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
+            })
+
     started = time.time()
     _v50_begin_image_batch(project_id)
     try:
-        # Starlette already owns a seekable/spooled UploadFile. Send that stream
-        # directly to StorageManager instead of writing imports/upload_* and then
-        # copying the same bytes into the final object a second time.
         for file in files:
             filename = safe_filename(file.filename or "image.jpg")
             ext = Path(filename).suffix.lower()
@@ -3234,12 +4441,8 @@ async def upload_images(
                     failed.append({"name": filename, "reason": "文件为空"})
                     continue
                 record = add_image_record(
-                    project_id,
-                    stream,
-                    filename,
-                    "raw",
-                    dataset_id,
-                    storage_source_id,
+                    project_id, stream, filename, "raw", dataset_id, storage_source_id,
+                    defer_unannotated_annotation=True,
                 )
                 if record:
                     uploaded.append(record)
@@ -3251,61 +4454,88 @@ async def upload_images(
                 failed.append({"name": filename, "reason": str(error)})
         committed = _v50_end_image_batch(save=True)
         if committed:
-            committed_by_id = {
-                str(item.get("id")): item for item in committed
-            }
-            uploaded = [
-                dict(committed_by_id.get(str(item.get("id"))) or item)
-                for item in uploaded
-            ]
-    except Exception:
+            committed_by_id = {str(item.get("id")): item for item in committed}
+            uploaded = [dict(committed_by_id.get(str(item.get("id"))) or item) for item in uploaded]
+        elapsed_seconds = round(max(0.0, time.time() - started), 2)
+        material_total = material_store(project_id).count()
+        image_ids = [str(item.get("id")) for item in uploaded]
+        if receipt_created:
+            store.complete_upload_request(
+                batch_id, image_ids, failed=failed, finished_at=now_iso(),
+                elapsed_seconds=elapsed_seconds, material_total=material_total,
+            )
+        else:
+            store.create(batch_id, image_ids, now_iso())
+    except Exception as error:
+        rollback_error = None
         if _v50_active_image_batch(project_id):
-            _v50_end_image_batch(save=False)
+            try:
+                _v50_end_image_batch(save=False)
+            except Exception as cleanup_error:
+                rollback_error = cleanup_error
+        if receipt_created:
+            try:
+                store.fail_upload_request(batch_id, error=str(rollback_error or error), failed_at=now_iso())
+            except Exception:
+                pass
+        if rollback_error is not None:
+            raise rollback_error from error
         raise
 
-    upload_batch_store(project_id).create(
-        batch_id,
-        [str(item.get("id")) for item in uploaded],
-        now_iso(),
-    )
     return {
-        "batch_id": batch_id,
-        "uploaded": uploaded, "failed": failed,
+        "batch_id": batch_id, "uploaded": uploaded, "failed": failed,
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
-        "elapsed_seconds": round(max(0.0, time.time()-started), 2),
-        "total": material_store(project_id).count(),
+        "elapsed_seconds": elapsed_seconds, "total": material_total, "replayed": False,
     }
 
 
 _ANNOTATION_INDEX_LOCK = threading.Lock()
 _ANNOTATION_INDEX_RUNNING: set = set()
 _ANNOTATION_INDEX_STATUS: Dict[str, Dict[str, Any]] = {}
+_ANNOTATION_INDEX_BATCH_SIZE = 500
 
 def _v52_annotation_index_worker(project_id: str):
     try:
         images = load_images(project_id)
         pending = [x for x in images if not x.get("annotation_summary_at")]
         total = len(pending)
-        _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": 0, "started_at": now_iso()}
+        started_at = now_iso()
+        _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": 0, "started_at": started_at}
         if not total:
             return
-        patches = {}
-        for i, img in enumerate(pending, 1):
-            image_id = str(img.get("id"))
-            anns = read_annotation(project_id, image_id)
-            boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
-            patch = {
-                **annotation_summary(boxes, anns.get('annotation_state')),
-                "annotation_summary_at": anns.get("updated_at") or now_iso(),
+        annotations = _v50_annotation_repository(project_id)
+        materials = material_store(project_id)
+        for offset in range(0, total, _ANNOTATION_INDEX_BATCH_SIZE):
+            batch = pending[offset:offset + _ANNOTATION_INDEX_BATCH_SIZE]
+            image_ids = [str(img.get("id")) for img in batch]
+            annotation_rows = annotations.get_many(image_ids)
+            patches = {}
+            for img, image_id in zip(batch, image_ids):
+                anns = annotation_rows.get(image_id) or {
+                    "annotation_state": "unannotated", "boxes": [],
+                }
+                boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
+                summary = _annotation_summary_for_material_index(
+                    boxes, anns.get('annotation_state'), img,
+                )
+                patch = {
+                    **summary,
+                    "annotation_summary_at": anns.get("updated_at") or now_iso(),
+                }
+                if boxes:
+                    patch["processing_status"] = "processed"
+                patches[image_id] = patch
+            materials.patch(patches)
+            processed = min(total, offset + len(batch))
+            _ANNOTATION_INDEX_STATUS[project_id] = {
+                "running": True,
+                "total": total,
+                "processed": processed,
+                "started_at": started_at,
+                "updated_at": now_iso(),
             }
-            if boxes:
-                patch["processing_status"] = "processed"
-            patches[image_id] = patch
-            if i % 100 == 0 or i == total:
-                _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": i, "started_at": _ANNOTATION_INDEX_STATUS.get(project_id,{}).get("started_at"), "updated_at": now_iso()}
-        material_store(project_id).patch(patches)
-        _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "total": total, "processed": total, "finished_at": now_iso()}
+        _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "total": total, "processed": total, "started_at": started_at, "finished_at": now_iso()}
     except Exception as e:
         _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "error": str(e), "finished_at": now_iso()}
     finally:
@@ -3464,8 +4694,20 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
     }
 
 
+LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
+    "旧版带标注导入接口已关闭；请使用“上传并检查标注”统一入口，"
+    "先确认外部标签到平台标签的映射后再正式入库"
+)
+
+
+def _reject_legacy_annotated_import(project_id: str) -> None:
+    get_project(project_id)
+    raise HTTPException(status_code=409, detail=LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL)
+
+
 @app.post("/api/projects/{project_id}/import/yolo_zip")
 async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "dataset.zip")
@@ -3554,6 +4796,7 @@ async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/labels")
 async def import_label_files(project_id: str, files: List[UploadFile] = File(...)):
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     images = load_images(project_id)
@@ -3614,6 +4857,7 @@ async def import_label_files(project_id: str, files: List[UploadFile] = File(...
 # -----------------------------
 @app.post("/api/projects/{project_id}/import/coco_zip")
 async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "coco_dataset.zip")
@@ -3704,6 +4948,7 @@ async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/voc_zip")
 async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import(project_id)
     import xml.etree.ElementTree as ET
     project = get_project(project_id)
     p = project_dir(project_id)
@@ -3767,8 +5012,8 @@ async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_
 @app.get("/api/projects/{project_id}/annotations/{image_id}")
 def get_annotation(project_id: str, image_id: str):
     get_project(project_id)
-    images = load_images(project_id)
-    img = next((x for x in images if x["id"] == image_id), None)
+    rows = material_store(project_id).get_many([str(image_id)])
+    img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     ann = read_annotation(project_id, image_id)
@@ -3777,25 +5022,34 @@ def get_annotation(project_id: str, image_id: str):
 
 class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
+    annotation_state: Optional[Literal["annotated", "confirmed_empty"]] = None
+    expected_version: Optional[int] = None
 
 
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
 def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     project = get_project(project_id)
-    images = load_images(project_id)
-    img = next((x for x in images if x["id"] == image_id), None)
+    materials = material_store(project_id)
+    rows = materials.get_many([str(image_id)])
+    img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     label_ids = {
         str(item["code"]): int(item["class_id"])
         for item in active_label_options(project_label_items(project))
     }
+    existing_boxes = list(read_annotation(project_id, image_id).get("boxes") or [])
     try:
         clean_boxes = normalize_boxes(
             payload.boxes,
             int(img.get("width") or 0),
             int(img.get("height") or 0),
             label_ids,
+        )
+        clean_boxes = restore_box_provenance(
+            clean_boxes, existing_boxes,
+            existing_source_fallback=_annotation_box_source_fallback(img),
+            new_source="manual",
         )
     except KeyError as error:
         missing_label = str(error.args[0] or "")
@@ -3814,9 +5068,46 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请检查标注框是否位于图片内部且宽高大于零。",
             status_code=422,
         ) from error
-    write_annotation(project_id, image_id, clean_boxes)
-    fresh = next((x for x in load_images(project_id) if str(x.get("id")) == str(image_id)), img)
-    return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
+    if not clean_boxes and payload.annotation_state != "confirmed_empty":
+        raise PlatformError(
+            code="ANNOTATION_EMPTY_CONFIRMATION_REQUIRED",
+            message="请确认无目标",
+            detail="删除最后一个标注框后，需要明确确认当前图片没有目标。",
+            solution="点击“确认无目标”后保存；如果误删，请先撤销或重新绘制标注框。",
+            status_code=409,
+        )
+    annotation_state = "annotated" if clean_boxes else "confirmed_empty"
+    try:
+        saved_annotation = write_annotation(
+            project_id,
+            image_id,
+            clean_boxes,
+            annotation_state,
+            annotation_scope=sorted(label_ids),
+            expected_version=payload.expected_version,
+        )
+    except AnnotationConflictError as error:
+        raise PlatformError(
+            code="ANNOTATION_CONCURRENT_MODIFICATION",
+            message="标注已被其他操作更新",
+            detail=(
+                f"当前图片标注已从版本 {error.expected_version} 更新为 "
+                f"{error.actual_version}，本次保存未覆盖最新标注。"
+            ),
+            solution="请刷新当前图片，核对最新标注后再保存。",
+            status_code=409,
+        ) from error
+    except AnnotationLabelStateError as error:
+        raise PlatformError(
+            code=error.code,
+            message="标签状态已变化，标注未保存",
+            detail=str(error),
+            solution="请刷新当前图片和标签列表，确认当前有效标签后重新保存。",
+            status_code=409,
+        ) from error
+    refreshed = materials.get_many([str(image_id)])
+    fresh = refreshed[0] if refreshed else img
+    return {"ok": True, "image": fresh, "annotation": saved_annotation, "saved_boxes": len(clean_boxes)}
 
 
 class BuildDatasetReq(BaseModel):
@@ -3836,12 +5127,12 @@ def build_dataset(project_id: str, payload: BuildDatasetReq):
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or payload.include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             selected.append((img, ann))
-            if not ann.get("boxes"):
+            if ann.get("annotation_state") == "confirmed_empty":
                 empty_count += 1
     if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的数据。请先上传图片并标注，或勾选包含未标注图片。")
+        raise HTTPException(status_code=400, detail="没有可生成的数据。请先完成标注；无目标图片请先明确“确认无目标”。")
     ratio = max(0.5, min(float(payload.train_ratio), 0.95))
     selected = sorted(selected, key=lambda x: x[0]["id"])
     if len(selected) == 1:
@@ -3949,12 +5240,12 @@ def build_paddle_dataset_internal(project_id: str, train_ratio: float = 0.8, inc
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             selected.append((img, ann))
-            if not ann.get("boxes"):
+            if ann.get("annotation_state") == "confirmed_empty":
                 empty_count += 1
     if not selected:
-        raise HTTPException(status_code=400, detail="没有可生成的飞桨数据。请先上传图片并标注，或勾选包含未标注图片。")
+        raise HTTPException(status_code=400, detail="没有可生成的飞桨数据。请先完成标注；无目标图片请先明确“确认无目标”。")
     ratio = max(0.5, min(float(train_ratio), 0.95))
     selected = sorted(selected, key=lambda x: x[0]["id"])
     if len(selected) == 1:
@@ -4072,6 +5363,17 @@ class PrelabelRunReq(BaseModel):
     target_label: str = "person"
     image_ids: Optional[List[str]] = None
     overwrite: bool = False
+
+
+LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL = (
+    "旧版自动标注直写接口已关闭；请使用当前 AI 自动标注任务，"
+    "模型结果先进入候选区，经人工二次确认后才能写入正式标注"
+)
+
+
+def _reject_legacy_direct_prelabel(project_id: str) -> None:
+    get_project(project_id)
+    raise HTTPException(status_code=409, detail=LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL)
 
 
 def list_prelabel_services_internal() -> List[Dict[str, Any]]:
@@ -4217,6 +5519,7 @@ def call_prelabel_service(cfg: Dict[str, Any], image_path: Path) -> Dict[str, An
 
 @app.post("/api/projects/{project_id}/prelabel/run")
 def run_prelabel(project_id: str, payload: PrelabelRunReq):
+    _reject_legacy_direct_prelabel(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     cfg = resolve_prelabel_config(payload)
@@ -5131,7 +6434,78 @@ def training_options(project_id: Optional[str] = None):
             "base_models": weights,
             "scan": {"ok": scan.get("ok"), "total": scan.get("total", 0), "families": scan.get("families", {}), "error": scan.get("error", "")},
         })
-    # 远程训练服务器
+    # 推荐远程训练入口：不绑定具体服务器。只在“在线 training Agent +
+    # 可移植对象存储”同时满足时暴露为 ready，避免用户先选机器再让调度器
+    # 二次改派。中央 allocator 最终拥有节点/GPU 选择权。
+    try:
+        training_agents = [
+            node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+            if str(node.get("connection_mode") or "").strip().lower() == "agent"
+            and bool(node.get("online"))
+            and "training" in set(node.get("effective_capabilities") or [])
+        ]
+    except Exception:
+        training_agents = []
+    portable_training_storage = False
+    try:
+        artifact_service = ModelArtifactService(
+            data_dir=DATA_DIR,
+            project_dir=project_dir,
+            algorithms_file=algorithms_file,
+            storage_sources_factory=storage_source_repository,
+            storage_credentials_factory=storage_credentials,
+        )
+        artifact_config = artifact_service.repository.config()
+        artifact_source_id = str(artifact_config.get("storage_source_id") or "").strip()
+        artifact_source = storage_source_repository().get(artifact_source_id) if artifact_source_id else None
+        portable_training_storage = bool(
+            artifact_source
+            and artifact_source.enabled
+            and StorageType.parse(artifact_source.type) in {StorageType.OSS, StorageType.S3}
+        )
+    except Exception:
+        portable_training_storage = False
+
+    if training_agents and portable_training_storage:
+        scheduler_algs = [
+            dict(item)
+            for item in TRAINING_CATALOG["algorithms"]
+            if str(item.get("framework") or "").lower() == "ultralytics"
+        ]
+        scheduler_models = []
+        seen_scheduler_models = set()
+        for item in scheduler_algs:
+            reference = str(item.get("base_model") or "").strip()
+            if not reference or reference in seen_scheduler_models:
+                continue
+            seen_scheduler_models.add(reference)
+            scheduler_models.append({
+                "label": reference,
+                "value": reference,
+                "framework": "ultralytics",
+                "source": "official",
+                "model_status": "DOWNLOADABLE",
+                "downloadable": True,
+            })
+        options.insert(0, {
+            "id": "cluster_scheduler",
+            "server_id": "",
+            "name": f"GPU 集群自动调度（推荐） · {len(training_agents)} 节点在线",
+            "type": "server",
+            "framework": "ultralytics",
+            "status": "ready",
+            "scheduler_owned": True,
+            "online_training_nodes": len(training_agents),
+            "algorithms": scheduler_algs,
+            "base_models": scheduler_models,
+            "recommendation": {
+                "device": "auto",
+                "resource_strategy": "auto",
+                "resource_profile": "balanced",
+            },
+        })
+
+    # 旧远程训练服务器入口继续保留作兼容；正式执行仍由中央调度器拥有节点分配权。
     for s in read_json(SERVERS_FILE, []):
         caps = _remote_capabilities(s)
         options.append({
@@ -5357,6 +6731,8 @@ def gpu_resources():
 
 
 class TrainReq(BaseModel):
+    task_id: Optional[str] = None
+
     @model_validator(mode="before")
     @classmethod
     def reject_dataset_group_contract(cls, value):
@@ -5377,6 +6753,7 @@ class TrainReq(BaseModel):
     imgsz: int = 640
     batch: StrictInt = 8
     resource_strategy: Literal["auto", "manual"] = "auto"
+    resource_profile: Literal["balanced", "performance", "stability"] = "balanced"
     device: str = "auto"
     gpu_policy: Literal["auto", "exclusive", "shared"] = "auto"
     estimated_gpu_memory_bytes: Optional[int] = Field(default=None, gt=0)
@@ -5391,6 +6768,8 @@ class TrainReq(BaseModel):
     paddle_command: Optional[str] = ""
     # v20 进阶训练参数，Ultralytics 本机训练生效。
     patience: int = 100
+    time: Optional[float] = None
+    precision: Literal["auto", "fp16", "bf16", "fp32"] = "auto"
     workers: StrictInt = 0
     optimizer: str = "auto"
     lr0: float = 0.01
@@ -5449,7 +6828,13 @@ class TrainReq(BaseModel):
     continue_threshold: float = 0.0
     stop_threshold: float = 0.0
     auto_supplement: bool = False
+    iteration_action: Optional[Dict[str, str]] = None
+    supplement_candidate_set_id: Optional[str] = ""
     supplement_count: int = 0
+    # Reusable Benchmark v1. The browser submits identity only; exact test IDs
+    # are resolved from the source version/Snapshot by the control plane.
+    benchmark_source_version_id: Optional[str] = ""
+    benchmark_scope_id: Optional[str] = ""
     # v42.7 AI mid-training intervention. The AI is advisory within constrained actions; Ground Truth metrics stay authoritative.
     ai_intervention_enabled: bool = False
     ai_intervention_epochs: Optional[List[int]] = None
@@ -5461,6 +6846,7 @@ class TrainReq(BaseModel):
     # v42.8：训练任务队列与训练完成后的自动转换。
     queue_priority: StrictInt = 50
     auto_convert_targets: Optional[List[str]] = None
+    external_analysis_id: Optional[str] = None
 
 
 def validate_train_request(payload: TrainReq):
@@ -5477,9 +6863,23 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="patience 不能小于 0")
     if int(payload.workers) < 0:
         raise HTTPException(status_code=400, detail="workers 不能小于 0")
-    allowed_optimizers = {"auto", "sgd", "adam", "adamw", "nadam", "radam", "rmsprop"}
+    allowed_optimizers = {"auto", "sgd", "musgd", "adam", "adamax", "adamw", "nadam", "radam", "rmsprop"}
     if str(payload.optimizer or "auto").strip().lower() not in allowed_optimizers:
-        raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / Adam / AdamW / NAdam / RAdam / RMSProp")
+        raise HTTPException(status_code=400, detail="不支持的 optimizer。可选：auto / SGD / MuSGD / Adam / Adamax / AdamW / NAdam / RAdam / RMSProp")
+    if payload.time is not None and not (0.1 <= float(payload.time) <= 720):
+        raise HTTPException(status_code=400, detail="最大训练时长 time 必须在 0.1~720 小时之间")
+    if str(payload.gpu_policy or "auto").strip().lower() == "shared":
+        raise HTTPException(
+            status_code=400,
+            detail="当前训练调度采用单卡单任务安全隔离，尚未启用 GPU 共享；请选择自动隔离或独占。",
+        )
+    try:
+        normalize_training_precision(payload.precision)
+    except TrainingPrecisionError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="当前训练运行时暂不支持 BF16；请选择自动（推荐）、FP16 或 FP32。",
+        ) from error
     if not (0 < float(payload.lr0) <= 1):
         raise HTTPException(status_code=400, detail="lr0 必须在 0~1 之间")
     if not (0 <= float(payload.lrf) <= 1):
@@ -5504,13 +6904,24 @@ def validate_train_request(payload: TrainReq):
             raise HTTPException(status_code=400, detail=f"{name} 必须在 0~1 之间")
     if int(payload.eval_interval) < 0 or int(payload.val_max_samples) < 0:
         raise HTTPException(status_code=400, detail="阶段检查轮次和试验集抽查数量不能小于 0")
+    metric = str(payload.eval_metric or "map50").strip().lower()
+    if metric not in {"map50", "precision", "recall"}:
+        raise HTTPException(status_code=400, detail="目标指标只支持：mAP50 / Precision / Recall")
+    continue_threshold = float(payload.continue_threshold or 0)
+    stop_threshold = float(payload.stop_threshold or 0)
+    if not (0 <= continue_threshold <= 1):
+        raise HTTPException(status_code=400, detail="优化参考线必须在 0~1 之间")
+    if not (0 <= stop_threshold <= 1):
+        raise HTTPException(status_code=400, detail="目标正确率必须在 0~1 之间（例如 90% = 0.9）")
+    if stop_threshold > 0 and int(payload.eval_interval) <= 0:
+        raise HTTPException(status_code=400, detail="设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0")
     if payload.experiment_percent is not None and not (0 <= float(payload.experiment_percent) <= 100):
         raise HTTPException(status_code=400, detail="试验集比例必须在 0~100 之间")
     if payload.random_experiment_split and payload.selected_image_ids and len(set(payload.selected_image_ids)) >= 2:
         if not (0 < float(payload.experiment_percent) < 100):
             raise HTTPException(status_code=400, detail="启用随机试验集时，比例必须大于 0 且小于 100")
-    if payload.continue_threshold and payload.stop_threshold and float(payload.continue_threshold) >= float(payload.stop_threshold):
-        raise HTTPException(status_code=400, detail="继续训练下限必须小于提前完成阈值")
+    if continue_threshold and stop_threshold and continue_threshold >= stop_threshold:
+        raise HTTPException(status_code=400, detail="优化参考线必须小于目标正确率")
     # v42.8 起训练阶段不再支持 AI 中途介入；质量门禁完全由试验集 Ground Truth 指标决定。
     payload.ai_intervention_enabled = False
     payload.ai_intervention_epochs = []
@@ -5540,48 +6951,462 @@ def _explicit_training_split(payload: TrainReq) -> SplitRequest:
     )
 
 
-def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+def _training_reusable_benchmark(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    source_version_id: str = "",
+    observed_scope_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    requested_version = str(source_version_id or "").strip()
+    requested_scope = str(observed_scope_id or "").strip().lower()
+    if not requested_version and not requested_scope:
+        return None
+    if not requested_version or not requested_scope:
+        raise HTTPException(
+            status_code=409,
+            detail="复用评测基准需要同时提交来源版本和已观察到的 Benchmark Scope，请刷新训练配置后重试",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", requested_scope):
+        raise HTTPException(status_code=409, detail="Benchmark Scope 身份无效，请刷新训练配置后重试")
+    if not isinstance(asset_algorithm, dict):
+        raise HTTPException(status_code=409, detail="评测基准所属算法不存在")
+
     try:
-        split = _explicit_training_split(payload)
+        current_version_id = str(resolve_current_version_id(asset_algorithm) or "")
+    except PlatformError as error:
+        raise HTTPException(status_code=409, detail=error.detail or error.message) from error
+    if not current_version_id or requested_version != current_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail="算法当前版本已变化，不能继续复用旧版本评测基准，请刷新训练配置后重试",
+        )
+    version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else None
+    evaluation = evaluation if isinstance(evaluation, dict) else {}
+    if str(evaluation.get("status") or "").strip().lower() != "succeeded":
+        raise HTTPException(status_code=409, detail="当前算法版本没有成功的独立评测，无法复用评测基准")
+    scope = evaluation.get("benchmark_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    scope_id = str(scope.get("scope_id") or "").strip().lower()
+    if scope.get("binding_level") != "bundle_verified" or not re.fullmatch(r"[0-9a-f]{64}", scope_id):
+        raise HTTPException(
+            status_code=409,
+            detail="当前算法版本缺少已校验 Test Bundle 的 Benchmark Scope，只能做描述性对比",
+        )
+    if scope_id != requested_scope:
+        raise HTTPException(status_code=409, detail="Benchmark Scope 已变化，请刷新训练配置后重新确认")
+
+    snapshot_id = str(evaluation.get("snapshot_id") or version.get("snapshot_id") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise HTTPException(status_code=409, detail="评测基准缺少有效训练 Snapshot")
+    snapshot_path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    if not snapshot_path.is_file():
+        raise HTTPException(status_code=409, detail="评测基准对应的训练 Snapshot 已不存在")
+    snapshot = read_json(snapshot_path, {})
+    if not isinstance(snapshot, dict) or str(snapshot.get("snapshot_id") or "").lower() != snapshot_id:
+        raise HTTPException(status_code=409, detail="评测基准 Snapshot 身份不一致")
+
+    from platform_core.training_evaluation import build_evaluation_benchmark_scope
+    try:
+        snapshot_scope = build_evaluation_benchmark_scope(snapshot)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    for key in ("test_image_count", "content_digest", "ground_truth_digest", "label_schema_digest"):
+        if str(scope.get(key) or "") != str(snapshot_scope.get(key) or ""):
+            raise HTTPException(
+                status_code=409,
+                detail="已归档 Benchmark Scope 与 Snapshot truth 不一致，不能复用",
+            )
+
+    raw_ids = snapshot.get("test_image_ids")
+    if raw_ids is None and isinstance(snapshot.get("ids"), dict):
+        raw_ids = snapshot["ids"].get("test")
+    test_ids = tuple(
+        dict.fromkeys(
+            str(value or "").strip()
+            for value in list(raw_ids or [])
+            if str(value or "").strip()
+        )
+    )
+    if not test_ids or len(test_ids) != int(scope.get("test_image_count") or 0):
+        raise HTTPException(status_code=409, detail="评测基准试验素材清单不完整")
+
+    records = {
+        str(row.get("image_id") or ""): row
+        for row in list(snapshot.get("images") or [])
+        if isinstance(row, dict) and str(row.get("image_id") or "")
+    }
+    materials = MaterialRepository(project_dir(project_id))
+    material_rows = materials.get_many(test_ids)
+    material_by_id = {
+        str(row.get("id") or ""): row
+        for row in material_rows
+        if str(row.get("id") or "")
+    }
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(test_ids)
+    for image_id in test_ids:
+        frozen = records.get(image_id)
+        material = material_by_id.get(image_id)
+        annotation = annotations.get(image_id) or {}
+        if frozen is None or material is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 已不存在，请重新建立基准",
+            )
+        if str(material.get("content_sha256") or "").lower() != str(
+            frozen.get("content_sha256") or ""
+        ).lower():
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 内容已变化，请重新评测后再建立基准",
+            )
+        annotation_hash = str(
+            annotation.get("content_digest")
+            or material.get("annotation_hash")
+            or ""
+        ).lower()
+        annotation_state = str(
+            annotation.get("annotation_state")
+            or material.get("annotation_state")
+            or "unannotated"
+        )
+        if (
+            annotation_hash != str(frozen.get("annotation_hash") or "").lower()
+            or annotation_state != str(frozen.get("annotation_state") or "")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 标注已变化，请重新评测后再建立基准",
+            )
+    return {
+        "source_version_id": current_version_id,
+        "source_version_name": str(version.get("version_name") or current_version_id),
+        "scope_id": scope_id,
+        "snapshot_id": snapshot_id,
+        "test_image_ids": test_ids,
+        "test_image_count": len(test_ids),
+        "binding_level": "bundle_verified",
+    }
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/benchmark-reuse")
+def training_benchmark_reuse(project_id: str, algorithm_id: str):
+    get_project(project_id)
+    algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id)
+        ),
+        None,
+    )
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    try:
+        current_version_id = str(resolve_current_version_id(algorithm) or "")
+    except PlatformError as error:
+        return {"available": False, "reason": error.detail or error.message}
+    if not current_version_id:
+        return {"available": False, "reason": "当前算法还没有可复用评测基准的正式版本"}
+    version = next(
+        (row for row in list(algorithm.get("versions") or []) if str(row.get("id") or "") == current_version_id),
+        {},
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else {}
+    scope = evaluation.get("benchmark_scope") if isinstance(evaluation, dict) else {}
+    scope_id = str((scope or {}).get("scope_id") or "").strip().lower()
+    if not scope_id:
+        return {"available": False, "reason": "当前版本尚未冻结 Benchmark Scope"}
+    try:
+        resolved = _training_reusable_benchmark(
+            project_id, algorithm, current_version_id, scope_id,
+        )
+    except HTTPException as error:
+        return {"available": False, "reason": str(error.detail or "当前评测基准不可复用")}
+    return {
+        "available": True,
+        "algorithm_id": str(algorithm_id),
+        "source_version_id": resolved["source_version_id"],
+        "source_version_name": resolved["source_version_name"],
+        "scope_id": resolved["scope_id"],
+        "snapshot_id": resolved["snapshot_id"],
+        "test_image_count": resolved["test_image_count"],
+        "binding_level": resolved["binding_level"],
+    }
+
+
+def _training_supplement_candidate_set(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    payload: TrainReq,
+    split: SplitRequest,
+) -> Optional[Dict[str, Any]]:
+    requested_id = str(payload.supplement_candidate_set_id or "").strip().lower()
+    if not isinstance(asset_algorithm, dict):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="补数据 Candidate Set 所属算法不存在")
+        return None
+
+    current_version_id = str(asset_algorithm.get("current_version_id") or "").strip()
+    current_version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    candidate_set = (
+        current_version.get("supplement_data_candidate_set")
+        if isinstance(current_version, dict)
+        else None
+    )
+    if not isinstance(candidate_set, dict) or not str(candidate_set.get("candidate_set_id") or ""):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="当前算法版本没有可用的补数据 Candidate Set")
+        return None
+
+    selected_ids = {
+        str(value)
+        for value in (*split.train_image_ids, *split.test_image_ids)
+        if str(value)
+    }
+    candidate_material_ids = {
+        str(value)
+        for value in list(candidate_set.get("material_ids") or [])
+        if str(value)
+    }
+    adopted_ids = sorted(selected_ids.intersection(candidate_material_ids))
+    if not adopted_ids:
+        if requested_id:
+            raise HTTPException(status_code=409, detail="本次训练未实际选择 Candidate Set 中的素材")
+        return None
+
+    candidate_set_id = str(candidate_set.get("candidate_set_id") or "").strip().lower()
+    if requested_id != candidate_set_id:
+        raise HTTPException(
+            status_code=409,
+            detail="训练请求缺少或使用了过期的 Candidate Set，请刷新训练配置后重试",
+        )
+
+    materials = MaterialRepository(project_dir(project_id))
+    material_rows = materials.get_many(adopted_ids)
+    material_by_id = {
+        str(row.get("id") or ""): row
+        for row in material_rows
+        if str(row.get("id") or "")
+    }
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(adopted_ids)
+    truth_rows = []
+    for material_id in adopted_ids:
+        material = material_by_id.get(material_id)
+        if material is None:
+            raise HTTPException(status_code=409, detail=f"补数据素材 {material_id} 已不存在")
+        annotation = annotations.get(material_id) or {}
+        truth_rows.append({
+            "id": material_id,
+            "content_sha256": str(material.get("content_sha256") or ""),
+            "annotation_hash": str(
+                annotation.get("content_digest")
+                or material.get("annotation_hash")
+                or ""
+            ),
+            "annotation_state": str(
+                annotation.get("annotation_state")
+                or material.get("annotation_state")
+                or "unannotated"
+            ),
+        })
+
+    from platform_core.online_feedback import build_supplement_training_provenance
+    try:
+        build_supplement_training_provenance(candidate_set, selected_ids, truth_rows)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return dict(candidate_set)
+
+
+@app.get("/api/v62/projects/{project_id}/training-labels/inherited")
+def training_inherited_labels_preview(
+    project_id: str,
+    algorithm_id: str,
+    base_version_id: str = "",
+):
+    get_project(project_id)
+    algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id or "")
+        ),
+        None,
+    )
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在")
+    try:
+        return inherited_training_label_preview(
+            DATA_DIR,
+            project_dir(project_id),
+            algorithm,
+            base_version_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+_TRAINING_TASK_ID_PATTERN = re.compile(r"train_[0-9a-f]{16,32}")
+
+
+def _new_training_task_id() -> str:
+    return f"train_{uuid.uuid4().hex[:24]}"
+
+
+def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+    asset_algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(payload.algorithm_asset_id or "")
+        ),
+        None,
+    )
+    if asset_algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在")
+    try:
+        requested_split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    confirmed_iteration_action = (
+        _validated_training_iteration_action(asset_algorithm, payload)
+        if payload.iteration_action
+        else None
+    )
     framework = str(payload.framework or "ultralytics").strip().lower()
-    if framework not in {"ultralytics", "paddle"}:
-        raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
     target = str(payload.target or "local").strip().lower()
     if target == "remote":
-        remote_id = str(payload.server_id or "").strip()
-        if not remote_id:
-            raise HTTPException(status_code=400, detail="远程训练必须选择训练服务器")
+        # v42.25 control-plane scheduling replaces the legacy direct remote
+        # server upload path. server_id is retained only as an optional
+        # compatibility/affinity label; the central service-node allocator owns
+        # the actual Agent selection.
+        remote_id = str(payload.server_id or "").strip() or "scheduler"
         resource_key = f"training:remote:{remote_id}"
     else:
         device = normalize_training_device(payload.device)
         resource_key = f"training:{device}"
-    task_id = uuid.uuid4().hex[:12]
-    request_payload = payload.model_dump(mode="json", exclude_none=True)
-    request_payload.update(
-        {
-            "split_mode": split.mode.value,
-            "train_image_ids": list(split.train_image_ids),
-            "test_image_ids": list(split.test_image_ids),
-            "experiment_percent": split.experiment_percent,
-            "validation_percent": split.validation_percent,
-            "schema_version": 3,
-            "requested_device": payload.device,
-        }
-    )
+    requested_task_id = str(payload.task_id or "").strip()
+    if requested_task_id and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested_task_id):
+        raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
+    task_id = requested_task_id or _new_training_task_id()
+    raw_request = payload.model_dump(mode="json", exclude_none=True)
+    request_identity = hashlib.sha256(
+        json.dumps(raw_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if requested_task_id:
+        existing_task = shared_task_repository().get(task_id)
+        if existing_task is not None:
+            if existing_task.project_id == project_id and existing_task.kind is TaskKind.TRAINING:
+                existing_payload = shared_task_artifacts().read_json(
+                    task_id, existing_task.payload_ref, default={},
+                )
+                if str((existing_payload or {}).get("request_identity") or "") != request_identity:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="训练任务 ID 已绑定其他请求，不能静默复用",
+                    )
+                return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
+            raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
+    prepare_task_id = f"trainprep_{task_id}"
+    request_payload = {
+        **raw_request,
+        "schema_version": 4,
+        "request_identity": request_identity,
+        "admission_request": raw_request,
+        "training_input_state": "PREPARING",
+        "training_prepare_task_id": prepare_task_id,
+        "requested_split": {
+            "mode": requested_split.mode.value,
+            "train_image_ids": list(requested_split.train_image_ids),
+            "test_image_ids": list(requested_split.test_image_ids),
+            "experiment_percent": requested_split.experiment_percent,
+            "validation_percent": requested_split.validation_percent,
+        },
+        "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
+        "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+        "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
+        "algorithm_identity": {
+            "id": str(asset_algorithm.get("id") or ""),
+            "name": str(asset_algorithm.get("name") or "已删除算法"),
+            "source_type": str(asset_algorithm.get("source_type") or "LOCAL"),
+        },
+        "confirmed_iteration_action": confirmed_iteration_action,
+        "requested_device": payload.device,
+        "requested_resources": {
+            "resource_strategy": str(payload.resource_strategy or "auto").lower(),
+            "resource_profile": str(payload.resource_profile or "balanced").lower(),
+            "gpu_policy": str(payload.gpu_policy or "auto").lower(),
+            "requested_device": str(payload.device or "auto"),
+            "batch": int(payload.batch),
+            "workers": int(payload.workers),
+            "precision": str(payload.precision or "auto").lower(),
+            "cache": raw_request.get("cache", False),
+        },
+        "target_resource_key": resource_key,
+        "target_required_capabilities": [f"training.{framework}"],
+        **(
+            {
+                "remote_input_state": "PREPARING",
+                "remote_prepare_task_id": prepare_task_id,
+            }
+            if target == "remote" else {}
+        ),
+    }
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
     record = shared_task_repository().create(
-        TaskRecord.new(
+        replace(
+            TaskRecord.new(
             task_id,
             project_id,
             TaskKind.TRAINING,
             "payload.json",
             resource_key,
             priority=int(payload.queue_priority),
-            required_capabilities=(f"training.{framework}",),
+            required_capabilities=("training.input.ready",),
+            ),
+            stage="training_input_pending",
+            current_item="正在后台准备训练输入",
         )
     )
+    try:
+        shared_task_artifacts().atomic_write_json(
+            prepare_task_id,
+            "payload.json",
+            {
+                "schema_version": 2,
+                "training_task_id": task_id,
+                "project_id": project_id,
+            },
+        )
+        preparation_record = shared_task_repository().create(
+            TaskRecord.new(
+                prepare_task_id,
+                project_id,
+                TaskKind.TRAINING_PREPARE,
+                "payload.json",
+                f"training-prepare:{project_id}",
+                priority=int(payload.queue_priority),
+                required_capabilities=("training.prepare",),
+            )
+        )
+    except Exception as error:
+        shared_task_repository().fail_queued_precondition(
+            task_id,
+            f"TRAINING_PREP_TASK_CREATE_FAILED: {error}",
+            status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+            stage="training_input_preparation_failed",
+        )
+        raise
     job_dir = project_dir(project_id) / "jobs" / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -5590,11 +7415,21 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "id": task_id,
             "task_id": task_id,
             "status": "queued",
-            "message": "已进入后台训练队列",
+            "task_stage": "training_input_pending",
+            "phase": "training_input_pending",
+            "message": "训练任务已创建，正在后台准备输入",
             "framework": framework,
             "target": target,
-            "asset_algorithm_id": payload.algorithm_asset_id,
-            "algorithm_asset_id": payload.algorithm_asset_id,
+            "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
+            "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+            "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
+            "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
+            "external_provider": (asset_algorithm or {}).get("provider_type", ""),
+            "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
+            "external_analysis_id": str(payload.external_analysis_id or ""),
+            "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
+            "confirmed_iteration_action": confirmed_iteration_action,
+            "supplement_candidate_set_id": str(payload.supplement_candidate_set_id or ""),
             "algorithm": payload.algorithm,
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
@@ -5603,10 +7438,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "requested_device": payload.device,
             "assigned_device": None,
             "actual_device": None,
-            "split_mode": split.mode.value,
-            "requested_train_images": len(split.train_image_ids),
-            "requested_test_images": len(split.test_image_ids),
+            "split_mode": requested_split.mode.value,
+            "requested_train_images": len(requested_split.train_image_ids),
+            "requested_test_images": len(requested_split.test_image_ids),
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
+            "requested_resources": request_payload["requested_resources"],
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "artifact_verified": False,
@@ -5615,7 +7451,13 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     sync_jobs_index(project_id)
     return JSONResponse(
         status_code=202,
-        content={"ok": True, "task": _public_task(record)},
+        content={
+            "ok": True,
+            "task": _public_task(record),
+            "preparation_task_id": preparation_record.task_id,
+            "training_input_state": "PREPARING",
+            **({"remote_input_state": "PREPARING"} if target == "remote" else {}),
+        },
     )
 
 
@@ -5653,225 +7495,8 @@ def _paddle_family_key(alg: Optional[Dict[str, Any]]) -> str:
 
 @app.post("/api/projects/{project_id}/train/start")
 def start_train(project_id: str, payload: TrainReq):
-    get_project(project_id)
-    validate_train_request(payload)
-    p = project_dir(project_id)
-    framework = (payload.framework or "ultralytics").strip().lower()
-    # 所有训练入口都遵守同一迭代合同：已有版本时只能使用最新上一版本，
-    # 且必须先通过实际训练运行时的权重加载校验，不能静默回退。
-    iteration_base = _v54_iteration_base(
-        project_id,
-        payload.algorithm_asset_id or "",
-        framework,
-        strict_latest=True,
-    )
-    model_value = (iteration_base or {}).get("path") or (payload.model or "").strip()
-    alg = get_algorithm_config(payload.algorithm or "")
-    if not alg and framework == "paddle":
-        alg = get_paddle_algorithm_by_key(payload.algorithm or "")
-    if alg and alg.get("framework") != framework:
-        raise HTTPException(status_code=400, detail="训练算法与训练框架不匹配，请重新选择。")
-    # Ultralytics needs a default .pt model. PaddleDetection must keep this empty unless user selected a real .pdparams.
-    # If we put the yml file name here, PaddleDetection will receive pretrain_weights=xxx.yml and fail/behave incorrectly.
-    if not model_value and alg and framework == "ultralytics":
-        model_value = alg.get("base_model") or ""
-
-    if framework not in {"ultralytics", "paddle"}:
-        raise HTTPException(status_code=400, detail="训练框架只支持 ultralytics 或 paddle")
-
-    if framework == "ultralytics":
-        if model_value.lower().endswith((".pdparams", ".pdmodel", ".pdiparams", ".onnx", ".engine", ".rknn", ".bmodel")) or model_value.startswith("PP-"):
-            raise HTTPException(
-                status_code=400,
-                detail="这个基础模型不是 Ultralytics .pt 训练权重，不能用于当前 YOLO 训练。请选择 yolo11n.pt、项目 best.pt 或本机扫描到的 .pt。",
-            )
-        model_value = resolve_ultralytics_model_path(model_value, project_id)
-        build = build_dataset(project_id, BuildDatasetReq(train_ratio=payload.train_ratio, include_empty=payload.include_empty, dataset_id=payload.dataset_id))
-    else:
-        if payload.target == "remote":
-            raise HTTPException(status_code=400, detail="当前飞桨训练执行器先支持本机命令模式；远程飞桨训练后续可用训练服务器单独部署。")
-        cmd_tmpl = (payload.paddle_command or "").strip()
-        if not cmd_tmpl and alg:
-            cmd_tmpl = alg.get("command_template", "")
-        if not cmd_tmpl:
-            raise HTTPException(
-                status_code=400,
-                detail="当前飞桨算法没有可用训练模板。请先在训练页选择 PP-YOLOE/PP-YOLOE+ 等预置算法，或切换到 Ultralytics。",
-            )
-        payload.paddle_command = cmd_tmpl
-        build = build_paddle_dataset_internal(project_id, payload.train_ratio, payload.include_empty, payload.dataset_id)
-
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = p / "jobs" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    job_file = job_dir / "job.json"
-    log_file = job_dir / "train.log"
-    prefix = "paddle" if framework == "paddle" else "train"
-    run_name = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
-    job = {
-        "id": job_id,
-        "project_id": project_id,
-        "asset_algorithm_id": (asset_algorithm or {}).get("id", ""),
-        "asset_algorithm_name": (asset_algorithm or {}).get("name", ""),
-        "status": "queued",
-        "target": payload.target,
-        "framework": framework,
-        "algorithm": payload.algorithm or "",
-        "algorithm_name": (alg or {}).get("name", ""),
-        "algorithm_config_path": (alg or {}).get("config_path", ""),
-        "algorithm_family": (alg or {}).get("family", ""),
-        "model": model_value or ("使用配置默认预训练权重 / 自动下载" if framework == "paddle" else model_value),
-        "epochs": max(1, int(payload.epochs)),
-        "imgsz": max(128, int(payload.imgsz)),
-        "batch": int(payload.batch),
-        "device": payload.device,
-        "run_name": run_name,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "log_file": str(log_file),
-        "message": "等待启动",
-    }
-    if framework == "ultralytics":
-        active_env = get_active_ultralytics_env()
-        if active_env:
-            job["ultralytics_env"] = {"python_path": active_env.get("python_path"), "root": active_env.get("root"), "version": active_env.get("version")}
-    if framework == "paddle":
-        job["paddle_command"] = payload.paddle_command
-        job["num_classes"] = len(build.get("labels", []) or [])
-        job["labels"] = build.get("labels", [])
-        job["paddle_lr0"] = _safe_paddle_lr(payload.lr0, int((build.get("counts") or {}).get("train", 0)), str(payload.device).lower() == "cpu")
-        job["paddle_eval"] = bool(payload.paddle_eval)
-        job["dataset_counts"] = build.get("counts", {})
-    write_json(job_file, job)
-    add_job_to_index(project_id, job)
-
-    if framework == "ultralytics" and payload.target == "remote":
-        server = resolve_server(payload)
-        dataset_zip = job_dir / "dataset.zip"
-        zip_dir(p / "dataset", dataset_zip)
-        try:
-            with dataset_zip.open("rb") as fp:
-                files = {"dataset_zip": ("dataset.zip", fp, "application/zip")}
-                model_fp = None
-                model_path = Path(model_value)
-                if model_path.is_file():
-                    model_fp = model_path.open("rb")
-                    files["model_file"] = (model_path.name, model_fp, "application/octet-stream")
-                data = {
-                    "model": model_path.name if model_fp else model_value,
-                    "epochs": str(job["epochs"]), "imgsz": str(job["imgsz"]), "batch": str(job["batch"]),
-                    "device": payload.device, "run_name": run_name,
-                    "patience": str(payload.patience), "workers": str(payload.workers), "optimizer": payload.optimizer or "auto",
-                    "lr0": str(payload.lr0), "lrf": str(payload.lrf), "weight_decay": str(payload.weight_decay),
-                    "close_mosaic": str(payload.close_mosaic), "mosaic": str(payload.mosaic), "cache": str(payload.cache),
-                    "single_cls": str(payload.single_cls).lower(), "pretrained": str(payload.pretrained).lower(), "rect": str(payload.rect).lower(),
-                    "amp": str(payload.amp).lower(), "cos_lr": str(payload.cos_lr).lower(), "freeze": str(payload.freeze),
-                    "momentum": str(payload.momentum), "warmup_epochs": str(payload.warmup_epochs), "save_period": str(payload.save_period),
-                    "seed": str(payload.seed), "deterministic": str(payload.deterministic).lower(), "multi_scale": str(payload.multi_scale),
-                    "hsv_h": str(payload.hsv_h), "hsv_s": str(payload.hsv_s), "hsv_v": str(payload.hsv_v),
-                    "degrees": str(payload.degrees), "translate": str(payload.translate), "scale": str(payload.scale),
-                    "shear": str(payload.shear), "perspective": str(payload.perspective), "flipud": str(payload.flipud),
-                    "fliplr": str(payload.fliplr), "mixup": str(payload.mixup),
-                }
-                headers = {"X-API-Key": server.get("api_key", "")}
-                try:
-                    r = requests.post(f"{server['base_url'].rstrip('/')}/api/remote/train", data=data, files=files, headers=headers, timeout=120)
-                finally:
-                    if model_fp:
-                        model_fp.close()
-                r.raise_for_status()
-                remote = r.json()
-            job.update({
-                "status": "running",
-                "message": "远程训练已启动",
-                "remote": {"server_id": server.get("id"), "name": server.get("name"), "base_url": server["base_url"], "api_key": server.get("api_key", ""), "job_id": remote.get("job_id")},
-                "updated_at": now_iso(),
-            })
-            write_json(job_file, job)
-            sync_jobs_index(project_id)
-            return {"ok": True, "job": job, "dataset": build}
-        except Exception as e:
-            job.update({"status": "failed", "message": f"远程训练启动失败：{e}", "updated_at": now_iso()})
-            write_json(job_file, job); sync_jobs_index(project_id)
-            raise HTTPException(status_code=500, detail=job["message"])
-
-    paddle_env: Dict[str, Any] = {}
-    if framework == "paddle":
-        paddle_env = get_active_paddle_env() or {}
-        paddledet_dir = Path(str(paddle_env.get("paddledet_dir") or "")).expanduser()
-        config_value = str((alg or {}).get("config_path") or "").strip()
-        if not config_value and (alg or {}).get("config_relpath"):
-            config_value = str(paddledet_dir / Path(str(alg["config_relpath"])))
-        if not paddledet_dir.is_dir() or not (paddledet_dir / "tools" / "train.py").is_file():
-            raise HTTPException(status_code=400, detail="当前环境未配置可用的 PaddleDetection 目录，无法执行真实飞桨训练")
-        if not config_value or not Path(config_value).is_file():
-            raise HTTPException(status_code=400, detail="所选飞桨算法的配置文件不存在，无法执行真实训练")
-        cmd = [
-            sys.executable,
-            str(BASE_DIR / "paddle_worker.py"),
-            "--project-dir", str(p),
-            "--dataset-dir", build["dataset"],
-            "--train-json", build["train_json"],
-            "--val-json", build["val_json"],
-            "--label-list", build["label_list"],
-            "--model", model_value,
-            "--epochs", str(job["epochs"]),
-            "--batch", str(job["batch"]),
-            "--device", payload.device,
-            "--job-id", job_id,
-            "--run-name", run_name,
-            "--paddledet-dir", str(paddledet_dir),
-            "--config", config_value,
-            "--num-classes", str(len(build.get("labels", []) or [])),
-            "--family", _paddle_family_key(alg),
-            "--lr0", str(_safe_paddle_lr(payload.lr0, int((build.get("counts") or {}).get("train", 0)), str(payload.device).lower() == "cpu")),
-        ]
-        if bool(payload.paddle_eval):
-            cmd.append("--enable-eval")
-    else:
-        cmd = [
-            ultralytics_runtime_python(),
-            str(BASE_DIR / "train_worker.py"),
-            "--project-dir", str(p),
-            "--data", build["data_yaml"],
-            "--model", model_value,
-            "--epochs", str(job["epochs"]),
-            "--imgsz", str(job["imgsz"]),
-            "--batch", str(job["batch"]),
-            "--device", payload.device,
-            "--job-id", job_id,
-            "--run-name", run_name,
-            "--patience", str(payload.patience), "--workers", str(payload.workers), "--optimizer", payload.optimizer or "auto",
-            "--lr0", str(payload.lr0), "--lrf", str(payload.lrf), "--weight-decay", str(payload.weight_decay),
-            "--close-mosaic", str(payload.close_mosaic), "--mosaic", str(payload.mosaic), "--cache", str(payload.cache),
-            "--single-cls", str(payload.single_cls).lower(), "--pretrained", str(payload.pretrained).lower(), "--rect", str(payload.rect).lower(),
-            "--amp", str(payload.amp).lower(), "--cos-lr", str(payload.cos_lr).lower(), "--freeze", str(payload.freeze),
-        ]
-    proc_env = os.environ.copy()
-    proc_env.setdefault("PYTHONIOENCODING", "utf-8")
-    proc_env.setdefault("PYTHONUTF8", "1")
-    if framework == "paddle":
-        penv = paddle_env
-        if penv.get("paddledet_dir"):
-            proc_env["PADDLEDETECTION_DIR"] = penv.get("paddledet_dir", "")
-        if penv.get("paddlex_dir"):
-            proc_env["PADDLEX_DIR"] = penv.get("paddlex_dir", "")
-        if penv.get("python_path"):
-            proc_env["PADDLE_PYTHON"] = penv.get("python_path", "")
-            job["paddle_env"] = penv
-            write_json(job_file, job)
-    if framework == "ultralytics":
-        job["runtime_check"] = check_ultralytics_train_runtime(ultralytics_runtime_python())
-        write_json(job_file, job)
-    with log_file.open("ab") as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(BASE_DIR), env=proc_env)
-    PROCESS_REGISTRY[job_id] = proc
-    job.update({"status": "running", "message": "训练已启动", "pid": proc.pid, "started_at": now_iso(), "updated_at": now_iso()})
-    write_json(job_file, job)
-    sync_jobs_index(project_id)
-    return {"ok": True, "job": job, "dataset": build}
-
+    """Compatibility URL: all training creation is owned by v12 Durable Training."""
+    return v12_start_train(project_id, payload)
 
 def resolve_server(payload: TrainReq) -> Dict[str, Any]:
     servers = read_json(SERVERS_FILE, [])
@@ -5914,9 +7539,155 @@ def list_jobs(project_id: str):
             worker_runtime=worker_runtime,
             queued_candidates=queued_candidates,
         )
-        if jf.exists(): write_json(jf,full)
+        # Read-side projection only; runtime truth is worker/task-runtime owned.
         out.append(full)
     return out
+
+
+
+_TRAINING_STREAM_ACTIVE_STATUSES = (
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+)
+
+
+def _training_event_row(project_id: str, task: TaskRecord) -> Dict[str, Any]:
+    """Build the same canonical training display truth used by HTTP reads."""
+    runtime = task_to_public(task)
+    job_file = project_dir(project_id) / "jobs" / task.task_id / "job.json"
+    worker_job = read_json(job_file, {}) if job_file.exists() else {}
+    display = build_training_display_progress(worker_job, runtime)
+    row = dict(runtime)
+    row.update(
+        progress_percent=display["overall_progress"],
+        current_item=display["message"] or runtime.get("current_item"),
+        current_epoch=display["current_epoch"],
+        total_epochs=display["total_epochs"],
+        current_batch=display["current_batch"],
+        total_batches=display["total_batches"],
+        elapsed_seconds=display["elapsed_seconds"],
+        eta_seconds=display["eta_seconds"],
+        phase_progress=display["phase_progress"],
+        telemetry_source=display["telemetry_source"],
+        display_revision=display["revision"],
+        training_display_progress=display,
+    )
+    if isinstance(worker_job.get("training_progress"), dict):
+        row["training_progress"] = worker_job["training_progress"]
+    return row
+
+
+def _training_event_rows(
+    project_id: str,
+    repository: Optional[TaskRepository] = None,
+) -> List[Dict[str, Any]]:
+    """Return canonical display truth for active Durable training tasks."""
+    repo = repository or shared_task_repository()
+    page = repo.list(
+        project_id=project_id,
+        kinds=(TaskKind.TRAINING,),
+        statuses=_TRAINING_STREAM_ACTIVE_STATUSES,
+        limit=100,
+    )
+    return [_training_event_row(project_id, task) for task in page.items]
+
+
+def _training_event_signature(row: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        row.get("status"),
+        row.get("persisted_status"),
+        row.get("phase"),
+        row.get("progress_percent"),
+        row.get("current_item"),
+        row.get("worker_id"),
+        row.get("resource_wait_reason"),
+        row.get("updated_at"),
+        row.get("finished_at"),
+        row.get("error"),
+        row.get("current_epoch"),
+        row.get("total_epochs"),
+        row.get("current_batch"),
+        row.get("total_batches"),
+        row.get("elapsed_seconds"),
+        row.get("eta_seconds"),
+        row.get("telemetry_source"),
+    )
+
+
+def _training_sse_message(row: Mapping[str, Any]) -> str:
+    payload = json.dumps(dict(row), ensure_ascii=False, separators=(",", ":"))
+    return f"event: training.task\ndata: {payload}\n\n"
+
+
+@app.get("/api/v64/projects/{project_id}/training-events")
+async def v64_training_events(project_id: str, request: Request):
+    get_project(project_id)
+    repository = shared_task_repository()
+
+    async def event_stream():
+        signatures: Dict[str, Tuple[Any, ...]] = {}
+        watched: set[str] = set()
+        last_keepalive = time.monotonic()
+        yield "retry: 2000\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                return
+
+            rows = _training_event_rows(project_id, repository)
+            active_ids = {str(row.get("task_id") or "") for row in rows}
+            announced_ids = getattr(event_stream, "_announced_ids", None)
+            if announced_ids != active_ids:
+                ready = json.dumps(
+                    {"task_ids": sorted(active_ids), "interval_ms": 750},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                yield f"event: training.ready\ndata: {ready}\n\n"
+                event_stream._announced_ids = set(active_ids)
+            for row in rows:
+                task_id = str(row.get("task_id") or "")
+                if not task_id:
+                    continue
+                watched.add(task_id)
+                signature = _training_event_signature(row)
+                if signatures.get(task_id) == signature:
+                    continue
+                signatures[task_id] = signature
+                yield _training_sse_message(row)
+
+            # A task disappears from the active query exactly when it becomes
+            # terminal. Read that task once so the browser receives its final
+            # durable state before this stream stops watching it.
+            for task_id in tuple(watched - active_ids):
+                task = repository.get(task_id)
+                if (
+                    task is not None
+                    and task.project_id == project_id
+                    and task.kind is TaskKind.TRAINING
+                ):
+                    row = _training_event_row(project_id, task)
+                    signature = _training_event_signature(row)
+                    if signatures.get(task_id) != signature:
+                        signatures[task_id] = signature
+                        yield _training_sse_message(row)
+                watched.discard(task_id)
+
+            now = time.monotonic()
+            if now - last_keepalive >= 15:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            await asyncio.sleep(0.75)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}")
@@ -5928,20 +7699,50 @@ def job_status(project_id: str, job_id: str):
     job = read_json(job_file, {})
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
-    job = enrich_job_runtime(project_id, job)
-    write_json(job_file, job)
-    try: _v48_dispatch_training_queues(project_id)
-    except Exception: pass
-    sync_jobs_index(project_id)
-    response = read_json(job_file, job)
+    job = enrich_job_runtime(project_id, job, allow_version_archive=False)
+    # Detail refresh is a single-task read projection. Do not dispatch queues or
+    # rebuild the global jobs index from a 1.5s detail/log poll.
+    # Return the enriched in-memory projection. Re-reading the worker-owned
+    # job.json here would discard canonical task truth we just overlaid.
+    response = dict(job)
     from platform_core.training_metrics import read_metrics
     task = _durable_training_task(project_id, job_id)
     metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")
                     if task else job_file.parent / "training-metrics.sqlite3")
     response["runtime_metrics"] = read_metrics(metrics_path)
     if task:
-        response["resolved_resources"] = shared_task_artifacts().read_json(job_id, "resolved-resources.json", default={})
+        artifacts = shared_task_artifacts()
+        response["resolved_resources"] = artifacts.read_json(
+            job_id,
+            "resolved-resources.json",
+            default=response.get("resolved_resources") or {},
+        )
+        response["runtime_resources"] = artifacts.read_json(
+            job_id,
+            "runtime-resources.json",
+            default=response.get("runtime_resources") or {},
+        )
     return response
+
+
+def _tail_training_log_text(path: Path, max_chars: int = 120000) -> str:
+    """Read only a bounded suffix of a potentially very large UTF-8 task log."""
+    try:
+        size = int(path.stat().st_size)
+        if size <= 0:
+            return ""
+        # UTF-8 uses at most four bytes per code point. Reading this many bytes
+        # is enough to recover max_chars from the suffix without scanning the
+        # entire log. Starting inside a multibyte sequence can lose at most one
+        # partial code point because decoding is intentionally best-effort.
+        max_bytes = max(4096, int(max_chars) * 4 + 4)
+        start = max(0, size - max_bytes)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            value = stream.read(max_bytes)
+        return value.decode("utf-8", errors="ignore")[-int(max_chars):].strip()
+    except (OSError, ValueError):
+        return ""
 
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}/log", response_class=PlainTextResponse)
@@ -5950,11 +7751,29 @@ def job_log(project_id: str, job_id: str):
     job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
+
+    sections: List[str] = []
     log_file = project_dir(project_id) / "jobs" / job_id / "train.log"
-    if not log_file.exists():
+    text = _tail_training_log_text(log_file)
+    if text:
+        sections.append(text)
+
+    # Durable task logs contain scheduler/worker/remote-execution lifecycle
+    # evidence that train.log alone cannot provide. Merge them into the same
+    # read-only endpoint so the frontend has one canonical log source.
+    task = _durable_training_task(project_id, job_id)
+    if task is not None and str(task.log_ref or "").strip():
+        try:
+            durable_log = shared_task_artifacts().artifact_path(job_id, task.log_ref)
+            text = _tail_training_log_text(durable_log)
+            if text and (not sections or text != sections[-1]):
+                sections.append("[任务运行日志]\n" + text)
+        except (OSError, ValueError):
+            pass
+
+    if not sections:
         return "暂无日志"
-    text = log_file.read_text(encoding="utf-8", errors="ignore")
-    return text[-80000:]
+    return "\n\n".join(sections)[-120000:]
 
 
 @app.post("/api/projects/{project_id}/jobs/{job_id}/stop")
@@ -6033,6 +7852,64 @@ def sync_remote_job(project_id: str, job_id: str) -> Dict[str, Any]:
     return job
 
 
+_TRAINING_JOB_ACTIVE_STATUSES = {
+    "queued", "waiting", "pending", "starting", "running",
+    "pausing", "paused", "resuming", "stopping", "cancel_requested",
+}
+_TRAINING_TASK_ACTIVE_STATUSES = {
+    "QUEUED", "WAITING_RESOURCE", "PENDING", "STARTING", "RUNNING",
+    "PAUSING", "PAUSED", "RESUMING", "STOPPING", "CANCEL_REQUESTED",
+}
+
+
+def _training_job_is_active(job: Mapping[str, Any]) -> bool:
+    status = str(job.get("status") or "").strip().lower()
+    task_status = str(
+        job.get("task_status") or job.get("persisted_status") or ""
+    ).strip().upper()
+    return status in _TRAINING_JOB_ACTIVE_STATUSES or task_status in _TRAINING_TASK_ACTIVE_STATUSES
+
+
+def _training_job_index_rows(
+    jobs: Sequence[Mapping[str, Any]],
+    *,
+    history_limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Retain every live task plus a bounded terminal history."""
+    canonical: Dict[str, Dict[str, Any]] = {}
+    for source in jobs:
+        if not isinstance(source, Mapping):
+            continue
+        row = dict(source)
+        task_id = str(row.get("task_id") or row.get("id") or "").strip()
+        if not task_id:
+            continue
+        current = canonical.get(task_id)
+        if current is None:
+            canonical[task_id] = row
+            continue
+        current_is_parent = str(current.get("id") or "") == task_id
+        row_is_parent = str(row.get("id") or "") == task_id
+        if row_is_parent and not current_is_parent:
+            canonical[task_id] = row
+        elif row_is_parent == current_is_parent and str(row.get("updated_at") or row.get("created_at") or "") > str(
+            current.get("updated_at") or current.get("created_at") or ""
+        ):
+            canonical[task_id] = row
+    ordered = sorted(
+        canonical.values(),
+        key=lambda row: str(row.get("created_at") or ""),
+        reverse=True,
+    )
+    active = [row for row in ordered if _training_job_is_active(row)]
+    history = [row for row in ordered if not _training_job_is_active(row)]
+    if history_limit >= 0:
+        history = history[:history_limit]
+    rows = active + history
+    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return rows
+
+
 def sync_jobs_index(project_id: str):
     p = project_dir(project_id)
     jobs_dir = p / "jobs"
@@ -6042,14 +7919,11 @@ def sync_jobs_index(project_id: str):
         if jf.exists():
             job = read_json(jf, {})
             job = enrich_job_runtime(project_id, job)
-            # 让列表状态和倒计时及时落盘，页面刷新/轮询都能看到最新状态。
-            try:
-                write_json(jf, job)
-            except Exception:
-                pass
+            # GET/list projection must never write back into worker-owned
+            # job.json. The worker publishes Batch/Epoch progress frequently;
+            # persisting an older read snapshot can clobber newer runtime truth.
             jobs.append(job)
-    jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    write_json(jobs_dir / "index.json", jobs[:50])
+    write_json(jobs_dir / "index.json", _training_job_index_rows(jobs))
 
 
 def list_models_internal(project_id: str) -> List[Dict[str, Any]]:
@@ -6203,6 +8077,7 @@ class LabelUpdateReq(BaseModel):
     display_name: Optional[str] = None
     color: Optional[str] = None
     hotkey: Optional[str] = None
+    aliases: Optional[List[str]] = None
 
 class AlgorithmReq(BaseModel):
     name: str
@@ -6224,7 +8099,8 @@ class VersionPatchReq(BaseModel):
 
 
 class AlgorithmVersionRollbackReq(BaseModel):
-    delete_current_version: bool = False
+    # Product contract: rollback means deleting the current version.
+    delete_current_version: Literal[True] = True
     expected_current_version_id: Optional[str] = None
 
 
@@ -6255,10 +8131,6 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
     # Legacy defaults remain a read projection and are persisted on the next
     # explicit algorithm/version mutation through platform_core.algorithms.
     return [project_current_version(item) for item in data]
-
-def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
-    save_algorithm_assets(algorithms_file(project_id), data)
-
 
 _ACTIVE_VERSION_REFERENCE_STATUSES = {
     TaskStatus.QUEUED,
@@ -6561,15 +8433,168 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": m.get("type") or "bbox",
             "hotkey": m.get("hotkey") or (str(i+1) if i < 9 else ""),
             "status": m.get("status") or "active",
+            "active": m.get("active", True),
+            "merged_into": str(m.get("merged_into") or ""),
+            "merged_at": str(m.get("merged_at") or ""),
+            "aliases": normalize_label_aliases(m.get("aliases") or []),
         })
     return items
 
 
-def normalize_box_for_project(project_id: str, img: Dict[str, Any], box: Dict[str, Any], create_label: bool = True) -> Optional[Dict[str, Any]]:
+def _ensure_project_label_meta(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    labels = project.setdefault("labels", [])
+    meta = project.setdefault("label_meta", [])
+    while len(meta) < len(labels):
+        idx = len(meta)
+        code = labels[idx]
+        meta.append({
+            "code": code,
+            "display_name": code,
+            "color": default_label_color(idx),
+            "type": "bbox",
+            "hotkey": str(idx + 1) if idx < 9 else "",
+            "aliases": [],
+        })
+    for idx, code in enumerate(labels):
+        if not isinstance(meta[idx], dict):
+            meta[idx] = {}
+        meta[idx]["code"] = code
+        meta[idx]["aliases"] = normalize_label_aliases(meta[idx].get("aliases") or [])
+    return meta
+
+
+def _validate_label_aliases(
+    project: Dict[str, Any],
+    aliases,
+    *,
+    target_class_id: Optional[int],
+    target_code: str,
+    target_display_name: str,
+) -> List[str]:
+    normalized = normalize_label_aliases(aliases)
+    target_identity = {str(target_code or "").strip(), str(target_display_name or "").strip()}
+    target_identity.discard("")
+    canonical_owners: Dict[str, set] = {}
+    for item in project_label_items(project):
+        if target_class_id is not None and int(item.get("class_id", -1)) == int(target_class_id):
+            continue
+        for value in label_identity_values(item):
+            canonical_owners.setdefault(value, set()).add(str(item.get("code")))
+    result = []
+    for alias in normalized:
+        if alias in target_identity:
+            continue
+        owners = canonical_owners.get(alias, set())
+        if owners:
+            raise ValueError(
+                f"标签别名 {alias} 与正式标签身份冲突：{'、'.join(sorted(owners))}"
+            )
+        result.append(alias)
+    return result
+
+
+def _set_project_label_aliases(
+    project: Dict[str, Any],
+    target_code: str,
+    aliases,
+    *,
+    replace: bool,
+) -> List[str]:
+    labels = project.get("labels", [])
+    if target_code not in labels:
+        raise ValueError(f"平台标签不存在：{target_code}")
+    meta = _ensure_project_label_meta(project)
+    target_idx = labels.index(target_code)
+    incoming = normalize_label_aliases(aliases)
+    incoming_set = set(incoming)
+    for idx, row in enumerate(meta):
+        existing = normalize_label_aliases(row.get("aliases") or [])
+        if idx == target_idx:
+            continue
+        row["aliases"] = [alias for alias in existing if alias not in incoming_set]
+    base = [] if replace else normalize_label_aliases(meta[target_idx].get("aliases") or [])
+    meta[target_idx]["aliases"] = normalize_label_aliases([*base, *incoming])
+    return meta[target_idx]["aliases"]
+
+
+def _prune_canonical_label_alias_conflicts(project: Dict[str, Any]) -> bool:
+    canonical = set()
+    for item in project_label_items(project):
+        canonical.update(label_identity_values(item))
+    changed = False
+    for row in _ensure_project_label_meta(project):
+        aliases = normalize_label_aliases(row.get("aliases") or [])
+        filtered = [alias for alias in aliases if alias not in canonical]
+        if filtered != aliases:
+            row["aliases"] = filtered
+            changed = True
+    return changed
+
+
+def remember_project_label_aliases(
+    project_id: str,
+    external_classes,
+    label_mapping,
+) -> Dict[str, List[str]]:
+    with label_governance_fence(project_dir(project_id)):
+        return _remember_project_label_aliases_locked(
+            project_id, external_classes, label_mapping,
+        )
+
+
+def _remember_project_label_aliases_locked(
+    project_id: str,
+    external_classes,
+    label_mapping,
+) -> Dict[str, List[str]]:
+    project = get_project(project_id)
+    updates = confirmed_alias_updates(
+        external_classes or [],
+        label_mapping or {},
+        project_label_items(project),
+    )
+    remembered: Dict[str, List[str]] = {}
+    for target, aliases in updates.items():
+        target_idx = project.get("labels", []).index(target)
+        target_item = project_label_items(project)[target_idx]
+        safe_aliases: List[str] = []
+        for alias in aliases:
+            try:
+                validated = _validate_label_aliases(
+                    project,
+                    [alias],
+                    target_class_id=target_idx,
+                    target_code=target,
+                    target_display_name=str(target_item.get("display_name") or target),
+                )
+            except ValueError:
+                # A canonical label identity always wins over reusable aliases.
+                # Skip only the conflicting source name; other confirmed aliases
+                # in the same batch remain safe to learn.
+                continue
+            safe_aliases.extend(validated)
+        if not safe_aliases:
+            continue
+        remembered[target] = _set_project_label_aliases(
+            project, target, safe_aliases, replace=False,
+        )
+    if remembered:
+        save_project(project)
+    return remembered
+
+
+def normalize_box_for_project(
+    project_id: str,
+    img: Dict[str, Any],
+    box: Dict[str, Any],
+    create_label: bool = True,
+    *,
+    project_state: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """把前端/导入的框统一清洗成可训练框。
     修复常见问题：class_id 缺失、class_id 字符串、只有 label、标签名与编码不一致、坐标反向/越界。
     """
-    project = get_project(project_id)
+    project = project_state if project_state is not None else get_project(project_id)
     labels = project.setdefault("labels", [])
     try:
         # 优先用 label 反查，避免前端 class_id 与后端标签顺序不一致导致跳过。
@@ -6618,6 +8643,7 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
         "label_usage": {label: 0 for label in project.get("labels", [])},
         "invalid_boxes": 0,
         "empty_images": 0,
+        "unannotated_images": 0,
         "can_train": False,
         "warnings": [],
     }
@@ -6633,12 +8659,14 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
                 clean.append(nb)
             else:
                 result["invalid_boxes"] += 1
-        if clean or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
+        if is_training_ground_truth(ann.get("annotation_state"), clean):
             result["splits"][split]["images"] += 1
-        if clean:
+        if clean and ann.get("annotation_state") == "annotated":
             result["annotated_images"] += 1
-        else:
+        elif ann.get("annotation_state") == "confirmed_empty":
             result["empty_images"] += 1
+        else:
+            result["unannotated_images"] += 1
         for b in clean:
             result["box_count"] += 1
             result["splits"][split]["boxes"] += 1
@@ -6669,31 +8697,62 @@ def v12_app_info():
 @app.get("/api/v12/projects/{project_id}/labels")
 def v12_list_labels(project_id: str):
     project = get_project(project_id)
-    return {"ok": True, "items": active_label_options(project_label_items(project))}
+    governance = project_label_items(project)
+    return {
+        "ok": True,
+        "items": active_label_options(governance),
+        "governance": governance,
+    }
 
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
+    with label_governance_fence(project_dir(project_id)):
+        return _v12_update_label_locked(project_id, class_id, payload)
+
+
+def _v12_update_label_locked(project_id: str, class_id: int, payload: LabelUpdateReq):
     project = get_project(project_id)
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
         raise HTTPException(status_code=404, detail="标签不存在")
+    pending_code = normalize_label(payload.code) if payload.code else labels[class_id]
+    current_meta = project.get("label_meta", [])
+    current_display = (
+        current_meta[class_id].get("display_name")
+        if class_id < len(current_meta) and isinstance(current_meta[class_id], dict)
+        else labels[class_id]
+    )
+    pending_display = payload.display_name if payload.display_name is not None else current_display
+    try:
+        validated_aliases = (
+            _validate_label_aliases(
+                project,
+                payload.aliases,
+                target_class_id=class_id,
+                target_code=pending_code,
+                target_display_name=pending_display or pending_code,
+            )
+            if payload.aliases is not None else None
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.code:
         code = normalize_label(payload.code)
         if not code:
             raise HTTPException(status_code=400, detail="标签编码不能为空")
         if code != labels[class_id] and code in labels:
             raise HTTPException(status_code=400, detail="标签编码已存在")
+        if code != labels[class_id]:
+            references = AnnotationRepository(
+                project_dir(project_id)
+            ).label_reference_preview([str(labels[class_id])])
+            if int(references.get("affected_images") or 0) > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该标签已被正式标注引用，不能同步改编码；请使用“统一标签”后台任务",
+                )
         labels[class_id] = code
-        # 同步已有标注中的 label 字段，不改 class_id
-        for img in load_images(project_id):
-            ann = read_annotation(project_id, img["id"])
-            changed = False
-            for b in ann.get("boxes", []):
-                if int(b.get("class_id", -1)) == class_id:
-                    b["label"] = code; changed = True
-            if changed:
-                write_annotation(project_id, img["id"], ann.get("boxes", []))
     meta = project.setdefault("label_meta", [])
     while len(meta) < len(labels):
         idx = len(meta)
@@ -6706,43 +8765,56 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
         m["color"] = payload.color
     if payload.hotkey is not None:
         m["hotkey"] = payload.hotkey
+    if validated_aliases is not None:
+        _set_project_label_aliases(
+            project, labels[class_id], validated_aliases, replace=True,
+        )
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     return {"ok": True, "items": project_label_items(project)}
 
 
 @app.delete("/api/v12/projects/{project_id}/labels/{class_id}")
 def v12_delete_label(project_id: str, class_id: int):
+    with label_governance_fence(project_dir(project_id)):
+        return _v12_delete_label_locked(project_id, class_id)
+
+
+def _v12_delete_label_locked(project_id: str, class_id: int):
     project = get_project(project_id)
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
         raise HTTPException(status_code=404, detail="标签不存在")
-    # 已被框使用时不允许删除；若删除的是未使用标签，后续 class_id 必须整体前移，避免类别错位。
-    image_anns = []
-    for img in load_images(project_id):
-        ann = read_annotation(project_id, img["id"])
-        boxes = ann.get("boxes", [])
-        if any(int(b.get("class_id", -1)) == class_id for b in boxes):
-            raise HTTPException(status_code=400, detail="该标签已被标注框使用，不能直接删除")
-        image_anns.append((img["id"], boxes))
-    labels.pop(class_id)
-    meta = project.get("label_meta", [])
-    if class_id < len(meta):
-        meta.pop(class_id)
-    # First persist the new schema, then rewrite boxes whose class index shifted.
+    code = str(labels[class_id])
+    references = AnnotationRepository(
+        project_dir(project_id)
+    ).label_reference_preview([code])
+    if int(references.get("affected_images") or 0) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="该标签仍被正式标注或 confirmed_empty 范围引用，请先统一标签后再删除",
+        )
+    meta = project.setdefault("label_meta", [])
+    while len(meta) < len(labels):
+        index = len(meta)
+        meta.append({
+            "code": labels[index],
+            "display_name": labels[index],
+            "color": default_label_color(index),
+            "type": "bbox",
+            "hotkey": str(index + 1) if index < 9 else "",
+            "aliases": [],
+        })
+    item = meta[class_id]
+    if str(item.get("status") or "active").lower() != "active":
+        return {"ok": True, "items": active_label_options(project_label_items(project))}
+    # Soft delete preserves project class ids. Physical compaction would require
+    # rewriting every higher class id and is deliberately not part of this HTTP path.
+    item["status"] = "inactive"
+    item["active"] = False
+    item["deleted_at"] = now_iso()
     save_project(project)
-    for image_id, boxes in image_anns:
-        changed = False
-        for b in boxes:
-            try:
-                cid = int(b.get("class_id", -1))
-            except Exception:
-                cid = -1
-            if cid > class_id:
-                b["class_id"] = cid - 1
-                changed = True
-        if changed:
-            write_annotation(project_id, image_id, boxes)
-    return {"ok": True, "items": project_label_items(get_project(project_id))}
+    return {"ok": True, "items": active_label_options(project_label_items(project))}
 
 
 @app.patch("/api/v12/projects/{project_id}/images/{image_id}")
@@ -6830,14 +8902,29 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
     scope = (payload.scope or "selected").lower()
     dataset_id = payload.dataset_id or None
     filt = (payload.filter or "all").lower()
+    updated = now_iso()
+    materials = material_store(project_id)
+
+    if scope == "selected":
+        if not target_ids:
+            raise HTTPException(status_code=400, detail="请先选择要移动的素材")
+        changed_rows = materials.patch({
+            image_id: {"split": split, "updated_at": updated}
+            for image_id in target_ids
+        })
+        if not changed_rows:
+            raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
+        return {"ok": True, "changed": len(changed_rows), "split": split}
+
     annotation_box_counts = {}
     if scope == "filtered" and filt in {"marked", "unmarked"}:
-        for img in load_images(project_id):
-            image_id = str(img.get("id"))
-            annotation_box_counts[image_id] = len(
-                read_annotation(project_id, image_id).get("boxes", [])
-            )
-    updated = now_iso()
+        images = load_images(project_id)
+        image_ids = [str(img.get("id") or "") for img in images if str(img.get("id") or "")]
+        annotations = AnnotationRepository(project_dir(project_id))
+        for offset in range(0, len(image_ids), 500):
+            batch_ids = image_ids[offset:offset + 500]
+            for image_id, annotation in annotations.get_many(batch_ids).items():
+                annotation_box_counts[str(image_id)] = len(annotation.get("boxes", []))
 
     def match_latest(img: Dict[str, Any]) -> bool:
         if dataset_id and img.get("dataset_id", "default") != dataset_id:
@@ -6872,7 +8959,7 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
             raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
         return changed
 
-    changed = material_store(project_id).mutate(apply_split)
+    changed = materials.mutate(apply_split)
     return {"ok": True, "changed": changed, "split": split}
 
 
@@ -6928,7 +9015,7 @@ def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_e
     result = {"train": [], "val": [], "test": []}
     for img in sorted(images, key=lambda x: x.get("id", "")):
         ann = read_annotation(project_id, img["id"])
-        if not ann.get("boxes") and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
+        if not is_training_ground_truth(ann.get("annotation_state"), ann.get("boxes") or []):
             continue
         split = (img.get("split") or "train").lower()
         if split not in result:
@@ -6968,7 +9055,7 @@ def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
                     clean.append(nb)
                 else:
                     counts["invalid_boxes"] += 1
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             shutil.copy2(src, dataset / "images" / part / img["stored_name"])
             lines = []
@@ -7123,7 +9210,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
                 nb = normalize_box_for_project(project_id, img, b, create_label=False)
                 if nb:
                     clean.append(nb)
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             labs = {str(b.get("label") or "") for b in clean}
             if combined_filter and not labs.intersection(combined_filter):
@@ -7148,7 +9235,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
             for b in ann.get("boxes", []):
                 nb=normalize_box_for_project(project_id,img,b,create_label=False)
                 if nb: clean.append(nb)
-            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
+            if not is_training_ground_truth(ann.get("annotation_state"), clean):
                 continue
             labs={str(b.get("label") or "") for b in clean}
             filt=train_filter if split=="train" else val_filter if split=="val" else set()
@@ -7248,264 +9335,258 @@ def _v54_iteration_base(
         "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
     }
 
+class ConfirmIterationActionReq(BaseModel):
+    decision_id: str
+    action: Literal["supplement_data", "continue_training", "business_validation", "manual_review"]
+
+
+class SupplementFeedbackCandidateSelection(BaseModel):
+    feedback_id: str
+    candidate_digest: str
+
+
+class FreezeSupplementFeedbackCandidatesReq(BaseModel):
+    candidates: List[SupplementFeedbackCandidateSelection] = Field(min_length=1, max_length=500)
+
+
+def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id: str):
+    get_project(project_id)
+    algorithm = next((row for row in list_algorithms_internal(project_id)
+                      if str(row.get("id")) == str(algorithm_id)), None)
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == str(version_id)), None)
+    if version is None:
+        raise HTTPException(status_code=404, detail="算法版本不存在")
+    return algorithm, version
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
+def confirm_iteration_action(project_id: str, algorithm_id: str, version_id: str,
+                             payload: ConfirmIterationActionReq):
+    from platform_core.iteration_actions import build_confirmed_iteration_action
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="只能基于算法当前版本确认下一步动作，请刷新后重试")
+    try:
+        action = build_confirmed_iteration_action(
+            algorithm_id=algorithm_id, version=version,
+            requested_action=payload.action, decision_id=payload.decision_id,
+            confirmed_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    previous = version.get("confirmed_iteration_action")
+    if isinstance(previous, dict):
+        previous_id = str(previous.get("action_id") or "")
+        if previous_id == action["action_id"]:
+            return {"ok": True, "action": previous, "idempotent": True}
+        if previous_id:
+            raise HTTPException(status_code=409, detail="该版本已确认其他迭代动作，请刷新版本状态")
+    stored = update_algorithm_version(
+        algorithms_file(project_id), algorithm_id, version_id,
+        {"confirmed_iteration_action": action}, now=now_iso(),
+    )
+    return {"ok": True, "action": stored.get("confirmed_iteration_action") or action}
+
+
+def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: TrainReq):
+    if not payload.iteration_action:
+        return None
+    from platform_core.iteration_actions import training_action_context
+    current_version_id = str(algorithm.get("current_version_id") or "")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == current_version_id), None)
+    if version is None:
+        raise HTTPException(status_code=409, detail="当前算法版本不存在，请刷新后重试")
+    stored = version.get("confirmed_iteration_action")
+    if not isinstance(stored, dict):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的继续训练动作")
+    try:
+        expected = training_action_context(stored)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    submitted = {str(k): str(v or "") for k, v in dict(payload.iteration_action).items()}
+    if submitted != expected:
+        raise HTTPException(status_code=409, detail="训练动作溯源已变化，请重新从独立评测确认继续训练")
+    if expected["version_id"] != current_version_id:
+        raise HTTPException(status_code=409, detail="继续训练动作不再指向当前版本")
+    expected_task_id = str((stored.get("training_draft") or {}).get("task_id") or "")
+    submitted_task_id = str(payload.task_id or "")
+    if not expected_task_id or submitted_task_id != expected_task_id:
+        raise HTTPException(status_code=409, detail="继续训练动作必须使用已确认的固定任务 ID")
+    return stored
+
+
+def _supplement_data_action(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="补数据候选只能基于算法当前版本，请刷新后重试")
+    action = version.get("confirmed_iteration_action")
+    source = dict(action.get("source") or {}) if isinstance(action, dict) else {}
+    if (
+        not isinstance(action, dict)
+        or str(action.get("status") or "") != "confirmed"
+        or str(action.get("action") or "") != "supplement_data"
+        or str(source.get("algorithm_id") or "") != str(algorithm_id)
+        or str(source.get("version_id") or "") != str(version_id)
+    ):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的补数据动作")
+    return algorithm, version, action
+
+
+def _supplement_feedback_candidates(project_id: str, feedback_rows):
+    from platform_core.online_feedback import build_supplement_candidate
+    materials = material_store(project_id)
+    material_ids = [
+        str(row.get("material_id") or "")
+        for row in feedback_rows
+        if str(row.get("material_id") or "")
+    ]
+    material_rows = {
+        str(row.get("id") or ""): row
+        for row in materials.get_many(material_ids)
+    }
+    annotations = AnnotationRepository(project_dir(project_id))
+    annotation_rows = annotations.get_many(list(material_rows)) if material_rows else {}
+    return [
+        build_supplement_candidate(
+            row,
+            material_rows.get(str(row.get("material_id") or "")),
+            annotation_rows.get(str(row.get("material_id") or "")),
+        )
+        for row in feedback_rows
+    ]
+
+
+@app.get("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates")
+def list_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    _, version, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    repository = _online_feedback_repository(project_id)
+    rows, total = repository.list_confirmed_for_version(algorithm_id, version_id, limit=500)
+    candidates = _supplement_feedback_candidates(project_id, rows)
+    eligible = sum(1 for row in candidates if row.get("eligible") is True)
+    annotation_required = sum(
+        1 for row in candidates if "ANNOTATION_REQUIRED" in set(row.get("reason_codes") or [])
+    )
+    return {
+        "ok": True,
+        "action_id": str(action.get("action_id") or ""),
+        "total": total,
+        "returned": len(candidates),
+        "truncated": total > len(candidates),
+        "eligible": eligible,
+        "annotation_required": annotation_required,
+        "items": candidates,
+        "candidate_set": version.get("supplement_data_candidate_set"),
+    }
+
+
+@app.post("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates/freeze")
+def freeze_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+    payload: FreezeSupplementFeedbackCandidatesReq,
+):
+    from filelock import FileLock
+    from platform_core.online_feedback import build_supplement_candidate_set
+
+    _, _, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    requested = {
+        str(row.feedback_id): str(row.candidate_digest).strip().lower()
+        for row in payload.candidates
+    }
+    if len(requested) != len(payload.candidates):
+        raise HTTPException(status_code=409, detail="补数据候选包含重复 feedback ID")
+    if any(
+        len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+        for digest in requested.values()
+    ):
+        raise HTTPException(status_code=400, detail="补数据候选 digest 无效")
+
+    repository = _online_feedback_repository(project_id)
+    feedback_rows = repository.get_many(requested)
+    if len(feedback_rows) != len(requested):
+        raise HTTPException(status_code=409, detail="部分补数据反馈已经不存在，请刷新后重试")
+    for row in feedback_rows:
+        if (
+            str(row.get("status") or "") != "confirmed"
+            or str(row.get("algorithm_id") or "") != str(algorithm_id)
+            or str(row.get("version_id") or "") != str(version_id)
+        ):
+            raise HTTPException(status_code=409, detail="补数据反馈状态或版本已经变化，请刷新后重试")
+
+    candidates = _supplement_feedback_candidates(project_id, feedback_rows)
+    by_id = {str(row["feedback_id"]): row for row in candidates}
+    for feedback_id, digest in requested.items():
+        candidate = by_id.get(feedback_id)
+        if candidate is None or str(candidate.get("candidate_digest") or "") != digest:
+            raise HTTPException(status_code=409, detail="补数据候选素材或标注已经变化，请刷新后重试")
+        if candidate.get("eligible") is not True:
+            raise HTTPException(status_code=409, detail="所选反馈尚未具备可训练的正式标注，请先完成复核")
+    try:
+        candidate_set = build_supplement_candidate_set(
+            action,
+            [by_id[feedback_id] for feedback_id in requested],
+            frozen_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    lock_path = str(algorithms_file(project_id).resolve()) + ".supplement-feedback.lock"
+    with FileLock(lock_path, timeout=30):
+        _, latest_version, latest_action = _supplement_data_action(
+            project_id, algorithm_id, version_id,
+        )
+        if str(latest_action.get("action_id") or "") != str(candidate_set["action_id"]):
+            raise HTTPException(status_code=409, detail="补数据动作已经变化，请刷新后重试")
+        previous = latest_version.get("supplement_data_candidate_set")
+        if isinstance(previous, dict) and str(previous.get("candidate_set_id") or ""):
+            if str(previous.get("candidate_set_id")) == candidate_set["candidate_set_id"]:
+                return {"ok": True, "idempotent": True, "candidate_set": previous}
+            raise HTTPException(status_code=409, detail="该版本已经冻结另一组补数据候选，不能覆盖")
+        stored = update_algorithm_version(
+            algorithms_file(project_id), algorithm_id, version_id,
+            {"supplement_data_candidate_set": candidate_set},
+            now=now_iso(),
+        )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "candidate_set": stored.get("supplement_data_candidate_set") or candidate_set,
+    }
+
+
 @app.post("/api/v12/projects/{project_id}/train/start")
 def v12_start_train(project_id: str, payload: TrainReq):
     get_project(project_id)
     validate_train_request(payload)
     p = project_dir(project_id)
     framework = (payload.framework or "ultralytics").strip().lower()
+    if framework != "ultralytics":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "当前 Durable Training 主流程只支持 Ultralytics。"
+                "PaddleDetection 尚未接入同一套冻结 Snapshot / COCO bundle / completion 合同。"
+            ),
+        )
     alg = get_algorithm_config(payload.algorithm or "")
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     if not str(payload.algorithm_asset_id or "").strip():
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
-    if payload.split_mode:
-        return _enqueue_explicit_training(project_id, payload)
-    mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
-    iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework, strict_latest=True)
-    if iteration_base:
-        base_selection = {
-            "base_version_id": iteration_base.get("version_id"),
-            "base_version_name": iteration_base.get("version_name") or "",
-            "base_model_path": iteration_base.get("path") or "",
-            "base_model_kind": "train_checkpoint",
-            "base_selection_reason": iteration_base.get("base_selection_reason") or "current_verified_version",
-        }
-    else:
-        base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
-    model_value = base_selection["base_model_path"]
-    if framework != "ultralytics":
-        # 飞桨真实训练仍走旧执行器，但数据集改用 COCO split 导出
-        return start_train(project_id, payload)
-    if not model_value:
-        raise HTTPException(status_code=400, detail="请选择基础模型权重")
-    if model_value.lower().endswith((".pdparams", ".pdmodel", ".pdiparams", ".onnx", ".engine", ".rknn", ".bmodel")) or model_value.startswith("PP-"):
-        raise HTTPException(status_code=400, detail="基础模型与训练框架冲突。Ultralytics 只能选择 .pt 权重。")
-    model_value = resolve_ultralytics_model_path(model_value, project_id)
-    base_selection["base_model_path"] = model_value
-    # v42.4: one logical data pool; train/val/test are sample roles rather than separate named datasets.
-    preflight = dataset_quality_report(project_id, None, payload.include_empty)
-    # A random candidate pool can start from freshly uploaded/unassigned
-    # materials; build_yolo_dataset_v44 assigns train/experiment roles below.
-    if not preflight.get("can_train") and not (payload.random_experiment_split and payload.selected_image_ids):
-        raise HTTPException(status_code=400, detail="数据不可训练：" + "；".join(preflight.get("warnings", [])))
-    build = build_yolo_dataset_v44(project_id, payload)
-    selected = build.get("selected_ids") or {}
-    selected_ids = set(selected.get("train") or []) | set(selected.get("val") or [])
-    snapshot_images = []
-    for image in load_images(project_id):
-        if str(image.get("id")) not in {str(value) for value in selected_ids}:
-            continue
-        annotation = read_annotation(project_id, str(image.get("id")))
-        snapshot_images.append({**image, "boxes": annotation.get("boxes") or []})
-    snapshot = build_snapshot(
-        snapshot_images,
-        selected.get("train") or [],
-        selected.get("val") or [],
-        active_label_options(project_label_items(get_project(project_id))),
-        seed=int(build.get("split_seed") or payload.seed or 0),
-    )
-    snapshot_path = persist_snapshot(p / "snapshots", snapshot)
-    job_id = uuid.uuid4().hex[:12]
-    run_name = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job_id[:4]}"
-    job_dir = p / "jobs" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    log_file = job_dir / "train.log"
-    dataset_name = ""
-    for ds in ensure_default_datasets(project_id):
-        if ds.get("id") == payload.dataset_id:
-            dataset_name = ds.get("name", "")
-            break
-    asset_algorithm = asset_algorithm or next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
-    job = {
-        "id": job_id,
-        "status": "queued",
-        "target": payload.target,
-        "asset_algorithm_id": (asset_algorithm or {}).get("id", ""),
-        "asset_algorithm_name": (asset_algorithm or {}).get("name", ""),
-        "framework": "ultralytics",
-        "algorithm": payload.algorithm or "",
-        "algorithm_name": (alg or {}).get("name") or "YOLO 目标检测",
-        "model": model_value,
-        "base_version_id": base_selection["base_version_id"],
-        "base_version_name": base_selection["base_version_name"],
-        "base_model_path": base_selection["base_model_path"],
-        "base_model_kind": base_selection["base_model_kind"],
-        "base_selection_reason": base_selection["base_selection_reason"],
-        "training_base": ({"mode":"previous_version", **iteration_base} if iteration_base else {"mode":"mother_model", "model": model_value}),
-        "parent_version_id": (iteration_base or {}).get("version_id", ""),
-        "parent_version_name": (iteration_base or {}).get("version_name", ""),
-        "epochs": max(1, int(payload.epochs)),
-        "imgsz": max(128, int(payload.imgsz)),
-        "batch": int(payload.batch),
-        "device": payload.device,
-        "advanced_params": {
-            "patience": payload.patience, "workers": payload.workers, "optimizer": payload.optimizer,
-            "lr0": payload.lr0, "lrf": payload.lrf, "weight_decay": payload.weight_decay,
-            "close_mosaic": payload.close_mosaic, "mosaic": payload.mosaic, "cache": payload.cache,
-            "single_cls": payload.single_cls, "pretrained": payload.pretrained, "rect": payload.rect,
-            "amp": payload.amp, "cos_lr": payload.cos_lr, "freeze": payload.freeze,
-            "momentum": payload.momentum, "warmup_epochs": payload.warmup_epochs, "save_period": payload.save_period,
-            "seed": payload.seed, "deterministic": payload.deterministic, "multi_scale": payload.multi_scale,
-            "hsv_h": payload.hsv_h, "hsv_s": payload.hsv_s, "hsv_v": payload.hsv_v,
-            "degrees": payload.degrees, "translate": payload.translate, "scale": payload.scale, "shear": payload.shear,
-            "perspective": payload.perspective, "flipud": payload.flipud, "fliplr": payload.fliplr, "mixup": payload.mixup,
-        },
-        "requested_train_params": {
-            "epochs": max(1, int(payload.epochs)), "imgsz": max(128, int(payload.imgsz)),
-            "batch": int(payload.batch), "device": payload.device,
-            "patience": payload.patience, "workers": payload.workers, "optimizer": payload.optimizer,
-            "lr0": payload.lr0, "lrf": payload.lrf, "weight_decay": payload.weight_decay,
-            "close_mosaic": payload.close_mosaic, "mosaic": payload.mosaic, "cache": payload.cache,
-            "single_cls": payload.single_cls, "pretrained": payload.pretrained, "rect": payload.rect,
-            "amp": payload.amp, "cos_lr": payload.cos_lr, "freeze": payload.freeze,
-            "momentum": payload.momentum, "warmup_epochs": payload.warmup_epochs, "save_period": payload.save_period,
-            "seed": payload.seed, "deterministic": payload.deterministic, "multi_scale": payload.multi_scale,
-            "hsv_h": payload.hsv_h, "hsv_s": payload.hsv_s, "hsv_v": payload.hsv_v,
-            "degrees": payload.degrees, "translate": payload.translate, "scale": payload.scale,
-            "shear": payload.shear, "perspective": payload.perspective,
-            "flipud": payload.flipud, "fliplr": payload.fliplr, "mixup": payload.mixup,
-        },
-        "dataset_id": "__all__",
-        "dataset_name": "全部数据",
-        "dataset_counts": build.get("counts", {}),
-        "dataset_selected_ids": build.get("selected_ids", {}),
-        "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent),
-        "random_experiment_split": bool(payload.random_experiment_split and payload.selected_image_ids),
-        "split_seed": int(build.get("split_seed") or payload.seed or 0),
-        "data_filters": build.get("filters", {}),
-        "dataset_snapshot": build.get("dataset", ""),
-        "snapshot_id": snapshot["snapshot_id"],
-        "snapshot_path": str(snapshot_path),
-        "data_yaml": build.get("data_yaml", ""),
-        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0)},
-        "ai_intervention": {"enabled": False},
-        "queue_priority": int(payload.queue_priority),
-        "priority_scheme": V56_PRIORITY_SCHEME,
-        "auto_convert_targets": list(payload.auto_convert_targets or []),
-        "train_request": payload.dict(),
-        "run_name": run_name,
-        "run_dir": str(p / "runs" / run_name),
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "log_file": str(log_file),
-        "message": "等待启动",
-    }
-    active_env = get_active_ultralytics_env()
-    if active_env:
-        job["ultralytics_env"] = {"python_path": active_env.get("python_path"), "root": active_env.get("root"), "version": active_env.get("version")}
-    # v42.8：训练任务统一进入资源队列。算法列表是唯一训练入口，任务页只负责运行/历史管理。
-    if payload.target == "remote":
-        server = resolve_server(payload)
-        job["execution_resource"] = {"type":"remote","id":server.get("id") or payload.server_id or "remote","name":server.get("name") or "远程训练服务器","base_url":server.get("base_url") or ""}
-        job["resource_key"] = f"remote:{server.get('id') or payload.server_id or server.get('base_url') or 'remote'}"
-    else:
-        env = get_active_ultralytics_env() or {}
-        job["execution_resource"] = {"type":"local","id":"local","name":env.get("name") or "本机训练环境","root":env.get("root") or ""}
-        job["resource_key"] = "local:default"
-    job["queued_at"] = now_iso()
-    job["message"] = "已进入训练队列"
-    write_json(job_dir / "job.json", job)
-    add_job_to_index(project_id, job)
-    _v48_dispatch_training_queues(project_id)
-    latest = read_json(job_dir / "job.json", job)
-    return {"ok": True, "job": latest, "dataset": build}
-
-    # v42.0.1: v12 页面选择“远程训练”时必须真正提交远程服务器，不能静默落到本机执行。
-    if payload.target == "remote":
-        server = resolve_server(payload)
-        dataset_zip = job_dir / "dataset.zip"
-        zip_dir(Path(build["dataset"]), dataset_zip)
-        try:
-            with dataset_zip.open("rb") as fp:
-                files = {"dataset_zip": ("dataset.zip", fp, "application/zip")}
-                model_fp = None
-                model_path = Path(model_value)
-                if model_path.is_file():
-                    model_fp = model_path.open("rb")
-                    files["model_file"] = (model_path.name, model_fp, "application/octet-stream")
-                data = {
-                    "model": model_path.name if model_fp else model_value,
-                    "epochs": str(job["epochs"]), "imgsz": str(job["imgsz"]), "batch": str(job["batch"]),
-                    "device": payload.device, "run_name": run_name,
-                    "patience": str(payload.patience), "workers": str(payload.workers), "optimizer": payload.optimizer or "auto",
-                    "lr0": str(payload.lr0), "lrf": str(payload.lrf), "weight_decay": str(payload.weight_decay),
-                    "close_mosaic": str(payload.close_mosaic), "mosaic": str(payload.mosaic), "cache": str(payload.cache),
-                    "single_cls": str(payload.single_cls).lower(), "pretrained": str(payload.pretrained).lower(), "rect": str(payload.rect).lower(),
-                    "amp": str(payload.amp).lower(), "cos_lr": str(payload.cos_lr).lower(), "freeze": str(payload.freeze),
-                }
-                headers = {"X-API-Key": server.get("api_key", "")}
-                try:
-                    r = requests.post(f"{server['base_url'].rstrip('/')}/api/remote/train", data=data, files=files, headers=headers, timeout=120)
-                finally:
-                    if model_fp:
-                        model_fp.close()
-                r.raise_for_status()
-                remote = r.json()
-            job.update({
-                "status": "running", "message": "远程训练已启动",
-                "remote": {"server_id": server.get("id"), "name": server.get("name"), "base_url": server["base_url"], "api_key": server.get("api_key", ""), "job_id": remote.get("job_id")},
-                "updated_at": now_iso(),
-            })
-            write_json(job_dir / "job.json", job)
-            sync_jobs_index(project_id)
-            return {"ok": True, "job": job, "dataset": build}
-        except Exception as e:
-            job.update({"status": "failed", "message": f"远程训练启动失败：{e}", "updated_at": now_iso()})
-            write_json(job_dir / "job.json", job)
-            sync_jobs_index(project_id)
-            raise HTTPException(status_code=500, detail=job["message"])
-
-    ai_cfg_path = ""
-    if payload.ai_intervention_enabled:
-        cfgs=_v35_items(MODEL_CONFIGS_FILE)
-        cfg=next((x for x in cfgs if x.get('id')==(payload.ai_model_config_id or '')),None) or next((x for x in cfgs if x.get('default_for_training_ai')),None)
-        if cfg:
-            ai_cfg_path=str(job_dir / "ai_intervention_config.json")
-            write_json(Path(ai_cfg_path), cfg)
-            job["ai_intervention"]["model_name"] = cfg.get("name") or cfg.get("model_name") or "AI模型"
-            write_json(job_dir / "job.json", job)
-    cmd = [
-        ultralytics_runtime_python(), str(BASE_DIR / "train_worker.py"),
-        "--project-dir", str(p), "--data", build["data_yaml"], "--model", model_value,
-        "--epochs", str(job["epochs"]), "--imgsz", str(job["imgsz"]), "--batch", str(job["batch"]),
-        "--device", payload.device, "--job-id", job_id, "--run-name", run_name,
-        "--patience", str(payload.patience), "--workers", str(payload.workers), "--optimizer", payload.optimizer or "auto",
-        "--lr0", str(payload.lr0), "--lrf", str(payload.lrf), "--weight-decay", str(payload.weight_decay),
-        "--close-mosaic", str(payload.close_mosaic), "--mosaic", str(payload.mosaic), "--cache", str(payload.cache),
-        "--single-cls", str(payload.single_cls).lower(), "--pretrained", str(payload.pretrained).lower(), "--rect", str(payload.rect).lower(),
-        "--amp", str(payload.amp).lower(), "--cos-lr", str(payload.cos_lr).lower(), "--freeze", str(payload.freeze),
-        "--momentum", str(payload.momentum), "--warmup-epochs", str(payload.warmup_epochs), "--save-period", str(payload.save_period),
-        "--seed", str(payload.seed), "--deterministic", str(payload.deterministic).lower(), "--multi-scale", str(payload.multi_scale),
-        "--hsv-h", str(payload.hsv_h), "--hsv-s", str(payload.hsv_s), "--hsv-v", str(payload.hsv_v),
-        "--degrees", str(payload.degrees), "--translate", str(payload.translate), "--scale", str(payload.scale), "--shear", str(payload.shear),
-        "--perspective", str(payload.perspective), "--flipud", str(payload.flipud), "--fliplr", str(payload.fliplr), "--mixup", str(payload.mixup),
-        "--val-max-samples", str(int(payload.val_max_samples or 0)),
-        "--eval-interval", str(int(payload.eval_interval or 0)), "--eval-metric", str(payload.eval_metric or "map50"),
-        "--continue-threshold", str(float(payload.continue_threshold or 0)), "--stop-threshold", str(float(payload.stop_threshold or 0)),
-        "--auto-supplement", str(bool(payload.auto_supplement)).lower(), "--supplement-count", str(int(payload.supplement_count or 0)),
-        "--ai-intervention", str(bool(payload.ai_intervention_enabled)).lower(),
-        "--ai-intervention-epochs", ",".join(str(int(x)) for x in sorted({int(x) for x in (payload.ai_intervention_epochs or []) if int(x)>0})),
-        "--ai-config", ai_cfg_path, "--ai-eval-samples", str(int(payload.ai_eval_samples or 20)),
-        "--ai-action-mode", str(payload.ai_action_mode or "auto"), "--ai-extra-epochs", str(int(payload.ai_extra_epochs or 20)),
-        "--ai-max-rounds", str(int(payload.ai_max_rounds or 1)),
-    ]
-    job["runtime_check"] = check_ultralytics_train_runtime(ultralytics_runtime_python())
-    write_json(job_dir / "job.json", job)
-    with log_file.open("ab") as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(BASE_DIR), env={**os.environ.copy(), "PYTHONUTF8":"1", "PYTHONIOENCODING":"utf-8"})
-    PROCESS_REGISTRY[job_id] = proc
-    job.update({"status": "running", "message": "训练已启动", "pid": proc.pid, "started_at": now_iso(), "updated_at": now_iso()})
-    write_json(job_dir / "job.json", job)
-    sync_jobs_index(project_id)
-    return {"ok": True, "job": job, "dataset": build}
-
-
-
-# ============================== v42.8 training queue ==============================
-V48_TRAIN_QUEUE_LOCK = threading.RLock()
-
+    if not payload.split_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="v12 训练创建必须提交 split_mode 并走 Durable Training 主路径；旧训练路径已禁止绕过冻结标签与 Snapshot 合同",
+        )
+    return _enqueue_explicit_training(project_id, payload)
 
 def _v48_resource_key(job: Dict[str, Any]) -> str:
     return str(job.get("resource_key") or ("remote:" + str((job.get("remote") or {}).get("server_id") or "remote") if job.get("target") == "remote" else "local:default"))
@@ -7606,6 +9687,7 @@ def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any
 
 V56_PRIORITY_SCHEME = "lower_number_first"
 V56_LEGACY_PRIORITY_MAP = {100: 1, 80: 20, 50: 50}
+_LEGACY_V48_TRAIN_QUEUE_LOCK = threading.RLock()
 
 
 def _v56_normalize_priority(job: Dict[str, Any]) -> int:
@@ -7644,7 +9726,7 @@ def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[st
 
 def _v48_dispatch_training_queues(project_id: str) -> None:
     """Run one task per resource, using lower-number-first priority and FIFO ties."""
-    with V48_TRAIN_QUEUE_LOCK:
+    with _LEGACY_V48_TRAIN_QUEUE_LOCK:
         rows=[]
         for jf in _v48_all_job_files(project_id):
             j=read_json(jf,{})
@@ -7809,36 +9891,174 @@ def v48_stop_job(project_id: str, job_id: str):
                 raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
         job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued); write_json(jf,job); sync_jobs_index(project_id)
         return job
-    was_queued = job.get("status") == "queued"
-    if was_queued:
+    legacy_status = str(job.get("status") or "").strip().lower()
+    queued_like = legacy_status in {"queued", "waiting", "pending"}
+    if queued_like:
         job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True); write_json(jf,job)
-    elif job.get("status") in {"running","paused"}:
+    elif legacy_status in {"running","paused"}:
         if job.get("target")=="remote":
             remote=job.get("remote") or {}
-            try: requests.post(f"{str(remote.get('base_url') or '').rstrip('/')}/api/remote/jobs/{remote.get('job_id')}/stop",headers={"X-API-Key":remote.get("api_key","")},timeout=10)
-            except Exception: pass
+            base=str(remote.get("base_url") or "").rstrip("/")
+            remote_job_id=str(remote.get("job_id") or "").strip()
+            if not base or not remote_job_id:
+                raise HTTPException(status_code=409,detail="远程训练缺少可校验的停止地址或任务 ID，未修改本地状态")
+            try:
+                response=requests.post(
+                    f"{base}/api/remote/jobs/{remote_job_id}/stop",
+                    headers={"X-API-Key":remote.get("api_key","")},
+                    timeout=10,
+                )
+            except requests.RequestException as error:
+                raise HTTPException(status_code=502,detail=f"远程训练停止请求失败，本地状态保持不变：{error}") from error
+            if not response.ok:
+                detail=(response.text or "").strip()[:300]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"远程训练停止失败，本地状态保持不变：HTTP {response.status_code}{' · '+detail if detail else ''}",
+                )
         else:
             _terminate_pid_tree(job.get("pid")); PROCESS_REGISTRY.pop(job_id,None)
         job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso()); write_json(jf,job)
-    # 只有真正开始过训练的任务才形成算法版本；纯排队后取消不属于一次算法迭代。
-    if not was_queued:
+    else:
+        raise HTTPException(status_code=409, detail="训练任务已经结束或不处于可停止状态，未修改本地状态")
+    # 只有真正开始过训练的任务才形成算法版本；排队/等待资源后取消不属于一次算法迭代。
+    if not queued_like:
         _v48_archive_training_version(project_id,job)
     _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
     return read_json(jf,job)
 
 
+_TRAINING_LEGACY_TERMINAL_STATUSES = {
+    "done", "finished", "completed", "succeeded", "success",
+    "failed", "stopped", "cancelled", "canceled",
+    "blocked_by_environment", "blocked_by_hardware",
+}
+_TRAINING_DURABLE_TERMINAL_STATUSES = {
+    TaskStatus.PARTIAL_SUCCESS,
+    TaskStatus.SUCCEEDED,
+    TaskStatus.CANCELLED,
+    TaskStatus.FAILED,
+    TaskStatus.BLOCKED_BY_ENVIRONMENT,
+    TaskStatus.BLOCKED_BY_HARDWARE,
+}
+
+
+class V48TrainingBatchDeleteReq(BaseModel):
+    job_ids: List[str] = Field(default_factory=list)
+
+
+def _purge_terminal_training_job_record(project_id: str, job_id: str) -> Dict[str, Any]:
+    job_id = str(job_id or "").strip()
+    if not job_id or job_id in {".", ".."} or "/" in job_id or "\\" in job_id:
+        raise ValueError("训练任务 ID 不合法")
+    job_dir = project_dir(project_id) / "jobs" / job_id
+    job = read_json(job_dir / "job.json", {})
+    durable = _durable_training_task(project_id, job_id)
+    if durable is None and not job:
+        return {"status": "missing", "job_id": job_id}
+
+    if durable is not None:
+        if durable.status not in _TRAINING_DURABLE_TERMINAL_STATUSES:
+            return {"status": "active", "job_id": job_id}
+    else:
+        status = str(job.get("status") or "").strip().lower()
+        if status not in _TRAINING_LEGACY_TERMINAL_STATUSES:
+            return {"status": "active", "job_id": job_id}
+
+    proc = PROCESS_REGISTRY.get(job_id)
+    if proc and proc.poll() is None:
+        return {"status": "active", "job_id": job_id}
+
+    if durable is not None:
+        shared_task_repository().delete_terminal(
+            job_id,
+            project_id=project_id,
+            kind=TaskKind.TRAINING,
+        )
+    shared_task_artifacts().delete_task(job_id)
+    shutil.rmtree(job_dir, ignore_errors=True)
+    PROCESS_REGISTRY.pop(job_id, None)
+    return {"status": "deleted", "job_id": job_id}
+
+
+@app.post("/api/v48/projects/{project_id}/jobs/batch-delete")
+def v48_batch_delete_jobs(project_id: str, payload: V48TrainingBatchDeleteReq):
+    get_project(project_id)
+    job_ids = list(dict.fromkeys(str(value or "").strip() for value in payload.job_ids if str(value or "").strip()))
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="请选择需要删除的训练记录")
+    if len(job_ids) > 200:
+        raise HTTPException(status_code=400, detail="单次最多批量删除 200 条训练记录")
+
+    deleted_ids: List[str] = []
+    skipped_active_ids: List[str] = []
+    missing_ids: List[str] = []
+    failures: List[Dict[str, str]] = []
+    for job_id in job_ids:
+        try:
+            result = _purge_terminal_training_job_record(project_id, job_id)
+            status = str(result.get("status") or "")
+            if status == "deleted":
+                deleted_ids.append(job_id)
+            elif status == "active":
+                skipped_active_ids.append(job_id)
+            else:
+                missing_ids.append(job_id)
+        except Exception as error:
+            failures.append({"job_id": job_id, "message": str(error)})
+
+    try:
+        _v48_dispatch_training_queues(project_id)
+    except Exception:
+        pass
+    sync_jobs_index(project_id)
+    return {
+        "ok": not failures,
+        "requested": len(job_ids),
+        "deleted": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "skipped_active": len(skipped_active_ids),
+        "skipped_active_ids": skipped_active_ids,
+        "missing": len(missing_ids),
+        "missing_ids": missing_ids,
+        "failed": len(failures),
+        "failures": failures,
+    }
+
+
 @app.delete("/api/v12/projects/{project_id}/jobs/{job_id}")
 def v12_delete_job(project_id: str, job_id: str):
     get_project(project_id)
-    # 先尝试停止
-    proc = PROCESS_REGISTRY.get(job_id)
-    if proc and proc.poll() is None:
-        try: proc.terminate()
-        except Exception: pass
-        PROCESS_REGISTRY.pop(job_id, None)
-    shutil.rmtree(project_dir(project_id) / "jobs" / job_id, ignore_errors=True)
-    try: _v48_dispatch_training_queues(project_id)
-    except Exception: pass
+    job_dir = project_dir(project_id) / "jobs" / job_id
+    job = read_json(job_dir / "job.json", {})
+    durable = _durable_training_task(project_id, job_id)
+
+    # Durable truth is authoritative when present. A stale legacy job.json must
+    # never make a finished durable task look active, nor may a cleanup request
+    # erase live durable work without cancellation first.
+    durable_active = durable is not None and durable.status in {
+        TaskStatus.QUEUED,
+        TaskStatus.RUNNING,
+        TaskStatus.CANCEL_REQUESTED,
+    }
+    legacy_active = durable is None and str(job.get("status") or "").lower() in {
+        "queued", "waiting", "pending", "running", "paused",
+    }
+    if durable_active or legacy_active:
+        v48_stop_job(project_id, job_id)
+        # Preserve durable task artifacts while cancellation/finalization may
+        # still be completing. This keeps the existing single-record behavior.
+        shutil.rmtree(job_dir, ignore_errors=True)
+    else:
+        try:
+            _purge_terminal_training_job_record(project_id, job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    try:
+        _v48_dispatch_training_queues(project_id)
+    except Exception:
+        pass
     sync_jobs_index(project_id)
     return {"ok": True}
 
@@ -7852,18 +10072,33 @@ def v12_list_algorithms(project_id: str):
 @app.post("/api/v12/projects/{project_id}/algorithms")
 def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
+    assert_local_algorithm_create_allowed(DATA_DIR)
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
+    return {"ok": True, "algorithm": item}
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
+def v12_get_algorithm(project_id: str, algorithm_id: str):
+    get_project(project_id)
+    item = next(
+        (row for row in list_algorithms_internal(project_id) if str(row.get("id") or "") == str(algorithm_id)),
+        None,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
     return {"ok": True, "algorithm": item}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq):
+    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     item = update_algorithm_asset(algorithms_file(project_id), algorithm_id, payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_delete_algorithm(project_id: str, algorithm_id: str):
+    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     delete_algorithm_asset(algorithms_file(project_id), algorithm_id)
     return {"ok": True}
 
@@ -7954,6 +10189,14 @@ def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payl
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
     get_project(project_id)
+    publish_service = ExternalAlgorithmPublishService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        external_secret_store_factory=_v35_secret_store,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
     result = delete_algorithm_version(
         algorithms_file(project_id),
         algorithm_id,
@@ -7961,6 +10204,11 @@ def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
         now=now_iso(),
         operator="local_user",
         dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+            project_id=project_id,
+            algorithm=algorithm,
+            version=version,
+        ),
         cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
     )
     return {
@@ -7987,15 +10235,28 @@ def v12_rollback_version(
             "回退请求必须携带页面确认时看到的 current_version_id。",
             "请刷新算法版本列表后重新确认回退。", 409,
         )
+    publish_service = ExternalAlgorithmPublishService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        external_secret_store_factory=_v35_secret_store,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
     result = rollback_algorithm_version(
         algorithms_file(project_id),
         algorithm_id,
         version_id,
         now=now_iso(),
-        delete_current_version=bool(payload.delete_current_version),
+        delete_current_version=True,
         operator="local_user",
         expected_current_version_id=payload.expected_current_version_id,
         dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+            project_id=project_id,
+            algorithm=algorithm,
+            version=version,
+        ),
         cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
     )
     return {
@@ -8093,6 +10354,18 @@ def _v48_quality_reached(job: Dict[str, Any]) -> bool:
     return value is not None and value>=target
 
 
+def _v48_supported_rockchip_chips(resource: Dict[str, Any]) -> List[str]:
+    remote_health = resource.get("remote_health")
+    remote_health = remote_health if isinstance(remote_health, dict) else {}
+    values = list(resource.get("supported_chips") or remote_health.get("supported_chips") or [])
+    chips = {
+        str(value or "").strip().lower()
+        for value in values
+        if str(value or "").strip().lower() in SUPPORTED_PORTABLE_RKNN_CHIPS
+    }
+    return sorted(chips)
+
+
 def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
     targets=list(job.get("auto_convert_targets") or [])
     summary={"requested":targets,"jobs":[],"errors":[]}
@@ -8104,8 +10377,18 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         if not resource:
             summary["errors"].append({"target":target,"message":"没有已检测通过的对应部署资源"});continue
         params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}
-        if target=="sophon": params["chip"]="bm1684x"
-        elif target=="rockchip": params["chip"]="rk3588"
+        if target=="sophon":
+            params["chip"]="bm1684x"
+        elif target=="rockchip":
+            chips=_v48_supported_rockchip_chips(resource)
+            if len(chips)!=1:
+                detail="、".join(chip.upper() for chip in chips) or "无"
+                summary["errors"].append({
+                    "target":target,
+                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568、RK3578 或 RK3576 后手动转换。",
+                })
+                continue
+            params["chip"]=chips[0]
         elif target=="ascend":
             socs=resource.get("detected_soc_versions") or (resource.get("remote_health") or {}).get("soc_versions") or []
             if not socs:
@@ -8123,7 +10406,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     if not job or job.get("auto_version_id") or job.get("never_started"):
         return None
     normalized_status = str(job.get("status") or "").strip().upper()
-    successful_statuses = {"DONE", "FINISHED", "COMPLETED", "SUCCEEDED", "PARTIAL_SUCCESS"}
+    successful_statuses = {"DONE", "FINISHED", "COMPLETED", "SUCCEEDED", "SUCCESS", "PARTIAL_SUCCESS"}
     if normalized_status not in successful_statuses:
         return None
     algorithm_id=str(job.get("asset_algorithm_id") or "")
@@ -8151,15 +10434,131 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     dst=vd/model_path.name;shutil.copy2(model_path,dst);stored_path=str(dst);model_name=dst.name;size_mb=round(dst.stat().st_size/1024/1024,2);model_type=dst.suffix.lower().lstrip('.')
     rep=job_report(project_id,str(job.get("id") or ""),Path(stored_path) if stored_path else None)
     accuracy=_v48_metric_from_job(job,"map50")
+    snapshot_id = str(job.get("snapshot_id") or "")
+    snapshot_truth = read_json(project_dir(project_id)/"snapshots"/f"{snapshot_id}.json", {}) if snapshot_id else {}
+    dataset_revision_id = str(
+        job.get("dataset_revision_id")
+        or (snapshot_truth.get("dataset_revision_id") if isinstance(snapshot_truth, dict) else "")
+        or ""
+    )
+    execution_resource = job.get("execution_resource")
+    execution_resource = execution_resource if isinstance(execution_resource, dict) else {}
+    model_sha256 = sha256_file(dst)
+    training_lineage = build_training_lineage(
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        framework=str(job.get("framework") or "ultralytics"),
+        base_version_id=job.get("base_version_id"),
+        base_version_name=job.get("base_version_name"),
+        base_model=job.get("base_model_path") or job.get("model"),
+        base_selection_reason=job.get("base_selection_reason"),
+        execution={
+            "mode": execution_resource.get("type") or job.get("target") or "local",
+            "worker_id": job.get("worker_id"),
+            "requested_device": job.get("requested_device") or job.get("device"),
+            "assigned_device": job.get("assigned_device"),
+            "actual_device": job.get("actual_device"),
+            "resource_id": execution_resource.get("id"),
+            "resource_name": execution_resource.get("name"),
+        },
+        requested_params=job.get("requested_train_params"),
+        actual_params=job.get("actual_train_params"),
+        supplement_provenance=(
+            snapshot_truth.get("supplement_provenance")
+            if isinstance(snapshot_truth, dict)
+            else job.get("supplement_provenance")
+        ),
+        artifacts=[{
+            "role": "primary",
+            "file_name": model_name,
+            "sha256": model_sha256,
+            "size_bytes": int(dst.stat().st_size),
+            "verified": bool(job.get("artifact_verified")),
+        }],
+        training_status=("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
+        training_outcome=job.get("training_outcome"),
+        completion_reason=job.get("completion_reason"),
+        finished_at=job.get("finished_at") or now_iso(),
+    )
+    from platform_core.training_evaluation import (
+        build_evaluation_benchmark_scope,
+        build_evaluation_truth,
+        build_feedback_adoption_outcome,
+        build_iteration_decision,
+    )
+    training_report = job.get("training_report")
+    training_report = training_report if isinstance(training_report, dict) else {}
+    evaluation_task_id = str(job.get("task_id") or job.get("id") or "")
+    dataset_manifest = {}
+    dataset_manifest_ref = str(job.get("dataset_manifest_ref") or "").strip()
+    if evaluation_task_id and dataset_manifest_ref:
+        manifest_value = shared_task_artifacts().read_json(
+            evaluation_task_id, dataset_manifest_ref, default={}
+        )
+        dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+    benchmark_scope = build_evaluation_benchmark_scope(
+        snapshot_truth if isinstance(snapshot_truth, dict) else None,
+        dataset_manifest=dataset_manifest or None,
+    )
+    evaluation = build_evaluation_truth(
+        training_report.get("test_result"),
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        model_sha256=model_sha256,
+        finished_at=job.get("finished_at") or now_iso(),
+        benchmark_scope=benchmark_scope,
+    )
+    iteration_decision = build_iteration_decision(
+        evaluation,
+        quality_gate=job.get("quality_gate"),
+    )
+    supplement_provenance = (
+        training_lineage.get("supplement_provenance")
+        if isinstance(training_lineage, dict)
+        else {}
+    )
+    feedback_adoption_outcome = {}
+    if isinstance(supplement_provenance, dict) and supplement_provenance:
+        lineage_base = (
+            training_lineage.get("base")
+            if isinstance(training_lineage.get("base"), dict)
+            else {}
+        )
+        source_version_id = str(lineage_base.get("version_id") or "").strip()
+        source_version = next(
+            (
+                row for row in (algo.get("versions") or [])
+                if str(row.get("id") or "") == source_version_id
+            ),
+            None,
+        )
+        feedback_adoption_outcome = build_feedback_adoption_outcome(
+            source_version.get("evaluation") if isinstance(source_version, dict) else None,
+            evaluation,
+            supplement_provenance,
+            source_version_id=source_version_id,
+            new_version_id=version_id,
+        )
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
         "job_id":job.get("id"),"remark":"训练结束自动生成版本","report":rep,"report_updated_at":now_iso(),
         "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
         "framework": str(job.get("framework") or "ultralytics").strip().lower(),
+        "external_analysis_id": str(job.get("external_analysis_id") or ""),
         "trainable": bool(stored_path),
         "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
-        "snapshot_id": str(job.get("snapshot_id") or ""),
+        "snapshot_id": snapshot_id,
+        "dataset_revision_id": dataset_revision_id,
+        "training_lineage": training_lineage,
+        "evaluation": evaluation,
+        "iteration_decision": iteration_decision,
+        **(
+            {"feedback_adoption_outcome": feedback_adoption_outcome}
+            if feedback_adoption_outcome else {}
+        ),
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,
@@ -8177,6 +10576,13 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
+    request_external_auto_publish_if_enabled(
+        data_dir=DATA_DIR,
+        algorithms_path=algorithms_file(project_id),
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        now=now_iso(),
+    )
     return version
 
 
@@ -8352,6 +10758,7 @@ async def v12_predict_image(
     framework = (inference_framework or "ultralytics").lower()
     source = (model_source or "project").lower()
     model_value = ""
+    feedback_version = None
 
     # 解析模型来源。v27 修复：原始模型 builtin、算法版本、项目模型、本机模型、飞桨模型统一收口，避免 model_path 未定义。
     try:
@@ -8374,6 +10781,7 @@ async def v12_predict_image(
                         break
                 if not version:
                     raise HTTPException(status_code=404, detail="算法版本不存在")
+                feedback_version = dict(version)
                 model_path = Path(version.get("stored_path", ""))
                 if not model_path.exists():
                     raise HTTPException(status_code=404, detail="算法版本模型文件不存在")
@@ -8398,8 +10806,10 @@ async def v12_predict_image(
 
     python_path = resolve_inference_python(framework, inference_env_id)
     data = run_predict_by_env(framework, python_path, str(model_value), in_path, out_path, float(conf))
-    return {
+    response = {
         "ok": True,
+        "prediction_id": pred_id,
+        "feedback_eligible": False,
         "detections": data.get("detections", []),
         "image_url": f"/data/projects/{project_id}/predictions/{out_path.name}",
         "labels": project.get("labels", []),
@@ -8409,8 +10819,585 @@ async def v12_predict_image(
         "python_path": python_path,
         "note": data.get("note", ""),
     }
+    if feedback_version is not None and algorithm_id and version_id:
+        try:
+            from platform_core.online_feedback import validate_prediction_evidence
+            info = image_info(in_path)
+            evidence = validate_prediction_evidence({
+                "schema_version": 1,
+                "prediction_id": pred_id,
+                "algorithm_id": str(algorithm_id),
+                "version_id": str(version_id),
+                "model_sha256": sha256_file(Path(str(model_value))),
+                "input_sha256": sha256_file(in_path),
+                "original_filename": safe_filename(file.filename or f"{pred_id}{ext}"),
+                "input_file": in_path.name,
+                "width": int(info["width"]),
+                "height": int(info["height"]),
+                "confidence": float(conf),
+                "engine": data.get("engine") or framework,
+                "detections": list(data.get("detections") or []),
+                "created_at": now_iso(),
+                "source_channel": "platform_test",
+            })
+            write_json(p / "predictions" / f"{pred_id}.evidence.json", evidence)
+            response.update({
+                "feedback_eligible": True,
+                "algorithm_id": evidence["algorithm_id"],
+                "version_id": evidence["version_id"],
+                "model_sha256": evidence["model_sha256"],
+                "input_sha256": evidence["input_sha256"],
+            })
+        except (OSError, ValueError):
+            # Prediction remains usable even when evidence cannot be promoted.
+            response["feedback_eligible"] = False
+    return response
 
 
+class OnlineFeedbackCreateReq(BaseModel):
+    prediction_id: str
+    feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    note: str = ""
+
+
+class OnlineFeedbackConfirmReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    dataset_id: str = "default"
+    confirm_all_labels_absent: bool = False
+
+
+class OnlineFeedbackDismissReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    reason: str = ""
+
+
+def _online_feedback_repository(project_id: str):
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    return OnlineFeedbackRepository(project_dir(project_id))
+
+
+ONLINE_FEEDBACK_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+ONLINE_FEEDBACK_MAX_DETECTIONS_JSON = 2 * 1024 * 1024
+
+
+def _online_feedback_version_model_sha256(version: Mapping[str, Any]) -> str:
+    candidates: List[str] = []
+    stored_path = Path(str(version.get("stored_path") or ""))
+    if stored_path.is_file() and stored_path.stat().st_size > 0:
+        candidates.append(sha256_file(stored_path).lower())
+    lineage = version.get("training_lineage")
+    if isinstance(lineage, Mapping):
+        for artifact in lineage.get("artifacts") or []:
+            if not isinstance(artifact, Mapping):
+                continue
+            if str(artifact.get("role") or "") != "primary" or not bool(artifact.get("verified")):
+                continue
+            digest = str(artifact.get("sha256") or "").strip().lower()
+            if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+                candidates.append(digest)
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本没有可验证的正式模型 SHA，请先恢复版本模型产物",
+        )
+    if len(candidates) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本模型文件与训练 lineage SHA 不一致，请先修复版本真值",
+        )
+    return candidates[0]
+
+
+def _online_prediction_evidence(project_id: str, prediction_id: str):
+    from platform_core.online_feedback import validate_prediction_evidence
+    prediction_id = str(prediction_id or "").strip()
+    if (
+        not prediction_id
+        or len(prediction_id) > 64
+        or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in prediction_id)
+    ):
+        raise HTTPException(status_code=400, detail="prediction_id 无效")
+    root = project_dir(project_id) / "predictions"
+    evidence = validate_prediction_evidence(
+        read_json(root / f"{prediction_id}.evidence.json", {})
+    )
+    if evidence["prediction_id"] != prediction_id:
+        raise HTTPException(status_code=409, detail="预测证据身份不一致，请重新测试")
+    input_file = str(evidence.get("input_file") or "")
+    if not input_file or Path(input_file).name != input_file:
+        raise HTTPException(status_code=409, detail="预测输入证据无效，请重新测试")
+    input_path = root / input_file
+    if not input_path.is_file() or sha256_file(input_path) != evidence["input_sha256"]:
+        raise HTTPException(status_code=409, detail="测试图片在抽检前已变化，请重新测试")
+    algorithm, version = _algorithm_version_for_action(
+        project_id, evidence["algorithm_id"], evidence["version_id"]
+    )
+    if _online_feedback_version_model_sha256(version) != evidence["model_sha256"]:
+        raise HTTPException(status_code=409, detail="算法版本模型已变化，请重新测试")
+    return evidence, input_path, algorithm, version
+
+
+def _online_feedback_box_signature(boxes: List[Dict[str, Any]]) -> List[Tuple[int, str, float, float, float, float]]:
+    """Compare reviewed prediction truth without depending on box IDs/order."""
+    result = []
+    for box in boxes or []:
+        result.append((
+            int(box.get("class_id") or 0),
+            str(box.get("label") or box.get("code") or ""),
+            round(float(box.get("x1") or 0), 4),
+            round(float(box.get("y1") or 0), 4),
+            round(float(box.get("x2") or 0), 4),
+            round(float(box.get("y2") or 0), 4),
+        ))
+    return sorted(result)
+
+
+def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[str, Any]):
+    active = active_label_options(project_label_items(project))
+    by_code = {str(item["code"]): item for item in active}
+    by_display: Dict[str, List[Dict[str, Any]]] = {}
+    for item in active:
+        by_display.setdefault(str(item.get("display_name") or ""), []).append(item)
+    boxes = []
+    for detection in evidence.get("detections") or []:
+        label = str(detection.get("label") or "").strip()
+        item = by_code.get(label)
+        if item is None:
+            matches = by_display.get(label) or []
+            item = matches[0] if len(matches) == 1 else None
+        if item is None:
+            raise ValueError(f"预测标签 {label or '-'} 无法唯一映射到当前项目标签")
+        boxes.append({
+            "id": f"feedback-{evidence['prediction_id']}-{int(detection.get('index') or 0)}",
+            "class_id": int(item["class_id"]),
+            "label": str(item["code"]),
+            "x1": float(detection["x1"]), "y1": float(detection["y1"]),
+            "x2": float(detection["x2"]), "y2": float(detection["y2"]),
+        })
+    return boxes, [str(item["code"]) for item in active]
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback")
+def list_online_feedback(project_id: str, status: str = "", limit: int = 100):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    allowed = {"", "pending_review", "confirmed", "dismissed"}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail="反馈状态无效")
+    rows = _online_feedback_repository(project_id).list(status=status, limit=limit)
+    return {"ok": True, "items": [public_feedback(row, compact=True) for row in rows]}
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback/{feedback_id}")
+def get_online_feedback(project_id: str, feedback_id: str):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    row = _online_feedback_repository(project_id).get(feedback_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    public = public_feedback(row)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, row["prediction_id"])
+        public["input_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{evidence['input_file']}"
+        )
+        result_image = project_dir(project_id) / "predictions" / f"{row['prediction_id']}_result.jpg"
+        public["result_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{result_image.name}"
+            if result_image.is_file() else ""
+        )
+    except (HTTPException, ValueError):
+        public["input_image_url"] = ""
+        public["result_image_url"] = ""
+    return {"ok": True, "feedback": public}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback", status_code=201)
+def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
+        row, idempotent = _online_feedback_repository(project_id).stage(
+            evidence,
+            feedback_type=payload.feedback_type,
+            note=payload.note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/external-intake", status_code=201)
+async def create_external_online_feedback(
+    project_id: str,
+    algorithm_id: str = Form(...),
+    version_id: str = Form(...),
+    model_sha256: str = Form(...),
+    external_source: str = Form(...),
+    external_sample_id: str = Form(...),
+    feedback_type: Literal["correct", "false_positive", "needs_correction"] = Form(...),
+    detections_json: str = Form("[]"),
+    confidence: float = Form(0.25),
+    note: str = Form(""),
+    file: UploadFile = File(...),
+):
+    from platform_core.online_feedback import public_feedback, validate_prediction_evidence
+
+    get_project(project_id)
+    source_name = str(external_source or "").strip()
+    sample_id = str(external_sample_id or "").strip()
+    if (
+        not source_name or len(source_name) > 200
+        or not sample_id or len(sample_id) > 200
+        or any(ord(ch) < 32 for ch in source_name + sample_id)
+    ):
+        raise HTTPException(status_code=400, detail="外部来源或样本编号无效")
+    if len(str(detections_json or "")) > ONLINE_FEEDBACK_MAX_DETECTIONS_JSON:
+        raise HTTPException(status_code=413, detail="detections_json 过大")
+    try:
+        detections = json.loads(detections_json or "[]")
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="detections_json 不是有效 JSON") from error
+    if not isinstance(detections, list):
+        raise HTTPException(status_code=400, detail="detections_json 必须是数组")
+
+    _, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    expected_model_sha = _online_feedback_version_model_sha256(version)
+    submitted_model_sha = str(model_sha256 or "").strip().lower()
+    if (
+        len(submitted_model_sha) != 64
+        or any(ch not in "0123456789abcdef" for ch in submitted_model_sha)
+    ):
+        raise HTTPException(status_code=400, detail="model_sha256 无效")
+    if submitted_model_sha != expected_model_sha:
+        raise HTTPException(status_code=409, detail="外部样本声明的模型 SHA 与正式算法版本不一致")
+
+    filename = safe_filename(file.filename or "external.jpg")
+    extension = Path(filename).suffix.lower()
+    if extension not in IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail="外部抽检仅支持图片文件")
+    raw = await file.read(ONLINE_FEEDBACK_MAX_IMAGE_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="外部抽检图片为空")
+    if len(raw) > ONLINE_FEEDBACK_MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="外部抽检图片超过 20MB")
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            image.verify()
+        with Image.open(BytesIO(raw)) as image:
+            width, height = int(image.width), int(image.height)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="外部抽检图片无法解码") from error
+
+    input_sha = hashlib.sha256(raw).hexdigest()
+    identity = {
+        "external_source": source_name,
+        "external_sample_id": sample_id,
+        "algorithm_id": str(algorithm_id),
+        "version_id": str(version_id),
+    }
+    prediction_id = "ext_" + hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()[:24]
+    root = project_dir(project_id) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    input_file = f"{prediction_id}_input{extension}"
+    input_path = root / input_file
+    evidence_path = root / f"{prediction_id}.evidence.json"
+
+    try:
+        incoming = validate_prediction_evidence({
+            "schema_version": 1,
+            "prediction_id": prediction_id,
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "model_sha256": expected_model_sha,
+            "input_sha256": input_sha,
+            "original_filename": filename,
+            "input_file": input_file,
+            "width": width,
+            "height": height,
+            "confidence": float(confidence),
+            "engine": "external",
+            "detections": detections,
+            "created_at": now_iso(),
+            "source_channel": "external_upload",
+            "external_source": source_name,
+            "external_sample_id": sample_id,
+        })
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    evidence_reused = False
+    if evidence_path.is_file():
+        existing = validate_prediction_evidence(read_json(evidence_path, {}))
+        stable_keys = (
+            "prediction_id", "algorithm_id", "version_id", "model_sha256",
+            "input_sha256", "width", "height", "confidence", "engine",
+            "detections", "source_channel", "external_source", "external_sample_id",
+        )
+        if any(existing.get(key) != incoming.get(key) for key in stable_keys):
+            raise HTTPException(
+                status_code=409,
+                detail="同一外部样本编号已经绑定不同的图片或预测证据",
+            )
+        existing_input = root / str(existing.get("input_file") or "")
+        if (
+            not existing_input.is_file()
+            or sha256_file(existing_input) != existing["input_sha256"]
+        ):
+            raise HTTPException(status_code=409, detail="已存在的外部样本证据文件不完整")
+        incoming = existing
+        evidence_reused = True
+    else:
+        if input_path.exists():
+            raise HTTPException(status_code=409, detail="外部样本存在未完成的证据文件，请人工检查")
+        temporary = root / f".{prediction_id}.{uuid.uuid4().hex}.upload"
+        temporary.write_bytes(raw)
+        try:
+            os.replace(temporary, input_path)
+            write_json(evidence_path, incoming)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    try:
+        row, repository_reused = _online_feedback_repository(project_id).stage(
+            incoming,
+            feedback_type=feedback_type,
+            note=note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "ok": True,
+        "idempotent": bool(evidence_reused or repository_reused),
+        "feedback": public_feedback(row),
+    }
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm")
+def confirm_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackConfirmReq,
+):
+    from platform_core.online_feedback import public_feedback
+    project = get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["status"] == "confirmed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="抽检反馈已结束")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再确认")
+    try:
+        evidence, input_path, _, _ = _online_prediction_evidence(
+            project_id, staged["prediction_id"]
+        )
+        source = dict((staged.get("payload") or {}).get("source") or {})
+        for key in ("algorithm_id", "version_id", "model_sha256", "input_sha256"):
+            if str(source.get(key) or "") != str(evidence.get(key) or ""):
+                raise ValueError("抽检来源在确认前发生变化，请重新提交反馈")
+        dataset_id = str(payload.dataset_id or "default")
+        if dataset_id not in {str(row.get("id") or "") for row in ensure_default_datasets(project_id)}:
+            raise ValueError("目标数据集不存在")
+
+        feedback_type = str(staged["feedback_type"])
+        truth_feedback = feedback_type in {"correct", "false_positive"}
+        if feedback_type == "correct":
+            preview_boxes, _ = _online_feedback_prediction_boxes(project, evidence)
+            if not preview_boxes:
+                raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
+        elif feedback_type == "false_positive":
+            if not payload.confirm_all_labels_absent:
+                raise ValueError("请明确确认画面中不存在当前启用标签目标")
+            _, preview_scope = _online_feedback_prediction_boxes(project, {
+                **evidence, "detections": [],
+            })
+            if not preview_scope:
+                raise ValueError("项目没有可用于负样本确认的启用标签")
+
+        materials = material_store(project_id)
+        material = materials.get_by_content_sha256(evidence["input_sha256"])
+        reused = material is not None
+        image_batch_open = False
+        try:
+            if material is None:
+                if truth_feedback:
+                    if _v50_active_image_batch(project_id) is not None:
+                        raise RuntimeError("online feedback cannot nest image batches")
+                    _v50_begin_image_batch(project_id)
+                    image_batch_open = True
+                material = add_image_record(
+                    project_id,
+                    input_path,
+                    evidence.get("original_filename") or input_path.name,
+                    "online_feedback",
+                    dataset_id,
+                    "default_local",
+                    content_sha256=evidence["input_sha256"],
+                    defer_unannotated_annotation=image_batch_open,
+                )
+                if material is None:
+                    raise ValueError("反馈图片无法写入素材库")
+            material_id = str(material["id"])
+            annotation_action = "manual_review"
+
+            if truth_feedback:
+                with label_governance_fence(project_dir(project_id)):
+                    # Re-read after acquiring the governance fence. Human review
+                    # freezes intent, not a stale active-label catalog/class id.
+                    current_project = get_project(project_id)
+                    annotations = AnnotationRepository(project_dir(project_id))
+                    current = annotations.get(material_id)
+                    if feedback_type == "correct":
+                        boxes, _ = _online_feedback_prediction_boxes(
+                            current_project, evidence,
+                        )
+                        if not boxes:
+                            raise ValueError(
+                                "当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本"
+                            )
+                        current_state = str(
+                            current.get("annotation_state") or "unannotated"
+                        )
+                        if current_state == "unannotated":
+                            write_annotation(
+                                project_id, material_id, boxes, "annotated",
+                            )
+                            annotation_action = "prediction_confirmed_as_truth"
+                        elif (
+                            current_state == "annotated"
+                            and _online_feedback_box_signature(
+                                current.get("boxes") or []
+                            )
+                            == _online_feedback_box_signature(boxes)
+                        ):
+                            # Recovery/idempotency: formal truth may have been
+                            # committed immediately before feedback finalization
+                            # failed. Matching truth is safe to acknowledge.
+                            annotation_action = "prediction_matches_existing_truth"
+                        else:
+                            raise ValueError(
+                                "该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth"
+                            )
+                    else:
+                        _, active_codes = _online_feedback_prediction_boxes(
+                            current_project, {**evidence, "detections": []},
+                        )
+                        if not active_codes:
+                            raise ValueError(
+                                "项目没有可用于负样本确认的启用标签"
+                            )
+                        state = str(
+                            current.get("annotation_state") or "unannotated"
+                        )
+                        if state == "annotated":
+                            raise ValueError(
+                                "该素材已有正式目标标注，不能直接改成负样本"
+                            )
+                        if state != "confirmed_empty":
+                            write_annotation(
+                                project_id,
+                                material_id,
+                                [],
+                                "confirmed_empty",
+                                annotation_scope=active_codes,
+                            )
+                        annotation_action = "confirmed_empty"
+
+                if image_batch_open:
+                    _v50_end_image_batch(save=True)
+                    image_batch_open = False
+            else:
+                annotation_action = "manual_annotation_required"
+        except Exception:
+            if image_batch_open and _v50_active_image_batch(project_id) is not None:
+                _v50_end_image_batch(save=False)
+                image_batch_open = False
+            raise
+
+        confirmed_at = now_iso()
+        latest_material = materials.get(material_id) or material
+        refs = [
+            dict(value) for value in list(latest_material.get("online_feedback_refs") or [])
+            if isinstance(value, dict) and str(value.get("feedback_id") or "") != str(feedback_id)
+        ][-49:]
+        refs.append({
+            "schema_version": 1,
+            "feedback_id": str(feedback_id),
+            "prediction_id": evidence["prediction_id"],
+            "algorithm_id": evidence["algorithm_id"],
+            "version_id": evidence["version_id"],
+            "model_sha256": evidence["model_sha256"],
+            "input_sha256": evidence["input_sha256"],
+            "feedback_type": staged["feedback_type"],
+            "confirmed_at": confirmed_at,
+        })
+        patch = {
+            "online_feedback_refs": refs,
+            "online_feedback_needs_review": staged["feedback_type"] == "needs_correction",
+            "updated_at": confirmed_at,
+        }
+        if staged["feedback_type"] in {"correct", "false_positive"}:
+            patch["processing_status"] = "processed"
+        elif staged["feedback_type"] == "needs_correction":
+            patch["processing_status"] = "pending_decision"
+        materials.patch({material_id: patch})
+
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id=material_id,
+            result={
+                "annotation_action": annotation_action,
+                "material_reused": reused,
+                "needs_manual_annotation": staged["feedback_type"] == "needs_correction",
+                "dataset_id": dataset_id,
+            },
+            confirmed_at=confirmed_at,
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/dismiss")
+def dismiss_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackDismissReq,
+):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再处理")
+    if staged["status"] == "dismissed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="已确认反馈不能再忽略")
+    try:
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id="",
+            result={
+                "dismissed": True,
+                "dismiss_reason": str(payload.reason or "").strip()[:1000],
+            },
+            confirmed_at=now_iso(),
+            status="dismissed",
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
 
 
 def _project_label_names(project: Dict[str, Any]) -> List[str]:
@@ -8502,23 +11489,54 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
 # v18 robust annotated dataset import
 # -----------------------------
 
-def _v18_safe_extract(zip_path: Path, dest: Path, progress_cb=None):
+def _v18_safe_extract(
+    zip_path: Path,
+    dest: Path,
+    progress_cb=None,
+    *,
+    selected_image_paths: Optional[Sequence[str]] = None,
+):
+    """Safely extract one ZIP, optionally filtering image payloads at source.
+
+    When selected_image_paths is provided, only those image members are written;
+    all non-image members (annotations/configuration) remain available so the
+    existing COCO/VOC/YOLO parsers keep the same semantics. This avoids the old
+    full-extract -> second-copy selected_root I/O path.
+    """
     dest = dest.resolve()
+    selected = None
+    if selected_image_paths is not None:
+        selected = {
+            v19_normalize_zip_path(value)
+            for value in selected_image_paths
+            if v19_normalize_zip_path(value)
+        }
     with zipfile.ZipFile(zip_path, 'r') as zf:
-        members=[m for m in zf.infolist() if m.filename and not m.filename.endswith('/')]
-        total=max(1,len(members))
-        for idx, member in enumerate(members, 1):
-            name = member.filename.replace('\\', '/')
-            if name.startswith('/') or '..' in Path(name).parts:
-                raise HTTPException(status_code=400, detail=f'压缩包包含不安全路径：{name}')
+        planned = []
+        for member in zf.infolist():
+            if not member.filename or member.filename.endswith('/'):
+                continue
+            raw_name = str(member.filename or '').replace('\\', '/')
+            if raw_name.startswith('/') or '..' in Path(raw_name).parts:
+                raise HTTPException(status_code=400, detail=f'压缩包包含不安全路径：{raw_name}')
+            name = v19_normalize_zip_path(raw_name)
             target = (dest / name).resolve()
-            if not str(target).startswith(str(dest)):
+            if target != dest and dest not in target.parents:
                 raise HTTPException(status_code=400, detail=f'压缩包包含越权路径：{name}')
+            is_image = Path(name).suffix.lower() in IMAGE_EXTS
+            if selected is not None and is_image and name not in selected:
+                continue
+            planned.append((member, name, target))
+
+        total = len(planned)
+        for idx, (member, name, target) in enumerate(planned, 1):
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, 'wb') as out:
-                shutil.copyfileobj(src, out, length=1024*1024)
-            if progress_cb and (idx==1 or idx==total or idx%20==0):
-                progress_cb(idx,total,f'正在解压 {idx}/{total} 个文件')
+                shutil.copyfileobj(src, out, length=8*1024*1024)
+            if progress_cb:
+                progress_cb(idx, total, f'正在解压 {idx}/{total} 个文件')
+        if progress_cb and total == 0:
+            progress_cb(0, 0, 'ZIP 中没有需要解压的文件')
 
 
 def _v18_split_from_path(path: Path) -> str:
@@ -8588,7 +11606,74 @@ def _v18_image_lookup(root: Path):
     return imgs, by_name, by_stem, by_rel
 
 
-def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_resolve_import_label_id(
+    project: Dict[str, Any],
+    source_key: str,
+    source_name: str,
+    label_mapping: Optional[Dict[str, str]],
+) -> int:
+    normalized_name = normalize_label(source_name)
+    if label_mapping is None:
+        return ensure_label(project, normalized_name)
+    target = str(
+        label_mapping.get(str(source_key))
+        or label_mapping.get(normalized_name)
+        or ""
+    ).strip()
+    if not target:
+        raise ValueError(f"外部标签 {source_name or source_key} 尚未映射到平台标签")
+    labels = project.get("labels") or []
+    if target not in labels:
+        raise ValueError(f"已确认的平台标签已失效：{target}")
+    return labels.index(target)
+
+
+def _v18_confirmed_import_scope(
+    label_mapping: Optional[Dict[str, str]],
+) -> Optional[List[str]]:
+    if label_mapping is None:
+        return None
+    return sorted({
+        str(target).strip()
+        for target in label_mapping.values()
+        if str(target).strip()
+    })
+
+
+def _v19_import_box_provenance(
+    import_context: Optional[Dict[str, Any]],
+    *,
+    source_format: str,
+    source_class_id: Any,
+    source_label_name: str,
+    canonical_label: str,
+    canonical_project_class_id: int,
+) -> Dict[str, Any]:
+    if not import_context:
+        return {}
+    return {
+        "source": "imported",
+        "source_task_id": str(import_context.get("source_task_id") or import_context.get("import_batch_id") or ""),
+        "import_batch_id": str(import_context.get("import_batch_id") or ""),
+        "source_format": str(source_format or "").lower(),
+        "source_class_id": str(source_class_id),
+        "source_label_name": str(source_label_name or ""),
+        "canonical_label_id": str(canonical_label or ""),
+        "canonical_project_class_id": int(canonical_project_class_id),
+        "mapping_method": "manual",
+        "confirmed_at": str(import_context.get("confirmed_at") or ""),
+    }
+
+
+def _v18_import_coco(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
+) -> bool:
     json_files = []
     for jp in root.rglob('*.json'):
         try:
@@ -8600,17 +11685,24 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
     if not json_files:
         return False
     project = get_project(project_id)
+    import_scope = _v18_confirmed_import_scope(label_mapping)
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     total_expected=sum(len(coco.get('images',[])) for _,coco in json_files) or 1
     progress_done=0
     for ann_json, coco in json_files:
         split = _v18_split_from_path(ann_json)
         cats = sorted(coco.get('categories', []), key=lambda c: int(c.get('id', 0)))
+        if import_context is not None and not import_scope and cats:
+            raise ValueError("structured annotation has no confirmed platform label scope")
         cat_to_class = {}
+        cat_source_names = {}
         for c in cats:
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
-            cat_to_class[cid] = ensure_label(project, label)
+            cat_source_names[cid] = label
+            cat_to_class[cid] = _v18_resolve_import_label_id(
+                project, str(cid), label, label_mapping,
+            )
         anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
         for a in coco.get('annotations', []):
             try:
@@ -8641,13 +11733,38 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
                         report['invalid_boxes'] += 1
                         continue
                     cls = cat_to_class[cid]
-                    boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(record['width'],x+w),2), 'y2':round(min(record['height'],y+h),2)})
+                    canonical = project['labels'][cls]
+                    boxes.append({
+                        'id': uuid.uuid4().hex[:10],
+                        'class_id': cls,
+                        'label': canonical,
+                        'x1': round(max(0, x), 2),
+                        'y1': round(max(0, y), 2),
+                        'x2': round(min(record['width'], x + w), 2),
+                        'y2': round(min(record['height'], y + h), 2),
+                        **_v19_import_box_provenance(
+                            import_context,
+                            source_format='coco',
+                            source_class_id=cid,
+                            source_label_name=cat_source_names.get(cid, ''),
+                            canonical_label=canonical,
+                            canonical_project_class_id=cls,
+                        ),
+                    })
                 return boxes
 
-            rec = add_image_record(
-                project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
-                annotation_builder=build_final_annotation,
-            )
+            if import_context is not None and not import_scope:
+                if image_annotations:
+                    raise ValueError("structured annotation has no confirmed platform label scope")
+                rec = add_image_record(
+                    project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                )
+            else:
+                rec = add_image_record(
+                    project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                    annotation_builder=build_final_annotation,
+                    annotation_scope=import_scope,
+                )
             if not rec:
                 report['skipped_images'] += 1
                 continue
@@ -8660,18 +11777,31 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             report['boxes'] += len(boxes)
             if boxes: report['annotated_images'] += 1
             progress_done += 1
-            if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
+            if progress_cb:
+                progress_cb(
+                    progress_done, total_expected,
+                    f'正在转换 COCO 标签并写入标注 {progress_done}/{total_expected}',
+                )
     report['detected_format'] = 'COCO'
     return True
 
 
-def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_import_voc(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
+) -> bool:
     import xml.etree.ElementTree as ET
     xml_files = list(root.rglob('*.xml'))
     if not xml_files:
         return False
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     project = get_project(project_id)
+    import_scope = _v18_confirmed_import_scope(label_mapping)
     any_imported = False
     total_expected=max(1,len(xml_files)); progress_done=0
     for xp in xml_files:
@@ -8687,12 +11817,16 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         split = _v18_split_from_path(xp)
         boxes=[]
         objects = list(r.findall('object'))
+        if import_context is not None and not import_scope and objects:
+            raise ValueError("structured annotation has no confirmed platform label scope")
 
         def build_final_annotation(record):
             for obj in objects:
                 label = normalize_label(obj.findtext('name') or 'object')
                 if not label: continue
-                cls = ensure_label(project, label)
+                cls = _v18_resolve_import_label_id(
+                    project, label, label, label_mapping,
+                )
                 bb = obj.find('bndbox')
                 if bb is None: continue
                 try:
@@ -8703,13 +11837,36 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
                 if x2-x1<2 or y2-y1<2:
                     report['invalid_boxes'] += 1
                     continue
-                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(record['width'],x2),2), 'y2':round(min(record['height'],y2),2)})
+                canonical = project['labels'][cls]
+                boxes.append({
+                    'id': uuid.uuid4().hex[:10],
+                    'class_id': cls,
+                    'label': canonical,
+                    'x1': round(max(0, x1), 2),
+                    'y1': round(max(0, y1), 2),
+                    'x2': round(min(record['width'], x2), 2),
+                    'y2': round(min(record['height'], y2), 2),
+                    **_v19_import_box_provenance(
+                        import_context,
+                        source_format='voc',
+                        source_class_id=label,
+                        source_label_name=label,
+                        canonical_label=canonical,
+                        canonical_project_class_id=cls,
+                    ),
+                })
             return boxes
 
-        rec = add_image_record(
-            project_id, src, src.name, 'imported_voc', dataset_id,
-            annotation_builder=build_final_annotation,
-        )
+        if import_context is not None and not import_scope:
+            rec = add_image_record(
+                project_id, src, src.name, 'imported_voc', dataset_id,
+            )
+        else:
+            rec = add_image_record(
+                project_id, src, src.name, 'imported_voc', dataset_id,
+                annotation_builder=build_final_annotation,
+                annotation_scope=import_scope,
+            )
         if not rec:
             report['skipped_images'] += 1
             continue
@@ -8722,25 +11879,41 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
+        if progress_cb:
+            progress_cb(
+                progress_done, total_expected,
+                f'正在转换 VOC 标签并写入标注 {progress_done}/{total_expected}',
+            )
     if any_imported:
         report['detected_format'] = 'Pascal VOC'
     return any_imported
 
 
-def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_import_yolo(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+    import_context: Optional[Dict[str, Any]] = None,
+) -> bool:
     label_files = [x for x in root.rglob('*.txt') if x.name.lower() not in {'classes.txt','obj.names','_darknet.labels','train.txt','val.txt','test.txt'}]
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     if not image_files:
         return False
     names = _v18_collect_class_names(root, label_files)
     project = get_project(project_id)
-    if names:
-        for n in names:
-            ensure_label(project, n)
-    elif not project.get('labels'):
-        ensure_label(project, 'object')
-        names = ['object']
+    import_scope = _v18_confirmed_import_scope(label_mapping)
+    if import_context is not None and not import_scope and names:
+        raise ValueError("structured annotation has no confirmed platform label scope")
+    if label_mapping is None and import_context is None:
+        if names:
+            for n in names:
+                ensure_label(project, n)
+        elif label_files and not project.get('labels'):
+            ensure_label(project, 'object')
+            names = ['object']
     imported_names = names or project.get('labels', [])
     label_by_stem: Dict[str, List[Path]] = {}
     for lf in label_files:
@@ -8757,9 +11930,19 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
             label_file = next((x for x in same_split if any(part.lower()=='labels' for part in x.parts)), same_split[0] if same_split else cands[0])
         boxes=[]
 
+        has_label_truth = bool(label_file and label_file.exists())
+        label_text = (
+            label_file.read_text(encoding='utf-8', errors='ignore')
+            if has_label_truth else ""
+        )
+        if import_context is not None and has_label_truth and not import_scope:
+            if label_text.strip():
+                raise ValueError("structured annotation has no confirmed platform label scope")
+            has_label_truth = False
+
         def build_final_annotation(record):
-            if label_file and label_file.exists():
-                for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
+            if has_label_truth:
+                for line in label_text.splitlines():
                     box = yolo_line_to_box(line, record['width'], record['height'])
                     if not box:
                         report['invalid_boxes'] += 1
@@ -8768,26 +11951,52 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
                     if old_cls < 0:
                         report['invalid_boxes'] += 1
                         continue
-                    if old_cls < len(imported_names):
-                        label = normalize_label(imported_names[old_cls])
-                        new_cls = get_label_id(project, label)
+                    source_label = (
+                        normalize_label(imported_names[old_cls])
+                        if old_cls < len(imported_names)
+                        else f'class_{old_cls}'
+                    )
+                    if label_mapping is not None:
+                        try:
+                            new_cls = _v18_resolve_import_label_id(
+                                project, str(old_cls), source_label, label_mapping,
+                            )
+                        except ValueError:
+                            report['skipped_labels'] += 1
+                            raise
+                    elif old_cls < len(imported_names):
+                        new_cls = get_label_id(project, source_label)
                     elif old_cls < len(project.get('labels', [])):
                         new_cls = old_cls
                     else:
                         report['skipped_labels'] += 1
                         continue
+                    canonical = project['labels'][new_cls]
                     box['class_id'] = new_cls
-                    box['label'] = project['labels'][new_cls]
+                    box['label'] = canonical
                     box['id'] = uuid.uuid4().hex[:10]
+                    box.update(_v19_import_box_provenance(
+                        import_context,
+                        source_format='yolo',
+                        source_class_id=old_cls,
+                        source_label_name=source_label,
+                        canonical_label=canonical,
+                        canonical_project_class_id=new_cls,
+                    ))
                     boxes.append(box)
-            else:
-                report['unmatched_labels'] += 1
             return boxes
 
-        rec = add_image_record(
-            project_id, img, img.name, 'imported_yolo', dataset_id,
-            annotation_builder=build_final_annotation,
-        )
+        if has_label_truth:
+            rec = add_image_record(
+                project_id, img, img.name, 'imported_yolo', dataset_id,
+                annotation_builder=build_final_annotation,
+                annotation_scope=import_scope,
+            )
+        else:
+            report['unmatched_labels'] += 1
+            rec = add_image_record(
+                project_id, img, img.name, 'imported_yolo', dataset_id,
+            )
         if not rec:
             report['skipped_images'] += 1
             continue
@@ -8800,7 +12009,11 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
+        if progress_cb:
+            progress_cb(
+                progress_done, total_expected,
+                f'正在转换 YOLO 标签并写入标注 {progress_done}/{total_expected}',
+            )
     if any_imported:
         report['detected_format'] = 'YOLO'
     return any_imported
@@ -8808,6 +12021,7 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
 
 @app.post('/api/v18/projects/{project_id}/datasets/{dataset_id}/import')
 async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: UploadFile = File(...)):
+    _reject_legacy_annotated_import(project_id)
     get_project(project_id)
     p = project_dir(project_id)
     filename = safe_filename(file.filename or 'dataset.zip')
@@ -8867,6 +12081,8 @@ async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: Upload
 # -----------------------------
 class V19ImportStartReq(BaseModel):
     selected_paths: Optional[List[str]] = None
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
 
 
 def v19_import_jobs_dir(project_id: str) -> Path:
@@ -8956,9 +12172,137 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     atomic_write_json(f, persisted)
 
 
+V19_ZIP_PHASE_WINDOWS: Dict[str, Tuple[float, float]] = {
+    "UPLOAD": (0.0, 35.0),
+    "MERGE": (35.0, 40.0),
+    "VERIFY": (40.0, 42.0),
+    "SCAN": (42.0, 48.0),
+    "WAITING_CONFIRMATION": (48.0, 48.0),
+    "READY": (48.0, 48.0),
+    "QUEUE": (48.0, 48.0),
+    "EXTRACT": (48.0, 68.0),
+    "ANNOTATION_PARSE": (68.0, 96.0),
+    "DB_COMMIT": (96.0, 99.0),
+    "DONE": (100.0, 100.0),
+}
+V19_ZIP_PHASE_LABELS = {
+    "UPLOAD": "上传 ZIP",
+    "MERGE": "合并 ZIP 分片",
+    "VERIFY": "校验 ZIP 结构",
+    "SCAN": "扫描 ZIP 内容",
+    "WAITING_CONFIRMATION": "等待确认标签",
+    "READY": "等待启动后台导入",
+    "QUEUE": "等待项目导入资源",
+    "EXTRACT": "解压导入范围",
+    "ANNOTATION_PARSE": "解析图片与标注",
+    "DB_COMMIT": "提交素材与标注",
+    "DONE": "导入完成",
+    "FAILED": "导入失败",
+}
+
+
+def _v19_phase_metrics(
+    phase: str,
+    completed: int | float | None,
+    total: int | float | None,
+    *,
+    started_at: float | None = None,
+) -> Dict[str, Any]:
+    done = max(0.0, float(completed or 0))
+    target = max(0.0, float(total or 0))
+    phase_progress = round(min(100.0, done / target * 100.0), 2) if target > 0 else None
+    elapsed = None
+    eta = None
+    if started_at is not None:
+        elapsed = round(max(0.0, time.time() - float(started_at)), 2)
+        if done > 0 and target > done:
+            eta = round(max(0.0, elapsed / done * (target - done)), 2)
+        elif target > 0 and done >= target:
+            eta = 0.0
+    return {
+        "phase": str(phase or "").upper(),
+        "phase_completed": completed,
+        "phase_total": total,
+        "phase_progress": phase_progress,
+        "phase_elapsed_seconds": elapsed,
+        "eta_seconds": eta,
+    }
+
+
+def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
+    """Canonical product-facing ZIP progress projection.
+
+    phase counters are factual. overall_progress is only a stable display
+    projection over those server-owned phases; browser code must not invent
+    a second set of phase weights.
+    """
+    status = str(job.get("status") or "").strip().lower()
+    phase = str(job.get("phase") or "").strip().upper()
+    if not phase:
+        phase = {
+            "uploading": "UPLOAD",
+            "merging": "MERGE",
+            "validating": "SCAN",
+            "selecting": "WAITING_CONFIRMATION" if job.get("label_confirmation_required") else "READY",
+            "queued": "QUEUE",
+            "waiting": "QUEUE",
+            "running": "ANNOTATION_PARSE",
+            "done": "DONE",
+            "failed": "FAILED",
+        }.get(status, "")
+
+    try:
+        done = max(0.0, float(job.get("phase_completed") or 0))
+    except (TypeError, ValueError):
+        done = 0.0
+    try:
+        total = max(0.0, float(job.get("phase_total") or 0))
+    except (TypeError, ValueError):
+        total = 0.0
+    if total > 0:
+        phase_progress: Optional[float] = min(100.0, done / total * 100.0)
+    else:
+        raw_phase_progress = job.get("phase_progress")
+        if raw_phase_progress in (None, ""):
+            phase_progress = None
+        else:
+            try:
+                phase_progress = max(0.0, min(100.0, float(raw_phase_progress)))
+            except (TypeError, ValueError):
+                phase_progress = None
+
+    if status == "done" or phase == "DONE":
+        overall = 100.0
+        phase_progress = 100.0
+    elif status == "failed" or phase == "FAILED":
+        try:
+            overall = max(0.0, min(99.0, float(job.get("progress") or 0)))
+        except (TypeError, ValueError):
+            overall = 0.0
+    else:
+        start, end = V19_ZIP_PHASE_WINDOWS.get(phase, (0.0, 99.0))
+        overall = start if phase_progress is None else start + (end - start) * phase_progress / 100.0
+        overall = max(0.0, min(99.0, overall))
+
+    return {
+        "phase": phase or None,
+        "phase_label": V19_ZIP_PHASE_LABELS.get(phase, str(job.get("stage") or phase or "ZIP 导入")),
+        "phase_progress": round(phase_progress, 2) if phase_progress is not None else None,
+        "overall_progress": round(overall, 2),
+        "completed": job.get("phase_completed"),
+        "total": job.get("phase_total"),
+        "unit": str(job.get("phase_unit") or ""),
+        "elapsed_seconds": job.get("phase_elapsed_seconds"),
+        "eta_seconds": job.get("eta_seconds") if phase_progress is not None else None,
+        "message": str(job.get("message") or ""),
+        "updated_at": job.get("updated_at"),
+    }
+
+
 def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
     result = dict(job or {})
     result.pop("images", None)
+    result["zip_display_progress"] = v19_zip_display_progress(result)
     limit = max(0, min(500, int(image_limit or 0)))
     if limit:
         images = v19_read_scan_images(project_id, str(result.get("id") or ""))
@@ -8976,16 +12320,29 @@ def v19_update_job(project_id: str, job_id: str, **kwargs):
         pass
 
 
-def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
+def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
+    import xml.etree.ElementTree as ET
+
     images: List[Dict[str, Any]] = []
     hints = set()
     file_count = 0
     total_size = 0
+    external_classes: List[Dict[str, Any]] = []
+    detected_format = "images"
+    annotation_box_count = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
-        for info in zf.infolist():
-            name = v19_normalize_zip_path(info.filename)
-            if not name or name.endswith("/"):
+        members = []
+        infos = [
+            (v19_normalize_zip_path(info.filename), info)
+            for info in zf.infolist()
+            if info.filename
+            and not v19_normalize_zip_path(info.filename).endswith("/")
+        ]
+        scan_total = len(infos)
+        for scan_index, (name, info) in enumerate(infos, 1):
+            if not name:
                 continue
+            members.append((name, info))
             file_count += 1
             total_size += max(0, int(getattr(info, "file_size", 0) or 0))
             low = name.lower()
@@ -9003,29 +12360,192 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
                 hints.add("COCO")
             if low.endswith(".xml"):
                 hints.add("VOC")
+            if progress_cb and (
+                scan_index == 1
+                or scan_index == scan_total
+                or scan_index % 250 == 0
+            ):
+                try:
+                    progress_cb("VERIFY", scan_index, scan_total, name)
+                except Exception:
+                    pass
+
+        if progress_cb:
+            try:
+                progress_cb(
+                    "SCAN",
+                    None,
+                    None,
+                    "ZIP 目录校验完成，正在识别图片与外部标注",
+                )
+            except Exception:
+                pass
+
+        # Match the worker's import priority: COCO -> VOC -> YOLO.
+        for name, info in members:
+            if Path(name).suffix.lower() != ".json":
+                continue
+            try:
+                data = json.loads(zf.read(info).decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+            if not (
+                isinstance(data, dict)
+                and isinstance(data.get("images"), list)
+                and isinstance(data.get("annotations"), list)
+                and isinstance(data.get("categories"), list)
+            ):
+                continue
+            counts: Dict[str, int] = {}
+            image_sets: Dict[str, set] = {}
+            for ann in data.get("annotations") or []:
+                key = str(ann.get("category_id"))
+                counts[key] = counts.get(key, 0) + 1
+                image_sets.setdefault(key, set()).add(str(ann.get("image_id")))
+            rows = []
+            for category in sorted(data.get("categories") or [], key=lambda row: int(row.get("id", 0))):
+                key = str(int(category.get("id", 0)))
+                label = normalize_label(category.get("name") or f"class_{key}")
+                if label:
+                    rows.append({
+                        "class_id": key,
+                        "name": label,
+                        "box_count": counts.get(key, 0),
+                        "image_count": len(image_sets.get(key, set())),
+                    })
+            if rows:
+                external_classes = rows
+                annotation_box_count = sum(int(row["box_count"]) for row in rows)
+                detected_format = "COCO"
+                break
+
+        if not external_classes:
+            stats: Dict[str, Dict[str, Any]] = {}
+            for name, info in members:
+                if Path(name).suffix.lower() != ".xml":
+                    continue
+                try:
+                    root = ET.fromstring(zf.read(info))
+                except Exception:
+                    continue
+                seen = set()
+                for obj in root.findall("object"):
+                    label = normalize_label(obj.findtext("name") or "")
+                    if not label:
+                        continue
+                    row = stats.setdefault(label, {"class_id": label, "name": label, "box_count": 0, "image_count": 0})
+                    row["box_count"] += 1
+                    if label not in seen:
+                        row["image_count"] += 1
+                        seen.add(label)
+            if stats:
+                external_classes = sorted(stats.values(), key=lambda row: str(row["name"]))
+                annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
+                detected_format = "Pascal VOC"
+
+        if not external_classes:
+            names: List[str] = []
+            for name, info in members:
+                low = name.lower()
+                base = Path(low).name
+                if base in {"data.yaml", "data.yml"} or low.endswith(".yaml") or low.endswith(".yml"):
+                    try:
+                        parsed = yaml.safe_load(zf.read(info).decode("utf-8", errors="ignore")) or {}
+                        raw_names = parsed.get("names", [])
+                        if isinstance(raw_names, dict):
+                            names = [
+                                normalize_label(raw_names[key])
+                                for key in sorted(raw_names, key=lambda value: int(value) if str(value).isdigit() else str(value))
+                            ]
+                        elif isinstance(raw_names, list):
+                            names = [normalize_label(value) for value in raw_names]
+                    except Exception:
+                        names = []
+                    if names:
+                        break
+            if not names:
+                for name, info in members:
+                    if Path(name).name.lower() not in {"classes.txt", "obj.names", "_darknet.labels"}:
+                        continue
+                    try:
+                        names = [
+                            normalize_label(value)
+                            for value in zf.read(info).decode("utf-8", errors="ignore").splitlines()
+                            if normalize_label(value)
+                        ]
+                    except Exception:
+                        names = []
+                    if names:
+                        break
+
+            counts: Dict[int, int] = {}
+            image_sets: Dict[int, set] = {}
+            for name, info in members:
+                low = name.lower()
+                if Path(low).suffix != ".txt":
+                    continue
+                if Path(low).name in {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}:
+                    continue
+                try:
+                    lines = zf.read(info).decode("utf-8", errors="ignore").splitlines()
+                except Exception:
+                    continue
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    try:
+                        class_id = int(float(parts[0]))
+                    except Exception:
+                        continue
+                    if class_id < 0:
+                        continue
+                    counts[class_id] = counts.get(class_id, 0) + 1
+                    image_sets.setdefault(class_id, set()).add(Path(name).stem)
+            if names or counts:
+                max_class = max([len(names) - 1, *counts.keys()], default=-1)
+                external_classes = [{
+                    "class_id": str(index),
+                    "name": names[index] if index < len(names) and names[index] else f"class_{index}",
+                    "box_count": counts.get(index, 0),
+                    "image_count": len(image_sets.get(index, set())),
+                } for index in range(max_class + 1)]
+                annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
+                detected_format = "YOLO"
+
+        if progress_cb:
+            try:
+                progress_cb(
+                    "SCAN",
+                    None,
+                    None,
+                    f"扫描完成：{len(images)} 张图片，格式 {detected_format}",
+                )
+            except Exception:
+                pass
+
     return {
         "file_count": file_count,
         "image_count": len(images),
         "images": images,
         "format_hints": sorted(hints) or ["未知"],
+        "detected_format": detected_format,
+        "external_classes": external_classes,
+        "annotation_box_count": annotation_box_count,
         "uncompressed_size_mb": round(total_size / 1024 / 1024, 2),
     }
 
 
-def v19_copy_selected_tree(extracted: Path, selected_root: Path, selected_paths: List[str]):
-    selected = {v19_normalize_zip_path(x) for x in selected_paths if x}
-    selected_root.mkdir(parents=True, exist_ok=True)
-    # 复制全部标注/配置文件，图片只复制用户选择的，解析时就不会把未选图片导入进来。
-    for f in extracted.rglob("*"):
-        if not f.is_file():
-            continue
-        rel = v19_normalize_zip_path(str(f.relative_to(extracted)))
-        is_img = f.suffix.lower() in IMAGE_EXTS
-        if is_img and rel not in selected:
-            continue
-        dst = selected_root / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(f, dst)
+def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
+    prepared = dict(scan or {})
+    classes = list(prepared.get("external_classes") or [])
+    if classes:
+        prepared["external_classes"] = external_label_facts(classes)
+        prepared["label_confirmation_required"] = True
+    else:
+        prepared["external_classes"] = []
+        prepared["label_confirmation_required"] = False
+    return prepared
 
 
 def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -9050,56 +12570,162 @@ def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _v19_assert_frozen_mapping_targets_active(
+    project_id: str,
+    label_mapping: Optional[Dict[str, str]],
+) -> None:
+    targets = sorted({
+        str(value).strip()
+        for value in dict(label_mapping or {}).values()
+        if str(value).strip()
+    })
+    if not targets:
+        return
+    active = {
+        str(item.get("code") or "").strip()
+        for item in active_label_options(project_label_items(get_project(project_id)))
+        if str(item.get("code") or "").strip()
+    }
+    unavailable = [code for code in targets if code not in active]
+    if unavailable:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "ZIP 标签映射目标已失效，请恢复标签后重试或重新创建导入任务："
+                + "、".join(unavailable[:10])
+            ),
+        )
+
+
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
     processing_started = time.time()
     job_dir = v19_job_dir(project_id, job_id)
     zip_path = job_dir / "source.zip"
     extracted = job_dir / "extracted"
-    selected_root = job_dir / "selected_root"
     selected_paths = [v19_normalize_zip_path(x) for x in selected_paths if x]
     total_selected = len(selected_paths) or int(job.get("image_count", 0) or 0)
     report = v19_build_report_base(job)
+    frozen_mapping = dict(job.get("label_mapping") or {}) or None
     lock = _v50_project_import_lock(project_id)
     try:
         # 同一项目的压缩包导入串行执行，避免大型导入争用磁盘与任务状态。
         with lock:
+            _v19_assert_frozen_mapping_targets_active(project_id, frozen_mapping)
             _v50_begin_image_batch(project_id)
             try:
-                v19_update_job(project_id, job_id, status="running", stage="正在解压数据集", progress=8,
-                               total_selected=total_selected, processed=0, message="后台解析已开始",
-                               processing_started_at=now_iso())
+                extract_started = time.time()
+                v19_update_job(
+                    project_id, job_id,
+                    status="running", stage="正在解压数据集", progress=48,
+                    phase="EXTRACT", phase_completed=0, phase_total=0, phase_unit="files",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    total_selected=total_selected, processed=0,
+                    message="已获得项目导入锁，开始按导入范围解压",
+                    processing_started_at=now_iso(),
+                )
                 if extracted.exists():
                     shutil.rmtree(extracted, ignore_errors=True)
                 extracted.mkdir(parents=True, exist_ok=True)
+                last_extract_emit = 0.0
                 def extract_progress(done,total,msg):
-                    frac=done/max(1,total); prog=8+frac*24
-                    elapsed=max(0.01,time.time()-processing_started)
-                    eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
-                    v19_update_job(project_id, job_id, stage="正在解压数据集", progress=round(prog,1), processed=done, total_files=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
-                _v18_safe_extract(zip_path, extracted, extract_progress)
-                v19_update_job(project_id, job_id, stage="正在准备解析范围", progress=34, processed=0)
+                    nonlocal last_extract_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_extract_emit < 0.6:
+                        return
+                    last_extract_emit = tick
+                    metrics = _v19_phase_metrics("EXTRACT", done, total, started_at=extract_started)
+                    v19_update_job(
+                        project_id, job_id,
+                        stage="正在解压数据集",
+                        progress=round(48 + metrics["phase_progress"] * 0.20, 2),
+                        phase_unit="files",
+                        processed=done,
+                        total_files=total,
+                        message=msg,
+                        processing_seconds=round(max(0.0, time.time()-processing_started), 1),
+                        **metrics,
+                    )
+                _v18_safe_extract(
+                    zip_path,
+                    extracted,
+                    extract_progress,
+                    selected_image_paths=selected_paths if selected_paths else None,
+                )
+                v19_update_job(
+                    project_id,
+                    job_id,
+                    stage="正在识别标注格式",
+                    progress=68,
+                    phase="ANNOTATION_PARSE", phase_completed=0,
+                    phase_total=total_selected, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    processed=0,
+                    message=(
+                        f"已按选择范围解压 {len(selected_paths)} 张图片，正在识别标注格式"
+                        if selected_paths
+                        else "数据集解压完成，正在识别标注格式"
+                    ),
+                )
                 parse_root = extracted
-                if selected_paths:
-                    if selected_root.exists():
-                        shutil.rmtree(selected_root, ignore_errors=True)
-                    v19_copy_selected_tree(extracted, selected_root, selected_paths)
-                    parse_root = selected_root
-                v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
+                import_context = {
+                    "import_batch_id": job_id,
+                    "source_task_id": job_id,
+                    "confirmed_at": str(job.get("label_confirmed_at") or ""),
+                }
+                annotation_started = time.time()
+                last_import_emit = 0.0
                 def import_progress(done,total,msg):
-                    frac=done/max(1,total); prog=45+frac*50
-                    elapsed=max(0.01,time.time()-processing_started)
-                    eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
-                    v19_update_job(project_id, job_id, stage=msg, progress=round(prog,1), processed=done, total_selected=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
-                v19_update_job(project_id, job_id, stage="正在解析 COCO / VOC / YOLO 标注", progress=44, processed=0)
-                imported = _v18_import_coco(project_id, parse_root, dataset_id, report, import_progress)
+                    nonlocal last_import_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_import_emit < 0.6:
+                        return
+                    last_import_emit = tick
+                    metrics = _v19_phase_metrics("ANNOTATION_PARSE", done, total, started_at=annotation_started)
+                    visible_msg = (
+                        f"正在统一标签并写入标注 · {msg}"
+                        if frozen_mapping else msg
+                    )
+                    v19_update_job(
+                        project_id, job_id,
+                        stage=visible_msg,
+                        progress=round(68 + metrics["phase_progress"] * 0.28, 2),
+                        phase_unit="images",
+                        processed=done,
+                        total_selected=total,
+                        message=visible_msg,
+                        processing_seconds=round(max(0.0, time.time()-processing_started), 1),
+                        **metrics,
+                    )
+                v19_update_job(
+                    project_id, job_id,
+                    stage=("正在统一标签并写入标注" if frozen_mapping else "正在解析 COCO / VOC / YOLO 标注"),
+                    progress=68,
+                    phase="ANNOTATION_PARSE", phase_completed=0,
+                    phase_total=total_selected, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    processed=0,
+                )
+                imported = _v18_import_coco(
+                    project_id, parse_root, dataset_id, report, import_progress,
+                    label_mapping=frozen_mapping,
+                    import_context=import_context,
+                )
                 if not imported:
-                    v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=44, processed=0)
-                    imported = _v18_import_voc(project_id, parse_root, dataset_id, report, import_progress)
+                    v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=68, phase="ANNOTATION_PARSE", processed=0)
+                    imported = _v18_import_voc(
+                        project_id, parse_root, dataset_id, report, import_progress,
+                        label_mapping=frozen_mapping,
+                        import_context=import_context,
+                    )
                 if not imported:
-                    v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=44, processed=0)
-                    imported = _v18_import_yolo(project_id, parse_root, dataset_id, report, import_progress)
+                    v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=68, phase="ANNOTATION_PARSE", processed=0)
+                    imported = _v18_import_yolo(
+                        project_id, parse_root, dataset_id, report, import_progress,
+                        label_mapping=frozen_mapping,
+                        import_context=import_context,
+                    )
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")
                 if report.get("boxes", 0) == 0:
@@ -9115,6 +12741,8 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if report.get("skipped_images", 0):
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
+                report["label_mapping"] = dict(job.get("label_mapping") or {})
+                report["label_confirmed_at"] = str(job.get("label_confirmed_at") or "")
             except BaseException:
                 # Importers persist image bytes and annotation truth before the
                 # buffered material projection is committed. A failed import must
@@ -9125,27 +12753,363 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 raise
             else:
                 # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
-                _v50_end_image_batch(save=True)
+                commit_started = time.time()
+                commit_total = int(report.get("imported_images") or total_selected or 0)
+                v19_update_job(
+                    project_id, job_id,
+                    stage="正在提交素材与标注",
+                    progress=96,
+                    phase="DB_COMMIT", phase_completed=0,
+                    phase_total=commit_total, phase_unit="images",
+                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                    message="解析完成，正在一次性提交素材索引与标注投影",
+                )
+                try:
+                    with label_governance_fence(project_dir(project_id)):
+                        _v19_assert_frozen_mapping_targets_active(
+                            project_id, frozen_mapping,
+                        )
+                        _v50_end_image_batch(save=True)
+                except BaseException:
+                    if _v50_active_image_batch(project_id):
+                        _v50_end_image_batch(save=False)
+                    raise
+                metrics = _v19_phase_metrics("DB_COMMIT", commit_total, commit_total, started_at=commit_started)
+                v19_update_job(
+                    project_id, job_id,
+                    progress=99,
+                    phase_unit="images",
+                    message="素材索引与标注投影已提交",
+                    **metrics,
+                )
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(
             project_id, job_id, status="done", stage="导入完成", progress=100,
+            phase="DONE", phase_completed=1, phase_total=1, phase_unit="step",
+            phase_progress=100, eta_seconds=0,
             processed=report.get("imported_images", 0), report=report,
             processing_seconds=processing_seconds, finished_at=now_iso(),
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
     except HTTPException as e:
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
-                       error=str(e.detail), report=report,
+        current = v19_read_job(project_id, job_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
+                       phase="FAILED", error=str(e.detail), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e.detail))
     except Exception as e:
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
-                       error=str(e), report=report,
+        current = v19_read_job(project_id, job_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
+                       phase="FAILED", error=str(e), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e))
     finally:
         shutil.rmtree(extracted, ignore_errors=True)
-        shutil.rmtree(selected_root, ignore_errors=True)
+
+
+
+class V19MultipartUploadReq(BaseModel):
+    file_name: str
+    file_size: int = Field(gt=0)
+    fingerprint: str = ""
+    part_size: int = 8 * 1024 * 1024
+
+
+def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
+    return ZipMultipartRepository(project_dir(project_id))
+
+
+@app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads")
+def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19MultipartUploadReq):
+    get_project(project_id)
+    filename = safe_filename(payload.file_name or "dataset.zip")
+    if Path(filename).suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.create_or_resume(
+            dataset_id=dataset_id, file_name=filename, file_size=int(payload.file_size),
+            fingerprint=str(payload.fingerprint or ""), part_size=int(payload.part_size or 0),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job_id = str(session["upload_id"])
+    current = read_json(v19_job_file(project_id, job_id), {})
+    if not isinstance(current, dict) or not current:
+        current = {
+            "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
+            "batch_id": job_id, "file_name": filename,
+            "file_size_mb": round(int(payload.file_size) / 1024 / 1024, 2),
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "status": "uploading", "stage": "正在上传 ZIP", "progress": 0,
+            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
+            "phase_total": int(payload.file_size), "phase_unit": "bytes",
+            "message": "分片上传已创建，可断点续传",
+            "upload_session_id": job_id, "total_parts": int(session.get("total_parts") or 0),
+            "created_at": now_iso(), "updated_at": now_iso(),
+        }
+    else:
+        current.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "phase": "UPLOAD", "phase_completed": int(session.get("received_bytes") or 0),
+            "phase_total": int(payload.file_size), "phase_unit": "bytes",
+            "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
+            "updated_at": now_iso(),
+        })
+    v19_write_job(project_id, current)
+    return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
+
+
+@app.put("/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}")
+async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number: int, request: Request):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        payload = await request.body()
+        result = repository.write_part(upload_id, part_number, BytesIO(payload))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job = read_json(v19_job_file(project_id, upload_id), {})
+    if isinstance(job, dict) and job:
+        completed = len(result.get("completed_parts") or [])
+        total_parts = int(result.get("total_parts") or 0)
+        job.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(result.get("received_bytes") or 0),
+            "upload_progress": float(result.get("upload_progress") or 0),
+            "phase": "UPLOAD",
+            "phase_completed": int(result.get("received_bytes") or 0),
+            "phase_total": int(result.get("file_size") or job.get("phase_total") or 0),
+            "phase_unit": "bytes",
+            "message": f"已完成 {completed}/{total_parts} 个分片",
+            "updated_at": now_iso(),
+        })
+        v19_write_job(project_id, job)
+    return {"ok": True, **result}
+
+
+_V19_UPLOAD_FINALIZE_GUARD = threading.Lock()
+_V19_UPLOAD_FINALIZE_ACTIVE: set[Tuple[str, str]] = set()
+
+
+def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
+    key = (str(project_id), str(upload_id))
+    try:
+        repository = _v19_multipart_repository(project_id)
+        session = repository.get(upload_id)
+        job = v19_read_job(project_id, upload_id)
+        jd = v19_job_dir(project_id, upload_id)
+        jd.mkdir(parents=True, exist_ok=True)
+        zip_path = jd / "source.zip"
+
+        merge_started = time.time()
+        v19_update_job(
+            project_id, upload_id,
+            status="merging", stage="正在合并 ZIP 分片", progress=35,
+            upload_progress=100,
+            phase="MERGE", phase_completed=0,
+            phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
+            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+            message="文件已上传，服务器正在后台合并 ZIP；页面可以关闭",
+        )
+        if not (
+            str(session.get("status") or "") == "completed"
+            and zip_path.is_file()
+        ):
+            last_merge_emit = 0.0
+            def merge_progress(written, total_bytes, part_number, total_parts):
+                nonlocal last_merge_emit
+                tick = time.monotonic()
+                if written != total_bytes and tick - last_merge_emit < 0.5:
+                    return
+                last_merge_emit = tick
+                metrics = _v19_phase_metrics("MERGE", written, total_bytes, started_at=merge_started)
+                v19_update_job(
+                    project_id,
+                    upload_id,
+                    status="merging",
+                    stage="正在合并 ZIP 分片",
+                    progress=round(35 + metrics["phase_progress"] * 0.05, 2),
+                    phase_unit="bytes",
+                    message=f"正在合并分片 {part_number}/{total_parts}",
+                    **metrics,
+                )
+            repository.assemble(upload_id, zip_path, on_progress=merge_progress)
+            session = repository.get(upload_id)
+
+        verify_started = time.time()
+        scan_started: Optional[float] = None
+        v19_update_job(
+            project_id, upload_id,
+            status="validating", stage="正在校验 ZIP 结构", progress=40,
+            upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
+            phase="VERIFY", phase_completed=None, phase_total=None, phase_unit="files",
+            phase_progress=None, phase_elapsed_seconds=0, eta_seconds=None,
+            message="ZIP 合并完成，正在校验压缩包目录结构",
+        )
+        last_verify_emit = 0.0
+        def scan_progress(phase, done, total_files, current_name):
+            nonlocal last_verify_emit, scan_started
+            if phase == "VERIFY":
+                tick = time.monotonic()
+                if done != total_files and tick - last_verify_emit < 0.5:
+                    return
+                last_verify_emit = tick
+                metrics = _v19_phase_metrics("VERIFY", done, total_files, started_at=verify_started)
+                phase_progress = metrics["phase_progress"]
+                v19_update_job(
+                    project_id,
+                    upload_id,
+                    status="validating",
+                    stage="正在校验 ZIP 结构",
+                    progress=round(40 + float(phase_progress or 0) * 0.02, 2),
+                    phase_unit="files",
+                    message=f"正在校验目录 {done}/{total_files} · {current_name}",
+                    **metrics,
+                )
+                return
+
+            if scan_started is None:
+                scan_started = time.time()
+            metrics = _v19_phase_metrics("SCAN", None, None, started_at=scan_started)
+            v19_update_job(
+                project_id,
+                upload_id,
+                status="validating",
+                stage="正在扫描图片与外部标注",
+                progress=42,
+                phase_unit="",
+                message=str(current_name or "正在识别图片与外部标注"),
+                **metrics,
+            )
+
+        scan_total_started = time.time()
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress))
+        scan_seconds = round(max(0.0, time.time() - scan_total_started), 2)
+        if scan.get("image_count", 0) == 0:
+            raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+        scan_images = list(scan.pop("images", []) or [])
+        v19_write_scan_images(project_id, upload_id, scan_images)
+        latest = v19_read_job(project_id, upload_id)
+        finished = {
+            **latest, **scan,
+            "id": upload_id, "project_id": project_id,
+            "dataset_id": latest.get("dataset_id") or session.get("dataset_id") or "default",
+            "batch_id": upload_id,
+            "file_name": latest.get("file_name") or session.get("file_name") or "dataset.zip",
+            "file_size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
+            "uploaded_bytes": zip_path.stat().st_size,
+            "upload_progress": 100,
+            "scan_seconds": scan_seconds,
+            "status": "selecting",
+            "stage": "上传与校验完成",
+            "progress": 48,
+            "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+            "phase_completed": 1,
+            "phase_total": 1,
+            "phase_unit": "step",
+            "phase_progress": 100,
+            "phase_elapsed_seconds": scan_seconds,
+            "eta_seconds": None,
+            "message": (
+                "后台扫描完成，等待确认标签并开始正式导入"
+                if scan.get("label_confirmation_required")
+                else "后台扫描完成，等待开始正式导入"
+            ),
+            "scan_images_ref": "scan-images.json",
+            "uploaded_at": latest.get("uploaded_at") or now_iso(),
+            "updated_at": now_iso(),
+        }
+        v19_write_job(project_id, finished)
+    except zipfile.BadZipFile:
+        current = v19_read_job(project_id, upload_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(
+            project_id, upload_id,
+            status="failed", stage="ZIP 校验失败", progress=failed_progress,
+            phase="FAILED", upload_progress=100,
+            error="压缩包已损坏、格式不正确或不是有效 ZIP。",
+            message="ZIP 校验失败", finished_at=now_iso(),
+        )
+    except Exception as error:
+        current = v19_read_job(project_id, upload_id)
+        failed_progress = v19_zip_display_progress(current)["overall_progress"]
+        v19_update_job(
+            project_id, upload_id,
+            status="failed", stage="ZIP 处理失败", progress=failed_progress,
+            phase="FAILED", upload_progress=100, error=str(error), message=str(error),
+            finished_at=now_iso(),
+        )
+    finally:
+        with _V19_UPLOAD_FINALIZE_GUARD:
+            _V19_UPLOAD_FINALIZE_ACTIVE.discard(key)
+
+
+def _v19_schedule_multipart_finalize(project_id: str, upload_id: str) -> bool:
+    key = (str(project_id), str(upload_id))
+    with _V19_UPLOAD_FINALIZE_GUARD:
+        if key in _V19_UPLOAD_FINALIZE_ACTIVE:
+            return False
+        _V19_UPLOAD_FINALIZE_ACTIVE.add(key)
+    thread = threading.Thread(
+        target=_v19_finalize_multipart_upload,
+        args=(str(project_id), str(upload_id)),
+        daemon=True,
+        name=f"zip-finalize-{str(upload_id)[:12]}",
+    )
+    thread.start()
+    return True
+
+
+def _v19_recover_multipart_finalize(project_id: str, job: Mapping[str, Any]) -> None:
+    if str(job.get("status") or "").strip().lower() in {"merging", "validating"}:
+        _v19_schedule_multipart_finalize(project_id, str(job.get("id") or ""))
+
+
+@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
+def v19_complete_multipart_upload(project_id: str, upload_id: str):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.get(upload_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    job = v19_read_job(project_id, upload_id)
+    status = str(job.get("status") or "").strip().lower()
+
+    if status in {"selecting", "running", "done"}:
+        return v19_public_job(project_id, job, image_limit=500 if status == "selecting" else 0)
+    if status not in {"merging", "validating"}:
+        completed = len(session.get("completed_parts") or [])
+        total = int(session.get("total_parts") or 0)
+        if str(session.get("status") or "") != "completed" and completed != total:
+            raise HTTPException(
+                status_code=409,
+                detail=f"ZIP 分片尚未全部上传：{completed}/{total}",
+            )
+        v19_update_job(
+            project_id, upload_id,
+            status="merging", stage="正在合并 ZIP 分片", progress=35,
+            upload_progress=100,
+            phase="MERGE", phase_completed=0,
+            phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
+            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+            message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
+        )
+
+    _v19_schedule_multipart_finalize(project_id, upload_id)
+    current = v19_read_job(project_id, upload_id)
+    return JSONResponse(
+        status_code=202,
+        content=v19_public_job(project_id, current, image_limit=0),
+    )
 
 
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
@@ -9164,7 +13128,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         # 分块落盘，避免大 ZIP 一次性读入内存。
         with zip_path.open("wb") as out:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = await file.read(8 * 1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
@@ -9178,7 +13142,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         raise HTTPException(status_code=400, detail="上传失败：ZIP 文件为空。")
     scan_started = time.time()
     try:
-        scan = v19_scan_zip(zip_path)
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
     except zipfile.BadZipFile:
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。")
@@ -9196,8 +13160,15 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "batch_id": job_id,
         "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
-        "status": "selecting", "stage": "上传与校验完成", "progress": 0,
-        "message": "上传与ZIP校验完成，等待开始后台导入",
+        "status": "selecting", "stage": "上传与校验完成", "progress": 48,
+        "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+        "phase_completed": 1, "phase_total": 1, "phase_unit": "step",
+        "phase_progress": 100, "eta_seconds": None,
+        "message": (
+            "上传与ZIP校验完成，等待确认标签并开始后台导入"
+            if scan.get("label_confirmation_required")
+            else "上传与ZIP校验完成，等待开始后台导入"
+        ),
         "scan_images_ref": "scan-images.json",
         "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
     }
@@ -9209,9 +13180,74 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
 def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
     if job.get("status") == "running":
-        return job
+        return v19_public_job(project_id, job)
     if job.get("status") not in {"selecting", "failed"}:
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
+
+    if payload.create_labels:
+        raise HTTPException(status_code=409, detail=IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
+
+    classes = list(job.get("external_classes") or [])
+    if classes:
+        project = get_project(project_id)
+        existing_digest = str(job.get("label_confirmation_digest") or "")
+        existing_mapping = {
+            str(key): str(value)
+            for key, value in dict(job.get("label_mapping") or {}).items()
+        }
+        if existing_digest:
+            requested_mapping = {
+                str(key): str(value)
+                for key, value in dict(payload.label_mapping or {}).items()
+            }
+            if requested_mapping and requested_mapping != existing_mapping:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该 ZIP 任务的标签映射已经确认冻结，失败重试不能更换映射",
+                )
+            try:
+                resolved, _ = resolve_external_label_mapping(
+                    classes,
+                    label_mapping=existing_mapping,
+                    create_labels=[],
+                    labels=project_label_items(project),
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            create = []
+        else:
+            try:
+                resolved, _ = resolve_external_label_mapping(
+                    classes,
+                    label_mapping=payload.label_mapping,
+                    create_labels=[],
+                    labels=project_label_items(project),
+                )
+                create = []
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            confirmation = {
+                "label_mapping": resolved,
+                "create_labels": [],
+                "external_classes": [
+                    {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
+                    for row in classes
+                ],
+            }
+            job.update({
+                "label_mapping": resolved,
+                "create_labels": create,
+                "label_confirmation_required": False,
+                "label_confirmed_at": now_iso(),
+                "label_confirmation_digest": hashlib.sha256(json.dumps(
+                    confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+            })
+            v19_write_job(project_id, job)
+        remember_project_label_aliases(project_id, classes, resolved)
+    elif payload.label_mapping:
+        raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
+
     selected_paths = payload.selected_paths or []
     if selected_paths:
         allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
@@ -9219,8 +13255,21 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         if not selected_paths:
             raise HTTPException(status_code=400, detail="没有选择有效图片")
     import threading
-    v19_update_job(project_id, job_id, status="running", stage="准备后台解析", progress=3, selected_count=len(selected_paths) or job.get("image_count", 0), message="已缩放到后台解析")
-    th = threading.Thread(target=v19_import_worker, args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths), daemon=True)
+    v19_update_job(
+        project_id, job_id,
+        status="running",
+        stage="等待项目导入资源",
+        progress=48,
+        phase="QUEUE", phase_completed=0, phase_total=1, phase_unit="step",
+        phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+        selected_count=len(selected_paths) or job.get("image_count", 0),
+        message="标签确认已冻结，正在等待项目级导入锁",
+    )
+    th = threading.Thread(
+        target=v19_import_worker,
+        args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths),
+        daemon=True,
+    )
     th.start()
     return v19_public_job(project_id, v19_read_job(project_id, job_id))
 
@@ -9228,11 +13277,13 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 @app.get("/api/v19/projects/{project_id}/import/jobs")
 def v19_list_import_jobs(project_id: str):
     get_project(project_id)
+    _v19_multipart_repository(project_id).cleanup_expired_if_due(interval_seconds=60)
     jobs = []
     d = v19_import_jobs_dir(project_id)
     for jf in d.glob("*/job.json"):
         job = read_json(jf, {})
         if job:
+            _v19_recover_multipart_finalize(project_id, job)
             # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
             preview = 300 if job.get("status") == "selecting" else 0
             jobs.append(v19_public_job(project_id, job, image_limit=preview))
@@ -9243,7 +13294,26 @@ def v19_list_import_jobs(project_id: str):
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
     job = v19_read_job(project_id, job_id)
+    _v19_recover_multipart_finalize(project_id, job)
     return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
+
+
+@app.delete("/api/v19/projects/{project_id}/import/jobs")
+def v19_clear_terminal_import_jobs(project_id: str):
+    get_project(project_id)
+    terminal = {"done", "failed", "cancelled", "canceled"}
+    deleted = []
+    kept = []
+    for job_file in v19_import_jobs_dir(project_id).glob("*/job.json"):
+        job = read_json(job_file, {})
+        job_id = str(job.get("id") or job_file.parent.name)
+        status = str(job.get("status") or "").strip().lower()
+        if status in terminal:
+            shutil.rmtree(job_file.parent, ignore_errors=True)
+            deleted.append(job_id)
+        else:
+            kept.append({"id": job_id, "status": status})
+    return {"ok": True, "deleted": len(deleted), "deleted_ids": deleted, "kept": kept}
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
@@ -10133,6 +14203,7 @@ def v33_stop_prelabel_task(project_id: str, task_id: str):
 
 @app.post("/api/v33/projects/{project_id}/prelabel-tasks")
 def v33_create_prelabel_task(project_id: str, payload: V33PrelabelTaskReq):
+    _reject_legacy_direct_prelabel(project_id)
     get_project(project_id)
     data = payload.dict()
     # 先解析一次，尽早发现服务不存在或地址为空。
@@ -10670,6 +14741,7 @@ def _v35_run_prelabel_task(project_id: str, task_id: str, payload: Dict[str, Any
 
 @app.post("/api/v35/projects/{project_id}/prelabel-tasks")
 def v35_create_prelabel_task(project_id: str, payload: V35PrelabelTaskReq):
+    _reject_legacy_direct_prelabel(project_id)
     get_project(project_id)
     data = payload.dict()
     cfg, tpl = _v35_resolve_model_and_prompt(data)
@@ -10884,16 +14956,113 @@ def _v36_import_single_image(project_id: str, src: Path, dataset_id: str, report
         report["detected_format"] = "普通图片"
 
 
+V36_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
+    "地址读取只允许导入未标注图片；检测到 YOLO/COCO/VOC 标注时，"
+    "请改用“上传并检查标注”统一入口，先确认标签映射再正式入库"
+)
+
+
+def _v36_detect_annotated_formats(root: Path) -> List[str]:
+    """Detect annotation-bearing sources without mutating platform labels or annotations."""
+    import xml.etree.ElementTree as ET
+
+    found = set()
+    if not root.exists():
+        return []
+    files = [root] if root.is_file() else root.rglob("*")
+    ignored_txt = {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}
+    for file_path in files:
+        if not file_path.is_file():
+            continue
+        name = file_path.name.lower()
+        suffix = file_path.suffix.lower()
+
+        if name in {"data.yaml", "data.yml"}:
+            try:
+                parsed = yaml.safe_load(file_path.read_text(encoding="utf-8", errors="ignore")) or {}
+                if isinstance(parsed, dict) and parsed.get("names"):
+                    found.add("YOLO")
+            except Exception:
+                pass
+
+        elif suffix == ".txt" and name not in ignored_txt:
+            try:
+                for raw in file_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    parts = raw.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    try:
+                        int(float(parts[0]))
+                        [float(value) for value in parts[1:5]]
+                    except Exception:
+                        continue
+                    found.add("YOLO")
+                    break
+            except Exception:
+                pass
+
+        elif suffix == ".json":
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8", errors="ignore"))
+                if (
+                    isinstance(data, dict)
+                    and isinstance(data.get("images"), list)
+                    and isinstance(data.get("annotations"), list)
+                    and isinstance(data.get("categories"), list)
+                ):
+                    found.add("COCO")
+            except Exception:
+                pass
+
+        elif suffix == ".xml":
+            try:
+                xml_root = ET.parse(file_path).getroot()
+                if any(obj.find("bndbox") is not None for obj in xml_root.findall("object")):
+                    found.add("VOC")
+            except Exception:
+                pass
+
+        if len(found) == 3:
+            break
+    return [name for name in ("COCO", "VOC", "YOLO") if name in found]
+
+
+def _v36_detect_source_annotation_formats(root: Path) -> List[str]:
+    if root.is_file() and root.suffix.lower() == ".zip":
+        scan = v19_scan_zip(root)
+        classes = list(scan.get("external_classes") or [])
+        if classes or int(scan.get("annotation_box_count") or 0) > 0:
+            detected = str(scan.get("detected_format") or "")
+            if detected == "Pascal VOC":
+                return ["VOC"]
+            if detected in {"COCO", "YOLO"}:
+                return [detected]
+            return ["ANNOTATED"]
+        return []
+    return _v36_detect_annotated_formats(root)
+
+
 def _v36_import_from_root(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any]) -> bool:
-    imported = False
-    imported = _v18_import_coco(project_id, root, dataset_id, report)
-    if not imported:
-        imported = _v18_import_voc(project_id, root, dataset_id, report)
-    if not imported:
-        imported = _v18_import_yolo(project_id, root, dataset_id, report)
-    if imported:
-        report["unannotated_images"] = max(0, int(report.get("imported_images", 0)) - int(report.get("annotated_images", 0)))
-    return imported
+    formats = _v36_detect_annotated_formats(root)
+    if formats:
+        raise RuntimeError(
+            f"{V36_ANNOTATED_IMPORT_BLOCKED_DETAIL}（检测到：{' / '.join(formats)}）"
+        )
+
+    image_files = (
+        [root]
+        if root.is_file() and root.suffix.lower() in IMAGE_EXTS
+        else [
+            file_path
+            for file_path in root.rglob("*")
+            if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTS
+        ]
+        if root.is_dir()
+        else []
+    )
+    for src in sorted(image_files, key=lambda value: str(value).lower()):
+        _v36_import_single_image(project_id, src, dataset_id, report)
+    return bool(image_files)
 
 
 def _v36_apply_split_policy(project_id: str, imported_ids: List[str], policy: str, train_ratio: float, val_ratio: float, test_ratio: float) -> Dict[str, int]:
@@ -11016,8 +15185,27 @@ def v36_scan_source_import(project_id: str, dataset_id: str, payload: V36SourceI
     if not source:
         raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
     if _v36_is_url(source):
-        return {"ok": True, **_v36_scan_url(source)}
-    return {"ok": True, **_v36_scan_local_root(Path(source).expanduser())}
+        scan = _v36_scan_url(source)
+        return {
+            "ok": True,
+            **scan,
+            "label_confirmation_required": False,
+            "legacy_annotated_import_blocked": False,
+            "annotation_check": "worker_preflight",
+        }
+
+    root = Path(source).expanduser()
+    scan = _v36_scan_local_root(root)
+    formats = _v36_detect_source_annotation_formats(root)
+    blocked = bool(formats)
+    return {
+        "ok": True,
+        **scan,
+        "detected_annotation_formats": formats,
+        "label_confirmation_required": blocked,
+        "legacy_annotated_import_blocked": blocked,
+        "import_block_reason": V36_ANNOTATED_IMPORT_BLOCKED_DETAIL if blocked else "",
+    }
 
 
 @app.get("/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs")
@@ -11033,6 +15221,16 @@ def v36_start_source_import_job(project_id: str, dataset_id: str, payload: V36So
     source = _v36_normalize_source(payload.source)
     if not source:
         raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
+    if not _v36_is_url(source):
+        root = Path(source).expanduser()
+        if not root.exists():
+            raise HTTPException(status_code=400, detail=f"路径不存在：{root}")
+        formats = _v36_detect_source_annotation_formats(root)
+        if formats:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{V36_ANNOTATED_IMPORT_BLOCKED_DETAIL}（检测到：{' / '.join(formats)}）",
+            )
     job_id = uuid.uuid4().hex[:12]
     task = {
         "id": job_id,
@@ -11369,10 +15567,105 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(item)
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind not in {"rockchip", "onnx", "ultralytics", "paddle"}:
+        item.update(
+            status="missing",
+            targets=[],
+            message="服务节点 Agent 当前只开放 ONNX 与瑞芯微 RKNN 转换",
+            agent_nodes=[],
+            supported_chips=[],
+            supported_precisions=[],
+            last_checked_at=now_iso(),
+        )
+        return item
+
+    required_capability = "conversion.rknn" if kind == "rockchip" else "conversion"
+    target = "rockchip" if kind == "rockchip" else "onnx"
+    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    supported_chips = set()
+    supported_precisions = set()
+    for node in nodes:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or required_capability not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        node_runtime = node.get("runtime")
+        node_runtime = dict(node_runtime) if isinstance(node_runtime, Mapping) else {}
+        node_chips = []
+        node_precisions = ["fp32"] if kind != "rockchip" else []
+        if kind == "rockchip":
+            rknn = node_runtime.get("rknn_toolkit2")
+            rknn = dict(rknn) if isinstance(rknn, Mapping) else {}
+            node_chips = [
+                str(chip).strip().lower()
+                for chip in (rknn.get("supported_chips") or [])
+                if str(chip).strip().lower() in SUPPORTED_PORTABLE_RKNN_CHIPS
+            ]
+            if not bool(rknn.get("available")) or not node_chips:
+                continue
+            node_precisions = ["fp16", "int8"]
+            supported_chips.update(node_chips)
+        supported_precisions.update(node_precisions)
+        node_row = {
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "capability": required_capability,
+            "supported_chips": sorted(set(node_chips)),
+        }
+        if kind == "rockchip":
+            node_row["supported_precisions"] = sorted(set(node_precisions))
+        eligible.append(node_row)
+
+    if eligible:
+        detail = (
+            f"检测到 {len(eligible)} 个在线 Agent 可执行 RKNN 转换"
+            if kind == "rockchip"
+            else f"检测到 {len(eligible)} 个在线 Agent 可执行 ONNX 转换"
+        )
+        item.update(
+            status="ready",
+            targets=[target],
+            message=detail,
+            agent_nodes=eligible,
+            supported_chips=sorted(supported_chips),
+            last_checked_at=now_iso(),
+        )
+        if kind == "rockchip":
+            item["supported_precisions"] = sorted(supported_precisions)
+        else:
+            item.pop("supported_precisions", None)
+    else:
+        detail = (
+            "没有在线且已授权 conversion.rknn、并通过 RKNN-Toolkit2 探测的 Agent 节点"
+            if kind == "rockchip"
+            else "没有在线且已授权 conversion 能力的 Agent 节点"
+        )
+        item.update(
+            status="missing",
+            targets=[],
+            message=detail,
+            agent_nodes=[],
+            supported_chips=[],
+            last_checked_at=now_iso(),
+        )
+        if kind == "rockchip":
+            item["supported_precisions"] = []
+        else:
+            item.pop("supported_precisions", None)
+    return item
+
+
 class DeployResourceReq(BaseModel):
     name: str
     kind: str  # ultralytics / paddle / tensorrt / sophon / ascend / rockchip
-    mode: str = "local"  # local / remote
+    mode: Literal["local", "remote", "agent"] = "local"
     base_url: str = ""
     api_key: str = ""
     python_path: str = ""
@@ -11442,7 +15735,13 @@ def v39_detect_deploy_resource(resource_id: str):
     idx = next((i for i,x in enumerate(items) if x.get("id") == resource_id), None)
     if idx is None: raise HTTPException(status_code=404, detail="部署资源不存在")
     item = items[idx]; runtime = _deploy_resource_runtime(item)
-    checked = _detect_remote_deploy_resource(runtime) if str(item.get("mode")) == "remote" else _detect_local_deploy_resource(runtime)
+    mode = str(item.get("mode") or "local").strip().lower()
+    if mode == "remote":
+        checked = _detect_remote_deploy_resource(runtime)
+    elif mode == "agent":
+        checked = _detect_agent_deploy_resource(runtime)
+    else:
+        checked = _detect_local_deploy_resource(runtime)
     checked.pop("api_key", None)
     if item.get("secret_ref"): checked["secret_ref"] = item.get("secret_ref")
     items[idx] = checked; _save_deploy_resources(items)
@@ -11659,6 +15958,9 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
             for p in ad.rglob("*"):
                 if p.is_file():outputs.append({"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_mb":round(p.stat().st_size/1024/1024,3)})
             cur.update(outputs=outputs,finished_at=now_iso(),message="远程转换完成，部署产物已拉回平台",progress=100);write_json(jf,cur)
+            request_external_auto_publish_for_conversion_if_enabled(
+                data_dir=DATA_DIR, project_id=project_id, conversion_job=cur,
+            )
     except Exception as e:
         cur=read_json(jf,job);cur.update(status="failed",stage="转换失败",message=str(e),error=str(e),finished_at=now_iso(),updated_at=now_iso());write_json(jf,cur)
         with (jd/"convert.log").open("a",encoding="utf-8",errors="ignore") as f:f.write(f"\n[{now_iso()}] 远程转换失败：{e}\n")
@@ -11669,14 +15971,66 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
 @app.post("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     source=_resolve_deploy_source(project_id,payload.source_id);resource=_deploy_resource_by_id(payload.resource_id)
+    resource_mode = str(resource.get("mode") or "local").strip().lower()
+    if resource_mode == "agent":
+        resource = _detect_agent_deploy_resource(resource)
     if resource.get("status") != "ready":
         raise HTTPException(status_code=400, detail="当前部署资源不可用，请先到“部署资源”执行检测")
     if payload.target not in (resource.get("targets") or []):
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
+    params=dict(payload.params or {})
+    if resource_mode == "agent" and str(payload.target or "").strip().lower() == "rockchip":
+        requested = dict(params)
+        precision = str(requested.get("precision") or "fp16").strip().lower()
+        chip = str(requested.get("chip") or "").strip().lower()
+        supported_chips = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_chips") or [])
+            if str(value or "").strip()
+        }
+        supported_precisions = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_precisions") or ["fp16", "int8"])
+            if str(value or "").strip()
+        }
+        if precision not in supported_precisions:
+            allowed_precision = "、".join(sorted(supported_precisions)) or "fp16、int8"
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
+            )
+        if not chip or (supported_chips and chip not in supported_chips):
+            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3578、rk3576"
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
+            )
+    portable_calibration = None
+    if (
+        resource_mode == "agent"
+        and str(payload.target or "").strip().lower() == "rockchip"
+        and str(params.get("precision") or "fp16").strip().lower() == "int8"
+    ):
+        try:
+            portable_calibration = _remote_execution_transport_service().build_rknn_calibration_snapshot(
+                project_id=project_id,
+                dataset_id=payload.dataset_id,
+                split=payload.calibration_split,
+                limit=max(1, int(payload.calibration_count)),
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="RKNN INT8 校准集准备失败",
+                detail=str(error),
+                solution="请确认校准图片位于已启用 OSS/S3/MinIO，且每张图片都有稳定 object_key、size 与 SHA256，然后重试。",
+                status_code=error.status_code,
+            ) from error
+        params["calibration_count"] = int(portable_calibration["item_count"])
+        params["calibration_snapshot"] = str(portable_calibration["snapshot_id"])
     job_id=uuid.uuid4().hex[:12];jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
     src=Path(str(source.get("path")));local_src=srcd/src.name;shutil.copy2(src,local_src)
-    params=dict(payload.params or {})
     params.setdefault("config_path",source.get("config_path") or "")
     params.setdefault("model_name",src.stem)
 
@@ -11694,7 +16048,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if paddle_env.get("paddle2onnx_path") and not resource_for_job.get("paddle2onnx_path"):
         resource_for_job["paddle2onnx_path"]=paddle_env.get("paddle2onnx_path")
     cal_dir=None
-    if payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
+    if resource_mode != "agent" and payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
         cal_dir=jd/"calibration"
         count=_deploy_prepare_calibration(project_id,payload.dataset_id,payload.calibration_split,max(1,int(payload.calibration_count)),cal_dir)
         if count<=0: raise HTTPException(status_code=400,detail="INT8 转换需要校准图片，但当前选择的数据集/分组没有可用图片")
@@ -11715,22 +16069,393 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
         "sha256": sha256_file(local_src),
     }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+    portable_conversion = None
+    conversion_target = str(payload.target or "").strip().lower()
+    should_stage_portable = (
+        (resource_mode == "agent" and conversion_target in {"onnx", "rockchip"})
+        or (resource_mode == "local" and conversion_target == "onnx")
+    )
+    if should_stage_portable:
+        try:
+            portable_conversion = _remote_execution_transport_service().stage_model_conversion(
+                project_id=project_id,
+                task_id=job_id,
+                source_id=payload.source_id,
+                source_path=src,
+                algorithm_id=str(source.get("algorithm_id") or ""),
+                version_id=str(source.get("version_id") or ""),
+                target=payload.target,
+                params=params,
+                calibration_snapshot=portable_calibration,
+            )
+            job["remote_portability"] = {
+                "status": "ready",
+                "transport": "object-storage-v1",
+                "task_kind": "MODEL_CONVERSION",
+            }
+        except RemoteExecutionTransportError as error:
+            if resource_mode == "agent":
+                raise PlatformError(
+                    code=error.code,
+                    message="Agent 模型转换准备失败",
+                    detail=str(error),
+                    solution="请检查模型资产对象存储、源模型完整性、目标参数以及 Agent conversion / conversion.rknn 节点状态后重试。",
+                    status_code=error.status_code,
+                ) from error
+            # Portable staging remains additive for the existing local path.
+            job["remote_portability"] = {
+                "status": "unavailable",
+                "code": error.code,
+                "message": str(error),
+            }
     _write_deploy_job(project_id,job)
-    if str(resource.get("mode"))=="remote":
+    if resource_mode=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
-        shared_task_artifacts().atomic_write_json(job_id, "request.json", {
-            "job_dir": str(jd), "worker_path": str(BASE_DIR / "deployment_worker.py"),
+        request_payload = {
+            "job_dir": str(jd),
+            "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
-        })
+            "execution_mode": "agent" if resource_mode == "agent" else "local",
+            "target": conversion_target,
+        }
+        if portable_conversion is not None:
+            request_payload["remote_execution"] = portable_conversion
+        shared_task_artifacts().atomic_write_json(job_id, "request.json", request_payload)
         shared_task_repository().create(TaskRecord.new(
             job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
             f"conversion:{resource.get('id') or payload.target}",
-            required_capabilities=("conversion.runtime",),
+            required_capabilities=(
+                ("agent.remote",)
+                if resource_mode == "agent"
+                else ("conversion.runtime",)
+            ),
         ))
         job["task_id"] = job_id
         _write_deploy_job(project_id, job)
     return {"ok":True,"job":job}
+
+
+def _eligible_rknn_board_nodes(chip: str) -> list[dict[str, Any]]:
+    chip = str(chip or "").strip().lower()
+    if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
+        return []
+    rows = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    for node in rows:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or "deployment-test.rknn" not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        runtime = node.get("runtime")
+        runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+        board = runtime.get("rknn_board")
+        board = dict(board) if isinstance(board, Mapping) else {}
+        if not bool(board.get("available")) or str(board.get("chip") or "").strip().lower() != chip:
+            continue
+        eligible.append({
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "chip": chip,
+            "rknn_lite_version": str(board.get("rknn_lite_version") or ""),
+        })
+    return eligible
+
+
+def _rknn_hardware_validation_context(project_id: str, job_id: str) -> dict[str, Any]:
+    get_project(project_id)
+    job = _read_deploy_job(project_id, job_id)
+    if str(job.get("target") or "").strip().lower() not in {"rockchip", "rknn"}:
+        raise HTTPException(status_code=400, detail="只有 RKNN 转换任务支持瑞芯微板端验证")
+    job_dir = _deploy_job_dir(project_id, job_id).resolve()
+    manifest_path = (job_dir / "artifacts" / "manifest.json").resolve()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=409, detail="RKNN 转换产物尚未形成可验证 manifest")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=409, detail="RKNN 转换 manifest 无法读取")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else None
+    output = manifest.get("output") if isinstance(manifest, Mapping) else None
+    if (
+        not isinstance(target, Mapping)
+        or str(target.get("kind") or "") != "rockchip"
+        or not isinstance(output, Mapping)
+    ):
+        raise HTTPException(status_code=409, detail="当前转换结果不是可验证的 RKNN 产物")
+    chip = str(target.get("chip") or "").strip().lower()
+    if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
+        raise HTTPException(status_code=400, detail=f"当前板端验证不支持芯片 {chip or '未指定'}")
+
+    model_name = Path(str(output.get("file_name") or "")).name
+    model_path = (job_dir / "artifacts" / model_name).resolve()
+    if (
+        not model_name
+        or model_path.parent != (job_dir / "artifacts").resolve()
+        or model_path.suffix.lower() != ".rknn"
+        or not model_path.is_file()
+        or model_path.stat().st_size <= 0
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型文件不存在或不可验证")
+    expected_sha = str(output.get("sha256") or "").strip().lower()
+    try:
+        expected_size = int(output.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+        or expected_size <= 0
+        or model_path.stat().st_size != expected_size
+        or sha256_file(model_path) != expected_sha
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型与转换 manifest 的 size/SHA256 不一致")
+
+    return {
+        "job": job,
+        "job_dir": job_dir,
+        "manifest": manifest,
+        "chip": chip,
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_sha256": expected_sha,
+        "model_size_bytes": expected_size,
+        "hardware_verified": manifest.get("hardware_verified") is True,
+        "board_nodes": _eligible_rknn_board_nodes(chip),
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight")
+def v39_rknn_hardware_test_preflight(project_id: str, job_id: str):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    nodes = list(context["board_nodes"])
+    already_verified = bool(context["hardware_verified"])
+    ready = bool(nodes) and not already_verified
+    reason = ""
+    solution = ""
+    if already_verified:
+        reason = "该 RKNN 产物已完成板端 Runtime 验证"
+    elif not nodes:
+        reason = f"当前没有匹配 {str(context['chip']).upper()} 的在线瑞芯微板端节点"
+        solution = "请先在对应 Rockchip 设备安装 Node Agent / RKNNLite，并确认节点 ONLINE 且 effective capability 包含 deployment-test.rknn。"
+    return {
+        "ok": True,
+        "ready": ready,
+        "already_verified": already_verified,
+        "chip": context["chip"],
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "board_nodes": nodes,
+        "reason": reason,
+        "solution": solution,
+    }
+
+
+def _rknn_hardware_acceptance_report(project_id: str, job_id: str) -> dict[str, Any]:
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    if not context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物尚未完成真实板端 Runtime 验证")
+    manifest = context["manifest"]
+    job = context["job"]
+    verification = manifest.get("hardware_verification") if isinstance(manifest, Mapping) else None
+    job_verification = job.get("hardware_verification") if isinstance(job, Mapping) else None
+    if not isinstance(verification, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少 durable hardware_verification 证据")
+    chip = str(verification.get("chip") or "").strip().lower()
+    task_id = str(verification.get("task_id") or "").strip()
+    node_id = str(verification.get("node_id") or "").strip()
+    engine = str(verification.get("engine") or "").strip().lower()
+    verified_at = str(verification.get("verified_at") or "").strip()
+    model_sha = str(verification.get("model_sha256") or "").strip().lower()
+    try:
+        generation = int(verification.get("execution_generation") or 0)
+        model_size = int(verification.get("model_size_bytes") or 0)
+        inference_ms = float(verification.get("inference_ms"))
+        output_count = int(verification.get("output_count"))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的数值证据无效") from error
+    input_evidence = verification.get("input")
+    if not isinstance(input_evidence, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少测试图 evidence")
+    input_sha = str(input_evidence.get("sha256") or "").strip().lower()
+    try:
+        input_size = int(input_evidence.get("size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的测试图 size 无效") from error
+    if (
+        chip != str(context["chip"])
+        or not task_id
+        or generation <= 0
+        or not node_id
+        or engine != "rknn-lite2"
+        or not verified_at
+        or model_sha != str(context["model_sha256"])
+        or model_size != int(context["model_size_bytes"])
+        or not re.fullmatch(r"[0-9a-f]{64}", input_sha)
+        or input_size <= 0
+        or inference_ms < 0
+        or output_count <= 0
+    ):
+        raise HTTPException(status_code=409, detail="当前板端验收记录不满足完整留证要求")
+    if isinstance(job_verification, Mapping):
+        if (
+            str(job_verification.get("task_id") or "") != task_id
+            or str(job_verification.get("node_id") or "") != node_id
+            or str(job_verification.get("chip") or "").strip().lower() != chip
+        ):
+            raise HTTPException(status_code=409, detail="job.json 与 manifest 的板端验收 evidence 不一致")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else {}
+    return {
+        "ok": True,
+        "report_version": 1,
+        "status": "passed",
+        "acceptance_scope": "rknn_runtime_hardware",
+        "project_id": str(project_id),
+        "conversion_job_id": str(job_id),
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "target": {
+            "chip": chip,
+            "precision": str((target or {}).get("precision") or ""),
+        },
+        "board": {
+            "node_id": node_id,
+            "rknn_lite_version": str(verification.get("rknn_lite_version") or ""),
+        },
+        "verification": {
+            "task_id": task_id,
+            "execution_generation": generation,
+            "verified_at": verified_at,
+            "engine": engine,
+            "input": {
+                "file_name": Path(str(input_evidence.get("file_name") or "input")).name,
+                "size_bytes": input_size,
+                "sha256": input_sha,
+            },
+            "inference_ms": inference_ms,
+            "output_count": output_count,
+            "output_shapes": list(verification.get("output_shapes") or []),
+        },
+        "accuracy_verified": False,
+        "statement": "本报告仅证明该 RKNN 产物已在匹配 Rockchip 板卡上完成 RKNNLite Runtime 推理验证，不代表算法准确率或业务效果验收。",
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report")
+def v39_rknn_hardware_acceptance_report(
+    project_id: str,
+    job_id: str,
+    download: bool = Query(False),
+):
+    report = _rknn_hardware_acceptance_report(project_id, job_id)
+    headers = {}
+    if download:
+        safe_job = re.sub(r"[^A-Za-z0-9._-]+", "-", str(job_id)).strip("-") or "rknn"
+        headers["Content-Disposition"] = f'attachment; filename="rknn-hardware-acceptance-{safe_job}.json"'
+    return JSONResponse(content=report, headers=headers)
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
+async def v39_create_rknn_hardware_test(
+    project_id: str,
+    job_id: str,
+    file: UploadFile = File(...),
+):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    job = context["job"]
+    job_dir = context["job_dir"]
+    chip = str(context["chip"])
+    model_path = context["model_path"]
+    if context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物已完成板端 Runtime 验证")
+
+    nodes = list(context["board_nodes"])
+    if not nodes:
+        raise PlatformError(
+            code="RKNN_BOARD_NODE_UNAVAILABLE",
+            message="没有可用的瑞芯微板端验证节点",
+            detail=f"需要在线、已授权 deployment-test.rknn 且真实识别为 {chip.upper()} 的 RKNNLite Agent",
+            solution="请在对应 RK3568/RK3576 设备部署 Node Agent，并安装可用的 RKNN-Toolkit-Lite2 后重试。",
+            status_code=409,
+        )
+
+    extension = Path(file.filename or "test.jpg").suffix.lower()
+    if extension not in IMAGE_EXTS:
+        extension = ".jpg"
+    task_id = uuid.uuid4().hex[:12]
+    prediction_dir = project_dir(project_id) / "predictions" / task_id
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    input_path = prediction_dir / f"input{extension}"
+    input_path.write_bytes(await file.read())
+    if input_path.stat().st_size <= 0:
+        input_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="板端验证图片为空")
+
+    params = job.get("params")
+    params = dict(params) if isinstance(params, Mapping) else {}
+    try:
+        input_size = int(params.get("input_size") or 640)
+    except (TypeError, ValueError):
+        input_size = 640
+    try:
+        remote_execution = _remote_execution_transport_service().stage_rknn_board_validation(
+            project_id=project_id,
+            task_id=task_id,
+            conversion_job_id=job_id,
+            model_path=model_path,
+            input_path=input_path,
+            chip=chip,
+            input_size=input_size,
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise PlatformError(
+            code=error.code,
+            message="RKNN 板端验证准备失败",
+            detail=str(error),
+            solution="请检查对象存储、RKNN 产物完整性和板端节点状态后重试。",
+            status_code=error.status_code,
+        ) from error
+
+    request = {
+        "execution_mode": "agent",
+        "framework": "rknn",
+        "runtime_format": "rknn",
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+        "input_size": input_size,
+        "model_path": str(model_path),
+        "input_path": str(input_path),
+        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "remote_execution": remote_execution,
+    }
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    record = shared_task_repository().create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.DEPLOYMENT_TEST,
+        "request.json",
+        f"deployment-rknn-board:{chip}",
+        required_capabilities=("agent.remote",),
+    ))
+    return JSONResponse(status_code=202, content={
+        **public_deployment_test(record),
+        "board_nodes": nodes,
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+    })
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/jobs")
@@ -11922,7 +16647,7 @@ def _v40_run_component_scan(scan_id: str):
         saved=_load_saved_deploy_resources()
         checked=[]
         for r in saved:
-            if str(r.get("mode"))=="remote":
+            if str(r.get("mode")) in {"remote", "agent"}:
                 continue
             try:
                 cr=_detect_local_deploy_resource(r)
@@ -12048,7 +16773,7 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     info=_v41_rknn_info(py)
     row['rknn_python']=py
     row['rknn_version']=str(info.get('version') or '')
-    row['supported_chips']=['rk3588','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118']
+    row['supported_chips']=['rk3588','rk3578','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118']
     if info.get('ok'):
         row.update(status='ready',targets=['rockchip'],version=row['rknn_version'],message='RKNN-Toolkit2 可用；无需开发板即可把 ONNX 转为 RKNN')
     else:
@@ -12206,12 +16931,13 @@ def v42_create_algorithm_blueprint(project_id: str, payload: V42AlgorithmBluepri
         name=payload.name.strip(), remark=payload.remark or '', industry=payload.industry or '',
         algorithm_type=payload.algorithm_type or 'yolo_ultralytics'
     ))
-    project = get_project(project_id)
-    for raw in payload.labels or []:
-        code = normalize_label(raw)
-        if code:
-            ensure_label(project, code)
-            project = get_project(project_id)
+    with label_governance_fence(project_dir(project_id)):
+        project = get_project(project_id)
+        for raw in payload.labels or []:
+            code = normalize_label(raw)
+            if code:
+                ensure_label(project, code)
+                project = get_project(project_id)
     blueprints = _v42_list(project_id, 'algorithm_blueprints')
     item = {
         "id": uuid.uuid4().hex[:12], "algorithm_id": alg.get("id"), "name": payload.name.strip(),
@@ -12262,8 +16988,22 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
         rows.append({
             'id': job.get('id'), 'target': target, 'target_name': V423_DEPLOY_TARGET_NAMES.get(target, target or '-'),
             'status': job.get('status'), 'stage': job.get('stage'), 'progress': job.get('progress'),
-            'resource_name': (job.get('resource') or {}).get('name') or '', 'params': job.get('params') or {},
-            'outputs': outputs, 'created_at': job.get('created_at'), 'finished_at': job.get('finished_at'),
+            'source_name': job.get('source_name') or '',
+            'resource_name': (job.get('resource') or {}).get('name') or '',
+            'params': job.get('params') or {}, 'outputs': outputs,
+            'task_id': job.get('task_id') or '', 'task_status': job.get('task_status') or '',
+            'durable_status': job.get('durable_status') or '', 'current_item': job.get('current_item') or '',
+            'priority': job.get('priority'), 'queue_rank': job.get('queue_rank'),
+            'resource_queue_position': job.get('resource_queue_position'),
+            'resource_wait_reason': job.get('resource_wait_reason') or '',
+            'worker_id': job.get('worker_id') or '', 'lease_expires_at': job.get('lease_expires_at') or '',
+            'conversion_status': job.get('conversion_status') or '',
+            'validation_status': job.get('validation_status') or '',
+            'runtime_verified': bool(job.get('runtime_verified')),
+            'hardware_verified': bool(job.get('hardware_verified')),
+            'hardware_verification': job.get('hardware_verification') or None,
+            'package_url': f"/api/v39/projects/{project_id}/deploy/jobs/{job.get('id')}/package" if job.get('status') == 'done' else '',
+            'created_at': job.get('created_at'), 'finished_at': job.get('finished_at'),
             'message': job.get('message') or '', 'error': job.get('error') or ''
         })
     rows.sort(key=lambda x: x.get('created_at') or '', reverse=True)
@@ -12569,19 +17309,26 @@ class V42PolicyReq(BaseModel):
 def v42_policies(project_id: str):get_project(project_id);return {"ok":True,"items":_v42_list(project_id,'iteration_policies')}
 
 
+def _legacy_iteration_write_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "旧 v42 自动迭代写入口已停用。请使用 v63 线上抽检/反馈完成 review/confirm，"
+            "再通过 Dataset Revision → Durable TRAINING → Evaluation → Confirmed Action 链继续迭代。"
+        ),
+    )
+
+
 @app.post('/api/v42/projects/{project_id}/iteration-policies')
 def v42_create_policy(project_id: str,payload:V42PolicyReq):
     get_project(project_id)
-    if not payload.name.strip():raise HTTPException(status_code=400,detail='策略名称不能为空')
-    rows=_v42_list(project_id,'iteration_policies');item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso(),"updated_at":now_iso()};rows.insert(0,item);_v42_save(project_id,'iteration_policies',rows[:100]);return item
+    _legacy_iteration_write_disabled()
 
 
 @app.put('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
 def v42_update_policy(project_id:str,policy_id:str,payload:V42PolicyReq):
-    rows=_v42_list(project_id,'iteration_policies')
-    for i,x in enumerate(rows):
-        if x.get('id')==policy_id:rows[i]={**x,**payload.dict(),"updated_at":now_iso()};_v42_save(project_id,'iteration_policies',rows);return rows[i]
-    raise HTTPException(status_code=404,detail='迭代策略不存在')
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.delete('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
@@ -12621,21 +17368,7 @@ def v42_online_feedback(project_id: str, algorithm_id: Optional[str] = None):
 @app.post('/api/v42/projects/{project_id}/online-feedback')
 def v42_submit_online_feedback(project_id: str, payload: V42OnlineFeedbackReq):
     get_project(project_id)
-    if not next((x for x in list_algorithms_internal(project_id) if x.get('id')==payload.algorithm_id),None):
-        raise HTTPException(status_code=404,detail='算法不存在')
-    item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso()}
-    # 外部系统/大模型抽查判为错误时，可把原图自动回流到指定数据集；失败只记录原因，不伪造素材。
-    if (not payload.correct) and (payload.image_url or '').strip() and (payload.dataset_id or '').strip():
-        try:
-            rr=requests.get((payload.image_url or '').strip(),timeout=20);rr.raise_for_status()
-            ext=Path((payload.image_url or '').split('?',1)[0]).suffix.lower();ext=ext if ext in IMAGE_EXTS else '.jpg'
-            tmp=project_dir(project_id)/'v42'/'feedback_tmp';tmp.mkdir(parents=True,exist_ok=True)
-            fp=tmp/f"feedback_{item['id']}{ext}";fp.write_bytes(rr.content)
-            rec=add_image_record(project_id,fp,fp.name,'online_feedback',payload.dataset_id or 'default')
-            item['returned_image_id']=rec.get('id') if rec else ''
-        except Exception as e:item['return_error']=str(e)
-    rows=_v42_list(project_id,'online_feedback');rows.insert(0,item);_v42_save(project_id,'online_feedback',rows[:5000])
-    return {"ok":True,"item":item,"summary":_v42_audit_summary(project_id,payload.algorithm_id)}
+    _legacy_iteration_write_disabled()
 
 
 def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int = 1000) -> Dict[str, Any]:
@@ -12822,11 +17555,8 @@ def v42_iteration_runs(project_id:str):return {"ok":True,"items":_v42_list(proje
 
 @app.post('/api/v42/projects/{project_id}/iteration-policies/{policy_id}/run')
 def v42_run_policy(project_id:str,policy_id:str):
-    policy=_v42_get(project_id,'iteration_policies',policy_id)
-    if not policy:raise HTTPException(status_code=404,detail='迭代策略不存在')
-    run={"id":uuid.uuid4().hex[:12],"policy_id":policy_id,"policy_name":policy.get('name'),"algorithm_id":policy.get('algorithm_id'),"status":"queued","stage":"等待启动","result":"","loop":0,"history":[],"created_at":now_iso(),"updated_at":now_iso()}
-    rows=_v42_list(project_id,'iteration_runs');rows.insert(0,run);_v42_save(project_id,'iteration_runs',rows[:100])
-    th=threading.Thread(target=_v42_run_iteration,args=(project_id,run['id'],dict(policy)),daemon=True);th.start();return run
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.get('/api/v42/projects/{project_id}/quality-overview')
@@ -12872,24 +17602,35 @@ def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[st
 
 
 def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> Dict[str, Any]:
-    project=get_project(project_id);images=load_images(project_id);req=req or V44QualityReq()
-    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or [])}
+    project=get_project(project_id);req=req or V44QualityReq()
+    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or []) if str(x)}
     if req.snapshot_id:
         snapshot_file=project_dir(project_id)/"snapshots"/f"{req.snapshot_id}.json"
         if not snapshot_file.is_file():raise HTTPException(status_code=404,detail="训练 Snapshot 不存在")
         snapshot=read_json(snapshot_file,{})
-        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or [])}
+        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or []) if str(x)}
+    if wanted_ids:
+        images=[]
+        materials=material_store(project_id)
+        ordered_ids=sorted(wanted_ids)
+        for offset in range(0,len(ordered_ids),500):
+            images.extend(materials.get_many(ordered_ids[offset:offset+500]))
+    else:
+        images=load_images(project_id)
+    annotation_ids=[str(img.get("id") or "") for img in images if str(img.get("id") or "")]
+    annotations: Dict[str, Dict[str, Any]]={}
+    for offset in range(0,len(annotation_ids),500):
+        annotations.update(read_annotations_many(project_id,annotation_ids[offset:offset+500]))
     candidates=[]
     for img in sorted(images,key=lambda row:str(row.get("id") or "")):
         sp=(img.get("split") or "unassigned").lower();sp=sp if sp in {"unassigned","train","val","test"} else "unassigned"
-        ann=read_annotation(project_id,img["id"]);clean=[];invalid=0
+        ann=annotations.get(str(img.get("id") or "")) or {};clean=[];invalid=0
         for box in ann.get("boxes",[]):
-            normalized=normalize_box_for_project(project_id,img,box,create_label=False)
+            normalized=normalize_box_for_project(project_id,img,box,create_label=False,project_state=project)
             if normalized:clean.append(normalized)
             else:invalid+=1
         labels={box["label"] for box in clean}
         if split and sp!=split:continue
-        if wanted_ids and str(img.get("id")) not in wanted_ids:continue
         if wanted and not labels.intersection(wanted):continue
         candidates.append({**img,"split":sp,"boxes":clean,"valid_box_count":len(clean),"invalid_box_count":invalid})
     if req.max_samples and req.max_samples>0:candidates=candidates[:int(req.max_samples)]
@@ -12909,6 +17650,21 @@ def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> 
     quality["split_counts"]={key:int(quality.get("split_counts",{}).get(key,0)) for key in ("unassigned","train","val","test")}
     return quality
 
+def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    success_statuses = {"done", "finished", "completed", "succeeded", "success"}
+    ended_statuses = success_statuses | {"failed", "stopped", "cancelled", "canceled"}
+    normalized = [str((job or {}).get("status") or "").strip().lower() for job in jobs]
+    success_count = sum(1 for status in normalized if status in success_statuses)
+    failure_count = sum(1 for status in normalized if status == "failed")
+    ended_count = sum(1 for status in normalized if status in ended_statuses)
+    return {
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "ended_count": ended_count,
+        "success_rate": round(success_count / ended_count * 100, 1) if ended_count else None,
+    }
+
+
 @app.get('/api/v44/projects/{project_id}/quality-center')
 def v44_quality_center(project_id: str):
     dq=_v44_dataset_quality(project_id)
@@ -12925,7 +17681,10 @@ def v44_quality_center(project_id: str):
         vals=[x*100 if x is not None and x<=1 else x for x in [p,r,m] if x is not None]
         score=round(sum(vals)/len(vals),1) if vals else None
         alg_rows.append({"id":a.get("id"),"name":a.get("name"),"version":v.get("version_name") or "", "precision":p,"recall":r,"map50":m,"score":score})
-    jobs=list_jobs(project_id);done=[j for j in jobs if j.get('status') in {'done','finished','completed'}];failed=[j for j in jobs if j.get('status')=='failed']
+    jobs=list_jobs(project_id)
+    training_stats=_training_success_rate_stats(jobs)
+    terminal_training_count=training_stats["ended_count"]
+    train_success_rate=training_stats["success_rate"]
     trained_count=sum(1 for x in alg_rows if x['score'] is not None)
     def avg_metric(k):
         vals=[]
@@ -12934,7 +17693,7 @@ def v44_quality_center(project_id: str):
             if v is not None: vals.append(v*100 if v<=1 else v)
         return round(sum(vals)/max(1,len(vals)),1)
     version_coverage=round(sum(1 for a in algs if a.get('versions'))/max(1,len(algs))*100,1)
-    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":round(len(done)/max(1,len(done)+len(failed))*100,1),"version_coverage":version_coverage}
+    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":train_success_rate,"train_success_count":training_stats["success_count"],"train_failure_count":training_stats["failure_count"],"train_completed_count":terminal_training_count,"version_coverage":version_coverage}
     return {"ok":True,"dataset":dq,"algorithm":alg_quality,"time":now_iso()}
 
 @app.post('/api/v44/projects/{project_id}/data-quality')
@@ -13088,8 +17847,9 @@ class V47ImageEditReq(BaseModel):
 @app.put('/api/v47/projects/{project_id}/images/{image_id}')
 def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
     get_project(project_id)
-    images = load_images(project_id)
-    target = next((x for x in images if str(x.get('id')) == image_id), None)
+    materials = material_store(project_id)
+    rows = materials.get_many([str(image_id)])
+    target = rows[0] if rows else None
     if not target:
         raise HTTPException(status_code=404, detail='图片不存在')
     name = (payload.name or '').strip()
@@ -13100,7 +17860,7 @@ def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
     if not name:
         raise HTTPException(status_code=400, detail='名称不能为空')
     # Only the business/display name is changed. The stored file name stays stable so annotations and snapshots remain traceable.
-    changed = material_store(project_id).patch({image_id: {'filename': name, 'updated_at': now_iso()}})
+    changed = materials.patch({image_id: {'filename': name, 'updated_at': now_iso()}})
     if not changed:
         raise HTTPException(status_code=404, detail='图片不存在')
     target = changed[0]
@@ -13116,6 +17876,7 @@ def _v47_file_for(project_id: str, folder: str, task_id: str) -> Path:
 
 from platform_core.cleaning import (
     MemoryHashIndex as _V47MemoryHashIndex,
+    clean_options as _v47_clean_options,
     dhash as _v47_dhash,
     hamming as _v47_hamming,
     image_metrics as _v47_image_metrics,
@@ -13125,6 +17886,11 @@ from platform_core.cleaning import (
 
 class V47CleanReq(BaseModel):
     image_ids: Optional[List[str]] = None
+    clean_scope: Literal['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'] = 'all'
+    execution_mode: Literal['local', 'agent'] = 'local'
+    scheduling_mode: Literal['auto', 'node'] = 'auto'
+    target_node_id: str = Field(default='', max_length=128)
+    queue_policy: Literal['normal', 'front', 'preempt'] = 'normal'
     exact_duplicate: bool = True
     near_duplicate: bool = True
     near_duplicate_hamming: int = 5
@@ -13143,6 +17909,11 @@ class V47CleanReq(BaseModel):
 
 class V47CleanConfirmReq(BaseModel):
     delete_ids: List[str]
+
+
+class V47CleanRuntimeReq(BaseModel):
+    image_ids: Optional[List[str]] = None
+    clean_scope: Literal['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'] = 'all'
 
 
 def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
@@ -13250,17 +18021,318 @@ def v47_list_clean_tasks(project_id: str):
 
 
 
+def _v47_clean_execution_mode(value: Any) -> str:
+    mode = str(value or 'local').strip().lower()
+    if mode not in {'local', 'agent'}:
+        raise ValueError('清洗执行方式仅支持 local 或 agent')
+    return mode
+
+
+def _v47_clean_required_capabilities(request: Dict[str, Any]) -> Tuple[str, ...]:
+    if (
+        str(request.get('operation') or '').upper() == MaterialBatchOperation.CLEAN.value
+        and str(request.get('execution_mode') or 'local').lower() == 'agent'
+    ):
+        return ('agent.remote',)
+    return ('materials.batch',)
+
+
+_V47_CLEAN_SCOPE_STATES = {
+    'all': None,
+    'annotated': 'annotated',
+    'unannotated': 'unannotated',
+    'confirmed_empty': 'confirmed_empty',
+}
+
+
+def _v47_clean_selection_spec(
+    clean_scope: str = 'all',
+    image_ids: Optional[List[str]] = None,
+) -> Tuple[Dict[str, Any], str]:
+    selected = list(dict.fromkeys(
+        str(value).strip() for value in (image_ids or []) if str(value).strip()
+    ))
+    scope = str(clean_scope or 'all').strip().lower()
+    if selected:
+        if scope not in {'all', 'selected'}:
+            raise ValueError('当前选中图片不能同时叠加标注状态清洗范围')
+        return {'scope': 'SELECTED', 'image_ids': selected}, 'selected'
+    if scope == 'selected':
+        raise ValueError('当前没有选中的图片')
+    if scope not in _V47_CLEAN_SCOPE_STATES:
+        raise ValueError('未知清洗范围')
+    annotation_state = _V47_CLEAN_SCOPE_STATES[scope]
+    filters = {'annotation_state': annotation_state} if annotation_state else {}
+    return {'scope': 'FILTERED', 'filters': filters}, scope
+
+
+def _v47_clean_agent_preflight(
+    project_id: str,
+    image_ids: Optional[List[str]] = None,
+    clean_scope: str = 'all',
+) -> Dict[str, Any]:
+    get_project(project_id)
+    try:
+        selection, normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
+    except ValueError as error:
+        return {
+            'agent_available': False,
+            'reason': str(error),
+            'selected_count': 0,
+            'eligible_nodes': [],
+        }
+    selected = list(selection.get('image_ids') or [])
+    materials = material_store(project_id)
+    filtered = str(selection.get('scope') or '') == 'FILTERED'
+    clauses, params = materials._filters(selection.get('filters') or {}) if filtered else ([], [])
+    where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    with closing(materials._connect()) as database:
+        join = ''
+        if selected:
+            database.execute(
+                "CREATE TEMP TABLE clean_preflight_selection ("
+                "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            database.executemany(
+                "INSERT INTO clean_preflight_selection(image_id) VALUES (?)",
+                ((image_id,) for image_id in selected),
+            )
+            join = " JOIN clean_preflight_selection s ON s.image_id=m.id"
+        row = database.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN trim(object_key)='' OR length(trim(content_sha256))<>64 "
+            "OR size_bytes<=0 THEN 1 ELSE 0 END),0) AS incomplete "
+            "FROM materials m" + join + where,
+            params,
+        ).fetchone()
+        total = int(row['total'] or 0)
+        incomplete = int(row['incomplete'] or 0)
+        sources = database.execute(
+            "SELECT storage_source_id,storage_type,COUNT(*) AS total "
+            "FROM materials m" + join + where + " GROUP BY storage_source_id,storage_type "
+            "ORDER BY storage_source_id",
+            params,
+        ).fetchall()
+
+    if selected and total != len(selected):
+        return {
+            'agent_available': False,
+            'reason': '所选素材已发生变化，请刷新后重新选择',
+            'selected_count': total,
+            'eligible_nodes': [],
+        }
+    if total <= 0:
+        return {
+            'agent_available': False,
+            'reason': '当前清洗范围没有可处理素材',
+            'selected_count': 0,
+            'clean_scope': normalized_scope,
+            'eligible_nodes': [],
+        }
+    if incomplete:
+        return {
+            'agent_available': False,
+            'reason': f'有 {incomplete} 张素材缺少对象存储大小或 SHA256 证据',
+            'selected_count': total,
+            'clean_scope': normalized_scope,
+            'eligible_nodes': [],
+        }
+
+    source_repo = storage_source_repository()
+    source_truth = []
+    for row in sources:
+        source_id = str(row['storage_source_id'] or '')
+        configured = source_repo.get(source_id)
+        try:
+            storage_type = StorageType.parse(configured.type if configured is not None else row['storage_type'])
+        except ValueError:
+            storage_type = None
+        portable = bool(
+            configured is not None
+            and configured.enabled
+            and storage_type in {StorageType.OSS, StorageType.S3}
+        )
+        source_truth.append({
+            'storage_source_id': source_id,
+            'storage_type': storage_type.value if storage_type is not None else str(row['storage_type'] or ''),
+            'count': int(row['total'] or 0),
+            'portable': portable,
+        })
+    blocked = [row for row in source_truth if not row['portable']]
+    if blocked:
+        names = '、'.join(row['storage_source_id'] or 'default_local' for row in blocked[:3])
+        return {
+            'agent_available': False,
+            'reason': f'本次范围包含不可远程读取的素材存储：{names}',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    allocator = CentralTaskAllocator(repository, artifacts)
+    nodes = [
+        node for node in ServiceNodeRepository(repository).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'cleaning' in set(node.get('effective_capabilities') or [])
+    ]
+    active_assignments = allocator.list(active_only=True)
+    assignments_by_node: Dict[str, List[Dict[str, Any]]] = {}
+    for assignment in active_assignments:
+        assignments_by_node.setdefault(str(assignment.get('node_id') or ''), []).append(assignment)
+    executions_by_node: Dict[str, List[str]] = {}
+    with repository._connect() as database:
+        rows = database.execute(
+            """
+            SELECT task_id,worker_id FROM tasks
+             WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+               AND worker_id LIKE 'agent:%'
+             ORDER BY updated_at,task_id
+            """
+        ).fetchall()
+    for row in rows:
+        worker_id = str(row['worker_id'] or '')
+        node_id = worker_id.removeprefix('agent:')
+        if node_id and worker_id.startswith('agent:'):
+            executions_by_node.setdefault(node_id, []).append(str(row['task_id']))
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权 cleaning 能力的 Agent 节点',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    try:
+        _remote_execution_transport_service().build_cleaning_remote_contract(
+            project_id,
+            'cleaning-preflight',
+        )
+    except RemoteExecutionTransportError as error:
+        return {
+            'agent_available': False,
+            'reason': str(error),
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    def scheduling_task_row(task: TaskRecord) -> Dict[str, Any]:
+        request = artifacts.read_json(task.task_id, task.payload_ref, default={}) or {}
+        operation = str(request.get('operation') or '').strip().upper() if isinstance(request, dict) else ''
+        return {
+            'task_id': task.task_id,
+            'kind': task.kind.value,
+            'operation': operation,
+            'status': task.status.value,
+            'stage': task.stage,
+            'progress': float(task.progress or 0),
+            'preemptible': task.status is not TaskStatus.RUNNING or task_preemptible(task, artifacts),
+        }
+
+    eligible_nodes = []
+    for node in nodes:
+        node_id = str(node.get('node_id') or '')
+        tasks_by_id: Dict[str, Dict[str, Any]] = {}
+        for task_id in executions_by_node.get(node_id, []):
+            task = repository.get(task_id)
+            if task is not None:
+                tasks_by_id[task.task_id] = scheduling_task_row(task)
+        for assignment in assignments_by_node.get(node_id, []):
+            task = repository.get(str(assignment.get('task_id') or ''))
+            if task is not None:
+                tasks_by_id.setdefault(task.task_id, scheduling_task_row(task))
+        task_rows = list(tasks_by_id.values())
+        can_preempt = all(
+            row.get('status') != TaskStatus.RUNNING.value or bool(row.get('preemptible'))
+            for row in task_rows
+        )
+        resources = dict(node.get('resources') or {})
+        eligible_nodes.append({
+            'node_id': node_id,
+            'display_name': str(node.get('display_name') or node_id),
+            'build_id': str(node.get('build_id') or ''),
+            'status': str(node.get('status') or ''),
+            'idle': not task_rows,
+            'active_count': len(task_rows),
+            'active_tasks': task_rows[:6],
+            'preemptible': bool(task_rows) and can_preempt,
+            'resources': {
+                'cpu': dict(resources.get('cpu') or {}),
+                'memory': dict(resources.get('memory') or {}),
+                'disk': dict(resources.get('disk') or {}),
+            },
+        })
+    eligible_nodes.sort(key=lambda row: (not bool(row['idle']), int(row['active_count']), row['display_name'].lower()))
+    return {
+        'agent_available': True,
+        'reason': '',
+        'selected_count': total,
+        'sources': source_truth,
+        'eligible_nodes': eligible_nodes,
+        'idle_nodes': sum(1 for row in eligible_nodes if row['idle']),
+        'busy_nodes': sum(1 for row in eligible_nodes if not row['idle']),
+    }
+
+
+@app.post('/api/v47/projects/{project_id}/clean-runtime/preflight')
+def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
+    truth = _v47_clean_agent_preflight(project_id, payload.image_ids, payload.clean_scope)
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **truth,
+    }
+
+
+def _v47_clean_scheduling(
+    execution_mode: str,
+    scheduling_mode: str,
+    target_node_id: str,
+    queue_policy: str,
+) -> Dict[str, str]:
+    mode = str(scheduling_mode or 'auto').strip().lower()
+    node_id = str(target_node_id or '').strip()
+    policy = str(queue_policy or 'normal').strip().lower()
+    if execution_mode != 'agent':
+        if mode != 'auto' or node_id or policy != 'normal':
+            raise ValueError('指定节点、插队或抢占仅适用于远程 Agent 清洗')
+        return {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'}
+    if mode == 'auto':
+        if node_id or policy != 'normal':
+            raise ValueError('自动调度不能同时指定节点或插队策略')
+        return {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'}
+    if mode != 'node' or not node_id:
+        raise ValueError('指定节点清洗必须选择一个 cleaning Agent')
+    if policy not in {'normal', 'front', 'preempt'}:
+        raise ValueError('未知清洗队列策略')
+    return {'mode': 'node', 'node_id': node_id, 'queue_policy': policy}
+
+
 def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
     data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
     image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
-    selection: Dict[str, Any]
-    if image_ids:
-        selection = {'scope': 'SELECTED', 'image_ids': image_ids}
-    else:
-        selection = {'scope': 'FILTERED', 'filters': {}}
-    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
+    clean_scope = str(data.pop('clean_scope', 'all') or 'all')
+    execution_mode = _v47_clean_execution_mode(data.pop('execution_mode', 'local'))
+    scheduling = _v47_clean_scheduling(
+        execution_mode,
+        data.pop('scheduling_mode', 'auto'),
+        data.pop('target_node_id', ''),
+        data.pop('queue_policy', 'normal'),
+    )
+    # Use the same CLEAN option owner as material_batches.parse_request().
+    # Prepared durable requests persist canonical defaults, so retries must
+    # compare against that canonical shape rather than raw V47 payload fields.
+    data = _v47_clean_options(data)
+    selection, _normalized_scope = _v47_clean_selection_spec(clean_scope, image_ids)
+    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data, 'scheduling': scheduling}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
     draft['selection_spec'] = estimate['selection_spec']
+    if execution_mode == 'agent':
+        draft['execution_mode'] = 'agent'
     return draft
 
 
@@ -13275,12 +18347,30 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
     request = _v47_material_batch_request(task.task_id)
     options = dict(request.get('options') or {})
     selection = dict(request.get('selection_spec') or {})
-    request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
+    selection_scope = str(selection.get('scope') or '').upper()
+    selection_filters = dict(selection.get('filters') or {})
+    clean_scope = (
+        'selected'
+        if selection_scope != 'FILTERED'
+        else str(selection_filters.get('annotation_state') or 'all').lower()
+    )
+    scheduling = dict(request.get('scheduling') or {'mode': 'auto', 'node_id': '', 'queue_policy': 'normal'})
+    request_payload = {
+        **options,
+        'image_ids': list(selection.get('image_ids') or []),
+        'clean_scope': clean_scope,
+        'scheduling': scheduling,
+    }
+    scheduling_event = artifacts.read_json(task.task_id, 'scheduling.json', default={}) or {}
     confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
     public_status = str(body.get('status') or task.status.value)
+    execution_mode = str(request.get('execution_mode') or 'local').lower()
     if public_status in {'QUEUED', 'WAITING_RESOURCE'}:
         status = 'queued'
-        status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
+        if public_status == 'WAITING_RESOURCE' and execution_mode == 'agent':
+            status_text = '等待远程清洗节点'
+        else:
+            status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
     elif public_status == 'RUNNING':
         status, status_text = 'running', '清洗中'
     elif public_status == 'CANCEL_REQUESTED':
@@ -13309,10 +18399,16 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'finished_at': body.get('finished_at'),
         'request_payload': request_payload,
         'resource_queue_position': body.get('resource_queue_position'),
+        'resource_queue_position_exact': bool(body.get('resource_queue_position_exact')),
         'resource_wait_reason': body.get('resource_wait_reason'),
         'worker_id': body.get('worker_id'),
         'lease_expires_at': body.get('lease_expires_at'),
+        'current_item': body.get('current_item'),
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
+        'execution_mode': execution_mode,
+        'clean_scope': clean_scope,
+        'scheduling': scheduling,
+        'scheduling_event': scheduling_event,
     }
 
 
@@ -13341,6 +18437,24 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
         return _v47_clean_compat_task(existing), False
 
     batch_payload = _v47_material_batch_payload(project_id, payload)
+    if str(batch_payload.get('execution_mode') or 'local') == 'agent':
+        preflight = _v47_clean_agent_preflight(project_id, payload.image_ids, payload.clean_scope)
+        if not preflight.get('agent_available'):
+            raise ValueError(str(preflight.get('reason') or '远程清洗当前不可用'))
+        scheduling = dict(batch_payload.get('scheduling') or {})
+        if str(scheduling.get('mode') or 'auto') == 'node':
+            eligible = {
+                str(node.get('node_id') or '')
+                for node in preflight.get('eligible_nodes') or []
+            }
+            if str(scheduling.get('node_id') or '') not in eligible:
+                raise ValueError('指定节点当前不在线、未启用 cleaning 服务或不满足远程清洗条件')
+        batch_payload['remote_execution'] = (
+            _remote_execution_transport_service().build_cleaning_remote_contract(
+                project_id,
+                requested_id,
+            )
+        )
     prepared_request = _v47_material_batch_request(requested_id)
     if prepared_request:
         def semantic_request(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -13351,13 +18465,16 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
                 'operation': value.get('operation'),
                 'selection_spec': selection,
                 'options': dict(value.get('options') or {}),
+                'execution_mode': str(value.get('execution_mode') or 'local'),
+                'scheduling': dict(value.get('scheduling') or {}),
             }
 
         if semantic_request(prepared_request) != semantic_request(batch_payload):
             raise ValueError('清洗任务 ID 已关联不同请求')
         prepared = TaskRecord.new(
             requested_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-            f'materials:{project_id}', required_capabilities=('materials.batch',),
+            f'materials:{project_id}',
+            required_capabilities=_v47_clean_required_capabilities(prepared_request),
         )
         return _v47_clean_compat_task(prepared), False
 
@@ -13383,13 +18500,17 @@ def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
         raise ValueError('清洗任务尚未准备完成')
     prepared = TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-        f'materials:{project_id}', required_capabilities=('materials.batch',),
+        f'materials:{project_id}',
+        required_capabilities=_v47_clean_required_capabilities(request),
     )
     published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
     return _v47_clean_compat_task(published)
 
 
-def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
+def _v47_durable_clean_results(
+    task_id: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
     artifacts = shared_task_artifacts()
     path = artifacts.artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
     if not path.is_file():
@@ -13401,7 +18522,89 @@ def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
             'SELECT r.result_json,s.state,s.error FROM clean_results r '
             'JOIN selection s ON s.image_id=r.image_id ORDER BY r.image_id'
         ).fetchall()
-    return {'items': [{**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]} for row in rows]}
+    items = [
+        {**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]}
+        for row in rows
+    ]
+    if project_id and items:
+        indexed = {
+            str(row.get('id')): public_material(project_id, row)
+            for row in material_store(project_id).get_many(
+                [str(item.get('image_id')) for item in items]
+            )
+        }
+        for item in items:
+            material = indexed.get(str(item.get('image_id'))) or {}
+            annotation_state = str(
+                material.get('annotation_state')
+                or material.get('annotation_status')
+                or ('annotated' if material.get('annotated') else 'unannotated')
+            ).strip().lower()
+            annotation_origin = str(material.get('annotation_origin') or '').strip().lower()
+            annotation_provenance = (
+                'confirmed_empty'
+                if annotation_state == 'confirmed_empty'
+                else annotation_origin or ('unannotated' if annotation_state == 'unannotated' else 'unknown')
+            )
+            item.update({
+                'url': material.get('url') or '',
+                'annotation_state': annotation_state,
+                'annotation_provenance': annotation_provenance,
+                'annotation_origin': annotation_origin,
+                'box_count': int(material.get('box_count') or 0),
+                'labels': list(material.get('labels') or []),
+            })
+    return {
+        'items': items,
+        'annotation_audit': _v47_durable_annotation_audit(task_id, project_id),
+    }
+
+
+def _v47_durable_annotation_audit(
+    task_id: str,
+    project_id: Optional[str] = None,
+    *,
+    cursor: str = '',
+    limit: int = 100,
+) -> Dict[str, Any]:
+    path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return {
+            'enabled': False, 'audited_images': 0, 'review_images': 0,
+            'warning_count': 0, 'items': [], 'next_cursor': None,
+        }
+    from platform_core.annotation_quality import read_annotation_audit
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        page = read_annotation_audit(database, cursor=cursor, limit=limit)
+    items = list(page.get('items') or [])
+    if project_id and items:
+        indexed = {
+            str(row.get('id')): public_material(project_id, row)
+            for row in material_store(project_id).get_many(
+                [str(item.get('image_id')) for item in items]
+            )
+        }
+        for item in items:
+            material = indexed.get(str(item.get('image_id'))) or {}
+            item['url'] = material.get('url') or ''
+    return {**page, 'items': items}
+
+
+def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
+    path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return []
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        if database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='selection'"
+        ).fetchone() is None:
+            return []
+        return [
+            str(row[0])
+            for row in database.execute(
+                'SELECT image_id FROM selection ORDER BY image_id'
+            ).fetchall()
+        ]
 
 _V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
 
@@ -13554,10 +18757,67 @@ def _v47_create_clean_task_record(
     return _v47_start_clean_task_record(project_id, str(task.get('id')))
 
 
+def _v47_apply_clean_scheduling(task_id: str) -> Dict[str, Any]:
+    request = _v47_material_batch_request(task_id)
+    scheduling = dict(request.get('scheduling') or {})
+    mode = str(scheduling.get('mode') or 'auto')
+    policy = str(scheduling.get('queue_policy') or 'normal')
+    node_id = str(scheduling.get('node_id') or '')
+    if mode != 'node':
+        return {'mode': 'auto', 'queue_policy': 'normal'}
+    repository = shared_task_repository()
+    allocator = CentralTaskAllocator(repository, shared_task_artifacts())
+    if policy == 'front':
+        promoted = repository.promote(task_id)
+        event = {
+            'mode': 'node',
+            'queue_policy': 'front',
+            'node_id': node_id,
+            'incoming_task_id': task_id,
+            'priority': promoted.priority,
+            'queue_rank': promoted.queue_rank,
+            'created_at': now_iso(),
+        }
+    elif policy == 'preempt':
+        event = allocator.preempt_for(task_id, node_id)
+        event['queue_policy'] = 'preempt'
+    else:
+        event = {
+            'mode': 'node',
+            'queue_policy': 'normal',
+            'node_id': node_id,
+            'incoming_task_id': task_id,
+            'created_at': now_iso(),
+        }
+    shared_task_artifacts().atomic_write_json(task_id, 'scheduling.json', event)
+    return event
+
+
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
-    task, _ = _v62_prepare_clean_compat(project_id, payload)
-    return _v62_publish_clean_compat(project_id, str(task['id']))
+    task_id = ''
+    try:
+        task, _ = _v62_prepare_clean_compat(project_id, payload)
+        task_id = str(task['id'])
+        _v62_publish_clean_compat(project_id, task_id)
+        _v47_apply_clean_scheduling(task_id)
+        durable = shared_task_repository().get(task_id)
+        if durable is None:
+            raise ValueError('清洗任务发布后未找到持久化任务')
+        return _v47_clean_compat_task(durable)
+    except NodeAssignmentError as error:
+        current = shared_task_repository().get(task_id) if task_id else None
+        if current is not None and current.status is TaskStatus.QUEUED:
+            shared_task_repository().request_cancel(task_id)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={'code': error.code, 'message': str(error)},
+        ) from error
+    except ValueError as error:
+        current = shared_task_repository().get(task_id) if task_id else None
+        if current is not None and current.status is TaskStatus.QUEUED:
+            shared_task_repository().request_cancel(task_id)
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 class V55UploadDecisionsReq(BaseModel):
@@ -13578,10 +18838,18 @@ def _v55_read_upload_batch(
 
 
 def _v55_enrich_upload_batch(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
-    images = {
-        str(image.get('id')): dict(image)
-        for image in load_images(project_id)
-    }
+    image_ids = list(dict.fromkeys(
+        str(item.get('image_id') or '')
+        for item in (batch.get('items') or [])
+        if str(item.get('image_id') or '')
+    ))
+    images: Dict[str, Dict[str, Any]] = {}
+    materials = material_store(project_id)
+    for offset in range(0, len(image_ids), 500):
+        for image in materials.get_many(image_ids[offset:offset + 500]):
+            image_id = str(image.get('id') or '')
+            if image_id:
+                images[image_id] = dict(image)
     enriched = dict(batch)
     enriched['items'] = []
     for stored_item in batch.get('items', []):
@@ -13638,6 +18906,9 @@ def v55_apply_upload_batch_decisions(
         raise HTTPException(status_code=404, detail='上传批次不存在')
     with store.locked(batch_id):
         original = _v55_read_upload_batch(store, batch_id, locked=True)
+        upload_request_status = str(original.get('upload_request_status') or 'SUCCEEDED').upper()
+        if upload_request_status != 'SUCCEEDED':
+            raise HTTPException(status_code=409, detail='上传批次尚未完成，不能提交清洗决策')
         clean_task_id = str(original.get('clean_task_id') or '')
         associated_clean_ids = [
             str(image_id)
@@ -13646,6 +18917,26 @@ def v55_apply_upload_batch_decisions(
         if bool(clean_task_id) != bool(associated_clean_ids):
             raise HTTPException(status_code=400, detail='上传批次清洗任务关联不完整')
         associated_clean_set = set(associated_clean_ids)
+        if clean_ids:
+            indexed = {
+                str(row.get('id')): row
+                for row in material_store(project_id).get_many(sorted(clean_ids))
+            }
+            not_unannotated = []
+            for image_id in sorted(clean_ids):
+                row = indexed.get(image_id) or {}
+                annotation_state = str(
+                    row.get('annotation_state')
+                    or row.get('annotation_status')
+                    or ('annotated' if row.get('annotated') else 'unannotated')
+                ).strip().lower()
+                if annotation_state != 'unannotated':
+                    not_unannotated.append(image_id)
+            if not_unannotated:
+                raise HTTPException(
+                    status_code=409,
+                    detail='批量上传入口只允许把未标注素材送入图片质量清洗；带标注素材请使用标注质量审计',
+                )
         if clean_task_id and clean_ids - associated_clean_set:
             raise HTTPException(
                 status_code=400,
@@ -13807,7 +19098,23 @@ def v47_clean_result(project_id: str, task_id: str):
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    return {'task': task, 'result': _v47_durable_clean_results(task_id)}
+    return {'task': task, 'result': _v47_durable_clean_results(task_id, project_id)}
+
+
+@app.get('/api/v47/projects/{project_id}/clean-tasks/{task_id}/annotation-audit')
+def v47_clean_annotation_audit(
+    project_id: str,
+    task_id: str,
+    cursor: str = '',
+    limit: int = 100,
+):
+    task = _v33_get_task(project_id, 'clean_tasks', task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail='清洗任务不存在')
+    return _v47_durable_annotation_audit(
+        task_id, project_id, cursor=cursor,
+        limit=max(1, min(200, int(limit or 100))),
+    )
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm')
@@ -13825,22 +19132,32 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         deleted = int(res.get('deleted') or 0)
         deleted_images = list(res.get('deleted_images') or [])
         failed_items = list(res.get('failed_items') or [])
-    # 清洗确认后，本次扫描范围内未删除的图片全部进入“已处理”。
-    req = task.get('request_payload') or {}
-    wanted = {str(x) for x in (req.get('image_ids') or []) if str(x)}
+    # 清洗确认严格绑定创建时已经冻结的 selection.sqlite3。
+    # FILTERED 范围不能因为兼容层 image_ids 为空而扩大到整个素材库。
+    wanted = set(_v47_frozen_clean_selection_ids(task_id))
+    if not wanted:
+        raise HTTPException(status_code=409, detail='清洗冻结范围不存在，请重新创建任务')
     cleaned_at = now_iso()
-    def mark_confirmed(rows):
-        processed_ids = []
-        for img in rows:
-            iid = str(img.get('id'))
-            if wanted and iid not in wanted:
-                continue
-            img['processing_status'] = 'processed'
-            img['cleaned_at'] = cleaned_at
-            img['clean_task_id'] = task_id
-            processed_ids.append(iid)
-        return processed_ids
-    processed_ids = material_store(project_id).mutate(mark_confirmed)
+    materials = material_store(project_id)
+    existing_ids = []
+    ordered_wanted = sorted(wanted)
+    for offset in range(0, len(ordered_wanted), 500):
+        existing_ids.extend(
+            str(row.get('id'))
+            for row in materials.get_many(ordered_wanted[offset:offset + 500])
+            if str(row.get('id') or '')
+        )
+    processed_ids = list(dict.fromkeys(existing_ids))
+    if processed_ids:
+        materials.patch_many(
+            processed_ids,
+            {
+                'processing_status': 'processed',
+                'cleaned_at': cleaned_at,
+                'clean_task_id': task_id,
+            },
+            batch_size=500,
+        )
     deleted_ids = [str(item.get('id')) for item in deleted_images]
     shared_task_artifacts().atomic_write_json(task_id, 'clean_confirmation.json', {
         'confirmed_at': now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
@@ -13885,12 +19202,37 @@ class AnnotationDecisionReq(BaseModel):
     reject_unmentioned: bool = True
     accept_unmentioned: bool = False
     commit: bool = True
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
 
 
-def _v47_parse_label_text(text: str) -> List[str]:
+def _v47_parse_label_text(
+    text: str,
+    catalog: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     import re
-    vals = [normalize_label(x) for x in re.split(r'[、,，;；\n\t]+', text or '') if x.strip()]
-    return list(dict.fromkeys(x for x in vals if x))
+    values = list(dict.fromkeys(
+        str(x or '').strip()
+        for x in re.split(r'[、,，;；\n\t]+', text or '')
+        if str(x or '').strip()
+    ))
+    if catalog is None:
+        return [normalize_label(value) for value in values if normalize_label(value)]
+    active_codes = {
+        str(item.get('code') or '').strip()
+        for item in catalog
+        if str(item.get('code') or '').strip()
+    }
+    unknown = [value for value in values if value not in active_codes]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "AI 标注标签必须显式使用当前标签库中的英文编码；"
+                "系统不会根据中文名、别名或历史映射自动选择标签："
+                + "、".join(unknown[:20])
+            ),
+        )
+    return values
 
 
 def _v47_default_annotation_model() -> Dict[str, Any]:
@@ -13900,26 +19242,20 @@ def _v47_default_annotation_model() -> Dict[str, Any]:
     return next((x for x in items if x.get('default_for_annotation')), items[0])
 
 
-def _v47_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
-    meta_by_code = {
-        str(item.get('code')): item
-        for item in project.get('label_meta', [])
-        if isinstance(item, dict) and str(item.get('status') or 'active') == 'active'
-    }
-    result = []
-    for index, item in enumerate(project.get('labels', [])):
-        code = normalize_label(item.get('code') if isinstance(item, dict) else item)
-        if not code:
-            continue
-        meta = item if isinstance(item, dict) else meta_by_code.get(code, {})
-        if str(meta.get('status') or 'active') != 'active':
-            continue
-        result.append({
-            'code': code,
-            'class_id': index,
-            'display_name_zh': str(meta.get('display_name_zh') or meta.get('display_name') or code),
-        })
-    return result
+def _annotation_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            'code': str(item['code']),
+            'class_id': int(item['class_id']),
+            'display_name_zh': str(
+                item.get('display_name_zh')
+                or item.get('display_name')
+                or item['code']
+            ),
+            'aliases': normalize_label_aliases(item.get('aliases') or []),
+        }
+        for item in active_label_options(project_label_items(project))
+    ]
 
 
 def _v47_build_annotation_prompt(
@@ -13949,200 +19285,29 @@ def _v47_build_annotation_prompt(
     return template.replace('{labels}', '、'.join(str(item.get('code')) for item in labels))
 
 
-def _v47_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
-    config_id = str(payload.get('model_config_id') or '')
-    provider_id = str(payload.get('provider_id') or '')
-    cfg = next((x for x in _v35_model_items() if x.get('id') == config_id or x.get('id') == provider_id), None)
-    if cfg:
-        runtime_cfg = dict(cfg)
-        reference = str(cfg.get('secret_ref') or '')
-        runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
-        return auto_label_core.provider_factory(runtime_cfg), cfg
-    if provider_id:
-        return auto_label_core.provider_factory(provider_id), {'id': provider_id, 'name': provider_id}
-    cfg = _v47_default_annotation_model()
-    runtime_cfg = dict(cfg)
-    reference = str(cfg.get('secret_ref') or '')
-    runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
-    return auto_label_core.provider_factory(runtime_cfg), cfg
-
-
-def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any]):
-    try:
-        _v33_update_task(project_id, 'prelabel_tasks', task_id, status='running', status_text='AI标注中', started_at=now_iso())
-        provider, cfg = _v47_runtime_provider(payload)
-        labels = list(payload.get('labels') or [])
-        project = get_project(project_id)
-        catalog = _v47_label_catalog(project)
-        selected_catalog = [item for item in catalog if item.get('code') in labels]
-        label_ids = {str(item['code']): int(item['class_id']) for item in selected_catalog}
-        if set(labels) != set(label_ids):
-            missing = sorted(set(labels) - set(label_ids))
-            raise RuntimeError('任务包含标签库之外或已停用的标签：' + '、'.join(missing))
-        prompt_template = dict(payload.get('prompt_template_snapshot') or {}).get('prompt') or ''
-        ids = set(payload.get('image_ids') or [])
-        images = [x for x in load_images(project_id) if x.get('id') in ids]
-        preview_count = max(0, int(payload.get('preview_count') or 0))
-        if preview_count:
-            images = images[:preview_count]
-        if not images:
-            raise RuntimeError('没有可自动标注的图片')
-        total = len(images); started = time.time(); candidates: Dict[str, Any] = {}; box_count = 0; errors = []
-        for idx, img in enumerate(images, 1):
-            cur = _v33_get_task(project_id, 'prelabel_tasks', task_id) or {}
-            if cur.get('stop_requested'):
-                _v33_update_task(project_id, 'prelabel_tasks', task_id, status='stopped', status_text='已停止', finished_at=now_iso()); return
-            try:
-                path = resolve_material_path(project_id, img)
-                prompt = _v47_build_annotation_prompt(
-                    cfg,
-                    selected_catalog,
-                    width=int(img['width']),
-                    height=int(img['height']),
-                    business_instruction=str(payload.get('business_instruction') or ''),
-                    template=prompt_template,
-                )
-                response = provider.annotate(
-                    image_bytes=path.read_bytes(),
-                    prompt=prompt,
-                    output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
-                )
-                text = str(response.get('text') or '')
-                parsed = auto_label_core.parse_candidate_response(
-                    text,
-                    width=int(img['width']),
-                    height=int(img['height']),
-                    label_ids=label_ids,
-                    label_aliases={
-                        str(item['code']): [str(item.get('display_name_zh') or '')]
-                        for item in selected_catalog
-                    },
-                )
-                threshold = float(payload.get('threshold') if payload.get('threshold') is not None else .45)
-                parsed = [box for box in parsed if float(box.get('confidence') or 0) >= threshold]
-                boxes = auto_label_core.nms_candidates(parsed, iou_threshold=0.5)
-                for box in boxes:
-                    box.update({
-                        'id': uuid.uuid4().hex[:10],
-                        'source': 'ai_candidate',
-                        'model_config_id': cfg.get('id'),
-                        'prompt_template_id': payload.get('prompt_template_id') or '',
-                        'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
-                    })
-                candidates[str(img['id'])] = {
-                    'image_id': img['id'],
-                    'filename': img.get('filename'),
-                    'url': img.get('url'),
-                    'status': 'success' if boxes else 'empty',
-                    'boxes': boxes,
-                    'raw_response_hash': auto_label_core.raw_response_hash(text),
-                    'request_id': str(response.get('request_id') or ''),
-                    'latency_ms': int(response.get('latency_ms') or 0),
-                    'provider': str(response.get('provider') or ''),
-                    'model': str(response.get('model') or cfg.get('model_name') or ''),
-                }
-                box_count += len(boxes)
-            except Exception as e:
-                error_item = {'image_id': img.get('id'), 'image':img.get('filename'),'error':str(e)}
-                errors.append(error_item)
-                candidates[str(img['id'])] = {
-                    'image_id': img.get('id'), 'filename': img.get('filename'), 'url': img.get('url'),
-                    'status': 'failed', 'boxes': [], 'error': str(e),
-                }
-            if idx % 2 == 0 or idx == total:
-                elapsed=max(.001,time.time()-started);eta=int(max(0,elapsed/idx*(total-idx)))
-                _v33_update_task(project_id,'prelabel_tasks',task_id,processed_images=idx,total_images=total,boxes_added=box_count,progress=int(idx/total*100),elapsed_seconds=int(elapsed),eta_seconds=eta,errors=errors[-20:])
-        result_path = _v47_file_for(project_id, 'prelabel_candidates', task_id)
-        write_json(result_path, {
-            'task_id': task_id, 'labels': labels, 'model_name': cfg.get('name'),
-            'prompt_template_id': payload.get('prompt_template_id') or '',
-            'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
-            'items': list(candidates.values()), 'generated_at': now_iso(),
-        })
-        if errors and len(errors) >= total and box_count == 0:
-            raise RuntimeError(errors[0]['error'])
-        _v33_update_task(project_id,'prelabel_tasks',task_id,status='awaiting_confirmation',status_text='待确认',progress=100,processed_images=total,total_images=total,boxes_added=box_count,candidate_file=str(result_path),model_name=cfg.get('name'),requested_labels=labels,finished_scan_at=now_iso(),errors=errors[-20:])
-    except Exception as e:
-        _v33_update_task(project_id,'prelabel_tasks',task_id,status='failed',status_text='失败',error=str(e),finished_at=now_iso())
-
-
-@app.post('/api/v47/projects/{project_id}/ai-label-tasks')
-def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
-    project = get_project(project_id)
-    labels = _v47_parse_label_text(payload.labels_text or '')
-    ref_ids = set(payload.reference_image_ids or [])
-    if ref_ids:
-        for iid in ref_ids:
-            for b in read_annotation(project_id, iid).get('boxes', []):
-                lbl = normalize_label(str(b.get('label') or ''))
-                if lbl and lbl not in labels: labels.append(lbl)
-    if not labels:
-        raise HTTPException(status_code=400, detail='请输入标签，或选择至少一张已有标注的参考图片')
-    available = {str(item.get('code')) for item in _v47_label_catalog(project)}
-    unknown = sorted(set(labels) - available)
-    if unknown:
-        raise HTTPException(status_code=400, detail='以下标签不在标签库或已停用：' + '、'.join(unknown))
-    cfg = next(
-        (x for x in _v35_model_items() if x.get('id') in {payload.model_config_id, payload.provider_id}),
-        None,
+def _retired_v47_annotation_api() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "旧版 v47 AI 标注接口已退役；请使用 /api/v60/projects/{project_id}/annotation-tasks。"
+            "AI 候选结果必须通过 durable review/decisions 流程确认后才能写入正式标注。"
+        ),
     )
-    if not cfg and not payload.provider_id:
-        cfg = _v47_default_annotation_model()
-    task_id=uuid.uuid4().hex[:12]
-    data=payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
-    data['labels']=labels
-    if cfg:
-        data['model_config_id']=cfg.get('id')
-    template = {}
-    if payload.prompt_template_id and payload.prompt_template_id != 'default':
-        template = next((x for x in _v35_prompt_items() if x.get('id') == payload.prompt_template_id), None) or {}
-        if not template:
-            raise HTTPException(status_code=400, detail='提示词模板不存在')
-        data['prompt_template_snapshot'] = template
-        data['prompt_template_version_id'] = template.get('version_id') or ''
-    total = min(len(payload.image_ids), payload.preview_count) if payload.preview_count > 0 else len(payload.image_ids)
-    task={'id':task_id,'name':payload.task_name or 'AI自动标注任务','model_name':(cfg or {}).get('name') or payload.provider_id,'requested_labels':labels,'status':'queued','status_text':'排队中','progress':0,'processed_images':0,'total_images':total,'boxes_added':0,'created_at':now_iso(),'request_payload':data,'stop_requested':False,'workflow':'v47_staged_ai','prompt_template_id':template.get('id') or 'default','prompt_template_version_id':template.get('version_id') or ''}
-    tasks=_v33_load_tasks(project_id,'prelabel_tasks');tasks.insert(0,task);_v33_save_tasks(project_id,'prelabel_tasks',tasks[:100])
-    threading.Thread(target=_v47_run_ai_label_task,args=(project_id,task_id,data),daemon=True).start()
-    return task
 
 
-@app.get('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/result')
+@app.post('/api/v47/projects/{project_id}/ai-label-tasks', deprecated=True)
+def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
+    _retired_v47_annotation_api()
+
+
+@app.get('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/result', deprecated=True)
 def v47_ai_label_result(project_id: str, task_id: str):
-    task=_v33_get_task(project_id,'prelabel_tasks',task_id)
-    if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
-    return {'status': task.get('status'), 'task':task,'result':read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})}
+    _retired_v47_annotation_api()
 
 
-@app.post('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/confirm')
+@app.post('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/confirm', deprecated=True)
 def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelConfirmReq):
-    task=_v33_get_task(project_id,'prelabel_tasks',task_id)
-    if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
-    if task.get('status') != 'awaiting_confirmation':
-        raise HTTPException(status_code=409, detail='只有待确认的候选标注任务可以写入')
-    data=read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})
-    allowed = {str(x.get('image_id')) for x in data.get('items',[]) if x.get('status') in {'success', 'empty'}}
-    chosen=set(payload.image_ids or allowed)
-    if not chosen.issubset(allowed):
-        raise HTTPException(status_code=400, detail='确认范围包含不存在或处理失败的图片')
-    overwrite=bool((task.get('request_payload') or {}).get('overwrite'))
-    applied=0;boxes=0
-    for item in data.get('items',[]):
-        iid=str(item.get('image_id'))
-        if iid not in chosen: continue
-        new=[]
-        for candidate in item.get('boxes') or []:
-            confirmed = dict(candidate)
-            confirmed['source'] = 'ai_candidate_confirmed'
-            new.append(confirmed)
-        old=read_annotation(project_id,iid).get('boxes',[])
-        if overwrite:
-            cids={x.get('class_id') for x in new};merged=[x for x in old if x.get('class_id') not in cids]+new
-        else: merged=old+new
-        write_annotation(project_id,iid,merged);applied+=1;boxes+=len(new)
-    _v33_update_task(project_id,'prelabel_tasks',task_id,status='done',status_text='已确认',confirmed_images=applied,confirmed_boxes=boxes,confirmed_at=now_iso(),finished_at=now_iso())
-    return {'ok':True,'applied_images':applied,'applied_image_ids':sorted(chosen),'boxes_added':boxes,'labels':get_project(project_id).get('labels',[])}
-
+    _retired_v47_annotation_api()
 
 def public_annotation_task(
     task: TaskRecord,
@@ -14204,6 +19369,10 @@ def public_annotation_task(
         "error": task.error,
         "name": str((request or {}).get("task_name") or "AI自动标注任务") if isinstance(request, dict) else "AI自动标注任务",
         "requested_labels": list((request or {}).get("labels") or []) if isinstance(request, dict) else [],
+        "model_config_id": str((request or {}).get("model_config_id") or "") if isinstance(request, dict) else "",
+        "model_config_name": str((request or {}).get("model_config_name") or "") if isinstance(request, dict) else "",
+        "model_provider": str((request or {}).get("model_provider") or "") if isinstance(request, dict) else "",
+        "model_config_revision": str((request or {}).get("model_config_revision") or "") if isinstance(request, dict) else "",
         "total_count": total_count,
         "completed_count": min(total_count, completed_count) if total_count else completed_count,
         "failed_count": failed_count,
@@ -14221,48 +19390,55 @@ def _annotation_summary(task: TaskRecord) -> dict:
 
 
 def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq) -> tuple[dict, str]:
-    project = get_project(project_id)
-    labels = _v47_parse_label_text(payload.labels_text)
-    for image_id in payload.reference_image_ids or []:
-        for box in read_annotation(project_id, image_id).get("boxes", []):
-            label = normalize_label(str(box.get("label") or ""))
-            if label and label not in labels:
-                labels.append(label)
-    if not labels:
-        raise HTTPException(status_code=400, detail="请输入标签，或选择至少一张已有标注的参考图片")
-    available = {str(item.get("code")) for item in _v47_label_catalog(project)}
-    unknown = sorted(set(labels) - available)
-    if unknown:
-        raise HTTPException(status_code=400, detail="以下标签不在标签库或已停用：" + "、".join(unknown))
-    image_ids = list(dict.fromkeys(str(value) for value in payload.image_ids if str(value)))
-    existing = {str(image.get("id")) for image in load_images(project_id)}
-    missing = sorted(set(image_ids) - existing)
-    if missing:
-        raise HTTPException(status_code=400, detail="以下素材不存在：" + "、".join(missing[:20]))
+    # Web submission owns selection/material validation only. Model/prompt
+    # selection and immutable configuration snapshots belong to the shared
+    # worker-safe annotation_runtime owner used by both v60 and Material Batch.
+    get_project(project_id)
+    image_ids = list(dict.fromkeys(
+        str(value) for value in payload.image_ids if str(value)
+    ))
     if not image_ids:
         raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
-    config = next(
-        (item for item in _v35_model_items() if item.get("id") in {payload.model_config_id, payload.provider_id}),
-        None,
-    )
-    if not config and not payload.provider_id:
-        config = _v47_default_annotation_model()
-    template = {}
-    if payload.prompt_template_id and payload.prompt_template_id != "default":
-        template = next((item for item in _v35_prompt_items() if item.get("id") == payload.prompt_template_id), None) or {}
-        if not template:
-            raise HTTPException(status_code=400, detail="提示词模板不存在")
+
+    existing = set()
+    materials = material_store(project_id)
+    for offset in range(0, len(image_ids), 500):
+        existing.update(
+            str(image.get("id"))
+            for image in materials.get_many(image_ids[offset:offset + 500])
+            if str(image.get("id") or "")
+        )
+    missing = sorted(set(image_ids) - existing)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="以下素材不存在：" + "、".join(missing[:20]),
+        )
+
     request = payload.model_dump(mode="json")
     request.update({
         "image_ids": image_ids,
-        "labels": labels,
-        "model_config_id": (config or {}).get("id") or payload.model_config_id,
-        "prompt_template_snapshot": template,
-        "prompt_template_version_id": template.get("version_id") or "",
-        "schema_version": 1,
+        "schema_version": 2,
     })
-    provider_key = str((config or {}).get("id") or payload.provider_id or "default")
-    return request, provider_key
+    try:
+        # _v35_model_items() performs the one-time legacy secret migration.
+        # prepare_annotation_request() is the only owner that interprets the
+        # model/prompt configuration and freezes it for Durable execution.
+        prepared = prepare_annotation_request(
+            DATA_DIR,
+            project_id,
+            request,
+            runtime=False,
+            model_configs=_v35_model_items(),
+            prompt_templates=_v35_prompt_items(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    provider_key = str(prepared.get("model_config_id") or "")
+    if not provider_key:
+        raise HTTPException(status_code=400, detail="AI_MODEL_CONFIG_NOT_FOUND: 请选择可用模型配置")
+    return prepared, provider_key
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks")
@@ -14326,19 +19502,117 @@ def get_annotation_task(project_id: str, task_id: str):
     return public_annotation_task(task, summary=_annotation_summary(task))
 
 
+@app.get("/api/v60/projects/{project_id}/annotation-material-states")
+def annotation_material_states(project_id: str, image_ids: str = ""):
+    get_project(project_id)
+    requested = list(dict.fromkeys(
+        value.strip() for value in str(image_ids or "").split(",") if value.strip()
+    ))
+    if len(requested) > 100:
+        raise HTTPException(status_code=422, detail="单次最多查询 100 张素材的 AI 标注状态")
+    if not requested:
+        return {"items": []}
+
+    repository = shared_task_repository()
+    page = repository.list(
+        project_id=project_id,
+        kinds={TaskKind.AI_ANNOTATION, TaskKind.MATERIAL_BATCH},
+        statuses={
+            TaskStatus.AWAITING_CONFIRMATION,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCEL_REQUESTED,
+        },
+        limit=100,
+    )
+    ranks = {"candidate_failed": 1, "awaiting_confirmation": 2, "committing": 3}
+    projected: Dict[str, Dict[str, Any]] = {}
+    for task in page.items:
+        if task.kind is TaskKind.MATERIAL_BATCH:
+            batch_request = shared_task_artifacts().read_json(
+                task.task_id, task.payload_ref, default={},
+            )
+            if str((batch_request or {}).get("operation") or "") != "AI_ANNOTATE":
+                continue
+        phase = str(task.stage or "").upper()
+        if task.status is TaskStatus.AWAITING_CONFIRMATION:
+            public_state = "awaiting_confirmation"
+        elif (
+            phase in {"REVIEW_QUEUED", "APPLYING_REVIEW"}
+            and task.status in {
+                TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED,
+            }
+        ):
+            public_state = "committing"
+        else:
+            continue
+        if not task.result_ref:
+            continue
+
+        store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
+        try:
+            rows = store.get_many(requested)
+        except (FileNotFoundError, ValueError):
+            continue
+        for image_id, item in rows.items():
+            candidate_status = str(item.get("status") or "")
+            if candidate_status == "failed":
+                state = "candidate_failed"
+            elif candidate_status not in {"success", "empty"}:
+                continue
+            elif public_state == "committing":
+                if item.get("accepted") is not True:
+                    continue
+                state = "committing"
+            else:
+                state = "awaiting_confirmation"
+
+            current = projected.get(image_id)
+            if current and ranks.get(str(current.get("state")), 0) >= ranks[state]:
+                continue
+            projected[image_id] = {
+                "image_id": image_id,
+                "state": state,
+                "task_id": task.task_id,
+            }
+    return {"items": [projected[key] for key in requested if key in projected]}
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
 def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None):
     task = _require_annotation_review_task(project_id, task_id)
     if not task.result_ref:
         raise HTTPException(status_code=409, detail="任务尚未生成候选结果")
+    store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
     try:
-        page = CandidateStore(shared_task_artifacts(), task_id=task.task_id).read_page(
+        page = store.read_page(
             cursor=cursor,
             limit=max(1, min(100, int(limit))),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+    items = [dict(item) for item in page.items]
+    missing_ids = list(dict.fromkeys(
+        str(item.get("image_id") or "")
+        for item in items
+        if str(item.get("image_id") or "")
+        and any(item.get(field) in (None, "") for field in ("url", "filename", "width", "height"))
+    ))
+    materials = {
+        str(row.get("id") or ""): public_material(project_id, row)
+        for row in material_store(project_id).get_many(missing_ids)
+    } if missing_ids else {}
+    for item in items:
+        material = materials.get(str(item.get("image_id") or ""))
+        if not material:
+            continue
+        for field in ("url", "filename", "width", "height"):
+            if item.get(field) in (None, "") and material.get(field) not in (None, ""):
+                item[field] = material[field]
+    response = {"items": items, "next_cursor": page.next_cursor, "total": page.total}
+    if cursor in {None, "", "0"}:
+        response["label_summary"] = store.label_summary()
+    return response
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
@@ -14359,39 +19633,112 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         for item in payload.decisions
     ]
     decided_ids = {item.image_id for item in decisions}
-    if any((store.get(image_id) or {}).get("status") not in {"success", "empty"} for image_id in decided_ids):
-        raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
-    store.apply_decisions(decisions)
+
+    mapping = {
+        str(source).strip(): str(target).strip()
+        for source, target in dict(payload.label_mapping or {}).items()
+        if str(source).strip() or str(target).strip()
+    }
+    if any(not source or not target for source, target in mapping.items()):
+        raise HTTPException(status_code=400, detail="标签统一映射不能包含空标签")
+    catalog = _annotation_label_catalog(get_project(project_id))
+    label_ids = {str(item["code"]): int(item["class_id"]) for item in catalog}
+    source_labels = (
+        {str(item["label"]) for item in store.label_summary()}
+        if mapping
+        else set()
+    )
+    unknown_sources = sorted(set(mapping) - source_labels)
+    unknown_targets = sorted(set(mapping.values()) - set(label_ids))
+    if unknown_sources:
+        raise HTTPException(status_code=400, detail="标签统一映射包含不存在的候选标签：" + "、".join(unknown_sources))
+    if unknown_targets:
+        raise HTTPException(status_code=400, detail="标签统一映射目标不在当前有效标签库：" + "、".join(unknown_targets))
+    for decision in decisions:
+        for box in decision.boxes or []:
+            source = str(box.get("label") or "").strip()
+            if not source or (source not in label_ids and source not in mapping):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"候选框标签不在当前有效标签库：{source or '(empty)'}",
+                )
+
+    try:
+        store.apply_decisions(
+            decisions,
+            allowed_statuses={"success", "empty"},
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail="审核范围包含不存在或生成失败的素材",
+        ) from error
+    reject_all_without_mapping = (
+        bool(payload.reject_unmentioned)
+        and not bool(payload.accept_unmentioned)
+        and not mapping
+        and all(not decision.accepted for decision in decisions)
+    )
+    if not reject_all_without_mapping:
+        try:
+            store.remap_labels(mapping, label_ids)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.accept_unmentioned:
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
         store.decide_unmentioned(False, exclude=decided_ids)
     summary = store.summary()
     if summary["unreviewed"] or not payload.commit:
-        return {"ok": True, "task": public_annotation_task(task, summary=summary), "review": summary}
-    if payload.commit:
-        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
-        if task.kind is TaskKind.MATERIAL_BATCH:
-            request = request.get("options") or {}
-        result = commit_candidate_decisions(
-            project_id,
+        return {
+            "ok": True,
+            "task": public_annotation_task(task, summary=summary),
+            "review": summary,
+            "label_summary": store.label_summary(),
+        }
+
+    if not summary.get("accepted"):
+        result = {
+            "applied_images": 0,
+            "applied_image_ids": [],
+            "boxes_added": 0,
+            "review": summary,
+            "completed_image_ids": [],
+            "image_summaries": [],
+            "image_summaries_truncated": False,
+        }
+        shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
+        final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
+        updated = shared_task_repository().complete_review(
             task.task_id,
-            store,
-            overwrite=bool((request or {}).get("overwrite")),
+            final_status,
+            "review/result.json",
+            accepted=False,
         )
-    else:
-        result = {"review": summary}
-    shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
-    final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
-    updated = shared_task_repository().complete_review(
-        task.task_id,
-        final_status,
-        "review/result.json",
-        accepted=bool(summary.get("accepted")),
+        return {"ok": True, "task": public_annotation_task(updated, summary=summary), **result}
+
+    confirmation = {
+        "accepted": True,
+        "confirmed_at": now_iso(),
+        "label_mapping": mapping,
+        "review": summary,
+    }
+    shared_task_artifacts().atomic_write_json(
+        task.task_id, "review/confirmation.json", confirmation,
     )
-    return {"ok": True, "task": public_annotation_task(updated, summary=summary), **result}
+    try:
+        updated = shared_task_repository().resume_after_review_confirmation(task.task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "ok": True,
+        "queued_for_commit": True,
+        "task": public_annotation_task(updated, summary=summary),
+        "review": summary,
+        "label_summary": store.label_summary(),
+    }
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel")
@@ -14480,7 +19827,11 @@ async def create_deployment_test(
     model_name: str = Form(""), model_source: str = Form("project"),
     local_path: str = Form(""), algorithm_id: str = Form(""), version_id: str = Form(""),
     conf: float = Form(0.25), inference_framework: str = Form("ultralytics"),
-    inference_env_id: str = Form(""), file: UploadFile = File(...),
+    inference_env_id: str = Form(""),
+    detection_batch_id: str = Form(""), detection_item_index: int = Form(-1),
+    detection_item_total: int = Form(0), detection_side: str = Form(""),
+    model_label: str = Form(""), original_filename: str = Form(""),
+    file: UploadFile = File(...),
 ):
     get_project(project_id)
     model_resolution = _resolve_v61_test_model(
@@ -14506,6 +19857,26 @@ async def create_deployment_test(
     input_path.write_bytes(await file.read())
     if input_path.stat().st_size <= 0:
         raise HTTPException(status_code=400, detail="测试图片为空")
+    batch_id = str(detection_batch_id or "").strip()
+    if batch_id:
+        if (
+            len(batch_id) > 64
+            or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in batch_id)
+        ):
+            raise HTTPException(status_code=400, detail="检测批次 ID 无效")
+        if detection_item_index < 0 or detection_item_index >= 100000:
+            raise HTTPException(status_code=400, detail="检测图片序号无效")
+        if detection_item_total <= 0 or detection_item_total > 100000:
+            raise HTTPException(status_code=400, detail="检测批次图片数量无效")
+        side = str(detection_side or "").strip().upper()
+        if side not in {"A", "B"}:
+            raise HTTPException(status_code=400, detail="检测模型侧必须是 A 或 B")
+    else:
+        side = ""
+    safe_original_name = Path(str(original_filename or file.filename or "test.jpg")).name[:255]
+    task_model_sha256 = ""
+    if algorithm_id and version_id and model_path and Path(model_path).is_file():
+        task_model_sha256 = sha256_file(Path(model_path)).lower()
     request = {
         "model_path": model_path,
         "model_reference": model_reference,
@@ -14514,11 +19885,61 @@ async def create_deployment_test(
         "downloadable": model_resolution.downloadable,
         "environment_status": model_resolution.environment_status,
         "input_path": str(input_path), "output_path": str(output_path),
+        "input_image_url": f"/data/projects/{project_id}/predictions/{task_id}/input{extension}",
         "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
         "framework": framework, "python_path": python_path,
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
         "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
+        "model_identity": {
+            "label": str(model_label or "").strip()[:300],
+            "model_name": str(model_name or "").strip()[:300],
+            "model_source": str(model_source or "project").strip()[:80],
+            "algorithm_id": str(algorithm_id or "").strip()[:128],
+            "version_id": str(version_id or "").strip()[:128],
+            "model_sha256": task_model_sha256,
+            "framework": framework,
+            "runtime_format": suffix.lstrip("."),
+        },
+        "detection_batch": (
+            {
+                "batch_id": batch_id,
+                "item_index": int(detection_item_index),
+                "item_total": int(detection_item_total),
+                "side": side,
+                "original_filename": safe_original_name,
+            }
+            if batch_id else None
+        ),
     }
+    try:
+        remote_execution = _remote_execution_transport_service().stage_deployment_test(
+            project_id=project_id,
+            task_id=task_id,
+            input_path=input_path,
+            model_path=model_path,
+            model_reference=model_reference,
+            model_reference_type=model_reference_type,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            framework=framework,
+            runtime_format=suffix.lstrip("."),
+            confidence=max(0.0, min(1.0, float(conf))),
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise PlatformError(
+            code=error.code,
+            message="远程部署准备失败",
+            detail=str(error),
+            solution="请检查模型资产对象存储、访问凭据和对象完整性后重试。",
+            status_code=error.status_code,
+        ) from error
+    if remote_execution is not None:
+        request["remote_execution"] = remote_execution
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
     record = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json", f"deployment-runtime:{suffix}",
@@ -14538,6 +19959,278 @@ def cancel_deployment_test(project_id: str, task_id: str):
     return public_deployment_test(shared_task_repository().request_cancel(task_id))
 
 
+@app.post("/api/v64/projects/{project_id}/deployment-tests/{task_id}/feedback-evidence")
+def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
+    """Create review evidence from one completed formal algorithm-version detection.
+
+    This is intentionally explicit: running a model test never promotes data or
+    writes annotation truth. The returned prediction_id can only enter the
+    existing v63 human-review flow.
+    """
+    from platform_core.online_feedback import validate_prediction_evidence
+
+    task = _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
+    if task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        raise HTTPException(status_code=409, detail="只有真实检测成功后才能提交抽检反馈")
+
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+    if not isinstance(request, dict) or not isinstance(result, dict):
+        raise HTTPException(status_code=409, detail="检测任务证据不完整，请重新检测")
+
+    identity = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
+    if str(identity.get("model_source") or "").lower() != "algorithm_version":
+        raise HTTPException(status_code=409, detail="只有正式算法版本检测可以进入抽检反馈")
+    algorithm_id = str(identity.get("algorithm_id") or "").strip()
+    version_id = str(identity.get("version_id") or "").strip()
+    if not algorithm_id or not version_id:
+        raise HTTPException(status_code=409, detail="检测任务缺少正式算法版本身份")
+
+    _algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    model_sha256 = _online_feedback_version_model_sha256(version)
+    task_model_sha256 = str(identity.get("model_sha256") or "").strip().lower()
+    if not task_model_sha256 or task_model_sha256 != model_sha256.lower():
+        raise HTTPException(
+            status_code=409,
+            detail="检测任务使用的模型与当前正式版本模型身份不一致，请重新检测",
+        )
+
+    source_input = Path(str(request.get("input_path") or ""))
+    source_output = Path(str(result.get("output_path") or request.get("output_path") or ""))
+    if not source_input.is_file() or source_input.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail="检测原图证据不可用，请重新检测")
+    if not source_output.is_file() or source_output.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail="检测结果图片不可用，请重新检测")
+
+    prediction_id = str(task.task_id)
+    root = project_dir(project_id) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    input_suffix = source_input.suffix.lower() if source_input.suffix.lower() in IMAGE_EXTS else ".jpg"
+    evidence_input = root / f"{prediction_id}_input{input_suffix}"
+    evidence_result = root / f"{prediction_id}_result.jpg"
+    evidence_path = root / f"{prediction_id}.evidence.json"
+
+    if evidence_path.is_file():
+        evidence, _, _, _ = _online_prediction_evidence(project_id, prediction_id)
+        return {
+            "ok": True,
+            "idempotent": True,
+            "prediction_id": prediction_id,
+            "feedback_eligible": True,
+            "algorithm_id": evidence["algorithm_id"],
+            "version_id": evidence["version_id"],
+            "model_sha256": evidence["model_sha256"],
+            "input_sha256": evidence["input_sha256"],
+            "detections": list(evidence.get("detections") or []),
+            "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+        }
+
+    shutil.copy2(source_input, evidence_input)
+    shutil.copy2(source_output, evidence_result)
+    info = image_info(evidence_input)
+    evidence = validate_prediction_evidence({
+        "schema_version": 1,
+        "prediction_id": prediction_id,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "model_sha256": model_sha256,
+        "input_sha256": sha256_file(evidence_input),
+        "original_filename": safe_filename(
+            str((request.get("detection_batch") or {}).get("original_filename") or source_input.name)
+        ),
+        "input_file": evidence_input.name,
+        "width": int(info["width"]),
+        "height": int(info["height"]),
+        "confidence": float(request.get("conf") or 0.25),
+        "engine": str(result.get("engine") or request.get("framework") or "ultralytics"),
+        "detections": list(result.get("detections") or []),
+        "created_at": str(task.finished_at or now_iso()),
+        "source_channel": "quality_center_detection",
+    })
+    write_json(evidence_path, evidence)
+    return {
+        "ok": True,
+        "idempotent": False,
+        "prediction_id": prediction_id,
+        "feedback_eligible": True,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "model_sha256": model_sha256,
+        "input_sha256": evidence["input_sha256"],
+        "detections": list(evidence.get("detections") or []),
+        "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+    }
+
+
+class DetectionBatchReviewReq(BaseModel):
+    review: Literal["correct", "missed", "false_positive", "box_inaccurate", "wrong_class"]
+    note: str = ""
+
+
+def _iter_detection_batch_rows(project_id: str, batch_id: str = "", *, scan_limit: int = 2000):
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    cursor = None
+    scanned = 0
+    expected = str(batch_id or "").strip()
+    while scanned < scan_limit:
+        page = repository.list(
+            project_id=project_id,
+            kinds=(TaskKind.DEPLOYMENT_TEST,),
+            limit=min(100, scan_limit - scanned),
+            cursor=cursor,
+        )
+        if not page.items:
+            break
+        scanned += len(page.items)
+        for task in page.items:
+            request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            batch = request.get("detection_batch") if isinstance(request, dict) else None
+            if not isinstance(batch, dict) or not batch.get("batch_id"):
+                continue
+            if expected and str(batch.get("batch_id")) != expected:
+                continue
+            result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+            review = artifacts.read_json(task.task_id, "detection_review.json", default={})
+            yield task, request, result if isinstance(result, dict) else {}, review if isinstance(review, dict) else {}
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+
+def _public_detection_batch(project_id: str, batch_id: str, rows):
+    repository = shared_task_repository()
+    grouped: Dict[int, Dict[str, Any]] = {}
+    created_values: List[str] = []
+    total = 0
+    for task, request, result, review in rows:
+        meta = request.get("detection_batch") or {}
+        index = int(meta.get("item_index") or 0)
+        total = max(total, int(meta.get("item_total") or 0))
+        item = grouped.setdefault(index, {
+            "index": index,
+            "original_filename": str(meta.get("original_filename") or ""),
+            "review": {},
+            "models": {},
+        })
+        side = str(meta.get("side") or "").upper()
+        truth = task_to_public(task, repository)
+        model = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
+        public_result = {
+            "task_id": task.task_id,
+            "status": truth.get("status"),
+            "progress_percent": truth.get("progress_percent"),
+            "phase": truth.get("phase"),
+            "model": model,
+            "input_image_url": str(request.get("input_image_url") or ""),
+            "result_image_url": str((result or {}).get("image_url") or request.get("image_url") or ""),
+            "detections": list((result or {}).get("detections") or []),
+            "preprocess_ms": (result or {}).get("preprocess_ms"),
+            "inference_ms": (result or {}).get("inference_ms"),
+            "postprocess_ms": (result or {}).get("postprocess_ms"),
+            "total_elapsed_ms": (result or {}).get("total_elapsed_ms"),
+            "error": truth.get("error") or truth.get("error_message") or "",
+        }
+        if side in {"A", "B"}:
+            item["models"][side] = public_result
+        if review and review.get("review"):
+            item["review"] = {
+                "review": str(review.get("review") or ""),
+                "note": str(review.get("note") or ""),
+                "updated_at": str(review.get("updated_at") or ""),
+            }
+        created = str(getattr(task, "created_at", "") or truth.get("created_at") or "")
+        if created:
+            created_values.append(created)
+    items = [grouped[index] for index in sorted(grouped)]
+    completed = sum(
+        1 for item in items
+        if item["models"] and all(
+            str(model.get("status") or "") in {"SUCCEEDED", "FAILED", "CANCELLED"}
+            for model in item["models"].values()
+        )
+    )
+    failed = sum(
+        1 for item in items
+        if any(str(model.get("status") or "") == "FAILED" for model in item["models"].values())
+    )
+    return {
+        "batch_id": batch_id,
+        "total": total or len(items),
+        "created_items": len(items),
+        "completed_items": completed,
+        "failed_items": failed,
+        "created_at": min(created_values) if created_values else "",
+        "updated_at": max(created_values) if created_values else "",
+        "items": items,
+    }
+
+
+@app.get("/api/v64/projects/{project_id}/detection-batches")
+def list_detection_batches(project_id: str, limit: int = Query(default=12, ge=1, le=50)):
+    get_project(project_id)
+    grouped: Dict[str, list] = {}
+    order: List[str] = []
+    for row in _iter_detection_batch_rows(project_id, scan_limit=1500):
+        meta = row[1].get("detection_batch") or {}
+        batch_id = str(meta.get("batch_id") or "")
+        if not batch_id:
+            continue
+        if batch_id not in grouped:
+            if len(order) >= limit:
+                continue
+            grouped[batch_id] = []
+            order.append(batch_id)
+        grouped[batch_id].append(row)
+    return {
+        "ok": True,
+        "items": [
+            {key: value for key, value in _public_detection_batch(project_id, batch_id, grouped[batch_id]).items() if key != "items"}
+            for batch_id in order
+        ],
+    }
+
+
+@app.get("/api/v64/projects/{project_id}/detection-batches/{batch_id}")
+def get_detection_batch(project_id: str, batch_id: str):
+    get_project(project_id)
+    rows = list(_iter_detection_batch_rows(project_id, batch_id, scan_limit=5000))
+    if not rows:
+        raise HTTPException(status_code=404, detail="检测批次不存在")
+    return {"ok": True, "batch": _public_detection_batch(project_id, batch_id, rows)}
+
+
+@app.post("/api/v64/projects/{project_id}/detection-batches/{batch_id}/items/{item_index}/review")
+def review_detection_batch_item(project_id: str, batch_id: str, item_index: int, payload: DetectionBatchReviewReq):
+    get_project(project_id)
+    rows = [
+        row for row in _iter_detection_batch_rows(project_id, batch_id, scan_limit=5000)
+        if int((row[1].get("detection_batch") or {}).get("item_index") or 0) == int(item_index)
+    ]
+    if not rows:
+        raise HTTPException(status_code=404, detail="检测结果不存在")
+    terminal = {
+        TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED,
+        TaskStatus.CANCELLED, TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE,
+    }
+    if any(task.status not in terminal for task, _, _, _ in rows):
+        raise HTTPException(status_code=409, detail="检测任务尚未结束，暂不能人工核验")
+    if not any(task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS} for task, _, _, _ in rows):
+        raise HTTPException(status_code=409, detail="该图片没有成功的真实检测结果，暂不能人工核验")
+    review = {
+        "schema_version": 1,
+        "batch_id": str(batch_id),
+        "item_index": int(item_index),
+        "review": payload.review,
+        "note": str(payload.note or "").strip()[:1000],
+        "updated_at": now_iso(),
+    }
+    artifacts = shared_task_artifacts()
+    for task, _, _, _ in rows:
+        artifacts.atomic_write_json(task.task_id, "detection_review.json", review)
+    return {"ok": True, "review": review}
+
 
 # ============================================================
 # v42.12 — import review, batch label remap, explicit ready state
@@ -14554,7 +20247,7 @@ class V52ReadyReq(BaseModel):
 @app.post('/api/v52/projects/{project_id}/labels/remap')
 def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
     get_project(project_id)
-    ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
+    ids = [str(x).strip() for x in (payload.image_ids or []) if str(x).strip()]
     source = normalize_label(payload.source_label)
     target = normalize_label(payload.target_label)
     if not ids:
@@ -14562,61 +20255,86 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
     if not source or not target:
         raise HTTPException(status_code=400, detail='原标签和新标签不能为空')
     if source == target:
-        return {'ok': True, 'changed_images': 0, 'changed_boxes': 0, 'source_label': source, 'target_label': target}
+        return {
+            'ok': True,
+            'changed_images': 0,
+            'changed_boxes': 0,
+            'source_label': source,
+            'target_label': target,
+        }
     project = get_project(project_id)
-    target_id = get_label_id(project, target)
-    changed_images = 0
-    changed_boxes = 0
-    for iid in ids:
-        ann = read_annotation(project_id, iid)
-        boxes = ann.get('boxes', [])
-        changed = False
-        for b in boxes:
-            if normalize_label(b.get('label')) == source:
-                b['label'] = target
-                b['class_id'] = target_id
-                changed_boxes += 1
-                changed = True
-        if changed:
-            write_annotation(project_id, iid, boxes)
-            changed_images += 1
-    return {
-        'ok': True,
-        'changed_images': changed_images,
-        'changed_boxes': changed_boxes,
-        'source_label': source,
-        'target_label': target,
-        'labels': get_project(project_id).get('labels', []),
+    active_targets = {
+        str(item.get('code')): int(item.get('class_id'))
+        for item in active_label_options(project_label_items(project))
     }
+    if target not in active_targets:
+        raise HTTPException(
+            status_code=409,
+            detail='目标标签必须来自当前有效标签库；如需新标签，请先在“标签管理”中显式创建',
+        )
+    try:
+        task = create_annotation_remap_batch(
+            project_id,
+            material_store(project_id),
+            shared_task_repository(),
+            shared_task_artifacts(),
+            ids,
+            source,
+            target,
+        )
+    except MaterialBatchRequestError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return JSONResponse(
+        status_code=202,
+        content=public_material_batch(
+            task, shared_task_artifacts(), shared_task_repository()
+        ),
+    )
 
 @app.post('/api/v52/projects/{project_id}/images/mark-ready')
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):
     get_project(project_id)
-    ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in (payload.image_ids or []) if str(value).strip()
+    ))
+    if not ids:
+        return {'ok': True, 'changed': 0, 'image_ids': [], 'images': []}
     now = now_iso()
-    def apply_ready(rows):
-        changed_images = []
-        for index, img in enumerate(rows):
-            if str(img.get('id')) not in ids:
-                continue
-            updated = mark_ready(img, now)
-            rows[index] = updated
-            changed_images.append(dict(updated))
-        return changed_images
-    changed_images = material_store(project_id).mutate(apply_ready)
-    changed = [str(img.get('id')) for img in changed_images]
-    return {'ok': True, 'changed': len(changed), 'image_ids': changed, 'images': changed_images}
+    materials = material_store(project_id)
+    current = materials.get_many(ids)
+    existing_ids = [str(row.get('id')) for row in current if str(row.get('id') or '')]
+    patch = {
+        'processing_status': 'processed',
+        'clean_skipped': True,
+        'clean_decision': 'skipped',
+        'clean_decision_at': now,
+        'updated_at': now,
+    }
+    materials.patch_many(existing_ids, patch, batch_size=500)
+    changed_images = [mark_ready(row, now) for row in current]
+    return {
+        'ok': True,
+        'changed': len(existing_ids),
+        'image_ids': existing_ids,
+        'images': changed_images,
+    }
 
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
     job = v19_read_job(project_id, job_id)
     report = v19_read_import_report(project_id, job_id, job)
-    ids = [str(x) for x in (report.get('imported_image_ids') or [])]
-    wanted = set(ids)
-    images = [x for x in load_images(project_id) if str(x.get('id')) in wanted]
+    ids = list(dict.fromkeys(
+        str(value).strip()
+        for value in (report.get('imported_image_ids') or [])
+        if str(value).strip()
+    ))
+    images = material_store(project_id).get_many(ids)
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(ids), 500):
+        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
     counts: Dict[str, int] = {}
     for img in images:
-        ann = read_annotation(project_id, str(img.get('id')))
+        ann = annotations.get(str(img.get('id'))) or {}
         for b in ann.get('boxes', []):
             label = str(b.get('label') or '').strip()
             if label:
@@ -14643,13 +20361,42 @@ def _v49_metric_from_report(report: Dict[str, Any], *keys: str):
     return None
 
 def _v49_job_label_counts(project_id: str, job: Dict[str, Any]) -> Dict[str, int]:
+    snapshot_id = str(job.get('snapshot_id') or '').strip().lower()
+    if re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
+        snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
+        if (
+            isinstance(snapshot, dict)
+            and str(snapshot.get('snapshot_id') or '').strip().lower() == snapshot_id
+            and isinstance(snapshot.get('label_counts'), dict)
+        ):
+            counts: Dict[str, int] = {}
+            for label, value in snapshot['label_counts'].items():
+                code = str(label or '').strip()
+                try:
+                    count = int(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if code and count > 0:
+                    counts[code] = count
+            return counts
+
     selected = job.get('dataset_selected_ids') or {}
-    ids = list(selected.get('train') or selected.get('train_image_ids') or [])
-    if not ids:
-        ids = list((job.get('data_summary') or {}).get('selected_ids', {}).get('train') or [])
+    ids = list(dict.fromkeys(
+        str(value).strip()
+        for value in (
+            selected.get('train')
+            or selected.get('train_image_ids')
+            or (job.get('data_summary') or {}).get('selected_ids', {}).get('train')
+            or []
+        )
+        if str(value).strip()
+    ))
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for offset in range(0, len(ids), 500):
+        annotations.update(read_annotations_many(project_id, ids[offset:offset + 500]))
     counts: Dict[str, int] = {}
-    for iid in ids:
-        ann = read_annotation(project_id, str(iid))
+    for image_id in ids:
+        ann = annotations.get(image_id) or {}
         for box in ann.get('boxes', []):
             label = str(box.get('label') or '').strip()
             if label:
@@ -14716,12 +20463,15 @@ def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
 def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     pid=str(project.get("id") or "")
     if not pid:return {"images":0,"algorithms":0,"versions":0,"jobs":0}
-    image_count=material_store(pid).count(); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
+    image_count=material_store(pid).count(); algs=list_algorithm_assets(algorithms_file(pid)); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
     if not isinstance(algs,list):algs=[]
     if not isinstance(jobs,list):jobs=[]
     return {"images":image_count,"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
 
 def _v53_choose_project(projects:List[Dict[str,Any]], preferred_project_id:str=""):
+    if not ALLOW_MULTIPLE_PROJECTS_FOR_TESTS:
+        runtime_projects = list_projects()
+        return runtime_projects[0] if runtime_projects else None
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}
     return choose_project(projects,preferred_project_id,counts)
 
@@ -14732,31 +20482,103 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
-        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state')
+        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state'),img
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated,annotation_state=fut.result(); patch={**annotation_summary(boxes,annotation_state),"annotation_summary_at":updated}
+            iid,boxes,updated,annotation_state,img=fut.result(); patch={**_annotation_summary_for_material_index(boxes,annotation_state,img),"annotation_summary_at":updated}
             if boxes:patch["processing_status"]="processed"
             patches[iid]=patch
             done+=1
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
     material_store(project_id).patch(patches); return load_images(project_id)
 
+def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
+    """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
+    try:
+        sync_jobs_index(project_id)
+    except Exception:
+        # A bootstrap response may still use the last durable index if one job
+        # cannot be enriched temporarily; never fall back to an older in-memory
+        # snapshot merely because the live overlay failed.
+        pass
+    jobs = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    return jobs if isinstance(jobs, list) else []
+
+
+def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]], int]:
+    """Read algorithms against one stable SQL revision.
+
+    A concurrent writer between the two revision probes makes us retry. This
+    avoids caching rows from revision N under revision N+1.
+    """
+    path = algorithms_file(project_id)
+    algorithms: List[Dict[str, Any]] = []
+    before = 0
+    for _ in range(5):
+        before = algorithm_store_revision(path)
+        algorithms = list_algorithms_internal(project_id)
+        after = algorithm_store_revision(path)
+        if before == after:
+            return algorithms, after
+
+    # Under sustained concurrent writes, never label potentially older rows with
+    # a newer revision. Returning the last pre-read revision guarantees the next
+    # request will retry instead of publishing a falsely-fresh cache entry.
+    return algorithms, before
+
+
+def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
+    global _V53_BOOTSTRAP_SNAPSHOT
+    payload = dict(snapshot or {})
+    cached_revision = int(payload.get("algorithm_revision") or 0)
+    current_revision = algorithm_store_revision(algorithms_file(project_id))
+    if cached_revision != current_revision:
+        algorithms, stable_revision = _v53_algorithms_with_revision(project_id)
+        payload["algorithms"] = algorithms
+        payload["algorithm_revision"] = stable_revision
+        payload["algorithms_generated_at"] = now_iso()
+
+        # Publish an atomic replacement only when it cannot move the cached
+        # algorithm revision backwards under concurrent snapshot requests.
+        current_cached = _V53_BOOTSTRAP_SNAPSHOT
+        published_revision = int(current_cached.get("algorithm_revision") or 0)
+        publish_revision = algorithm_store_revision(algorithms_file(project_id))
+        cached_project_id = str((current_cached.get("project") or {}).get("id") or "")
+        if (
+            cached_project_id == project_id
+            and stable_revision == publish_revision
+            and stable_revision >= published_revision
+        ):
+            refreshed = dict(current_cached)
+            refreshed["algorithms"] = algorithms
+            refreshed["algorithm_revision"] = stable_revision
+            refreshed["algorithms_generated_at"] = payload["algorithms_generated_at"]
+            refreshed["generated_at"] = now_iso()
+            _V53_BOOTSTRAP_SNAPSHOT = refreshed
+
+    payload["jobs"] = _v53_live_jobs(project_id)
+    payload["jobs_generated_at"] = now_iso()
+    return payload
+
+
 def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
     # First paint reads repository counters and small metadata indexes only.
     # Materials use v61 pagination; legacy annotation JSON is resolved per image.
-    project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
+    project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project)
+    algorithms, algorithm_revision = _v53_algorithms_with_revision(project_id)
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
-    jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
-    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"generated_at":now_iso()}
+    jobs=_v53_live_jobs(project_id)
+    model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
+    generated_at=now_iso()
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"algorithm_revision":algorithm_revision,"algorithms_generated_at":generated_at,"jobs":jobs,"model_configs":model_configs,"platform_version":APP_VERSION,"build_id":BUILD_ID,"generated_at":generated_at,"jobs_generated_at":generated_at}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
     try:
         _V53_BOOTSTRAP_STATUS.update({"status":"running","progress":1,"stage":"读取平台数据","message":"正在读取项目索引","started_at":now_iso(),"finished_at":"","error":""})
-        projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []
+        projects=list_projects()
         if not projects:projects=[create_project(ProjectCreate(name="默认空间",description="系统自动创建",labels=[]))]
         _v53_set_bootstrap(8,"读取平台数据",f"发现 {len(projects)} 个项目")
         active=_v53_choose_project(projects,preferred_project_id)
@@ -14804,56 +20626,135 @@ def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/snapshot")
 def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
-    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else _v53_choose_project(projects,""); chosen_id=str(chosen.get("id")) if chosen else ""
+    global _V53_BOOTSTRAP_SNAPSHOT
+    projects=list_projects(); requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""; cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
+    if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
+        live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,cached_id)
+        return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
+    counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else choose_project(projects,"",counts); chosen_id=str(chosen.get("id")) if chosen else ""
+    projects_with_counts=[{**project,"bootstrap_counts":counts.get(str(project.get("id") or ""),{"images":0,"algorithms":0,"versions":0,"jobs":0})} for project in projects]
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
         if requested and chosen_id==requested:
-            snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+            snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and (refresh or chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")):
-        snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
-    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
+        snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+    final_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")
+    live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,final_id) if final_id else dict(_V53_BOOTSTRAP_SNAPSHOT)
+    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
 
 
 # ============================================================
 # v42.14 — label schema management / annotation stability
 # ============================================================
+class V54LabelUnifyReq(BaseModel):
+    target_label: str
+
+
+class V54LabelsUnifyReq(BaseModel):
+    source_class_ids: List[int] = Field(default_factory=list)
+    target_label: str
+
+
+class V54LabelsUnifyPreviewReq(BaseModel):
+    source_class_ids: List[int] = Field(default_factory=list)
+
+
+def _v54_resolve_unify_sources(project_id: str, source_class_ids):
+    project = get_project(project_id)
+    catalog = active_label_options(project_label_items(project))
+    by_id = {int(item.get('class_id', -1)): item for item in catalog}
+    ids = list(dict.fromkeys(int(value) for value in (source_class_ids or [])))
+    if not ids:
+        raise HTTPException(status_code=400, detail='请至少选择一个来源标签')
+    if len(ids) > 50:
+        raise HTTPException(status_code=422, detail='一次最多统一 50 个来源标签')
+    missing = [value for value in ids if value not in by_id]
+    if missing:
+        raise HTTPException(status_code=404, detail='部分来源标签不存在或已停用，请刷新后重试')
+    return project, catalog, [by_id[value] for value in ids]
+
+
+def _v54_start_unify(project_id: str, source_class_ids, target_label: str):
+    _project, catalog, source_items = _v54_resolve_unify_sources(
+        project_id, source_class_ids,
+    )
+    target = normalize_label(target_label)
+    active_targets = {str(item.get('code')) for item in catalog}
+    if target not in active_targets:
+        raise HTTPException(
+            status_code=409,
+            detail='目标标签必须来自当前有效标签库；如需新标签，请先显式创建',
+        )
+    sources = [str(item.get('code') or '').strip() for item in source_items]
+    if target in sources:
+        raise HTTPException(status_code=400, detail='目标标签不能同时作为来源标签')
+    try:
+        task = create_annotation_remap_by_labels(
+            project_id,
+            material_store(project_id),
+            shared_task_repository(),
+            shared_task_artifacts(),
+            sources,
+            target,
+            retire_sources_on_success=True,
+        )
+    except MaterialBatchRequestError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return JSONResponse(
+        status_code=202,
+        content=public_material_batch(
+            task, shared_task_artifacts(), shared_task_repository()
+        ),
+    )
+
+
 @app.get('/api/v54/projects/{project_id}/label-schema')
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
-    items = active_label_options(project_label_items(project))
-    usage = {str(x.get('code')): {'images': 0, 'boxes': 0} for x in items}
-    summary_patches = {}
-    for img in load_images(project_id):
-        counts = img.get('label_counts')
-        if not isinstance(counts, dict):
-            preview = img.get('annotation_preview') if isinstance(img.get('annotation_preview'), list) else []
-            box_count = int(img.get('box_count') or 0)
-            if 'box_count' in img and box_count <= len(preview):
-                counts = {}
-                for box in preview:
-                    label = str(box.get('label') or '').strip()
-                    if label:
-                        counts[label] = int(counts.get(label, 0)) + 1
-            else:
-                boxes = read_annotation(project_id, str(img.get('id'))).get('boxes', [])
-                counts = annotation_summary(boxes).get('label_counts', {})
-            summary_patches[str(img.get('id'))] = {'label_counts': counts}
-        seen = set()
-        for raw_label, raw_count in counts.items():
-            label = str(raw_label or '').strip()
-            count = max(0, int(raw_count or 0))
-            if not label or count <= 0:
-                continue
-            usage.setdefault(label, {'images': 0, 'boxes': 0})['boxes'] += count
-            seen.add(label)
-        for label in seen:
-            usage.setdefault(label, {'images': 0, 'boxes': 0})['images'] += 1
-    if summary_patches:
-        material_store(project_id).patch(summary_patches)
+    governance = project_label_items(project)
+    items = active_label_options(governance)
+    references = AnnotationRepository(
+        project_dir(project_id)
+    ).label_reference_usage()
     for x in items:
-        x['usage_images'] = usage.get(str(x.get('code')), {}).get('images', 0)
-        x['usage_boxes'] = usage.get(str(x.get('code')), {}).get('boxes', 0)
-    return {'ok': True, 'items': items}
+        code = str(x.get('code'))
+        ref = references.get(code, {})
+        x['usage_images'] = int(ref.get('positive_images') or 0)
+        x['usage_boxes'] = int(ref.get('boxes') or 0)
+        x['scope_images'] = int(ref.get('scope_images') or 0)
+        x['affected_images'] = int(ref.get('affected_images') or 0)
+    return {'ok': True, 'items': items, 'governance': governance}
+
+
+@app.post('/api/v54/projects/{project_id}/labels/unify/preview')
+def v54_preview_unify_labels(
+    project_id: str, payload: V54LabelsUnifyPreviewReq,
+):
+    _project, _catalog, source_items = _v54_resolve_unify_sources(
+        project_id, payload.source_class_ids,
+    )
+    sources = [str(item.get('code') or '').strip() for item in source_items]
+    return {
+        'ok': True,
+        'source_labels': sources,
+        **AnnotationRepository(
+            project_dir(project_id)
+        ).label_reference_preview(sources),
+    }
+
+
+@app.post('/api/v54/projects/{project_id}/labels/unify')
+def v54_unify_labels(project_id: str, payload: V54LabelsUnifyReq):
+    return _v54_start_unify(
+        project_id, payload.source_class_ids, payload.target_label,
+    )
+
+
+@app.post('/api/v54/projects/{project_id}/labels/{class_id}/unify')
+def v54_unify_label(project_id: str, class_id: int, payload: V54LabelUnifyReq):
+    return _v54_start_unify(project_id, [class_id], payload.target_label)
+
 
 @app.get('/api/v54/projects/{project_id}/algorithms/{algorithm_id}/iteration-base')
 def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str = 'ultralytics'):
@@ -14861,8 +20762,159 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
     return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework, strict_latest=True)}
 
 
+from platform_core.external_algorithm_platform import (
+    ExternalAlgorithmPlatformService,
+    assert_algorithm_mutable,
+    assert_local_algorithm_create_allowed,
+    external_algorithm_platform_router,
+)
+from platform_core.external_algorithm_publish import (
+    ExternalAlgorithmPublishService,
+    external_algorithm_publish_router,
+    request_external_auto_publish_for_conversion_if_enabled,
+    request_external_auto_publish_if_enabled,
+)
 from platform_core.material_batches import material_batch_router
+from platform_core.training_material_picker_api import training_material_picker_router
+from platform_core.training_recovery_api import training_recovery_router
+from platform_core.remote_execution_transport import (
+    RemoteExecutionTransportError,
+    RemoteExecutionTransportService,
+    SUPPORTED_PORTABLE_RKNN_CHIPS,
+)
 
+
+def _remote_execution_transport_service():
+    return RemoteExecutionTransportService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+        task_artifacts=shared_task_artifacts(),
+    )
+
+
+def _resolve_agent_execution_payload(task, payload, assignment):
+    return _remote_execution_transport_service().resolve_execution_payload(
+        task,
+        payload,
+        assignment,
+    )
+
+
+def _prepare_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().prepare_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
+
+def _confirm_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().confirm_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
+
+def _commit_agent_result_publication(task, payload, evidence, confirmed):
+    return _remote_execution_transport_service().commit_result_publication(
+        task,
+        payload,
+        evidence,
+        confirmed,
+    )
+
+
+def _prepare_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().prepare_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
+
+def _confirm_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().confirm_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
+
+def _agent_material_scan_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().material_scan_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_material_scan_read(task, payload, *, object_key):
+    return _remote_execution_transport_service().material_scan_read_contract(
+        task,
+        payload,
+        object_key=object_key,
+    )
+
+
+def _agent_clean_selection_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().clean_selection_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_clean_selection_read(task, payload, *, image_id):
+    return _remote_execution_transport_service().clean_selection_read_contract(
+        task,
+        payload,
+        image_id=image_id,
+    )
+
+
+app.include_router(external_algorithm_platform_router(
+    data_dir=DATA_DIR,
+    get_project=get_project,
+    algorithms_file=algorithms_file,
+    secret_store_factory=_v35_secret_store,
+))
+app.include_router(external_algorithm_publish_router(
+    data_dir=DATA_DIR,
+    get_project=get_project,
+    project_dir=project_dir,
+    algorithms_file=algorithms_file,
+    external_secret_store_factory=_v35_secret_store,
+    storage_sources_factory=storage_source_repository,
+    storage_credentials_factory=storage_credentials,
+))
 app.include_router(material_batch_router(
     get_project, material_store, shared_task_repository, shared_task_artifacts,
+))
+app.include_router(training_material_picker_router(
+    get_project,
+    lambda: DATA_DIR,
+    project_path_provider=project_dir,
+))
+app.include_router(training_recovery_router(
+    get_project,
+    shared_task_repository,
+    shared_task_artifacts,
+    agent_execution_payload_resolver=_resolve_agent_execution_payload,
+    agent_result_upload_preparer=_prepare_agent_result_upload,
+    agent_result_upload_confirmer=_confirm_agent_result_upload,
+    agent_result_commit_handler=_commit_agent_result_publication,
+    agent_training_model_upload_preparer=_prepare_agent_training_model_uploads,
+    agent_training_model_upload_confirmer=_confirm_agent_training_model_uploads,
+    agent_material_scan_page_provider=_agent_material_scan_page,
+    agent_material_scan_read_provider=_agent_material_scan_read,
+    agent_clean_selection_page_provider=_agent_clean_selection_page,
+    agent_clean_selection_read_provider=_agent_clean_selection_read,
 ))

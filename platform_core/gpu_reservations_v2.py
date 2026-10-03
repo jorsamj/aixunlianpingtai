@@ -12,6 +12,7 @@ import time
 
 from .gpu_resources import GPUResourceManager, _normalized_gpu_row, _number
 from .training_devices import normalize_training_device
+from .training_resource_policy import deferred_auto_reservation_bytes
 
 
 LEGACY_UNSCOPED_NODE = "legacy-unscoped"
@@ -400,6 +401,17 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
             return False, "GPU_WORKER_SLOT_BUSY: training slot already owns a task on this node"
 
         estimated = _number(payload.get("estimated_gpu_memory_bytes")) or None
+        deferred_auto = (
+            payload.get("resource_resolution_deferred") is True
+            and str(payload.get("resource_strategy") or "auto").strip().lower() == "auto"
+            and device == "auto"
+        )
+        admission_estimate = (
+            _number(payload.get("gpu_memory_floor_bytes")) or None
+            if deferred_auto else estimated
+        )
+        if deferred_auto and admission_estimate is None:
+            return False, "RESOURCE_ADMISSION_ESTIMATE_MISSING: deferred AUTO requires gpu_memory_floor_bytes"
         cutoff = (datetime.fromisoformat(now) - timedelta(seconds=self.config.sample_max_age_seconds)).isoformat()
         candidates = []
         reasons = []
@@ -441,14 +453,29 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
                 reasons.append("GPU_CONCURRENCY_LIMIT: GPU is reserved on this node")
                 continue
             capacity = min(int(total * self.config.max_reserved_ratio), total - self.config.safety_bytes)
-            requested = estimated or capacity
             reserved = sum(row["reserved_bytes"] for row in active)
+            if deferred_auto:
+                try:
+                    requested = deferred_auto_reservation_bytes(
+                        payload,
+                        total_bytes=int(total),
+                        free_bytes=int(free),
+                        already_reserved_bytes=int(reserved),
+                        active_count=count,
+                    )
+                except ValueError as error:
+                    return False, f"{error}"
+                if not requested:
+                    reasons.append("GPU_MEMORY_INSUFFICIENT: batch=1 admission floor exceeds candidate AUTO budget")
+                    continue
+            else:
+                requested = estimated or capacity
             if requested <= 0 or reserved + requested > capacity or requested > free - reserved - self.config.safety_bytes:
                 reasons.append("GPU_MEMORY_INSUFFICIENT: free memory after reservations and safety reserve is insufficient")
                 continue
             eligible = bool(
-                estimated
-                and estimated <= total * self.config.small_job_ratio
+                admission_estimate
+                and admission_estimate <= total * self.config.small_job_ratio
                 and self._sharing_evidence(payload, now)
             )
             if count and (policy == "auto" or any(row["policy"] == "auto" for row in active)):
@@ -480,13 +507,25 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
                         "GPU_SHARING_EVIDENCE_REQUIRED: small memory estimate and recent low GPU/CPU/IO pressure required"
                     )
                     continue
-            score = (
-                count == 0,
-                -count,
-                (free - reserved - self.config.safety_bytes) / total,
-                -gpu["utilization"],
-                -int(physical_index),
-            )
+            headroom = max(0, free - reserved - self.config.safety_bytes)
+            if deferred_auto:
+                low_pressure = gpu["utilization"] <= self.config.shared_utilization_limit
+                score = (
+                    count == 0,
+                    -count,
+                    low_pressure,
+                    headroom,
+                    -gpu["utilization"],
+                    -int(physical_index),
+                )
+            else:
+                score = (
+                    count == 0,
+                    -count,
+                    headroom / total,
+                    -gpu["utilization"],
+                    -int(physical_index),
+                )
             candidates.append((score, gpu, physical_index, logical_index, requested, eligible))
 
         if not candidates:
@@ -503,7 +542,7 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
             """,
             (
                 task["task_id"], self.node_id, gpu["gpu_uuid"], int(physical_index),
-                int(logical_index), int(logical_index), requested, estimated, worker_id,
+                int(logical_index), int(logical_index), requested, admission_estimate, worker_id,
                 self.worker_slot, token, policy, int(eligible),
                 (payload.get("gpu_sharing_evidence") or {}).get("sampled_at") if eligible else None,
                 now, now, expires_at,

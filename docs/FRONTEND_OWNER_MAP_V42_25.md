@@ -1,5 +1,22 @@
 # Frontend Final-Owner Map — v42.25
 
+## 2026-09-24 Training detail/log final-owner closure
+
+Final product owner chain:
+
+```text
+TrainingTaskRuntime                list + task mutations
+TrainingProgressStream             durable SSE/live task events
+TrainingRecoveryRuntime            ONLY detail/log dialog visual owner
+PollRegistryRuntime                detail fallback polling lifecycle
+backend job detail/log endpoints   read-only enriched truth
+```
+
+Retired/forbidden as alternate owners: legacy `openTrainDetail423` renderer, legacy training run center, separate log modal renderer, private runtime CSS injector, raw timer loop. Success/failure semantics come from canonical `task_status`; an open detail receives SSE and performs one final canonical detail/log reconciliation at terminal transition. Detail polling must not dispatch queues, rebuild the jobs index, overwrite worker `job.json`, or archive algorithm versions.
+
+Permanent evidence is documented in `docs/CODEX_HANDOFF_2026-09-24_TRAINING_DETAIL_LOGS.md`. Code baseline before documentation: `8e50195f76d0aa58ccf6082bdbd7c93029b528b7`; formal `VERSION.txt` remains `42.24.0`.
+
+
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
 > Latest fully accepted code point: `1c3fa7f2b5cb826c0998f249637241a59134f053` / run `34794630837`

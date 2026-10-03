@@ -86,7 +86,7 @@ class AnnotationBatch:
             checkpoint = manifest.summary(image_id)
             context.save_checkpoint(checkpoint)
             check_active(context, "AI_ANNOTATION", image_id,
-                         int(checkpoint["processed"] * 100 / max(1, checkpoint["total"])))
+                         int(checkpoint["processed"] * 70 / max(1, checkpoint["total"])))
 
     def finish(self):
         summary = self.store.summary()

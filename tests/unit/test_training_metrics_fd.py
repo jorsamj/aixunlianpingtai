@@ -31,12 +31,14 @@ class TrackingConnection:
         return getattr(self._connection, name)
 
 
-def resolved_resources():
-    return {
+def resolved_resources(**overrides):
+    value = {
         "resolved_batch": 4,
         "resolved_workers": 0,
         "resolved_cache": False,
     }
+    value.update(overrides)
+    return value
 
 
 def test_training_metrics_closes_every_sqlite_connection(tmp_path, monkeypatch):
@@ -110,3 +112,78 @@ def test_training_metrics_sqlite_fd_count_does_not_grow(tmp_path):
         assert training_metrics.read_metrics(db_path)["resolved_batch"] == 4
 
     assert _count_open_fds_for(db_path) == baseline
+
+
+def test_runtime_truth_reads_effective_train_loader_not_trainer_batch_size(tmp_path):
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "runtime-truth.sqlite3",
+        resolved_resources(resolved_batch=11, resolved_workers=0),
+        gpu_uuid=None,
+        interval=999,
+    )
+    metrics.psutil = None
+    trainer = SimpleNamespace(
+        batch_size=100,
+        args=SimpleNamespace(cache=False),
+        train_loader=SimpleNamespace(
+            batch_size=11,
+            num_workers=0,
+            dataset=[object()] * 11,
+        ),
+    )
+
+    runtime = metrics.on_train_start(trainer)
+
+    assert runtime == {
+        "runtime_batch": 11,
+        "runtime_workers": 0,
+        "runtime_cache": False,
+    }
+    assert metrics.resolved["runtime_batch"] == 11
+    assert metrics.resolved["runtime_workers"] == 0
+
+
+def test_resource_runtime_mismatch_guard_still_fails_closed(tmp_path):
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "runtime-mismatch.sqlite3",
+        resolved_resources(resolved_batch=11, resolved_workers=0),
+        gpu_uuid=None,
+        interval=999,
+    )
+    metrics.psutil = None
+    trainer = SimpleNamespace(
+        batch_size=100,
+        args=SimpleNamespace(cache=False),
+        train_loader=SimpleNamespace(
+            batch_size=10,
+            num_workers=0,
+            dataset=[object()] * 11,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="RESOURCE_RUNTIME_MISMATCH"):
+        metrics.on_train_start(trainer)
+
+
+def test_runtime_worker_truth_comes_from_train_loader(tmp_path):
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "runtime-workers.sqlite3",
+        resolved_resources(resolved_batch=50, resolved_workers=2),
+        gpu_uuid=None,
+        interval=999,
+    )
+    metrics.psutil = None
+    trainer = SimpleNamespace(
+        batch_size=100,
+        args=SimpleNamespace(cache=False),
+        train_loader=SimpleNamespace(
+            batch_size=50,
+            num_workers=2,
+            dataset=[object()] * 100,
+        ),
+    )
+
+    runtime = metrics.on_train_start(trainer)
+
+    assert runtime["runtime_batch"] == 50
+    assert runtime["runtime_workers"] == 2

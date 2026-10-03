@@ -78,8 +78,9 @@ export function installTrainingMaterialSummaryRuntime({
     const labels = ready ? selectedLabelCodes(ids) : [];
     const labelElement = document.getElementById('tr429Labels');
     if (labelElement) {
+      const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
       const labelText = !ids.length ? '—' : ready
-        ? (labels.map(labelDisplay).filter(Boolean).join('、') || '无标签')
+        ? `${baseLabels} · 可直接训练 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
         : '读取中…';
       setTextIfChanged(labelElement, labelText);
     }
@@ -89,7 +90,7 @@ export function installTrainingMaterialSummaryRuntime({
       const title = card.querySelector('span');
       const value = card.querySelector('b');
       if (title?.textContent?.trim() === '可选素材' && value) {
-        const totalText = summary ? String(Math.max(0, Number(summary.eligible_total || 0))) : '…';
+        const totalText = summary ? String(Math.max(0, Number(summary.selectable_total || 0))) : '…';
         setTextIfChanged(value, totalText);
         if (value.dataset.serverTruth !== 'training-material-summary') {
           value.dataset.serverTruth = 'training-material-summary';
@@ -147,8 +148,12 @@ export function installTrainingMaterialSummaryRuntime({
       summary = {
         requested_count: Math.max(0, Number(body.requested_count || 0)),
         matched_count: Math.max(0, Number(body.matched_count || 0)),
+        selectable_count: Math.max(0, Number(body.selectable_count || 0)),
         eligible_count: Math.max(0, Number(body.eligible_count || 0)),
+        pending_annotation_count: Math.max(0, Number(body.pending_annotation_count || 0)),
+        selectable_total: Math.max(0, Number(body.selectable_total || 0)),
         eligible_total: Math.max(0, Number(body.eligible_total || 0)),
+        pending_annotation_total: Math.max(0, Number(body.pending_annotation_total || 0)),
         box_count: Math.max(0, Number(body.box_count || 0)),
         size_bytes: Math.max(0, Number(body.size_bytes || 0)),
         label_codes: uniqueIds(body.label_codes),
@@ -168,6 +173,18 @@ export function installTrainingMaterialSummaryRuntime({
     }
   }
 
+  function invalidate() {
+    requestSequence += 1;
+    activeController?.abort?.();
+    activeController = null;
+    currentSignature = null;
+    pendingSignature = null;
+    summary = null;
+    lastError = '';
+    queueDecorate();
+    window.TrainingLabelRuntime?.queueRefresh?.();
+  }
+
   function syncSelection() {
     const ids = currentIds();
     const signature = trainingMaterialSelectionSignature(ids);
@@ -182,8 +199,9 @@ export function installTrainingMaterialSummaryRuntime({
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422500',
+    build: 'training-material-summary-runtime-422502',
     refresh,
+    invalidate,
     summaryReadyFor,
     summaryFor,
     selectedLabelCodes,
@@ -193,7 +211,9 @@ export function installTrainingMaterialSummaryRuntime({
         signature: currentSignature,
         pendingSignature,
         loading: Boolean(pendingSignature),
+        selectableTotal: summary?.selectable_total ?? null,
         eligibleTotal: summary?.eligible_total ?? null,
+        pendingAnnotation: summary?.pending_annotation_count ?? null,
         selectedLabels: summary?.label_codes?.length || 0,
         lastError,
         networkOwner: true,

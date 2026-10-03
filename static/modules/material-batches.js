@@ -38,10 +38,15 @@ function save(items) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
 }
 
-export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh} = {}) {
+export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry} = {}) {
   if (typeof window === 'undefined' || window.__materialBatchRuntime62Installed) return false;
   window.__materialBatchRuntime62Installed = true;
-  const timers = new Map();
+  const registry = pollRegistry || window.PollRegistryRuntime;
+  if (!registry?.startTimeout || !registry?.clear) {
+    window.__materialBatchRuntime62Installed = false;
+    return false;
+  }
+  const POLL_OWNERS = ['数据集', '自动标注及清洗'];
 
   const pid = () => String(projectId?.() || '');
   const base = () => `/api/v62/projects/${encodeURIComponent(pid())}/material-batches`;
@@ -66,37 +71,58 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     tell(`${task.operation || '批量任务'}：${materialBatchTaskText(task)} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
   }
 
+  function pollKey(taskId) {
+    return `material-batch:${String(taskId || '')}`;
+  }
+
+  function stopPolling(taskId) {
+    return registry.clear(pollKey(taskId));
+  }
+
   function poll(taskId) {
-    clearTimeout(timers.get(taskId));
+    const id = String(taskId || '');
+    if (!id) return false;
+    stopPolling(id);
     const tick = async () => {
       try {
-        const task = await get(taskId);
+        const task = await get(id);
         remember(task);
         announce(task);
         if (isMaterialBatchActive(task)) {
-          timers.set(taskId, setTimeout(tick, 1500));
+          registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
-          timers.delete(taskId);
+          stopPolling(id);
           await refresh?.();
           if (task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
         }
       } catch (error) {
-        timers.delete(taskId);
+        stopPolling(id);
         tell(error.message || String(error));
       }
     };
-    tick();
+    void tick();
+    return true;
   }
 
-  function selection(scope) {
+  function resume() {
+    for (const [taskId, entry] of Object.entries(saved())) {
+      if (entry.project_id === pid()) poll(taskId);
+    }
+    return true;
+  }
+
+  function selection(scope, explicitIds = []) {
     if (scope === 'CURRENT_PAGE') return {scope, image_ids: (currentPageIds?.() || []).map(String)};
-    if (scope === 'SELECTED') return {scope, image_ids: (selectedIds?.() || []).map(String)};
+    if (scope === 'SELECTED') {
+      const source = explicitIds?.length ? explicitIds : (selectedIds?.() || []);
+      return {scope, image_ids: [...new Set(source.map(String).filter(Boolean))]};
+    }
     return {scope: 'FILTERED', filters: filteredSpec?.() || {}};
   }
 
-  async function run(operation, {scope, options = {}} = {}) {
+  async function run(operation, {scope, options = {}, imageIds = [], skipConfirm = false} = {}) {
     if (!pid()) throw new Error('请先选择项目');
     const chosen = scope || window.prompt('处理范围：CURRENT_PAGE 当前页 / FILTERED 全部筛选结果 / SELECTED 当前已选', 'CURRENT_PAGE');
     if (!['CURRENT_PAGE', 'FILTERED', 'SELECTED'].includes(chosen)) return null;
@@ -105,14 +131,14 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       if (!labels?.trim()) return null;
       options = {...options, labels_text: labels};
     }
-    const payload = {operation, selection_spec: selection(chosen), options};
+    const payload = {operation, selection_spec: selection(chosen, imageIds), options};
     const estimate = await json(await fetch(`${base()}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
     if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
     const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
-    if (!window.confirm(`${cleanNote}本次将处理 ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    if (!skipConfirm && !window.confirm(`${cleanNote}本次将处理 ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
     const task = await json(await fetch(base(), {
@@ -134,10 +160,15 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/retry`, {method: 'POST'}));
     remember(task); poll(task.task_id); return task;
   };
-  window.stopMaterialBatchPolling62 = taskId => { clearTimeout(timers.get(taskId)); timers.delete(taskId); };
+  window.stopMaterialBatchPolling62 = taskId => stopPolling(taskId);
 
-  for (const [taskId, entry] of Object.entries(saved())) {
-    if (entry.project_id === pid()) poll(taskId);
-  }
+  const runtime = Object.freeze({
+    build: 'material-batch-runtime-422403',
+    poll,
+    resume,
+    stop: stopPolling,
+  });
+  window.MaterialBatchRuntime62 = runtime;
+  resume();
   return true;
 }

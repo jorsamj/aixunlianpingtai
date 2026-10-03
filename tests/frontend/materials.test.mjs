@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {applyAnnotationResult} from '../../static/modules/annotation.js';
+import {ANNOTATION_PREVIEW_LIMIT, applyAnnotationResult} from '../../static/modules/annotation.js';
 import {applyCleanConfirmation} from '../../static/modules/cleaning.js';
 import {activeLabelOptions} from '../../static/modules/labels.js';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from '../../static/modules/materials.js';
@@ -79,7 +79,8 @@ test('annotation response preserves the true count above the preview limit', () 
     boxes,
   );
   assert.equal(result[0].box_count, 80);
-  assert.equal(result[0].annotation_preview.length, 64);
+  assert.equal(ANNOTATION_PREVIEW_LIMIT, 32);
+  assert.equal(result[0].annotation_preview.length, ANNOTATION_PREVIEW_LIMIT);
 });
 
 test('upload response exposes one decision batch for single or multiple files', () => {
@@ -100,4 +101,35 @@ test('clean confirmation removes only backend-confirmed deletions and marks the 
     {id: 'one', processing_status: 'processed', clean_skipped: false},
     {id: 'three'}
   ]);
+});
+
+
+test('annotation response keeps formal box provenance in the gallery preview', () => {
+  const result = applyAnnotationResult(
+    [{id: 'one', annotated: false, labels: [], box_count: 0}],
+    {image: {id: 'one', annotation_origin: 'ai_confirmed', box_count: 1}},
+    [{
+      class_id: 0,
+      label: 'fire',
+      x1: 1,
+      y1: 2,
+      x2: 10,
+      y2: 20,
+      source: 'ai_candidate_confirmed',
+      source_task_id: 'task-1',
+      confidence: 0.91,
+    }],
+  );
+  assert.deepEqual(result[0].annotation_preview, [{
+    class_id: 0,
+    label: 'fire',
+    x1: 1,
+    y1: 2,
+    x2: 10,
+    y2: 20,
+    source: 'ai_candidate_confirmed',
+    source_task_id: 'task-1',
+    confidence: 0.91,
+  }]);
+  assert.equal(result[0].annotation_origin, 'ai_confirmed');
 });

@@ -8,7 +8,7 @@ from PIL import Image
 def create_project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
