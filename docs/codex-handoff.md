@@ -1,6 +1,129 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-10-03 Training Material Picker / Annotation GT 筛选最终收口（最新）
+
+本节生产代码 cutoff：
+
+`dcf63cf2e56f49834bc08b5377d5bc5b6826b9f5`
+
+正式版本：
+
+`42.24.72`
+
+该 cutoff 已确认 GitHub Actions **22 / 22 workflow runs 全部 completed success**，对应 **57 / 57 check-runs success**，failure / queued / in_progress 均为 0。
+
+本交接提交本身只更新 `docs/codex-handoff.md` 并把正式版本最小 patch 递增到 `42.24.73`；不修改训练、标注、导入、调度、发布或转换生产逻辑。
+
+### 1. CLOSED：Training Picker summary / test bulk-selection 已改读 AnnotationRepository
+
+`42.24.69` 已关闭上一节尚未完成的 Picker 辅助统计 owner：
+
+- `selection-summary` 的 eligible / pending / box / label counts 直接来自 `AnnotationRepository.training_ground_truth_summary()`；
+- test role 的 bulk-selection 不再使用 MaterialRepository 的 `annotated` 投影判断 Ground Truth；
+- full-pool totals 同时按 Material revision + Annotation revision 缓存；
+- Annotation summary 使用 normalized `annotation_label_references`，不逐图 hydration boxes JSON；
+- 大选择集合用 SQLite TEMP table，保持 10k / 20k / 50k 线性级处理边界；
+- permanent guard 明确禁止恢复 `m.annotated <> 0` 或 `filters["annotated"] = True` 作为训练 GT。
+
+### 2. CLOSED：Picker 标签筛选也已切到正式 Annotation GT
+
+`42.24.71 ~ 42.24.72` 继续关闭了此前仍残留的最后一个 Picker 真相缺口：
+
+- 卡片列表 `GET /training-materials` 带 label filter 时，不再读取 MaterialRepository 的 `material_labels` 作为标签真相；
+- `GET /training-materials/ids` 带 label filter 时，同样改读正式 Annotation GT；
+- `POST /training-materials/bulk-selection` 的 filtered label selection 同样改读正式 Annotation GT；
+- test role 无 label filter 时，继续使用正式 annotated / confirmed_empty GT eligibility；
+- MaterialRepository 仍只负责素材 identity / processing status / query / cursor paging，不成为 Annotation Ground Truth owner。
+
+当前 GT-aware Picker 查询采用：
+
+`materials.sqlite3`
+→ SQLite `ATTACH annotations.sqlite3`
+→ indexed `annotation_label_references`
+→ 同一 read transaction 内计算 total + cursor page
+
+因此没有新增：
+
+- Python 全量逐图 JSON 扫描；
+- N+1 AnnotationRepository.get()；
+- 第二套 picker paging owner；
+- 第二套 Annotation GT owner。
+
+### 3. CLOSED：陈旧 Material annotation projection 不再影响训练素材筛选
+
+回归测试已显式构造“Material projection 与正式 AnnotationRepository 真相相反”的场景：
+
+- Material 仍显示 `smoke`，但 Annotation GT 已变成 unannotated：Picker 必须排除；
+- Material 未显示 `smoke`，但 Annotation GT 已正式 annotated smoke：Picker 必须纳入。
+
+当前以下三个入口全部按正式 GT 得到一致集合：
+
+1. paged material cards；
+2. filtered IDs；
+3. bulk selection。
+
+`42.24.71` 的 backend contracts、frontend contracts 与 Real Chrome 均已验证生产逻辑通过；该 HEAD 唯一失败是初版 source guard 误把卡片返回字段 `"labels": labels` 当成 Material label filter。 `42.24.72` 已把 guard 收窄到实际 filtering owner，最终 22 / 22 workflows 全绿。
+
+### 4. 当前训练准确性主链继续保持成立
+
+本轮没有改动训练资源 T0/T1/T2、Scheduler、Trainer 或 split owner。
+
+当前继续成立：
+
+- AnnotationRepository 是唯一 Ground Truth owner；
+- training material picker / selection summary / label filters 使用正式 GT；
+- 训练创建后仍会再次按 image_id 回读 AnnotationRepository；
+- Source GT 与 Training Projection 继续分离；
+- `source_annotation_hash` 继续进入 input freeze；
+- new-label train-positive reserve 继续在 split 阶段保护新增标签正样本；
+- grouped / duplicate component 不拆分；
+- 20k split 使用 bitset + predecessor arrays，不恢复 O(N²) tuple 状态；
+- Trainer 不重新规划 Batch / Workers / Cache / Precision。
+
+### 5. 本轮完整版本推进
+
+- `42.24.52`：durable ZIP bounded annotation scope；
+- `42.24.53`：unscoped structured negative fail-safe；
+- `42.24.54`：durable import / label governance fence；
+- `42.24.55 ~ 42.24.56`：rollback regression contract 修正；
+- `42.24.57`：canonical label governance truth；
+- `42.24.58`：formal annotation writes / delete restore governance fence；
+- `42.24.59 ~ 42.24.62`：legacy metadata / confirmed-empty / cleaning fixture 合同对齐；
+- `42.24.63`：storage import GT commit governance fence；
+- `42.24.64`：online feedback 正式 GT 原子提升；
+- `42.24.65`：AI annotation active-label truth；
+- `42.24.66`：标签治理 usage / preview 改读 AnnotationRepository；
+- `42.24.67`：whole-label unify selection freeze 改读 AnnotationRepository；
+- `42.24.68`：上一轮交接 / source guard；
+- `42.24.69`：Training Picker summary / test bulk 改读正式 GT；
+- `42.24.70`：GT summary SQLite snapshot 稳定化；
+- `42.24.71`：Picker label filters 改读 Annotation GT；
+- `42.24.72`：Picker GT source guard 精确化，全量 CI 绿；
+- `42.24.73`：本交接文档提交。
+
+### 6. 后续继续审计方向
+
+当前没有已知需要立即修复的 Picker Ground Truth P0/P1 缺口。
+
+下一轮如继续主流程审计，建议按真实调用链继续检查：
+
+`dataset snapshot / input freeze`
+→ `Trainer result`
+→ `新畅联 publish`
+→ `ONNX / RKNN conversion`
+→ `OSS archive / public_url`
+
+重点仍保持：
+
+- 前后端合同一致；
+- 不新增第二 owner；
+- 不把 Material projection 反升格为 GT；
+- 1k / 10k / 20k 性能不退化；
+- queued / in_progress 永远不当 success；
+- 每个正式提交继续从远端真实 VERSION 最小 patch +1。
+
+
 ## 2026-10-03 Annotation GT 治理 / 标签统一候选冻结收口（最新）
 
 本节生产代码 cutoff：
