@@ -96,8 +96,54 @@ def _normalize_labels(values: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
 
 
-def _selection_summary(repository: MaterialRepository, image_ids: list[str]) -> dict:
-    """Aggregate selected-material truth without hydrating material payload JSON."""
+@lru_cache(maxsize=128)
+def _cached_pool_training_totals(
+    project_path: str,
+    material_revision: int,
+    annotation_revision: int,
+) -> tuple[int, int, int]:
+    """Cache full-pool GT counts by both durable repository revisions."""
+    project = Path(project_path)
+    annotations = AnnotationRepository(project)
+    truth = annotations.training_ground_truth_summary()
+    actual_revision = int(truth["revision"])
+    if actual_revision != int(annotation_revision):
+        return _cached_pool_training_totals(
+            project_path,
+            int(material_revision),
+            actual_revision,
+        )
+    with closing(sqlite3.connect(project / "materials.sqlite3", timeout=30)) as database:
+        database.execute("PRAGMA busy_timeout=30000")
+        database.execute("PRAGMA temp_store=FILE")
+        database.execute(
+            "CREATE TEMP TABLE eligible_training_gt_ids ("
+            "id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        eligible_ids = list(truth["eligible_ids"])
+        if eligible_ids:
+            database.executemany(
+                "INSERT OR IGNORE INTO eligible_training_gt_ids(id) VALUES (?)",
+                ((image_id,) for image_id in eligible_ids),
+            )
+        selectable_total = int(database.execute(
+            "SELECT COUNT(*) FROM materials "
+            "WHERE processing_status='processed'"
+        ).fetchone()[0])
+        eligible_total = int(database.execute(
+            "SELECT COUNT(*) FROM materials m "
+            "JOIN eligible_training_gt_ids gt ON gt.id=m.id "
+            "WHERE m.processing_status='processed'"
+        ).fetchone()[0])
+    return selectable_total, eligible_total, actual_revision
+
+
+def _selection_summary(
+    repository: MaterialRepository,
+    annotations: AnnotationRepository,
+    image_ids: list[str],
+) -> dict:
+    """Aggregate selected-material facts while formal GT stays Annotation-owned."""
     with closing(sqlite3.connect(repository.path, timeout=30)) as database:
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
@@ -113,49 +159,64 @@ def _selection_summary(repository: MaterialRepository, image_ids: list[str]) -> 
             )
         row = database.execute(
             "SELECT COUNT(m.id) AS matched_count, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' THEN 1 ELSE 0 END), 0) AS selectable_count, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN 1 ELSE 0 END), 0) AS eligible_count, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated = 0 THEN 1 ELSE 0 END), 0) AS pending_annotation_count, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN m.box_count ELSE 0 END), 0) AS box_count, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' AND m.annotated <> 0 THEN m.size_bytes ELSE 0 END), 0) AS size_bytes, "
-            "COALESCE(SUM(CASE WHEN m.processing_status = 'processed' THEN m.size_bytes ELSE 0 END), 0) AS selectable_size_bytes "
+            "COALESCE(SUM(CASE WHEN m.processing_status='processed' "
+            "THEN 1 ELSE 0 END),0) AS selectable_count, "
+            "COALESCE(SUM(CASE WHEN m.processing_status='processed' "
+            "THEN m.size_bytes ELSE 0 END),0) AS selectable_size_bytes "
             "FROM requested_training_material_ids r "
-            "LEFT JOIN materials m ON m.id = r.id"
+            "LEFT JOIN materials m ON m.id=r.id"
         ).fetchone()
-        label_rows = database.execute(
-            "SELECT ml.label_code AS label_code, COUNT(DISTINCT ml.material_id) AS material_count "
+        processed_rows = database.execute(
+            "SELECT m.id, m.size_bytes "
             "FROM requested_training_material_ids r "
-            "JOIN materials m ON m.id = r.id AND m.processing_status = 'processed' AND m.annotated <> 0 "
-            "JOIN material_labels ml ON ml.material_id = m.id "
-            "GROUP BY ml.label_code ORDER BY ml.label_code"
+            "JOIN materials m ON m.id=r.id "
+            "WHERE m.processing_status='processed' "
+            "ORDER BY m.id"
         ).fetchall()
-        totals = database.execute(
-            "SELECT "
-            "COALESCE(SUM(CASE WHEN processing_status = 'processed' THEN 1 ELSE 0 END), 0) AS selectable_total, "
-            "COALESCE(SUM(CASE WHEN processing_status = 'processed' AND annotated <> 0 THEN 1 ELSE 0 END), 0) AS eligible_total, "
-            "COALESCE(SUM(CASE WHEN processing_status = 'processed' AND annotated = 0 THEN 1 ELSE 0 END), 0) AS pending_annotation_total "
-            "FROM materials"
-        ).fetchone()
-    label_counts = {str(item["label_code"]): int(item["material_count"]) for item in label_rows}
+
+    processed_ids = [str(item["id"]) for item in processed_rows]
+    size_by_id = {
+        str(item["id"]): max(0, int(item["size_bytes"] or 0))
+        for item in processed_rows
+    }
+    truth = annotations.training_ground_truth_summary(processed_ids)
+    eligible_ids = set(str(value) for value in truth["eligible_ids"])
+    eligible_count = len(eligible_ids)
+    selectable_count = int(row["selectable_count"] or 0)
+    label_counts = dict(truth["label_counts"])
+
+    material_revision = repository.current_revision()
+    selectable_total, eligible_total, pool_annotation_revision = (
+        _cached_pool_training_totals(
+            str(repository.project_path),
+            int(material_revision),
+            int(annotations.current_revision()),
+        )
+    )
     return {
         "requested_count": len(image_ids),
         "matched_count": int(row["matched_count"] or 0),
-        "selectable_count": int(row["selectable_count"] or 0),
-        "eligible_count": int(row["eligible_count"] or 0),
-        "pending_annotation_count": int(row["pending_annotation_count"] or 0),
-        "box_count": int(row["box_count"] or 0),
-        "size_bytes": int(row["size_bytes"] or 0),
+        "selectable_count": selectable_count,
+        "eligible_count": eligible_count,
+        "pending_annotation_count": max(0, selectable_count - eligible_count),
+        "box_count": int(truth["box_count"] or 0),
+        "size_bytes": sum(size_by_id.get(image_id, 0) for image_id in eligible_ids),
         "selectable_size_bytes": int(row["selectable_size_bytes"] or 0),
         "label_codes": list(label_counts),
         "label_counts": label_counts,
-        "selectable_total": int(totals["selectable_total"] or 0),
-        "eligible_total": int(totals["eligible_total"] or 0),
-        "pending_annotation_total": int(totals["pending_annotation_total"] or 0),
+        "selectable_total": selectable_total,
+        "eligible_total": eligible_total,
+        "pending_annotation_total": max(0, selectable_total - eligible_total),
+        "annotation_revision": max(
+            int(truth["revision"]),
+            int(pool_annotation_revision),
+        ),
     }
 
 
 def _bulk_filtered_ids(
     repository: MaterialRepository,
+    annotations: AnnotationRepository,
     *,
     query: str = "",
     labels: tuple[str, ...] = (),
@@ -172,8 +233,6 @@ def _bulk_filtered_ids(
         "labels": labels,
         "processing_status": "processed",
     }
-    if require_ground_truth:
-        filters["annotated"] = True
     cursor = None
     ids: list[str] = []
     total = -1
@@ -198,6 +257,11 @@ def _bulk_filtered_ids(
         cursor = page.next_cursor
         if not cursor:
             break
+    if require_ground_truth:
+        truth = annotations.training_ground_truth_summary(ids)
+        eligible = set(str(value) for value in truth["eligible_ids"])
+        ids = [image_id for image_id in ids if image_id in eligible]
+        total = len(ids)
     return ids, total if total >= 0 else len(ids)
 
 
@@ -365,8 +429,12 @@ def training_material_picker_router(
             role = str(body.get("role") or "train").strip().lower()
             if role not in {"train", "test"}:
                 raise ValueError("role must be train or test")
+            annotations = annotation_repository_for_path(
+                str(repository.project_path)
+            )
             ids, total = _bulk_filtered_ids(
                 repository,
+                annotations,
                 query=query,
                 labels=labels,
                 require_ground_truth=role == "test",
@@ -387,7 +455,8 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         repository = materials(project_id)
-        summary = _selection_summary(repository, image_ids)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        summary = _selection_summary(repository, annotations, image_ids)
         return {**summary, "repository_revision": repository.current_revision()}
 
     @router.get("/{image_id}/thumbnail")

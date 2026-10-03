@@ -8,6 +8,7 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/training_material_picker_api.py'
+      - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
       - 'static/modules/training-material-picker-runtime.js'
@@ -44,7 +45,7 @@ jobs:
           fastapi httpx uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
-        run: python -m py_compile platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
+        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
       - name: Backend paging thumbnail and summary contracts
         run: >-
           python -m pytest -q
@@ -107,7 +108,16 @@ jobs:
           grep -Fq 'include_total=first' platform_core/training_material_picker_api.py
           grep -Fq 'processing_status="processed"' platform_core/training_material_picker_api.py
           grep -Fq 'require_ground_truth=role == "test"' platform_core/training_material_picker_api.py
-          grep -Fq "m.processing_status = 'processed' AND m.annotated <> 0" platform_core/training_material_picker_api.py
+          grep -Fq 'def training_ground_truth_summary(' platform_core/annotation_repository.py
+          grep -Fq 'annotations.training_ground_truth_summary' platform_core/training_material_picker_api.py
+          if grep -Fq 'filters["annotated"] = True' platform_core/training_material_picker_api.py; then
+            echo 'test bulk-selection must use AnnotationRepository GT, not Material annotated projection' >&2
+            exit 1
+          fi
+          if grep -Fq 'm.annotated <> 0' platform_core/training_material_picker_api.py; then
+            echo 'training selection summary must not use Material annotated projection as Ground Truth' >&2
+            exit 1
+          fi
           grep -Fq 'repository.list_page' platform_core/training_material_picker_api.py
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
           grep -Fq 'requested_training_material_ids' platform_core/training_material_picker_api.py

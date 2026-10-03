@@ -710,6 +710,88 @@ class AnnotationRepository:
                 if path.stem not in persisted_ids:
                     yield self._legacy_record(path.stem)
 
+    def training_ground_truth_summary(self, image_ids=None) -> dict:
+        """Summarize live formal GT from the normalized reference index.
+
+        This is a read-only training view over AnnotationRepository truth. It
+        deliberately ignores delete backups because those rows are not live GT.
+        When image_ids is provided, a TEMP table avoids SQLite variable limits
+        and keeps 10k/20k/50k selection summaries linear without boxes JSON
+        hydration.
+        """
+        ids = None
+        if image_ids is not None:
+            ids = list(dict.fromkeys(
+                self._id(value) for value in image_ids if str(value)
+            ))
+            if len(ids) > 100000:
+                raise ValueError(
+                    "training ground-truth summary is limited to 100000 image ids"
+                )
+
+        with closing(self._connect()) as db:
+            db.execute("PRAGMA temp_store=FILE")
+            join_requested = ""
+            if ids is not None:
+                db.execute(
+                    "CREATE TEMP TABLE requested_training_gt_ids ("
+                    "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+                )
+                if ids:
+                    db.executemany(
+                        "INSERT OR IGNORE INTO requested_training_gt_ids(image_id) "
+                        "VALUES (?)",
+                        ((image_id,) for image_id in ids),
+                    )
+                join_requested = (
+                    " JOIN requested_training_gt_ids requested "
+                    "ON requested.image_id=refs.image_id"
+                )
+
+            db.execute("BEGIN")
+            try:
+                revision_row = db.execute(
+                    "SELECT value FROM annotation_meta WHERE key='revision'"
+                ).fetchone()
+                rows = db.execute(
+                    "SELECT refs.image_id, "
+                    "COALESCE(SUM(CASE WHEN refs.annotation_state='annotated' "
+                    "THEN refs.box_count ELSE 0 END),0) AS box_count, "
+                    "MAX(CASE WHEN refs.annotation_state='confirmed_empty' "
+                    "AND refs.scope_ref=1 THEN 1 ELSE 0 END) AS confirmed_empty "
+                    "FROM annotation_label_references refs"
+                    + join_requested
+                    + " GROUP BY refs.image_id "
+                    "HAVING box_count > 0 OR confirmed_empty = 1 "
+                    "ORDER BY refs.image_id"
+                ).fetchall()
+                label_rows = db.execute(
+                    "SELECT refs.label_code AS label_code, "
+                    "COUNT(DISTINCT refs.image_id) AS image_count "
+                    "FROM annotation_label_references refs"
+                    + join_requested
+                    + " WHERE refs.annotation_state='annotated' "
+                    "AND refs.box_count>0 AND refs.label_code<>'' "
+                    "AND refs.label_code<>'*' "
+                    "GROUP BY refs.label_code ORDER BY refs.label_code"
+                ).fetchall()
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+        eligible_ids = [str(row["image_id"]) for row in rows]
+        return {
+            "revision": int(revision_row[0]) if revision_row is not None else 0,
+            "eligible_ids": eligible_ids,
+            "eligible_count": len(eligible_ids),
+            "box_count": sum(int(row["box_count"] or 0) for row in rows),
+            "label_counts": {
+                str(row["label_code"]): int(row["image_count"] or 0)
+                for row in label_rows
+            },
+        }
+
     def label_reference_usage(self) -> dict[str, dict[str, int]]:
         """Aggregate canonical GT references by label in one indexed query."""
         with closing(self._connect()) as db:

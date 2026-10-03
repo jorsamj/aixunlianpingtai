@@ -252,3 +252,68 @@ def test_cleaned_unannotated_material_is_selectable_but_not_counted_as_ground_tr
     assert facts["selectable_total"] == 260
     assert facts["eligible_total"] == 230
     assert facts["pending_annotation_total"] == 30
+
+
+
+def test_training_picker_summary_and_test_bulk_ignore_stale_material_annotation_projection(
+    tmp_path,
+):
+    client, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+
+    # Material projection intentionally remains the opposite of formal GT.
+    assert repository.get("m0000")["annotated"] is True
+    assert repository.get("m0250")["annotated"] is False
+    annotations.upsert(
+        "m0000",
+        [],
+        "unannotated",
+        project_material=False,
+    )
+    annotations.upsert(
+        "m0250",
+        [{
+            "id": "formal-smoke-250",
+            "label": "smoke",
+            "class_id": 0,
+            "x1": 40,
+            "y1": 20,
+            "x2": 200,
+            "y2": 100,
+        }],
+        "annotated",
+        annotation_scope=["smoke"],
+        project_material=False,
+    )
+
+    summary = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["m0000", "m0250"]},
+    )
+    assert summary.status_code == 200, summary.text
+    facts = summary.json()
+    assert facts["matched_count"] == 2
+    assert facts["selectable_count"] == 2
+    assert facts["eligible_count"] == 1
+    assert facts["pending_annotation_count"] == 1
+    assert facts["box_count"] == 1
+    assert facts["label_codes"] == ["smoke"]
+    assert facts["label_counts"] == {"smoke": 1}
+    assert facts["size_bytes"] == repository.get("m0250")["size_bytes"]
+    assert facts["eligible_total"] == 230
+    assert facts["pending_annotation_total"] == 30
+
+    selected = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={
+            "query": "",
+            "labels": [],
+            "all_available": True,
+            "role": "test",
+        },
+    )
+    assert selected.status_code == 200, selected.text
+    body = selected.json()
+    assert body["total"] == 230
+    assert "m0000" not in body["items"]
+    assert "m0250" in body["items"]
