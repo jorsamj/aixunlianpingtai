@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.training_material_picker_api import training_material_picker_router
 
@@ -30,8 +31,51 @@ def _record(index: int, *, annotated: bool = True) -> dict:
 
 def _client(tmp_path):
     data_dir = tmp_path / "data"
-    repository = MaterialRepository(data_dir / "projects" / "p1")
+    project_path = data_dir / "projects" / "p1"
+    repository = MaterialRepository(project_path)
     repository.upsert_many([_record(index, annotated=index < 1000) for index in range(1200)])
+
+    annotations = AnnotationRepository(project_path)
+    rows = []
+    for index in range(1000):
+        base_label = "smoke" if index % 2 == 0 else "person"
+        labels = [base_label]
+        second_label = "helmet" if index % 5 == 0 else base_label
+        labels.append(second_label)
+        rows.append({
+            "image_id": f"s{index:05d}",
+            "annotation_state": "annotated",
+            "annotation_scope": sorted(set(labels)),
+            "boxes": [
+                {
+                    "id": f"box-{index}-0",
+                    "label": base_label,
+                    "class_id": 0 if base_label == "smoke" else 1,
+                    "x1": 10,
+                    "y1": 10,
+                    "x2": 30,
+                    "y2": 30,
+                },
+                {
+                    "id": f"box-{index}-1",
+                    "label": second_label,
+                    "class_id": (
+                        2 if second_label == "helmet"
+                        else (0 if second_label == "smoke" else 1)
+                    ),
+                    "x1": 40,
+                    "y1": 40,
+                    "x2": 60,
+                    "y2": 60,
+                },
+            ],
+        })
+    for offset in range(0, len(rows), 500):
+        annotations.upsert_many(
+            rows[offset:offset + 500],
+            project_material=False,
+        )
+
     app = FastAPI()
     app.include_router(training_material_picker_router(
         lambda project_id: {"id": project_id} if project_id == "p1" else None,

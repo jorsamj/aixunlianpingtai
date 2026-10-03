@@ -731,25 +731,25 @@ class AnnotationRepository:
 
         with closing(self._connect()) as db:
             db.execute("PRAGMA temp_store=FILE")
-            join_requested = ""
-            if ids is not None:
-                db.execute(
-                    "CREATE TEMP TABLE requested_training_gt_ids ("
-                    "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
-                )
-                if ids:
-                    db.executemany(
-                        "INSERT OR IGNORE INTO requested_training_gt_ids(image_id) "
-                        "VALUES (?)",
-                        ((image_id,) for image_id in ids),
-                    )
-                join_requested = (
-                    " JOIN requested_training_gt_ids requested "
-                    "ON requested.image_id=refs.image_id"
-                )
-
             db.execute("BEGIN")
             try:
+                join_requested = ""
+                if ids is not None:
+                    db.execute(
+                        "CREATE TEMP TABLE requested_training_gt_ids ("
+                        "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+                    )
+                    if ids:
+                        db.executemany(
+                            "INSERT OR IGNORE INTO requested_training_gt_ids(image_id) "
+                            "VALUES (?)",
+                            ((image_id,) for image_id in ids),
+                        )
+                    join_requested = (
+                        " JOIN requested_training_gt_ids requested "
+                        "ON requested.image_id=refs.image_id"
+                    )
+
                 revision_row = db.execute(
                     "SELECT value FROM annotation_meta WHERE key='revision'"
                 ).fetchone()
