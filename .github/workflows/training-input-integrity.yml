@@ -109,6 +109,10 @@ jobs:
           grep -Fq 'test_redaction_v2_preserves_selected_positive_pixels_inside_excluded_box' tests/unit/test_training_label_contract.py
           grep -Fq 'test_legacy_v1_redaction_remains_replayable_without_v2_pixel_restore' tests/unit/test_training_label_contract.py
           grep -Fq 'training_projection_digest' platform_core/snapshots.py
+          grep -Fq '"source_annotation_hash",' platform_core/snapshots.py
+          grep -Fq 'DATASET_REVISION_SCHEMA_VERSION = 2' platform_core/snapshots.py
+          grep -Fq 'test_dataset_revision_v2_tracks_source_annotation_identity' tests/unit/test_snapshots.py
+          grep -Fq 'test_dataset_revision_v1_identity_remains_backward_compatible' tests/unit/test_snapshots.py
           grep -Fq 'negative_origin_counts' platform_core/snapshots.py
           grep -Fq 'test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source' tests/unit/test_training_label_contract.py
           grep -Fq 'test_task_filtered_negative_materializes_as_empty_yolo_label' tests/unit/test_training_label_contract.py

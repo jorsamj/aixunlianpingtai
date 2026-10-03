@@ -1,5 +1,6 @@
 import pytest
 
+from platform_core import snapshots as snapshots_module
 from platform_core.snapshots import (
     build_snapshot,
     dataset_revision_document,
@@ -223,7 +224,7 @@ def test_dataset_revision_is_split_independent_but_snapshot_is_not():
     first = build_snapshot(images, first_manifest, [{"code": "fire", "class_id": 0}])
     second = build_snapshot(images, second_manifest, [{"code": "fire", "class_id": 0}])
 
-    assert first["dataset_revision_schema_version"] == 1
+    assert first["dataset_revision_schema_version"] == 2
     assert first["canonical_annotation_schema_version"] == 1
     assert first["dataset_revision_id"] == second["dataset_revision_id"]
     assert first["snapshot_id"] != second["snapshot_id"]
@@ -268,6 +269,83 @@ def test_dataset_revision_changes_with_platform_or_external_annotation_truth():
         [{"code": "fire", "class_id": 0}],
     )
     assert platform_snapshot["dataset_revision_id"] != original["dataset_revision_id"]
+
+
+def test_dataset_revision_v2_tracks_source_annotation_identity():
+    images = _revision_images()
+    for index, row in enumerate(images):
+        row["source_annotation_state"] = "annotated"
+        row["source_annotation_hash"] = f"{index + 100:064x}"
+        row["source_labels"] = ["fire"]
+        row["training_projection_policy"] = "selected_labels_v1"
+        row["training_projection_digest"] = f"{index + 200:064x}"
+
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=17,
+    )
+    original = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    assert original["dataset_revision_schema_version"] == 2
+
+    changed_source = [dict(row) for row in images]
+    changed_source[1]["source_annotation_hash"] = "f" * 64
+    changed = build_snapshot(
+        changed_source,
+        manifest,
+        [{"code": "fire", "class_id": 0}],
+    )
+
+    assert changed["dataset_revision_id"] != original["dataset_revision_id"]
+    original_row = next(
+        row for row in original["images"] if row["image_id"] == "1"
+    )
+    changed_row = next(
+        row for row in changed["images"] if row["image_id"] == "1"
+    )
+    assert original_row["annotation_hash"] == changed_row["annotation_hash"]
+    assert (
+        original_row["training_projection_digest"]
+        == changed_row["training_projection_digest"]
+    )
+
+
+def test_dataset_revision_v1_identity_remains_backward_compatible():
+    images = _revision_images()
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=23,
+    )
+    current = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    legacy_id = snapshots_module._dataset_revision_id(
+        current["images"],
+        current["label_schema"],
+        schema_version=1,
+    )
+    legacy = {
+        **current,
+        "dataset_revision_schema_version": 1,
+        "dataset_revision_id": legacy_id,
+    }
+
+    normalized = ensure_dataset_revision(legacy)
+    document = dataset_revision_document(legacy)
+
+    assert normalized["dataset_revision_schema_version"] == 1
+    assert normalized["dataset_revision_id"] == legacy_id
+    assert document["schema_version"] == 1
+    assert document["dataset_revision_id"] == legacy_id
 
 
 def test_dataset_revision_document_and_persistence_are_immutable(tmp_path):

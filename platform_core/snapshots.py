@@ -11,7 +11,8 @@ from .training_splits import SplitManifest
 
 
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
-DATASET_REVISION_SCHEMA_VERSION = 1
+DATASET_REVISION_SCHEMA_VERSION = 2
+LEGACY_DATASET_REVISION_SCHEMA_VERSION = 1
 
 
 def _canonical(value: Any) -> str:
@@ -78,40 +79,73 @@ def _external_annotation_provenance(
     }
 
 
+def _dataset_revision_fields(schema_version: int) -> tuple[str, ...]:
+    if schema_version == LEGACY_DATASET_REVISION_SCHEMA_VERSION:
+        return (
+            "image_id",
+            "dataset_id",
+            "source_type",
+            "source_ref",
+            "group_id",
+            "content_sha256",
+            "storage_source_id",
+            "storage_type",
+            "object_key",
+            "annotation_state",
+            "annotation_scope",
+            "annotation_hash",
+            "negative_origin",
+            "source_annotation_state",
+            "source_labels",
+            "training_projection_policy",
+            "training_projection_digest",
+            "training_excluded_label_count",
+            "box_count",
+            "labels",
+            "external_annotation",
+        )
+    if schema_version == DATASET_REVISION_SCHEMA_VERSION:
+        return (
+            "image_id",
+            "dataset_id",
+            "source_type",
+            "source_ref",
+            "group_id",
+            "content_sha256",
+            "storage_source_id",
+            "storage_type",
+            "object_key",
+            "annotation_state",
+            "annotation_scope",
+            "annotation_hash",
+            "negative_origin",
+            "source_annotation_state",
+            "source_annotation_hash",
+            "source_labels",
+            "training_projection_policy",
+            "training_projection_digest",
+            "training_excluded_label_count",
+            "box_count",
+            "labels",
+            "external_annotation",
+        )
+    raise ValueError(f"不支持的 Dataset Revision schema 版本：{schema_version}")
+
+
 def _dataset_revision_payload(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
     supplement_provenance: Mapping[str, Any] | None = None,
+    *,
+    schema_version: int = DATASET_REVISION_SCHEMA_VERSION,
 ) -> dict[str, Any]:
-    fields = (
-        "image_id",
-        "dataset_id",
-        "source_type",
-        "source_ref",
-        "group_id",
-        "content_sha256",
-        "storage_source_id",
-        "storage_type",
-        "object_key",
-        "annotation_state",
-        "annotation_scope",
-        "annotation_hash",
-        "negative_origin",
-        "source_annotation_state",
-        "source_labels",
-        "training_projection_policy",
-        "training_projection_digest",
-        "training_excluded_label_count",
-        "box_count",
-        "labels",
-        "external_annotation",
-    )
+    fields = _dataset_revision_fields(int(schema_version))
     images = [
         {field: record.get(field) for field in fields}
         for record in sorted(records, key=lambda row: str(row.get("image_id") or ""))
     ]
     payload = {
-        "schema_version": DATASET_REVISION_SCHEMA_VERSION,
+        "schema_version": int(schema_version),
         "canonical_annotation_schema_version": CANONICAL_ANNOTATION_SCHEMA_VERSION,
         "label_schema": _stable_schema(label_schema),
         "images": images,
@@ -125,8 +159,15 @@ def _dataset_revision_id(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
     supplement_provenance: Mapping[str, Any] | None = None,
+    *,
+    schema_version: int = DATASET_REVISION_SCHEMA_VERSION,
 ) -> str:
-    payload = _dataset_revision_payload(records, label_schema, supplement_provenance)
+    payload = _dataset_revision_payload(
+        records,
+        label_schema,
+        supplement_provenance,
+        schema_version=schema_version,
+    )
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
@@ -140,17 +181,31 @@ def ensure_dataset_revision(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(snapshot)
     records = list(value.get("images") or [])
     label_schema = list(value.get("label_schema") or [])
+    actual = str(value.get("dataset_revision_id") or "").strip().lower()
+    raw_schema_version = value.get("dataset_revision_schema_version")
+    if raw_schema_version in (None, ""):
+        schema_version = (
+            LEGACY_DATASET_REVISION_SCHEMA_VERSION
+            if actual
+            else DATASET_REVISION_SCHEMA_VERSION
+        )
+    else:
+        try:
+            schema_version = int(raw_schema_version)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("Snapshot dataset_revision_schema_version 无效") from error
+    _dataset_revision_fields(schema_version)
     expected = _dataset_revision_id(
         records,
         label_schema,
         value.get("supplement_provenance")
         if isinstance(value.get("supplement_provenance"), Mapping)
         else None,
+        schema_version=schema_version,
     )
-    actual = str(value.get("dataset_revision_id") or "").strip().lower()
     if actual and actual != expected:
         raise ValueError("Snapshot dataset_revision_id 与冻结数据 truth 不一致")
-    value["dataset_revision_schema_version"] = DATASET_REVISION_SCHEMA_VERSION
+    value["dataset_revision_schema_version"] = schema_version
     value["canonical_annotation_schema_version"] = CANONICAL_ANNOTATION_SCHEMA_VERSION
     value["dataset_revision_id"] = expected
     return value
@@ -166,6 +221,7 @@ def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         normalized.get("supplement_provenance")
         if isinstance(normalized.get("supplement_provenance"), Mapping)
         else None,
+        schema_version=int(normalized["dataset_revision_schema_version"]),
     )
     return {
         "dataset_revision_id": str(normalized["dataset_revision_id"]),
