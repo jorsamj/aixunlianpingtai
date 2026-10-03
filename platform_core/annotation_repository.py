@@ -710,6 +710,32 @@ class AnnotationRepository:
                 if path.stem not in persisted_ids:
                     yield self._legacy_record(path.stem)
 
+    def label_reference_usage(self) -> dict[str, dict[str, int]]:
+        """Aggregate canonical GT references by label in one indexed query."""
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                _BACKUP_REFERENCE_CTE
+                + "SELECT label_code, "
+                  "COUNT(DISTINCT CASE WHEN box_count>0 THEN image_id END) "
+                  "AS positive_images, "
+                  "COUNT(DISTINCT CASE WHEN scope_ref=1 THEN image_id END) "
+                  "AS scope_images, "
+                  "COUNT(DISTINCT image_id) AS affected_images, "
+                  "COALESCE(SUM(box_count),0) AS boxes "
+                  "FROM all_label_references "
+                  "WHERE label_code <> '' "
+                  "GROUP BY label_code ORDER BY label_code"
+            ).fetchall()
+        return {
+            str(row["label_code"]): {
+                "positive_images": int(row["positive_images"] or 0),
+                "scope_images": int(row["scope_images"] or 0),
+                "affected_images": int(row["affected_images"] or 0),
+                "boxes": int(row["boxes"] or 0),
+            }
+            for row in rows
+        }
+
     def label_reference_preview(self, label_codes) -> dict[str, int]:
         codes = list(dict.fromkeys(
             str(code).strip() for code in (label_codes or ())

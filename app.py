@@ -20714,16 +20714,16 @@ def v54_label_schema(project_id: str):
     project = get_project(project_id)
     governance = project_label_items(project)
     items = active_label_options(governance)
-    store = material_store(project_id)
-    usage = store.label_usage()
-    references = store.label_reference_usage()
+    references = AnnotationRepository(
+        project_dir(project_id)
+    ).label_reference_usage()
     for x in items:
         code = str(x.get('code'))
         ref = references.get(code, {})
-        x['usage_images'] = int(ref.get('positive_images') or usage.get(code, {}).get('images', 0))
-        x['usage_boxes'] = int(usage.get(code, {}).get('boxes', 0))
+        x['usage_images'] = int(ref.get('positive_images') or 0)
+        x['usage_boxes'] = int(ref.get('boxes') or 0)
         x['scope_images'] = int(ref.get('scope_images') or 0)
-        x['affected_images'] = int(ref.get('affected_images') or x['usage_images'] + x['scope_images'])
+        x['affected_images'] = int(ref.get('affected_images') or 0)
     return {'ok': True, 'items': items, 'governance': governance}
 
 
@@ -20738,7 +20738,9 @@ def v54_preview_unify_labels(
     return {
         'ok': True,
         'source_labels': sources,
-        **material_store(project_id).label_reference_preview(sources),
+        **AnnotationRepository(
+            project_dir(project_id)
+        ).label_reference_preview(sources),
     }
 
 

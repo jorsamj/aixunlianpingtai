@@ -624,6 +624,26 @@ def test_unify_retirement_requires_annotation_and_material_references_both_zero(
     )
     _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
 
+    schema = client.get(
+        f"/api/v54/projects/{project_id}/label-schema"
+    )
+    assert schema.status_code == 200, schema.text
+    fire = next(
+        row for row in schema.json()["items"] if row["code"] == "fire"
+    )
+    assert fire["usage_images"] == 2
+    assert fire["usage_boxes"] == 2
+    assert fire["affected_images"] == 2
+
+    preview = client.post(
+        f"/api/v54/projects/{project_id}/labels/unify/preview",
+        json={"source_class_ids": [0]},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["positive_images"] == 2
+    assert preview.json()["boxes"] == 2
+    assert preview.json()["affected_images"] == 2
+
     created = client.post(
         f"/api/v54/projects/{project_id}/labels/0/unify",
         json={"target_label": "smoke"},
