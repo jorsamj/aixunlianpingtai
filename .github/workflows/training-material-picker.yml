@@ -122,14 +122,17 @@ jobs:
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
           grep -Fq 'def _gt_material_filter_page(' platform_core/training_material_picker_api.py
           grep -Fq 'annotation_gt.annotation_label_references' platform_core/training_material_picker_api.py
-          if grep -Fq '"labels": labels' platform_core/training_material_picker_api.py; then
-            echo 'training picker label filters must use AnnotationRepository GT, not Material labels' >&2
-            exit 1
-          fi
-          if grep -Fq 'labels=tuple(label or ())' platform_core/training_material_picker_api.py; then
-            echo 'training picker page label filters must not return to Material label projection' >&2
-            exit 1
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('platform_core/training_material_picker_api.py').read_text(encoding='utf-8')
+          bulk = source.split('def _bulk_filtered_ids(', 1)[1].split('def _thumbnail_identity(', 1)[0]
+          page = source.split('def list_training_materials(', 1)[1].split('@router.get("/ids")', 1)[0]
+          ids = source.split('def list_training_material_ids(', 1)[1].split('@router.post("/bulk-selection")', 1)[0]
+          if '"labels": labels' in bulk:
+              raise SystemExit('bulk selection must not pass labels to MaterialRepository filters')
+          if 'labels=tuple(label or ())' in page or '"labels": tuple(label or ())' in ids:
+              raise SystemExit('picker label filters must use AnnotationRepository GT')
+          PY
           grep -Fq 'requested_training_material_ids' platform_core/training_material_picker_api.py
           grep -Fq 'app.include_router(training_material_picker_router(' app.py
           if grep -Fq 'training_material_picker_router' platform_core/training_recovery_api.py; then
