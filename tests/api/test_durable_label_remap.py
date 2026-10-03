@@ -649,19 +649,26 @@ def test_unify_retirement_requires_annotation_and_material_references_both_zero(
         json={"target_label": "smoke"},
     )
     assert created.status_code == 202, created.text
-    assert created.json()["total"] == 1
+    assert created.json()["total"] == 2
     assert scheduler.run_once() is True
 
     final = client.get(
         f"/api/v62/projects/{project_id}/material-batches/{created.json()['task_id']}"
     ).json()
-    assert final["status"] == "FAILED"
-    assert "ANNOTATION_REMAP_REFERENCES_REMAIN" in str(final["error_examples"])
+    assert final["status"] == "SUCCEEDED"
+    assert final["changed_images"] == 2
+    assert final["changed_boxes"] == 2
     stored = app_module.get_project(project_id)
-    assert stored["label_meta"][0].get("status", "active") == "active"
+    assert stored["label_meta"][0]["status"] == "merged"
+    assert stored["label_meta"][0]["merged_into"] == "smoke"
+
     annotation_truth = AnnotationRepository(app_module.project_dir(project_id))
-    assert annotation_truth.label_reference_preview(["fire"])["affected_images"] == 1
+    assert annotation_truth.label_reference_preview(["fire"])["affected_images"] == 0
     assert app_module.material_store(project_id).label_reference_preview(["fire"])["affected_images"] == 0
+    second_truth = annotation_truth.get(second_id)
+    assert second_truth["boxes"][0]["label"] == "smoke"
+    projected = app_module.material_store(project_id).get(second_id)
+    assert projected["labels"] == ["smoke"]
 
 
 def test_active_material_batch_list_exposes_safe_remap_resume_truth(
@@ -842,3 +849,33 @@ def test_label_delete_uses_annotation_repository_truth_not_material_projection(
     assert "confirmed_empty" in deleted.text
     current = app_module.get_project(project_id)
     assert current["label_meta"][1].get("status", "active") == "active"
+
+
+
+def test_whole_label_unify_freeze_records_annotation_repository_owner(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, artifacts, _scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v54/projects/{project_id}/labels/0/unify",
+        json={"target_label": "smoke"},
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    request = artifacts.read_json(task_id, "request.json")
+    assert request["selection_spec"]["reference_owner"] == "annotation_repository"
+    assert isinstance(request["selection_spec"]["annotation_revision"], int)
+
+    manifest = BatchSelection(
+        artifacts.artifact_path(task_id, "selection.sqlite3")
+    )
+    try:
+        owner = manifest.database.execute(
+            "SELECT value FROM meta WHERE key='reference_owner'"
+        ).fetchone()
+        assert owner[0] == "annotation_repository"
+    finally:
+        manifest.close()

@@ -19,7 +19,7 @@ from .cleaning import DurableHashIndex, clean_options
 from .cleaning import ImageDecodeError
 from .cleaning_analysis_runtime import CleaningAnalysisRuntime
 from .cleaning_batches import clean_batch
-from .labels import label_governance_fence
+from .labels import active_project_label_ids, label_governance_fence
 from .material_repository import MaterialRepository
 from .material_repository_batch import _transform_many
 from .material_selection import MaterialSelectionSpec, SelectionScope
@@ -572,7 +572,7 @@ def create_annotation_remap_by_labels(
     project_id, materials, repository, artifacts, source_labels, target_label,
     *, retire_sources_on_success=True,
 ):
-    """Freeze the indexed union of multiple canonical source labels."""
+    """Freeze the live AnnotationRepository union of canonical source labels."""
     sources = list(dict.fromkeys(
         str(value).strip() for value in (source_labels or [])
         if str(value).strip()
@@ -596,6 +596,36 @@ def create_annotation_remap_by_labels(
             "目标标签不能同时作为来源标签",
             400,
         )
+
+    annotations = AnnotationRepository(materials.project_path)
+    with label_governance_fence(materials.project_path):
+        active = active_project_label_ids(materials.project_path) or {}
+        unavailable = [
+            code for code in [*sources, target] if code not in active
+        ]
+        if unavailable:
+            raise BatchRequestError(
+                "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                "来源或目标标签已不存在或已停用，请刷新后重新确认",
+                409,
+            )
+        frozen = annotations.live_reference_snapshot(sources)
+
+    image_ids = list(frozen["image_ids"])
+    total = len(image_ids)
+    if total <= 0:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SOURCE_UNUSED",
+            "当前没有正式标注引用所选来源标签",
+            409,
+        )
+    if total > MAX_REMAP_SELECTION:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SELECTION_TOO_LARGE",
+            f"一次标签变换最多支持 {MAX_REMAP_SELECTION} 张素材",
+            422,
+        )
+
     task_id = uuid.uuid4().hex
     selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
     request_payload = {
@@ -609,60 +639,49 @@ def create_annotation_remap_by_labels(
         "selection_spec": {
             "scope": "LABEL_REFERENCE",
             "source_labels": sources,
+            "reference_owner": "annotation_repository",
+            "annotation_revision": int(frozen["revision"]),
         },
     }
     try:
-        with closing(BatchSelection(selection_path)):
-            pass
-        with closing(materials._connect()) as database:
-            database.execute(
-                "ATTACH DATABASE ? AS batch_selection", (str(selection_path),)
-            )
-            database.execute("PRAGMA batch_selection.synchronous=FULL")
-            database.execute("BEGIN IMMEDIATE")
+        with closing(BatchSelection(selection_path)) as manifest:
+            manifest.database.execute("BEGIN IMMEDIATE")
             try:
-                revision = materials._revision(database)
-                placeholders = ",".join("?" for _ in sources)
-                database.execute(
-                    "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
-                    f"SELECT material_id FROM main.material_labels "
-                    f"WHERE label_code IN ({placeholders})",
-                    sources,
-                )
-                database.execute(
-                    "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
-                    f"SELECT material_id FROM main.material_annotation_scopes "
-                    f"WHERE label_code IN ({placeholders})",
-                    sources,
-                )
-                total = int(database.execute(
-                    "SELECT COUNT(*) FROM batch_selection.selection"
-                ).fetchone()[0])
-                if total <= 0:
-                    raise BatchRequestError(
-                        "MATERIAL_REMAP_SOURCE_UNUSED",
-                        "当前没有素材引用所选来源标签",
-                        409,
+                for offset in range(0, total, BATCH_SIZE):
+                    chunk = image_ids[offset:offset + BATCH_SIZE]
+                    material_ids = {
+                        str(item["id"]) for item in materials.get_many(chunk)
+                    }
+                    missing = [
+                        image_id for image_id in chunk
+                        if image_id not in material_ids
+                    ]
+                    if missing:
+                        sample = ", ".join(missing[:10])
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_ORPHAN_ANNOTATION",
+                            "正式标注存在但素材记录缺失，请先运行标签完整性审计："
+                            + sample,
+                            409,
+                        )
+                    manifest.database.executemany(
+                        "INSERT OR IGNORE INTO selection(image_id) VALUES (?)",
+                        ((image_id,) for image_id in chunk),
                     )
-                if total > MAX_REMAP_SELECTION:
-                    raise BatchRequestError(
-                        "MATERIAL_REMAP_SELECTION_TOO_LARGE",
-                        f"一次标签变换最多支持 {MAX_REMAP_SELECTION} 张素材",
-                        422,
-                    )
-                database.executemany(
-                    "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
+                manifest.database.executemany(
+                    "INSERT INTO meta(key,value) VALUES (?,?)",
                     (
                         ("frozen", utc_now()),
-                        ("repository_revision", str(revision)),
+                        ("repository_revision", str(frozen["revision"])),
+                        ("reference_owner", "annotation_repository"),
                         ("selection_kind", "annotation_label_reference"),
                         ("source_labels", json.dumps(sources, ensure_ascii=False)),
                         ("target_label", target),
                     ),
                 )
-                database.execute("COMMIT")
+                manifest.database.execute("COMMIT")
             except Exception:
-                database.execute("ROLLBACK")
+                manifest.database.execute("ROLLBACK")
                 raise
         artifacts.atomic_write_json(task_id, "request.json", request_payload)
         with closing(BatchSelection(selection_path)) as manifest:
@@ -679,8 +698,8 @@ def create_annotation_remap_by_labels(
         raise
     except Exception as error:
         raise BatchRequestError(
-            "MATERIAL_REMAP_CREATION_FAILED",
-            f"标签统一任务创建失败：{redact_storage_error(error)}",
+            "MATERIAL_REMAP_CREATE_FAILED",
+            f"标签变换任务创建失败：{redact_storage_error(error)}",
             500,
         ) from error
 

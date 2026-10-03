@@ -769,6 +769,37 @@ class AnnotationRepository:
             'boxes': int(row[3] or 0),
         }
 
+    def live_reference_snapshot(self, label_codes) -> dict:
+        """Freeze live GT references and annotation revision from one SQLite snapshot."""
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != '*'
+        ))
+        if not codes:
+            return {"revision": self.current_revision(), "image_ids": []}
+        if len(codes) > 100:
+            raise ValueError('annotation label reference lookup is limited to 100 labels')
+        placeholders = ','.join('?' for _ in codes)
+        with closing(self._connect()) as db:
+            db.execute('BEGIN')
+            try:
+                revision_row = db.execute(
+                    "SELECT value FROM annotation_meta WHERE key='revision'"
+                ).fetchone()
+                rows = db.execute(
+                    f'SELECT DISTINCT image_id FROM annotation_label_references '
+                    f'WHERE label_code IN ({placeholders}) ORDER BY image_id',
+                    codes,
+                ).fetchall()
+                db.execute('COMMIT')
+            except Exception:
+                db.execute('ROLLBACK')
+                raise
+        return {
+            "revision": int(revision_row[0]) if revision_row is not None else 0,
+            "image_ids": [str(row[0]) for row in rows],
+        }
+
     def reference_image_ids(self, label_codes) -> list[str]:
         codes = list(dict.fromkeys(
             str(code).strip() for code in (label_codes or ())
