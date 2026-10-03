@@ -1,6 +1,126 @@
 # Codex / 人工接管交接记录
 
 
+## 2026-10-03 Annotation GT 治理 / 标签统一候选冻结收口（最新）
+
+本节生产代码 cutoff：
+
+`b6375376854cb66aae6339f4b42057443198ff4b`
+
+正式版本：
+
+`42.24.67`
+
+该 cutoff 已确认 GitHub Actions **28 / 28 workflow runs 全部 completed success**，对应 **74 / 74 check-runs success**，failure / queued / in_progress 均为 0。
+
+本交接提交本身只增加永久 source guard、更新交接文档并把正式版本最小 patch 递增到 `42.24.68`；不重新设计训练、标注、导入或标签治理架构。
+
+### 1. CLOSED：durable ZIP / structured import annotation_scope 真相
+
+`42.24.52 ~ 42.24.53` 已关闭本地 durable ZIP 主链的 scope 缺口：
+
+- YOLO / COCO / VOC 正式入库时，`annotation_scope` 只来自用户已经确认的 `label_mapping` target；
+- 有框图片与 `confirmed_empty` 使用相同 bounded imported scope；
+- 普通图片 ZIP 没有 sidecar 时保持 `unannotated`，不能伪造 `confirmed_empty`；
+- 空 YOLO txt / VOC XML / COCO annotations 若没有任何已确认 platform schema，不得自动扩大成项目全部 active labels；
+- active v19 importer 不再在缺少确认 mapping 时隐式 `ensure_label()` / 自动创建 `object`；
+- 若结构化文件实际存在正标注却没有确认 scope，则 fail-closed。
+
+### 2. CLOSED：label governance TOCTOU 与 GT 写入 fence
+
+`42.24.54 ~ 42.24.65` 已把标签状态变化与正式 GT 写入纳入同一治理边界：
+
+- 项目级 `label_governance_fence` 为跨进程 FileLock，并支持同一执行上下文可重入；
+- 标签新增、改编码、软删除、别名记忆、标签统一退役共享同一 governance fence；
+- AnnotationRepository 的正式 upsert / batch upsert / remap / dataset-delete restore 在写 GT 前重新校验当前 active canonical label；
+- `active=false` 与 `status != active` 使用统一 active-label 语义；
+- dataset-delete 尚未完成时的 annotation backup 继续计入标签引用真相，不能趁 live row 暂时删除时错误退役标签；
+- storage import 在最终 GT commit 前重新验证 frozen mapping target；
+- online feedback 将素材创建 + 正式 GT 提升做成可回滚事务；
+- AI annotation label catalog 已统一复用 canonical active-label helper。
+
+AnnotationRepository 仍是唯一 Ground Truth owner；这些 fence 没有引入第二个 annotation owner、第二个 label owner 或第二套 remap runtime。
+
+### 3. CLOSED：标签管理 UI / API 引用统计改为 AnnotationRepository 真相
+
+`42.24.66` 已关闭“后台按 GT 拒绝、页面却按 Material projection 显示 0 引用”的前后端不一致：
+
+- `GET /api/v54/projects/{project_id}/label-schema` 的 usage / box / scope / affected 统计直接来自 `AnnotationRepository.label_reference_usage()`；
+- `POST .../labels/unify/preview` 直接来自 `AnnotationRepository.label_reference_preview()`；
+- 不再用 MaterialRepository 的 `material_labels / material_annotation_scopes` 作为标签治理引用真相；
+- 聚合是 SQLite 索引级一次查询，不做逐图 JSON hydration。
+
+### 4. CLOSED：whole-label unify 候选冻结改为 AnnotationRepository live reference snapshot
+
+`42.24.67` 已关闭此前“Material projection 陈旧导致统一任务漏选正式 GT”的问题。
+
+当前 whole-label unify 创建链：
+
+`v54 source/target active 校验`
+→ `label_governance_fence`
+→ `AnnotationRepository.live_reference_snapshot(source_labels)`
+→ 冻结 `annotation_revision + image_ids`
+→ 释放 governance fence
+→ 分批验证 Material identity
+→ 写入现有 `BatchSelection`
+→ durable `REMAP_ANNOTATION_LABELS`
+
+当前 selection audit 明确保存：
+
+- `reference_owner = annotation_repository`
+- `annotation_revision`
+- `source_labels`
+- `target_label`
+
+如果正式 GT 引用存在但对应 Material row 已丢失，创建任务直接以 `MATERIAL_REMAP_ORPHAN_ANNOTATION` fail-closed，要求先做标签完整性审计，不能静默漏掉该 GT。
+
+并发情况下，freeze 后若又新增旧来源标签 GT，最终 retirement gate 仍会再次检查 AnnotationRepository 与 Material projection 都清零，因此不会错误 retire source label。
+
+### 5. 当前已审计确认仍成立的训练准确性合同
+
+训练主链继续保持上一节的 CLOSED 合同：
+
+- training label contract 的 selected material label truth 直接读取 AnnotationRepository；
+- 训练素材 hydration 会按 image_id 分批回读 AnnotationRepository，把 `annotation_state / annotation_scope / annotation_hash / boxes` 覆盖到 task-local row；
+- Source GT 与 Training Projection 分离；
+- `source_annotation_hash` 继续进入 input freeze；
+- split 仍按正式 `annotated / confirmed_empty` 语义判断 Ground Truth；
+- 新增标签 train-positive reserve 与 20k split 近线性内存实现没有被本轮改动回退；
+- Trainer / Scheduler / resource planner 的 T0/T1/T2 owner 没有变化。
+
+### 6. 当前仍需继续审计：Training Material Picker 的辅助统计 owner
+
+这里**尚未标记 CLOSED，也不要草率改成 Python 全量扫描**。
+
+已确认：
+
+- picker 当前页卡片会批量读取 AnnotationRepository，所以单张卡片上的 `annotation_state / boxes / training_state` 是正式 GT；
+- 但 `selection-summary`、`bulk-selection(role=test)`、部分标签筛选总数仍依赖 MaterialRepository 的 `annotated / material_labels` 投影；
+- 最终训练创建链会再次回读 AnnotationRepository，因此目前更偏向“选择器统计/体验可能与最终真相短暂不一致”，而不是最终训练 GT 被污染；
+- 这一块涉及 cursor / total / 10k~20k 性能与 workflow permanent guards，不能用逐页 Python 扫描或逐图 `get()` 修补。
+
+下一会话继续时，优先设计 SQLite 索引级 GT summary / filter 合同，再决定是否把 picker 的 summary / test bulk-selection 切到 AnnotationRepository；必须保持 server paging、50k selection 上限和无 N+1。
+
+### 7. 本轮版本推进
+
+- `42.24.52`：durable import bounded annotation scope
+- `42.24.53`：unscoped structured negative fail-safe
+- `42.24.54`：durable import / label governance fence
+- `42.24.55 ~ 42.24.56`：rollback regression contract 修正
+- `42.24.57`：canonical label governance truth
+- `42.24.58`：formal annotation writes + delete restore governance fence
+- `42.24.59 ~ 42.24.62`：旧测试 / cleaning / confirmed-empty fixtures 对齐新 GT 合同
+- `42.24.63`：storage import GT commit governance fence
+- `42.24.64`：online feedback 正式 GT 原子提升
+- `42.24.65`：AI annotation active-label truth
+- `42.24.66`：v54 标签治理统计 / preview 改读 AnnotationRepository
+- `42.24.67`：whole-label unify selection freeze 改读 AnnotationRepository
+- `42.24.68`：本交接 / permanent source guard
+
+后续每个正式提交继续从远端真实 `VERSION.txt` 最小 patch +1；不要重新固定版本，也不要把 UI build metadata 当正式平台版本。
+
+
+
 ## 2026-09-30 标注 Ground Truth / 训练投影 / Split 准确性收口（最新）
 
 本节生产代码 cutoff：
