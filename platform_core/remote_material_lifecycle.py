@@ -223,7 +223,11 @@ def remote_execution_staging_refs(
                     _normalized_ref(
                         task=task,
                         value=output_ref,
-                        role="confirmed-result",
+                        role=(
+                            "review"
+                            if task.kind is TaskKind.MATERIAL_IMPORT
+                            else "confirmed-result"
+                        ),
                         sha256=output_sha,
                         size_bytes=output_size,
                     ),

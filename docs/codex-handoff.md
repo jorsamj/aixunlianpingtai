@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Remote execution staging GC / material ledger compatibility 修正（最新）
+
+- 上游提交：a2019fae0a66bff3fcd354c40576c9a6c2be72ae / VERSION 42.24.86
+- 42.24.86 首轮 CI 的 Remote Material Import contract 暴露一个兼容性回归：MATERIAL_IMPORT 已有 cleanup ledger 的 output role 从 review 被泛化成 confirmed-result。
+- 本提交 VERSION：42.24.87。
+- 修复原则：不改测试、不改删除范围；MATERIAL_IMPORT 继续保留历史 role=review，MODEL_CONVERSION / TRAINING / MATERIAL_BATCH 使用 confirmed-result。
+- 其余 42.24.86 exact-ref GC、单一 storage Worker heartbeat owner、禁止 prefix delete、DEPLOYMENT_TEST fail-closed 范围全部保持不变。
+
 ## 2026-10-05 Remote execution staging GC / external reconciliation 收口（最新）
 
 本节基线：
