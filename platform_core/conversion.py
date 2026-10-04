@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-SUPPORTED_ROCKCHIP_CHIPS = frozenset({"rk3568", "rk3578", "rk3576"})
+SUPPORTED_ROCKCHIP_CHIPS = frozenset({"rk3568", "rk3576"})
 
 
 class ConversionError(RuntimeError):
@@ -41,7 +41,7 @@ def validate_target(kind: str, params: Mapping[str, Any]) -> dict[str, Any]:
     if target in {"rockchip", "rknn"}:
         chip = str(values.get("chip") or "").strip().lower()
         if chip not in SUPPORTED_ROCKCHIP_CHIPS:
-            raise ValueError("当前产品瑞芯微转换只支持 rk3568、rk3578 或 rk3576")
+            raise ValueError("当前产品瑞芯微转换只支持 rk3568 或 rk3576")
         values.update({"kind": "rockchip", "chip": chip, "precision": precision})
     elif target in {"ascend", "atlas"}:
         soc = str(values.get("soc_version") or "").strip()

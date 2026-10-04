@@ -10432,7 +10432,7 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
                 detail="、".join(chip.upper() for chip in chips) or "无"
                 summary["errors"].append({
                     "target":target,
-                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568、RK3578 或 RK3576 后手动转换。",
+                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568 或 RK3576 后手动转换。",
                 })
                 continue
             params["chip"]=chips[0]
@@ -16048,7 +16048,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
                 detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
             )
         if not chip or (supported_chips and chip not in supported_chips):
-            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3578、rk3576"
+            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
             raise HTTPException(
                 status_code=400,
                 detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
@@ -16797,18 +16797,17 @@ def v40_latest_component_scan():
 # v41: 部署插件框架 + 瑞芯微 RKNN-Toolkit2
 # ============================================================
 from deploy_plugins import plugin_catalog as _v41_plugin_catalog
+from platform_core.rknn_runtime import probe_rknn_toolkit
 
 
 def _v41_rknn_info(py: str) -> Dict[str, Any]:
-    py=str(py or '')
-    if not py or not Path(py).exists():
-        return {'ok':False,'error':'Python 不存在'}
-    code="from rknn.api import RKNN; import importlib.metadata as m,json; print(json.dumps({'version':m.version('rknn-toolkit2')},ensure_ascii=False))"
-    try:
-        cp=subprocess.run([py,'-c',code],capture_output=True,text=True,encoding='utf-8',errors='ignore',timeout=20)
-        if cp.returncode!=0:return {'ok':False,'error':(cp.stderr or cp.stdout or 'RKNN-Toolkit2 导入失败')[-1200:]}
-        return {'ok':True,**json.loads((cp.stdout or '{}').splitlines()[-1])}
-    except Exception as e:return {'ok':False,'error':str(e)}
+    result=probe_rknn_toolkit(py)
+    return {
+        'ok':bool(result.get('available')),
+        'version':str(result.get('version') or ''),
+        'supported_chips':list(result.get('supported_chips') or []),
+        'error':str(result.get('error') or ''),
+    }
 
 _v41_old_detect_local_deploy_resource = _detect_local_deploy_resource
 
@@ -16820,7 +16819,7 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     info=_v41_rknn_info(py)
     row['rknn_python']=py
     row['rknn_version']=str(info.get('version') or '')
-    row['supported_chips']=['rk3588','rk3578','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118']
+    row['supported_chips']=list(info.get('supported_chips') or [])
     if info.get('ok'):
         row.update(status='ready',targets=['rockchip'],version=row['rknn_version'],message='RKNN-Toolkit2 可用；无需开发板即可把 ONNX 转为 RKNN')
     else:

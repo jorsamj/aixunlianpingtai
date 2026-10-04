@@ -12,7 +12,7 @@ const TARGETS = [
 
 const VENDOR_META = {
   original: {mark: '通', scene: '原始训练模型', note: '训练完成但尚未转换的模型统一走“通用”对应关系。', required: true},
-  rockchip: {mark: 'RK', scene: 'RKNN 转换', note: '当前优先 RK3568 / RK3578；RK3576 继续兼容。具体芯片型号始终以真实转换产物为准。'},
+  rockchip: {mark: 'RK', scene: 'RKNN 转换', note: '当前产品支持 RK3568 / RK3576；具体芯片型号始终以真实转换产物为准。'},
   tensorrt: {mark: 'NV', scene: 'TensorRT 转换', note: '用于 NVIDIA GPU / TensorRT 交付产物。'},
   ascend: {mark: '昇', scene: 'Ascend / OM', note: '用于华为 Ascend 转换产物。'},
   sophon: {mark: '算', scene: 'Sophon / BModel', note: '用于算能转换产物。'},

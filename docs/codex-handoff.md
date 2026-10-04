@@ -1,5 +1,54 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-04 RKNN 官方型号合同纠正 / Conversion capability truth（最新）
+
+本节正式版本：
+
+`42.24.81`
+
+本节只纠正 `42.24.79 ~ 42.24.80` 中 RKNN 型号能力判断；这两版已经完成的“单一版本转换弹窗、型号下拉、durable progress 原位刷新、转换记录 UI、conversion state bridge”继续保留。
+
+### 1. 纠正：RK3578 不是 RKNN-Toolkit2 官方 target_platform
+
+重新核对 Rockchip 官方 RKNN-Toolkit2 支持平台和官方示例后确认：
+
+- RK3566 / RK3568：支持；
+- RK3576：支持；
+- RK3588：官方支持，但当前产品合同仍不开放；
+- `RK3578`：不是官方 RKNN-Toolkit2 target_platform。
+
+因此此前把 RK3578 加入 Toolkit probe、Agent conversion、board runtime 和前端 canonical set 的改动从本节开始全部 supersede。
+
+当前产品 canonical Rockchip 转换目标：
+
+`RK3568 / RK3576`
+
+### 2. capability truth 继续由真实资源探测驱动
+
+版本转换弹窗仍然使用 SELECT，不恢复手工输入。
+
+本地 RKNN 资源检测不再因为 `from rknn.api import RKNN` 成功就硬编码宣称支持一大串芯片，而是直接复用：
+
+`platform_core.rknn_runtime.probe_rknn_toolkit()`
+
+只有真实通过 `RKNN.config(target_platform=...)` 的当前产品目标才进入 `supported_chips`，前端下拉继续只显示该资源真实上报并且属于产品允许集合的型号。
+
+### 3. fail-closed / regression
+
+本提交同步收紧：
+
+- `platform_core.conversion.SUPPORTED_ROCKCHIP_CHIPS`；
+- portable Agent conversion；
+- RKNN Toolkit capability probe；
+- RKNNLite board SoC identity；
+- 自动转换提示与 API fallback；
+- external publish UI 文案；
+- version conversion UI 支持顺序。
+
+新增负向回归：`rk3578` 作为 Rockchip target 必须被 canonical validation / Agent conversion 拒绝；frontend source guard 禁止再次把 RK3578 放回型号下拉。
+
+旧 handoff 中关于 RK3578 的章节保留作为历史审计记录，但从本节开始均视为已被 supersede。
+
 ## 2026-10-04 Conversion CI regression 收口（最新）
 
 本节基线：

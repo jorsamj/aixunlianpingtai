@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from platform_core.conversion import validate_target
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,3 +64,9 @@ def test_missing_vendor_compiler_fails_without_fake_artifact(
     assert result["status"] == "failed"
     assert result["error_code"] == error_code
     assert not list((job_dir / "artifacts").rglob(f"*{forbidden_suffix}"))
+
+
+
+def test_product_contract_rejects_rk3578_target_platform():
+    with pytest.raises(ValueError, match="rk3568.*rk3576"):
+        validate_target("rockchip", {"chip": "rk3578", "precision": "fp16"})

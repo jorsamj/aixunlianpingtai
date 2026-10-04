@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REMOTE_RKNN_CHIPS = ("rk3568", "rk3578", "rk3576")
+REMOTE_RKNN_CHIPS = ("rk3568", "rk3576")
 
 
 def probe_rknn_toolkit(
@@ -37,7 +37,7 @@ import json
 from rknn.api import RKNN
 
 chips = []
-for chip in ("rk3568", "rk3578", "rk3576"):
+for chip in ("rk3568", "rk3576"):
     runtime = RKNN(verbose=False)
     try:
         code = runtime.config(target_platform=chip)
@@ -92,7 +92,7 @@ print(json.dumps({
     if not chips:
         result["version"] = version
         result["error"] = (
-            "RKNN-Toolkit2 imported but none of rk3568, rk3578 or rk3576 "
+            "RKNN-Toolkit2 imported but neither rk3568 nor rk3576 "
             "passed target_platform config probing"
         )
         return result

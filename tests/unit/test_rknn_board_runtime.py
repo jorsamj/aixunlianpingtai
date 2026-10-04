@@ -12,17 +12,12 @@ class Completed:
         self.stderr = stderr
 
 
-def test_detect_rockchip_soc_maps_rk356x_family_rk3578_and_rk3576(tmp_path):
+def test_detect_rockchip_soc_maps_rk356x_family_and_rk3576(tmp_path):
     compatible = tmp_path / "compatible"
     compatible.write_bytes(b"rockchip,rk3568\x00vendor,board")
     result = runtime.detect_rockchip_soc(compatible, machine="aarch64")
     assert result["supported"] is True
     assert result["chip"] == "rk3568"
-
-    compatible.write_bytes(b"rockchip,rk3578\x00vendor,board")
-    result = runtime.detect_rockchip_soc(compatible, machine="arm64")
-    assert result["supported"] is True
-    assert result["chip"] == "rk3578"
 
     compatible.write_bytes(b"rockchip,rk3576\x00vendor,board")
     result = runtime.detect_rockchip_soc(compatible, machine="arm64")
