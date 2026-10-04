@@ -1,5 +1,25 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-04 RKNN capability guard / remote transport 合同补齐（最新）
+
+本节基线：
+
+- 上游 HEAD：`069cee4fef28a9d2422a3f8530c57bc20b21d091`
+- 上游 VERSION：`42.24.82`
+- 本提交正式版本：`42.24.83`
+
+`42.24.81` 已把产品 RKNN target_platform 纠正为 `RK3568 / RK3576`，但 remote transport 的错误文案、portable conversion 单测以及 `Remote Conversion Runtime` workflow source guard 仍残留旧的 RK3578 合同。
+
+本提交只补齐同一 capability truth：
+
+- `SUPPORTED_ROCKCHIP_CHIPS` 继续是唯一产品转换允许集合；
+- remote conversion / board validation 错误消息只声明 RK3568 / RK3576；
+- RK3578 与 RK3588 都作为产品合同负向样例 fail-closed；
+- workflow 不再要求 UI / worker / browser tests 出现 RK3578，并明确防止 RK3578 / RK3588 被重新暴露成产品转换选项。
+
+不修改 conversion UI owner、durable progress owner、ModelArtifact owner 或 external publication owner。
+
+
 ## 2026-10-04 RKNN 板端验收文案合同同步（最新）
 
 本节基线：

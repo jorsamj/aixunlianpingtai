@@ -418,7 +418,7 @@ class RemoteExecutionTransportService:
         if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_RKNN_BOARD_CHIP_INVALID",
-                "RKNN board verification supports rk3568, rk3578 or rk3576",
+                "RKNN board verification supports rk3568 or rk3576",
                 422,
             )
         try:
@@ -863,7 +863,7 @@ class RemoteExecutionTransportService:
         if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_CONVERSION_PARAMS_INVALID",
-                "portable Agent RKNN conversion currently supports rk3568, rk3578 or rk3576",
+                "portable Agent RKNN conversion currently supports rk3568 or rk3576",
                 422,
             )
         precision = str(values.get("precision") or "fp16").strip().lower()

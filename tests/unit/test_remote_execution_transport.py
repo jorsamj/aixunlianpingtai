@@ -1786,7 +1786,7 @@ def _portable_rknn_contract(tmp_path, monkeypatch, *, chip="rk3568"):
     return transport, provider, model, digest, contract
 
 
-@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])
+@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])
 def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypatch, chip):
     _transport, _provider, model, digest, contract = _portable_rknn_contract(
         tmp_path, monkeypatch, chip=chip
@@ -1806,7 +1806,8 @@ def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypa
 @pytest.mark.parametrize(
     ("params", "message"),
     [
-        ({"chip": "rk3588", "precision": "fp16"}, "rk3568, rk3578 or rk3576"),
+        ({"chip": "rk3578", "precision": "fp16"}, "rk3568 or rk3576"),
+        ({"chip": "rk3588", "precision": "fp16"}, "rk3568 or rk3576"),
         ({"chip": "rk3568", "precision": "fp32"}, "fp16 or int8"),
         ({"chip": "rk3568", "precision": "fp16", "dynamic": True}, "static input shape"),
         ({"chip": "rk3568", "precision": "fp16", "batch": 2}, "batch=1"),
@@ -1916,7 +1917,7 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert publish_requests[0]["conversion_job"]["params"]["chip"] == "rk3568"
 
 
-@pytest.mark.parametrize("chip", ["rk3568", "rk3578", "rk3576"])
+@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])
 def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path, chip):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
