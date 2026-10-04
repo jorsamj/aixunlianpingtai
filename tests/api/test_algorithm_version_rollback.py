@@ -213,6 +213,72 @@ def test_rollback_delete_preserves_directory_used_by_target_version(client, seed
 
 
 
+def test_rollback_cleanup_failure_can_retry_without_recreating_deleted_version(
+    client, seeded_project, monkeypatch,
+):
+    project_id, _ = seeded_project
+    algorithm = _create_algorithm(client, project_id)
+    _seed_versions(project_id, algorithm["id"])
+    calls = {"artifacts": 0, "publications": 0}
+
+    def purge_version(_self, pid, aid, vid):
+        assert (pid, aid, vid) == (project_id, algorithm["id"], "v5")
+        calls["artifacts"] += 1
+        if calls["artifacts"] == 1:
+            raise PermissionError("temporary object delete failure")
+        return {"artifacts_deleted": 1, "remote_objects_deleted": 1}
+
+    def delete_publication_version(_self, pid, aid, vid, **_kwargs):
+        assert (pid, aid, vid) == (project_id, algorithm["id"], "v5")
+        calls["publications"] += 1
+        return {
+            "publications_deleted": 1,
+            "legacy_artifacts_deleted": 0,
+            "artifact_mappings_deleted": 1,
+        }
+
+    monkeypatch.setattr(app_module.ModelArtifactService, "purge_version", purge_version)
+    monkeypatch.setattr(
+        app_module.ExternalPublicationRepository,
+        "delete_version",
+        delete_publication_version,
+    )
+
+    first = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
+        json={"delete_current_version": True, "expected_current_version_id": "v5"},
+    )
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert first_body["cleanup_status"] == "cleanup_failed"
+    assert calls == {"artifacts": 1, "publications": 0}
+
+    stored = next(
+        row for row in app_module.list_algorithm_assets(app_module.algorithms_file(project_id))
+        if row["id"] == algorithm["id"]
+    )
+    assert [row["id"] for row in stored["versions"]] == ["v3"]
+    operation = stored["version_operations"][-1]
+    assert operation["cleanup_version"]["id"] == "v5"
+    operation_id = operation["id"]
+
+    retried = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/version-operations/{operation_id}/retry-cleanup"
+    )
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["cleanup_status"] == "cleanup_completed"
+    assert retried.json()["already_completed"] is False
+    assert calls == {"artifacts": 2, "publications": 1}
+
+    repeated = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/version-operations/{operation_id}/retry-cleanup"
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["cleanup_status"] == "cleanup_completed"
+    assert repeated.json()["already_completed"] is True
+    assert calls == {"artifacts": 2, "publications": 1}
+
+
 def test_rollback_cleanup_purges_deleted_version_delivery_state_only(
     client, seeded_project, monkeypatch,
 ):

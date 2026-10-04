@@ -57,6 +57,7 @@ from platform_core.algorithms import (
     project_current_version,
     resolve_current_version_id,
     rollback_algorithm_version,
+    retry_algorithm_version_cleanup,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
@@ -8187,6 +8188,9 @@ def _algorithm_version_active_references(
     algorithm_id = str(algorithm.get("id") or "")
     version_id = str(version.get("id") or "")
     model_paths = _version_model_paths(version)
+    version_root = (
+        project_dir(project_id) / "algorithm_versions" / algorithm_id / version_id
+    ).resolve() if algorithm_id and version_id else None
     references: List[Dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -8217,7 +8221,14 @@ def _algorithm_version_active_references(
             raw = str((request or {}).get("model_path") or "").strip()
             if raw:
                 try:
-                    if Path(raw).expanduser().resolve() in model_paths:
+                    resolved_model = Path(raw).expanduser().resolve()
+                    if (
+                        resolved_model in model_paths
+                        or (
+                            version_root is not None
+                            and (resolved_model == version_root or version_root in resolved_model.parents)
+                        )
+                    ):
                         add("DEPLOYMENT_TEST", task.task_id, f"该版本仍有活动部署测试任务 {task.task_id}")
                 except (OSError, RuntimeError):
                     continue
@@ -10273,6 +10284,27 @@ def v12_rollback_version(
             version=version,
         ),
         cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+    )
+    return {
+        "ok": result.get("cleanup_status") != "cleanup_failed",
+        **result,
+        "reference_check": {
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "not_verifiable": ["online_deployment_instances"],
+        },
+    }
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/version-operations/{operation_id}/retry-cleanup")
+def v12_retry_version_cleanup(project_id: str, algorithm_id: str, operation_id: str):
+    get_project(project_id)
+    result = retry_algorithm_version_cleanup(
+        algorithms_file(project_id),
+        algorithm_id,
+        operation_id,
+        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(
+            project_id, algorithm, version,
+        ),
     )
     return {
         "ok": result.get("cleanup_status") != "cleanup_failed",

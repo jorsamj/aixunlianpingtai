@@ -151,6 +151,10 @@ jobs:
           grep -Fq 'model_assets.purge_version(project_id, algorithm_id, version_id)' app.py
           grep -Fq 'ExternalPublicationRepository(DATA_DIR).delete_version(' app.py
           grep -Fq 'test_rollback_cleanup_purges_deleted_version_delivery_state_only' tests/api/test_algorithm_version_rollback.py
+          grep -Fq 'def retry_algorithm_version_cleanup(' platform_core/algorithms.py
+          grep -Fq 'version-operations/{operation_id}/retry-cleanup' app.py
+          grep -Fq 'test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted' tests/unit/test_algorithms.py
+          grep -Fq 'test_rollback_cleanup_failure_can_retry_without_recreating_deleted_version' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'return self.version_create(payload)' platform_core/external_algorithm_publish.py
           grep -Fq 'return self.version_list_by_product(product_id)' platform_core/external_algorithm_publish.py
           grep -Fq 'return self.weight_create(payload)' platform_core/external_algorithm_publish.py
