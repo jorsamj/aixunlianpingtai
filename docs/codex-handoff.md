@@ -1,5 +1,23 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-04 RKNN 板端验收文案合同同步（最新）
+
+本节基线：
+
+- 上游：`c9e6d4046ab8b991e51f167790635900e46c7223`
+- 上游 VERSION：`42.24.81`
+- 本提交正式版本：`42.24.82`
+
+`42.24.80` 的 Remote RKNN Board Runtime Protocol 最后一条 real-chrome 红灯不是板端逻辑失败，而是浏览器测试仍断言旧文案“RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证”。
+
+当前产品 UI 已明确改为：
+
+- `转换完成 · 待板端验证`
+- `RKNN 文件已生成；完成匹配芯片的 RKNNLite 实机推理后才升级为硬件已验证。`
+
+本提交只同步浏览器验收合同，不回退新的 conversion record 信息层级，不放宽板端验证按钮、preflight、真实 task 进度和最终 hardware_verified 验收。
+
+
 ## 2026-10-04 RKNN 官方型号合同纠正 / Conversion capability truth（最新）
 
 本节正式版本：

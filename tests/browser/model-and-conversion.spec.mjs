@@ -437,7 +437,8 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   const historyDialog = page.getByRole('dialog', {name: '版本转换'});
   await expect(historyDialog).toBeVisible();
   const job = historyDialog.locator('.convert428-job', {hasText: '瑞芯微 RKNN'});
-  await expect(job.getByText('RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证')).toBeVisible();
+  await expect(job.getByText('转换完成 · 待板端验证')).toBeVisible();
+  await expect(job.getByText(/RKNN 文件已生成/)).toBeVisible();
   await job.getByRole('button', {name: '板端验证'}).click();
   const dialog = page.getByRole('dialog', {name: 'RKNN 板端验证'});
   await expect(dialog.getByText(/验收条件已满足/)).toBeVisible();
