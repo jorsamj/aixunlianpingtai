@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Conversion frontend Windows source-boundary guard（最新）
+
+- 上游：`e36ab3ede5f670677690a35a08196ecf34b57f2d` / VERSION `42.24.90`。
+- 本提交正式版本：`42.24.91`。
+- `42.24.90` 新纳入 Remote Conversion Runtime 的既有 frontend contract 在 Windows checkout 暴露 CRLF 敏感边界：测试用硬编码 LF 序列定位 `openNewConvertCore416` owner 结束位置。
+- 生产 conversion UI/runtime 未失败；Python conversion runtime 101 tests 已通过。
+- 本提交只把源码切片 end marker 改为稳定 owner token `window.installUsability417?.();`，保留原全部能力/单 owner/UI 断言，不删除、不放宽测试。
+
 ## 2026-10-05 Conversion record / ModelArtifact 删除边界收口（最新）
 
 - 上游绿基线：`5f6d482735e2a36de8490b54a3cca81ab8204578` / VERSION `42.24.89`，22 / 22 workflows completed success。

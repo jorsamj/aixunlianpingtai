@@ -44,7 +44,7 @@ test('version conversion polling is PollRegistry-owned and scoped to the current
 
 test('version conversion keeps chip choice capability-owned and submit returns to the existing history dialog', () => {
   const createStart = source.indexOf('window.openNewConvertCore416=async function');
-  const createEnd = source.indexOf('\n})();\n\nwindow.installUsability417', createStart);
+  const createEnd = source.indexOf('window.installUsability417?.();', createStart);
   assert.ok(createStart >= 0 && createEnd > createStart);
   const createLayer = source.slice(createStart, createEnd);
   assert.match(createLayer, /<select id="conv428Chip" class="select"><\/select>/);
