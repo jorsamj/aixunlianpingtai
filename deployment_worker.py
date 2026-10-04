@@ -433,7 +433,7 @@ def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
         )
     chip = str(params.get('chip') or '').strip().lower()
     if chip not in SUPPORTED_ROCKCHIP_CHIPS:
-        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568、rk3578 或 rk3576，且必须明确选择目标芯片')
+        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568 或 rk3576，且必须明确选择目标芯片')
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}
     dataset_txt = None
