@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Conversion record / ModelArtifact 删除边界收口（最新）
+
+- 上游绿基线：`5f6d482735e2a36de8490b54a3cca81ab8204578` / VERSION `42.24.89`，22 / 22 workflows completed success。
+- 本提交正式版本：`42.24.90`。
+- 已产生成果的 conversion job 属于算法版本交付审计，不允许通过 `DELETE /api/v39/.../deploy/jobs/{job_id}` 单独裸删；版本成果退役继续唯一由 algorithm version rollback/delete owner 处理。
+- failed / stopped / cancelled / blocked_by_environment 等无交付终态只有在没有 canonical ModelArtifact reference 时才允许删除。
+- ModelArtifact 增加 `project_id + conversion_job_id` 索引化 provenance 查询，并以 `version + target + chip + sha256` canonical identity 兼容历史 provenance 丢失。
+- 修复 ModelArtifact upsert：空 `conversion_job_id` 不再抹掉已有非空 provenance。
+- 前端版本转换记录只对无交付失败终态显示“删除”，done / blocked_by_hardware 不再展示假删除操作。
+- 不调用 ChangLian `weight_remove`，不新增单 artifact retirement owner；外部 Weight、immutable object、publication mapping 继续由版本级正式 owner 管理。
+
 ## 2026-10-05 RKNN 板端 staging GC scope fence（最新）
 
 - 上游：`d37fed8904a588ebbaec63bbca88132f2f708603` / VERSION `42.24.88`。

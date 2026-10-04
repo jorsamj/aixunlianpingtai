@@ -92,7 +92,10 @@ from platform_core.labels import (
     normalize_label_aliases,
 )
 from platform_core.material_store import MaterialStore
-from platform_core.model_artifacts import ModelArtifactService
+from platform_core.model_artifacts import (
+    ModelArtifactService,
+    SUCCESSFUL_CONVERSION_STATUSES,
+)
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
@@ -16549,10 +16552,65 @@ def v39_stop_deploy_job(project_id: str, job_id: str):
 
 @app.delete("/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
 def v39_delete_deploy_job(project_id: str, job_id: str):
-    job=_read_deploy_job(project_id,job_id)
-    if job.get("status") in {"running","queued"}:raise HTTPException(status_code=400,detail="运行中的任务请先停止")
-    shutil.rmtree(_deploy_job_dir(project_id,job_id),ignore_errors=True)
-    return {"ok":True}
+    job = _read_deploy_job(project_id, job_id)
+    status = str(job.get("status") or "").strip().lower()
+    if status in {
+        "running", "queued", "waiting_resource", "cancel_requested",
+        "stopping", "waiting", "pending",
+    }:
+        raise HTTPException(status_code=400, detail="运行中的任务请先停止")
+
+    model_assets = ModelArtifactService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
+    artifact_refs = model_assets.conversion_job_artifact_references(project_id, job)
+    if status in SUCCESSFUL_CONVERSION_STATUSES:
+        raise PlatformError(
+            "CONVERSION_JOB_DELIVERY_IMMUTABLE",
+            "已产生成果的转换记录不能单独删除",
+            (
+                f"job_id={job_id}; status={status}; "
+                f"canonical_artifacts={len(artifact_refs)}"
+            ),
+            "转换成果属于算法版本交付链和审计记录。若需退役成果，请删除或回退对应算法版本，由版本清理 owner 统一处理 ModelArtifact、存储对象和发布映射。",
+            409,
+        )
+    if artifact_refs:
+        preview = "、".join(
+            str(row.get("artifact_id") or "-") for row in artifact_refs[:10]
+        )
+        raise PlatformError(
+            "CONVERSION_JOB_ARTIFACT_REFERENCED",
+            "转换记录仍被模型资产引用",
+            f"job_id={job_id}; artifact_id={preview}",
+            "请保留该转换记录；若要退役交付成果，请通过算法版本删除或回退流程处理。",
+            409,
+        )
+
+    job_dir = _deploy_job_dir(project_id, job_id)
+    try:
+        shutil.rmtree(job_dir)
+    except OSError as error:
+        raise PlatformError(
+            "CONVERSION_JOB_DELETE_FAILED",
+            "转换记录删除失败",
+            str(error),
+            "请检查任务目录文件占用和权限后重试；平台不会把未确认删除的任务报告为成功。",
+            409,
+        ) from error
+    if job_dir.exists():
+        raise PlatformError(
+            "CONVERSION_JOB_DELETE_FAILED",
+            "转换记录删除结果无法确认",
+            str(job_dir),
+            "请检查任务目录权限后重试。",
+            409,
+        )
+    return {"ok": True, "job_id": str(job_id)}
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/artifacts")

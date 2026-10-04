@@ -334,6 +334,12 @@ class ModelArtifactRepository:
             )
             """
         )
+        database.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_model_artifacts_conversion_job
+            ON model_artifacts(project_id, conversion_job_id)
+            """
+        )
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
@@ -379,6 +385,49 @@ class ModelArtifactRepository:
         with closing(self._connect()) as database:
             row = database.execute("SELECT * FROM model_artifacts WHERE artifact_id = ?", (str(artifact_id),)).fetchone()
         return self._public(row) if row else None
+
+    def find_identity(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        target: str,
+        chip_code: str,
+        sha256: str,
+    ) -> dict[str, Any] | None:
+        with closing(self._connect()) as database:
+            row = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id=? AND algorithm_id=? AND version_id=?
+                  AND target=? AND chip_code=? AND sha256=?
+                """,
+                (
+                    str(project_id), str(algorithm_id), str(version_id),
+                    str(target), str(chip_code or "").strip().lower(),
+                    str(sha256 or "").strip().lower(),
+                ),
+            ).fetchone()
+        return self._public(row) if row else None
+
+    def list_by_conversion_job(
+        self,
+        project_id: str,
+        conversion_job_id: str,
+    ) -> list[dict[str, Any]]:
+        job_id = str(conversion_job_id or "").strip()
+        if not job_id:
+            return []
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id=? AND conversion_job_id=?
+                ORDER BY created_at, artifact_id
+                """,
+                (str(project_id), job_id),
+            ).fetchall()
+        return [self._public(row) for row in rows]
 
     @staticmethod
     def _public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
@@ -440,7 +489,11 @@ class ModelArtifactRepository:
                     file_name=excluded.file_name,
                     size_bytes=excluded.size_bytes,
                     chip_code=excluded.chip_code,
-                    conversion_job_id=excluded.conversion_job_id,
+                    conversion_job_id=CASE
+                        WHEN TRIM(excluded.conversion_job_id) <> ''
+                        THEN excluded.conversion_job_id
+                        ELSE conversion_job_id
+                    END,
                     metadata_json=excluded.metadata_json,
                     updated_at=excluded.updated_at
                 """,
@@ -1475,6 +1528,62 @@ class ModelArtifactService:
         if public_url:
             uploaded = self.repository.patch(str(row["artifact_id"]), public_url=public_url)
         return uploaded
+
+    def conversion_job_artifact_references(
+        self,
+        project_id: str,
+        conversion_job: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve canonical references owned by a conversion record."""
+        project_id = str(project_id or "").strip()
+        job_id = str(conversion_job.get("id") or "").strip()
+        if not project_id or not job_id:
+            return []
+        found = {
+            str(row["artifact_id"]): row
+            for row in self.repository.list_by_conversion_job(project_id, job_id)
+        }
+        algorithm_id = ""
+        version_id = ""
+        for source in (conversion_job.get("source_trace"), conversion_job.get("source_meta")):
+            if not isinstance(source, Mapping):
+                continue
+            candidate_algorithm = str(source.get("algorithm_id") or "").strip()
+            candidate_version = str(source.get("version_id") or "").strip()
+            if candidate_algorithm and candidate_version:
+                algorithm_id, version_id = candidate_algorithm, candidate_version
+                break
+        if not algorithm_id or not version_id:
+            source_id = str(conversion_job.get("source_id") or "").strip()
+            match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+            if match:
+                algorithm_id, version_id = match.group(1), match.group(2)
+        if not algorithm_id or not version_id:
+            return list(found.values())
+        algorithm = next(
+            (item for item in list_algorithms(self.algorithms_file(project_id))
+             if str(item.get("id") or "") == algorithm_id),
+            None,
+        )
+        version = next(
+            (item for item in ((algorithm or {}).get("versions") or [])
+             if isinstance(item, Mapping) and str(item.get("id") or "") == version_id),
+            None,
+        )
+        if algorithm is None or version is None:
+            return list(found.values())
+        for discovered in self.discover_version_artifacts(project_id, algorithm, version):
+            if str(discovered.get("conversion_job_id") or "") != job_id:
+                continue
+            row = self.repository.find_identity(
+                project_id, algorithm_id, version_id,
+                str(discovered.get("target") or ""),
+                str(discovered.get("chip_code") or ""),
+                str(discovered.get("sha256") or ""),
+            )
+            if row is not None:
+                found[str(row["artifact_id"])] = row
+        return [found[key] for key in sorted(found)]
 
     def refresh_conversion_artifacts(
         self,

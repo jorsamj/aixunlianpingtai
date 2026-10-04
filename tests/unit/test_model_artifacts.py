@@ -355,6 +355,49 @@ def _seed(root: Path):
     return model, output
 
 
+def test_empty_upsert_does_not_erase_conversion_job_provenance(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    first = service.repository.upsert(discovered)
+    assert first["conversion_job_id"] == "convert-1"
+
+    second = service.repository.upsert({**discovered, "conversion_job_id": ""})
+    assert second["artifact_id"] == first["artifact_id"]
+    assert second["conversion_job_id"] == "convert-1"
+
+
+def test_conversion_job_reference_falls_back_to_canonical_identity(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    row = service.repository.upsert(discovered)
+    with sqlite3.connect(service.repository.db_path) as database:
+        database.execute(
+            "UPDATE model_artifacts SET conversion_job_id='' WHERE artifact_id=?",
+            (row["artifact_id"],),
+        )
+
+    job = json.loads(
+        (
+            _project_dir(tmp_path, "p1")
+            / "deployment" / "jobs" / "convert-1" / "job.json"
+        ).read_text(encoding="utf-8")
+    )
+    references = service.conversion_job_artifact_references("p1", job)
+    assert [item["artifact_id"] for item in references] == [row["artifact_id"]]
+
+
 def test_conversion_validation_promotes_on_same_canonical_artifact_identity(tmp_path: Path):
     _seed(tmp_path)
     service = _service(tmp_path)

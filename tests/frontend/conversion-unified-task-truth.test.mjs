@@ -60,3 +60,14 @@ test('version conversion keeps chip choice capability-owned and submit returns t
   assert.match(submitLayer, /if\(!replaceVersionConversionBody428\(aid,vid,r\)\)modal\('版本转换',historyHtml428\(aid,vid,r\),true\)/);
   assert.match(submitLayer, /正在创建转换任务/);
 });
+
+
+test('version conversion only offers delete for terminal records without deliverable artifacts', () => {
+  const start = source.indexOf('function conversionActions428(job)');
+  const end = source.indexOf('\n  function rememberVersionConversion428', start);
+  assert.ok(start >= 0 && end > start);
+  const actions = source.slice(start, end);
+  assert.match(actions, /deletable=\['failed','stopped','cancelled','blocked_by_environment'\]\.includes\(status\)/);
+  assert.match(actions, /deletable\?`<button class="btn mini danger" onclick="deleteDeployJob/);
+  assert.doesNotMatch(actions, /!active\?`<button class="btn mini danger" onclick="deleteDeployJob/);
+});
