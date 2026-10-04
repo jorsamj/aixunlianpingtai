@@ -271,6 +271,8 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await expect(createDialog.locator('#conv428Resource')).toHaveValue('rknn-agent-ui');
   await expect(createDialog.locator('#conv428Resource')).toContainText('RKNN 服务节点 Agent');
   await expect(createDialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  expect(await createDialog.locator('#conv428Chip').evaluate(node => node.tagName)).toBe('SELECT');
+  await expect(createDialog.locator('#conv428Chip option')).toHaveText(['RK3568', 'RK3578', 'RK3576']);
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3568');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3578');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3576');
@@ -495,7 +497,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
     body: JSON.stringify({
       algorithm: {id: algorithmId, name: 'RKNN INT8 算法'},
       version: {id: versionId, version_name: '20260918193000', model_name: 'best.pt', stored_path: 'models/best.pt'},
-      items: created ? [{id: 'rknn-int8-job', target: 'rockchip', status: 'queued', progress: 0, message: '等待远程节点'}] : []
+      items: created ? [{id: 'rknn-int8-job', target: 'rockchip', target_name: '瑞芯微 RKNN', status: 'running', stage: 'RKNN 编译中', progress: 37, message: '正在生成 RKNN 产物', params: {chip: 'rk3568', precision: 'int8'}, resource_name: 'RKNN Agent · RK3568', outputs: []}] : []
     })
   }));
   await page.route('**/api/v39/deploy/resources', route => route.fulfill({
@@ -560,6 +562,10 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
   await dialog.getByRole('button', {name: '开始转换'}).click();
 
   await expect.poll(() => submitted).not.toBeNull();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('dialog', {name: '版本转换'})).toHaveCount(1);
+  await expect(historyDialog.locator('[data-conversion-percent]')).toContainText('37%');
+  await expect(historyDialog.locator('[data-conversion-message]')).toContainText('正在生成 RKNN 产物');
   expect(submitted).toMatchObject({
     source_id: `version::${algorithmId}::${versionId}`,
     target: 'rockchip',

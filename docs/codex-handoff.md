@@ -1,5 +1,65 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-04 Conversion UX / RKNN capability truth 收口（最新）
+
+本节基线：
+
+- 上游绿基线：`257558bcf596f2474ff597230f94566d197d9dd0`
+- 基线 VERSION：`42.24.78`
+- 基线 workflows：29 / 29 completed success
+- 本提交正式版本：`42.24.79`
+
+上游 `42.24.78` 已确认 RKNN 板端验证只提升同一 canonical ModelArtifact metadata，并重新请求既有 external publication owner；本轮不建立第二 artifact identity。
+
+本轮不修改 Annotation Ground Truth、Training Picker、Dataset Revision、Scheduler 或 ModelArtifact owner。
+
+### 1. 转换型号不再要求用户手工猜写
+
+版本转换继续由既有 `openVersionConvert428 → openNewConvert428 → submitConvert428` owner 负责，没有新增第二套 conversion UI/runtime。
+
+Rockchip / Ascend / Sophon 的芯片字段改为选择式。Rockchip 型号只来自当前已检测转换资源的 `supported_chips`；资源没有上报能力时 fail-closed，不允许用户输入裸数字绕过能力检测。
+
+当前 Rockchip canonical 支持顺序统一为：
+
+`RK3568 / RK3578 / RK3576`
+
+并同步到 core conversion validation、Agent conversion runtime、RKNN-Toolkit2 probe、board runtime detection 和前端校验。
+
+### 2. 创建转换后不再重复弹第二个“版本转换”窗口
+
+此前提交成功后会关闭创建弹窗，再重新调用 `modal('版本转换', ...)`，在已有版本转换弹窗上重复创建一层。
+
+现在创建任务成功后：
+
+创建弹窗关闭
+→ 刷新原有版本转换弹窗 body
+→ 继续由既有 PollRegistry owner 轮询
+
+只有调用链不存在原 history dialog 时才 fallback 打开版本转换窗口。
+
+### 3. 转换记录继续只读 durable conversion truth
+
+后端 `_overlay_durable_deploy_job()` 已把 canonical `MODEL_CONVERSION` 的 `progress_percent / phase / WAITING_RESOURCE / worker / queue` truth 投影到部署 job。
+
+前端不新增进度推算器，只展示该 canonical progress，并增加明确百分比、当前阶段、资源、精度、芯片和产物层级。
+
+`BLOCKED_BY_HARDWARE` 的 RKNN 现在也能从版本转换记录直接进入板端验证，不会因为 durable status 投影而错误隐藏验证入口。
+
+### 4. 回归边界
+
+新增/加强回归覆盖：
+
+- RK3578 Toolkit capability probe；
+- RK3578 Agent conversion；
+- RK3578 board identity detection；
+- Rockchip 型号必须为 SELECT 且来自 resource capabilities；
+- 转换提交后只保留一个版本转换 dialog；
+- 任务创建后 37% canonical progress / stage 可立即显示；
+- conversion source guard 防止恢复手工型号输入和重复 modal。
+
+下一轮继续沿 external Weight reconciliation → artifact GC/reference truth 深审。
+
+
 
 ## 2026-10-03 Dataset Revision v2 / Source GT 身份 / 发布链复核（最新）
 

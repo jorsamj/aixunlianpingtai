@@ -737,3 +737,30 @@ def test_agent_conversion_runner_rejects_rknn_int8_calibration_hash_mismatch(tmp
     assert outcome.status == "FAILED"
     assert not any(event[0] == "prepare" for event in client.events)
     assert client.finish_calls[-1]["status"] == "FAILED"
+
+
+def test_agent_conversion_runner_accepts_rk3578_as_canonical_rknn_target(tmp_path):
+    source = b"portable-rknn-rk3578-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_worker_script(runtime_root, manifest_chip="rk3578")
+    client = FakeClient()
+    session = FakeSession(source)
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=session,
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_rknn_lease(source, chip="rk3578"))
+
+    assert outcome.status == "BLOCKED_BY_HARDWARE"
+    assert len(session.puts) == 1
+    confirm = next(event for event in client.events if event[0] == "confirm")
+    assert confirm[1]["chip"] == "rk3578"
+    assert confirm[1]["model"] == "model_rk3578.rknn"

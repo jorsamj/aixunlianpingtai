@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_BOARD_CHIPS = ("rk3568", "rk3576")
+SUPPORTED_BOARD_CHIPS = ("rk3568", "rk3578", "rk3576")
 DEFAULT_COMPATIBLE_PATH = Path("/proc/device-tree/compatible")
 
 
@@ -36,13 +36,15 @@ def detect_rockchip_soc(
         return result
     compatible = raw.replace(b"\x00", b",").decode("utf-8", errors="ignore").lower()
     result["compatible"] = compatible[:2000]
-    if "rk3576" in compatible:
+    if "rk3578" in compatible:
+        result.update(supported=True, chip="rk3578", error="")
+    elif "rk3576" in compatible:
         result.update(supported=True, chip="rk3576", error="")
     elif "rk3568" in compatible or "rk3566" in compatible:
         # RKNN-Toolkit2 uses the RK3566/RK3568 platform family.
         result.update(supported=True, chip="rk3568", error="")
     else:
-        result["error"] = "device-tree compatible is not an RK3568/RK3576 board"
+        result["error"] = "device-tree compatible is not an RK3568/RK3578/RK3576 board"
     return result
 
 

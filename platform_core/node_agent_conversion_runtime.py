@@ -538,7 +538,7 @@ class AgentConversionRunner:
                     "node-local RKNN Python runtime is unavailable"
                 )
             chip = str(safe_params.get("chip") or "").strip().lower()
-            if chip not in {"rk3568", "rk3576"}:
+            if chip not in {"rk3568", "rk3578", "rk3576"}:
                 raise AgentConversionRuntimeError(
                     f"portable RKNN target chip {chip or '<empty>'} is unsupported"
                 )

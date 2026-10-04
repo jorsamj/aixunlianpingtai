@@ -40,3 +40,22 @@ test('version conversion polling is PollRegistry-owned and scoped to the current
   assert.match(finalPoll, /versionConversionRoot428\(aid,vid\)/);
   assert.doesNotMatch(finalPoll, /setTimeout\(/);
 });
+
+
+test('version conversion keeps chip choice capability-owned and submit returns to the existing history dialog', () => {
+  const createStart = source.indexOf('window.openNewConvertCore416=async function');
+  const createEnd = source.indexOf('\n})();\n\nwindow.installUsability417', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  const createLayer = source.slice(createStart, createEnd);
+  assert.match(createLayer, /<select id="conv428Chip" class="select"><\/select>/);
+  assert.match(source, /rockchipOrder428=\['rk3568','rk3578','rk3576'\]/);
+  assert.match(source, /平台不会让用户手工猜型号/);
+
+  const submitStart = source.indexOf('window.submitConvert428=async function');
+  const submitEnd = source.indexOf('// ---------------------- training creation from algorithm', submitStart);
+  assert.ok(submitStart >= 0 && submitEnd > submitStart);
+  const submitLayer = source.slice(submitStart, submitEnd);
+  assert.match(submitLayer, /replaceVersionConversionBody428\(aid,vid,r\)/);
+  assert.doesNotMatch(submitLayer, /closeModal\(\);\s*const r=.*modal\('版本转换'/s);
+  assert.match(submitLayer, /正在创建转换任务/);
+});
