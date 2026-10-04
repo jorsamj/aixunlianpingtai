@@ -1,5 +1,28 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-04 Conversion CI regression 收口（最新）
+
+本节基线：
+
+- 上游提交：`4ff884fd8fb1ff063f9cb2d092f46ac4dbe882c6`
+- 上游 VERSION：`42.24.79`
+- 本提交正式版本：`42.24.80`
+
+`42.24.79` 首轮 CI 暴露两个与 conversion 变更直接相关的确定性回归：
+
+1. 重写版本转换记录 renderer 时误覆盖了既有 `rememberVersionConversion428` 与 `window.versionConversionJob428` 状态桥接函数，导致 `openVersionConvert428()` 在真实浏览器中捕获 ReferenceError 后只显示 toast，无法打开“版本转换”弹窗。
+2. 两条 frontend source guard 仍固化旧的 RK3568/RK3576 双芯片文案，以及错误地把“仅当原 history dialog 不存在时 fallback 打开版本转换弹窗”也视为重复弹窗。
+
+本提交只恢复既有 conversion 状态桥接 owner，并把测试合同更新为当前真实语义：
+
+- canonical Rockchip 集合：`RK3568 / RK3578 / RK3576`；
+- 创建转换成功后优先原地刷新已有 history dialog；
+- 只有 history root 不存在时允许 fallback modal；
+- 不新增第二 conversion owner。
+
+另一个 `material-workflows` 浏览器失败与本轮 conversion 路径无直接代码交集，已单独重跑失败 job 以区分偶发时序与真实回归；不通过放宽/删除测试处理。
+
+
 ## 2026-10-04 Conversion UX / RKNN capability truth 收口（最新）
 
 本节基线：

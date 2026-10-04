@@ -56,6 +56,6 @@ test('version conversion keeps chip choice capability-owned and submit returns t
   assert.ok(submitStart >= 0 && submitEnd > submitStart);
   const submitLayer = source.slice(submitStart, submitEnd);
   assert.match(submitLayer, /replaceVersionConversionBody428\(aid,vid,r\)/);
-  assert.doesNotMatch(submitLayer, /closeModal\(\);\s*const r=.*modal\('版本转换'/s);
+  assert.match(submitLayer, /if\(!replaceVersionConversionBody428\(aid,vid,r\)\)modal\('版本转换',historyHtml428\(aid,vid,r\),true\)/);
   assert.match(submitLayer, /正在创建转换任务/);
 });
