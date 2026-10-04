@@ -669,6 +669,64 @@ class ExternalPublicationRepository:
             )
         return current
 
+    def delete_version(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        *,
+        provider: str = PROVIDER_CHANGLIAN,
+    ) -> dict[str, int]:
+        """Delete one provider publication and its version-owned mapping rows."""
+        provider_id = self._provider(provider)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                """
+                SELECT publication_key
+                FROM external_version_publications
+                WHERE provider = ? AND project_id = ?
+                  AND algorithm_id = ? AND version_id = ?
+                """,
+                (
+                    provider_id,
+                    str(project_id),
+                    str(algorithm_id),
+                    str(version_id),
+                ),
+            ).fetchone()
+            key = str(row["publication_key"]) if row is not None else ""
+            artifact_count = 0
+            mapping_count = 0
+            if key:
+                artifact_count = int(database.execute(
+                    "SELECT COUNT(*) FROM external_model_artifacts WHERE publication_key=?",
+                    (key,),
+                ).fetchone()[0] or 0)
+                mapping_count = int(database.execute(
+                    "SELECT COUNT(*) FROM external_artifact_publications WHERE publication_key=?",
+                    (key,),
+                ).fetchone()[0] or 0)
+                database.execute(
+                    """
+                    DELETE FROM external_version_publications
+                    WHERE provider = ? AND project_id = ?
+                      AND algorithm_id = ? AND version_id = ?
+                    """,
+                    (
+                        provider_id,
+                        str(project_id),
+                        str(algorithm_id),
+                        str(version_id),
+                    ),
+                )
+            database.commit()
+        return {
+            "publications_deleted": 1 if key else 0,
+            "legacy_artifacts_deleted": artifact_count,
+            "artifact_mappings_deleted": mapping_count,
+        }
+
     def delete_algorithm(
         self,
         project_id: str,

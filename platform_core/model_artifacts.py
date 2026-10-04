@@ -492,6 +492,30 @@ class ModelArtifactRepository:
             rows = database.execute(sql, args).fetchall()
         return [self._public(row) for row in rows]
 
+    def delete_version(
+        self, project_id: str, algorithm_id: str, version_id: str,
+    ) -> list[dict[str, Any]]:
+        """Delete canonical ModelArtifact rows owned by one exact algorithm version."""
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            rows = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
+                ORDER BY created_at, artifact_id
+                """,
+                (str(project_id), str(algorithm_id), str(version_id)),
+            ).fetchall()
+            database.execute(
+                """
+                DELETE FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
+                """,
+                (str(project_id), str(algorithm_id), str(version_id)),
+            )
+            database.commit()
+        return [self._public(row) for row in rows]
+
     def delete_algorithm(self, project_id: str, algorithm_id: str) -> list[dict[str, Any]]:
         """Delete canonical ModelArtifact rows owned by one project algorithm."""
         with closing(self._connect()) as database:
@@ -1476,6 +1500,78 @@ class ModelArtifactService:
                         summary[key] += current[key]
         return summary
 
+    def _purge_remote_objects(
+        self,
+        project_id: str,
+        rows: list[Mapping[str, Any]],
+        *,
+        error_code: str,
+        message: str,
+        solution: str,
+    ) -> int:
+        """Delete immutable delivery objects before their canonical rows."""
+        remote_deleted = 0
+        errors: list[str] = []
+        for row in rows:
+            source_id = str(row.get("storage_source_id") or "").strip()
+            object_key = str(row.get("object_key") or "").strip()
+            if not source_id or not object_key:
+                continue
+            try:
+                provider = self._provider(str(project_id), source_id)
+                if provider.exists(object_key):
+                    provider.delete(object_key)
+                remote_deleted += 1
+            except Exception as error:
+                errors.append(
+                    f"{row.get('artifact_id') or '-'} {object_key}: {error}"
+                )
+        if errors:
+            raise PlatformError(
+                error_code,
+                message,
+                "；".join(errors[:10]),
+                solution,
+                409,
+            )
+        return remote_deleted
+
+    def purge_version(
+        self, project_id: str, algorithm_id: str, version_id: str,
+    ) -> dict[str, Any]:
+        """Purge one version's immutable objects before dropping canonical rows."""
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self.repository.list(
+                project_id=str(project_id),
+                algorithm_id=str(algorithm_id),
+                version_id=str(version_id),
+                limit=500,
+                offset=offset,
+            )
+            rows.extend(page)
+            if len(page) < 500:
+                break
+            offset += len(page)
+        remote_deleted = self._purge_remote_objects(
+            str(project_id),
+            rows,
+            error_code="ALGORITHM_VERSION_ARTIFACT_PURGE_FAILED",
+            message="算法版本模型成果清理失败",
+            solution=(
+                "请检查算法与转换结果存储的删除权限后重试版本清理；"
+                "平台不会在远端对象删除结果不确定时删除对应 ModelArtifact 记录。"
+            ),
+        )
+        removed = self.repository.delete_version(
+            str(project_id), str(algorithm_id), str(version_id),
+        )
+        return {
+            "artifacts_deleted": len(removed),
+            "remote_objects_deleted": remote_deleted,
+        }
+
     def purge_algorithm(self, project_id: str, algorithm_id: str) -> dict[str, Any]:
         """Remove model-delivery objects and rows for a deleted algorithm.
 
@@ -1496,30 +1592,16 @@ class ModelArtifactService:
             if len(page) < 500:
                 break
             offset += len(page)
-        remote_deleted = 0
-        errors: list[str] = []
-        for row in rows:
-            source_id = str(row.get("storage_source_id") or "").strip()
-            object_key = str(row.get("object_key") or "").strip()
-            if not source_id or not object_key:
-                continue
-            try:
-                provider = self._provider(str(project_id), source_id)
-                if provider.exists(object_key):
-                    provider.delete(object_key)
-                remote_deleted += 1
-            except Exception as error:
-                errors.append(
-                    f"{row.get('artifact_id') or '-'} {object_key}: {error}"
-                )
-        if errors:
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_ARTIFACT_PURGE_FAILED",
-                "外部算法模型成果清理失败",
-                "；".join(errors[:10]),
-                "请检查算法与转换结果存储的删除权限后重新同步；平台不会在模型成果未清理完成时删除算法主记录。",
-                409,
-            )
+        remote_deleted = self._purge_remote_objects(
+            str(project_id),
+            rows,
+            error_code="EXTERNAL_ALGORITHM_ARTIFACT_PURGE_FAILED",
+            message="外部算法模型成果清理失败",
+            solution=(
+                "请检查算法与转换结果存储的删除权限后重新同步；"
+                "平台不会在模型成果未清理完成时删除算法主记录。"
+            ),
+        )
         removed = self.repository.delete_algorithm(str(project_id), str(algorithm_id))
         return {
             "artifacts_deleted": len(removed),

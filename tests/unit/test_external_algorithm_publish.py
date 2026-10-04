@@ -96,6 +96,40 @@ def test_publication_repository_delete_algorithm_cascades_version_and_weight_map
     assert repository.artifact_publication("artifact-a1") is None
 
 
+def test_publication_repository_delete_version_cascades_only_target_version(
+    tmp_path: Path,
+):
+    repository = ExternalPublicationRepository(tmp_path)
+    algorithm = {"id": "a1", "external_product_id": "p1"}
+
+    for version_id in ("v1", "v2"):
+        version = {
+            "id": version_id,
+            "version_name": version_id.upper(),
+            "version_no": version_id,
+            "external_analysis_id": "analysis-1",
+        }
+        publication = repository.ensure_publication(
+            project_id="project-1",
+            algorithm=algorithm,
+            version=version,
+        )
+        repository.ensure_artifact_publication(
+            publication["publication_key"],
+            {"artifact_id": f"artifact-{version_id}", "chip_code": ""},
+            {"compute_platform_id": "cp-general", "chip_code": ""},
+        )
+
+    result = repository.delete_version("project-1", "a1", "v1")
+
+    assert result["publications_deleted"] == 1
+    assert result["artifact_mappings_deleted"] == 1
+    assert repository.publication("project-1", "a1", "v1") is None
+    assert repository.artifact_publication("artifact-v1") is None
+    assert repository.publication("project-1", "a1", "v2") is not None
+    assert repository.artifact_publication("artifact-v2") is not None
+
+
 def test_new_external_publish_save_does_not_persist_legacy_storage_fields(tmp_path: Path):
     repository = ExternalPublicationRepository(tmp_path)
 

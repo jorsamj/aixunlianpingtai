@@ -8272,6 +8272,21 @@ def _cleanup_algorithm_version_artifacts(
             ],
         }
 
+    # The version metadata has already been removed atomically. Retire its
+    # immutable delivery objects and publication outbox before local source
+    # files, so storage-delete failures remain diagnosable and retryable.
+    model_assets = ModelArtifactService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
+    model_assets.purge_version(project_id, algorithm_id, version_id)
+    ExternalPublicationRepository(DATA_DIR).delete_version(
+        project_id, algorithm_id, version_id,
+    )
+
     other_paths: set[Path] = set()
     for other in algorithm.get("versions") or []:
         if str(other.get("id") or "") != version_id:
@@ -20770,6 +20785,7 @@ from platform_core.external_algorithm_platform import (
 )
 from platform_core.external_algorithm_publish import (
     ExternalAlgorithmPublishService,
+    ExternalPublicationRepository,
     external_algorithm_publish_router,
     request_external_auto_publish_for_conversion_if_enabled,
     request_external_auto_publish_if_enabled,

@@ -210,3 +210,63 @@ def test_rollback_delete_preserves_directory_used_by_target_version(client, seed
     assert response.json()["cleanup_status"] == "cleanup_failed"
     assert shared_root.exists()
     assert target_model.exists()
+
+
+
+def test_rollback_cleanup_purges_deleted_version_delivery_state_only(
+    client, seeded_project, monkeypatch,
+):
+    project_id, _ = seeded_project
+    algorithm = _create_algorithm(client, project_id)
+    _seed_versions(project_id, algorithm["id"])
+    monkeypatch.setattr(
+        app_module, "_v54_validate_iteration_artifact",
+        lambda _path, _framework: True,
+    )
+
+    calls = {"artifacts": [], "publications": []}
+
+    def purge_version(_self, pid, aid, vid):
+        calls["artifacts"].append((pid, aid, vid))
+        return {"artifacts_deleted": 2, "remote_objects_deleted": 2}
+
+    def delete_publication_version(_self, pid, aid, vid, **_kwargs):
+        calls["publications"].append((pid, aid, vid))
+        return {
+            "publications_deleted": 1,
+            "legacy_artifacts_deleted": 0,
+            "artifact_mappings_deleted": 2,
+        }
+
+    monkeypatch.setattr(
+        app_module.ModelArtifactService,
+        "purge_version",
+        purge_version,
+    )
+    monkeypatch.setattr(
+        app_module.ExternalPublicationRepository,
+        "delete_version",
+        delete_publication_version,
+    )
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
+        json={
+            "delete_current_version": True,
+            "expected_current_version_id": "v5",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["cleanup_status"] == "cleanup_completed"
+    assert calls["artifacts"] == [(project_id, algorithm["id"], "v5")]
+    assert calls["publications"] == [(project_id, algorithm["id"], "v5")]
+    stored = next(
+        row
+        for row in app_module.list_algorithm_assets(
+            app_module.algorithms_file(project_id)
+        )
+        if row["id"] == algorithm["id"]
+    )
+    assert stored["current_version_id"] == "v3"
+    assert [row["id"] for row in stored["versions"]] == ["v3"]
