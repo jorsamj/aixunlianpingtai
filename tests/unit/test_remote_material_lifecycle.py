@@ -3,9 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from platform_core.remote_material_lifecycle import (
     REMOTE_MATERIAL_CLEANUP_REF,
+    RemoteExecutionStagingLifecycle,
     RemoteMaterialStagingLifecycle,
+    remote_execution_staging_refs,
 )
 from platform_core.storage.models import ObjectMetadata
 from platform_core.task_runtime import (
@@ -304,3 +308,237 @@ def test_cleanup_rejects_non_owned_object_key_even_if_written_into_payload(tmp_p
         assert "task-owned" in str(error)
     else:
         raise AssertionError("non-owned object key was accepted for staging cleanup")
+
+
+
+def _remote_task(kind, task_id, status=TaskStatus.RUNNING, *, finished_at=None, attempt=1):
+    return SimpleNamespace(
+        task_id=task_id,
+        project_id="project-1",
+        kind=kind,
+        status=status,
+        payload_ref="request.json",
+        finished_at=finished_at,
+        updated_at=finished_at or datetime.now(timezone.utc).isoformat(),
+        attempt=attempt,
+    )
+
+
+def _result_payload(kind, task_id):
+    section_name = {
+        TaskKind.MODEL_CONVERSION: "conversion",
+        TaskKind.TRAINING: "training",
+        TaskKind.MATERIAL_BATCH: "cleaning",
+    }[kind]
+    section = {
+        "output": {
+            "storage_source_id": "s3-main",
+            "object_key": f"remote-execution/project-1/{task_id}/output/result.bin",
+            "file_name": "result.bin",
+        }
+    }
+    if kind is TaskKind.MODEL_CONVERSION:
+        section["source"] = {
+            "storage_source_id": "s3-main",
+            "object_key": "changlian-ai/artifacts/project-1/a1/v1/original/model.pt",
+            "sha256": "c" * 64,
+            "size_bytes": 9,
+        }
+    elif kind is TaskKind.TRAINING:
+        section["bundle"] = {
+            "storage_source_id": "s3-main",
+            "object_key": "remote-training/bundles/project-1/snapshot/bundle.zip",
+            "sha256": "c" * 64,
+            "size_bytes": 9,
+        }
+        section["model"] = {
+            "type": "object",
+            "storage_source_id": "s3-main",
+            "object_key": "changlian-ai/artifacts/project-1/a1/v1/training/model.pt",
+            "sha256": "d" * 64,
+            "size_bytes": 10,
+        }
+    return {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": kind.value,
+            "transport": "object-storage-v1",
+            section_name: section,
+        }
+    }
+
+
+def test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source(tmp_path):
+    runtime = tmp_path / "task_runtime"
+    repository = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    provider = FakeProvider()
+    task_id = "convert-task"
+    request = _result_payload(TaskKind.MODEL_CONVERSION, task_id)
+    artifacts.atomic_write_json(task_id, "request.json", request)
+    repository.create(
+        TaskRecord.new(
+            task_id,
+            "project-1",
+            TaskKind.MODEL_CONVERSION,
+            "request.json",
+            "conversion:agent",
+            required_capabilities=("agent.remote",),
+        ),
+        artifacts=artifacts,
+    )
+    lease = repository.claim_next(
+        "agent",
+        (TaskKind.MODEL_CONVERSION,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    output_key = "remote-execution/project-1/convert-task/output/generation-1/result.bin"
+    canonical_key = "changlian-ai/artifacts/project-1/a1/v1/original/model.pt"
+    provider.put(output_key, b"output!", "e" * 64)
+    provider.put(canonical_key, b"canonical", "c" * 64)
+    artifacts.atomic_write_json(
+        task_id,
+        "remote-results/1/upload.json",
+        {
+            "execution_generation": 1,
+            "storage_ref": {"storage_source_id": "s3-main", "object_key": output_key},
+            "sha256": "e" * 64,
+            "size_bytes": len(b"output!"),
+        },
+    )
+    failed = repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.FAILED,
+        error="agent failed after upload",
+    )
+    finished = datetime.fromisoformat(failed.finished_at)
+
+    lifecycle = RemoteExecutionStagingLifecycle(
+        repository,
+        artifacts,
+        lambda _project_id, _ref: provider,
+        retention_seconds=3600,
+    )
+    early = lifecycle.maintain(now=finished + timedelta(minutes=30))
+    assert early["retained"] == 1
+    assert provider.exists(output_key) is True
+    late = lifecycle.maintain(now=finished + timedelta(hours=2))
+    assert late["complete"] == 1
+    assert provider.exists(output_key) is False
+    assert provider.exists(canonical_key) is True
+    assert canonical_key not in provider.deleted
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [TaskKind.MODEL_CONVERSION, TaskKind.TRAINING, TaskKind.MATERIAL_BATCH],
+)
+def test_confirmed_remote_result_records_only_task_owned_result(kind, tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    task_id = f"{kind.value.lower()}-task"
+    task_value = _remote_task(kind, task_id)
+    request = _result_payload(kind, task_id)
+    result_key = f"remote-execution/project-1/{task_id}/output/generation-1/result.bin"
+    lifecycle = RemoteExecutionStagingLifecycle(
+        None,
+        artifacts,
+        lambda _project_id, _ref: FakeProvider(),
+    )
+    recorded = lifecycle.record_confirmed(
+        task_value,
+        request,
+        {"execution_generation": 1, "sha256": "f" * 64, "size_bytes": 6},
+        {
+            "result": {
+                "output_storage": {"storage_source_id": "s3-main", "object_key": result_key},
+                "output_sha256": "f" * 64,
+                "output_size_bytes": 6,
+            }
+        },
+    )
+    assert recorded["status"] == "RECORDED"
+    ledger = artifacts.read_json(task_id, REMOTE_MATERIAL_CLEANUP_REF)
+    assert [row["object_key"] for row in ledger["objects"]] == [result_key]
+
+
+def test_successful_retry_ledger_includes_previous_generation_result(tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    task_id = "training-retry"
+    task_value = _remote_task(TaskKind.TRAINING, task_id, attempt=2)
+    request = _result_payload(TaskKind.TRAINING, task_id)
+    old_key = "remote-execution/project-1/training-retry/output/generation-1/result.bin"
+    current_key = "remote-execution/project-1/training-retry/output/generation-2/result.bin"
+    for generation, key, digest, size in (
+        (1, old_key, "a" * 64, 5),
+        (2, current_key, "b" * 64, 6),
+    ):
+        artifacts.atomic_write_json(
+            task_id,
+            f"remote-results/{generation}/upload.json",
+            {
+                "execution_generation": generation,
+                "storage_ref": {"storage_source_id": "s3-main", "object_key": key},
+                "sha256": digest,
+                "size_bytes": size,
+            },
+        )
+    lifecycle = RemoteExecutionStagingLifecycle(
+        None,
+        artifacts,
+        lambda _project_id, _ref: FakeProvider(),
+    )
+    lifecycle.record_confirmed(
+        task_value,
+        request,
+        {"execution_generation": 2, "sha256": "b" * 64, "size_bytes": 6},
+        {
+            "result": {
+                "output_storage": {"storage_source_id": "s3-main", "object_key": current_key},
+                "output_sha256": "b" * 64,
+                "output_size_bytes": 6,
+            }
+        },
+    )
+    ledger = artifacts.read_json(task_id, REMOTE_MATERIAL_CLEANUP_REF)
+    assert {row["object_key"] for row in ledger["objects"]} == {old_key, current_key}
+
+
+def test_deployment_test_is_not_gc_eligible_without_durable_output_copy():
+    task_value = _remote_task(TaskKind.DEPLOYMENT_TEST, "deploy-task")
+    prefix = "remote-execution/project-1/deploy-task"
+    payload_value = {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "deployment": {
+                "input": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/input/image.jpg",
+                    "sha256": "a" * 64,
+                    "size_bytes": 5,
+                },
+                "output": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/output/result.jpg",
+                },
+            },
+        }
+    }
+    assert remote_execution_staging_refs(
+        task_value,
+        payload_value,
+        confirmed={
+            "result": {
+                "output_storage": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/output/generation-1/result.jpg",
+                },
+                "output_sha256": "b" * 64,
+                "output_size_bytes": 6,
+            }
+        },
+        evidence={"execution_generation": 1, "sha256": "b" * 64, "size_bytes": 6},
+    ) == []

@@ -14,7 +14,7 @@ from platform_core.node_identity import resolve_node_identity
 from platform_core.storage.material_cache_runtime import MaterialCacheRuntimeReporter
 from platform_core.external_algorithm_auto_sync import ExternalAlgorithmAutoSyncReporter
 from platform_core.secrets import KeyringSecretStore
-from platform_core.remote_material_lifecycle import RemoteMaterialStagingGCReporter
+from platform_core.remote_material_lifecycle import RemoteExecutionStagingGCReporter
 from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -174,18 +174,18 @@ def main(argv=None) -> int:
         pass
     instance_lease.add_renew_hook(cache_reporter.report)
 
-    material_gc_reporter = None
+    remote_staging_gc_reporter = None
     if "storage" in set(instance_roles):
-        material_gc_reporter = RemoteMaterialStagingGCReporter(
+        remote_staging_gc_reporter = RemoteExecutionStagingGCReporter(
             repository,
             artifacts,
             data_dir,
         )
         try:
-            material_gc_reporter.report()
+            remote_staging_gc_reporter.report()
         except Exception:
             pass
-        instance_lease.add_renew_hook(material_gc_reporter.report)
+        instance_lease.add_renew_hook(remote_staging_gc_reporter.report)
 
     external_sync_reporter = None
     if "storage" in set(instance_roles):

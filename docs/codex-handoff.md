@@ -1,5 +1,27 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Remote execution staging GC / external reconciliation 收口（最新）
+
+本节基线：
+
+- 上游绿基线：cbc0f37448f305bd76bb79699a920a1404467909
+- 基线 VERSION：42.24.85
+- 基线 workflows：22 / 22 completed success
+- 本提交正式版本：42.24.86
+
+本轮继续沿发布 / 回退 / GC 主线，不修改 Annotation Ground Truth、Training Picker、Dataset Revision、Scheduler、ModelArtifact 或 external publication owner。
+
+external Version / Weight reconciliation 已复核：Version/Weight 创建前先远端恢复；create/edit timeout 后再次反查；无法唯一确认则 UNKNOWN + fail-closed，不盲目 duplicate create。rollback/delete 使用官方 version_remove，不能确认远端已删时阻断本地删除。
+
+staging GC 继续复用唯一 storage Worker heartbeat owner。同一 lifecycle、同一 reporter、同一 durable ledger/state path 现在覆盖 MATERIAL_IMPORT、MODEL_CONVERSION、TRAINING result ZIP、MATERIAL_BATCH/CLEAN result review。
+
+只删除 exact remote-execution/{project_id}/{task_id}/... 引用，且必须具备 storage_source_id + object_key + size + SHA256；删除前再次 stat 校验。禁止 list_objects / prefix delete。
+
+明确不删除 canonical ModelArtifact / training model object、remote-training shared bundle、formal material object、DEPLOYMENT_TEST output。DEPLOYMENT_TEST 仍可能持有 durable result reference，在证明本地/canonical copy owner 前保持 fail-closed。
+
+成功重试时 cleanup ledger 会同时纳入较早失败 generation 的 durable upload refs，避免只清最终 generation。commit handler 只记录 ledger，不立即删除；storage Worker 仅在 AWAITING_CONFIRMATION / terminal 后执行真正删除。
+
+
 ## 2026-10-04 RKNN capability guard / remote transport 合同补齐（最新）
 
 本节基线：

@@ -43,7 +43,7 @@ from .remote_cleaning import (
     RemoteCleaningError,
     commit_remote_cleaning_review,
 )
-from .remote_material_lifecycle import RemoteMaterialStagingLifecycle
+from .remote_material_lifecycle import RemoteExecutionStagingLifecycle
 from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
@@ -4053,7 +4053,7 @@ class RemoteExecutionTransportService:
         # a provider outage must not turn a verified import into a failed task.
         cleanup: dict[str, Any]
         try:
-            lifecycle = RemoteMaterialStagingLifecycle(
+            lifecycle = RemoteExecutionStagingLifecycle(
                 None,
                 self.task_artifacts,
                 lambda project_id, ref: self._source_provider(project_id, ref)[1],
@@ -4150,6 +4150,33 @@ class RemoteExecutionTransportService:
             "remote_cleaning_review_ref": review_ref,
         }
 
+    def _record_remote_result_staging(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.task_artifacts is None:
+            return {
+                "status": "DEFERRED",
+                "deleted": 0,
+                "error": "task artifact store unavailable",
+            }
+        try:
+            lifecycle = RemoteExecutionStagingLifecycle(
+                None,
+                self.task_artifacts,
+                lambda project_id, ref: self._source_provider(project_id, ref)[1],
+            )
+            return lifecycle.record_confirmed(task, payload, evidence, confirmed)
+        except Exception as error:
+            return {
+                "status": "DEFERRED",
+                "deleted": 0,
+                "error": str(error)[:1000],
+            }
+
     def commit_result_publication(
         self,
         task,
@@ -4159,21 +4186,33 @@ class RemoteExecutionTransportService:
     ) -> dict[str, Any]:
         kind = str(getattr(task.kind, "value", task.kind))
         if kind == "TRAINING":
-            return self._commit_training_result(task, payload, evidence, confirmed)
-        if kind == "MODEL_CONVERSION":
-            return self._commit_conversion_result(task, payload, evidence, confirmed)
-        if kind == "MATERIAL_IMPORT":
+            committed = self._commit_training_result(task, payload, evidence, confirmed)
+        elif kind == "MODEL_CONVERSION":
+            committed = self._commit_conversion_result(task, payload, evidence, confirmed)
+        elif kind == "MATERIAL_IMPORT":
             return self._commit_material_import_result(task, payload, evidence, confirmed)
-        if kind == "MATERIAL_BATCH":
-            return self._commit_cleaning_result(task, payload, evidence, confirmed)
-        if kind == "DEPLOYMENT_TEST":
+        elif kind == "MATERIAL_BATCH":
+            committed = self._commit_cleaning_result(task, payload, evidence, confirmed)
+        elif kind == "DEPLOYMENT_TEST":
+            # Deployment output may still be durable result truth; keep it out
+            # of GC until a separate local/canonical copy contract is proven.
             return self._commit_rknn_board_verification_result(
                 task,
                 payload,
                 evidence,
                 confirmed,
             )
-        return {}
+        else:
+            return {}
+        return {
+            **dict(committed or {}),
+            "remote_staging_cleanup": self._record_remote_result_staging(
+                task,
+                payload,
+                evidence,
+                confirmed,
+            ),
+        }
 
     @staticmethod
     def _material_scan_source(material: Mapping[str, Any]) -> Mapping[str, Any]:

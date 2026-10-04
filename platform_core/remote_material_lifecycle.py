@@ -1,7 +1,12 @@
-"""Lifecycle governance for temporary Remote MATERIAL_IMPORT staging objects.
+"""Lifecycle governance for temporary task-owned remote execution objects.
 
-Only exact task-owned object references are eligible. The implementation never
-lists/deletes by prefix and never touches formal target material object keys.
+Only exact remote-execution/{project}/{task}/... references are eligible.
+The owner never lists/deletes by prefix and never touches canonical ModelArtifact
+objects, shared remote-training bundles, or formal material object keys.
+
+The historical remote-material ledger/state paths remain unchanged so existing
+cleanup journals stay recoverable while this single owner also governs
+conversion, training-result, and cleaning-result staging.
 """
 from __future__ import annotations
 
@@ -22,6 +27,15 @@ REMOTE_MATERIAL_GC_STATE_REF = "remote-material-gc-state.json"
 REMOTE_MATERIAL_STAGING_RETENTION_SECONDS = max(
     3600,
     int(os.environ.get("MC_REMOTE_MATERIAL_STAGING_RETENTION_SECONDS", 7 * 24 * 3600)),
+)
+REMOTE_EXECUTION_CLEANUP_REF = REMOTE_MATERIAL_CLEANUP_REF
+REMOTE_EXECUTION_GC_STATE_REF = REMOTE_MATERIAL_GC_STATE_REF
+REMOTE_EXECUTION_STAGING_RETENTION_SECONDS = REMOTE_MATERIAL_STAGING_RETENTION_SECONDS
+_STAGING_TASK_KINDS = (
+    TaskKind.MATERIAL_IMPORT,
+    TaskKind.MATERIAL_BATCH,
+    TaskKind.MODEL_CONVERSION,
+    TaskKind.TRAINING,
 )
 _TERMINAL = {
     TaskStatus.SUCCEEDED,
@@ -105,7 +119,24 @@ def _normalized_ref(
     }
 
 
-def material_staging_refs(
+def _append_unique_ref(
+    result: list[dict[str, Any]],
+    candidate: Mapping[str, Any],
+) -> None:
+    identity = (
+        str(candidate.get("storage_source_id") or ""),
+        str(candidate.get("object_key") or ""),
+    )
+    for existing in result:
+        if (
+            str(existing.get("storage_source_id") or ""),
+            str(existing.get("object_key") or ""),
+        ) == identity:
+            return
+    result.append(dict(candidate))
+
+
+def remote_execution_staging_refs(
     task,
     payload: Mapping[str, Any],
     *,
@@ -113,49 +144,47 @@ def material_staging_refs(
     evidence: Mapping[str, Any] | None = None,
     artifacts=None,
 ) -> list[dict[str, Any]]:
-    if task.kind is not TaskKind.MATERIAL_IMPORT:
+    """Return exact task-owned temporary refs; never canonical/shared objects."""
+    if task.kind not in _STAGING_TASK_KINDS:
         return []
     remote = payload.get("remote_execution")
-    if not isinstance(remote, Mapping):
-        return []
-    material = remote.get("material_import")
     if (
-        not isinstance(material, Mapping)
+        not isinstance(remote, Mapping)
         or int(remote.get("version") or 0) != 1
-        or str(remote.get("task_kind") or "") != "MATERIAL_IMPORT"
+        or str(remote.get("task_kind") or "") != task.kind.value
         or str(remote.get("transport") or "") != "object-storage-v1"
     ):
         return []
+
     result: list[dict[str, Any]] = []
-    input_ref = material.get("input")
-    if isinstance(input_ref, Mapping):
-        result.append(
-            _normalized_ref(
-                task=task,
-                value=input_ref,
-                role="input",
-                sha256=input_ref.get("sha256"),
-                size_bytes=input_ref.get("size_bytes"),
+    if task.kind is TaskKind.MATERIAL_IMPORT:
+        material = remote.get("material_import")
+        if not isinstance(material, Mapping):
+            return []
+        input_ref = material.get("input")
+        if isinstance(input_ref, Mapping):
+            _append_unique_ref(
+                result,
+                _normalized_ref(
+                    task=task,
+                    value=input_ref,
+                    role="input",
+                    sha256=input_ref.get("sha256"),
+                    size_bytes=input_ref.get("size_bytes"),
+                ),
             )
-        )
+    else:
+        section_name = {
+            TaskKind.MODEL_CONVERSION: "conversion",
+            TaskKind.TRAINING: "training",
+            TaskKind.MATERIAL_BATCH: "cleaning",
+        }[task.kind]
+        if not isinstance(remote.get(section_name), Mapping):
+            return []
 
-    output_ref = None
-    output_sha = None
-    output_size = None
-    if isinstance(confirmed, Mapping):
-        confirmed_result = confirmed.get("result")
-        if isinstance(confirmed_result, Mapping):
-            output_ref = confirmed_result.get("output_storage")
-            output_sha = confirmed_result.get("output_sha256")
-            output_size = confirmed_result.get("output_size_bytes")
-    if isinstance(evidence, Mapping):
-        output_sha = output_sha or evidence.get("sha256")
-        output_size = output_size or evidence.get("size_bytes")
-
-    if not isinstance(output_ref, Mapping) and artifacts is not None:
-        # A failed/cancelled generation can have prepared an immutable result
-        # object without reaching confirm. Recover the exact generation-owned
-        # storage_ref from the durable upload state rather than deriving keys.
+    # Recover all exact generation uploads so a later successful retry also
+    # retires stale output from earlier failed generations.
+    if artifacts is not None:
         for generation in range(1, max(0, int(getattr(task, "attempt", 0))) + 1):
             state = artifacts.read_json(
                 str(task.task_id),
@@ -171,28 +200,58 @@ def material_staging_refs(
                 candidate = _normalized_ref(
                     task=task,
                     value=storage_ref,
-                    role=f"review:generation-{generation}",
+                    role=f"result:generation-{generation}",
                     sha256=state.get("sha256"),
                     size_bytes=state.get("size_bytes"),
                 )
             except ValueError:
                 continue
-            if not any(row["object_key"] == candidate["object_key"] for row in result):
-                result.append(candidate)
-    elif isinstance(output_ref, Mapping):
-        result.append(
-            _normalized_ref(
-                task=task,
-                value=output_ref,
-                role="review",
-                sha256=output_sha,
-                size_bytes=output_size,
-            )
-        )
+            _append_unique_ref(result, candidate)
+
+    if isinstance(confirmed, Mapping):
+        confirmed_result = confirmed.get("result")
+        if isinstance(confirmed_result, Mapping):
+            output_ref = confirmed_result.get("output_storage")
+            output_sha = confirmed_result.get("output_sha256")
+            output_size = confirmed_result.get("output_size_bytes")
+            if isinstance(evidence, Mapping):
+                output_sha = output_sha or evidence.get("sha256")
+                output_size = output_size or evidence.get("size_bytes")
+            if isinstance(output_ref, Mapping):
+                _append_unique_ref(
+                    result,
+                    _normalized_ref(
+                        task=task,
+                        value=output_ref,
+                        role="confirmed-result",
+                        sha256=output_sha,
+                        size_bytes=output_size,
+                    ),
+                )
     return result
 
 
-class RemoteMaterialStagingGCReporter:
+def material_staging_refs(
+    task,
+    payload: Mapping[str, Any],
+    *,
+    confirmed: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
+    artifacts=None,
+) -> list[dict[str, Any]]:
+    """Compatibility wrapper for the original MATERIAL_IMPORT contract."""
+    if task.kind is not TaskKind.MATERIAL_IMPORT:
+        return []
+    return remote_execution_staging_refs(
+        task,
+        payload,
+        confirmed=confirmed,
+        evidence=evidence,
+        artifacts=artifacts,
+    )
+
+
+class RemoteExecutionStagingGCReporter:
     """Throttled observer attached to the existing storage Worker heartbeat."""
 
     def __init__(
@@ -232,7 +291,7 @@ class RemoteMaterialStagingGCReporter:
                 credentials={source.id: secret},
             ).create(source)
 
-        self.lifecycle = RemoteMaterialStagingLifecycle(
+        self.lifecycle = RemoteExecutionStagingLifecycle(
             repository,
             artifacts,
             resolver,
@@ -253,8 +312,8 @@ class RemoteMaterialStagingGCReporter:
             return {"error": str(error)[:1000]}
 
 
-class RemoteMaterialStagingLifecycle:
-    """Exact-ref, idempotent cleanup for remote material staging objects."""
+class RemoteExecutionStagingLifecycle:
+    """Exact-ref, idempotent cleanup for task-owned remote execution staging."""
 
     def __init__(
         self,
@@ -329,19 +388,25 @@ class RemoteMaterialStagingLifecycle:
         now: datetime | str | None = None,
         cleanup_now: bool = False,
     ) -> dict[str, Any]:
-        refs = material_staging_refs(
+        refs = remote_execution_staging_refs(
             task,
             payload,
             confirmed=confirmed,
             evidence=evidence,
             artifacts=self.artifacts,
         )
+        if not refs:
+            return {
+                "task_id": str(task.task_id),
+                "status": "NO_OBJECTS",
+                "deleted": 0,
+            }
         current = self._read_ledger(str(task.task_id))
         ledger = {
             "schema_version": 1,
             "task_id": str(task.task_id),
             "project_id": str(task.project_id),
-            "reason": "server_confirmed_review",
+            "reason": "server_confirmed_remote_result",
             "eligible_after": _iso(now),
             "objects": self._merge_objects(
                 list(current.get("objects") or []),
@@ -366,14 +431,14 @@ class RemoteMaterialStagingLifecycle:
     def _build_terminal_ledger(self, task, *, now=None) -> dict[str, Any] | None:
         if self.repository is None:
             return None
-        if task.kind is not TaskKind.MATERIAL_IMPORT or task.status not in _TERMINAL:
+        if task.kind not in _STAGING_TASK_KINDS or task.status not in _TERMINAL:
             return None
         payload = self.artifacts.read_json(
             str(task.task_id), str(task.payload_ref), default={}
         )
         if not isinstance(payload, Mapping):
             return None
-        refs = material_staging_refs(
+        refs = remote_execution_staging_refs(
             task,
             payload,
             artifacts=self.artifacts,
@@ -503,13 +568,13 @@ class RemoteMaterialStagingLifecycle:
 
     def maintain(self, *, now: datetime | str | None = None) -> dict[str, Any]:
         if self.repository is None:
-            raise RuntimeError("remote material staging maintenance requires TaskRepository")
+            raise RuntimeError("remote execution staging maintenance requires TaskRepository")
         now_dt = _utc(now)
         state = self._read_state()
         cursor = state.get("cursor")
         statuses = [TaskStatus.AWAITING_CONFIRMATION, *_TERMINAL]
         page = self.repository.list(
-            kinds=(TaskKind.MATERIAL_IMPORT,),
+            kinds=_STAGING_TASK_KINDS,
             statuses=statuses,
             limit=self.scan_limit,
             cursor=str(cursor) if cursor else None,
@@ -551,11 +616,21 @@ class RemoteMaterialStagingLifecycle:
         }
 
 
+# Compatibility aliases: there is still exactly one lifecycle/reporter owner.
+RemoteMaterialStagingGCReporter = RemoteExecutionStagingGCReporter
+RemoteMaterialStagingLifecycle = RemoteExecutionStagingLifecycle
+
 __all__ = [
+    "REMOTE_EXECUTION_CLEANUP_REF",
+    "REMOTE_EXECUTION_GC_STATE_REF",
+    "REMOTE_EXECUTION_STAGING_RETENTION_SECONDS",
     "REMOTE_MATERIAL_CLEANUP_REF",
     "REMOTE_MATERIAL_GC_STATE_REF",
     "REMOTE_MATERIAL_STAGING_RETENTION_SECONDS",
+    "RemoteExecutionStagingGCReporter",
+    "RemoteExecutionStagingLifecycle",
     "RemoteMaterialStagingGCReporter",
     "RemoteMaterialStagingLifecycle",
     "material_staging_refs",
+    "remote_execution_staging_refs",
 ]

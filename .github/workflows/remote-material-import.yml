@@ -294,12 +294,19 @@ jobs:
           grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py
           grep -Fq 'material_staging_ref' platform_core/remote_material_import.py
           grep -Fq '_remote_material_publisher' platform_core/storage/import_tasks.py
-          grep -Fq 'class RemoteMaterialStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'class RemoteExecutionStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'RemoteMaterialStagingLifecycle = RemoteExecutionStagingLifecycle' platform_core/remote_material_lifecycle.py
           grep -Fq 'REMOTE_MATERIAL_STAGING_RETENTION_SECONDS' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.MODEL_CONVERSION' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.TRAINING' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.MATERIAL_BATCH' platform_core/remote_material_lifecycle.py
           grep -Fq 'provider.delete(key)' platform_core/remote_material_lifecycle.py
-          grep -Fq 'RemoteMaterialStagingGCReporter' task_worker.py
-          grep -Fq 'instance_lease.add_renew_hook(material_gc_reporter.report)' task_worker.py
-          grep -Fq 'remote_staging_cleanup' platform_core/remote_execution_transport.py
+          grep -Fq 'RemoteExecutionStagingGCReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(remote_staging_gc_reporter.report)' task_worker.py
+          grep -Fq 'def _record_remote_result_staging(' platform_core/remote_execution_transport.py
+          grep -Fq 'test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_successful_retry_ledger_includes_previous_generation_result' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_deployment_test_is_not_gc_eligible_without_durable_output_copy' tests/unit/test_remote_material_lifecycle.py
           ! grep -Fq 'list_objects(' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
