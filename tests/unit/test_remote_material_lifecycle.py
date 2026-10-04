@@ -515,6 +515,12 @@ def test_deployment_test_gc_records_only_staged_model_and_input_not_result_outpu
             "task_kind": "DEPLOYMENT_TEST",
             "transport": "object-storage-v1",
             "deployment": {
+                "runtime_format": "rknn",
+                "board": {
+                    "schema_version": 1,
+                    "conversion_job_id": "convert-1",
+                    "chip": "rk3568",
+                },
                 "input": {
                     "storage_source_id": "s3-main",
                     "object_key": f"{prefix}/rknn-board-input/image.jpg",
@@ -578,3 +584,53 @@ def test_deployment_test_gc_records_only_staged_model_and_input_not_result_outpu
         f"{prefix}/rknn-board-input/image.jpg",
     }
     assert output_key not in {row["object_key"] for row in ledger["objects"]}
+
+
+
+def test_generic_deployment_test_stays_outside_rknn_board_gc_scope():
+    task_value = _remote_task(TaskKind.DEPLOYMENT_TEST, "generic-deploy")
+    prefix = "remote-execution/project-1/generic-deploy"
+    payload_value = {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "deployment": {
+                "framework": "ultralytics",
+                "runtime_format": "pt",
+                "input": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/input/image.jpg",
+                    "sha256": "a" * 64,
+                    "size_bytes": 5,
+                },
+                "model": {
+                    "type": "object",
+                    "artifact_id": "canonical-model",
+                    "storage_source_id": "s3-main",
+                    "object_key": "changlian-ai/artifacts/project-1/a1/v1/original/model.pt",
+                    "sha256": "c" * 64,
+                    "size_bytes": 7,
+                },
+                "output": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/output/result.jpg",
+                },
+            },
+        }
+    }
+    assert remote_execution_staging_refs(
+        task_value,
+        payload_value,
+        confirmed={
+            "result": {
+                "output_storage": {
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/output/generation-1/result.jpg",
+                },
+                "output_sha256": "b" * 64,
+                "output_size_bytes": 6,
+            }
+        },
+        evidence={"execution_generation": 1, "sha256": "b" * 64, "size_bytes": 6},
+    ) == []

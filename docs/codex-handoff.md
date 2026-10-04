@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 RKNN 板端 staging GC scope fence（最新）
+
+- 上游：`d37fed8904a588ebbaec63bbca88132f2f708603` / VERSION `42.24.88`。
+- 本提交正式版本：`42.24.89`。
+- `DEPLOYMENT_TEST` staging GC 明确只接受 `runtime_format=rknn` 且带 `board.conversion_job_id` 的板端验证合同。
+- 普通远程 deployment test 的 model 可能是 canonical ModelArtifact object key，不属于 task-owned prefix；本提交保持其在该 GC owner 之外，避免 canonical 引用触发 fail-closed 并阻塞整页 GC sweep。
+- RKNN board 仍只清 task-owned model/input；result output 继续保留为 `hardware_verification.result_output_storage` durable truth。
+
 ## 2026-10-05 RKNN 板端验证 staging GC 精确收口（最新）
 
 - 上游绿基线：`8c06517df7ed3d7e2c31684f5a4e24d73cbc5009` / VERSION `42.24.87`。

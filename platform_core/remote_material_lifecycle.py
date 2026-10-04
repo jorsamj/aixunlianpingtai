@@ -176,7 +176,16 @@ def remote_execution_staging_refs(
             )
     elif task.kind is TaskKind.DEPLOYMENT_TEST:
         deployment = remote.get("deployment")
-        if not isinstance(deployment, Mapping):
+        board = deployment.get("board") if isinstance(deployment, Mapping) else None
+        if (
+            not isinstance(deployment, Mapping)
+            or str(deployment.get("runtime_format") or "").strip().lower() != "rknn"
+            or not isinstance(board, Mapping)
+            or not str(board.get("conversion_job_id") or "").strip()
+        ):
+            # Generic remote deployment tests may reference canonical ModelArtifact
+            # objects outside the task prefix. Keep them outside this board-only
+            # GC scope until their own result/local-copy lifecycle is proven.
             return []
         # Board validation stages redundant transport copies of the already-local
         # RKNN artifact plus the one-shot validation image. The result output is

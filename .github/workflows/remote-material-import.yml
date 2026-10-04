@@ -309,6 +309,7 @@ jobs:
           grep -Fq 'test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_successful_retry_ledger_includes_previous_generation_result' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_deployment_test_gc_records_only_staged_model_and_input_not_result_output' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_generic_deployment_test_stays_outside_rknn_board_gc_scope' tests/unit/test_remote_material_lifecycle.py
           ! grep -Fq 'list_objects(' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
