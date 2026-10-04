@@ -505,7 +505,8 @@ def test_successful_retry_ledger_includes_previous_generation_result(tmp_path):
     assert {row["object_key"] for row in ledger["objects"]} == {old_key, current_key}
 
 
-def test_deployment_test_is_not_gc_eligible_without_durable_output_copy():
+def test_deployment_test_gc_records_only_staged_model_and_input_not_result_output(tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
     task_value = _remote_task(TaskKind.DEPLOYMENT_TEST, "deploy-task")
     prefix = "remote-execution/project-1/deploy-task"
     payload_value = {
@@ -516,29 +517,64 @@ def test_deployment_test_is_not_gc_eligible_without_durable_output_copy():
             "deployment": {
                 "input": {
                     "storage_source_id": "s3-main",
-                    "object_key": f"{prefix}/input/image.jpg",
+                    "object_key": f"{prefix}/rknn-board-input/image.jpg",
                     "sha256": "a" * 64,
                     "size_bytes": 5,
                 },
+                "model": {
+                    "type": "object",
+                    "storage_source_id": "s3-main",
+                    "object_key": f"{prefix}/rknn-board-model/model.rknn",
+                    "sha256": "c" * 64,
+                    "size_bytes": 7,
+                },
                 "output": {
                     "storage_source_id": "s3-main",
-                    "object_key": f"{prefix}/output/result.jpg",
+                    "object_key": f"{prefix}/rknn-board-output/result.jpg",
                 },
             },
         }
     }
-    assert remote_execution_staging_refs(
+    output_key = f"{prefix}/rknn-board-output/generation-1/result.jpg"
+    confirmed = {
+        "result": {
+            "output_storage": {
+                "storage_source_id": "s3-main",
+                "object_key": output_key,
+            },
+            "output_sha256": "b" * 64,
+            "output_size_bytes": 6,
+        }
+    }
+    refs = remote_execution_staging_refs(
         task_value,
         payload_value,
-        confirmed={
-            "result": {
-                "output_storage": {
-                    "storage_source_id": "s3-main",
-                    "object_key": f"{prefix}/output/generation-1/result.jpg",
-                },
-                "output_sha256": "b" * 64,
-                "output_size_bytes": 6,
-            }
-        },
+        confirmed=confirmed,
         evidence={"execution_generation": 1, "sha256": "b" * 64, "size_bytes": 6},
-    ) == []
+        artifacts=artifacts,
+    )
+    assert {row["role"] for row in refs} == {"board-model", "board-input"}
+    assert {row["object_key"] for row in refs} == {
+        f"{prefix}/rknn-board-model/model.rknn",
+        f"{prefix}/rknn-board-input/image.jpg",
+    }
+    assert output_key not in {row["object_key"] for row in refs}
+
+    lifecycle = RemoteExecutionStagingLifecycle(
+        None,
+        artifacts,
+        lambda _project_id, _ref: FakeProvider(),
+    )
+    recorded = lifecycle.record_confirmed(
+        task_value,
+        payload_value,
+        {"execution_generation": 1, "sha256": "b" * 64, "size_bytes": 6},
+        confirmed,
+    )
+    assert recorded["status"] == "RECORDED"
+    ledger = artifacts.read_json("deploy-task", REMOTE_MATERIAL_CLEANUP_REF)
+    assert {row["object_key"] for row in ledger["objects"]} == {
+        f"{prefix}/rknn-board-model/model.rknn",
+        f"{prefix}/rknn-board-input/image.jpg",
+    }
+    assert output_key not in {row["object_key"] for row in ledger["objects"]}

@@ -1,5 +1,14 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 RKNN 板端验证 staging GC 精确收口（最新）
+
+- 上游绿基线：`8c06517df7ed3d7e2c31684f5a4e24d73cbc5009` / VERSION `42.24.87`。
+- 本提交正式版本：`42.24.88`。
+- 继续复用唯一 `RemoteExecutionStagingLifecycle` 与 storage Worker heartbeat，不新增第二 GC owner。
+- `DEPLOYMENT_TEST` 现在只回收 task-owned `rknn-board-model` 与 `rknn-board-input` 临时对象；两者都有 exact object key + size + SHA256，并且板端验证成功后 canonical RKNN 仍由原 conversion artifact owner 持有。
+- `rknn-board-output` 明确继续排除 GC：其 exact ref 被持久化到 `hardware_verification.result_output_storage`，仍属于验收报告 durable truth；在建立本地/canonical copy 之前不能删除。
+- terminal 任务仍遵循既有 retention；删除前继续 stat 校验 size/SHA256，禁止 prefix delete / list delete。
+
 ## 2026-10-05 Remote execution staging GC / material ledger compatibility 修正（最新）
 
 - 上游提交：a2019fae0a66bff3fcd354c40576c9a6c2be72ae / VERSION 42.24.86

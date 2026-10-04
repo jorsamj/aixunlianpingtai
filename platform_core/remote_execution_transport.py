@@ -4194,14 +4194,15 @@ class RemoteExecutionTransportService:
         elif kind == "MATERIAL_BATCH":
             committed = self._commit_cleaning_result(task, payload, evidence, confirmed)
         elif kind == "DEPLOYMENT_TEST":
-            # Deployment output may still be durable result truth; keep it out
-            # of GC until a separate local/canonical copy contract is proven.
-            return self._commit_rknn_board_verification_result(
+            committed = self._commit_rknn_board_verification_result(
                 task,
                 payload,
                 evidence,
                 confirmed,
             )
+            # The staging lifecycle intentionally records only the task-owned
+            # board model/input copies. The result output remains durable report
+            # truth via hardware_verification.result_output_storage.
         else:
             return {}
         return {

@@ -36,6 +36,7 @@ _STAGING_TASK_KINDS = (
     TaskKind.MATERIAL_BATCH,
     TaskKind.MODEL_CONVERSION,
     TaskKind.TRAINING,
+    TaskKind.DEPLOYMENT_TEST,
 )
 _TERMINAL = {
     TaskStatus.SUCCEEDED,
@@ -173,6 +174,29 @@ def remote_execution_staging_refs(
                     size_bytes=input_ref.get("size_bytes"),
                 ),
             )
+    elif task.kind is TaskKind.DEPLOYMENT_TEST:
+        deployment = remote.get("deployment")
+        if not isinstance(deployment, Mapping):
+            return []
+        # Board validation stages redundant transport copies of the already-local
+        # RKNN artifact plus the one-shot validation image. The result output is
+        # different: hardware_verification.result_output_storage is durable
+        # report truth, so it must stay outside GC until a canonical copy exists.
+        for role, field in (("board-model", "model"), ("board-input", "input")):
+            staged = deployment.get(field)
+            if not isinstance(staged, Mapping):
+                continue
+            _append_unique_ref(
+                result,
+                _normalized_ref(
+                    task=task,
+                    value=staged,
+                    role=role,
+                    sha256=staged.get("sha256"),
+                    size_bytes=staged.get("size_bytes"),
+                ),
+            )
+        return result
     else:
         section_name = {
             TaskKind.MODEL_CONVERSION: "conversion",
