@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from platform_core.errors import PlatformError
-from platform_core.algorithms import save_algorithms
+from platform_core.algorithms import list_algorithms, save_algorithms
 from platform_core.model_artifacts import (
     ARTIFACT_OSS_SOURCE_ID,
     ArtifactOSSConfigPayload,
@@ -353,6 +353,62 @@ def _seed(root: Path):
     }), encoding="utf-8")
     (root / "projects.json").write_text(json.dumps([{"id": "p1", "name": "项目1"}]), encoding="utf-8")
     return model, output
+
+
+def test_conversion_validation_promotes_on_same_canonical_artifact_identity(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithm = algorithms[0]
+    version = algorithm["versions"][0]
+
+    job_path = (
+        _project_dir(tmp_path, "p1")
+        / "deployment" / "jobs" / "convert-1" / "job.json"
+    )
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job.update({
+        "validation_status": "converted_unverified",
+        "runtime_verified": False,
+        "hardware_verified": False,
+        "conversion_status": "converted",
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    first = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    first_row = service.repository.upsert(first)
+    service.repository.patch(
+        first_row["artifact_id"],
+        storage_source_id="default_local",
+        object_key="immutable/rknn/model.rknn",
+        public_url="https://models.example.test/immutable/rknn/model.rknn",
+        storage_status="UPLOADED",
+    )
+
+    job.update({
+        "validation_status": "hardware_verified",
+        "runtime_verified": True,
+        "hardware_verified": True,
+        "conversion_status": "hardware_verified",
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    refreshed = service.refresh_conversion_artifacts(
+        "p1", "local-a1", "v1", "convert-1"
+    )
+    assert len(refreshed) == 1
+    promoted = refreshed[0]
+    assert promoted["artifact_id"] == first_row["artifact_id"]
+    assert promoted["sha256"] == first_row["sha256"]
+    assert promoted["storage_status"] == "UPLOADED"
+    assert promoted["object_key"] == "immutable/rknn/model.rknn"
+    assert promoted["metadata"]["validation_status"] == "hardware_verified"
+    assert promoted["metadata"]["runtime_verified"] is True
+    assert promoted["metadata"]["hardware_verified"] is True
+    assert promoted["metadata"]["conversion_status"] == "hardware_verified"
 
 
 @pytest.mark.parametrize(

@@ -3864,12 +3864,55 @@ class RemoteExecutionTransportService:
             job_tmp.replace(job_path)
         finally:
             lock.release()
+
+        algorithm_id = ""
+        version_id = ""
+        for source in (
+            latest_job.get("source_trace"),
+            latest_job.get("source_meta"),
+        ):
+            if not isinstance(source, Mapping):
+                continue
+            candidate_algorithm_id = str(source.get("algorithm_id") or "").strip()
+            candidate_version_id = str(source.get("version_id") or "").strip()
+            if candidate_algorithm_id and candidate_version_id:
+                algorithm_id = candidate_algorithm_id
+                version_id = candidate_version_id
+                break
+        if not algorithm_id or not version_id:
+            source_id = str(latest_job.get("source_id") or "").strip()
+            match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+            if match:
+                algorithm_id, version_id = match.group(1), match.group(2)
+
+        refreshed_artifacts: list[dict[str, Any]] = []
+        if algorithm_id and version_id:
+            refreshed_artifacts = self.model_artifacts.refresh_conversion_artifacts(
+                str(task.project_id),
+                algorithm_id,
+                version_id,
+                conversion_job_id,
+            )
+        from .external_publish_request import (
+            request_external_auto_publish_for_conversion_if_enabled,
+        )
+        external_publish_requested = request_external_auto_publish_for_conversion_if_enabled(
+            data_dir=self.data_dir,
+            project_id=str(task.project_id),
+            conversion_job=latest_job,
+        )
         return {
             "rknn_hardware_verified": True,
             "conversion_job_id": conversion_job_id,
             "chip": chip,
             "inference_ms": inference_ms,
             "output_count": output_count,
+            "canonical_artifact_ids": [
+                str(item.get("artifact_id") or "")
+                for item in refreshed_artifacts
+                if str(item.get("artifact_id") or "")
+            ],
+            "external_publish_requested": bool(external_publish_requested),
         }
 
     def _project_label_items(self, project_id: str) -> list[dict[str, Any]]:

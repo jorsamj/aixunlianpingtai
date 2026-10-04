@@ -1220,7 +1220,19 @@ class ModelArtifactService:
                 if raw:
                     output_path = Path(raw).expanduser()
                     if _is_conversion_deliverable(target, output_path):
-                        candidates.append(("conversion", target, output_path, str(job.get("id") or ""), {"chip_code": chip}))
+                        candidates.append((
+                            "conversion",
+                            target,
+                            output_path,
+                            str(job.get("id") or ""),
+                            {
+                                "chip_code": chip,
+                                "validation_status": str(job.get("validation_status") or ""),
+                                "conversion_status": str(job.get("conversion_status") or status),
+                                "runtime_verified": job.get("runtime_verified") is True,
+                                "hardware_verified": job.get("hardware_verified") is True,
+                            },
+                        ))
         seen: set[tuple[str, str, str]] = set()
         result: list[dict[str, Any]] = []
         for kind, target, path, job_id, metadata in candidates:
@@ -1463,6 +1475,44 @@ class ModelArtifactService:
         if public_url:
             uploaded = self.repository.patch(str(row["artifact_id"]), public_url=public_url)
         return uploaded
+
+    def refresh_conversion_artifacts(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        conversion_job_id: str,
+    ) -> list[dict[str, Any]]:
+        """Refresh canonical metadata for one conversion job without re-uploading bytes."""
+        algorithm_id = str(algorithm_id or "").strip()
+        version_id = str(version_id or "").strip()
+        conversion_job_id = str(conversion_job_id or "").strip()
+        if not algorithm_id or not version_id or not conversion_job_id:
+            return []
+        algorithm = next(
+            (
+                item for item in list_algorithms(self.algorithms_file(str(project_id)))
+                if str(item.get("id") or "") == algorithm_id
+            ),
+            None,
+        )
+        if algorithm is None:
+            return []
+        version = next(
+            (
+                item for item in (algorithm.get("versions") or [])
+                if isinstance(item, Mapping) and str(item.get("id") or "") == version_id
+            ),
+            None,
+        )
+        if version is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for item in self.discover_version_artifacts(str(project_id), algorithm, version):
+            if str(item.get("conversion_job_id") or "") != conversion_job_id:
+                continue
+            rows.append(self.repository.upsert(item))
+        return rows
 
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}

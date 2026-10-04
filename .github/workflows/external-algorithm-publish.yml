@@ -123,6 +123,10 @@ jobs:
           grep -Fq 'test_purge_version_keeps_canonical_rows_when_remote_delete_fails' tests/unit/test_model_artifacts.py
           grep -Fq 'def purge_version(' platform_core/model_artifacts.py
           grep -Fq 'def delete_version(' platform_core/model_artifacts.py
+          grep -Fq 'def refresh_conversion_artifacts(' platform_core/model_artifacts.py
+          grep -Fq '"validation_status": str(job.get("validation_status") or "")' platform_core/model_artifacts.py
+          grep -Fq 'test_conversion_validation_promotes_on_same_canonical_artifact_identity' tests/unit/test_model_artifacts.py
+          grep -Fq 'canonical_artifact_ids' platform_core/remote_execution_transport.py
           grep -Fq "usage||'')!=='model_artifact'" static/app.js
       - name: Syntax and wiring guards
         run: |

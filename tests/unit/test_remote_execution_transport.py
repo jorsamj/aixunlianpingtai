@@ -40,6 +40,22 @@ class FakeModelArtifacts:
         self.model_row = model_row
         self.discovered = []
         self.registered = []
+        self.refreshed = []
+
+    def refresh_conversion_artifacts(
+        self, project_id, algorithm_id, version_id, conversion_job_id
+    ):
+        row = {
+            "artifact_id": hashlib.sha256(
+                f"{project_id}:{algorithm_id}:{version_id}:{conversion_job_id}".encode("utf-8")
+            ).hexdigest()[:32],
+            "project_id": str(project_id),
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "conversion_job_id": str(conversion_job_id),
+        }
+        self.refreshed.append(dict(row))
+        return [row]
 
     def discover_version_artifacts(self, project_id, algorithm, version):
         return list(self.discovered)
@@ -1971,6 +1987,7 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
         "target": "rockchip",
         "status": "done",
         "validation_status": "converted_unverified",
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
     }), encoding="utf-8")
 
     task = SimpleNamespace(
@@ -2044,6 +2061,11 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
     assert verification["input"]["sha256"] == "c" * 64
     assert verification["input"]["size_bytes"] == 123
     assert verification["verified_at"]
+    assert committed["canonical_artifact_ids"]
+    assert len(transport.model_artifacts.refreshed) == 1
+    assert transport.model_artifacts.refreshed[0]["algorithm_id"] == "a1"
+    assert transport.model_artifacts.refreshed[0]["version_id"] == "v1"
+    assert transport.model_artifacts.refreshed[0]["conversion_job_id"] == "convert-1"
 
     # Any later model mutation must fail closed and cannot produce a new valid verification.
     model.write_bytes(b"mutated-rknn-model")
