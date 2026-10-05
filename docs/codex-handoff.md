@@ -1,5 +1,14 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Version reference fence CI fixture 对齐（最新）
+
+- 上游提交：`6bcf917546a9535adc07e6d82a81c1f9ee88504b` / VERSION `42.24.105`。
+- `42.24.105` 首轮 CI 的 `tests/api/test_deployment_test_runtime.py::test_detection_batch_metadata_history_and_review_are_durable` 暴露旧测试夹具：它提交 `model_source=algorithm_version` 和 `algo-feedback / ver-feedback`，但算法数据库里从未建立该正式版本。
+- 新的 version reference fence 正确以 `ALGORITHM_VERSION_REFERENCE_RETIRED` 拒绝不存在的正式版本；不能为了旧夹具放宽生产合同。
+- 本提交把该集成测试改为先建立真实 `algo-feedback / ver-feedback` 算法版本，再继续验证 detection batch metadata、history 和 feedback evidence 链；生产代码不变。
+- 正式版本：`42.24.106`。
+
+
 ## 2026-10-05 Version retirement / 新引用创建竞态收口（最新）
 
 - 上游绿基线：`a2fff0998c2fe56ce3431ec7d8408a78010235ea` / VERSION `42.24.104`，20 / 20 workflow runs、59 / 59 check-runs completed success。

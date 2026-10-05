@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import app as app_module
+from platform_core.algorithms import save_algorithms
 from platform_core.remote_execution_transport import RemoteExecutionTransportError
 from platform_core.task_runtime import TaskKind
 
@@ -196,6 +197,27 @@ def test_detection_batch_metadata_history_and_review_are_durable(
     client, seeded_project, tmp_path, monkeypatch
 ):
     batch_id = "bench-api-test-1"
+    project_id, _image = seeded_project
+    formal_model = tmp_path / "model.onnx"
+    formal_model.write_bytes(b"onnx-test-model")
+    algorithms = app_module.list_algorithm_assets(app_module.algorithms_file(project_id))
+    algorithms.append({
+        "id": "algo-feedback",
+        "name": "烟火",
+        "current_version_id": "ver-feedback",
+        "versions": [{
+            "id": "ver-feedback",
+            "version_name": "v1",
+            "stored_path": str(formal_model),
+            "model_name": formal_model.name,
+            "artifact_verified": True,
+            "training_status": "SUCCEEDED",
+            "trainable": True,
+            "framework": "ultralytics",
+        }],
+    })
+    save_algorithms(app_module.algorithms_file(project_id), algorithms)
+
     project_id, _model, task = _create_deployment_task(
         client,
         seeded_project,
