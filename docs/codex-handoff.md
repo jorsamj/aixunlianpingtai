@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 External Weight 恢复 / durable filePath 对账收口（最新）
+
+- 上游绿基线：`5acd3355edbb0501a6440db6e653387aa692216f` / VERSION `42.24.101`，46 / 46 workflows completed success。
+- 本提交正式版本：`42.24.102`。
+- 审计发现：当本地尚无 `external_weight_id`、但新畅联已经存在同一 Version 下的 Weight 时，旧逻辑在 `_recover_weight()` 返回 `weightId` 后直接把 provider mapping 标成 `SYNCED`。如果远端历史 Weight 的 `filePath` 为空，本地会错误显示发布完成，但远端没有 durable 下载地址。
+- 当前所有通过 `listByVersion` 恢复得到的 `weightId` 都统一走 `_bind_recovered_weight → _edit_existing_weight`：先绑定原 `weightId` 并置 `PENDING`，再复用既有 `weight_edit + timeout 后反查确认` owner，写齐 canonical `computePlatformId / chipCode / fileName / filePath` 后才允许 `SYNCED`。
+- 覆盖三条恢复路径：创建前反查已有 Weight、`create_weight` 异常后反查、创建成功但响应漏 `weightId` 后反查。只有新增接口明确返回 `weightId` 的正常成功路径可直接完成映射。
+- 恢复旧 Weight 不调用 `weight_create`，不会为了补齐 `filePath` 创建重复 Weight；edit 结果未知且无法由远端合同反查确认时继续 `UNKNOWN + fail-closed`。
+- 新增回归：远端已有 original Weight 且 `filePath=""` 时，发布必须复用原 `weightId`、执行一次 edit、补齐长期 URL，Version/Weight create 次数均保持 0。
+- 下一轮继续审 external Weight 删除/缺失后的恢复边界，以及 version retirement reference truth；不要重做已 CLOSED 的 remote staging / conversion orphan / RKNN board evidence GC。
+
 ## 2026-10-05 RKNN 板端验收引用 / 版本退役闭环（最新）
 
 - 上游绿基线：`1c32c9ed43237ce221a5bbbba8926072ddf8b24c` / VERSION `42.24.100`，46 / 46 workflows completed success。

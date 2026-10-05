@@ -391,6 +391,10 @@ jobs:
           test ! -e tools/_one_shot_model_asset_integration.py
           test ! -e .github/workflows/_one_shot_model_asset_integration.yml
           grep -Fq 'PUBLICATION_SCHEMA_VERSION = 4' platform_core/external_algorithm_publish.py
+          grep -Fq 'def _edit_existing_weight(' platform_core/external_algorithm_publish.py
+          grep -Fq 'def _bind_recovered_weight(' platform_core/external_algorithm_publish.py
+          grep -Fq 'sync_status="PENDING"' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_recovered_weight_missing_file_path_is_repaired_without_duplicate_create' tests/unit/test_external_algorithm_publish.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
 
 

@@ -2107,6 +2107,91 @@ class ExternalAlgorithmPublishService:
             and str(row.get("filePath") or "") == str(artifact.get("public_url") or "")
         )
 
+    def _edit_existing_weight(
+        self,
+        current: Mapping[str, Any],
+        external_version_id: str,
+        client: PublishingChangLianClient,
+        payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        external_weight_id = str(current.get("external_weight_id") or "").strip()
+        if not external_weight_id:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_ID_MISSING",
+                "新畅联权重文件 ID 缺失",
+                str(current.get("file_name") or ""),
+                "只能对已经唯一恢复到 weightId 的远端权重执行更新。",
+                409,
+            )
+        edit_payload = {"weightId": external_weight_id, **dict(payload)}
+        try:
+            client.edit_weight(edit_payload)
+        except Exception as error:
+            confirmed = False
+            try:
+                rows = extract_items(client.list_version_weights(external_version_id))
+                confirmed = any(
+                    self._remote_weight_contract_matches(
+                        row,
+                        current,
+                        weight_id=external_weight_id,
+                    )
+                    for row in rows
+                )
+            except Exception:
+                confirmed = False
+            if confirmed:
+                patched = self.repository.patch_artifact_publication(
+                    str(current["artifact_id"]),
+                    provider=PROVIDER_CHANGLIAN,
+                    sync_status="SYNCED",
+                    last_error="",
+                )
+                return {**dict(current), **patched}
+            self.repository.patch_artifact_publication(
+                str(current["artifact_id"]),
+                provider=PROVIDER_CHANGLIAN,
+                sync_status="UNKNOWN",
+                last_error=str(error),
+            )
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_EDIT_UNKNOWN",
+                "新畅联权重文件更新结果无法确认",
+                str(error),
+                "请先核对新畅联该 weightId 的 computePlatformId / chipCode / fileName / filePath；平台不会重复创建新权重。",
+                502,
+            ) from error
+        patched = self.repository.patch_artifact_publication(
+            str(current["artifact_id"]),
+            provider=PROVIDER_CHANGLIAN,
+            sync_status="SYNCED",
+            last_error="",
+        )
+        return {**dict(current), **patched}
+
+    def _bind_recovered_weight(
+        self,
+        current: Mapping[str, Any],
+        recovered_weight_id: str,
+        external_version_id: str,
+        client: PublishingChangLianClient,
+        payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        patched = self.repository.patch_artifact_publication(
+            str(current["artifact_id"]),
+            provider=PROVIDER_CHANGLIAN,
+            external_weight_id=str(recovered_weight_id),
+            sync_status="PENDING",
+            last_error="",
+        )
+        recovered = {**dict(current), **patched}
+        return self._edit_existing_weight(
+            recovered,
+            external_version_id,
+            client,
+            payload,
+        )
+
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
         current = self._artifact_projection(str(artifact["artifact_id"])) or dict(artifact)
         attempts = int(current.get("attempts") or 0) + 1
@@ -2121,51 +2206,12 @@ class ExternalAlgorithmPublishService:
         if external_weight_id:
             if str(current.get("sync_status") or "").upper() == "SYNCED":
                 return current
-            edit_payload = {"weightId": external_weight_id, **payload}
-            try:
-                client.edit_weight(edit_payload)
-            except Exception as error:
-                confirmed = False
-                try:
-                    rows = extract_items(client.list_version_weights(external_version_id))
-                    confirmed = any(
-                        self._remote_weight_contract_matches(
-                            row,
-                            current,
-                            weight_id=external_weight_id,
-                        )
-                        for row in rows
-                    )
-                except Exception:
-                    confirmed = False
-                if confirmed:
-                    patched = self.repository.patch_artifact_publication(
-                        str(current["artifact_id"]),
-                        provider=PROVIDER_CHANGLIAN,
-                        sync_status="SYNCED",
-                        last_error="",
-                    )
-                    return {**current, **patched}
-                self.repository.patch_artifact_publication(
-                    str(current["artifact_id"]),
-                    provider=PROVIDER_CHANGLIAN,
-                    sync_status="UNKNOWN",
-                    last_error=str(error),
-                )
-                raise PlatformError(
-                    "EXTERNAL_WEIGHT_EDIT_UNKNOWN",
-                    "新畅联权重文件更新结果无法确认",
-                    str(error),
-                    "请先核对新畅联该 weightId 的 computePlatformId / chipCode / fileName / filePath；平台不会重复创建新权重。",
-                    502,
-                ) from error
-            patched = self.repository.patch_artifact_publication(
-                str(current["artifact_id"]),
-                provider=PROVIDER_CHANGLIAN,
-                sync_status="SYNCED",
-                last_error="",
+            return self._edit_existing_weight(
+                current,
+                external_version_id,
+                client,
+                payload,
             )
-            return {**current, **patched}
         try:
             recovered = self._recover_weight(client, external_version_id, current)
         except PlatformError as error:
@@ -2175,11 +2221,13 @@ class ExternalAlgorithmPublishService:
             )
             raise
         if recovered:
-            patched = self.repository.patch_artifact_publication(
-                str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
-                external_weight_id=recovered, sync_status="SYNCED", last_error="",
+            return self._bind_recovered_weight(
+                current,
+                recovered,
+                external_version_id,
+                client,
+                payload,
             )
-            return {**current, **patched}
         try:
             response = client.create_weight(payload)
         except Exception as error:
@@ -2188,11 +2236,13 @@ class ExternalAlgorithmPublishService:
             except PlatformError:
                 recovered = ""
             if recovered:
-                patched = self.repository.patch_artifact_publication(
-                    str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
-                    external_weight_id=recovered, sync_status="SYNCED", last_error="",
+                return self._bind_recovered_weight(
+                    current,
+                    recovered,
+                    external_version_id,
+                    client,
+                    payload,
                 )
-                return {**current, **patched}
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
                 sync_status="UNKNOWN", last_error=str(error),
@@ -2204,13 +2254,21 @@ class ExternalAlgorithmPublishService:
         weight_id = _remote_id(response, ("weightId", "algorithmWeightId", "id"))
         if not weight_id:
             try:
-                weight_id = self._recover_weight(client, external_version_id, current)
+                recovered = self._recover_weight(client, external_version_id, current)
             except PlatformError as error:
                 self.repository.patch_artifact_publication(
                     str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
                     sync_status="UNKNOWN", last_error=str(error)
                 )
                 raise
+            if recovered:
+                return self._bind_recovered_weight(
+                    current,
+                    recovered,
+                    external_version_id,
+                    client,
+                    payload,
+                )
         if not weight_id:
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,

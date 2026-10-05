@@ -1279,6 +1279,45 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert result["publication"]["external_algo_version_id"] == "av-1"
 
 
+def test_recovered_weight_missing_file_path_is_repaired_without_duplicate_create(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    FakePublishingClient.versions = [{
+        "algoVersionId": "remote-existing-version",
+        "versionName": "20260917120000",
+        "versionNo": "20260917120000",
+        "analysisId": "analysis-1",
+    }]
+    FakePublishingClient.weights = [{
+        "weightId": "remote-existing-weight",
+        "algoVersionId": "remote-existing-version",
+        "computePlatformId": "cp-rk",
+        "chipCode": "PYTORCH",
+        "fileName": "best.pt",
+        "filePath": "",
+    }]
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert result["external_algo_version_id"] == "remote-existing-version"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+    assert FakePublishingClient.weight_edits == 1
+    remote = FakePublishingClient.weights[0]
+    assert remote["weightId"] == "remote-existing-weight"
+    assert remote["filePath"].startswith(
+        "https://platform.example/changlian-ai/artifacts/projects/"
+    )
+    artifact = result["artifacts"][0]
+    assert artifact["external_weight_id"] == "remote-existing-weight"
+    assert artifact["sync_status"] == "SYNCED"
+    assert artifact["public_url"] == remote["filePath"]
+
+
 def test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
