@@ -332,6 +332,8 @@ jobs:
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
           grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
           grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'test_remote_training_commit_reuses_existing_task_version_before_base_stale_check' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'version_id = self._remote_training_version_id(' platform_core/remote_execution_transport.py
           grep -Fq 'test_v12_rejects_paddle_before_algorithm_or_material_io' tests/api/test_training_request.py
           grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
           grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py

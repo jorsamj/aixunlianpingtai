@@ -1428,6 +1428,77 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     assert str(tmp_path / "task_runtime" / "remote-training-results") not in serialized
 
 
+def test_remote_training_commit_reuses_existing_task_version_before_base_stale_check(
+    tmp_path, monkeypatch,
+):
+    provider = FakeProvider()
+    model_artifacts = FakeModelArtifacts()
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(
+        tmp_path,
+        provider,
+        model_artifacts=model_artifacts,
+        task_artifacts=artifacts,
+    )
+    task, payload, _bundle_bytes, _bundle_sha = _remote_training_fixture()
+    generation = 2
+    stage = transport._training_result_stage_root(task.task_id, generation)
+    (stage / "verified").mkdir(parents=True)
+    (stage / "verified.json").write_text("{}", encoding="utf-8")
+    version_id = transport._remote_training_version_id(
+        task.task_id,
+        generation,
+        "snapshot-remote-one",
+    )
+    existing_version = {
+        "id": version_id,
+        "version_name": "remote-existing",
+        "task_id": task.task_id,
+        "job_id": task.task_id,
+        "training_job_id": task.task_id,
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "external_analysis_id": "analysis-visual-1",
+    }
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.list_algorithms",
+        lambda _path: [{
+            "id": "algorithm-one",
+            "current_version_id": version_id,
+            "versions": [existing_version],
+        }],
+    )
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.resolve_current_version_id",
+        lambda _algorithm, framework=None: version_id,
+    )
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.request_external_auto_publish_if_enabled",
+        lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
+    )
+
+    committed = transport.commit_result_publication(
+        task,
+        payload,
+        {
+            "sha256": "a" * 64,
+            "size_bytes": 1,
+            "execution_generation": generation,
+        },
+        {"result": {}},
+    )
+
+    assert committed["version_id"] == version_id
+    assert committed["version_name"] == "remote-existing"
+    assert committed["model_artifacts_committed"] is True
+    assert committed["external_publish_requested"] is True
+    assert publish_requests[0]["version_id"] == version_id
+    assert model_artifacts.registered == []
+
+
 def test_remote_training_commit_rejects_stale_iteration_base(tmp_path, monkeypatch):
     provider = FakeProvider()
     transport = service(tmp_path, provider)

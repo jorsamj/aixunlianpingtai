@@ -2985,24 +2985,11 @@ class RemoteExecutionTransportService:
                 422,
             )
         expected_base_id = str(model_contract.get("base_version_id") or "").strip()
-        current_base_id = str(resolve_current_version_id(algorithm, framework="ultralytics") or "")
-        if expected_base_id:
-            if current_base_id != expected_base_id:
-                raise RemoteExecutionTransportError(
-                    "REMOTE_TRAINING_BASE_VERSION_STALE",
-                    "algorithm current version changed while remote training was running",
-                    409,
-                )
-        elif current_base_id:
-            raise RemoteExecutionTransportError(
-                "REMOTE_TRAINING_BASE_VERSION_STALE",
-                "algorithm gained a newer current version while first-run remote training was running",
-                409,
-            )
-
-        version_id = "rt" + hashlib.sha256(
-            f"{task.task_id}:{generation}:{training.get('snapshot_id')}".encode("utf-8")
-        ).hexdigest()[:10]
+        version_id = self._remote_training_version_id(
+            str(task.task_id),
+            generation,
+            str(training.get("snapshot_id") or ""),
+        )
         existing_version = next(
             (
                 row
@@ -3012,6 +2999,8 @@ class RemoteExecutionTransportService:
             None,
         )
         if existing_version is not None:
+            # Crash recovery must resolve the same task/version before comparing
+            # its frozen base with the now-advanced current_version_id.
             durable_analysis_id = str(payload.get("external_analysis_id") or "").strip()
             if durable_analysis_id and not str(existing_version.get("external_analysis_id") or "").strip():
                 existing_version = update_algorithm_version(
@@ -3035,6 +3024,21 @@ class RemoteExecutionTransportService:
                 "model_artifacts_committed": True,
                 "external_publish_requested": bool(external_publish_requested),
             }
+
+        current_base_id = str(resolve_current_version_id(algorithm, framework="ultralytics") or "")
+        if expected_base_id:
+            if current_base_id != expected_base_id:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_BASE_VERSION_STALE",
+                    "algorithm current version changed while remote training was running",
+                    409,
+                )
+        elif current_base_id:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_BASE_VERSION_STALE",
+                "algorithm gained a newer current version while first-run remote training was running",
+                409,
+            )
 
         verified_models = result.get("verified_models")
         training_models = confirmed.get("training_models")
