@@ -844,6 +844,59 @@ def test_terminal_training_gc_retires_unattached_final_model_delivery(tmp_path):
     assert delivery["status"] == "DELETED"
 
 
+def test_terminal_training_gc_does_not_protect_older_generation_by_task_id_only(tmp_path):
+    fixture = _training_delivery_fixture(tmp_path, attached=False)
+    # A later retry generation may attach a different deterministic version
+    # while keeping the same durable training task id.
+    save_algorithms(
+        tmp_path / "projects" / "project-1" / "algorithms.json",
+        [{
+            "id": "algorithm-one",
+            "name": "训练算法",
+            "current_version_id": "rt-newer-generation",
+            "versions": [{
+                "id": "rt-newer-generation",
+                "version_name": "retry-success",
+                "task_id": "training-orphan",
+                "job_id": "training-orphan",
+                "training_job_id": "training-orphan",
+                "execution_generation": 2,
+                "training_status": "SUCCEEDED",
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+            }],
+        }],
+    )
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["complete"] == 1
+    assert fixture["provider"].exists(fixture["object_key"]) is False
+    assert fixture["local_model"].exists() is False
+    assert fixture["canonical"].list(
+        project_id="project-1",
+        algorithm_id="algorithm-one",
+        version_id=fixture["version_id"],
+    ) == []
+    ledger = fixture["artifacts"].read_json(
+        "training-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    delivery = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "provisional-training-delivery"
+    )
+    assert delivery["status"] == "DELETED"
+
+
 def test_terminal_training_gc_protects_delivery_when_version_is_attached(tmp_path):
     fixture = _training_delivery_fixture(tmp_path, attached=True)
     finished = datetime.fromisoformat(fixture["task"].finished_at)

@@ -1,5 +1,15 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Remote training generation-scoped orphan GC（最新）
+
+- 上游绿基线：`c4ea470fd7f51ebf7030a4acf0cbc90a76d48309` / VERSION `42.24.96`，23 / 23 workflows completed success。
+- 本提交正式版本：`42.24.97`。
+- `42.24.96` 已把 unattached remote-training final model delivery 纳入唯一 `RemoteExecutionStagingLifecycle`；本提交只修正 retry generation 的引用判定，不新增 GC owner。
+- 已确认 `training-models.json` 的 version_id 在进入清理前必须通过 deterministic identity：`hash(task_id, execution_generation, snapshot_id)`。
+- 旧保护逻辑同时接受“任意 algorithm version 的 task_id 与 durable task_id 相同”，会导致 generation-1 失败产物在 generation-2 成功 attach 后被错误标记为 `PROTECTED`，形成永久 orphan。
+- 当前保护 truth 收紧为 exact `version_id`。同 task 的后续 generation 不再保护旧 generation；真正已 attach 的同一 deterministic version 仍保持 `PROTECTED`。
+- 新增回归覆盖：generation-1 provisional delivery + generation-2 同 task_id attached version，retention 到期后 generation-1 的 remote object、本地主模型和 canonical provisional ModelArtifact 都必须被精确清理。
+
 ## 2026-10-05 Conversion frontend Windows source-boundary guard（最新）
 
 - 上游：`e36ab3ede5f670677690a35a08196ecf34b57f2d` / VERSION `42.24.90`。

@@ -724,7 +724,6 @@ class RemoteExecutionStagingLifecycle:
         project_id: str,
         algorithm_id: str,
         version_id: str,
-        task_id: str,
     ) -> bool:
         if self.data_dir is None:
             raise RuntimeError("training delivery cleanup requires data_dir")
@@ -740,19 +739,17 @@ class RemoteExecutionStagingLifecycle:
         )
         if algorithm is None:
             return False
-        for row in (algorithm.get("versions") or []):
-            if not isinstance(row, Mapping):
-                continue
-            if str(row.get("id") or "") == str(version_id):
-                return True
-            if str(task_id or "") and str(
-                row.get("task_id")
-                or row.get("job_id")
-                or row.get("training_job_id")
-                or ""
-            ) == str(task_id):
-                return True
-        return False
+        # Provisional remote-training delivery identity is generation-scoped:
+        # _normalize_training_delivery_ref() already proves version_id equals
+        # hash(task_id, generation, snapshot_id). A later retry generation may
+        # legitimately attach another version with the same durable task_id.
+        # Protect only the exact deterministic version or older generation
+        # artifacts become permanent false-positive references.
+        return any(
+            isinstance(row, Mapping)
+            and str(row.get("id") or "") == str(version_id)
+            for row in (algorithm.get("versions") or [])
+        )
 
     def _cleanup_training_delivery_group(
         self,
@@ -784,7 +781,6 @@ class RemoteExecutionStagingLifecycle:
                     str(task.project_id),
                     algorithm_id,
                     version_id,
-                    str(task.task_id),
                 ):
                     for index in indices:
                         objects[index].update(
