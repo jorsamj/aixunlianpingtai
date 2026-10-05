@@ -1,3 +1,21 @@
+<!-- LIVE_HANDOFF_2026_10_05_DELIVERY_CLOSURE -->
+> ## 2026-10-05 当前项目接手入口：发布 / 回退 / GC / 外部对账已收口（最高优先级）
+>
+> 本节写入前真实远端：`18eeb5a59d7319841d5f0a992abf1b7eccd75f0a`，`VERSION.txt=42.24.108`；该 HEAD **21 / 21 workflows completed success，failure / queued / in_progress = 0 / 0 / 0**。本次仅更新交接文档，正式版本递增到 `42.24.109`；新文档提交自身的 Actions 必须由接手者重新读取，不能直接沿用 21 / 21。
+>
+> 当前项目已经从早期训练 / Annotation GT / Training Picker / Dataset Revision 收口继续推进到：**canonical ModelArtifact、RKNN board validation、external Version/Weight reconciliation、version rollback/delete、remote execution staging GC、conversion local orphan、remote training generation orphan、RKNN board durable evidence retirement，以及 version retirement 与新引用创建双向 fence**。这些主链均继续复用既有 owner，没有新增第二套 artifact / publication / GC truth。
+>
+> 当前产品 Rockchip canonical 转换目标只有 **RK3568 / RK3576**。本文后面 2026-09-28 等旧段落中把 RK3578 当正向产品能力的描述已经被 supersede；**不要恢复 RK3578**，RK3588 当前也不开放。
+>
+> AnnotationRepository 仍是唯一 Annotation Ground Truth；Training Picker / Dataset Revision v2 / Source GT 与 Training Projection 分离保持 CLOSED；Trainer 不得重新决定 Batch / Workers / Cache / Precision，不得恢复 runtime re-plan。
+>
+> external publication 当前长期合同以 `docs/EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md` 最新版为准；最近会话详细交接以 `docs/codex-handoff.md` 顶部 2026-10-05 章节为准；新会话可直接使用 `docs/CODEX_TAKEOVER_PROMPT_2026-10-05_DELIVERY_CLOSURE.md`。
+>
+> **下一优先级不是继续开放式重构发布/GC。** 接手必须先重读实时 HEAD / VERSION / 最近 commits / Actions / failure logs；随后只处理新的真实 CI 红灯、现场复现、生产外部接口证据或用户新增需求。若进入生产验收，重点补 Linux/NVIDIA、正式 OSS、新畅联生产接口和 RK3568/RK3576 实板证据。
+>
+> 下方所有旧 LIVE HANDOFF 保留作历史审计，但凡与本节冲突，一律以实时 GitHub + 本节 + `docs/codex-handoff.md` 最新章节为准。
+>
+
 <!-- LIVE_HANDOFF_2026_09_28_TRAINING_RK3578_GREEN -->
 > ## 2026-09-28 当前接手入口：训练主链 / RK3578 / 新畅联即时发布 wake 已收口，代码 cutoff 63/63 全绿（最高优先级）
 >

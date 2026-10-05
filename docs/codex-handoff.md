@@ -1,5 +1,99 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 会话迁移 / 文档权威关系 / 下一轮启动点（当前最新）
+
+### 0. 本节写入前真实基线
+
+本节写入前重新读取远端，不沿用旧会话 SHA：
+
+- 分支：`feature/external-algorithm-publishing`
+- HEAD：`18eeb5a59d7319841d5f0a992abf1b7eccd75f0a`
+- 提交：`docs: hand off delivery reconciliation closure`
+- VERSION：`42.24.108`
+- GitHub Actions：**21 / 21 workflow runs completed success**
+- failure / queued / in_progress：**0 / 0 / 0**
+
+本次只整理交接与长期合同文档，不修改生产 runtime。正式版本按规则最小 patch +1 到 `42.24.109`。本次文档提交产生的新 HEAD 必须由下一会话重新读取 Actions，不能把上面的 21 / 21 自动外推到新 HEAD。
+
+### 1. 文档权威顺序已经重新整理
+
+下一会话按以下顺序读取：
+
+1. GitHub 真实远端 HEAD / `VERSION.txt` / 最近 commits / Actions / completed failure logs；
+2. 本文件最顶部最新章节；
+3. `docs/PROJECT_HANDOFF_CURRENT.md` 顶部 2026-10-05 最新覆盖；
+4. 发布 / 回退 / GC 任务再读 `docs/EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md`；
+5. 可直接复制的接手指令：`docs/CODEX_TAKEOVER_PROMPT_2026-10-05_DELIVERY_CLOSURE.md`。
+
+旧文档和旧章节只作为历史证据。特别是任何仍写 `VERSION=42.24.0`、把 RK3578 当当前产品正向能力、或把 external reconciliation / staging GC 当尚未实现的旧段落，都已经被 2026-10-05 最新章节 supersede。
+
+### 2. 当前项目背景与已关闭主链
+
+本项目是畅联云算法训练平台，长期分支为 `feature/external-algorithm-publishing`。当前主链已经形成：
+
+Training Picker
+→ AnnotationRepository Ground Truth
+→ Training Label Contract
+→ task-local Training Projection
+→ Source GT identity freeze
+→ Dataset Snapshot / Dataset Revision v2
+→ Split / Input Freeze
+→ canonical Resource Planner
+→ Trainer
+→ verified ModelArtifact
+→ 新畅联 Version / Weight
+→ conversion Weight
+→ RKNN board validation
+→ reconciliation / rollback / exact-ref GC。
+
+本轮从 `42.24.76` 开始重点深审的发布 / 回退 / GC / external reconciliation 链，截至 `42.24.107` 已完成主要收口，`42.24.108` 已写入正式交接。不要重新设计这些已经 CLOSED 的 owner。
+
+### 3. 当前长期产品合同
+
+- AnnotationRepository 继续是唯一 Annotation Ground Truth owner。
+- ModelArtifact 继续是唯一 canonical 模型产物 owner。
+- external publication 继续使用唯一 publication / auto-publish owner。
+- Remote execution staging GC 继续使用唯一 `RemoteExecutionStagingLifecycle`，复用 storage Worker heartbeat。
+- version rollback/delete 继续复用 `version_operations` cleanup journal。
+- RKNN 板端验证只提升同一 canonical artifact，不建立 verified 第二身份。
+- 当前产品 Rockchip 转换目标只有 **RK3568 / RK3576**。
+- **RK3578 必须保持产品合同负向 fail-closed**；RK3588 当前也不开放。
+- external Version / Weight 恢复、漂移 reconciliation、远端删除恢复、歧义 UNKNOWN 已收口。
+- version retirement 与训练 / conversion / deployment / board / ModelArtifact / publish 新引用创建之间已有同一 delivery fence，禁止绕开。
+
+### 4. 下一轮真正的 OPEN，不再是开放式重构
+
+下一会话不要继续“为了再保险”扩大 external / GC 架构。只有出现真实证据才重新进入已关闭主链。
+
+优先顺序：
+
+1. 重新读取新 HEAD 的 Actions；任何 completed failure 先读真实 job log。
+2. 若用户提出新的产品需求，先找到最终 runtime / canonical owner，再做最小改动。
+3. 若要做生产验收，重点是**真实环境证据**而不是继续加模拟 owner：
+   - Linux / NVIDIA 真实训练与推理；
+   - 正式 OSS PUT / STAT / Range GET / DELETE；
+   - 新畅联生产 Version / Weight create / recover / edit / delete / drift reconciliation；
+   - RK3568 / RK3576 实板 RKNNLite 验证。
+4. 若发现真实 orphan / publication drift / rollback inconsistency，必须先证明 exact identity / reference truth，再扩展现有 owner；禁止新建第二套 GC / publication / ModelArtifact owner。
+5. 性能继续按 1k / 10k / 20k 约束：禁止 N+1 OSS/head、无界远端 reconciliation、全量 JSON hydration、O(N²) Python 状态。
+
+### 5. 继续执行的硬约束
+
+- 不 merge main；
+- 不 tag；
+- 不 release；
+- 不 force push；
+- 不删除测试；
+- 不放宽测试；
+- queued / in_progress 绝不能当 success；
+- 每个正式提交 `VERSION.txt` 最小 patch +1；
+- 不写死 Windows 路径；
+- 前后端合同保持一致；
+- 先确认 canonical owner，再修改；
+- zero-reference 后才删除旧 owner；
+- 不新增第二 Annotation GT / TrainingTaskRuntime / Scheduler / planner / GPU reservation / CandidateStore / ZIP / ModelArtifact / publication / conversion artifact identity / staging GC owner。
+
+
 ## 2026-10-05 发布 / 回退 / GC / 新畅联对账主链最终交接（当前最新）
 
 ### 0. 当前真实绿基线
