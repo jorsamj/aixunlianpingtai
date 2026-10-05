@@ -144,6 +144,86 @@ def test_rollback_and_delete_preflight_blocks_active_conversion_before_pointer_c
     assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
 
 
+def test_rollback_and_delete_blocks_active_rknn_board_validation_by_conversion_lineage(
+    client, seeded_project,
+):
+    project_id, _ = seeded_project
+    algorithm = _create_algorithm(client, project_id)
+    _seed_versions(project_id, algorithm["id"])
+
+    conversion_id = f"convert-{uuid.uuid4().hex[:8]}"
+    conversion_dir = app_module.deploy_root(project_id) / "jobs" / conversion_id
+    artifacts_dir = conversion_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    model = artifacts_dir / "model_rk3568.rknn"
+    model.write_bytes(b"rknn-model")
+    (conversion_dir / "job.json").write_text(
+        json.dumps({
+            "id": conversion_id,
+            "status": "done",
+            "source_id": f"version::{algorithm['id']}::v5",
+            "source_trace": {
+                "algorithm_id": algorithm["id"],
+                "version_id": "v5",
+            },
+            "target": "rockchip",
+            "params": {"chip": "rk3568", "precision": "fp16"},
+        }),
+        encoding="utf-8",
+    )
+
+    task_id = f"board-{uuid.uuid4().hex[:8]}"
+    app_module.shared_task_artifacts().atomic_write_json(
+        task_id,
+        "request.json",
+        {
+            "execution_mode": "agent",
+            "framework": "rknn",
+            "runtime_format": "rknn",
+            "source_conversion_job_id": conversion_id,
+            "model_path": str(model),
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+                "deployment": {
+                    "runtime_format": "rknn",
+                    "board": {
+                        "conversion_job_id": conversion_id,
+                        "chip": "rk3568",
+                    },
+                },
+            },
+        },
+    )
+    app_module.shared_task_repository().create(
+        app_module.TaskRecord.new(
+            task_id,
+            project_id,
+            app_module.TaskKind.DEPLOYMENT_TEST,
+            "request.json",
+            "deployment-rknn-board:rk3568",
+            required_capabilities=("agent.remote",),
+        ),
+        artifacts=app_module.shared_task_artifacts(),
+    )
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
+        json={"delete_current_version": True, "expected_current_version_id": "v5"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "ALGORITHM_VERSION_IN_USE"
+    assert "板端验证" in response.json()["detail"]
+    stored = next(
+        row for row in app_module.list_algorithm_assets(app_module.algorithms_file(project_id))
+        if row["id"] == algorithm["id"]
+    )
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+
+
 def test_rollback_and_delete_removes_only_owned_version_folder_and_keeps_training_history(client, seeded_project):
     project_id, _ = seeded_project
     algorithm = _create_algorithm(client, project_id)

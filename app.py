@@ -8222,6 +8222,32 @@ def _algorithm_version_active_references(
             if _deploy_job_references_version(job, algorithm_id, version_id):
                 add("MODEL_CONVERSION", task.task_id, f"该版本仍有活动模型转换任务 {task.task_id}")
         elif task.kind is TaskKind.DEPLOYMENT_TEST:
+            source_conversion_job_id = str(
+                (request or {}).get("source_conversion_job_id") or ""
+            ).strip()
+            if not source_conversion_job_id:
+                remote = (request or {}).get("remote_execution")
+                deployment = remote.get("deployment") if isinstance(remote, Mapping) else None
+                board = deployment.get("board") if isinstance(deployment, Mapping) else None
+                if isinstance(board, Mapping):
+                    source_conversion_job_id = str(
+                        board.get("conversion_job_id") or ""
+                    ).strip()
+            if source_conversion_job_id:
+                source_job = read_json(
+                    _deploy_job_dir(project_id, source_conversion_job_id) / "job.json",
+                    {},
+                )
+                if source_job and _deploy_job_references_version(
+                    source_job, algorithm_id, version_id,
+                ):
+                    add(
+                        "DEPLOYMENT_TEST",
+                        task.task_id,
+                        f"该版本仍有活动 RKNN 板端验证任务 {task.task_id}",
+                    )
+                    continue
+
             raw = str((request or {}).get("model_path") or "").strip()
             if raw:
                 try:
