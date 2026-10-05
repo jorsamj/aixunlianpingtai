@@ -3061,6 +3061,7 @@ class ExternalAlgorithmPublishService:
             }
             drifted = 0
             blocked = False
+            blocked_errors: list[str] = []
             for artifact in self._publication_artifacts(publication_key):
                 if str(artifact.get("sync_status") or "").upper() != "SYNCED":
                     continue
@@ -3100,6 +3101,7 @@ class ExternalAlgorithmPublishService:
                         last_error=str(error)[:2000],
                     )
                     blocked = True
+                    blocked_errors.append(str(error))
                     continue
                 self.repository.patch_artifact_publication(
                     str(artifact["artifact_id"]),
@@ -3114,12 +3116,24 @@ class ExternalAlgorithmPublishService:
                 )
                 drifted += 1
 
-            self._mark_remote_check(publication_key)
+            if blocked:
+                self.repository.patch_publication(
+                    publication_key,
+                    status="UNKNOWN",
+                    last_error=(
+                        "REMOTE_WEIGHT_RECONCILIATION_AMBIGUOUS: "
+                        + "；".join(blocked_errors)
+                    )[:2000],
+                    remote_checked_at=utc_now(),
+                    remote_check_error="",
+                )
+            else:
+                self._mark_remote_check(publication_key)
             return {
                 "checked": True,
                 "drifted": drifted,
                 "blocked": blocked,
-                "reason": "drift" if drifted or blocked else "in_sync",
+                "reason": "blocked" if blocked else ("drift" if drifted else "in_sync"),
             }
 
     def auto_publish_ready(self) -> bool:
@@ -3233,7 +3247,7 @@ class ExternalAlgorithmPublishService:
                                 summary["remote_drifted"] += drifted
                                 if reconciled.get("error"):
                                     summary["remote_reconcile_failed"] += 1
-                                needs_sync = drifted > 0
+                                needs_sync = drifted > 0 and not bool(reconciled.get("blocked"))
                             except Exception:
                                 summary["remote_reconcile_failed"] += 1
                                 needs_sync = False

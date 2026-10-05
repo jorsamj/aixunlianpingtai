@@ -402,6 +402,9 @@ jobs:
           grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_weight_without_duplicate_version' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_version_and_weights' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'test_remote_reconcile_due_uses_long_success_and_short_failure_windows' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'REMOTE_WEIGHT_RECONCILIATION_AMBIGUOUS' platform_core/external_algorithm_publish.py
+          grep -Fq 'drifted > 0 and not bool(reconciled.get("blocked"))' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_remote_weight_reconcile_ambiguity_marks_publication_unknown_without_guessing' tests/unit/test_external_algorithm_publish.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
 
 

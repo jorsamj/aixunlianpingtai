@@ -2808,6 +2808,53 @@ def test_auto_publish_remote_reconcile_recreates_missing_version_and_weights(tmp
     assert publication["external_algo_version_id"] == FakePublishingClient.versions[0]["algoVersionId"]
 
 
+def test_remote_weight_reconcile_ambiguity_marks_publication_unknown_without_guessing(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"id": "p1", "name": "项目1"}]),
+        encoding="utf-8",
+    )
+    service = _service(tmp_path, memory)
+
+    first = service.run_auto_publish_once()
+    assert first["published"] == 1
+    assert FakePublishingClient.weight_creates == 1
+    canonical_remote = dict(FakePublishingClient.weights[0])
+    publication = service.repository.publication("p1", "a1", "v1")
+    service.repository.patch_publication(
+        publication["publication_key"],
+        remote_checked_at="2026-09-01T00:00:00Z",
+        remote_check_error="",
+    )
+    FakePublishingClient.weights = [
+        {**canonical_remote, "weightId": "ambiguous-weight-a"},
+        {**canonical_remote, "weightId": "ambiguous-weight-b"},
+    ]
+    creates_before = FakePublishingClient.weight_creates
+    edits_before = FakePublishingClient.weight_edits
+
+    reconciled = service.run_auto_publish_once()
+
+    assert reconciled["remote_reconciled"] == 1
+    assert reconciled["published"] == 0
+    assert FakePublishingClient.weight_creates == creates_before
+    assert FakePublishingClient.weight_edits == edits_before
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "UNKNOWN"
+    assert "REMOTE_WEIGHT_RECONCILIATION_AMBIGUOUS" in publication["last_error"]
+    mapping = service.repository.artifact_publications(publication["publication_key"])[0]
+    assert mapping["sync_status"] == "UNKNOWN"
+    assert mapping["external_weight_id"] == canonical_remote["weightId"]
+
+    repeated = service.run_auto_publish_once()
+    assert repeated["published"] == 0
+    assert FakePublishingClient.weight_creates == creates_before
+    assert FakePublishingClient.weight_edits == edits_before
+
+
 def test_remote_reconcile_due_uses_long_success_and_short_failure_windows(tmp_path: Path):
     repository = ExternalPublicationRepository(tmp_path)
     now = datetime(2026, 10, 5, 6, 0, tzinfo=timezone.utc)

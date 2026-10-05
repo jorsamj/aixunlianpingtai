@@ -1,5 +1,15 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 External Weight 歧义 fail-closed 最终收口（最新）
+
+- 上游绿基线：`0e0296e05ee3f12fd9dabe45ca21a6ff9df06b66` / VERSION `42.24.103`，23 / 23 workflows completed success。
+- 本提交正式版本：`42.24.104`。
+- `42.24.103` 已增加 6h/15min、单轮 20 Version 的 bounded 远端 Version/Weight 漂移对账，并在权威缺失时把 provider mapping 退回 PENDING，由原 publish owner 自愈。
+- 本提交只补 fail-closed 尾边界：如果旧 `weightId` 已不在远端 Version 下，但同一 canonical `fileName + computePlatformId + chipCode + filePath` 出现多个候选，artifact mapping 与 version publication 同时进入 `UNKNOWN`。
+- auto-publish 对 `blocked=True` 不再调用 publish；不会 edit 任意候选，也不会 create 第三个 Weight。后续自动周期继续保持跳过，必须先人工消歧远端 Weight。
+- 新增回归构造两个完全相同身份的远端 Weight，验证 Version publication=UNKNOWN、mapping=UNKNOWN、Weight create/edit 计数均不增加。
+- 至此 external Version/Weight create/recover/edit/delete、远端漂移、rollback fence、ModelArtifact/staging/orphan GC 主链已完成本轮收口。后续除非出现真实 CI/现场 bug，不再继续扩张该链路。
+
 ## 2026-10-05 External Version / Weight 远端漂移低频对账收口（最新）
 
 - 上游绿基线：`5970bddeff5c2751edba536729fdbf76b3309862` / VERSION `42.24.102`，23 / 23 workflows、59 / 59 check-runs completed success。
