@@ -7279,6 +7279,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     )
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
+    reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()
     try:
         requested_split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
@@ -7367,22 +7368,28 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             if target == "remote" else {}
         ),
     }
-    shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
-    record = shared_task_repository().create(
-        replace(
-            TaskRecord.new(
-            task_id,
-            project_id,
-            TaskKind.TRAINING,
-            "payload.json",
-            resource_key,
-            priority=int(payload.queue_priority),
-            required_capabilities=("training.input.ready",),
-            ),
-            stage="training_input_pending",
-            current_item="正在后台准备训练输入",
+    with _algorithm_version_reference_fence(
+        project_id,
+        str(asset_algorithm.get("id") or ""),
+        reference_version_id,
+        require_current=True,
+    ):
+        shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
+        record = shared_task_repository().create(
+            replace(
+                TaskRecord.new(
+                    task_id,
+                    project_id,
+                    TaskKind.TRAINING,
+                    "payload.json",
+                    resource_key,
+                    priority=int(payload.queue_priority),
+                    required_capabilities=("training.input.ready",),
+                ),
+                stage="training_input_pending",
+                current_item="正在后台准备训练输入",
+            )
         )
-    )
     try:
         shared_task_artifacts().atomic_write_json(
             prepare_task_id,
@@ -8159,6 +8166,75 @@ def _iter_active_project_tasks(project_id: str):
         cursor = page.next_cursor
         if not cursor:
             break
+
+
+@contextmanager
+def _algorithm_version_reference_fence(
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    *,
+    require_current: bool = False,
+):
+    """Serialize creation of a live version reference against version retirement."""
+    algorithm_id = str(algorithm_id or "").strip()
+    version_id = str(version_id or "").strip()
+    if not algorithm_id or not version_id:
+        yield None
+        return
+    with model_delivery_version_fence(
+        DATA_DIR, str(project_id), algorithm_id, version_id, timeout=0.0,
+    ):
+        algorithm = next(
+            (
+                row for row in list_algorithms_internal(str(project_id))
+                if str(row.get("id") or "") == algorithm_id
+            ),
+            None,
+        )
+        version = next(
+            (
+                row for row in ((algorithm or {}).get("versions") or [])
+                if isinstance(row, Mapping)
+                and str(row.get("id") or "") == version_id
+            ),
+            None,
+        )
+        if algorithm is None or version is None:
+            raise PlatformError(
+                "ALGORITHM_VERSION_REFERENCE_RETIRED",
+                "算法版本已经退役，不能再创建新的业务引用",
+                f"algorithm={algorithm_id}; version={version_id}",
+                "请刷新算法/版本列表后重新选择当前仍存在的版本。",
+                409,
+            )
+        if require_current and resolve_current_version_id(algorithm) != version_id:
+            raise PlatformError(
+                "ALGORITHM_VERSION_REFERENCE_STALE",
+                "算法当前版本已经变化，不能按旧版本创建训练任务",
+                (
+                    f"algorithm={algorithm_id}; expected={version_id}; "
+                    f"current={resolve_current_version_id(algorithm) or '-'}"
+                ),
+                "请刷新训练创建页，按新的当前版本重新确认迭代训练。",
+                409,
+            )
+        yield {"algorithm": dict(algorithm), "version": dict(version)}
+
+
+def _deploy_job_version_identity(job: Mapping[str, Any]) -> tuple[str, str]:
+    for source in (job.get("source_trace"), job.get("source_meta")):
+        if not isinstance(source, Mapping):
+            continue
+        algorithm_id = str(source.get("algorithm_id") or "").strip()
+        version_id = str(source.get("version_id") or "").strip()
+        if algorithm_id and version_id:
+            return algorithm_id, version_id
+    source_id = str(job.get("source_id") or "").strip()
+    match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+    if match:
+        return match.group(1), match.group(2)
+    return "", ""
 
 
 def _version_model_paths(version: Mapping[str, Any]) -> set[Path]:
@@ -16214,6 +16290,19 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
 
 @app.post("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
+    source = _resolve_deploy_source(project_id, payload.source_id)
+    algorithm_id = str(source.get("algorithm_id") or "").strip()
+    version_id = str(source.get("version_id") or "").strip()
+    with _algorithm_version_reference_fence(
+        project_id, algorithm_id, version_id,
+    ):
+        return _v39_create_deploy_job_under_version_fence(project_id, payload)
+
+
+def _v39_create_deploy_job_under_version_fence(
+    project_id: str,
+    payload: DeployJobReq,
+):
     source=_resolve_deploy_source(project_id,payload.source_id);resource=_deploy_resource_by_id(payload.resource_id)
     resource_mode = str(resource.get("mode") or "local").strip().lower()
     if resource_mode == "agent":
@@ -16612,6 +16701,21 @@ async def v39_create_rknn_hardware_test(
     project_id: str,
     job_id: str,
     file: UploadFile = File(...),
+):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    algorithm_id, version_id = _deploy_job_version_identity(context["job"])
+    with _algorithm_version_reference_fence(
+        project_id, algorithm_id, version_id,
+    ):
+        return await _v39_create_rknn_hardware_test_under_version_fence(
+            project_id, job_id, file,
+        )
+
+
+async def _v39_create_rknn_hardware_test_under_version_fence(
+    project_id: str,
+    job_id: str,
+    file: UploadFile,
 ):
     context = _rknn_hardware_validation_context(project_id, job_id)
     job = context["job"]
@@ -20130,6 +20234,49 @@ async def create_deployment_test(
     detection_item_total: int = Form(0), detection_side: str = Form(""),
     model_label: str = Form(""), original_filename: str = Form(""),
     file: UploadFile = File(...),
+):
+    with _algorithm_version_reference_fence(
+        project_id,
+        str(algorithm_id or "").strip(),
+        str(version_id or "").strip(),
+    ):
+        return await _create_deployment_test_under_version_fence(
+            project_id=project_id,
+            model_name=model_name,
+            model_source=model_source,
+            local_path=local_path,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            conf=conf,
+            inference_framework=inference_framework,
+            inference_env_id=inference_env_id,
+            detection_batch_id=detection_batch_id,
+            detection_item_index=detection_item_index,
+            detection_item_total=detection_item_total,
+            detection_side=detection_side,
+            model_label=model_label,
+            original_filename=original_filename,
+            file=file,
+        )
+
+
+async def _create_deployment_test_under_version_fence(
+    project_id: str,
+    model_name: str,
+    model_source: str,
+    local_path: str,
+    algorithm_id: str,
+    version_id: str,
+    conf: float,
+    inference_framework: str,
+    inference_env_id: str,
+    detection_batch_id: str,
+    detection_item_index: int,
+    detection_item_total: int,
+    detection_side: str,
+    model_label: str,
+    original_filename: str,
+    file: UploadFile,
 ):
     get_project(project_id)
     model_resolution = _resolve_v61_test_model(

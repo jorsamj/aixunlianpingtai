@@ -175,6 +175,14 @@ jobs:
           grep -Fq 'verification["result_output_storage"]["sha256"] == "a" * 64' tests/unit/test_remote_execution_transport.py
           grep -Fq 'source_conversion_job_id' app.py
           grep -Fq '该版本仍有活动 RKNN 板端验证任务' app.py
+          grep -Fq 'def _algorithm_version_reference_fence(' app.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_RETIRED' app.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' app.py
+          grep -Fq 'reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()' app.py
+          grep -Fq 'def _v39_create_deploy_job_under_version_fence(' app.py
+          grep -Fq 'async def _v39_create_rknn_hardware_test_under_version_fence(' app.py
+          grep -Fq 'async def _create_deployment_test_under_version_fence(' app.py
+          grep -Fq 'test_version_reference_fence_rechecks_live_version_and_current_truth' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'def retry_algorithm_version_cleanup(' platform_core/algorithms.py
           grep -Fq 'version-operations/{operation_id}/retry-cleanup' app.py
           grep -Fq 'test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted' tests/unit/test_algorithms.py

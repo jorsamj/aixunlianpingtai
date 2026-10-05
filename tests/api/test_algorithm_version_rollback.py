@@ -3,6 +3,8 @@ import json
 import uuid
 from pathlib import Path
 
+import pytest
+
 import app as app_module
 from platform_core.algorithms import save_algorithms
 
@@ -45,6 +47,45 @@ def _seed_versions(project_id: str, algorithm_id: str, *, explicit_current: bool
         algorithm["current_version_id"] = "v5"
     save_algorithms(app_module.algorithms_file(project_id), rows)
     return v5, v3
+
+
+def test_version_reference_fence_rechecks_live_version_and_current_truth(
+    client, seeded_project,
+):
+    project_id, _ = seeded_project
+    algorithm = _create_algorithm(client, project_id)
+    _seed_versions(project_id, algorithm["id"])
+
+    with app_module._algorithm_version_reference_fence(
+        project_id, algorithm["id"], "v5", require_current=True,
+    ):
+        pass
+
+    with pytest.raises(app_module.PlatformError) as stale:
+        with app_module._algorithm_version_reference_fence(
+            project_id, algorithm["id"], "v3", require_current=True,
+        ):
+            pass
+    assert stale.value.code == "ALGORITHM_VERSION_REFERENCE_STALE"
+
+    app_module.delete_algorithm_version(
+        app_module.algorithms_file(project_id),
+        algorithm["id"],
+        "v3",
+        now=app_module.now_iso(),
+        dependency_check=lambda _algorithm, _version: [],
+        cleanup=lambda _algorithm, _version: {
+            "status": "cleanup_completed",
+            "targets": [],
+            "errors": [],
+        },
+    )
+    with pytest.raises(app_module.PlatformError) as retired:
+        with app_module._algorithm_version_reference_fence(
+            project_id, algorithm["id"], "v3",
+        ):
+            pass
+    assert retired.value.code == "ALGORITHM_VERSION_REFERENCE_RETIRED"
 
 
 def test_algorithm_list_projects_legacy_current_version_without_persisting_it(client, seeded_project):

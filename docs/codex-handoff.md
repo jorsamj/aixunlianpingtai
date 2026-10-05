@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Version retirement / 新引用创建竞态收口（最新）
+
+- 上游绿基线：`a2fff0998c2fe56ce3431ec7d8408a78010235ea` / VERSION `42.24.104`，20 / 20 workflow runs、59 / 59 check-runs completed success。
+- 本提交正式版本：`42.24.105`。
+- 最后一轮 retirement reference truth 审计发现：版本删除/回退、ModelArtifact 上传/重试和 external publish 已共享 `model_delivery_version_fence`，但“新建活动版本引用”的任务入口此前没有加入同一 fence。理论竞态为：retirement preflight 通过后，训练/转换/部署测试才落入新任务；随后远端 Version 与本地版本元数据已经删除，cleanup 晚检虽然会保留文件，却无法撤销前两步。
+- 当前不新增第二锁/第二 owner。训练创建、模型转换创建、普通 deployment test、RKNN 板端验证统一复用既有 `model_delivery_version_fence`；拿锁后重新读取算法/version truth，版本已退役则 `ALGORITHM_VERSION_REFERENCE_RETIRED` fail-closed。
+- 迭代训练额外要求拿锁后的 `current_version_id` 仍等于创建页最初读取的版本；若期间当前版本发生变化则 `ALGORITHM_VERSION_REFERENCE_STALE`，要求刷新后重新确认。
+- durable 任务引用一旦创建，retirement 随后拿锁时会由既有 `_algorithm_version_active_references` 看见并拒绝删除；若 retirement 先拿锁并完成，任务创建拿锁后会因版本不存在而拒绝。由此关闭 create-vs-retire TOCTOU 窗口。
+- 不修改 Annotation GT、Training Picker、Dataset Revision、Scheduler、TaskRepository、ModelArtifact identity、external publication owner 或 staging GC owner。
+
+
 ## 2026-10-05 External Weight 歧义 fail-closed 最终收口（最新）
 
 - 上游绿基线：`0e0296e05ee3f12fd9dabe45ca21a6ff9df06b66` / VERSION `42.24.103`，23 / 23 workflows completed success。
