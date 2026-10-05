@@ -1194,3 +1194,45 @@ def test_terminal_conversion_gc_protects_exact_canonical_model_artifact(tmp_path
         if row.get("scope") == "conversion-local-staging"
     )
     assert local_row["status"] == "PROTECTED"
+
+
+
+def test_conversion_local_gc_defers_stale_failed_snapshot_after_task_retry(tmp_path):
+    fixture = _conversion_local_orphan_fixture(tmp_path)
+    stale_failed = fixture["task"]
+    retried = fixture["repository"].retry("conversion-local-orphan")
+    assert retried.status is TaskStatus.QUEUED
+    lease = fixture["repository"].claim_next(
+        "agent-retry",
+        (TaskKind.MODEL_CONVERSION,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    assert lease.task.status is TaskStatus.RUNNING
+    assert lease.task.attempt == 2
+
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+    result = lifecycle.cleanup_task(
+        stale_failed,
+        now=datetime.fromisoformat(stale_failed.finished_at) + timedelta(hours=2),
+        force=True,
+    )
+
+    assert result["status"] == "INCOMPLETE"
+    assert result["pending"] >= 1
+    assert fixture["local_path"].exists() is True
+    ledger = fixture["artifacts"].read_json(
+        "conversion-local-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    local_row = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "conversion-local-staging"
+    )
+    assert local_row["status"] == "PENDING"
+    assert "newer active/retry generation" in local_row["last_error"]

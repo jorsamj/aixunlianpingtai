@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Conversion local GC retry/fence race 收口（最新）
+
+- 上游绿基线：`6f4bf44fdbf3b164cf9b859bdc6d039d518e916c` / VERSION `42.24.98`，29 / 29 workflows completed success。
+- 本提交正式版本：`42.24.99`。
+- `42.24.98` 已补齐 remote conversion 本地 orphan 的即时回滚与 terminal GC；本提交只关闭同一 durable task retry 与后台 GC 的竞态。
+- TaskRepository retry 会把同一个 task_id 从 terminal 重新置为 QUEUED，并在下一次 claim 时增加 attempt。因此 storage Worker maintenance 可能持有旧 FAILED page snapshot，而新 generation 已开始运行。
+- local conversion cleanup 现在删除前实时重读 TaskRepository：新 generation 为 QUEUED/RUNNING/CANCEL_REQUESTED/AWAITING_CONFIRMATION 时保持 PENDING；新的成功交付终态保持 PROTECTED；只有仍是 FAILED/CANCELLED/BLOCKED_BY_ENVIRONMENT 才继续 orphan 判定。
+- 本地文件检查/删除复用 `.remote-conversion-commit.lock`，与 `_commit_conversion_result()` 同一 file-commit fence；canonical ModelArtifact 查询与 unlink 再进入现有 `model_delivery_version_fence`，防止 GC 与 delivery owner 并发接管同一版本资产。
+- 两个 fence 都使用非阻塞 GC 语义；锁忙或任何引用真相无法确认时只记 PENDING，后续 heartbeat 重试，不阻塞 Worker scheduler，也不猜测删除。
+- 新增回归：旧 FAILED snapshot + 同 task_id generation-2 RUNNING 时，本地 artifact 必须保留且 cleanup ledger 为 PENDING。
+
 ## 2026-10-05 Remote conversion local orphan / retry recovery（最新）
 
 - 上游绿基线：`7745c041c59d70182030017d0407a5d792d9bb77` / VERSION `42.24.97`，23 / 23 workflows completed success。

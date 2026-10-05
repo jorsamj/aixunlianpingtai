@@ -62,6 +62,10 @@ _CONVERSION_ORPHAN_TERMINAL = {
     TaskStatus.FAILED,
     TaskStatus.BLOCKED_BY_ENVIRONMENT,
 }
+_ACTIVE_CONVERSION_JOB_STATUSES = {
+    "queued", "running", "waiting_resource", "cancel_requested",
+    "stopping", "waiting", "pending",
+}
 
 
 def _utc(value: datetime | str | None = None) -> datetime:
@@ -1125,144 +1129,215 @@ class RemoteExecutionStagingLifecycle:
         indices: list[int],
         now_dt: datetime,
     ) -> dict[str, int]:
-        if self.data_dir is None:
+        def mark(
+            status: str,
+            *,
+            error: str = "",
+            deleted_at: bool = False,
+            pending_count: int = 0,
+            conflict_count: int = 0,
+        ) -> dict[str, int]:
             for index in indices:
-                objects[index].update(
-                    status="PENDING",
-                    last_error="conversion local cleanup requires data_dir",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
+                values: dict[str, Any] = {
+                    "status": status,
+                    "last_error": str(error)[:1000],
+                    "last_attempt_at": now_dt.isoformat(),
+                }
+                if deleted_at:
+                    values["deleted_at"] = now_dt.isoformat()
+                objects[index].update(values)
+            return {
+                "deleted": 0,
+                "conflicts": conflict_count,
+                "pending": pending_count,
+            }
 
-        # A retry can move the durable task to a deliverable terminal state
-        # after an earlier failure ledger was created. Never delete in that case.
-        if task.status not in _CONVERSION_ORPHAN_TERMINAL:
-            for index in indices:
-                objects[index].update(
-                    status="PROTECTED",
-                    last_error="",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": 0, "pending": 0}
+        if self.data_dir is None:
+            return mark(
+                "PENDING",
+                error="conversion local cleanup requires data_dir",
+                pending_count=len(indices),
+            )
+
+        project_id = str(task.project_id)
+        task_id = str(task.task_id)
+        # maintenance() can hold a stale terminal page item while the same
+        # durable task has already been retried. Re-read current task truth.
+        live_task = self.repository.get(task_id) if self.repository is not None else task
+        live_status = getattr(live_task, "status", task.status)
+        if live_status in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.PARTIAL_SUCCESS,
+            TaskStatus.BLOCKED_BY_HARDWARE,
+        }:
+            return mark("PROTECTED")
+        if live_status not in _CONVERSION_ORPHAN_TERMINAL:
+            return mark(
+                "PENDING",
+                error="conversion task has a newer active/retry generation",
+                pending_count=len(indices),
+            )
 
         sample = objects[indices[0]]
         local_path = Path(str(sample.get("local_path") or "")).resolve()
-        project_id = str(task.project_id)
-        task_id = str(task.task_id)
         expected_root = (
             self.data_dir / "projects" / project_id
             / "deploy" / "jobs" / task_id / "artifacts"
         ).resolve()
         if expected_root not in local_path.parents:
-            for index in indices:
-                objects[index].update(
-                    status="CONFLICT",
-                    last_error="conversion local staging path escaped task artifact root",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
-
-        job_file = expected_root.parent / "job.json"
-        if job_file.is_file():
-            try:
-                job = json.loads(job_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                job = {}
-            if (
-                isinstance(job, Mapping)
-                and str(job.get("status") or "").strip().lower()
-                in SUCCESSFUL_CONVERSION_STATUSES
-            ):
-                for index in indices:
-                    objects[index].update(
-                        status="PROTECTED",
-                        last_error="",
-                        last_attempt_at=now_dt.isoformat(),
-                    )
-                return {"deleted": 0, "conflicts": 0, "pending": 0}
-
-        artifact_repository = ModelArtifactRepository(self.data_dir)
-        if artifact_repository.list_by_conversion_job(project_id, task_id):
-            for index in indices:
-                objects[index].update(
-                    status="PROTECTED",
-                    last_error="",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": 0, "pending": 0}
-
-        if not local_path.exists():
-            for index in indices:
-                objects[index].update(
-                    status="ABSENT",
-                    last_error="",
-                    deleted_at=now_dt.isoformat(),
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": 0, "pending": 0}
-        if local_path.is_symlink() or not local_path.is_file():
-            for index in indices:
-                objects[index].update(
-                    status="CONFLICT",
-                    last_error="conversion local staging is not a regular task-owned file",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
-
-        actual_size = int(local_path.stat().st_size)
-        actual_sha = _sha256_path(local_path)
-        matching = [
-            index for index in indices
-            if int(objects[index].get("size_bytes") or 0) == actual_size
-            and str(objects[index].get("sha256") or "").strip().lower() == actual_sha
-        ]
-        if not matching:
-            for index in indices:
-                objects[index].update(
-                    status="CONFLICT",
-                    last_error="conversion local staging size/SHA256 does not match durable generation evidence",
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
-
-        for index in matching:
-            item = objects[index]
-            canonical = artifact_repository.find_identity(
-                project_id,
-                str(item.get("algorithm_id") or ""),
-                str(item.get("version_id") or ""),
-                str(item.get("target") or ""),
-                str(item.get("chip_code") or ""),
-                actual_sha,
+            return mark(
+                "CONFLICT",
+                error="conversion local staging path escaped task artifact root",
+                conflict_count=len(indices),
             )
-            if canonical is not None:
-                for protected_index in indices:
-                    objects[protected_index].update(
-                        status="PROTECTED",
-                        last_error="",
-                        last_attempt_at=now_dt.isoformat(),
-                    )
-                return {"deleted": 0, "conflicts": 0, "pending": 0}
 
+        identities = {
+            (
+                str(objects[index].get("algorithm_id") or ""),
+                str(objects[index].get("version_id") or ""),
+                str(objects[index].get("target") or ""),
+                str(objects[index].get("chip_code") or ""),
+            )
+            for index in indices
+        }
+        if len(identities) != 1 or not all(next(iter(identities), ())[:3]):
+            return mark(
+                "CONFLICT",
+                error="conversion local staging identity evidence is inconsistent",
+                conflict_count=len(indices),
+            )
+        algorithm_id, version_id, target, chip_code = next(iter(identities))
+
+        job_root = expected_root.parent
+        commit_lock = FileLock(
+            str(job_root / ".remote-conversion-commit.lock"),
+            timeout=0,
+        )
         try:
-            local_path.unlink()
-        except OSError as error:
-            for index in indices:
-                objects[index].update(
-                    status="PENDING",
-                    last_error=str(error)[:1000],
-                    last_attempt_at=now_dt.isoformat(),
-                )
-            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
-
-        for index in indices:
-            objects[index].update(
-                status="DELETED" if index in matching else "ABSENT",
-                last_error="",
-                deleted_at=now_dt.isoformat(),
-                last_attempt_at=now_dt.isoformat(),
+            commit_lock.acquire()
+        except Timeout:
+            return mark(
+                "PENDING",
+                error="conversion local commit is active",
+                pending_count=len(indices),
             )
-        return {"deleted": 1, "conflicts": 0, "pending": 0}
+        try:
+            # Re-read both durable task and job truth under the same local file
+            # commit fence used by _commit_conversion_result().
+            live_task = self.repository.get(task_id) if self.repository is not None else task
+            live_status = getattr(live_task, "status", task.status)
+            if live_status in {
+                TaskStatus.SUCCEEDED,
+                TaskStatus.PARTIAL_SUCCESS,
+                TaskStatus.BLOCKED_BY_HARDWARE,
+            }:
+                return mark("PROTECTED")
+            if live_status not in _CONVERSION_ORPHAN_TERMINAL:
+                return mark(
+                    "PENDING",
+                    error="conversion task has a newer active/retry generation",
+                    pending_count=len(indices),
+                )
+
+            job_file = job_root / "job.json"
+            job: Mapping[str, Any] = {}
+            if job_file.is_file():
+                try:
+                    loaded_job = json.loads(job_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    loaded_job = {}
+                if isinstance(loaded_job, Mapping):
+                    job = loaded_job
+            job_status = str(job.get("status") or "").strip().lower()
+            if job_status in SUCCESSFUL_CONVERSION_STATUSES:
+                return mark("PROTECTED")
+            if job_status in _ACTIVE_CONVERSION_JOB_STATUSES:
+                return mark(
+                    "PENDING",
+                    error="conversion job has a newer active/retry generation",
+                    pending_count=len(indices),
+                )
+
+            try:
+                with model_delivery_version_fence(
+                    self.data_dir,
+                    project_id,
+                    algorithm_id,
+                    version_id,
+                    timeout=0,
+                ):
+                    artifact_repository = ModelArtifactRepository(self.data_dir)
+                    if artifact_repository.list_by_conversion_job(project_id, task_id):
+                        return mark("PROTECTED")
+
+                    if not local_path.exists():
+                        return mark("ABSENT", deleted_at=True)
+                    if local_path.is_symlink() or not local_path.is_file():
+                        return mark(
+                            "CONFLICT",
+                            error="conversion local staging is not a regular task-owned file",
+                            conflict_count=len(indices),
+                        )
+
+                    actual_size = int(local_path.stat().st_size)
+                    actual_sha = _sha256_path(local_path)
+                    matching = [
+                        index for index in indices
+                        if int(objects[index].get("size_bytes") or 0) == actual_size
+                        and str(objects[index].get("sha256") or "").strip().lower() == actual_sha
+                    ]
+                    if not matching:
+                        return mark(
+                            "CONFLICT",
+                            error=(
+                                "conversion local staging size/SHA256 does not "
+                                "match durable generation evidence"
+                            ),
+                            conflict_count=len(indices),
+                        )
+
+                    canonical = artifact_repository.find_identity(
+                        project_id,
+                        algorithm_id,
+                        version_id,
+                        target,
+                        chip_code,
+                        actual_sha,
+                    )
+                    if canonical is not None:
+                        return mark("PROTECTED")
+
+                    try:
+                        local_path.unlink()
+                    except OSError as error:
+                        return mark(
+                            "PENDING",
+                            error=str(error),
+                            pending_count=len(indices),
+                        )
+
+                    for index in indices:
+                        objects[index].update(
+                            status="DELETED" if index in matching else "ABSENT",
+                            last_error="",
+                            deleted_at=now_dt.isoformat(),
+                            last_attempt_at=now_dt.isoformat(),
+                        )
+                    return {"deleted": 1, "conflicts": 0, "pending": 0}
+            except Exception as error:
+                # A busy version-delivery fence or repository/storage read
+                # failure is retryable background maintenance, not permission
+                # to guess that a local artifact is orphaned.
+                return mark(
+                    "PENDING",
+                    error=str(error),
+                    pending_count=len(indices),
+                )
+        finally:
+            try:
+                commit_lock.release()
+            except Exception:
+                pass
 
     def cleanup_task(
         self,

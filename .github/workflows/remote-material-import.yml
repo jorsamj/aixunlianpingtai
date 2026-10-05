@@ -315,6 +315,9 @@ jobs:
           grep -Fq 'test_terminal_conversion_gc_retires_exact_local_orphan_after_crash' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_terminal_conversion_gc_protects_local_artifact_after_job_commit' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_terminal_conversion_gc_protects_exact_canonical_model_artifact' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_conversion_local_gc_defers_stale_failed_snapshot_after_task_retry' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq '.remote-conversion-commit.lock' platform_core/remote_material_lifecycle.py
+          grep -Fq 'timeout=0' platform_core/remote_material_lifecycle.py
           grep -Fq 'test_terminal_training_gc_refuses_unowned_canonical_row' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'def _record_remote_result_staging(' platform_core/remote_execution_transport.py
           grep -Fq 'test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source' tests/unit/test_remote_material_lifecycle.py
