@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from contextlib import ExitStack
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -1240,6 +1241,8 @@ def mirror_products_to_algorithms(
             ),
             "external_active": product_status == "1",
             "external_status": product_status,
+            "external_delete_pending": False,
+            "external_delete_pending_at": "",
             "external_last_synced_at": synced_at,
             "external_master_data_digest": str(master_digest or ""),
         }
@@ -2623,46 +2626,117 @@ class ExternalAlgorithmPlatformService:
                 "remote_objects_deleted": 0,
                 "publications_deleted": 0,
             }
-            for existing_algorithm in existing_external:
-                product_id = str(existing_algorithm.get("external_product_id") or "")
-                if product_id and product_id in incoming_product_ids:
-                    continue
-                current = self.local_purger.purge(project_id, existing_algorithm)
-                purge_summary["algorithms_purged"] += 1
-                for key in (
-                    "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
-                    "publications_deleted",
+            removed_external = [
+                row
+                for row in existing_external
+                if not str(row.get("external_product_id") or "")
+                or str(row.get("external_product_id") or "") not in incoming_product_ids
+            ]
+            from .model_artifacts import model_delivery_version_fence
+            retirement_store = AlgorithmSqlStore(Path(algorithms_path))
+            # Keep one existing delivery fence per current version until the
+            # canonical mirror has hard-deleted the missing external algorithm.
+            # A durable delete-pending marker blocks new publish/auto-upload work
+            # if purge or mirror later fails and the local row must remain.
+            with ExitStack() as delivery_fences:
+                locked: set[tuple[str, str]] = set()
+                for existing_algorithm in sorted(
+                    removed_external,
+                    key=lambda row: str(row.get("id") or ""),
                 ):
-                    purge_summary[key] += int(current.get(key) or 0)
+                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
+                    for version in sorted(
+                        (
+                            row for row in (existing_algorithm.get("versions") or [])
+                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
+                        ),
+                        key=lambda row: str(row.get("id") or ""),
+                    ):
+                        version_id = str(version.get("id") or "").strip()
+                        identity = (algorithm_id, version_id)
+                        if identity in locked:
+                            continue
+                        delivery_fences.enter_context(
+                            model_delivery_version_fence(
+                                self.data_dir,
+                                project_id,
+                                algorithm_id,
+                                version_id,
+                            )
+                        )
+                        locked.add(identity)
 
-            self._update_sync_operation(
-                project_id,
-                str(operation_id),
-                current_phase="cache_commit",
-            )
-            self.repository.save_cache(cache)
-            try:
+                for existing_algorithm in removed_external:
+                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
+                    retiring = retirement_store.patch_algorithm(
+                        algorithm_id,
+                        {
+                            "external_active": False,
+                            "external_status": "deleted_pending_cleanup",
+                            "external_delete_pending": True,
+                            "external_delete_pending_at": synced_at,
+                        },
+                    )
+                    # Re-read/acquire any version that appeared while the first
+                    # lock set was being established. New publication is now
+                    # blocked by external_active=False/delete-pending.
+                    for version in sorted(
+                        (
+                            row for row in (retiring.get("versions") or [])
+                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
+                        ),
+                        key=lambda row: str(row.get("id") or ""),
+                    ):
+                        version_id = str(version.get("id") or "").strip()
+                        identity = (algorithm_id, version_id)
+                        if identity in locked:
+                            continue
+                        delivery_fences.enter_context(
+                            model_delivery_version_fence(
+                                self.data_dir,
+                                project_id,
+                                algorithm_id,
+                                version_id,
+                            )
+                        )
+                        locked.add(identity)
+
+                    current = self.local_purger.purge(project_id, retiring)
+                    purge_summary["algorithms_purged"] += 1
+                    for key in (
+                        "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
+                        "publications_deleted",
+                    ):
+                        purge_summary[key] += int(current.get(key) or 0)
+
                 self._update_sync_operation(
                     project_id,
                     str(operation_id),
-                    current_phase="algorithm_mirror_commit",
+                    current_phase="cache_commit",
                 )
-                mirror = mirror_products_to_algorithms(
-                    algorithms_path=algorithms_path,
-                    products=products,
-                    categories=categories,
-                    analyses_by_product=analyses_by_product,
-                    provider=PROVIDER_CHANGLIAN,
-                    synced_at=synced_at,
-                    master_digest=digest,
-                )
-            except Exception:
-                # Cache and algorithm mirror are one successful generation.
+                self.repository.save_cache(cache)
                 try:
-                    self.repository.save_cache(previous_cache)
+                    self._update_sync_operation(
+                        project_id,
+                        str(operation_id),
+                        current_phase="algorithm_mirror_commit",
+                    )
+                    mirror = mirror_products_to_algorithms(
+                        algorithms_path=algorithms_path,
+                        products=products,
+                        categories=categories,
+                        analyses_by_product=analyses_by_product,
+                        provider=PROVIDER_CHANGLIAN,
+                        synced_at=synced_at,
+                        master_digest=digest,
+                    )
                 except Exception:
-                    pass
-                raise
+                    # Cache and algorithm mirror are one successful generation.
+                    try:
+                        self.repository.save_cache(previous_cache)
+                    except Exception:
+                        pass
+                    raise
 
             counts = {
                 "categories": len(categories),

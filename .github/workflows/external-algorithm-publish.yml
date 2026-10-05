@@ -127,6 +127,9 @@ jobs:
           grep -Fq 'def model_delivery_version_fence(' platform_core/model_artifacts.py
           grep -Fq 'test_stale_auto_upload_snapshot_does_not_revive_retired_version' tests/unit/test_model_artifacts.py
           grep -Fq 'test_retry_refuses_to_reupload_artifact_after_version_retired' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_auto_upload_stale_snapshot_skips_external_algorithm_delete_pending' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_retry_refuses_external_algorithm_delete_pending_even_if_version_remains' tests/unit/test_model_artifacts.py
+          grep -Fq 'MODEL_ARTIFACT_ALGORITHM_RETIRING' platform_core/model_artifacts.py
           grep -Fq 'with model_delivery_version_fence(' platform_core/external_algorithm_publish.py
           grep -Fq 'return self._publish_under_version_fence(' platform_core/external_algorithm_publish.py
           grep -Fq 'DATA_DIR, project_id, algorithm_id, version_id' app.py

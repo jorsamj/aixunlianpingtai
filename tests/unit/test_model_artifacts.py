@@ -395,6 +395,48 @@ def test_retry_refuses_to_reupload_artifact_after_version_retired(tmp_path: Path
     assert error.value.code == "MODEL_ARTIFACT_VERSION_RETIRED"
 
 
+def test_auto_upload_stale_snapshot_skips_external_algorithm_delete_pending(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    stale = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["source_type"] = "EXTERNAL"
+    current[0]["provider_type"] = "CHANG_LIAN"
+    current[0]["external_active"] = False
+    current[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    result = service.ingest_version("p1", stale, stale["versions"][0])
+
+    assert result == {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_retry_refuses_external_algorithm_delete_pending_even_if_version_remains(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "original"
+    )
+    row = service.repository.upsert(discovered)
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["source_type"] = "EXTERNAL"
+    current[0]["provider_type"] = "CHANG_LIAN"
+    current[0]["external_active"] = False
+    current[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    with pytest.raises(PlatformError) as error:
+        service.retry(row["artifact_id"])
+    assert error.value.code == "MODEL_ARTIFACT_ALGORITHM_RETIRING"
+
+
 def test_empty_upsert_does_not_erase_conversion_job_provenance(tmp_path: Path):
     _seed(tmp_path)
     service = _service(tmp_path)

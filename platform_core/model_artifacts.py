@@ -1695,10 +1695,14 @@ class ModelArtifactService:
             current_algorithm, current_version = self._current_version(
                 str(project_id), algorithm_id, version_id,
             )
-            if current_algorithm is None or current_version is None:
+            if (
+                current_algorithm is None
+                or current_version is None
+                or current_algorithm.get("external_delete_pending") is True
+            ):
                 # run_auto_upload_once may hold a stale list snapshot while a
-                # concurrent rollback/delete retires this version. Never revive
-                # a canonical row/object after the retirement purge.
+                # concurrent rollback/delete or external hard-delete retires
+                # this version. Never revive a canonical row/object after purge.
                 return summary
             for item in self.discover_version_artifacts(
                 str(project_id), current_algorithm, current_version,
@@ -1857,9 +1861,17 @@ class ModelArtifactService:
             row = self.repository.get(artifact_id)
             if row is None:
                 raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
-            _algorithm, version = self._current_version(
+            algorithm, version = self._current_version(
                 project_id, algorithm_id, version_id,
             )
+            if algorithm is not None and algorithm.get("external_delete_pending") is True:
+                raise PlatformError(
+                    "MODEL_ARTIFACT_ALGORITHM_RETIRING",
+                    "外部算法正在退役，不能重新上传模型资产",
+                    f"artifact={artifact_id}; algorithm={algorithm_id}",
+                    "请等待新畅联同步完成；远端已删除算法的本地产物不会被重新创建。",
+                    409,
+                )
             if version is None:
                 raise PlatformError(
                     "MODEL_ARTIFACT_VERSION_RETIRED",

@@ -223,6 +223,10 @@ jobs:
           grep -Fq 'test_missing_external_product_is_deleted_with_versions' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_remote_status_two_is_retained_as_inactive_not_deleted' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"external_delete_pending": True' platform_core/external_algorithm_platform.py
+          grep -Fq 'with ExitStack() as delivery_fences:' platform_core/external_algorithm_platform.py
+          grep -Fq 'model_delivery_version_fence(' platform_core/external_algorithm_platform.py
           grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
           grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
           grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py

@@ -513,6 +513,13 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
             self.items = []
 
         def purge(self, project_id, algorithm):
+            current = next(
+                row for row in list_algorithms(algorithms_path)
+                if row["id"] == algorithm["id"]
+            )
+            assert current["external_active"] is False
+            assert current["external_status"] == "deleted_pending_cleanup"
+            assert current["external_delete_pending"] is True
             self.items.append((project_id, algorithm["id"], algorithm["external_product_id"]))
             return {
                 "tasks_deleted": 2,
@@ -565,6 +572,91 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
     assert counts["artifacts_deleted"] == 3
     assert counts["remote_objects_deleted"] == 3
     assert counts["publications_deleted"] == 1
+
+
+def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_path: Path):
+    class MissingProductClient(FakeChangLianClient):
+        def products(self, **_filters):
+            return {"data": []}
+
+    class FailingPurger:
+        def purge(self, _project_id, algorithm):
+            assert algorithm["external_active"] is False
+            assert algorithm["external_delete_pending"] is True
+            raise RuntimeError("object storage delete denied")
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=MissingProductClient,
+        local_purger=FailingPurger(),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    algorithms_path = tmp_path / "project-delete-failed" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-p1",
+        "name": "待删除算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": True,
+        "versions": [{"id": "v1"}],
+        "current_version_id": "v1",
+    }])
+
+    with pytest.raises(Exception):
+        service.sync(
+            project_id="project-delete-failed",
+            algorithms_path=algorithms_path,
+        )
+
+    retained = list_algorithms(algorithms_path)
+    assert len(retained) == 1
+    assert retained[0]["external_active"] is False
+    assert retained[0]["external_status"] == "deleted_pending_cleanup"
+    assert retained[0]["external_delete_pending"] is True
+    assert retained[0]["versions"] == [{"id": "v1"}]
+
+
+def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-reappeared" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-p1",
+        "name": "曾待删除算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": False,
+        "external_status": "deleted_pending_cleanup",
+        "external_delete_pending": True,
+        "external_delete_pending_at": "2026-10-04T00:00:00+00:00",
+        "versions": [{"id": "v1"}],
+        "current_version_id": "v1",
+    }])
+
+    result = service.sync(
+        project_id="project-reappeared",
+        algorithms_path=algorithms_path,
+    )
+
+    assert result["ok"] is True
+    row = list_algorithms(algorithms_path)[0]
+    assert row["external_active"] is True
+    assert row["external_status"] == "1"
+    assert row["external_delete_pending"] is False
+    assert row["external_delete_pending_at"] == ""
+    assert row["versions"] == [{"id": "v1"}]
 
 
 def test_sync_rejects_concurrent_project_sync_without_mutating_state(tmp_path: Path):
