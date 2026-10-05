@@ -1,6 +1,7 @@
 import hashlib
 import sqlite3
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from io import BytesIO
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from platform_core.model_artifacts import (
     ModelArtifactService,
     build_artifact_object_key,
     build_public_url,
+    model_delivery_version_fence,
 )
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
 from platform_core.storage.models import ObjectMetadata, StorageHealth
@@ -478,6 +480,51 @@ def test_conversion_job_reference_falls_back_to_canonical_identity(tmp_path: Pat
     )
     references = service.conversion_job_artifact_references("p1", job)
     assert [item["artifact_id"] for item in references] == [row["artifact_id"]]
+
+
+def test_conversion_validation_refresh_waits_for_retirement_fence(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with model_delivery_version_fence(tmp_path, "p1", "local-a1", "v1"):
+            future = executor.submit(
+                service.refresh_conversion_artifacts,
+                "p1", "local-a1", "v1", "convert-1",
+            )
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.05)
+
+            algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+            algorithms[0]["versions"] = []
+            algorithms[0]["current_version_id"] = ""
+            save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+
+        assert future.result(timeout=1) == []
+    finally:
+        executor.shutdown(wait=True)
+
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_conversion_validation_refresh_skips_external_algorithm_delete_pending(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_active"] = False
+    algorithms[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+
+    refreshed = service.refresh_conversion_artifacts(
+        "p1", "local-a1", "v1", "convert-1"
+    )
+
+    assert refreshed == []
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
 
 
 def test_conversion_validation_promotes_on_same_canonical_artifact_identity(tmp_path: Path):

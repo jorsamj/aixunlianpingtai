@@ -1652,36 +1652,34 @@ class ModelArtifactService:
         version_id: str,
         conversion_job_id: str,
     ) -> list[dict[str, Any]]:
-        """Refresh canonical metadata for one conversion job without re-uploading bytes."""
+        """Refresh canonical conversion metadata under the version delivery fence."""
+        project_id = str(project_id or "").strip()
         algorithm_id = str(algorithm_id or "").strip()
         version_id = str(version_id or "").strip()
         conversion_job_id = str(conversion_job_id or "").strip()
-        if not algorithm_id or not version_id or not conversion_job_id:
+        if not project_id or not algorithm_id or not version_id or not conversion_job_id:
             return []
-        algorithm = next(
-            (
-                item for item in list_algorithms(self.algorithms_file(str(project_id)))
-                if str(item.get("id") or "") == algorithm_id
-            ),
-            None,
-        )
-        if algorithm is None:
-            return []
-        version = next(
-            (
-                item for item in (algorithm.get("versions") or [])
-                if isinstance(item, Mapping) and str(item.get("id") or "") == version_id
-            ),
-            None,
-        )
-        if version is None:
-            return []
-        rows: list[dict[str, Any]] = []
-        for item in self.discover_version_artifacts(str(project_id), algorithm, version):
-            if str(item.get("conversion_job_id") or "") != conversion_job_id:
-                continue
-            rows.append(self.repository.upsert(item))
-        return rows
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            algorithm, version = self._current_version(
+                project_id, algorithm_id, version_id,
+            )
+            if (
+                algorithm is None
+                or version is None
+                or algorithm.get("external_delete_pending") is True
+            ):
+                # Board validation may finish while rollback/external retirement
+                # is purging this version. Never recreate a canonical row after
+                # the version delivery lifecycle has retired it.
+                return []
+            rows: list[dict[str, Any]] = []
+            for item in self.discover_version_artifacts(project_id, algorithm, version):
+                if str(item.get("conversion_job_id") or "") != conversion_job_id:
+                    continue
+                rows.append(self.repository.upsert(item))
+            return rows
 
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
