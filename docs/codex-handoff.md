@@ -1,5 +1,322 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 发布 / 回退 / GC / 新畅联对账主链最终交接（当前最新）
+
+### 0. 当前真实绿基线
+
+本节写入前已重新读取远端真实状态，不沿用旧会话 SHA：
+
+- 分支：`feature/external-algorithm-publishing`
+- HEAD：`056f78dbe31598b22f78b45a297a72ab182c58ca`
+- 提交：`test: align conversion version reference fixture`
+- VERSION：`42.24.107`
+- 当前 HEAD GitHub Actions：**22 / 22 workflow runs completed success**
+- 当前 HEAD check-runs：**59 / 59 completed success**
+- failure / queued / in_progress：**0 / 0 / 0**
+
+本节提交只用于交接收口，正式版本最小 patch +1 到：
+
+`42.24.108`
+
+不修改 Annotation Ground Truth、Training Picker、Dataset Revision、训练运行、conversion runtime、ModelArtifact、external publication 或 GC 生产逻辑。
+
+> 注意：本轮会话最初从 `42.24.76` 接手，但远端期间被其他会话持续推进到 `42.24.107`。后续会话必须重新读取远端，不得再把 `a9eb278... / 42.24.76`、`257558bc... / 42.24.78`、`1e222241... / 42.24.99` 等历史 cutoff 当成当前基线。
+
+### 1. 本轮原目标已经基本完成，不要重新扩张
+
+本轮最初要求继续深审：
+
+`conversion artifact identity`
+→ `RKNN board validation`
+→ `external weight reconciliation`
+→ `external version delete / rollback`
+→ `local version rollback`
+→ `artifact GC / orphan cleanup`
+
+截至 `42.24.107`，这条主链已经按单一 owner / fail-closed / exact identity 原则完成主要收口。
+
+除非出现**新的真实 CI 红灯、现场复现、远端接口返回或数据不一致证据**，下一会话不要继续为了“再保险”扩张这条链，也不要新增第二套 artifact / publication / GC owner。
+
+### 2. CLOSED：version rollback / delivery artifact 清理与失败续清理
+
+`42.24.76` 已实现 version-level delivery purge：
+
+- 只针对 `project_id + algorithm_id + version_id`；
+- immutable model object 删除成功后才删除 canonical ModelArtifact row；
+- 失败时 `ALGORITHM_VERSION_ARTIFACT_PURGE_FAILED` fail-closed；
+- external publication/version-owned mapping/legacy state 只清目标 version。
+
+`42.24.77` 补齐 interrupted purge 恢复能力：
+
+- 继续复用既有 `version_operations` 作为唯一 cleanup journal；
+- 被删版本 metadata 已消失后，仍可从 bounded cleanup snapshot 幂等续清理；
+- cleanup_completed 再次重试直接返回 already-completed；
+- **不会重复调用新畅联 Version 删除，也不会重建被删 version metadata。**
+
+不要新建第二套 rollback cleanup queue / GC journal。
+
+### 3. CLOSED：RKNN validation 只提升同一 canonical artifact
+
+`42.24.78` 已关闭“板端验证产生第二 artifact identity”的风险：
+
+- RKNN 板端验证后只刷新同一 ModelArtifact 的 metadata；
+- artifact identity 继续绑定 `version + target + chip + sha256`；
+- 已上传 object_key / artifact_id 不变；
+- validation truth 可从 `converted_unverified` 提升到 `hardware_verified`；
+- 板端成功后只重新唤醒既有 external publication owner 做幂等 reconciliation。
+
+禁止创建“verified RKNN 第二 ModelArtifact”。
+
+### 4. CLOSED：Rockchip 产品 capability truth
+
+`42.24.79 ~ 42.24.83` 完成 conversion UI/runtime/capability 合同整理；随后正式纠正产品支持集合。
+
+当前产品 canonical Rockchip target：
+
+- `RK3568`
+- `RK3576`
+
+`RK3578` 不是当前 RKNN-Toolkit2 产品 target_platform，必须保持负向 fail-closed；`RK3588` 虽存在官方能力，但当前产品合同仍不开放。
+
+转换 UI：
+
+- 继续使用原 conversion owner；
+- chip 使用 capability-driven SELECT；
+- 不恢复裸文本输入；
+- 创建任务后原位刷新 conversion history；
+- 不允许重复叠加第二个“版本转换”弹窗。
+
+旧 handoff 中曾把 RK3578 作为正向能力的章节是历史记录，均已被后续 `42.24.81+` supersede。
+
+### 5. CLOSED：Remote execution staging GC 唯一 owner
+
+`42.24.86+` 已把 staging lifecycle 收到唯一 owner：
+
+`RemoteExecutionStagingLifecycle`
+（兼容旧 `RemoteMaterialStagingLifecycle` durable journal/state）
+
+运行 owner：
+
+- storage Worker；
+- 复用既有 Worker heartbeat；
+- 不新增独立 timer / thread / scheduler。
+
+覆盖的 task-owned staging 包括：
+
+- MATERIAL_IMPORT；
+- MODEL_CONVERSION；
+- TRAINING result ZIP；
+- MATERIAL_BATCH / cleaning review；
+- RKNN board task-owned model/input（后续专门收紧）。
+
+删除合同：
+
+- 只接受 exact `remote-execution/{project_id}/{task_id}/...`；
+- 必须有 `storage_source_id + object_key + size + SHA256`；
+- 删除前重新 stat 校验；
+- 禁止 `list_objects`；
+- 禁止 prefix delete；
+- provider/identity 不确定时保持 PENDING/CONFLICT，后续 heartbeat 重试。
+
+明确**不属于普通 staging GC**：
+
+- canonical ModelArtifact immutable object；
+- remote-training shared bundle；
+- formal material object；
+- external Weight/publication mapping；
+- 仍作为 durable evidence 的 RKNN board output。
+
+不要建立第二套 staging GC owner。
+
+### 6. CLOSED：conversion local orphan / retry race
+
+`42.24.98 ~ 42.24.99` 补齐 control-plane 本地 conversion orphan：
+
+- remote output 下载到 `deploy/jobs/<task>/artifacts` 后、finalization 前失败，可精确撤销本次新文件；
+- 进程崩溃由 storage Worker 同一 lifecycle 兜底；
+- exact local path + size/SHA256 + durable generation evidence；
+- job 已 done/blocked_by_hardware 或 canonical ModelArtifact 已接管时保持 PROTECTED；
+- retry generation 开始后旧 terminal snapshot 不得继续删新 generation 正在使用的文件；
+- GC 与 commit 复用 conversion commit fence 和 model delivery version fence。
+
+禁止另起 local conversion janitor。
+
+### 7. CLOSED：remote training generation-scoped orphan
+
+`42.24.96 ~ 42.24.97` 已收口 remote training provisional delivery orphan：
+
+- unattached remote-training final model delivery 进入同一 lifecycle；
+- attachment/reference truth 使用 deterministic version identity；
+- 保护必须匹配 exact version_id，不允许“同 task_id 任意 generation”误保护；
+- generation-2 成功后，generation-1 失败 provisional delivery 到期可精确清理；
+- 真正 attach 的 canonical version/model 保持 PROTECTED。
+
+remote-training shared dataset bundle 仍不是 task-owned staging，禁止按 task GC。
+
+### 8. CLOSED：RKNN board validation 与 version retirement
+
+`42.24.100 ~ 42.24.101` 已完成板端引用和 durable evidence：
+
+- active RKNN board DEPLOYMENT_TEST 会通过 `source_conversion_job_id → conversion source_trace` 回溯 version；
+- QUEUED/RUNNING/CANCEL_REQUESTED 时 version rollback/delete 必须 fail-closed；
+- 成功验收把 `hardware_verification.result_output_storage` 持久化为 exact object identity；
+- board output 在 version 存活期间属于 durable hardware evidence，不由普通 staging GC 删除；
+- version 正式 retirement 时由既有 version cleanup owner 精确删除；
+- 删除前再次 stat size/SHA256；
+- 失败继续走既有 version operation retry journal；
+- 删除对象后保留 job/manifest 验收审计 metadata，并标记 evidence unavailable/deleted。
+
+### 9. CLOSED：External Version / Weight 恢复、漂移和歧义
+
+`42.24.102`：
+
+- 恢复远端已有 Weight 后，不再因为拿到 weightId 就直接 SYNCED；
+- 统一通过既有 edit owner 补齐 canonical `computePlatformId / chipCode / fileName / filePath`；
+- 远端已有 Weight 时不重复 create。
+
+`42.24.103`：
+
+- 复用唯一 auto-publish worker 做低频远端漂移对账；
+- 正常检查窗口约 6h；
+- 失败约 15min 后重试；
+- 单轮最多检查 20 个 Version；
+- 同 productId Version list 复用缓存；
+- Weight 列表按 Version 一次读取，避免逐 Weight N+1；
+- 网络失败只记 remote_check_error，不误判删除。
+
+发现远端 Weight 被删：
+
+- provider mapping 退回 PENDING；
+- 原 publish owner 只恢复缺失 Weight；
+- 不重复创建 Version。
+
+发现整个远端 Version 被删：
+
+- 清理 stale provider IDs；
+- 再由原 publish owner 恢复/创建 Version + Weight。
+
+`42.24.104`：
+
+- 如果远端同一 canonical Weight identity 出现多个候选，publication + mapping 进入 UNKNOWN；
+- auto-publish blocked；
+- 不 edit 任意候选；
+- 不 create 第三个 Weight；
+- 必须人工消歧后才能继续。
+
+这条链已经完成本轮收口。不要再新增“第二 reconciliation worker”。
+
+### 10. CLOSED：version retirement 与“新引用创建” TOCTOU
+
+`42.24.105` 已补齐 retirement preflight 之后新任务才创建的竞态：
+
+统一复用既有：
+
+`model_delivery_version_fence`
+
+覆盖：
+
+- 训练创建；
+- conversion 创建；
+- 普通 deployment test；
+- RKNN board validation；
+- version rollback/delete；
+- ModelArtifact upload/retry；
+- external publish。
+
+拿锁后必须重新读取 version truth：
+
+- version 已退役 → `ALGORITHM_VERSION_REFERENCE_RETIRED`；
+- 迭代训练 current_version 已变化 → `ALGORITHM_VERSION_REFERENCE_STALE`。
+
+由此形成双向 fence：
+
+- task/reference 先创建 → retirement 后续会看到 active reference 并拒绝；
+- retirement 先完成 → task/reference 创建会发现 version 不存在并拒绝。
+
+`42.24.106 ~ 42.24.107` 只是在 CI 中修复旧测试夹具，使其先创建真实 canonical version；生产 fence 不放宽。
+
+### 11. 现阶段权威结论
+
+截至 `42.24.107`：
+
+- external Version / Weight create / recover / edit / delete / drift reconciliation：已收口；
+- version rollback + local cleanup + retry journal：已收口；
+- canonical ModelArtifact identity / validation promotion：已收口；
+- remote execution staging exact-ref GC：已收口；
+- conversion local orphan GC：已收口；
+- remote training generation orphan：已收口；
+- RKNN board input/model staging 与 output durable evidence retirement：已收口；
+- create-reference vs version-retire TOCTOU：已收口。
+
+因此下一会话**不要继续把“external Weight reconciliation / artifact GC/reference truth”当成开放式重构任务**。
+
+只有出现以下证据之一，才重新进入该链：
+
+1. 当前 HEAD 的真实 workflow/check failure；
+2. 现场可复现数据不一致；
+3. 新畅联真实接口返回与现有合同不一致；
+4. storage object / ModelArtifact / publication mapping 有可证明 orphan；
+5. version retirement 被真实 active task/reference 绕过；
+6. 性能数据证明现有 bounded reconciliation/GC 不够。
+
+### 12. 仍需长期保持的严格规则
+
+继续遵守：
+
+- 不 merge main；
+- 不 tag；
+- 不 release；
+- 不 force push；
+- 不删除测试；
+- 不放宽测试；
+- queued / in_progress 绝不算 success；
+- 一个 workflow success 绝不能说全部可部署；
+- 每个正式提交 VERSION 最小 patch +1；
+- 不写死 Windows 路径；
+- 先找到真实 runtime / canonical owner，再修改；
+- zero-reference 后才删旧 owner；
+- 不新增第二 Annotation GT owner；
+- 不新增第二 TrainingTaskRuntime / Scheduler / resource planner / GPU reservation owner；
+- 不新增第二 CandidateStore / ZIP owner；
+- 不新增第二 ModelArtifact / publication / conversion artifact identity / staging GC owner。
+
+性能继续按 1k / 10k / 20k 思考，禁止 N+1 OSS/head、无界远端 reconciliation、全量 JSON hydration、O(N²) 状态。
+
+### 13. 下一会话启动顺序
+
+下一会话第一步仍必须重新读取：
+
+1. `origin/feature/external-algorithm-publishing` 当前 HEAD；
+2. `VERSION.txt`；
+3. 最近至少 20 commits；
+4. 当前 HEAD 所有 GitHub Actions / check-runs；
+5. 所有 completed failure 的真实 job log；
+6. 本文档最顶部最新章节；
+7. 与本次新任务相关的真实生产 owner / test / workflow。
+
+如果开始时远端仍然是：
+
+- HEAD `056f78dbe31598b22f78b45a297a72ab182c58ca`
+- VERSION `42.24.107`
+- 22 / 22 workflows success
+- 59 / 59 check-runs success
+
+则可把它作为当前生产代码绿基线。
+
+但本交接文档提交后预计 HEAD/VERSION 会最小递增到新的 docs-only cutoff；新会话必须以**实际远端**为准。
+
+### 14. 下一步建议，不再主动扩张已 CLOSED 链
+
+如果没有新的现场问题：
+
+- 先做一次**部署前最终状态核验**，确认最新 HEAD 的全部触发 workflow 终态；
+- 再根据用户接下来实际提出的功能/现场问题进入对应模块；
+- 若只是“检查技术债”，只做有证据、影响正确性/性能/可维护性的定点清理，不做大爆炸重构；
+- 不要因为历史 handoff 里仍存在 RK3578、旧 staging GC、旧 remote Weight 等描述就回退已被 supersede 的合同。
+
+---
+
+
 ## 2026-10-05 Conversion portable CI fixture / version truth 对齐（最新）
 
 - 上游提交：`9d37a36cf745339dfc933506d25bcac49a404b9e` / VERSION `42.24.106`。
