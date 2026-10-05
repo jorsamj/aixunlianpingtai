@@ -3493,6 +3493,11 @@ class RemoteExecutionTransportService:
                 "remote conversion result commit is busy",
                 409,
             ) from error
+        created_destination = False
+        manifest_path: Path | None = None
+        previous_manifest: bytes | None = None
+        job_tmp: Path | None = None
+        job_committed = False
         try:
             destination = (artifacts / file_name).resolve()
             if artifacts not in destination.parents:
@@ -3544,6 +3549,7 @@ class RemoteExecutionTransportService:
                             502,
                         )
                     temporary.replace(destination)
+                    created_destination = True
                 finally:
                     temporary.unlink(missing_ok=True)
 
@@ -3577,6 +3583,11 @@ class RemoteExecutionTransportService:
                 },
             }
             manifest_path = artifacts / "manifest.json"
+            previous_manifest = (
+                manifest_path.read_bytes()
+                if manifest_path.is_file()
+                else None
+            )
             manifest_tmp = artifacts / ".manifest.json.remote.tmp"
             manifest_tmp.write_text(
                 json.dumps(manifest, ensure_ascii=False, sort_keys=True),
@@ -3649,6 +3660,7 @@ class RemoteExecutionTransportService:
                 encoding="utf-8",
             )
             job_tmp.replace(job_file)
+            job_committed = True
             from .external_publish_request import (
                 request_external_auto_publish_for_conversion_if_enabled,
             )
@@ -3666,6 +3678,33 @@ class RemoteExecutionTransportService:
                 "runtime_verified": runtime_verified,
                 "hardware_verified": False,
             }
+        except Exception:
+            # If this invocation downloaded a new local artifact but failed
+            # before job.json became durable, it is not yet a deliverable
+            # conversion result. Roll back only files created/overwritten by
+            # this invocation so the next execution generation is not blocked.
+            if not job_committed:
+                try:
+                    if job_tmp is not None:
+                        job_tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    if manifest_path is not None:
+                        if previous_manifest is None:
+                            manifest_path.unlink(missing_ok=True)
+                        else:
+                            restore = artifacts / ".manifest.json.rollback.tmp"
+                            restore.write_bytes(previous_manifest)
+                            restore.replace(manifest_path)
+                except OSError:
+                    pass
+                if created_destination:
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            raise
         finally:
             lock.release()
 

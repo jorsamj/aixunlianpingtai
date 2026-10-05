@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -977,3 +978,219 @@ def test_terminal_training_gc_refuses_unowned_canonical_row(tmp_path):
     )
     assert delivery["status"] == "CONFLICT"
     assert "not owned" in delivery["last_error"]
+
+
+
+def _conversion_local_orphan_fixture(
+    tmp_path: Path,
+    *,
+    job_status: str = "failed",
+    canonical: bool = False,
+):
+    runtime = tmp_path / "task_runtime"
+    repository = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    provider = FakeProvider()
+    task_id = "conversion-local-orphan"
+    project_id = "project-1"
+    algorithm_id = "algorithm-one"
+    version_id = "version-one"
+    payload_value = {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MODEL_CONVERSION",
+            "transport": "object-storage-v1",
+            "conversion": {
+                "schema_version": 1,
+                "target": "onnx",
+                "source_trace": {
+                    "source_id": f"version::{algorithm_id}::{version_id}",
+                    "algorithm_id": algorithm_id,
+                    "version_id": version_id,
+                    "sha256": "a" * 64,
+                },
+                "params": {
+                    "input_size": 640,
+                    "batch": 1,
+                    "opset": 12,
+                    "dynamic": False,
+                    "simplify": False,
+                },
+                "output": {
+                    "storage_source_id": "s3-main",
+                    "object_key": (
+                        f"remote-execution/{project_id}/{task_id}/"
+                        "conversion-output/model.onnx"
+                    ),
+                    "file_name": "model.onnx",
+                },
+            },
+        },
+    }
+    artifacts.atomic_write_json(task_id, "request.json", payload_value)
+    repository.create(
+        TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.MODEL_CONVERSION,
+            "request.json",
+            "conversion:agent",
+            required_capabilities=("agent.remote",),
+        ),
+        artifacts=artifacts,
+    )
+    lease = repository.claim_next(
+        "agent",
+        (TaskKind.MODEL_CONVERSION,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    body = b"local-conversion-orphan"
+    digest = hashlib.sha256(body).hexdigest()
+    remote_key = (
+        f"remote-execution/{project_id}/{task_id}/"
+        "conversion-output/generation-1/model.onnx"
+    )
+    provider.put(remote_key, body, digest)
+    artifacts.atomic_write_json(
+        task_id,
+        "remote-results/1/upload.json",
+        {
+            "execution_generation": 1,
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": remote_key,
+                "file_name": "model.onnx",
+            },
+            "sha256": digest,
+            "size_bytes": len(body),
+        },
+    )
+    local_path = (
+        tmp_path / "projects" / project_id / "deploy" / "jobs" / task_id
+        / "artifacts" / "model.onnx"
+    )
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(body)
+    (local_path.parent.parent / "job.json").write_text(
+        json.dumps({
+            "id": task_id,
+            "project_id": project_id,
+            "status": job_status,
+            "target": "onnx",
+            "source_trace": {
+                "algorithm_id": algorithm_id,
+                "version_id": version_id,
+            },
+        }),
+        encoding="utf-8",
+    )
+    model_artifacts = ModelArtifactRepository(tmp_path)
+    if canonical:
+        model_artifacts.upsert({
+            "artifact_id": "canonical-conversion-orphan",
+            "project_id": project_id,
+            "algorithm_id": algorithm_id,
+            "version_id": version_id,
+            "artifact_kind": "conversion",
+            "target": "onnx",
+            "chip_code": "",
+            "conversion_job_id": "",
+            "file_name": "model.onnx",
+            "source_path": str(local_path),
+            "sha256": digest,
+            "size_bytes": len(body),
+            "metadata": {},
+        })
+    failed = repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.FAILED,
+        error="control-plane crashed after local conversion download",
+    )
+    return {
+        "repository": repository,
+        "artifacts": artifacts,
+        "provider": provider,
+        "task": failed,
+        "remote_key": remote_key,
+        "local_path": local_path,
+        "model_artifacts": model_artifacts,
+    }
+
+
+def test_terminal_conversion_gc_retires_exact_local_orphan_after_crash(tmp_path):
+    fixture = _conversion_local_orphan_fixture(tmp_path)
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["complete"] == 1
+    assert fixture["provider"].exists(fixture["remote_key"]) is False
+    assert fixture["local_path"].exists() is False
+    ledger = fixture["artifacts"].read_json(
+        "conversion-local-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    local_row = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "conversion-local-staging"
+    )
+    assert local_row["status"] == "DELETED"
+
+
+def test_terminal_conversion_gc_protects_local_artifact_after_job_commit(tmp_path):
+    fixture = _conversion_local_orphan_fixture(tmp_path, job_status="done")
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["complete"] == 1
+    assert fixture["provider"].exists(fixture["remote_key"]) is False
+    assert fixture["local_path"].exists() is True
+    ledger = fixture["artifacts"].read_json(
+        "conversion-local-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    assert all(
+        row.get("scope") != "conversion-local-staging"
+        for row in ledger["objects"]
+    )
+
+
+def test_terminal_conversion_gc_protects_exact_canonical_model_artifact(tmp_path):
+    fixture = _conversion_local_orphan_fixture(tmp_path, canonical=True)
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["complete"] == 1
+    assert fixture["provider"].exists(fixture["remote_key"]) is False
+    assert fixture["local_path"].exists() is True
+    ledger = fixture["artifacts"].read_json(
+        "conversion-local-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    local_row = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "conversion-local-staging"
+    )
+    assert local_row["status"] == "PROTECTED"

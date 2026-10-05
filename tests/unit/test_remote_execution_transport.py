@@ -766,6 +766,59 @@ def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_
     }
 
 
+def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
+    tmp_path, monkeypatch
+):
+    transport, provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-rollback",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {"remote_execution": contract}
+    output = b"verified-remote-onnx"
+    output_sha = hashlib.sha256(output).hexdigest()
+    evidence = {
+        "sha256": output_sha,
+        "size_bytes": len(output),
+        "execution_generation": 3,
+    }
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    confirmed["result_ref"] = "remote-results/3/result.json"
+
+    job_dir = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-rollback"
+    job_dir.mkdir(parents=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        '{"id":"convert-rollback","status":"queued","outputs":[]}',
+        encoding="utf-8",
+    )
+    original_replace = Path.replace
+
+    def fail_job_commit(path, target):
+        if path.name == ".job.json.remote.tmp":
+            raise OSError("simulated durable job commit failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_job_commit)
+
+    with pytest.raises(OSError, match="durable job commit failure"):
+        transport.commit_result_publication(task, payload, evidence, confirmed)
+
+    assert not (job_dir / "artifacts" / "model.onnx").exists()
+    assert not (job_dir / "artifacts" / "manifest.json").exists()
+    assert json.loads(job_file.read_text(encoding="utf-8"))["status"] == "queued"
+
+
 def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
     tmp_path, monkeypatch
 ):

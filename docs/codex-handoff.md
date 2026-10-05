@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Remote conversion local orphan / retry recovery（最新）
+
+- 上游绿基线：`7745c041c59d70182030017d0407a5d792d9bb77` / VERSION `42.24.97`，23 / 23 workflows completed success。
+- 本提交正式版本：`42.24.98`。
+- remote object-storage conversion output 已由唯一 `RemoteExecutionStagingLifecycle` exact-ref GC 管理；本提交补齐 control-plane 下载到 `projects/<project>/deploy/jobs/<task>/artifacts` 后、job finalization 前中断留下的本地 orphan。
+- 正常 Python 异常路径：仅当本次 invocation 新建了 local conversion artifact 且 `job.json` 尚未原子提交时，立即撤销本次新文件并恢复/移除本次 manifest，避免后续 execution generation 被 stale local SHA 冲突阻断。
+- 进程崩溃兜底：继续复用 storage Worker heartbeat 的同一 staging lifecycle / 同一 ledger；只对 FAILED / CANCELLED / BLOCKED_BY_ENVIRONMENT 的 MODEL_CONVERSION 构造 exact local staging evidence。
+- 删除条件必须同时满足：路径位于当前 task 的 `deploy/jobs/<task>/artifacts`、size/SHA256 匹配 durable generation upload evidence、job 不在成功交付态、且不存在 conversion_job provenance 或 exact `version + target + chip + sha256` canonical ModelArtifact。
+- 若 job 已 `done/blocked_by_hardware` 或 canonical ModelArtifact 已接管，本地文件保持 `PROTECTED`；remote task-owned staging object 仍可独立回收。
+- 不删除 job.json / 日志，不新增第二 GC owner，不触碰 immutable ModelArtifact storage object、external Weight 或 publication mapping。
+
 ## 2026-10-05 Remote training generation-scoped orphan GC（最新）
 
 - 上游绿基线：`c4ea470fd7f51ebf7030a4acf0cbc90a76d48309` / VERSION `42.24.96`，23 / 23 workflows completed success。

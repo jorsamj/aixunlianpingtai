@@ -26,6 +26,7 @@ from filelock import FileLock, Timeout
 from .algorithms import list_algorithms
 from .model_artifacts import (
     ModelArtifactRepository,
+    SUCCESSFUL_CONVERSION_STATUSES,
     build_artifact_object_key,
     model_delivery_version_fence,
 )
@@ -55,6 +56,11 @@ _TERMINAL = {
     TaskStatus.FAILED,
     TaskStatus.BLOCKED_BY_ENVIRONMENT,
     TaskStatus.BLOCKED_BY_HARDWARE,
+}
+_CONVERSION_ORPHAN_TERMINAL = {
+    TaskStatus.CANCELLED,
+    TaskStatus.FAILED,
+    TaskStatus.BLOCKED_BY_ENVIRONMENT,
 }
 
 
@@ -304,6 +310,138 @@ def material_staging_refs(
         evidence=evidence,
         artifacts=artifacts,
     )
+
+
+def _conversion_local_artifact_path(
+    data_dir: Path,
+    *,
+    project_id: str,
+    task_id: str,
+    file_name: str,
+) -> Path:
+    return (
+        data_dir
+        / "projects"
+        / str(project_id)
+        / "deploy"
+        / "jobs"
+        / str(task_id)
+        / "artifacts"
+        / Path(str(file_name)).name
+    ).resolve()
+
+
+def remote_conversion_local_orphan_refs(
+    task,
+    payload: Mapping[str, Any],
+    *,
+    artifacts,
+    data_dir: str | Path,
+) -> list[dict[str, Any]]:
+    """Recover exact local conversion copies left before durable job finalization."""
+    if (
+        task.kind is not TaskKind.MODEL_CONVERSION
+        or task.status not in _CONVERSION_ORPHAN_TERMINAL
+    ):
+        return []
+    remote = payload.get("remote_execution")
+    conversion = remote.get("conversion") if isinstance(remote, Mapping) else None
+    source_trace = conversion.get("source_trace") if isinstance(conversion, Mapping) else None
+    if (
+        not isinstance(conversion, Mapping)
+        or int(remote.get("version") or 0) != 1
+        or str(remote.get("task_kind") or "") != "MODEL_CONVERSION"
+        or str(remote.get("transport") or "") != "object-storage-v1"
+        or not isinstance(source_trace, Mapping)
+    ):
+        return []
+    algorithm_id = str(source_trace.get("algorithm_id") or "").strip()
+    version_id = str(source_trace.get("version_id") or "").strip()
+    target = str(conversion.get("target") or "").strip().lower()
+    params = conversion.get("params")
+    params = params if isinstance(params, Mapping) else {}
+    chip_code = str(params.get("chip") or "").strip().lower() if target == "rockchip" else ""
+    if not algorithm_id or not version_id or target not in {"onnx", "rockchip"}:
+        return []
+
+    base = Path(data_dir).resolve()
+    job_dir = (
+        base / "projects" / str(task.project_id) / "deploy" / "jobs" / str(task.task_id)
+    ).resolve()
+    job_file = job_dir / "job.json"
+    if job_file.is_file():
+        try:
+            job = json.loads(job_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            job = {}
+        if (
+            isinstance(job, Mapping)
+            and str(job.get("status") or "").strip().lower()
+            in SUCCESSFUL_CONVERSION_STATUSES
+        ):
+            # A crash may happen after job.json became durable but before the
+            # Task Runtime terminal update. That local artifact is deliverable.
+            return []
+
+    expected_suffix = ".onnx" if target == "onnx" else ".rknn"
+    result: list[dict[str, Any]] = []
+    for generation in range(1, max(0, int(getattr(task, "attempt", 0))) + 1):
+        state = artifacts.read_json(
+            str(task.task_id),
+            f"remote-results/{generation}/upload.json",
+            default={},
+        )
+        if (
+            not isinstance(state, Mapping)
+            or int(state.get("execution_generation") or 0) != generation
+        ):
+            continue
+        storage_ref = state.get("storage_ref")
+        if not isinstance(storage_ref, Mapping):
+            continue
+        file_name = str(storage_ref.get("file_name") or "").strip()
+        digest = str(state.get("sha256") or "").strip().lower()
+        try:
+            size = int(state.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            continue
+        if (
+            not file_name
+            or Path(file_name).name != file_name
+            or Path(file_name).suffix.lower() != expected_suffix
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or size <= 0
+        ):
+            continue
+        local_path = _conversion_local_artifact_path(
+            base,
+            project_id=str(task.project_id),
+            task_id=str(task.task_id),
+            file_name=file_name,
+        )
+        artifacts_root = (job_dir / "artifacts").resolve()
+        if artifacts_root not in local_path.parents:
+            continue
+        result.append({
+            "scope": "conversion-local-staging",
+            "role": f"local-result:generation-{generation}",
+            "algorithm_id": algorithm_id,
+            "version_id": version_id,
+            "conversion_job_id": str(task.task_id),
+            "execution_generation": generation,
+            "target": target,
+            "chip_code": chip_code,
+            "file_name": file_name,
+            "local_path": str(local_path),
+            "sha256": digest,
+            "size_bytes": size,
+            "status": "PENDING",
+            "last_error": "",
+            "last_attempt_at": None,
+            "deleted_at": None,
+        })
+    return result
 
 
 def _training_delivery_version_id(task_id: str, generation: int, snapshot_id: str) -> str:
@@ -601,14 +739,22 @@ class RemoteExecutionStagingLifecycle:
         existing: list[Mapping[str, Any]],
         discovered: list[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+        by_identity: dict[tuple[str, ...], dict[str, Any]] = {}
         for item in [*existing, *discovered]:
             if not isinstance(item, Mapping):
                 continue
-            identity = (
-                str(item.get("storage_source_id") or ""),
-                str(item.get("object_key") or ""),
-            )
+            if str(item.get("scope") or "") == "conversion-local-staging":
+                identity = (
+                    "local",
+                    str(item.get("local_path") or ""),
+                    str(item.get("sha256") or ""),
+                )
+            else:
+                identity = (
+                    "remote",
+                    str(item.get("storage_source_id") or ""),
+                    str(item.get("object_key") or ""),
+                )
             if not all(identity):
                 continue
             current = by_identity.get(identity)
@@ -619,7 +765,8 @@ class RemoteExecutionStagingLifecycle:
             for key in (
                 "scope", "role", "sha256", "size_bytes", "algorithm_id",
                 "version_id", "execution_generation", "artifact_id",
-                "file_name", "local_path",
+                "file_name", "local_path", "conversion_job_id",
+                "target", "chip_code",
             ):
                 if item.get(key) not in (None, ""):
                     current[key] = item[key]
@@ -693,6 +840,15 @@ class RemoteExecutionStagingLifecycle:
         if task.kind is TaskKind.TRAINING and self.data_dir is not None:
             refs.extend(
                 remote_training_delivery_orphan_refs(
+                    task,
+                    payload,
+                    artifacts=self.artifacts,
+                    data_dir=self.data_dir,
+                )
+            )
+        if task.kind is TaskKind.MODEL_CONVERSION and self.data_dir is not None:
+            refs.extend(
+                remote_conversion_local_orphan_refs(
                     task,
                     payload,
                     artifacts=self.artifacts,
@@ -961,6 +1117,153 @@ class RemoteExecutionStagingLifecycle:
                 )
             return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
 
+    def _cleanup_conversion_local_group(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        objects: list[dict[str, Any]],
+        indices: list[int],
+        now_dt: datetime,
+    ) -> dict[str, int]:
+        if self.data_dir is None:
+            for index in indices:
+                objects[index].update(
+                    status="PENDING",
+                    last_error="conversion local cleanup requires data_dir",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
+
+        # A retry can move the durable task to a deliverable terminal state
+        # after an earlier failure ledger was created. Never delete in that case.
+        if task.status not in _CONVERSION_ORPHAN_TERMINAL:
+            for index in indices:
+                objects[index].update(
+                    status="PROTECTED",
+                    last_error="",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": 0}
+
+        sample = objects[indices[0]]
+        local_path = Path(str(sample.get("local_path") or "")).resolve()
+        project_id = str(task.project_id)
+        task_id = str(task.task_id)
+        expected_root = (
+            self.data_dir / "projects" / project_id
+            / "deploy" / "jobs" / task_id / "artifacts"
+        ).resolve()
+        if expected_root not in local_path.parents:
+            for index in indices:
+                objects[index].update(
+                    status="CONFLICT",
+                    last_error="conversion local staging path escaped task artifact root",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
+
+        job_file = expected_root.parent / "job.json"
+        if job_file.is_file():
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                job = {}
+            if (
+                isinstance(job, Mapping)
+                and str(job.get("status") or "").strip().lower()
+                in SUCCESSFUL_CONVERSION_STATUSES
+            ):
+                for index in indices:
+                    objects[index].update(
+                        status="PROTECTED",
+                        last_error="",
+                        last_attempt_at=now_dt.isoformat(),
+                    )
+                return {"deleted": 0, "conflicts": 0, "pending": 0}
+
+        artifact_repository = ModelArtifactRepository(self.data_dir)
+        if artifact_repository.list_by_conversion_job(project_id, task_id):
+            for index in indices:
+                objects[index].update(
+                    status="PROTECTED",
+                    last_error="",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": 0}
+
+        if not local_path.exists():
+            for index in indices:
+                objects[index].update(
+                    status="ABSENT",
+                    last_error="",
+                    deleted_at=now_dt.isoformat(),
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": 0}
+        if local_path.is_symlink() or not local_path.is_file():
+            for index in indices:
+                objects[index].update(
+                    status="CONFLICT",
+                    last_error="conversion local staging is not a regular task-owned file",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
+
+        actual_size = int(local_path.stat().st_size)
+        actual_sha = _sha256_path(local_path)
+        matching = [
+            index for index in indices
+            if int(objects[index].get("size_bytes") or 0) == actual_size
+            and str(objects[index].get("sha256") or "").strip().lower() == actual_sha
+        ]
+        if not matching:
+            for index in indices:
+                objects[index].update(
+                    status="CONFLICT",
+                    last_error="conversion local staging size/SHA256 does not match durable generation evidence",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
+
+        for index in matching:
+            item = objects[index]
+            canonical = artifact_repository.find_identity(
+                project_id,
+                str(item.get("algorithm_id") or ""),
+                str(item.get("version_id") or ""),
+                str(item.get("target") or ""),
+                str(item.get("chip_code") or ""),
+                actual_sha,
+            )
+            if canonical is not None:
+                for protected_index in indices:
+                    objects[protected_index].update(
+                        status="PROTECTED",
+                        last_error="",
+                        last_attempt_at=now_dt.isoformat(),
+                    )
+                return {"deleted": 0, "conflicts": 0, "pending": 0}
+
+        try:
+            local_path.unlink()
+        except OSError as error:
+            for index in indices:
+                objects[index].update(
+                    status="PENDING",
+                    last_error=str(error)[:1000],
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
+
+        for index in indices:
+            objects[index].update(
+                status="DELETED" if index in matching else "ABSENT",
+                last_error="",
+                deleted_at=now_dt.isoformat(),
+                last_attempt_at=now_dt.isoformat(),
+            )
+        return {"deleted": 1, "conflicts": 0, "pending": 0}
+
     def cleanup_task(
         self,
         task,
@@ -994,14 +1297,28 @@ class RemoteExecutionStagingLifecycle:
                 str(task.task_id), str(task.payload_ref), default={}
             )
             payload = payload if isinstance(payload, Mapping) else {}
+            conversion_local_groups: dict[str, list[int]] = {}
             training_groups: dict[tuple[str, str], list[int]] = {}
             for index, item in enumerate(objects):
-                if str(item.get("scope") or "") != "provisional-training-delivery":
+                scope = str(item.get("scope") or "")
+                if scope == "conversion-local-staging":
+                    conversion_local_groups.setdefault(
+                        str(item.get("local_path") or ""), []
+                    ).append(index)
+                    continue
+                if scope != "provisional-training-delivery":
                     continue
                 training_groups.setdefault((
                     str(item.get("algorithm_id") or ""),
                     str(item.get("version_id") or ""),
                 ), []).append(index)
+            for indices in conversion_local_groups.values():
+                outcome = self._cleanup_conversion_local_group(
+                    task, payload, objects, indices, now_dt,
+                )
+                deleted += int(outcome.get("deleted") or 0)
+                conflicts += int(outcome.get("conflicts") or 0)
+                pending += int(outcome.get("pending") or 0)
             for indices in training_groups.values():
                 outcome = self._cleanup_training_delivery_group(
                     task, payload, objects, indices, now_dt,
@@ -1011,7 +1328,10 @@ class RemoteExecutionStagingLifecycle:
                 pending += int(outcome.get("pending") or 0)
 
             for item in objects:
-                if str(item.get("scope") or "") == "provisional-training-delivery":
+                if str(item.get("scope") or "") in {
+                    "provisional-training-delivery",
+                    "conversion-local-staging",
+                }:
                     continue
                 if item.get("status") in {"DELETED", "ABSENT"}:
                     continue
@@ -1153,6 +1473,7 @@ __all__ = [
     "RemoteMaterialStagingGCReporter",
     "RemoteMaterialStagingLifecycle",
     "material_staging_refs",
+    "remote_conversion_local_orphan_refs",
     "remote_execution_staging_refs",
     "remote_training_delivery_orphan_refs",
 ]

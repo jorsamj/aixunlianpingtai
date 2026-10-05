@@ -241,6 +241,9 @@ jobs:
           grep -Fq '("agent.remote",)' app.py
           grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
           grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
+          grep -Fq 'created_destination = False' platform_core/remote_execution_transport.py
+          grep -Fq 'if not job_committed:' platform_core/remote_execution_transport.py
+          grep -Fq 'test_model_conversion_commit_rolls_back_new_local_file_before_job_commit' tests/unit/test_remote_execution_transport.py
           grep -Fq '"params": params' platform_core/remote_execution_transport.py
           grep -Fq 'from .external_publish_request import (' platform_core/remote_execution_transport.py
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
