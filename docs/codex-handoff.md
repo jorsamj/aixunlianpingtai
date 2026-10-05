@@ -1,5 +1,19 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 External Version / Weight 远端漂移低频对账收口（最新）
+
+- 上游绿基线：`5970bddeff5c2751edba536729fdbf76b3309862` / VERSION `42.24.102`，23 / 23 workflows、59 / 59 check-runs completed success。
+- 本提交正式版本：`42.24.103`。
+- 审计确认：既有 auto-publish worker 每 30 秒做一次本地恢复扫描，但 `publication_requires_sync()` 只看本地 publication / ModelArtifact truth；如果用户在新畅联人工删除已发布 Weight 或整个 Version，本地仍为 `PUBLISHED + SYNCED` 时不会自动感知。
+- 本提交不新增线程、不新增 publication owner，也不把远端查询塞进每 30 秒的普通状态判断。继续复用唯一 auto-publish worker，并增加 publication 级远端检查审计：`remote_checked_at / remote_check_error`。
+- 成功发布即记录最新远端确认时间；正常远端漂移检查每 6 小时一次，检查失败 15 分钟后再试；每个 30 秒 worker 周期最多检查 20 个 Version，避免大量历史版本形成远端 N+1 洪峰。
+- 同一轮内按 productId 缓存 Version 列表；每个待检查 Version 只调用一次官方 `listByVersion` 读取全部 Weight。不会逐 Weight 调接口。
+- 对账函数只降级本地 provider mapping，不直接创建/编辑远端实体：Weight ID 缺失、Weight 字段漂移、Version ID 缺失/变更时退回 `PENDING`；真正的 Version/Weight recover/edit/create 继续唯一由现有 `publish → _ensure_external_version / _sync_weight` owner 负责。
+- Version 仍存在但 Weight 被删除：只重建缺失 Weight，不重复创建 Version。整个 Version 被删除：清空 stale Version/Weight provider IDs，再由原 publish owner重新恢复或创建 Version + Weight。
+- 远端列表查询失败只记录 `remote_check_error` 并 fail-closed，不改 `SYNCED` mapping；不会把网络故障误判为远端删除。
+- 新增回归覆盖 Weight-only 删除、Version+Weight 删除、6h 成功窗口 / 15min 失败重试窗口，以及发布后短期不重复远端检查。
+- 下一轮建议只做 version retirement reference truth 最后复核与文档收口；不要重做 remote staging/conversion orphan/RKNN board GC 或 Annotation/Training 已 CLOSED 工作。
+
 ## 2026-10-05 External Weight 恢复 / durable filePath 对账收口（最新）
 
 - 上游绿基线：`5acd3355edbb0501a6440db6e653387aa692216f` / VERSION `42.24.101`，46 / 46 workflows completed success。

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import sqlite3
@@ -209,6 +210,8 @@ class FakePublishingClient:
     version_creates = 0
     weight_creates = 0
     weight_edits = 0
+    weight_lists = 0
+    version_lists = 0
     version_removes = 0
     removed_version_ids = []
     last_version_payload = None
@@ -231,6 +234,8 @@ class FakePublishingClient:
         cls.version_creates = 0
         cls.weight_creates = 0
         cls.weight_edits = 0
+        cls.weight_lists = 0
+        cls.version_lists = 0
         cls.version_removes = 0
         cls.removed_version_ids = []
         cls.last_version_payload = None
@@ -245,6 +250,7 @@ class FakePublishingClient:
 
     def list_product_versions(self, product_id):
         type(self).last_version_list_path = f"/internal/algorithm/algorithm-version/listByProduct/{product_id}"
+        type(self).version_lists += 1
         return {"code": 200, "data": list(self.versions)}
 
     def list_analysis_versions(self, analysis_id):
@@ -274,6 +280,7 @@ class FakePublishingClient:
 
     def list_version_weights(self, algo_version_id):
         type(self).last_weight_list_path = f"/internal/algorithm/algorithm-weight/listByVersion/{algo_version_id}"
+        type(self).weight_lists += 1
         return {"code": 200, "data": list(self.weights)}
 
     def version_remove(self, algo_version_ids):
@@ -2718,6 +2725,112 @@ def test_auto_publish_worker_recovers_successful_external_version_without_reques
     assert "external_publish_status" not in version
     publication = service.repository.publication("p1", "a1", "v1")
     assert publication["status"] == "PUBLISHED"
+
+
+def test_auto_publish_remote_reconcile_recreates_missing_weight_without_duplicate_version(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"id": "p1", "name": "项目1"}]),
+        encoding="utf-8",
+    )
+    service = _service(tmp_path, memory)
+
+    first = service.run_auto_publish_once()
+    assert first["published"] == 1
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+
+    publication = service.repository.publication("p1", "a1", "v1")
+    service.repository.patch_publication(
+        publication["publication_key"],
+        remote_checked_at="2026-09-01T00:00:00Z",
+        remote_check_error="",
+    )
+    FakePublishingClient.weights = []
+    before_lists = FakePublishingClient.weight_lists
+
+    repaired = service.run_auto_publish_once()
+
+    assert repaired["remote_reconciled"] == 1
+    assert repaired["remote_drifted"] >= 1
+    assert repaired["published"] == 1
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    assert len(FakePublishingClient.weights) == 1
+    assert FakePublishingClient.weight_lists >= before_lists + 2
+
+    lists_after_repair = FakePublishingClient.weight_lists
+    immediate = service.run_auto_publish_once()
+    assert immediate["remote_reconciled"] == 0
+    assert FakePublishingClient.weight_lists == lists_after_repair
+    assert FakePublishingClient.weight_creates == 2
+
+
+def test_auto_publish_remote_reconcile_recreates_missing_version_and_weights(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"id": "p1", "name": "项目1"}]),
+        encoding="utf-8",
+    )
+    service = _service(tmp_path, memory)
+
+    first = service.run_auto_publish_once()
+    assert first["published"] == 1
+    old_version_id = FakePublishingClient.versions[0]["algoVersionId"]
+    old_weight_id = FakePublishingClient.weights[0]["weightId"]
+
+    publication = service.repository.publication("p1", "a1", "v1")
+    service.repository.patch_publication(
+        publication["publication_key"],
+        remote_checked_at="2026-09-01T00:00:00Z",
+        remote_check_error="",
+    )
+    FakePublishingClient.versions = []
+    FakePublishingClient.weights = []
+
+    repaired = service.run_auto_publish_once()
+
+    assert repaired["remote_reconciled"] == 1
+    assert repaired["remote_drifted"] >= 1
+    assert repaired["published"] == 1
+    assert FakePublishingClient.version_creates == 2
+    assert FakePublishingClient.weight_creates == 2
+    assert FakePublishingClient.versions[0]["algoVersionId"] != old_version_id
+    assert FakePublishingClient.weights[0]["weightId"] != old_weight_id
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "PUBLISHED"
+    assert publication["external_algo_version_id"] == FakePublishingClient.versions[0]["algoVersionId"]
+
+
+def test_remote_reconcile_due_uses_long_success_and_short_failure_windows(tmp_path: Path):
+    repository = ExternalPublicationRepository(tmp_path)
+    now = datetime(2026, 10, 5, 6, 0, tzinfo=timezone.utc)
+    base = {
+        "status": "PUBLISHED",
+        "external_algo_version_id": "av-1",
+        "remote_checked_at": (now - timedelta(hours=1)).isoformat(),
+        "remote_check_error": "",
+    }
+    assert repository.remote_reconcile_due(base, now=now) is False
+
+    failed = {
+        **base,
+        "remote_checked_at": (now - timedelta(minutes=16)).isoformat(),
+        "remote_check_error": "temporary timeout",
+    }
+    assert repository.remote_reconcile_due(failed, now=now) is True
+
+    stale = {
+        **base,
+        "remote_checked_at": (now - timedelta(hours=7)).isoformat(),
+    }
+    assert repository.remote_reconcile_due(stale, now=now) is True
 
 
 def test_rollback_remote_delete_fails_closed_when_same_name_remote_version_is_ambiguous(tmp_path: Path):

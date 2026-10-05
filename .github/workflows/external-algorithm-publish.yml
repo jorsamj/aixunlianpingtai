@@ -395,6 +395,13 @@ jobs:
           grep -Fq 'def _bind_recovered_weight(' platform_core/external_algorithm_publish.py
           grep -Fq 'sync_status="PENDING"' platform_core/external_algorithm_publish.py
           grep -Fq 'test_recovered_weight_missing_file_path_is_repaired_without_duplicate_create' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'DEFAULT_REMOTE_RECONCILE_SECONDS = 6 * 3600' platform_core/external_algorithm_publish.py
+          grep -Fq 'DEFAULT_REMOTE_RECONCILE_BATCH = 20' platform_core/external_algorithm_publish.py
+          grep -Fq 'def reconcile_published_remote(' platform_core/external_algorithm_publish.py
+          grep -Fq 'remote_checked_at=utc_now()' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_weight_without_duplicate_version' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_version_and_weights' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_remote_reconcile_due_uses_long_success_and_short_failure_windows' tests/unit/test_external_algorithm_publish.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
 
 

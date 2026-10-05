@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import requests
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional
 
@@ -49,6 +49,9 @@ from .storage import StorageProviderFactory, StorageSourceRepository
 
 PUBLICATION_SCHEMA_VERSION = 4
 DEFAULT_AUTO_PUBLISH_RETRY_SECONDS = 300
+DEFAULT_REMOTE_RECONCILE_SECONDS = 6 * 3600
+DEFAULT_REMOTE_RECONCILE_RETRY_SECONDS = 15 * 60
+DEFAULT_REMOTE_RECONCILE_BATCH = 20
 SUCCESSFUL_VERSION_STATUSES = {"SUCCEEDED", "PARTIAL_SUCCESS", "DONE", "FINISHED", "COMPLETED"}
 ACTIVE_CONVERSION_STATUSES = {"queued", "running", "waiting", "pending", "cancel_requested"}
 # ModelArtifact is the canonical owner of conversion deliverability. Keep the
@@ -248,7 +251,9 @@ CREATE TABLE IF NOT EXISTS external_version_publications (
     attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    published_at TEXT
+    published_at TEXT,
+    remote_checked_at TEXT,
+    remote_check_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_external_publication_project_version
 ON external_version_publications(project_id, algorithm_id, version_id);
@@ -336,6 +341,14 @@ class ExternalPublicationRepository:
         if "version_no" not in version_columns:
             database.execute(
                 "ALTER TABLE external_version_publications ADD COLUMN version_no TEXT NOT NULL DEFAULT ''"
+            )
+        if "remote_checked_at" not in version_columns:
+            database.execute(
+                "ALTER TABLE external_version_publications ADD COLUMN remote_checked_at TEXT"
+            )
+        if "remote_check_error" not in version_columns:
+            database.execute(
+                "ALTER TABLE external_version_publications ADD COLUMN remote_check_error TEXT NOT NULL DEFAULT ''"
             )
         artifact_publication_columns = {
             str(row["name"])
@@ -774,7 +787,10 @@ class ExternalPublicationRepository:
         }
 
     def patch_publication(self, publication_key: str, **changes: Any) -> Dict[str, Any]:
-        allowed = {"external_algo_version_id", "status", "last_error", "attempts", "updated_at", "published_at"}
+        allowed = {
+            "external_algo_version_id", "status", "last_error", "attempts",
+            "updated_at", "published_at", "remote_checked_at", "remote_check_error",
+        }
         values = {key: value for key, value in changes.items() if key in allowed}
         values.setdefault("updated_at", utc_now())
         if not values:
@@ -1002,6 +1018,28 @@ class ExternalPublicationRepository:
             return True
         last = _status_time(str(publication.get("updated_at") or ""))
         return not last or (datetime.now(timezone.utc) - last).total_seconds() >= DEFAULT_AUTO_PUBLISH_RETRY_SECONDS
+
+    def remote_reconcile_due(
+        self,
+        publication: Mapping[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        if (
+            str(publication.get("status") or "").upper() != "PUBLISHED"
+            or not str(publication.get("external_algo_version_id") or "").strip()
+        ):
+            return False
+        current = now or datetime.now(timezone.utc)
+        last = _status_time(str(publication.get("remote_checked_at") or ""))
+        if last is None:
+            return True
+        interval = (
+            DEFAULT_REMOTE_RECONCILE_RETRY_SECONDS
+            if str(publication.get("remote_check_error") or "").strip()
+            else DEFAULT_REMOTE_RECONCILE_SECONDS
+        )
+        return (current - last).total_seconds() >= interval
 
 
 class PublishingChangLianClient(ChangLianClient):
@@ -2034,17 +2072,11 @@ class ExternalAlgorithmPublishService:
             )
         return payload
 
-    def _recover_weight(self, client: PublishingChangLianClient, external_version_id: str, artifact: Mapping[str, Any]) -> str:
-        try:
-            rows = extract_items(client.list_version_weights(external_version_id))
-        except Exception as error:
-            raise PlatformError(
-                "EXTERNAL_WEIGHT_RECOVERY_UNAVAILABLE",
-                "无法查询新畅联权重进行幂等恢复",
-                str(error),
-                "恢复查询不可用时平台不会继续新增权重；请恢复 listByVersion 后重试。",
-                502,
-            ) from error
+    def _recover_weight_from_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        artifact: Mapping[str, Any],
+    ) -> str:
         exact_ids: set[str] = set()
         related: list[Mapping[str, Any]] = []
         expected_chip = _canonical_chip_code(artifact.get("remote_chip_code") or "")
@@ -2063,14 +2095,9 @@ class ExternalAlgorithmPublishService:
                 else:
                     related.append(row)
             elif same_file and same_platform and same_chip:
-                # Same provider identity but a conflicting filePath is unsafe.
                 related.append(row)
             elif same_file and same_platform and expected_chip and not remote_chip:
-                # A chip-specific local artifact cannot safely claim a remote
-                # row that omitted chipCode; keep this fail-closed.
                 related.append(row)
-            # Different explicit chip identities are distinct weights and may
-            # coexist under the same Version/compute platform/file name.
         if len(exact_ids) > 1 or related:
             raise PlatformError(
                 "EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS",
@@ -2082,6 +2109,19 @@ class ExternalAlgorithmPublishService:
         if len(exact_ids) == 1:
             return next(iter(exact_ids))
         return ""
+
+    def _recover_weight(self, client: PublishingChangLianClient, external_version_id: str, artifact: Mapping[str, Any]) -> str:
+        try:
+            rows = extract_items(client.list_version_weights(external_version_id))
+        except Exception as error:
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_RECOVERY_UNAVAILABLE",
+                "无法查询新畅联权重进行幂等恢复",
+                str(error),
+                "恢复查询不可用时平台不会继续新增权重；请恢复 listByVersion 后重试。",
+                502,
+            ) from error
+        return self._recover_weight_from_rows(rows, artifact)
 
     @staticmethod
     def _remote_weight_id(row: Mapping[str, Any]) -> str:
@@ -2696,6 +2736,8 @@ class ExternalAlgorithmPublishService:
                 status="PUBLISHED",
                 last_error="",
                 published_at=str(publication.get("published_at") or utc_now()),
+                remote_checked_at=utc_now(),
+                remote_check_error="",
             )
 
         deferred = [
@@ -2890,6 +2932,196 @@ class ExternalAlgorithmPublishService:
             "external_algo_version_id": external_version_id,
         }
 
+    def _mark_remote_check(
+        self,
+        publication_key: str,
+        *,
+        error: str = "",
+    ) -> Dict[str, Any]:
+        return self.repository.patch_publication(
+            publication_key,
+            remote_checked_at=utc_now(),
+            remote_check_error=str(error or "")[:2000],
+        )
+
+    def reconcile_published_remote(
+        self,
+        *,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        client: PublishingChangLianClient,
+        remote_versions: Iterable[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        """Reconcile one published Version using bounded provider snapshots.
+
+        This method never creates/edits remote data. It only downgrades stale
+        local provider mappings so the existing publish owner can repair them.
+        """
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            algorithm, version = self._algorithm_version(
+                project_id, algorithm_id, version_id,
+            )
+            publication = self._version_publication(
+                project_id, algorithm, version, create=False,
+            )
+            if (
+                not publication
+                or str(publication.get("status") or "").upper() != "PUBLISHED"
+                or not str(publication.get("external_algo_version_id") or "").strip()
+            ):
+                return {"checked": False, "drifted": 0, "reason": "not_published"}
+
+            publication_key = str(publication["publication_key"])
+            external_version_id = str(publication["external_algo_version_id"]).strip()
+            product_id = str(algorithm.get("external_product_id") or "").strip()
+            analysis_id = str(version.get("external_analysis_id") or "").strip()
+            version_name = str(version.get("version_name") or version_id).strip()
+            version_no = str(version.get("version_no") or "").strip()
+            version_rows = [
+                dict(row) for row in remote_versions if isinstance(row, Mapping)
+            ]
+            ids = {
+                str(
+                    row.get("algoVersionId")
+                    or row.get("algorithmVersionId")
+                    or row.get("versionId")
+                    or row.get("id")
+                    or ""
+                ).strip()
+                for row in version_rows
+            }
+            ids.discard("")
+
+            if external_version_id not in ids:
+                try:
+                    recovered_version_id = self._remote_version_match(
+                        version_rows,
+                        version_name,
+                        version_no,
+                        analysis_id=analysis_id,
+                        product_id=product_id,
+                    )
+                except PlatformError as error:
+                    self.repository.patch_publication(
+                        publication_key,
+                        status="UNKNOWN",
+                        last_error=str(error)[:2000],
+                        remote_checked_at=utc_now(),
+                        remote_check_error=str(error)[:2000],
+                    )
+                    return {"checked": True, "drifted": 0, "blocked": True, "reason": "version_ambiguous"}
+
+                mappings = self.repository.artifact_publications(
+                    publication_key, provider=PROVIDER_CHANGLIAN,
+                )
+                for mapping in mappings:
+                    self.repository.patch_artifact_publication(
+                        str(mapping["artifact_id"]),
+                        provider=PROVIDER_CHANGLIAN,
+                        external_weight_id="",
+                        sync_status="PENDING",
+                        last_error="REMOTE_VERSION_RECONCILE: 远端 Version 身份已变化，Weight 需重新对账",
+                    )
+                self.repository.patch_publication(
+                    publication_key,
+                    external_algo_version_id=str(recovered_version_id or ""),
+                    status="PENDING",
+                    last_error=(
+                        "REMOTE_VERSION_REBOUND"
+                        if recovered_version_id
+                        else "REMOTE_VERSION_MISSING"
+                    ),
+                    remote_checked_at=utc_now(),
+                    remote_check_error="",
+                )
+                return {
+                    "checked": True,
+                    "drifted": max(1, len(mappings)),
+                    "reason": "version_rebound" if recovered_version_id else "version_missing",
+                }
+
+            try:
+                weight_rows = extract_items(client.list_version_weights(external_version_id))
+            except Exception as error:
+                self._mark_remote_check(publication_key, error=str(error))
+                return {
+                    "checked": False,
+                    "drifted": 0,
+                    "reason": "weight_query_failed",
+                    "error": str(error)[:1000],
+                }
+
+            remote_by_id = {
+                self._remote_weight_id(row): row
+                for row in weight_rows
+                if self._remote_weight_id(row)
+            }
+            drifted = 0
+            blocked = False
+            for artifact in self._publication_artifacts(publication_key):
+                if str(artifact.get("sync_status") or "").upper() != "SYNCED":
+                    continue
+                weight_id = str(artifact.get("external_weight_id") or "").strip()
+                if not weight_id:
+                    self.repository.patch_artifact_publication(
+                        str(artifact["artifact_id"]),
+                        provider=PROVIDER_CHANGLIAN,
+                        sync_status="PENDING",
+                        last_error="REMOTE_WEIGHT_ID_MISSING: 本地 SYNCED 映射缺少 weightId",
+                    )
+                    drifted += 1
+                    continue
+                remote = remote_by_id.get(weight_id)
+                if remote is not None:
+                    if not self._remote_weight_contract_matches(
+                        remote, artifact, weight_id=weight_id,
+                    ):
+                        self.repository.patch_artifact_publication(
+                            str(artifact["artifact_id"]),
+                            provider=PROVIDER_CHANGLIAN,
+                            sync_status="PENDING",
+                            last_error="REMOTE_WEIGHT_DRIFT: 远端 Weight 字段与 canonical delivery contract 不一致",
+                        )
+                        drifted += 1
+                    continue
+
+                try:
+                    recovered_weight_id = self._recover_weight_from_rows(
+                        weight_rows, artifact,
+                    )
+                except PlatformError as error:
+                    self.repository.patch_artifact_publication(
+                        str(artifact["artifact_id"]),
+                        provider=PROVIDER_CHANGLIAN,
+                        sync_status="UNKNOWN",
+                        last_error=str(error)[:2000],
+                    )
+                    blocked = True
+                    continue
+                self.repository.patch_artifact_publication(
+                    str(artifact["artifact_id"]),
+                    provider=PROVIDER_CHANGLIAN,
+                    external_weight_id=str(recovered_weight_id or ""),
+                    sync_status="PENDING",
+                    last_error=(
+                        "REMOTE_WEIGHT_REBOUND: 已发现同一 canonical Weight 的新远端 ID"
+                        if recovered_weight_id
+                        else "REMOTE_WEIGHT_MISSING: 远端 Version 下已不存在该 canonical Weight"
+                    ),
+                )
+                drifted += 1
+
+            self._mark_remote_check(publication_key)
+            return {
+                "checked": True,
+                "drifted": drifted,
+                "blocked": blocked,
+                "reason": "drift" if drifted or blocked else "in_sync",
+            }
+
     def auto_publish_ready(self) -> bool:
         external = self.external_repository.config()
         model_storage = self.model_assets.repository.config()
@@ -2904,12 +3136,25 @@ class ExternalAlgorithmPublishService:
         )
 
     def run_auto_publish_once(self) -> Dict[str, int]:
-        summary = {"checked": 0, "published": 0, "skipped": 0, "failed": 0}
+        summary = {
+            "checked": 0,
+            "published": 0,
+            "skipped": 0,
+            "failed": 0,
+            "remote_reconciled": 0,
+            "remote_drifted": 0,
+            "remote_reconcile_failed": 0,
+        }
         if not self.auto_publish_ready():
             return summary
         projects = _json_load(self.data_dir / "projects.json", [])
         if not isinstance(projects, list):
             return summary
+
+        remote_budget = DEFAULT_REMOTE_RECONCILE_BATCH
+        client: PublishingChangLianClient | None = None
+        version_cache: dict[str, list[Dict[str, Any]] | Exception] = {}
+
         for project in projects:
             project_id = str(project.get("id") or "") if isinstance(project, dict) else ""
             if not project_id:
@@ -2929,20 +3174,71 @@ class ExternalAlgorithmPublishService:
                                 self.algorithms_file(project_id),
                                 str(algorithm.get("id") or ""),
                                 str(version.get("id") or ""),
-                                {
-                                    "external_publish_requested_at": utc_now(),
-                                },
+                                {"external_publish_requested_at": utc_now()},
                                 now=utc_now(),
                             )
                         except Exception:
-                            # The worker still attempts the durable publication below;
-                            # the marker is observability, not the sole queue owner.
                             pass
+
                     summary["checked"] += 1
                     publication = self._version_publication(
                         project_id, algorithm, version, create=False,
                     )
-                    if not self.publication_requires_sync(project_id, algorithm, version, publication):
+                    needs_sync = self.publication_requires_sync(
+                        project_id, algorithm, version, publication,
+                    )
+
+                    if (
+                        not needs_sync
+                        and remote_budget > 0
+                        and publication
+                        and self.repository.remote_reconcile_due(publication)
+                    ):
+                        product_id = str(algorithm.get("external_product_id") or "").strip()
+                        if client is None:
+                            try:
+                                client = self._external_client()
+                            except Exception as error:
+                                client = None
+                                version_cache[product_id] = error
+                        if product_id not in version_cache and client is not None:
+                            try:
+                                version_cache[product_id] = extract_items(
+                                    client.list_product_versions(product_id)
+                                )
+                            except Exception as error:
+                                version_cache[product_id] = error
+
+                        remote_budget -= 1
+                        cached = version_cache.get(product_id)
+                        if isinstance(cached, Exception) or client is None:
+                            error = cached if isinstance(cached, Exception) else RuntimeError("external client unavailable")
+                            self.repository.patch_publication(
+                                str(publication["publication_key"]),
+                                remote_checked_at=utc_now(),
+                                remote_check_error=str(error)[:2000],
+                            )
+                            summary["remote_reconcile_failed"] += 1
+                        else:
+                            try:
+                                reconciled = self.reconcile_published_remote(
+                                    project_id=project_id,
+                                    algorithm_id=str(algorithm.get("id") or ""),
+                                    version_id=str(version.get("id") or ""),
+                                    client=client,
+                                    remote_versions=list(cached or []),
+                                )
+                                summary["remote_reconciled"] += int(bool(reconciled.get("checked")))
+                                drifted = int(reconciled.get("drifted") or 0)
+                                summary["remote_drifted"] += drifted
+                                if reconciled.get("error"):
+                                    summary["remote_reconcile_failed"] += 1
+                                needs_sync = drifted > 0
+                            except Exception:
+                                summary["remote_reconcile_failed"] += 1
+                                needs_sync = False
+
+                    if not needs_sync:
                         summary["skipped"] += 1
                         continue
                     try:
