@@ -2185,6 +2185,10 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
     assert verification["input"]["file_name"] == "verify.jpg"
     assert verification["input"]["sha256"] == "c" * 64
     assert verification["input"]["size_bytes"] == 123
+    assert verification["result_output_storage"]["storage_source_id"] == "remote-models"
+    assert verification["result_output_storage"]["object_key"] == "result.jpg"
+    assert verification["result_output_storage"]["size_bytes"] == 10
+    assert verification["result_output_storage"]["sha256"] == "a" * 64
     assert verification["verified_at"]
     assert committed["canonical_artifact_ids"]
     assert len(transport.model_artifacts.refreshed) == 1

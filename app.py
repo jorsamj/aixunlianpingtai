@@ -20,7 +20,7 @@ from urllib.parse import quote
 from contextlib import closing, contextmanager
 from datetime import datetime
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 
 import requests
@@ -8183,6 +8183,158 @@ def _deploy_job_references_version(job: Mapping[str, Any], algorithm_id: str, ve
     )
 
 
+def _version_cleanup_storage_provider(
+    project_id: str,
+    ref: Mapping[str, Any],
+):
+    source_id = str(ref.get("storage_source_id") or "").strip()
+    if not source_id:
+        raise RuntimeError("板端验收结果缺少 storage_source_id")
+    source = storage_source_repository().get(source_id)
+    if source is None or not source.enabled:
+        raise RuntimeError(f"板端验收结果存储源不可用：{source_id}")
+    try:
+        storage_type = StorageType.parse(source.type)
+    except ValueError as error:
+        raise RuntimeError(f"板端验收结果存储类型无效：{source.type}") from error
+    if storage_type not in {StorageType.OSS, StorageType.S3}:
+        raise RuntimeError(f"板端验收结果不是可移植对象存储：{source_id}")
+    secret: Mapping[str, str] = {}
+    if source.secret_ref:
+        secret = storage_credentials().get(source.secret_ref) or {}
+    return StorageProviderFactory(
+        data_dir=DATA_DIR,
+        project_dir=project_dir(project_id),
+        credentials={source.id: secret},
+    ).create(source)
+
+
+def _retire_rknn_board_result_output(
+    project_id: str,
+    job_file: Path,
+    job: Dict[str, Any],
+    *,
+    targets: List[str],
+    errors: List[str],
+) -> bool:
+    verification = job.get("hardware_verification")
+    if not isinstance(verification, Mapping):
+        return False
+    output_ref = verification.get("result_output_storage")
+    if not isinstance(output_ref, Mapping) or not output_ref:
+        return False
+
+    try:
+        task_id = str(verification.get("task_id") or "").strip()
+        generation = int(verification.get("execution_generation") or 0)
+        source_id = str(output_ref.get("storage_source_id") or "").strip()
+        object_key = str(output_ref.get("object_key") or "").strip().replace("\\", "/")
+        if not task_id or generation <= 0 or not source_id or not object_key:
+            raise ValueError("板端验收结果对象缺少 task/generation/source/key 身份")
+
+        safe_project = re.sub(r"[^A-Za-z0-9._-]+", "-", str(project_id).strip()).strip("-._")[:120] or "project"
+        safe_task = re.sub(r"[^A-Za-z0-9._-]+", "-", task_id).strip("-._")[:120] or "task"
+        expected_prefix = (
+            f"remote-execution/{safe_project}/{safe_task}/"
+            f"rknn-board-output/generation-{generation}/"
+        )
+        object_path = PurePosixPath(object_key)
+        if (
+            object_path.is_absolute()
+            or ".." in object_path.parts
+            or not object_key.startswith(expected_prefix)
+        ):
+            raise ValueError(
+                f"板端验收结果对象不属于当前 task/generation：{object_key}"
+            )
+
+        expected_sha = str(output_ref.get("sha256") or "").strip().lower()
+        try:
+            expected_size = int(output_ref.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha) or expected_size <= 0:
+            state = shared_task_artifacts().read_json(
+                task_id,
+                f"remote-results/{generation}/upload.json",
+                default={},
+            )
+            state_ref = state.get("storage_ref") if isinstance(state, Mapping) else None
+            state_generation = int(state.get("execution_generation") or 0) if isinstance(state, Mapping) else 0
+            if (
+                not isinstance(state_ref, Mapping)
+                or state_generation != generation
+                or str(state_ref.get("storage_source_id") or "").strip() != source_id
+                or str(state_ref.get("object_key") or "").strip().replace("\\", "/") != object_key
+            ):
+                raise ValueError("板端验收结果缺少可恢复的 durable upload evidence")
+            expected_sha = str(state.get("sha256") or "").strip().lower()
+            try:
+                expected_size = int(state.get("size_bytes") or 0)
+            except (TypeError, ValueError):
+                expected_size = 0
+
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha) or expected_size <= 0:
+            raise ValueError("板端验收结果 size/SHA256 evidence 无效")
+
+        manifest_path = job_file.parent / "artifacts" / "manifest.json"
+        manifest = read_json(manifest_path, {}) if manifest_path.is_file() else {}
+        manifest_verification = (
+            manifest.get("hardware_verification")
+            if isinstance(manifest, Mapping)
+            else None
+        )
+        if isinstance(manifest_verification, Mapping):
+            if (
+                str(manifest_verification.get("task_id") or "").strip() != task_id
+                or int(manifest_verification.get("execution_generation") or 0) != generation
+            ):
+                raise ValueError("job.json 与 manifest 的板端验收 task/generation 不一致")
+            manifest_ref = manifest_verification.get("result_output_storage")
+            if isinstance(manifest_ref, Mapping) and manifest_ref:
+                manifest_source = str(manifest_ref.get("storage_source_id") or "").strip()
+                manifest_key = str(manifest_ref.get("object_key") or "").strip().replace("\\", "/")
+                if manifest_source != source_id or manifest_key != object_key:
+                    raise ValueError("job.json 与 manifest 的板端验收 result object 不一致")
+
+        provider = _version_cleanup_storage_provider(project_id, output_ref)
+        if provider.exists(object_key):
+            metadata = provider.stat(object_key)
+            actual_sha = str(getattr(metadata, "sha256", "") or "").strip().lower()
+            actual_size = int(getattr(metadata, "size_bytes", 0) or 0)
+            if actual_size != expected_size or not actual_sha or actual_sha != expected_sha:
+                raise ValueError("板端验收结果对象 size/SHA256 已变化，拒绝删除")
+            provider.delete(object_key)
+
+        retired_at = now_iso()
+        retired_ref = dict(output_ref)
+        retired_ref.update({
+            "sha256": expected_sha,
+            "size_bytes": expected_size,
+            "available": False,
+            "deleted_with_version_at": retired_at,
+        })
+        job_verification = dict(verification)
+        job_verification["result_output_storage"] = retired_ref
+        job["hardware_verification"] = job_verification
+
+        if isinstance(manifest_verification, Mapping):
+            next_manifest = dict(manifest)
+            next_verification = dict(manifest_verification)
+            next_verification["result_output_storage"] = dict(retired_ref)
+            next_manifest["hardware_verification"] = next_verification
+            write_json(manifest_path, next_manifest)
+
+        targets.append(f"storage://{source_id}/{object_key}")
+        return True
+    except Exception as error:
+        errors.append(
+            f"清理 RKNN 板端验收结果失败 {job.get('id') or job_file.parent.name}：{error}"
+        )
+        return False
+
+
 def _algorithm_version_active_references(
     project_id: str,
     algorithm: Mapping[str, Any],
@@ -8355,7 +8507,13 @@ def _cleanup_algorithm_version_artifacts(
             errors.append(f"转换任务在清理阶段重新变为活动状态：{job.get('id') or job_file.parent.name}")
             continue
         job_root = job_file.parent.resolve()
-        changed = False
+        changed = _retire_rknn_board_result_output(
+            project_id,
+            job_file,
+            job,
+            targets=targets,
+            errors=errors,
+        )
         for output in job.get("outputs") or []:
             raw = str(output.get("path") or "").strip()
             if not raw:

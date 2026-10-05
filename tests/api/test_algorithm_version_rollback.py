@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -254,6 +255,144 @@ def test_rollback_and_delete_removes_only_owned_version_folder_and_keeps_trainin
     assert stored["current_version_id"] == "v3"
     assert [row["id"] for row in stored["versions"]] == ["v3"]
     assert stored["version_operations"][-1]["cleanup_status"] == "cleanup_completed"
+
+
+def test_rollback_retires_rknn_board_result_output_with_legacy_upload_evidence(
+    client, seeded_project, monkeypatch,
+):
+    project_id, _ = seeded_project
+    algorithm = _create_algorithm(client, project_id)
+    _seed_versions(project_id, algorithm["id"])
+
+    task_id = f"board-retire-{uuid.uuid4().hex[:8]}"
+    generation = 2
+    source_id = "remote-models"
+    result_bytes = b"board-result-image"
+    result_sha = hashlib.sha256(result_bytes).hexdigest()
+    result_key = (
+        f"remote-execution/{project_id}/{task_id}/"
+        f"rknn-board-output/generation-{generation}/result.jpg"
+    )
+
+    class FakeMetadata:
+        size_bytes = len(result_bytes)
+        sha256 = result_sha
+
+    class FakeProvider:
+        def __init__(self):
+            self.objects = {result_key}
+            self.deleted = []
+
+        def exists(self, key):
+            return str(key) in self.objects
+
+        def stat(self, key):
+            assert str(key) == result_key
+            return FakeMetadata()
+
+        def delete(self, key):
+            self.deleted.append(str(key))
+            self.objects.discard(str(key))
+
+    provider = FakeProvider()
+    monkeypatch.setattr(
+        app_module,
+        "_version_cleanup_storage_provider",
+        lambda pid, ref: provider,
+    )
+
+    conversion_id = f"convert-retire-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.deploy_root(project_id) / "jobs" / conversion_id
+    artifacts_dir = job_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    verification = {
+        "task_id": task_id,
+        "execution_generation": generation,
+        "node_id": "rk3568-board-01",
+        "chip": "rk3568",
+        "engine": "rknn-lite2",
+        "model_sha256": "b" * 64,
+        "model_size_bytes": 123,
+        "input": {
+            "file_name": "verify.jpg",
+            "sha256": "c" * 64,
+            "size_bytes": 456,
+        },
+        # Legacy pre-42.24.101 evidence intentionally lacks size/SHA256 here.
+        "result_output_storage": {
+            "storage_source_id": source_id,
+            "object_key": result_key,
+            "file_name": "result.jpg",
+            "content_type": "image/jpeg",
+        },
+    }
+    job = {
+        "id": conversion_id,
+        "status": "done",
+        "source_id": f"version::{algorithm['id']}::v5",
+        "source_trace": {
+            "algorithm_id": algorithm["id"],
+            "version_id": "v5",
+        },
+        "target": "rockchip",
+        "params": {"chip": "rk3568", "precision": "fp16"},
+        "hardware_verified": True,
+        "validation_status": "hardware_verified",
+        "hardware_verification": verification,
+        "outputs": [],
+    }
+    (job_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    (artifacts_dir / "manifest.json").write_text(
+        json.dumps({
+            "status": "hardware_verified",
+            "hardware_verified": True,
+            "hardware_verification": verification,
+        }),
+        encoding="utf-8",
+    )
+    app_module.shared_task_artifacts().atomic_write_json(
+        task_id,
+        f"remote-results/{generation}/upload.json",
+        {
+            "execution_generation": generation,
+            "storage_ref": {
+                "storage_source_id": source_id,
+                "object_key": result_key,
+                "file_name": "result.jpg",
+            },
+            "sha256": result_sha,
+            "size_bytes": len(result_bytes),
+        },
+    )
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v3/rollback",
+        json={"delete_current_version": True, "expected_current_version_id": "v5"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["cleanup_status"] == "cleanup_completed"
+    assert provider.deleted == [result_key]
+    assert not provider.exists(result_key)
+    assert any(result_key in target for target in body["cleanup_targets"])
+
+    retired_job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    retired_ref = retired_job["hardware_verification"]["result_output_storage"]
+    assert retired_ref["available"] is False
+    assert retired_ref["sha256"] == result_sha
+    assert retired_ref["size_bytes"] == len(result_bytes)
+    assert retired_ref["deleted_with_version_at"]
+    assert retired_job["source_version_status"] == "deleted"
+
+    retired_manifest = json.loads(
+        (artifacts_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_ref = retired_manifest["hardware_verification"]["result_output_storage"]
+    assert manifest_ref["available"] is False
+    assert manifest_ref["sha256"] == result_sha
+    assert manifest_ref["size_bytes"] == len(result_bytes)
+    assert retired_manifest["hardware_verification"]["task_id"] == task_id
 
 
 def test_direct_delete_api_rejects_current_version(client, seeded_project):

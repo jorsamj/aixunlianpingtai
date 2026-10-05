@@ -3860,9 +3860,17 @@ class RemoteExecutionTransportService:
             "inference_ms": inference_ms,
             "output_count": output_count,
             "output_shapes": list(runtime.get("output_shapes") or []),
-            "result_output_storage": dict(
-                (confirmed.get("result") or {}).get("output_storage") or {}
-            ),
+            "result_output_storage": {
+                **dict((confirmed.get("result") or {}).get("output_storage") or {}),
+                "size_bytes": _positive_int(
+                    evidence.get("size_bytes"),
+                    "result.size_bytes",
+                ),
+                "sha256": _normalized_sha256(
+                    evidence.get("sha256"),
+                    "result.sha256",
+                ),
+            },
         }
         lock = FileLock(str(job_dir / ".rknn-hardware-verify.lock"), timeout=30)
         try:

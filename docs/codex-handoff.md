@@ -1,5 +1,19 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 RKNN 板端验收引用 / 版本退役闭环（最新）
+
+- 上游绿基线：`1c32c9ed43237ce221a5bbbba8926072ddf8b24c` / VERSION `42.24.100`，46 / 46 workflows completed success。
+- `42.24.100` 已补齐 active RKNN board validation 的版本引用：DEPLOYMENT_TEST 会通过 `source_conversion_job_id → conversion job source_trace` 回溯算法版本；板端任务仍为 QUEUED/RUNNING/CANCEL_REQUESTED 时，version rollback/delete 必须 fail-closed，不能先删 conversion artifact。
+- 本提交正式版本：`42.24.101`。
+- RKNN 板端验证成功时，`hardware_verification.result_output_storage` 现在持久化 exact `storage_source_id + object_key + size_bytes + sha256`。artifact identity 不变，不新增第二 ModelArtifact / publication owner。
+- `rknn-board-output` 继续不属于普通 staging GC：算法版本仍存在时它保留为硬件验收 durable evidence；只有该 source version 被正式 rollback/delete 后，现有 `_cleanup_algorithm_version_artifacts` owner 才退休该 exact object。
+- 版本退役只接受 `remote-execution/{project}/{board_task}/rknn-board-output/generation-{n}/...`，删除前重新 stat 校验 size/SHA256；禁止 prefix/list delete。对象变化、存储不可达、identity 不一致时 cleanup_failed，并由既有 version operation retry journal 重试。
+- 兼容历史 pre-42.24.101 验收记录：若 `result_output_storage` 尚未持久化 size/SHA256，只允许从同一 task + execution_generation 的 `remote-results/{generation}/upload.json` 恢复 exact evidence；无法恢复则 fail-closed。
+- 远端对象退休后仍保留 job.json / manifest.json 的 hardware verification 审计元数据，并标记 `available=false / deleted_with_version_at`；不会删除 conversion job 审计记录。
+- 下一轮继续从 external Weight reconciliation / version retirement reference truth 尾部审计，不重做 Annotation GT、Training Picker、Dataset Revision 或已经关闭的 remote staging/conversion orphan GC。
+
+
+
 ## 2026-10-05 Conversion local GC retry/fence race 收口（最新）
 
 - 上游绿基线：`6f4bf44fdbf3b164cf9b859bdc6d039d518e916c` / VERSION `42.24.98`，29 / 29 workflows completed success。
