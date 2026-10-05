@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-05 Conversion portable CI fixture / version truth 对齐（最新）
+
+- 上游提交：`9d37a36cf745339dfc933506d25bcac49a404b9e` / VERSION `42.24.106`。
+- `Remote Conversion Runtime` 的 9 个失败共享同一旧测试 helper：`_patch_creation` mock 了 `version::algorithm-a::version-1` source lineage，却没有提供对应算法/version canonical truth。
+- 本提交只在该 focused conversion fixture 中补齐 `algorithm-a / version-1`，继续让生产 version reference fence 严格校验；不把不存在的版本重新视为合法，不放宽转换参数/资源/portable transport 测试。
+- 生产代码不变，正式版本：`42.24.107`。
+
+
 ## 2026-10-05 Version reference fence CI fixture 对齐（最新）
 
 - 上游提交：`6bcf917546a9535adc07e6d82a81c1f9ee88504b` / VERSION `42.24.105`。

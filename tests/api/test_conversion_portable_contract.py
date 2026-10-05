@@ -220,6 +220,25 @@ def _patch_creation(monkeypatch, tmp_path, transport):
         "_resolve_deploy_source",
         lambda _project_id, _source_id: _source(model),
     )
+    monkeypatch.setattr(
+        app_module,
+        "list_algorithms_internal",
+        lambda _project_id: [{
+            "id": "algorithm-a",
+            "name": "portable-contract",
+            "current_version_id": "version-1",
+            "versions": [{
+                "id": "version-1",
+                "version_name": "v1",
+                "stored_path": str(model),
+                "model_name": model.name,
+                "artifact_verified": True,
+                "training_status": "SUCCEEDED",
+                "trainable": True,
+                "framework": "ultralytics",
+            }],
+        }],
+    )
     monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _resource_id: _resource())
     monkeypatch.setattr(
         app_module,
