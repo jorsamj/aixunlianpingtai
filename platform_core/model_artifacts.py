@@ -8,14 +8,14 @@ import sqlite3
 import requests
 import tempfile
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlsplit
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms
@@ -64,6 +64,41 @@ def _safe_segment(value: Any, fallback: str = "item") -> str:
     import re
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
     return (text or fallback)[:120]
+
+
+@contextmanager
+def model_delivery_version_fence(
+    data_dir: str | Path,
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    *,
+    timeout: float = 120.0,
+):
+    """Cross-process fence for one algorithm-version delivery lifecycle."""
+    identity = hashlib.sha256(
+        f"{project_id}:{algorithm_id}:{version_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    root = Path(data_dir) / "model_artifacts" / "version-fences"
+    root.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(root / f"{identity}.lock"), timeout=max(0.0, float(timeout)))
+    try:
+        lock.acquire()
+    except Timeout as error:
+        raise PlatformError(
+            "MODEL_DELIVERY_VERSION_BUSY",
+            "算法版本交付状态正在变更",
+            f"project={project_id}; algorithm={algorithm_id}; version={version_id}",
+            "请等待当前发布、归档或版本退役事务完成后重试。",
+            409,
+        ) from error
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
 
 
 def _json_load(path: Path, default: Any) -> Any:
@@ -626,6 +661,31 @@ class ModelArtifactService:
         self.storage_sources_factory = storage_sources_factory
         self.storage_credentials_factory = storage_credentials_factory
         self.repository = ModelArtifactRepository(self.data_dir)
+
+    def _current_version(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        algorithm = next(
+            (
+                row for row in list_algorithms(self.algorithms_file(str(project_id)))
+                if str(row.get("id") or "") == str(algorithm_id)
+            ),
+            None,
+        )
+        if algorithm is None:
+            return None, None
+        version = next(
+            (
+                row for row in (algorithm.get("versions") or [])
+                if isinstance(row, Mapping)
+                and str(row.get("id") or "") == str(version_id)
+            ),
+            None,
+        )
+        return dict(algorithm), dict(version) if version is not None else None
 
     def public_config(self) -> dict[str, Any]:
         config = self.repository.config()
@@ -1625,16 +1685,33 @@ class ModelArtifactService:
 
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
-        for item in self.discover_version_artifacts(project_id, algorithm, version):
-            summary["discovered"] += 1
-            row = self.ensure_uploaded(item)
-            status = str(row.get("storage_status") or "PENDING").upper()
-            if status == "UPLOADED":
-                summary["uploaded"] += 1
-            elif status == "FAILED":
-                summary["failed"] += 1
-            else:
-                summary["pending"] += 1
+        algorithm_id = str(algorithm.get("id") or "").strip()
+        version_id = str(version.get("id") or "").strip()
+        if not algorithm_id or not version_id:
+            return summary
+        with model_delivery_version_fence(
+            self.data_dir, str(project_id), algorithm_id, version_id,
+        ):
+            current_algorithm, current_version = self._current_version(
+                str(project_id), algorithm_id, version_id,
+            )
+            if current_algorithm is None or current_version is None:
+                # run_auto_upload_once may hold a stale list snapshot while a
+                # concurrent rollback/delete retires this version. Never revive
+                # a canonical row/object after the retirement purge.
+                return summary
+            for item in self.discover_version_artifacts(
+                str(project_id), current_algorithm, current_version,
+            ):
+                summary["discovered"] += 1
+                row = self.ensure_uploaded(item)
+                status = str(row.get("storage_status") or "PENDING").upper()
+                if status == "UPLOADED":
+                    summary["uploaded"] += 1
+                elif status == "FAILED":
+                    summary["failed"] += 1
+                else:
+                    summary["pending"] += 1
         return summary
 
     def run_auto_upload_once(self) -> dict[str, int]:
@@ -1768,17 +1845,37 @@ class ModelArtifactService:
         }
 
     def retry(self, artifact_id: str) -> dict[str, Any]:
-        row = self.repository.get(artifact_id)
-        if row is None:
+        initial = self.repository.get(artifact_id)
+        if initial is None:
             raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
-        discovered = {
-            "artifact_id": row["artifact_id"], "project_id": row["project_id"], "algorithm_id": row["algorithm_id"],
-            "version_id": row["version_id"], "artifact_kind": row["artifact_kind"], "target": row["target"],
-            "conversion_job_id": row.get("conversion_job_id") or "", "file_name": row["file_name"],
-            "source_path": row["source_path"], "sha256": row["sha256"], "size_bytes": row["size_bytes"],
-            "metadata": row.get("metadata") or {},
-        }
-        return self.ensure_uploaded(discovered, force=True)
+        project_id = str(initial.get("project_id") or "")
+        algorithm_id = str(initial.get("algorithm_id") or "")
+        version_id = str(initial.get("version_id") or "")
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            row = self.repository.get(artifact_id)
+            if row is None:
+                raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
+            _algorithm, version = self._current_version(
+                project_id, algorithm_id, version_id,
+            )
+            if version is None:
+                raise PlatformError(
+                    "MODEL_ARTIFACT_VERSION_RETIRED",
+                    "算法版本已退役，不能重新上传模型资产",
+                    f"artifact={artifact_id}; version={version_id}",
+                    "请刷新模型资产列表；版本退役后的产物只能由版本级清理/审计流程处理。",
+                    409,
+                )
+            discovered = {
+                "artifact_id": row["artifact_id"], "project_id": row["project_id"], "algorithm_id": row["algorithm_id"],
+                "version_id": row["version_id"], "artifact_kind": row["artifact_kind"], "target": row["target"],
+                "conversion_job_id": row.get("conversion_job_id") or "", "file_name": row["file_name"],
+                "source_path": row["source_path"], "sha256": row["sha256"], "size_bytes": row["size_bytes"],
+                "metadata": row.get("metadata") or {},
+            }
+            return self.ensure_uploaded(discovered, force=True)
 
     def download(self, artifact_id: str):
         row = self.repository.get(artifact_id)

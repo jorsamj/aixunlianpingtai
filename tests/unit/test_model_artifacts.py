@@ -355,6 +355,46 @@ def _seed(root: Path):
     return model, output
 
 
+def test_stale_auto_upload_snapshot_does_not_revive_retired_version(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    stale_version = dict(algorithm["versions"][0])
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["versions"] = []
+    current[0]["current_version_id"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    summary = service.ingest_version("p1", algorithm, stale_version)
+
+    assert summary == {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_retry_refuses_to_reupload_artifact_after_version_retired(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "original"
+    )
+    row = service.repository.upsert(discovered)
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["versions"] = []
+    current[0]["current_version_id"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    with pytest.raises(PlatformError) as error:
+        service.retry(row["artifact_id"])
+    assert error.value.code == "MODEL_ARTIFACT_VERSION_RETIRED"
+
+
 def test_empty_upsert_does_not_erase_conversion_job_provenance(tmp_path: Path):
     _seed(tmp_path)
     service = _service(tmp_path)

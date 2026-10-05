@@ -31,6 +31,7 @@ from .model_artifacts import (
     ModelArtifactService,
     StorageTestPayload,
     SUCCESSFUL_CONVERSION_STATUSES as MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES,
+    model_delivery_version_fence,
 )
 from .external_algorithm_platform import (
     DEFAULT_CONFIG as EXTERNAL_PLATFORM_DEFAULT_CONFIG,
@@ -2366,6 +2367,17 @@ class ExternalAlgorithmPublishService:
         }
 
     def publish(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            return self._publish_under_version_fence(
+                project_id=project_id,
+                algorithm_id=algorithm_id,
+                version_id=version_id,
+                automatic=automatic,
+            )
+
+    def _publish_under_version_fence(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         self._assert_current_external_identity(algorithm, version)
         if (

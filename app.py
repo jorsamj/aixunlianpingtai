@@ -95,6 +95,7 @@ from platform_core.material_store import MaterialStore
 from platform_core.model_artifacts import (
     ModelArtifactService,
     SUCCESSFUL_CONVERSION_STATUSES,
+    model_delivery_version_fence,
 )
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
@@ -10226,20 +10227,23 @@ def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
         storage_sources_factory=storage_source_repository,
         storage_credentials_factory=storage_credentials,
     )
-    result = delete_algorithm_version(
-        algorithms_file(project_id),
-        algorithm_id,
-        version_id,
-        now=now_iso(),
-        operator="local_user",
-        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
-        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
-            project_id=project_id,
-            algorithm=algorithm,
-            version=version,
-        ),
-        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
-    )
+    with model_delivery_version_fence(
+        DATA_DIR, project_id, algorithm_id, version_id,
+    ):
+        result = delete_algorithm_version(
+            algorithms_file(project_id),
+            algorithm_id,
+            version_id,
+            now=now_iso(),
+            operator="local_user",
+            dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+            remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+                project_id=project_id,
+                algorithm=algorithm,
+                version=version,
+            ),
+            cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+        )
     return {
         "ok": result.get("cleanup_status") != "cleanup_failed",
         **result,
@@ -10272,22 +10276,28 @@ def v12_rollback_version(
         storage_sources_factory=storage_source_repository,
         storage_credentials_factory=storage_credentials,
     )
-    result = rollback_algorithm_version(
-        algorithms_file(project_id),
+    with model_delivery_version_fence(
+        DATA_DIR,
+        project_id,
         algorithm_id,
-        version_id,
-        now=now_iso(),
-        delete_current_version=True,
-        operator="local_user",
-        expected_current_version_id=payload.expected_current_version_id,
-        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
-        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
-            project_id=project_id,
-            algorithm=algorithm,
-            version=version,
-        ),
-        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
-    )
+        str(payload.expected_current_version_id),
+    ):
+        result = rollback_algorithm_version(
+            algorithms_file(project_id),
+            algorithm_id,
+            version_id,
+            now=now_iso(),
+            delete_current_version=True,
+            operator="local_user",
+            expected_current_version_id=payload.expected_current_version_id,
+            dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+            remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+                project_id=project_id,
+                algorithm=algorithm,
+                version=version,
+            ),
+            cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+        )
     return {
         "ok": result.get("cleanup_status") != "cleanup_failed",
         **result,
