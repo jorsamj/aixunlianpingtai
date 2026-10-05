@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from platform_core.algorithms import save_algorithms
+from platform_core.model_artifacts import ModelArtifactRepository, build_artifact_object_key
 from platform_core.remote_material_lifecycle import (
     REMOTE_MATERIAL_CLEANUP_REF,
     RemoteExecutionStagingLifecycle,
@@ -634,3 +638,289 @@ def test_generic_deployment_test_stays_outside_rknn_board_gc_scope():
         },
         evidence={"execution_generation": 1, "sha256": "b" * 64, "size_bytes": 6},
     ) == []
+
+
+
+def _training_delivery_fixture(tmp_path: Path, *, attached: bool):
+    runtime = tmp_path / "task_runtime"
+    repository = TaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    provider = FakeProvider()
+    project_id = "project-1"
+    task_id = "training-orphan"
+    algorithm_id = "algorithm-one"
+    snapshot_id = "snapshot-orphan"
+    generation = 1
+    version_id = "rt" + hashlib.sha256(
+        f"{task_id}:{generation}:{snapshot_id}".encode("utf-8")
+    ).hexdigest()[:10]
+    model_bytes = b"provisional-best-model"
+    digest = hashlib.sha256(model_bytes).hexdigest()
+    file_name = "best.pt"
+    object_key = build_artifact_object_key(
+        root_prefix="historic-model-root",
+        project_id=project_id,
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        target="training",
+        sha256=digest,
+        file_name=file_name,
+    )
+    prepare_artifact_id = hashlib.sha256(
+        f"{project_id}:{algorithm_id}:{version_id}:best:{digest}".encode("utf-8")
+    ).hexdigest()[:32]
+    request = {
+        "algorithm_asset_id": algorithm_id,
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "training": {
+                "schema_version": 2,
+                "snapshot_id": snapshot_id,
+                "result": {
+                    "storage_source_id": "s3-main",
+                    "object_key": (
+                        f"remote-execution/{project_id}/{task_id}/training-result.zip"
+                    ),
+                },
+            },
+        },
+    }
+    artifacts.atomic_write_json(task_id, "request.json", request)
+    repository.create(
+        TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.TRAINING,
+            "request.json",
+            "training:agent",
+            required_capabilities=("agent.remote",),
+        ),
+        artifacts=artifacts,
+    )
+    lease = repository.claim_next(
+        "agent",
+        (TaskKind.TRAINING,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    artifacts.atomic_write_json(
+        task_id,
+        f"remote-results/{generation}/training-models.json",
+        {
+            "task_id": task_id,
+            "project_id": project_id,
+            "node_id": "agent-one",
+            "execution_generation": generation,
+            "version_id": version_id,
+            "models": [{
+                "role": "best",
+                "file_name": file_name,
+                "sha256": digest,
+                "size_bytes": len(model_bytes),
+                "artifact_id": prepare_artifact_id,
+                "storage_ref": {
+                    "storage_source_id": "s3-main",
+                    "object_key": object_key,
+                    "file_name": file_name,
+                    "content_type": "application/octet-stream",
+                },
+            }],
+            "confirmed": True,
+        },
+    )
+    provider.put(object_key, model_bytes, digest)
+    project = tmp_path / "projects" / project_id
+    project.mkdir(parents=True, exist_ok=True)
+    versions = []
+    current_version_id = ""
+    if attached:
+        versions = [{
+            "id": version_id,
+            "version_name": "attached",
+            "task_id": task_id,
+            "job_id": task_id,
+            "training_job_id": task_id,
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+        }]
+        current_version_id = version_id
+    save_algorithms(
+        project / "algorithms.json",
+        [{
+            "id": algorithm_id,
+            "name": "训练算法",
+            "current_version_id": current_version_id,
+            "versions": versions,
+        }],
+    )
+    local_model = (
+        project / "models"
+        / f"remote_{task_id}_g1_best_{digest[:12]}.pt"
+    )
+    local_model.parent.mkdir(parents=True, exist_ok=True)
+    local_model.write_bytes(model_bytes)
+
+    canonical = ModelArtifactRepository(tmp_path)
+    row = canonical.upsert({
+        "artifact_id": "canonical-provisional-best",
+        "project_id": project_id,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "artifact_kind": "original",
+        "target": "best",
+        "chip_code": "",
+        "conversion_job_id": "",
+        "file_name": file_name,
+        "source_path": str(local_model),
+        "sha256": digest,
+        "size_bytes": len(model_bytes),
+        "metadata": {
+            "remote_training": True,
+            "task_id": task_id,
+            "execution_generation": generation,
+            "snapshot_id": snapshot_id,
+            "role": "best",
+        },
+    })
+    canonical.patch(
+        row["artifact_id"],
+        storage_source_id="s3-main",
+        object_key=object_key,
+        storage_status="UPLOADED",
+    )
+    failed = repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.FAILED,
+        error="remote training base became stale after model upload",
+    )
+    return {
+        "repository": repository,
+        "artifacts": artifacts,
+        "provider": provider,
+        "task": failed,
+        "version_id": version_id,
+        "object_key": object_key,
+        "local_model": local_model,
+        "canonical": canonical,
+    }
+
+
+def test_terminal_training_gc_retires_unattached_final_model_delivery(tmp_path):
+    fixture = _training_delivery_fixture(tmp_path, attached=False)
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    early = lifecycle.maintain(now=finished + timedelta(minutes=30))
+    assert early["retained"] == 1
+    assert fixture["provider"].exists(fixture["object_key"]) is True
+
+    late = lifecycle.maintain(now=finished + timedelta(hours=2))
+    assert late["complete"] == 1
+    assert fixture["provider"].exists(fixture["object_key"]) is False
+    assert fixture["local_model"].exists() is False
+    assert fixture["canonical"].list(
+        project_id="project-1",
+        algorithm_id="algorithm-one",
+        version_id=fixture["version_id"],
+    ) == []
+    ledger = fixture["artifacts"].read_json(
+        "training-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    delivery = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "provisional-training-delivery"
+    )
+    assert delivery["status"] == "DELETED"
+
+
+def test_terminal_training_gc_protects_delivery_when_version_is_attached(tmp_path):
+    fixture = _training_delivery_fixture(tmp_path, attached=True)
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["complete"] == 1
+    assert fixture["provider"].exists(fixture["object_key"]) is True
+    assert fixture["local_model"].exists() is True
+    assert len(fixture["canonical"].list(
+        project_id="project-1",
+        algorithm_id="algorithm-one",
+        version_id=fixture["version_id"],
+    )) == 1
+    ledger = fixture["artifacts"].read_json(
+        "training-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    delivery = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "provisional-training-delivery"
+    )
+    assert delivery["status"] == "PROTECTED"
+
+
+
+def test_terminal_training_gc_refuses_unowned_canonical_row(tmp_path):
+    fixture = _training_delivery_fixture(tmp_path, attached=False)
+    fixture["canonical"].upsert({
+        "artifact_id": "unexpected-other-row",
+        "project_id": "project-1",
+        "algorithm_id": "algorithm-one",
+        "version_id": fixture["version_id"],
+        "artifact_kind": "conversion",
+        "target": "last",
+        "chip_code": "",
+        "conversion_job_id": "unexpected-conversion",
+        "file_name": "unexpected.pt",
+        "source_path": "",
+        "sha256": "f" * 64,
+        "size_bytes": 1,
+        "metadata": {
+            "remote_training": False,
+            "task_id": "other-task",
+        },
+    })
+    finished = datetime.fromisoformat(fixture["task"].finished_at)
+    lifecycle = RemoteExecutionStagingLifecycle(
+        fixture["repository"],
+        fixture["artifacts"],
+        lambda _project_id, _ref: fixture["provider"],
+        data_dir=tmp_path,
+        retention_seconds=3600,
+    )
+
+    result = lifecycle.maintain(now=finished + timedelta(hours=2))
+
+    assert result["incomplete"] == 1
+    assert fixture["provider"].exists(fixture["object_key"]) is True
+    assert fixture["local_model"].exists() is True
+    assert len(fixture["canonical"].list(
+        project_id="project-1",
+        algorithm_id="algorithm-one",
+        version_id=fixture["version_id"],
+    )) == 2
+    ledger = fixture["artifacts"].read_json(
+        "training-orphan", REMOTE_MATERIAL_CLEANUP_REF
+    )
+    delivery = next(
+        row for row in ledger["objects"]
+        if row.get("scope") == "provisional-training-delivery"
+    )
+    assert delivery["status"] == "CONFLICT"
+    assert "not owned" in delivery["last_error"]

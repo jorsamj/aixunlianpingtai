@@ -1,15 +1,19 @@
 """Lifecycle governance for temporary task-owned remote execution objects.
 
-Only exact remote-execution/{project}/{task}/... references are eligible.
-The owner never lists/deletes by prefix and never touches canonical ModelArtifact
-objects, shared remote-training bundles, or formal material object keys.
+Only exact remote-execution/{project}/{task}/... references are eligible for
+ordinary staging cleanup. Remote-training final-key models are eligible only
+from durable task evidence while their deterministic algorithm version is still
+unattached. Referenced canonical ModelArtifact objects, shared remote-training
+bundles, and formal material object keys are protected.
 
 The historical remote-material ledger/state paths remain unchanged so existing
 cleanup journals stay recoverable while this single owner also governs
-conversion, training-result, and cleaning-result staging.
+conversion, training-result, cleaning-result, and provisional training delivery
+cleanup.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -19,6 +23,12 @@ from typing import Any, Callable, Mapping
 
 from filelock import FileLock, Timeout
 
+from .algorithms import list_algorithms
+from .model_artifacts import (
+    ModelArtifactRepository,
+    build_artifact_object_key,
+    model_delivery_version_fence,
+)
 from .task_runtime import TaskKind, TaskStatus
 
 
@@ -62,6 +72,14 @@ def _utc(value: datetime | str | None = None) -> datetime:
 
 def _iso(value: datetime | str | None = None) -> str:
     return _utc(value).isoformat()
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _safe_segment(value: object, fallback: str) -> str:
@@ -288,6 +306,193 @@ def material_staging_refs(
     )
 
 
+def _training_delivery_version_id(task_id: str, generation: int, snapshot_id: str) -> str:
+    return "rt" + hashlib.sha256(
+        f"{task_id}:{int(generation)}:{snapshot_id}".encode("utf-8")
+    ).hexdigest()[:10]
+
+
+def _training_delivery_local_path(
+    data_dir: Path,
+    *,
+    project_id: str,
+    task_id: str,
+    generation: int,
+    role: str,
+    sha256: str,
+    file_name: str,
+) -> Path:
+    suffix = Path(str(file_name or "model.pt")).suffix.lower() or ".pt"
+    return (
+        data_dir
+        / "projects"
+        / str(project_id)
+        / "models"
+        / (
+            f"remote_{_safe_segment(task_id, 'task')}_g{int(generation)}_"
+            f"{role}_{sha256[:12]}{suffix}"
+        )
+    ).resolve()
+
+
+def _normalize_training_delivery_ref(
+    task,
+    payload: Mapping[str, Any],
+    state: Mapping[str, Any],
+    model: Mapping[str, Any],
+    *,
+    generation: int,
+    primary_role: str,
+    data_dir: Path,
+) -> dict[str, Any]:
+    remote = payload.get("remote_execution")
+    training = remote.get("training") if isinstance(remote, Mapping) else None
+    if (
+        task.kind is not TaskKind.TRAINING
+        or not isinstance(training, Mapping)
+        or int(remote.get("version") or 0) != 1
+        or str(remote.get("task_kind") or "") != "TRAINING"
+        or str(remote.get("transport") or "") != "object-storage-v1"
+    ):
+        raise ValueError("training delivery cleanup requires the portable training contract")
+    algorithm_id = str(payload.get("algorithm_asset_id") or "").strip()
+    snapshot_id = str(training.get("snapshot_id") or "").strip()
+    version_id = str(state.get("version_id") or "").strip()
+    expected_version_id = _training_delivery_version_id(
+        str(task.task_id), generation, snapshot_id,
+    )
+    role = str(model.get("role") or "").strip().lower()
+    digest = str(model.get("sha256") or "").strip().lower()
+    file_name = str(model.get("file_name") or "").strip()
+    storage_ref = model.get("storage_ref")
+    try:
+        size = int(model.get("size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("training delivery size evidence is invalid") from error
+    if (
+        not algorithm_id
+        or not snapshot_id
+        or version_id != expected_version_id
+        or role not in {"best", "last"}
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+        or size <= 0
+        or not file_name
+        or Path(file_name).name != file_name
+        or Path(file_name).suffix.lower() != ".pt"
+        or not isinstance(storage_ref, Mapping)
+    ):
+        raise ValueError("training delivery identity evidence is invalid")
+    source_id = str(storage_ref.get("storage_source_id") or "").strip()
+    object_key = str(storage_ref.get("object_key") or "").strip().replace("\\", "/")
+    path = PurePosixPath(object_key)
+    canonical = build_artifact_object_key(
+        root_prefix="gc-root",
+        project_id=str(task.project_id),
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        target="training",
+        sha256=digest,
+        file_name=file_name,
+    )
+    canonical_suffix = canonical.split("/", 1)[1]
+    expected_prepare_id = hashlib.sha256(
+        f"{task.project_id}:{algorithm_id}:{version_id}:{role}:{digest}".encode("utf-8")
+    ).hexdigest()[:32]
+    if (
+        not source_id
+        or not object_key
+        or path.is_absolute()
+        or ".." in path.parts
+        or not object_key.endswith("/" + canonical_suffix)
+        or str(model.get("artifact_id") or "").strip() != expected_prepare_id
+    ):
+        raise ValueError("training delivery object is not the deterministic task artifact")
+    local_path = ""
+    if role == primary_role:
+        local_path = str(
+            _training_delivery_local_path(
+                data_dir,
+                project_id=str(task.project_id),
+                task_id=str(task.task_id),
+                generation=generation,
+                role=role,
+                sha256=digest,
+                file_name=file_name,
+            )
+        )
+    return {
+        "scope": "provisional-training-delivery",
+        "role": role,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "execution_generation": int(generation),
+        "artifact_id": expected_prepare_id,
+        "file_name": file_name,
+        "storage_source_id": source_id,
+        "object_key": object_key,
+        "sha256": digest,
+        "size_bytes": size,
+        "local_path": local_path,
+        "status": "PENDING",
+        "last_error": "",
+        "last_attempt_at": None,
+        "deleted_at": None,
+    }
+
+
+def remote_training_delivery_orphan_refs(
+    task,
+    payload: Mapping[str, Any],
+    *,
+    artifacts,
+    data_dir: str | Path,
+) -> list[dict[str, Any]]:
+    """Recover exact final-key model uploads that never became an algorithm version."""
+    if task.kind is not TaskKind.TRAINING:
+        return []
+    base = Path(data_dir).resolve()
+    result: list[dict[str, Any]] = []
+    for generation in range(1, max(0, int(getattr(task, "attempt", 0))) + 1):
+        state = artifacts.read_json(
+            str(task.task_id),
+            f"remote-results/{generation}/training-models.json",
+            default={},
+        )
+        if (
+            not isinstance(state, Mapping)
+            or int(state.get("execution_generation") or 0) != generation
+            or not str(state.get("version_id") or "").strip()
+            or not isinstance(state.get("models"), list)
+        ):
+            continue
+        models = [item for item in state.get("models") or [] if isinstance(item, Mapping)]
+        roles = [str(item.get("role") or "").strip().lower() for item in models]
+        if not models or len(set(roles)) != len(roles) or not set(roles).issubset({"best", "last"}):
+            continue
+        primary_role = "best" if "best" in roles else "last"
+        generation_refs: list[dict[str, Any]] = []
+        try:
+            for model in models:
+                generation_refs.append(
+                    _normalize_training_delivery_ref(
+                        task,
+                        payload,
+                        state,
+                        model,
+                        generation=generation,
+                        primary_role=primary_role,
+                        data_dir=base,
+                    )
+                )
+        except Exception:
+            # Malformed legacy evidence is fail-safe: skip this generation
+            # without blocking cleanup of unrelated terminal tasks.
+            continue
+        result.extend(generation_refs)
+    return result
+
+
 class RemoteExecutionStagingGCReporter:
     """Throttled observer attached to the existing storage Worker heartbeat."""
 
@@ -365,6 +570,7 @@ class RemoteExecutionStagingLifecycle:
         self.repository = repository
         self.artifacts = artifacts
         self.provider_resolver = provider_resolver
+        self.data_dir = Path(data_dir).resolve() if data_dir is not None else None
         self.retention_seconds = max(3600, int(retention_seconds))
         self.scan_limit = max(1, min(100, int(scan_limit)))
         if data_dir is not None:
@@ -410,7 +616,11 @@ class RemoteExecutionStagingLifecycle:
                 by_identity[identity] = dict(item)
                 continue
             # Preserve terminal cleanup state while refreshing immutable evidence.
-            for key in ("role", "sha256", "size_bytes"):
+            for key in (
+                "scope", "role", "sha256", "size_bytes", "algorithm_id",
+                "version_id", "execution_generation", "artifact_id",
+                "file_name", "local_path",
+            ):
                 if item.get(key) not in (None, ""):
                     current[key] = item[key]
         return list(by_identity.values())
@@ -480,6 +690,15 @@ class RemoteExecutionStagingLifecycle:
             payload,
             artifacts=self.artifacts,
         )
+        if task.kind is TaskKind.TRAINING and self.data_dir is not None:
+            refs.extend(
+                remote_training_delivery_orphan_refs(
+                    task,
+                    payload,
+                    artifacts=self.artifacts,
+                    data_dir=self.data_dir,
+                )
+            )
         if not refs:
             return None
         current = self._read_ledger(str(task.task_id))
@@ -499,6 +718,252 @@ class RemoteExecutionStagingLifecycle:
         }
         self._write_ledger(str(task.task_id), ledger)
         return ledger
+
+    def _algorithm_version_exists(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        task_id: str,
+    ) -> bool:
+        if self.data_dir is None:
+            raise RuntimeError("training delivery cleanup requires data_dir")
+        algorithms = list_algorithms(
+            self.data_dir / "projects" / str(project_id) / "algorithms.json"
+        )
+        algorithm = next(
+            (
+                row for row in algorithms
+                if str(row.get("id") or "") == str(algorithm_id)
+            ),
+            None,
+        )
+        if algorithm is None:
+            return False
+        for row in (algorithm.get("versions") or []):
+            if not isinstance(row, Mapping):
+                continue
+            if str(row.get("id") or "") == str(version_id):
+                return True
+            if str(task_id or "") and str(
+                row.get("task_id")
+                or row.get("job_id")
+                or row.get("training_job_id")
+                or ""
+            ) == str(task_id):
+                return True
+        return False
+
+    def _cleanup_training_delivery_group(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        objects: list[dict[str, Any]],
+        indices: list[int],
+        now_dt: datetime,
+    ) -> dict[str, int]:
+        if self.data_dir is None:
+            for index in indices:
+                objects[index].update(
+                    status="PENDING",
+                    last_error="training delivery cleanup requires data_dir",
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
+        sample = objects[indices[0]]
+        algorithm_id = str(sample.get("algorithm_id") or "")
+        version_id = str(sample.get("version_id") or "")
+        try:
+            with model_delivery_version_fence(
+                self.data_dir,
+                str(task.project_id),
+                algorithm_id,
+                version_id,
+            ):
+                if self._algorithm_version_exists(
+                    str(task.project_id),
+                    algorithm_id,
+                    version_id,
+                    str(task.task_id),
+                ):
+                    for index in indices:
+                        objects[index].update(
+                            status="PROTECTED",
+                            last_error="",
+                            last_attempt_at=now_dt.isoformat(),
+                        )
+                    return {"deleted": 0, "conflicts": 0, "pending": 0}
+
+                primary_roles = {
+                    str(objects[index].get("role") or "")
+                    for index in indices
+                    if str(objects[index].get("local_path") or "")
+                }
+                if len(primary_roles) > 1:
+                    raise ValueError("training delivery has multiple local primary models")
+                primary_role = next(iter(primary_roles), "")
+                validated: list[tuple[int, dict[str, Any]]] = []
+                for index in indices:
+                    item = objects[index]
+                    safe = _normalize_training_delivery_ref(
+                        task,
+                        payload,
+                        {"version_id": str(item.get("version_id") or "")},
+                        {
+                            "role": item.get("role"),
+                            "file_name": item.get("file_name"),
+                            "sha256": item.get("sha256"),
+                            "size_bytes": item.get("size_bytes"),
+                            "artifact_id": item.get("artifact_id"),
+                            "storage_ref": {
+                                "storage_source_id": item.get("storage_source_id"),
+                                "object_key": item.get("object_key"),
+                            },
+                        },
+                        generation=int(item.get("execution_generation") or 0),
+                        primary_role=primary_role,
+                        data_dir=self.data_dir,
+                    )
+                    if str(item.get("local_path") or "") != str(safe.get("local_path") or ""):
+                        raise ValueError("training delivery local path evidence changed")
+                    validated.append((index, safe))
+
+                expected = {
+                    (str(safe["role"]), str(safe["sha256"])): safe
+                    for _, safe in validated
+                }
+                artifact_repository = ModelArtifactRepository(self.data_dir)
+                rows = artifact_repository.list(
+                    project_id=str(task.project_id),
+                    algorithm_id=algorithm_id,
+                    version_id=version_id,
+                    limit=100,
+                )
+                for row in rows:
+                    metadata = row.get("metadata")
+                    safe = expected.get((
+                        str(row.get("target") or "").strip().lower(),
+                        str(row.get("sha256") or "").strip().lower(),
+                    ))
+                    if (
+                        safe is None
+                        or not isinstance(metadata, Mapping)
+                        or metadata.get("remote_training") is not True
+                        or str(metadata.get("task_id") or "") != str(task.task_id)
+                        or int(row.get("size_bytes") or 0) != int(safe["size_bytes"])
+                        or str(row.get("storage_source_id") or "") not in {
+                            "", str(safe["storage_source_id"]),
+                        }
+                        or str(row.get("object_key") or "") not in {
+                            "", str(safe["object_key"]),
+                        }
+                    ):
+                        raise ValueError(
+                            "canonical ModelArtifact row is not owned by this provisional training delivery"
+                        )
+
+                providers: dict[int, object] = {}
+                existing_remote: set[int] = set()
+                for index, safe in validated:
+                    item = objects[index]
+                    item["last_attempt_at"] = now_dt.isoformat()
+                    if item.get("status") in {"DELETED", "ABSENT"}:
+                        continue
+                    provider = self.provider_resolver(str(task.project_id), safe)
+                    providers[index] = provider
+                    key = str(safe["object_key"])
+                    if not provider.exists(key):
+                        item.update(
+                            status="ABSENT",
+                            last_error="",
+                            deleted_at=now_dt.isoformat(),
+                        )
+                        continue
+                    meta = provider.stat(key)
+                    actual_sha = str(getattr(meta, "sha256", "") or "").strip().lower()
+                    if (
+                        int(getattr(meta, "size_bytes", 0) or 0) != int(safe["size_bytes"])
+                        or not actual_sha
+                        or actual_sha != str(safe["sha256"])
+                    ):
+                        raise ValueError(
+                            "provisional training model size/SHA256 no longer matches durable evidence"
+                        )
+                    existing_remote.add(index)
+
+                for _index, safe in validated:
+                    local_path = str(safe.get("local_path") or "")
+                    if not local_path:
+                        continue
+                    candidate = Path(local_path)
+                    if candidate.exists() and (
+                        not candidate.is_file()
+                        or int(candidate.stat().st_size) != int(safe["size_bytes"])
+                        or _sha256_path(candidate) != str(safe["sha256"])
+                    ):
+                        raise ValueError(
+                            "provisional local training model no longer matches durable evidence"
+                        )
+
+                deleted = 0
+                for index, safe in validated:
+                    if index not in existing_remote:
+                        continue
+                    try:
+                        providers[index].delete(str(safe["object_key"]))
+                        objects[index].update(
+                            status="DELETED",
+                            last_error="",
+                            deleted_at=now_dt.isoformat(),
+                        )
+                        deleted += 1
+                    except Exception as error:
+                        objects[index].update(status="PENDING", last_error=str(error)[:1000])
+                        return {"deleted": deleted, "conflicts": 0, "pending": 1}
+
+                for index, safe in validated:
+                    local_path = str(safe.get("local_path") or "")
+                    if not local_path:
+                        continue
+                    candidate = Path(local_path)
+                    if candidate.exists():
+                        try:
+                            candidate.unlink()
+                        except OSError as error:
+                            objects[index].update(
+                                status="PENDING",
+                                last_error=str(error)[:1000],
+                            )
+                            return {"deleted": deleted, "conflicts": 0, "pending": 1}
+
+                try:
+                    artifact_repository.delete_version(
+                        str(task.project_id), algorithm_id, version_id,
+                    )
+                except Exception as error:
+                    for index, _safe in validated:
+                        objects[index].update(
+                            status="PENDING",
+                            last_error=str(error)[:1000],
+                        )
+                    return {"deleted": deleted, "conflicts": 0, "pending": 1}
+                return {"deleted": deleted, "conflicts": 0, "pending": 0}
+        except ValueError as error:
+            for index in indices:
+                objects[index].update(
+                    status="CONFLICT",
+                    last_error=str(error)[:1000],
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": len(indices), "pending": 0}
+        except Exception as error:
+            for index in indices:
+                objects[index].update(
+                    status="PENDING",
+                    last_error=str(error)[:1000],
+                    last_attempt_at=now_dt.isoformat(),
+                )
+            return {"deleted": 0, "conflicts": 0, "pending": len(indices)}
 
     def cleanup_task(
         self,
@@ -529,7 +994,29 @@ class RemoteExecutionStagingLifecycle:
                 }
             objects = [dict(row) for row in list(ledger.get("objects") or [])]
             deleted = conflicts = pending = 0
+            payload = self.artifacts.read_json(
+                str(task.task_id), str(task.payload_ref), default={}
+            )
+            payload = payload if isinstance(payload, Mapping) else {}
+            training_groups: dict[tuple[str, str], list[int]] = {}
+            for index, item in enumerate(objects):
+                if str(item.get("scope") or "") != "provisional-training-delivery":
+                    continue
+                training_groups.setdefault((
+                    str(item.get("algorithm_id") or ""),
+                    str(item.get("version_id") or ""),
+                ), []).append(index)
+            for indices in training_groups.values():
+                outcome = self._cleanup_training_delivery_group(
+                    task, payload, objects, indices, now_dt,
+                )
+                deleted += int(outcome.get("deleted") or 0)
+                conflicts += int(outcome.get("conflicts") or 0)
+                pending += int(outcome.get("pending") or 0)
+
             for item in objects:
+                if str(item.get("scope") or "") == "provisional-training-delivery":
+                    continue
                 if item.get("status") in {"DELETED", "ABSENT"}:
                     continue
                 item["last_attempt_at"] = now_dt.isoformat()
@@ -570,7 +1057,8 @@ class RemoteExecutionStagingLifecycle:
             ledger["objects"] = objects
             ledger["updated_at"] = now_dt.isoformat()
             ledger["complete"] = all(
-                row.get("status") in {"DELETED", "ABSENT"} for row in objects
+                row.get("status") in {"DELETED", "ABSENT", "PROTECTED"}
+                for row in objects
             )
             ledger["conflicts"] = sum(row.get("status") == "CONFLICT" for row in objects)
             ledger["pending"] = sum(row.get("status") == "PENDING" for row in objects)
@@ -670,4 +1158,5 @@ __all__ = [
     "RemoteMaterialStagingLifecycle",
     "material_staging_refs",
     "remote_execution_staging_refs",
+    "remote_training_delivery_orphan_refs",
 ]

@@ -305,6 +305,12 @@ jobs:
           grep -Fq 'provider.delete(key)' platform_core/remote_material_lifecycle.py
           grep -Fq 'RemoteExecutionStagingGCReporter' task_worker.py
           grep -Fq 'instance_lease.add_renew_hook(remote_staging_gc_reporter.report)' task_worker.py
+          grep -Fq 'provisional-training-delivery' platform_core/remote_material_lifecycle.py
+          grep -Fq 'remote-results/{generation}/training-models.json' platform_core/remote_material_lifecycle.py
+          grep -Fq 'model_delivery_version_fence(' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_retires_unattached_final_model_delivery' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_protects_delivery_when_version_is_attached' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_refuses_unowned_canonical_row' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'def _record_remote_result_staging(' platform_core/remote_execution_transport.py
           grep -Fq 'test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_successful_retry_ledger_includes_previous_generation_result' tests/unit/test_remote_material_lifecycle.py

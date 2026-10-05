@@ -18,6 +18,7 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
@@ -44,6 +45,7 @@ on:
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -84,6 +86,7 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
@@ -110,6 +113,7 @@ on:
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -172,6 +176,7 @@ jobs:
           platform_core/node_agent_executor_loop.py
           platform_core/agent_execution.py
           platform_core/remote_execution_transport.py
+          platform_core/remote_material_lifecycle.py
           platform_core/model_artifacts.py
           platform_core/training_recovery_api.py
           node_agent.py
@@ -188,6 +193,7 @@ jobs:
           tests/unit/test_training_lineage.py
           tests/unit/test_training_evaluation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_executor_loop.py
@@ -231,6 +237,7 @@ jobs:
           tests/unit/test_remote_training_results.py
           tests/unit/test_training_evaluation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_model_artifacts.py
       - name: Atomic training version commit fencing
@@ -334,6 +341,9 @@ jobs:
           grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
           grep -Fq 'test_remote_training_commit_reuses_existing_task_version_before_base_stale_check' tests/unit/test_remote_execution_transport.py
           grep -Fq 'version_id = self._remote_training_version_id(' platform_core/remote_execution_transport.py
+          grep -Fq 'provisional-training-delivery' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_retires_unattached_final_model_delivery' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_refuses_unowned_canonical_row' tests/unit/test_remote_material_lifecycle.py
           grep -Fq 'test_v12_rejects_paddle_before_algorithm_or_material_io' tests/api/test_training_request.py
           grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
           grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py
