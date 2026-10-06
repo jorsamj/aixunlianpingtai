@@ -14,7 +14,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.114`  
 > 上一批审计记录提交后 VERSION：`42.24.115`  
 > 上一批审计记录提交后 VERSION：`42.24.116`  
-> 本批审计记录提交后 VERSION：`42.24.117`  
+> 上一批审计记录提交后 VERSION：`42.24.117`  
+> 本批审计记录提交后 VERSION：`42.24.118`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1321,6 +1322,85 @@ Source 是配置实体，不应因新增另一条配置而被隐式删除。
 
 ---
 
+
+### AUDIT-029 — 第 101 个 Model Config 会静默删除最老配置并遗留 Keyring Secret
+
+**级别：中～高**  
+**模块：Model Config / Secret Lifecycle / AI Annotation Configuration**
+
+**现象：**
+
+当前正式“模型配置”页面使用：
+
+`GET/POST/PUT/DELETE /api/v35/model-configs`
+
+创建配置时：
+
+`items.insert(0, item)`
+→ `_v35_save_items(MODEL_CONFIGS_FILE, items[:100])`
+
+因此第 101 个模型配置创建时，最老配置会被直接从 `MODEL_CONFIGS_FILE` 物理截断。
+
+这不是前端分页，而是配置 owner 数据本身被删。
+
+**额外 secret 泄漏：**
+
+显式：
+
+`DELETE /api/v35/model-configs/{config_id}`
+
+会找到 removed config，并：
+
+`_v35_secret_store().delete(secret_ref)`
+
+但 create-time `items[:100]` 截断完全没有经过 DELETE owner。
+
+所以被第 101 个配置挤掉的旧配置若带 API Key：
+
+- config row 消失；
+- Keyring secret 不删除；
+- 形成不可从正常 UI 管理的 orphan secret。
+
+**真实调用链：**
+
+100 个 Model Config
+→ 当前“模型配置”页新增第 101 个
+→ POST v35 model-configs
+→ 新 secret 先写 Keyring（若有）
+→ new item 插到列表首位
+→ save `items[:100]`
+→ oldest config 静默丢失
+→ oldest secret 仍留在 Keyring。
+
+**为什么是 Bug / 套娃：**
+
+长期配置实体被错误套用 history retention；同时 secret lifecycle 只有显式 DELETE 才能完成，截断路径绕过了 canonical secret cleanup。
+
+**影响：**
+
+- 模型配置无提示丢失；
+- 默认 AI 模型可能被挤掉；
+- 用户创建新配置却导致另一条配置消失；
+- Keyring 出现 orphan secret；
+- 后续 secret 审计 / rotation 无法通过配置列表定位该凭据；
+- 若旧配置仍被其它持久化业务引用，UI 已经无法编辑/查看它。
+
+**为什么 CI 没发现：**
+
+现有 Model Config / secret tests 覆盖 create、sanitize、explicit delete 等，不覆盖第 101 个 config 的 persistence 与 secret cleanup。
+
+**建议最小修复：**
+
+- Model Config 不得用 `items[:100]` 做物理 retention；
+- 若确有数量上限，create 前明确 409，不能隐式删除其它配置；
+- UI 列表做分页/搜索即可；
+- 所有配置删除必须只走显式 delete lifecycle，并处理 active durable reference（AUDIT-018）。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101st create、old config retention、old secret retention/cleanup 语义。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1502,6 +1582,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-029` 起继续编号；
+- 确认后从 `AUDIT-030` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
