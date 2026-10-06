@@ -27,7 +27,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.127`  
 > 上一批审计记录提交后 VERSION：`42.24.128`  
 > 上一批审计记录提交后 VERSION：`42.24.129`  
-> 本批审计记录提交后 VERSION：`42.24.130`  
+> 上一批审计记录提交后 VERSION：`42.24.130`  
+> 本批审计记录提交后 VERSION：`42.24.131`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2301,6 +2302,115 @@ Bug 在于候选浏览 owner 把“最新 500 条”当成唯一可选择全集�
 
 ---
 
+
+### AUDIT-043 — Quality Center 用 `versions[0]` 代替 `current_version_id`，非相邻 rollback 后会展示错误版本指标
+
+**级别：中～高**  
+**模块：Quality Center / Algorithm current-version projection / rollback read consistency**
+
+**现象：**
+
+`v44_quality_center()` 对每个算法直接：
+
+`vers = a.get("versions") or []`
+→ `v = vers[0] if vers else {}`
+
+然后从该版本 report 计算：
+
+- Precision；
+- Recall；
+- mAP50；
+- algorithm score。
+
+但 canonical Algorithm owner 已有明确：
+
+`current_version_id`
+
+并且 rollback 会修改这个指针。
+
+**真实调用链：**
+
+AlgorithmSqlStore 新版本归档时：
+
+`sort_index = MIN(sort_index) - 1`
+
+`read_all()` 又按：
+
+`versions.sort_index ASC`
+
+返回，所以新版本通常排在 `versions[0]`。
+
+例如：
+
+- v1：sort_index=0
+- v2：sort_index=-1
+- v3：sort_index=-2，current=v3
+
+执行产品允许的非相邻 rollback：
+
+v3 → v1
+
+rollback owner：
+
+- 删除当前 v3；
+- `current_version_id = v1`；
+- v2 作为历史版本继续保留。
+
+此时 SQL read 顺序变为：
+
+`versions = [v2, v1]`
+
+但 current pointer 是：
+
+`current_version_id = v1`
+
+Quality Center 仍取 `versions[0] = v2`，因此展示 v2 的 Precision / Recall / mAP50，而不是当前已回退到的 v1。
+
+**为什么是 Bug / 套娃：**
+
+版本数组顺序只是展示/存储顺序，不是 current-version owner。
+
+系统已经建立 canonical `current_version_id`，Quality Center 却重新用数组第一项推导“当前版本”，形成第二套 current-version truth。
+
+这不是 Version Retirement / rollback owner 本身错误，而是读取端绕过该 owner。
+
+**影响：**
+
+- rollback 后质量中心算法指标可与算法详情当前版本不一致；
+- 算法平均质量会被错误版本污染；
+- 管理者可能认为回退已生效，但质量 KPI 仍显示中间历史版本；
+- 多算法平均 Precision / Recall / mAP50 进一步失真；
+- 指标缓存刷新也无法修复，因为错误来自版本选择逻辑。
+
+**为什么 CI 没发现：**
+
+rollback 测试覆盖 current pointer / 删除 / cleanup 合同；
+
+Quality Center 测试没有覆盖：
+
+- v1 → v2 → v3；
+- 从 v3 非相邻回退到 v1；
+- v2 保留但不再 current；
+- Quality Center 必须按 `current_version_id` 取 report。
+
+**建议最小修复：**
+
+不要重排或重写版本 owner。
+
+Quality Center 直接复用 canonical pointer：
+
+- 读取 `current_version_id`；
+- 从 `versions` 中按 id 精确找 current；
+- pointer 无效时 fail-closed / 明确显示 current-version error；
+- 不再用 `versions[0]` 推断当前版本。
+
+同时横向检查其它当前可达页面是否仍把 `versions[0]` 当 current。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖非相邻 rollback 后 Quality Center 指标。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2482,6 +2592,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-043` 起继续编号；
+- 确认后从 `AUDIT-044` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
