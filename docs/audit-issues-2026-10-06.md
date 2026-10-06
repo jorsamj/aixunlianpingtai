@@ -2599,6 +2599,108 @@ Source 更新语义没有区分：
 
 ---
 
+
+### AUDIT-046 — Training “自动转换”只选择厂商，目标芯片 / SoC 没有进入冻结合同
+
+**级别：高**  
+**模块：Training Settings / Auto Conversion / Deployment Target Identity**
+
+**现象：**
+
+当前 canonical Training Settings 的“达标后自动转换”只允许勾选：
+
+- `ascend`
+- `rockchip`
+- `sophon`
+
+前端最终只提交：
+
+`auto_convert_targets: ["ascend"|"rockchip"|"sophon"]`
+
+没有提交、冻结或让用户确认：
+
+- Rockchip chip；
+- Ascend soc_version；
+- Sophon processor/chip；
+- 对应 conversion resource identity。
+
+但真正的转换 runtime 明确依赖这些目标硬件身份。
+
+**真实调用链：**
+
+Training Settings
+→ `.ts428AutoConvert`
+→ `auto_convert_targets`
+→ Training 成功归档版本
+→ `_v48_auto_convert_version()`
+
+然后三种厂商采用三套不同策略：
+
+1. **Rockchip**
+   - 从第一个 ready resource 读取 supported_chips；
+   - 只有恰好 1 个 chip 才允许自动转换；
+   - 同时支持 RK3568 + RK3576 时直接记录 error 并跳过转换。
+   - 现有回归测试还明确固定了“多芯片必须 fail-closed”。
+
+2. **Ascend**
+   - 读取 `detected_soc_versions / remote_health.soc_versions`；
+   - 不让用户确认，直接使用 `socs[0]`；
+   - 但 canonical `validate_target()` 明确要求 soc_version 必须与部署硬件一致。
+
+3. **Sophon**
+   - 直接硬编码：
+     `params["chip"] = "bm1684x"`
+   - Deployment Worker 也会把缺省 chip 当作 bm1684x。
+
+**为什么是 Bug / 套娃：**
+
+Training 侧把“厂商”误当成完整 conversion target identity。
+
+真正转换 owner 对硬件 identity 的要求却比 Training request 更严格：
+
+- Rockchip 选择不充分时 fail-closed；
+- Ascend 选择不充分时 silent-first；
+- Sophon 选择不充分时 hardcode-default。
+
+同一个“自动转换”产品动作因此既不确定，也不一致。
+
+**影响：**
+
+- 常见同时支持 RK3568 / RK3576 的资源上，用户明明勾选“瑞芯微自动转换”，训练完成后却不会创建 RKNN job；
+- Ascend 多 SoC 资源可能自动选择并非用户部署目标的第一个 soc_version；
+- Sophon 非 BM1684X 目标无法通过 Training 设置表达，可能失败或生成错误目标产物；
+- 自动转换 summary 只在训练完成后暴露 errors，用户创建训练时无法知道配置本身不可兑现；
+- 产物 chipCode / computePlatform 身份可能与用户真实部署目标不一致；
+- 若选中的 ready resource 是 legacy remote resource，还会继续进入 AUDIT-024 的第二 Conversion Runtime owner。
+
+**为什么 CI 没发现：**
+
+现有测试分别覆盖：
+
+- Rockchip 单芯片成功；
+- Rockchip 多芯片 fail-closed；
+
+但没有前后端合同测试要求 Training UI 在开启 auto conversion 时必须冻结完整 target identity，也没有覆盖 Ascend 多 SoC / Sophon 非 BM1684X 的用户意图。
+
+**建议最小修复：**
+
+不要在 `_v48_auto_convert_version()` 里继续猜。
+
+最小方向：
+
+- Training Settings 开启某个自动转换目标时，选择并冻结 canonical `resource_id + target hardware identity`；
+- Rockchip 明确选择 RK3568 或 RK3576；
+- Ascend 明确选择 soc_version；
+- Sophon 明确选择 processor/chip；
+- 提交前按当前 Deploy Resource capability 做 fail-closed；
+- Training request 只持有 immutable auto-conversion plan；
+- 真正转换仍只调用 canonical Conversion owner，不新增第二 conversion runtime。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 Rockchip 双芯片、Ascend 多 SoC、Sophon 非 BM1684X，以及资源变化后的 fail-closed。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2780,6 +2882,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-046` 起继续编号；
+- 确认后从 `AUDIT-047` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
