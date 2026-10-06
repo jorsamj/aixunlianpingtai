@@ -23,7 +23,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.123`  
 > 上一批审计记录提交后 VERSION：`42.24.124`  
 > 上一批审计记录提交后 VERSION：`42.24.125`  
-> 本批审计记录提交后 VERSION：`42.24.126`  
+> 上一批审计记录提交后 VERSION：`42.24.126`  
+> 本批审计记录提交后 VERSION：`42.24.127`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1935,102 +1936,33 @@ Detection Batch 并没有独立 batch index，而是每次从整个项目的 `Ta
 ---
 
 
-### AUDIT-037 — Training Settings 仍提供“AI 中途介入”，但 canonical submit 与后端都会静默强制关闭
+### AUDIT-037 — 已撤销：AI 中途介入设置并非当前 canonical Training Settings 可达入口
 
-**级别：中～高**  
-**模块：Training Settings / TrainingSubmitRuntime / TrainReq**
+**状态：撤销，不计入确认问题**
 
-**现象：**
+最初根据 `openTrainSettings425()` / `saveTrainSettings425()` 中仍存在完整“AI 中途介入”控件，误判其为当前训练设置入口。
 
-当前训练设置弹窗仍真实展示完整“AI 中途介入”配置，包括：
+继续按最终浏览器调用链复核后确认：
 
-- 启用开关；
-- 介入 Epoch；
-- AI 模型；
-- 每次抽样数；
-- 可追加轮数；
-- 最大介入次数；
-- 自动执行 / 只给建议。
+- 当前算法卡最终训练入口为 `startAlgorithmTraining429`；
+- 文件后部明确执行 `startAlgorithmTraining429 = openTrainingCreateCanonical429`；
+- 同时把 `startAlgorithmTraining423` 也重定向到同一个 canonical 429 owner；
+- 当前训练创建页“编辑全部训练参数”调用 `openTrainSettings429()`；
+- `openTrainSettings429()` 实际调用 `openTrainSettings428()`，其中没有 AI 中途介入区域；
+- `startAlgorithmTrainingLegacy423_2` 在当前生产静态代码中只有定义，没有其它调用；
+- `openTrain425()` 只有 Legacy 定义以及上述 zero-reference Legacy wrapper 内部调用；
+- `openTrainSettings425()` / `saveTrainSettings425()` 只存在于该旧 425 Modal 内部；
+- `static/main.mjs`、当前 algorithm/training modules、index.html 均没有引用这些 425 Legacy 入口。
 
-`saveTrainSettings425()` 还会真实校验：
+因此：
 
-- 开启后必须填写介入轮次；
-- 开启后必须选择 AI 模型；
+旧 425 AI intervention UI 当前属于 **zero-reference Legacy UI**，不能按生产可达 Bug 登记。
 
-并把配置写入 `state.train425Config`。
+后端 / Schema 仍保留并强制关闭 AI intervention 字段，可作为后续 API/Legacy 清理债审查，但在没有新的真实可达证据前，不再声称“当前用户能配置后被静默丢弃”。
 
-但 canonical：
+**结论：撤销，不修；编号保留，不复用。**
 
-`buildTrainingEngineParameters()`
 
-直接硬编码：
-
-`ai_intervention_enabled: false`
-
-并完全不提交其它 AI 介入字段。
-
-后端 `validate_train_request()` 又再次无条件执行：
-
-- `payload.ai_intervention_enabled = False`
-- `payload.ai_intervention_epochs = []`
-- `payload.ai_model_config_id = ""`
-
-**真实调用链：**
-
-用户打开训练设置
-→ 勾选“AI 中途介入”
-→ 选择模型 / Epoch / 自动执行
-→ 前端保存成功
-→ TrainingSubmitRuntime build payload
-→ 强制 `ai_intervention_enabled=false`
-→ v12 Training 创建成功
-→ 训练从未执行用户刚配置的 AI 介入。
-
-即使第三方直接调用 API 带上 AI 介入字段：
-→ Pydantic 接受
-→ `validate_train_request()`
-→ 静默改为关闭。
-
-**为什么是 Bug / 套娃：**
-
-这是明确的 UI / API / runtime 合同分裂：
-
-- UI 宣称支持并要求用户配置；
-- Schema 仍公开这些字段；
-- canonical submit 静默丢弃；
-- backend runtime 静默覆盖。
-
-它不会 fail-fast，用户只能在训练结束后发现功能从未生效。
-
-**影响：**
-
-- 用户以为 AI 会在指定 Epoch 介入，实际不会；
-- 用户选的模型 / 轮次 / 行为模式全部无效；
-- 训练结果与界面承诺不一致；
-- 排查时 payload / job truth 也无法解释用户曾开启过该功能；
-- 属于高误导性的 silent no-op。
-
-**为什么 CI 没发现：**
-
-现有测试把“v42.8 起 AI 中途介入禁用”视为 backend 行为，但没有前端合同测试要求：
-
-“既然后端永久禁用，该配置区不得继续作为可用能力展示”。
-
-**建议最小修复：**
-
-当前不要重新实现第二套 AI Training runtime。
-
-最小修复应 fail-closed：
-
-- 从当前 Training Settings 移除 / 禁用“AI 中途介入”可编辑区，并明确当前未开放；
-- TrainReq Schema 同步移除或正式标记 retired 字段；
-- canonical submit 不再保留伪配置；
-- 若未来重新上线，必须重新走一个明确的 Training runtime contract，而不是恢复旧 v42 旁路。
-
-**是否需要 VERSION：** 是。  
-**是否需要新增回归测试：** 是，至少覆盖当前设置 UI 不得呈现可提交的 AI intervention，以及 API 不再宣称支持已退役能力。
-
----
 
 
 ### AUDIT-038 — Cleaning confirm 缺少状态 guard，可提前确认仍在运行的 CLEAN
