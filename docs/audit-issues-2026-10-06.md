@@ -26,7 +26,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.126`  
 > 上一批审计记录提交后 VERSION：`42.24.127`  
 > 上一批审计记录提交后 VERSION：`42.24.128`  
-> 本批审计记录提交后 VERSION：`42.24.129`  
+> 上一批审计记录提交后 VERSION：`42.24.129`  
+> 本批审计记录提交后 VERSION：`42.24.130`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2194,6 +2195,112 @@ Quality Center 从 aggregate truth 计算 KPI，实时 jobs index 继续保持 b
 
 ---
 
+
+### AUDIT-042 — Supplement Feedback 候选固定只暴露最新 500 条，501+ 时更老已确认反馈无法进入 Candidate Set
+
+**级别：中～高**  
+**模块：Online Feedback / Supplement Data / Candidate Set / Iteration**
+
+**现象：**
+
+补数据候选接口：
+
+`GET /api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates`
+
+调用：
+
+`list_confirmed_for_version(..., limit=500)`
+
+repository 固定：
+
+`ORDER BY confirmed_at DESC, id DESC LIMIT ?`
+
+且 limit 最大强制为 500。
+
+接口会返回：
+
+- `total`
+- `returned`
+- `truncated = total > returned`
+
+前端也会提示：
+
+“候选超过 500 条，请先处理当前批次。”
+
+但当前没有任何：
+
+- cursor；
+- page；
+- offset；
+- “加载更多 / 下一批”入口。
+
+与此同时 Candidate Set 自身明确限制：
+
+`1 <= candidates <= 500`
+
+并且同一版本一旦冻结一个 `supplement_data_candidate_set`，再次冻结另一组会 409，不能覆盖。
+
+**真实调用链：**
+
+同一版本已有 700 条 confirmed feedback
+→ list endpoint 只返回最新 500
+→ 前端只能看到这固定 500 条
+→ 更老 200 条不可见、不可勾选
+→ 用户从当前 500 条中 freeze Candidate Set
+→ version 写入唯一 `supplement_data_candidate_set`
+→ 再次 freeze 第二组被拒绝。
+
+即使用户暂时不 freeze、重新打开页面，repository 仍按同样排序返回同一最新 500 条，因此不存在“下一批 200 条”的实际路径。
+
+**为什么是 Bug / 套娃：**
+
+“Candidate Set 最多 500 条”可以是合法业务上限；
+
+Bug 在于候选浏览 owner 把“最新 500 条”当成唯一可选择全集，导致用户无法从 501+ 条已确认反馈中选择任意 500 条。
+
+这是 bounded query 被错误当成完整 selection truth。
+
+**影响：**
+
+- 第 501+ 条 confirmed feedback 永远无法进入该版本 Candidate Set；
+- 较老但更有价值 / 已完成正式标注的反馈无法选择；
+- UI 的“请先处理当前批次”具有误导性，因为当前没有下一批；
+- 后续 Training supplement provenance 只能建立在被截断的可见集合上；
+- 1k / 10k 在线反馈规模下会系统性遗漏历史候选。
+
+**为什么 CI 没发现：**
+
+现有测试覆盖：
+
+- 单条 confirmed feedback；
+- stale annotation；
+- pending feedback exclusion；
+- Candidate Set identity/provenance；
+
+没有覆盖：
+
+- 501+ confirmed feedback；
+- 第 501 条是否可分页访问；
+- 从非最新 500 中选择候选；
+- truncated 后的继续处理流程。
+
+**建议最小修复：**
+
+不提高 Candidate Set 500 条上限，也不做无界 hydration。
+
+最小方向：
+
+- `list_confirmed_for_version` 提供稳定 cursor 分页；
+- API 暴露 cursor / next_cursor；
+- 前端支持受控翻页 / 加载更多，并允许跨页维护选择；
+- freeze 仍最多 500 条，后端继续按 feedback_id + candidate_digest 做最终 CAS 核验；
+- 禁止 per-feedback N+1，素材 / Annotation 继续批量读取。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 501+、跨页选择与固定 500 freeze 上限。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2375,6 +2482,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-042` 起继续编号；
+- 确认后从 `AUDIT-043` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
