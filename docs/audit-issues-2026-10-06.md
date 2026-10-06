@@ -24,7 +24,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.124`  
 > 上一批审计记录提交后 VERSION：`42.24.125`  
 > 上一批审计记录提交后 VERSION：`42.24.126`  
-> 本批审计记录提交后 VERSION：`42.24.127`  
+> 上一批审计记录提交后 VERSION：`42.24.127`  
+> 本批审计记录提交后 VERSION：`42.24.128`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2009,6 +2010,86 @@ Detection Batch 并没有独立 batch index，而是每次从整个项目的 `Ta
 
 ---
 
+
+### AUDIT-040 — 第 21 个 Legacy Training Server 会静默物理删除最老服务器配置
+
+**级别：中**  
+**模块：Training Resource / Legacy Training Server Configuration**
+
+**现象：**
+
+当前“训练资源”页面仍提供：
+
+- “训练服务器”；
+- “接入服务器”；
+- `quickAddServer()` / `saveServer()`。
+
+保存调用：
+
+`POST /api/train_servers`
+
+后端：
+
+`save_train_server()`
+
+执行：
+
+`servers.insert(0, item)`
+→ `write_json(SERVERS_FILE, servers[:20])`
+
+因此已有 20 条服务器配置时，第 21 条创建会正常返回成功，但最老一条服务器配置会被静默从持久化文件中删除。
+
+**真实调用链：**
+
+当前训练资源页
+→ “接入服务器”
+→ `saveServer()`
+→ POST `/api/train_servers`
+→ 新配置插入首位
+→ `servers[:20]`
+→ oldest server 被物理丢弃
+→ 前端重新拉 `/api/training_options`，只看到剩余 20 条。
+
+**为什么是 Bug / 套娃：**
+
+这是把“UI/history 数量上限”错误实现成长期配置 owner 的物理 retention。
+
+Training Server 是显式配置实体，删除应只通过明确 DELETE；新增另一条服务器不能隐式删除已有配置。
+
+并且这些 legacy server 当前仍被 `/api/training_options` 消费，AUDIT-022 已确认它们仍能进入训练资源 target，因此这不是 zero-reference 配置。
+
+**影响：**
+
+- 第 21 个服务器创建时会无提示丢一条旧配置；
+- 用户无法知道哪条服务器因新增被删除；
+- training_options / 资源页目标集合会突然变化；
+- 如果用户仍依赖旧资源做诊断或兼容任务，其配置会丢失；
+- 无显式删除审计意图。
+
+**为什么 CI 没发现：**
+
+当前 training-server 前端测试只验证：
+
+- `saveServer` 是唯一最终保存 owner；
+- 保存后 scoped refresh `/api/training_options`；
+- navigation race fencing。
+
+没有 21+ server persistence / retention 测试。
+
+**建议最小修复：**
+
+结合 AUDIT-022 一起收口，不新增新的 Training Server owner。
+
+- 不再使用 `servers[:20]` 做物理持久化裁剪；
+- 若产品确实需要硬数量上限，应在 create 前明确 409，并告诉用户先显式删除；
+- 如果 legacy server 最终只保留诊断用途，则先完成 canonical Training target fail-closed，再按 zero-reference / migration 规则退役；
+- 显式 DELETE 仍是唯一删除入口。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖第 21 条 create 不得静默删除旧配置。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2190,6 +2271,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-040` 起继续编号；
+- 确认后从 `AUDIT-041` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
