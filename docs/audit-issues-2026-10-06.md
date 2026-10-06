@@ -12,7 +12,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.112`  
 > 上一批审计记录提交后 VERSION：`42.24.113`  
 > 上一批审计记录提交后 VERSION：`42.24.114`  
-> 本批审计记录提交后 VERSION：`42.24.115`  
+> 上一批审计记录提交后 VERSION：`42.24.115`  
+> 本批审计记录提交后 VERSION：`42.24.116`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1160,6 +1161,87 @@ v42 runtime 没有：
 
 ---
 
+
+### AUDIT-027 — collection_runs 最近 100 条是运行状态唯一存储，active run 可被新任务物理挤掉
+
+**级别：高**  
+**模块：素材接入 / Collection Run State / Auto Scheduler / Concurrency**
+
+**现象：**
+
+创建 v42 Source Collection run 时：
+
+`rows.insert(0, run)`
+→ `_v42_save(project_id, "collection_runs", rows[:100])`
+
+也就是说项目只持久化最近 100 条 collection run。
+
+这不是单纯 UI history window，因为运行中的 daemon worker 更新状态时也是：
+
+`_v42_collect_status()`
+→ 重新读取 `collection_runs`
+→ 找到相同 run_id 才更新
+→ 再写回整个 JSON。
+
+而 Source 调度判断同样依赖：
+
+`_v42_source_last_run()`
+→ 只从这份 bounded `collection_runs` 中找该 source 的最后一次 run。
+
+**真实故障链：**
+
+一个较老 collection run 仍 RUNNING
+→ 项目其它 Source 又创建 100+ 个更新 run
+→ 老 run 被 `rows[:100]` 物理丢弃
+→ 原 daemon worker 继续执行，但后续 `_v42_collect_status(run_id,...)` 已找不到自己
+→ progress / done / failed 状态全部无法再落库。
+
+若该 run 属于 auto Source：
+
+→ `_v42_source_last_run(source_id)` 也看不到这个 active run
+→ `_v42_source_due()` 不再命中“last run queued/running”保护
+→ scheduler 可能再次为同一 Source 启动新的 collection thread。
+
+**为什么是 Bug / 套娃：**
+
+一个 bounded history JSON 同时承担：
+
+- active execution state；
+- worker progress sink；
+- scheduler mutual exclusion；
+- recent history。
+
+历史保留策略可以直接删除正在运行的状态 owner。
+
+**影响：**
+
+- 正在采集的任务从状态存储中消失；
+- worker 完成/失败无法回写；
+- UI runtime_status 与真实线程状态分裂；
+- auto Source 可能并发重复采集；
+- 同一图片来源可能重复入库；
+- source cadence 也会因 last run 丢失提前触发。
+
+**为什么 CI 没发现：**
+
+当前没有覆盖 v42 collection 101+ runs 的测试，也没有“老 active run 被 history truncation 挤掉”的 scheduler concurrency test。
+
+**建议最小修复：**
+
+根修仍应随 AUDIT-026 收口到 Durable Import owner。
+
+在迁移完成前至少必须：
+
+- active run 绝不能被 history trimming 删除；
+- terminal history 与 active state 分离；
+- scheduler mutual exclusion 不能依赖 bounded history；
+- 状态更新找不到 active run 时必须 fail-closed / 记录严重错误，不能静默成功。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101+ runs、active run retention、重复调度防护。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1341,6 +1423,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-027` 起继续编号；
+- 确认后从 `AUDIT-028` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
