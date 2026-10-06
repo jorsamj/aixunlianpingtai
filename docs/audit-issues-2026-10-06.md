@@ -17,7 +17,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.117`  
 > 上一批审计记录提交后 VERSION：`42.24.118`  
 > 上一批审计记录提交后 VERSION：`42.24.119`  
-> 本批审计记录提交后 VERSION：`42.24.120`  
+> 上一批审计记录提交后 VERSION：`42.24.120`  
+> 本批审计记录提交后 VERSION：`42.24.121`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1647,6 +1648,74 @@ Label delete owner 只看“当前 Annotation truth 是否引用”，没有看�
 
 ---
 
+
+### AUDIT-033 — AI Annotation 任务列表只消费第一页 50 条，active task 可消失并停止轮询
+
+**级别：中～高**  
+**模块：AI Annotation / Task Pagination / AutoLabelPollRuntime / PollRegistry**
+
+**现象：**
+
+后端 `GET /api/v60/projects/{project_id}/annotation-tasks` 已提供 cursor 分页，返回 `items + next_cursor`。
+
+但当前最终 AI 标注页面固定请求 `?limit=50`，随后直接用 `response.items` 覆盖 `state.annotationTasks60`，完全不消费 `next_cursor`。
+
+独立 `AutoLabelPollRuntime` 的默认 loader 也再次固定请求 `/annotation-tasks?limit=50`，并且 `activate()/schedule()` 只依据这 50 条中是否存在 active task 决定是否继续轮询。
+
+**真实调用链：**
+
+项目存在 51+ 个 AI_ANNOTATION task
+→ 较老 QUEUED / RUNNING / CANCEL_REQUESTED task 位于第 51+
+→ 页面刷新只拿最新 50 条
+→ active task 从 `state.annotationTasks60` 和任务表消失。
+
+如果前 50 条都已终态：
+
+→ `hasActiveAutoLabelTask(firstPage) == false`
+→ `AutoLabelPollRuntime.schedule()` 不再注册 `auto-label-v60`
+→ 第 51+ 个 active task 后续状态变化不会被页面自动发现。
+
+**为什么是 Bug / 套娃：**
+
+后端 cursor API 只是 bounded history projection；前端却把单页同时当成：
+
+- 完整任务列表；
+- active-task truth；
+- polling lifecycle truth。
+
+**影响：**
+
+- 第 51+ 个 active AI 标注任务从 UI 消失；
+- 自动轮询可能提前停止；
+- 用户可能误以为任务不存在并重复创建；
+- 较老 AWAITING_CONFIRMATION 任务也可能不再出现在任务表；
+- Durable Task 仍真实存在，但 UI / PollRegistry 看不到它。
+
+**为什么 CI 没发现：**
+
+现有 frontend/browser 测试明确验证当前 `?limit=50` 行为，主要覆盖少量 active task 的 row patching / PollRegistry；没有覆盖：
+
+- 51+ annotation tasks；
+- task-list `next_cursor`；
+- active task 位于第二页；
+- 第一页全 terminal、第二页仍 active。
+
+Candidate Review 自身的候选分页测试属于另一个 endpoint，不能覆盖任务列表分页。
+
+**建议最小修复：**
+
+不要无界一次性 hydrate 全任务历史。
+
+- active AI_ANNOTATION task 必须独立完整保留；
+- terminal history 使用 cursor 分页 / 加载更多；
+- AutoLabelPollRuntime 是否继续轮询只能基于完整 active truth；
+- 页面 history 与 active execution truth 分离，但仍共享 canonical TaskRepository owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖第 51+ 个 active task 与 polling continuity。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1828,6 +1897,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-033` 起继续编号；
+- 确认后从 `AUDIT-034` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
