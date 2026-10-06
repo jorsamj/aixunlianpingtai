@@ -3138,6 +3138,110 @@ CLEAN MaterialBatch 支持 FILTERED 大范围；explicit large selection 也支�
 
 ---
 
+
+### AUDIT-051 — ZIP 导入完成复核页重新全量 hydrate 10k/20k 素材与标注，绕过 v19 已有 bounded preview
+
+**级别：中～高**  
+**模块：ZIP Import Review / MaterialRepository / AnnotationRepository / Frontend Hydration**
+
+**现象：**
+
+v19 ZIP 扫描阶段已经针对大包做了明确的规模收口：
+
+- 10k / 20k ZIP 可识别；
+- scan images 存外部 manifest；
+- job detail 默认不携带全部 images；
+- preview 有明确 `image_limit`；
+- list 只返回 bounded preview。
+
+但导入完成后的：
+
+`GET /api/v52/projects/{project_id}/import/jobs/{job_id}/review`
+
+又把完整导入范围一次性 hydrate 回来。
+
+**真实调用链：**
+
+导入报告中：
+`report.imported_image_ids = [全部导入 image_id]`
+
+用户打开“本次导入素材”
+→ `showImportReview412(jobId)`
+→ GET v52 review
+→ 后端：
+  - 读取全部 imported_image_ids；
+  - `MaterialRepository.get_many(all ids)`；
+  - 每 500 条 `read_annotations_many()`，直到全部标注读完；
+  - 再遍历全部 boxes 重算 label_box_counts；
+  - 返回完整 `image_ids + images + report + label_box_counts`
+→ 前端把完整数组保存进：
+  - `state.import412.image_ids`
+  - `state.import412.images`
+  - `state.import412Selected`
+→ 最后 UI 只做：
+`rows.slice(0, 180)`
+
+所以 180 只是 DOM 截断，不是后端 / 网络 / state 分页。
+
+**为什么是 Bug / 套娃：**
+
+v19 主导入 owner 已经明确为 10k/20k 做了 bounded scan/read contract；v52 compatibility review 又重新创建了一条“全量 material + annotation hydration”旁路。
+
+而且 import worker 的 report 已经维护：
+
+`label_box_counts`
+
+v52 review 仍通过读取全部 AnnotationRepository boxes 再计算一次，产生重复全量 I/O。
+
+**规模影响：**
+
+20k 导入完成后，用户只是打开复核弹窗就会：
+
+- 一次 material get_many 20k；
+- AnnotationRepository 按 500 批读取共 20k；
+- Python 构造全部 images/annotation dictionaries；
+- 全量 JSON 序列化与网络传输；
+- 浏览器保存 20k image rows 和 20k selected IDs；
+- 最终却只展示前 180 张。
+
+这与仓库已有的 10k/20k bounded preview 测试目标直接冲突。
+
+**影响：**
+
+- 大 ZIP 导入完成后复核弹窗首开慢、内存峰值高；
+- Web API 和浏览器都承担与整个导入包大小线性增长的成本；
+- 移动端更容易卡顿；
+- label_box_counts 重算造成额外 Annotation I/O；
+- 10k/20k 导入前半段已经完成的性能优化在最终复核阶段失效。
+
+**为什么 CI 没发现：**
+
+现有：
+
+- `test_v19_import_scalability.py` 明确覆盖 10k / 20k scan bounded preview；
+- `zip-import-10k.test.mjs` 验证 picker 只显示 bounded preview；
+- `test_v52_import_review_owner.py` 只验证 review 从 MaterialRepository 读取真实素材，不覆盖大规模分页。
+
+没有测试要求 v52 review 在 10k/20k 时也必须 bounded。
+
+**建议最小修复：**
+
+不要新增第二 import review store。
+
+最小方向：
+
+- v52 review 增加 cursor / limit，按 imported_image_ids 的稳定顺序分页；
+- 首屏 100~200 条即可；
+- `image_ids` 全量选择语义不要通过把 20k IDs 全塞进浏览器来实现，可由 server-side selection scope / import batch identity 表达；
+- label_box_counts 优先使用 import report 已冻结统计，不要再次扫描全部正式标注；
+- 当前页只对当前 image_ids 批量读取 material / annotation；
+- “全选 / 反选 / 批量清洗”需使用 batch scope + exclusions，而不是全量客户端 Set。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 10k / 20k review first-page bounded、next cursor、全选语义和无全量 annotation rescan。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -3319,6 +3423,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-051` 起继续编号；
+- 确认后从 `AUDIT-052` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
