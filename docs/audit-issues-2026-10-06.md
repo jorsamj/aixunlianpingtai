@@ -11,7 +11,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.111`  
 > 上一批审计记录提交后 VERSION：`42.24.112`  
 > 上一批审计记录提交后 VERSION：`42.24.113`  
-> 本批审计记录提交后 VERSION：`42.24.114`  
+> 上一批审计记录提交后 VERSION：`42.24.114`  
+> 本批审计记录提交后 VERSION：`42.24.115`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1048,6 +1049,117 @@ bounded projection 反过来覆盖了 canonical lifecycle / artifact truth。
 
 ---
 
+
+### AUDIT-026 — 当前“素材接入”仍由 daemon thread 采集，绕过 Durable MATERIAL_IMPORT owner
+
+**级别：高**  
+**模块：素材接入 / Source Collection / Auto Scheduler / Durable Import**
+
+**现象：**
+
+当前最终可达的“素材接入”页面仍直接使用：
+
+- `GET/POST/PUT/DELETE /api/v42/projects/{project_id}/sources`
+- `POST /api/v42/projects/{project_id}/sources/{source_id}/collect`
+
+手动采集：
+
+`v42_collect()`
+
+创建一条 JSON `collection_runs` 记录后，直接：
+
+`threading.Thread(target=_v42_run_collect, daemon=True).start()`
+
+自动采集则由另一个进程内：
+
+`threading.Thread(target=_v42_source_scheduler_loop, daemon=True)`
+
+每 20 秒扫描一次 Source。
+
+整个链没有进入当前已经存在的 Durable `MATERIAL_IMPORT` owner。
+
+**真实调用链：**
+
+当前素材接入页面
+→ `runSourceNow422()`
+→ v42 source collect
+→ collection_runs JSON = queued
+→ daemon thread
+→ 直接 folder / RTSP / HTTP JSON 拉取
+→ `add_image_record()` 写素材。
+
+自动模式：
+→ startup 启动 daemon scheduler
+→ `_v42_source_scheduler_once()`
+→ `v42_collect()`
+→ 再启动采集 daemon thread。
+
+**为什么是 Bug / 套娃：**
+
+同一种“外部素材采集 / 导入”存在两套 active execution owner：
+
+1. canonical Storage Import / MATERIAL_IMPORT Durable Task；
+2. v42 Source Collection daemon-thread runtime。
+
+v42 runtime 没有：
+
+- TaskRepository；
+- Worker lease；
+- heartbeat；
+- claim/reclaim；
+- crash recovery；
+- canonical cancel；
+- Central Scheduler / Service Node capability；
+-统一 Material Import 审计链。
+
+**重启后的确定性故障：**
+
+如果平台在 collection run 为 `queued` 或 `running` 时重启：
+
+- daemon worker 线程消失；
+- `collection_runs` JSON 仍保留 queued/running；
+- startup 只会重启 source scheduler，不会恢复具体 collection worker；
+- `_v42_source_due()` 又看到该 source 的 last run 仍为 queued/running，于是返回 false；
+- 该自动 Source 可能长期不再调度，除非人工修改/清理历史状态。
+
+**影响：**
+
+- 平台重启会丢正在采集的 Source task；
+- 自动 Source 可永久卡成“运行中/排队中”；
+- 没有可靠取消与恢复；
+- 当前 Service Node / capability / storage import 调度完全绕过；
+- Source Collection 与 Storage Import 形成重复 Owner；
+- 状态只保存在 bounded JSON history，无法提供 durable execution truth。
+
+**删除 Source 的边界：**
+
+已启动 run 使用的是创建时传入的 source dict 快照，因此删除 Source 不一定中断当前线程；但它也意味着 Source lifecycle 与 collection lifecycle 没有 canonical reference fence，删除后历史 run 仍可能继续写素材。根问题仍是第二 Runtime owner。
+
+**为什么 CI 没发现：**
+
+现有 Source / Storage tests 主要覆盖 Storage Source Repository、v36 guard、Storage Import 等；没有覆盖当前 v42 Source Collection 的：
+
+- restart recovery；
+- stale queued/running；
+- Durable Task ownership；
+- auto scheduler 与 active run 的恢复。
+
+**建议最小修复：**
+
+不要再造新的 collection scheduler。
+
+- v42 Source 只保留业务配置；
+- “立即采集”和自动调度都创建 canonical `MATERIAL_IMPORT` / 统一 Import task；
+- folder / RTSP / HTTP JSON 作为 Import source adapter；
+- 自动周期只负责提交 Durable task，不自己执行素材采集；
+- restart/cancel/retry/Service Node 调度全部复用 TaskRepository；
+- 迁移时要处理现存 queued/running collection_runs 的 stale recovery。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 manual collect、auto collect、restart、stale running、cancel/retry、Source delete。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1229,6 +1341,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-026` 起继续编号；
+- 确认后从 `AUDIT-027` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
