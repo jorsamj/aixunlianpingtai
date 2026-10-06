@@ -20,7 +20,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.120`  
 > 上一批审计记录提交后 VERSION：`42.24.121`  
 > 上一批审计记录提交后 VERSION：`42.24.122`  
-> 本批审计记录提交后 VERSION：`42.24.123`  
+> 上一批审计记录提交后 VERSION：`42.24.123`  
+> 本批审计记录提交后 VERSION：`42.24.124`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1837,6 +1838,100 @@ Blueprint 不得用 `[:200]` 做物理 retention；若它仍是正式业务实�
 
 ---
 
+
+### AUDIT-036 — Detection Batch 用全项目 DEPLOYMENT_TEST 扫描上限代替 batch index，1k/10k 规模会截断批次真相
+
+**级别：中～高**  
+**模块：检测台 / Detection Batch / DEPLOYMENT_TEST / 性能与历史真相**
+
+**现象：**
+
+Detection Batch 并没有独立 batch index，而是每次从整个项目的 `TaskKind.DEPLOYMENT_TEST` 里按时间倒序扫描 request artifact，再判断：
+
+`request.detection_batch.batch_id`
+
+当前固定上限：
+
+- 批次列表：`scan_limit=1500`
+- 指定批次详情：`scan_limit=5000`
+- 单图人工复核：`scan_limit=5000`
+
+后端创建接口却允许：
+
+`detection_item_total <= 100000`
+
+且 A/B 对比模式每张图会创建 A、B 两个 DEPLOYMENT_TEST task。
+
+**真实调用链：**
+
+1,000 张图 A/B 对比
+→ 约 2,000 个 DEPLOYMENT_TEST task
+→ `GET /api/v64/.../detection-batches`
+→ 只扫描最近 1,500 个 task
+→ 当前批次只能聚合出约 750 张图对应的两侧结果，或形成不完整 side 集合
+→ summary 的 `created_items/completed_items/failed_items` 与真实批次不一致。
+
+更大批次：
+
+2,500+ 张图 A/B
+→ 超过 5,000 task
+→ 指定 `batch_id` 的详情 / review 仍只扫描最近 5,000 条
+→ 同一批次后半部分任务不可见。
+
+历史场景：
+
+某旧 batch 的 task 整体被后续 5,000+ 个 DEPLOYMENT_TEST 推出窗口
+→ 按明确 batch_id 查询
+→ 扫描不到任何 row
+→ API 返回 404“检测批次不存在”
+→ 但 Durable Task / artifacts 仍真实存在。
+
+**为什么是 Bug / 套娃：**
+
+`scan_limit` 本来是保护读性能的 bounded scan，却被当作 Detection Batch 的身份索引和完整聚合 truth。
+
+这不是单纯“历史只显示最近 N 条”，因为：
+
+- 指定 batch ID 的 detail 也受同一全项目窗口限制；
+- review 写入依赖这次扫描结果；
+- 同一个大批次本身就可能超过扫描上限；
+- API 明确允许远大于该上限的 batch size。
+
+**影响：**
+
+- 1k 图 A/B 批量检测的列表摘要已经可能不完整；
+- 大批次详情丢部分图片/模型侧；
+- 人工复核可能找不到真实存在的 item；
+- 老批次按 ID 查询可误 404；
+- 用户可能误认为检测丢失或重复发起测试；
+- 10k/20k 规模下顺序扫描大量 request/result artifact 也会形成明显 I/O 放大。
+
+**为什么 CI 没发现：**
+
+当前测试主要使用小批次，没有覆盖：
+
+- 1,000 图 / 2,000 task；
+- 单 batch 超过 1,500 / 5,000 task；
+- 旧 batch 位于第 5,001+ 个 Deployment Test；
+- review 在窗口外 item 上仍需工作。
+
+**建议最小修复：**
+
+不要把 `scan_limit` 简单改成无界。
+
+建立一次写入、可索引的 batch ownership truth，例如 canonical batch_id/item_index/side 索引表或 TaskRepository 可查询 metadata index：
+
+- batch list 按 batch entity 分页；
+- batch detail 按 `batch_id` 定向查；
+- review 按 `batch_id + item_index` 定向查；
+- active task 仍由原 TaskRepository owner；
+- 禁止为每个图片 N+1 扫全项目任务。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 1k、5k+ task、旧 batch 定向查询和 review。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2018,6 +2113,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-036` 起继续编号；
+- 确认后从 `AUDIT-037` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
