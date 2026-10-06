@@ -18,7 +18,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.118`  
 > 上一批审计记录提交后 VERSION：`42.24.119`  
 > 上一批审计记录提交后 VERSION：`42.24.120`  
-> 本批审计记录提交后 VERSION：`42.24.121`  
+> 上一批审计记录提交后 VERSION：`42.24.121`  
+> 本批审计记录提交后 VERSION：`42.24.122`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1716,6 +1717,64 @@ Candidate Review 自身的候选分页测试属于另一个 endpoint，不能覆
 
 ---
 
+
+### AUDIT-034 — 第 201 个 Prompt Template 会静默物理删除最老模板
+
+**级别：中**  
+**模块：Prompt Template / Model Config UI / AI Annotation Configuration**
+
+**现象：**
+
+当前正式“模型配置”页面直接维护：
+
+`GET/POST/PUT/DELETE /api/v35/prompt-templates`
+
+创建模板时：
+
+`items.insert(0, item)`
+→ `_v35_save_items(PROMPT_LIBRARY_FILE, items[:200])`
+
+因此已有 200 个 Prompt Template 时，再创建第 201 个：
+
+- API 正常返回创建成功；
+- 新模板被保存；
+- 最老模板被静默从 `PROMPT_LIBRARY_FILE` 物理删除。
+
+这不是前端分页，也没有显式删除意图。
+
+**当前影响边界：**
+
+modern AI Annotation 在任务创建时会冻结实际 prompt / template snapshot，因此已经受理的 Durable AI task 不会因为旧模板被截断而换 prompt 或直接失败。
+
+问题发生在长期配置 owner 本身：
+
+- 老模板从模型配置页消失；
+- 后续新任务无法再选择该模板；
+- 依赖该模板 ID 的其它配置/历史 UI 可能失去可解析对象；
+- 用户只看到“新增成功”，不知道另一条配置同时被删除。
+
+**为什么是 Bug / 套娃：**
+
+长期配置实体被错误套用了“只保留最近 N 条”的 history retention 逻辑。
+
+Prompt Template 的删除已经有显式 DELETE owner；create-time truncation绕过了该 lifecycle。
+
+**为什么 CI 没发现：**
+
+现有 Prompt Template 测试关注校验、版本化、render/preview 与正常 CRUD，没有第 201 个 template 的持久化合同测试。
+
+**建议最小修复：**
+
+- Prompt Template 不得用 `items[:200]` 做物理 retention；
+- UI 如需性能优化应做分页 / 搜索；
+- 如果产品真要硬上限，应在 create 前明确 409 并提示用户清理，不能隐式删除最老配置；
+- 配置删除只走显式 DELETE owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖第 201 个 create 不得静默删除旧模板。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1897,6 +1956,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-034` 起继续编号；
+- 确认后从 `AUDIT-035` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
