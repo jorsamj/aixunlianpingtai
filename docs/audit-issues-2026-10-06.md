@@ -2701,6 +2701,108 @@ Training 侧把“厂商”误当成完整 conversion target identity。
 
 ---
 
+
+### AUDIT-047 — Model Config PUT 会原地覆盖 frozen secret_ref 的 Keyring 值，Queued AI task 凭据并未真正冻结
+
+**级别：高**  
+**模块：AI Annotation / Model Config / Secret Lifecycle / Durable Request Freeze**
+
+**现象：**
+
+Durable AI Annotation 在 submit 时已经正确冻结：
+
+- `model_config_snapshot`
+- `model_config_revision`
+- `secret_ref`
+
+并且 request.json 不保存真实 API key。
+
+但：
+
+`PUT /api/v35/model-configs/{config_id}`
+
+如果用户填写新的 API Key，会复用旧配置的同一个：
+
+`secret_ref("model-config", config_id)`
+
+然后直接：
+
+`_v35_secret_store().set(reference, api_key)`
+
+也就是说 secret reference 不变，但 reference 指向的 secret value 被原地覆盖。
+
+Worker 真正执行 frozen request 时：
+
+`annotation_runtime.prepare_request(..., runtime=True)`
+
+会从 frozen snapshot 取出 `secret_ref`，然后再次：
+
+`KeyringSecretStore().get(reference)`
+
+读取**执行时当前值**，而不是任务提交时的凭据版本。
+
+**真实调用链：**
+
+AI task submit
+→ request.json 冻结 `secret_ref = xjalgo:model-config:model-1`
+→ task QUEUED
+→ 用户编辑同一个 Model Config 并更新 API Key
+→ PUT v35
+→ Keyring 同一个 reference 被覆盖
+→ Worker 后续 claim task
+→ frozen model_config_snapshot 仍是旧 URL/模型配置
+→ Keyring lookup 得到新 API Key
+→ 旧配置 + 新凭据组合执行。
+
+**为什么是 Bug / 套娃：**
+
+当前 freeze contract 只冻结了“secret pointer”，没有冻结“credential revision”。
+
+对 Durable Task 来说，secret_ref 被当成 immutable input，但它指向的值实际上是 mutable global state。
+
+因此“任务提交成功后执行输入被冻结”的合同并未成立。
+
+**影响：**
+
+- queued AI task 可能使用提交后才设置的新 API Key；
+- 旧 endpoint / model snapshot 与新账号凭据组合，可能直接鉴权失败；
+- 如果新旧 key 属于不同租户/账户，任务可能访问错误的配额或数据域；
+- retry 结果依赖当前 Keyring，而不是原任务输入；
+- 审计时无法从 task revision 证明实际使用的是哪一版 credential；
+- AUDIT-018 的 delete 问题只是同一 secret lifecycle 缺口的另一种表现。
+
+**为什么 CI 没发现：**
+
+现有：
+
+`test_runtime_uses_frozen_model_snapshot_even_after_live_config_changes`
+
+只修改 live Model Config 的 URL / model_name。
+
+测试中的 `FakeSecrets.get()` 始终固定返回同一个字符串，并没有模拟真实 PUT 对同一 secret_ref 做覆盖。
+
+因此它证明了配置正文 snapshot 正确，却没有证明 credential value snapshot / revision 正确。
+
+**建议最小修复：**
+
+不要把真实 secret 写进 request.json。
+
+最小方案：
+
+- Secret Store 支持 immutable credential revision / versioned secret reference；
+- submit 时冻结 `secret_ref + secret_revision`；
+- Worker 必须按该 revision 读取；
+- Model Config 更新 API Key 时创建新 revision，而不是覆盖旧 task 已引用的 value；
+- active Durable task 引用的旧 revision 在 terminal 前不可 GC；
+- delete / rotation / update 统一走同一个 secret reference owner。
+
+如果当前 Keyring abstraction 暂时不支持 revision，至少应在有 active task 引用当前 secret_ref 时阻止 API Key 修改，不能静默替换。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 submit → rotate API key → queued task 仍使用提交时凭据 revision。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2882,6 +2984,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-047` 起继续编号；
+- 确认后从 `AUDIT-048` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
