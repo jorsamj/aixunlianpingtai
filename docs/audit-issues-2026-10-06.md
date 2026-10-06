@@ -16,7 +16,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.116`  
 > 上一批审计记录提交后 VERSION：`42.24.117`  
 > 上一批审计记录提交后 VERSION：`42.24.118`  
-> 本批审计记录提交后 VERSION：`42.24.119`  
+> 上一批审计记录提交后 VERSION：`42.24.119`  
+> 本批审计记录提交后 VERSION：`42.24.120`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1473,6 +1474,179 @@ PollRegistry 的 `replaceVideo424Timer()` 又只看当前 `state.video424` 是�
 
 ---
 
+
+### AUDIT-031 — Label 停用可在 Training PREPARING 阶段破坏尚未冻结的继承标签合同
+
+**级别：高**  
+**模块：Label Governance / Durable Training / TRAINING_PREPARE / Iteration**
+
+**现象：**
+
+v12 Training 创建时先受理：
+
+- `TRAINING`
+- `TRAINING_PREPARE`
+
+但此时还没有冻结 `effective_label_schema / label_contract`。
+
+真正的标签合同是在 TrainingPrepare Worker 的：
+
+`_freeze_request_contract()`
+
+里实时调用：
+
+`resolve_training_label_contract()`
+
+后才写进 `input-freeze.json`。
+
+与此同时：
+
+`DELETE /api/v12/projects/{project_id}/labels/{class_id}`
+
+只检查当前 AnnotationRepository 是否仍引用该标签。若当前素材已没有该标签的正式框 / confirmed_empty scope，就允许把标签 soft-delete 为 inactive。
+
+**真实调用链：**
+
+迭代训练提交
+→ 上一算法版本 `label_schema` 含 inherited label A
+→ Training / TRAINING_PREPARE 已创建，但 label contract 尚未冻结
+→ 当前素材已无 A 引用
+→ 用户在标签管理停用 A
+→ label delete 成功，A 变 inactive
+→ TrainingPrepare 执行
+→ `resolve_training_label_contract()`
+→ `_resolve_inherited_label_governance()`
+→ 发现上一版本标签 A 当前 inactive 且无 `merged_into`
+→ 明确 fail-closed
+→ 已受理 Training preparation 失败。
+
+**为什么是 Bug / 套娃：**
+
+Label delete owner 只看“当前 Annotation truth 是否引用”，没有看“已受理但尚未 freeze 的 Training contract 是否引用”。
+
+因此标签生命周期可以在 Training 输入冻结前破坏已经受理的迭代任务。
+
+**影响：**
+
+- 用户看到训练任务创建成功，随后停用一个“当前无素材”的历史标签，会把任务打失败；
+- 迭代继承标签合同与 Label Governance truth 发生 TOCTOU；
+- PREPARING Training 不能保证提交时看到的继承标签仍可冻结；
+- 问题只发生在 freeze 前，freeze 完成后的历史 schema 本身仍是不可变的。
+
+**为什么 CI 没发现：**
+
+现有 label governance 测试覆盖：
+
+- 有 AnnotationRepository 引用时禁止删除；
+- governance lock 重检；
+- soft delete 保留 class_id。
+
+现有 Training 测试覆盖 label contract / inherited schema，但没有：
+
+`Training accepted -> label inactive -> TRAINING_PREPARE freeze`
+
+这个跨 owner 并发窗口。
+
+**建议最小修复：**
+
+不要把重型 label contract 解析重新塞回前端弹窗。
+
+优先在 canonical label mutation owner 增加 active Training pre-freeze reference fence：
+
+- 检查 PREPARING / QUEUED 且尚未形成 `input-freeze.json` 的 Training；
+- 若其 previous-version inherited schema / requested labels 引用目标 code，则停用 409；
+- freeze 完成后由 frozen contract 自己持有历史 truth；
+- 查询必须 cursor / indexed，禁止无界扫描。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 inherited label、PREPARING、freeze 后三个窗口。
+
+---
+
+### AUDIT-032 — 直接修改 Label code 会破坏历史算法版本的迭代继承链
+
+**级别：高**  
+**模块：Label Governance / Algorithm Version lineage / Iteration Training**
+
+**现象：**
+
+当前标签管理 UI 明确允许编辑英文标签编码，并调用：
+
+`PUT /api/v12/projects/{project_id}/labels/{class_id}`
+
+后端只在旧 code 仍被当前 AnnotationRepository 引用时阻止改名。
+
+如果当前已经没有素材引用，接口会直接：
+
+`labels[class_id] = new_code`
+
+并把当前 `label_meta[class_id].code` 更新为 new_code。
+
+它不会保留：
+
+- old_code governance row；
+- `status=merged`；
+- `merged_into=new_code`；
+- 历史算法版本引用迁移记录。
+
+**真实调用链：**
+
+历史算法版本 `label_schema = [old_code, ...]`
+→ 当前素材已不再引用 old_code
+→ 标签管理把 old_code 改成 new_code
+→ PUT 成功
+→ 当前 project governance 中 old_code 彻底消失
+→ 下一次从历史版本迭代
+→ `resolve_training_label_contract()`
+→ `_resolve_inherited_label_governance()`
+→ `governance.get(old_code) is None`
+→ 明确报“上一算法版本标签 old_code 已不在当前项目标签治理中”
+→ 迭代无法继续。
+
+**为什么是 Bug / 套娃：**
+
+算法版本的历史 `label_schema` 是不可变 lineage truth，但 Label code rename owner 只尊重当前 Annotation truth，没有尊重历史 version reference。
+
+这不是单纯显示名修改，而是在改 canonical identity。
+
+**影响：**
+
+- 一个看似合法的标签改名可以永久阻断旧版本迭代；
+- 历史版本仍保存 old_code，但当前 governance 无法解释 old_code 到 new_code 的关系；
+- 用户只能人工恢复旧标签或另做统一，形成不可预期维护成本；
+- 和当前“统一标签必须显式产生 merged_into”治理合同不一致。
+
+**为什么 CI 没发现：**
+
+现有测试只证明：
+
+- old_code 有当前标注引用时 rename 必须 409；
+- lock 后会重新检查 AnnotationRepository。
+
+没有测试：
+
+`old_code 无当前标注引用，但仍被 algorithm version label_schema 引用`
+
+这一 lineage 场景。
+
+**建议最小修复：**
+
+不要允许 canonical code 在存在历史 version 引用时被裸改名。
+
+最小方向二选一：
+
+1. 历史版本仍引用 old_code 时，普通 PUT code rename 直接 409，提示走“统一标签”；或
+2. code rename 本身升级为正式治理迁移，保留 old_code 为 `merged -> new_code` 的 lineage edge。
+
+优先方案 1，避免把普通编辑接口变成第二套标签迁移 owner。
+
+显示名 / 颜色 / 快捷键等非 identity 字段仍可正常修改。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖历史 version 引用、无 annotation 引用、普通 rename 必须 fail-closed。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1654,6 +1828,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-031` 起继续编号；
+- 确认后从 `AUDIT-033` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
