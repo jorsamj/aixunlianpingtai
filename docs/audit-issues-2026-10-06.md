@@ -2803,6 +2803,106 @@ AI task submit
 
 ---
 
+
+### AUDIT-048 — Quality Center / Training Data Quality 每次全量重读图片字节算 SHA1，20k 素材会产生巨量重复 I/O
+
+**级别：中～高**  
+**模块：Quality Center / Training Data Quality / MaterialRepository / Performance**
+
+**现象：**
+
+当前：
+
+- `GET /api/v44/projects/{project_id}/quality-center`
+- `POST /api/v44/projects/{project_id}/data-quality`
+
+最终都走：
+
+`_v44_dataset_quality()`
+
+该函数已经通过 MaterialRepository 读取 material rows，row 中已经持有：
+
+- `content_sha256`
+- `size_bytes`
+
+但随后仍对每一张 candidate 执行：
+
+`resolve_material_path()`
+→ `path.read_bytes()`
+→ `hashlib.sha1(...).hexdigest()`
+
+并再次通过文件 stat 统计容量。
+
+**真实调用链：**
+
+打开“质量中心”
+→ GET v44 quality-center
+→ `_v44_dataset_quality(project_id)`
+→ load all materials
+→ batch load AnnotationRepository
+→ normalize boxes
+→ 对全部素材逐张打开源文件、一次性 `read_bytes()`
+→ SHA1
+→ `compute_quality(candidates)`
+
+训练创建窗口点击“查看数据质量”也会对本次显式选择的全部 image_ids 执行同一条路径。
+
+**为什么是 Bug / 技术债：**
+
+`compute_quality()` 对重复图判断只要求稳定的 `content_hash`，并不要求重新读取文件。
+
+MaterialRepository 已经把内容摘要作为 canonical metadata：
+
+`content_sha256 TEXT`
+
+且有对应索引。
+
+因此当前做法把已存在的 O(N) metadata 查询退化为：
+
+O(全部图片字节数) 的磁盘 / 对象落地 I/O + hash CPU。
+
+**规模影响：**
+
+例如：
+
+- 1k 张 × 1 MB ≈ 每次额外读 1 GB；
+- 10k 张 × 1 MB ≈ 每次额外读 10 GB；
+- 20k 张 × 1 MB ≈ 每次额外读 20 GB。
+
+实际图片更大时线性增加。
+
+而 Quality Center 是页面读取 API，不应在每次首次进入页面时重新校验所有源文件字节。
+
+**影响：**
+
+- 10k / 20k 素材项目打开质量中心明显变慢；
+- Web worker / API 请求长时间占用磁盘和 CPU；
+- 同时训练 / 清洗 / 导入时会争抢 I/O；
+- 对对象存储或非本地 material，`resolve_material_path` 还可能产生额外准备成本；
+- Python `read_bytes()` 会为整张图片分配内存，单张大图时增加瞬时内存压力；
+- 用户每次重新打开质量页都会重复做同样工作。
+
+**为什么 CI 没发现：**
+
+现有质量计算测试主要验证指标值，没有 1k / 10k / 20k 的 I/O contract，也没有断言“已存在 content_sha256 时不得重新打开源图片”。
+
+**建议最小修复：**
+
+不改变 `compute_quality()` owner。
+
+在 `_v44_dataset_quality()`：
+
+- 优先使用 material row 的 `content_sha256` 作为 `content_hash`；
+- 优先使用 `size_bytes` 统计容量；
+- 仅对 legacy / 缺失 digest 的 row 做 bounded fallback hash，并回填 canonical metadata；
+- 不要为质量页面再造第二套 hash cache；
+- 后续若 Quality Center 仍需全项目统计，再考虑做 SQLite aggregate / revision cache，但不能用无界 DOM 或 N+1。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖已有 digest 不读源文件，以及 1k / 10k / 20k metadata-only 路径。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2984,6 +3084,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-048` 起继续编号；
+- 确认后从 `AUDIT-049` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
