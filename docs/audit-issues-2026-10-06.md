@@ -8,7 +8,8 @@
 > 本文档首批提交 VERSION：`42.24.110`  
 > 续审计核验 HEAD：`0e03819fafe50a02bc57d1980ed0c62d97c95296`  
 > 续审计核验 VERSION：`42.24.110`  
-> 本批审计记录提交后 VERSION：`42.24.111`  
+> 上一批审计记录提交后 VERSION：`42.24.111`  
+> 本批审计记录提交后 VERSION：`42.24.112`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -785,6 +786,85 @@ worker 持续依赖：
 ---
 
 
+
+### AUDIT-022 — Legacy Training Server 仍作为 ready target 展示，但 v12 Durable Training 不再按该服务器执行
+
+**级别：高**  
+**模块：Training Resource UI / training_options / Durable Training / CentralTaskAllocator**
+
+**现象：**
+
+`/api/training_options` 已经提供 canonical `cluster_scheduler`，但随后仍遍历 legacy `SERVERS_FILE`，把旧远程训练服务器按 `/api/remote/health` 的结果继续返回为 `type="server", status="ready", server_id=<legacy id>`。前端 `readyTargets429()` 只看 ready，因此旧服务器会真实进入训练创建弹窗。
+
+**真实调用链：**
+
+旧服务器 health 正常 → `/api/training_options` → `server:<id>` → TrainingSubmitRuntime → `target:"remote", server_id:"<legacy id>"` → v12 train/start → `_enqueue_explicit_training()`。
+
+但 v12 只把 `server_id` 用来形成 `resource_key=training:remote:<id>`；CentralTaskAllocator 的真实节点亲和只认 `payload.scheduling.mode == "node"` 与 `scheduling.node_id`，不会按 legacy server_id 选节点。TrainingPrepare 还要求 canonical OSS/S3 可移植存储。
+
+**为什么是 Bug / 套娃：**
+
+UI 把“旧远程训练 HTTP 服务健康”误当成“当前 Durable Training 可执行目标”，但真实执行已经由 Service Node / Central Scheduler owner 接管。用户选择“服务器 A”并不能保证在服务器 A 执行。
+
+**影响：**
+
+- 选服务器 A，实际可调度到其它 Agent；
+- 旧服务器健康但无 Service Node Agent 时仍会显示可用；
+- 未配置 portable OSS/S3 时会在 preparation 阶段失败；
+- 资源选择名称与真实执行节点不一致。
+
+**为什么 CI 没发现：**
+
+scheduler target 测试把 legacy server 列表置空；remote training API 测试反而明确验证“不需要 legacy server_id”，没有覆盖 legacy ready target 必须从当前 Durable Training UI fail-closed。
+
+**建议最小修复：**
+
+不恢复旧 direct remote training runtime。Training Create 只暴露 scheduler-owned remote target；legacy server 若保留只用于资源诊断。TrainingSubmit 对 `type=server && !scheduler_owned` fail-closed。未来指定节点必须走 canonical Service Node scheduling。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-023 — Cleaning 列表先截断 100 条 MATERIAL_BATCH 再筛 CLEAN，会丢活动清洗任务
+
+**级别：中**  
+**模块：Cleaning compatibility projection / PollRegistry / MaterialBatch**
+
+**现象：**
+
+`GET /api/v47/projects/{project_id}/clean-tasks` 最终调用 `_v47_list_durable_clean_tasks()`。该函数先执行 `TaskRepository.list(kinds={MATERIAL_BATCH}, limit=100)`，然后才读取 request 并筛 `operation == CLEAN`，且忽略 `next_cursor`。
+
+TaskRepository 按 `created_at DESC, task_id DESC` 排序，所以这不是“最近 100 个清洗任务”，而是“最近 100 个所有 MaterialBatch 中恰好属于 CLEAN 的任务”。
+
+**真实调用链：**
+
+较老 CLEAN 仍 RUNNING / AWAITING_CONFIRMATION → 后续出现 100+ 个其它 MaterialBatch → CLEAN 被挤到第 101+ → v47 list 不再返回 → `refreshCleanOps427Delta()` 用该列表覆盖 `state.clean427` → PollRegistry 也根据当前列表决定是否继续 clean polling。
+
+**为什么是 Bug / 套娃：**
+
+bounded history 被放在 operation 过滤之前，又被兼容层当成完整 Cleaning truth。
+
+**影响：**
+
+- 活动清洗任务可从页面消失；
+- 待确认清洗任务可能不可见；
+- active clean 消失后页面可能停止 clean polling；
+- Durable Task truth 与 UI truth 分裂。
+
+**为什么 CI 没发现：**
+
+现有测试覆盖 durable create/run/result/confirm 与 PollRegistry owner，但没有 100+ mixed MaterialBatch、active CLEAN 位于第 101+ 的组合。
+
+**建议最小修复：**
+
+禁止无界 hydration，也禁止 per-task N+1。优先让 canonical task query 可按 MaterialBatch operation 做可索引过滤；至少保证全部 active CLEAN 不会被 history window 截掉，terminal history 再独立 bounded。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，覆盖 100+ mixed MaterialBatch。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -966,6 +1046,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-022` 起继续编号；
+- 确认后从 `AUDIT-024` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
