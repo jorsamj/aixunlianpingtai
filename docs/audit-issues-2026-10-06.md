@@ -29,7 +29,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.129`  
 > 上一批审计记录提交后 VERSION：`42.24.130`  
 > 上一批审计记录提交后 VERSION：`42.24.131`  
-> 本批审计记录提交后 VERSION：`42.24.132`  
+> 上一批审计记录提交后 VERSION：`42.24.132`  
+> 本批审计记录提交后 VERSION：`42.24.133`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2507,6 +2508,97 @@ Source 更新语义没有区分：
 
 ---
 
+
+### AUDIT-045 — Algorithm 综合报告无界扫描全部 job.json，Legacy 任务还会按当前 Annotation GT 反复重算历史标签统计
+
+**级别：中～高**  
+**模块：Algorithm Report / Training History / Annotation hydration / Performance**
+
+**现象：**
+
+当前算法卡“综合报告”按钮真实调用：
+
+`GET /api/v49/projects/{project_id}/algorithms/{algorithm_id}/report`
+
+该 endpoint 每次请求都会：
+
+1. 遍历项目整个 `jobs/*/job.json`；
+2. 对每个目录读取 JSON；
+3. 再按 algorithm_id 过滤；
+4. 对该算法每条历史 job 调 `_v49_job_label_counts()`。
+
+现代 Training 若有有效 `snapshot_id` 且 Snapshot 带 `label_counts`，会直接读取冻结统计。
+
+但 Legacy / 无 Snapshot 任务会回退到：
+
+- 读取历史 job 中的 train image ids；
+- 每 500 张调用 `read_annotations_many()`；
+- 从**当前 AnnotationRepository**重新统计 boxes / labels。
+
+**真实调用链：**
+
+429 算法列表
+→ “综合报告”
+→ `algorithmReport429()`
+→ v49 report
+→ `jobs_dir.glob("*/job.json")`
+→ 全项目 job 文件逐个读取
+→ 命中算法的历史 job
+→ `_v49_job_label_counts()`
+→ 若无 snapshot label_counts
+→ 当前 AnnotationRepository 批量读取并重新统计。
+
+**为什么是 Bug / 技术债：**
+
+这里同时有两个相互放大的问题：
+
+1. **无界历史 hydration**
+   - report 只属于一个 algorithm，却先扫描整个项目所有 job 目录；
+   - 项目 10k / 20k 历史任务时，请求成本与全项目任务数线性增长。
+
+2. **Legacy 历史统计不是冻结真相**
+   - 旧 Training 的标签分布按今天的 AnnotationRepository 重算；
+   - 用户后续统一标签、修改框、确认空样本后，过去“训练素材标签维度”会被重写；
+   - 这不是当时训练真正看到的历史输入。
+
+对于大量 legacy job，第二条还会把成本放大成：
+
+`历史任务数 × 每任务素材批次数`
+
+虽然每次 annotation 读取本身按 500 bounded，但 report 整体仍是无界 hydration。
+
+**影响：**
+
+- 1k / 10k / 20k 历史任务下综合报告首开显著变慢；
+- 大量旧任务时可能造成高磁盘 I/O / SQLite 读取；
+- 历史 label_counts 会随当前 GT 漂移；
+- “累计参与训练的检测框数量”无法作为稳定审计数据；
+- 页面把重算结果显示成“算法长期训练总结”，语义失真。
+
+**为什么 CI 没发现：**
+
+现有浏览器训练/质量报告测试主要验证页面流程和小数据集，没有：
+
+- 1k / 10k / 20k jobs 规模测试；
+- 一个算法只占项目少量 job 时的全项目扫描成本；
+- legacy job 缺 snapshot 时历史 Annotation 变化后的报告不变性测试。
+
+**建议最小修复：**
+
+不新增第二 Training history owner。
+
+- 为 Training history 提供按 `project_id + algorithm_id` 的可索引查询 / aggregate；
+- summary / trend / duration / success / label counts 使用一次项目级或算法级 aggregate truth；
+- 现代任务继续读取 frozen snapshot/report；
+- legacy 任务若确实没有冻结 label truth，应明确标记“历史统计不可恢复 / legacy-derived”，不要静默拿当前 GT 冒充历史输入；
+- 前端只需要最近明细时继续 bounded，例如最后 20 条，完整 aggregate 在后端一次计算；
+- 禁止通过扫描所有 job 目录来服务单算法报告。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 10k job 索引成本，以及 legacy annotation 后改不应伪造历史训练 truth。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2688,6 +2780,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-045` 起继续编号；
+- 确认后从 `AUDIT-046` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
