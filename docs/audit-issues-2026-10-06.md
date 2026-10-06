@@ -25,7 +25,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.125`  
 > 上一批审计记录提交后 VERSION：`42.24.126`  
 > 上一批审计记录提交后 VERSION：`42.24.127`  
-> 本批审计记录提交后 VERSION：`42.24.128`  
+> 上一批审计记录提交后 VERSION：`42.24.128`  
+> 本批审计记录提交后 VERSION：`42.24.129`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2090,6 +2091,109 @@ Training Server 是显式配置实体，删除应只通过明确 DELETE；新增
 
 ---
 
+
+### AUDIT-041 — 质量中心“训练成功率”把最近 50 条终态窗口当成全量项目 KPI
+
+**级别：中**  
+**模块：Quality Center / Training history aggregation / bounded job index**
+
+**现象：**
+
+`v44_quality_center()` 计算项目级训练 KPI 时直接调用：
+
+`jobs = list_jobs(project_id)`
+
+然后：
+
+`_training_success_rate_stats(jobs)`
+
+生成：
+
+- `train_success_rate`
+- `train_success_count`
+- `train_failure_count`
+- `train_completed_count`
+
+当前质量中心 UI 明确展示：
+
+“训练成功率”
++
+“X 成功 / Y 已结束”。
+
+但 `list_jobs()` 不是全量历史 truth。
+
+`sync_jobs_index()`
+→ `_training_job_index_rows(..., history_limit=50)`
+→ 保留全部 active
++
+最近 50 条 terminal history。
+
+**真实调用链：**
+
+项目累计 100+ 条已结束 Training
+→ `sync_jobs_index()`
+→ index 只保留最近 50 条 terminal
+→ `v44_quality_center()`
+→ `list_jobs()`
+→ `_training_success_rate_stats()`
+→ 只对这 50 条计算成功率
+→ UI 却显示成项目“训练成功率 / 成功数 / 已结束数”。
+
+例如：
+
+历史 100 条中 70 成功、30 失败；
+最近 50 条恰好 45 成功、5 失败；
+
+真实累计成功率 70%，质量中心会显示 90%，同时显示“45 成功 / 50 已结束”。
+
+**为什么是 Bug / 套娃：**
+
+bounded jobs index 的设计本身是正确的，它服务于：
+
+- 当前 active 状态；
+- 最近任务；
+- 实时页面。
+
+错误在于 Quality Center 把这个 bounded projection 当成项目级全量统计 truth。
+
+与 AUDIT-013 同根，但这里影响的是全项目质量 KPI，而不是单算法训练次数。
+
+**影响：**
+
+- 累计训练成功率失真；
+- 成功 / 失败 / 已结束数量失真；
+- 项目训练稳定性趋势判断错误；
+- 历史失败会随着新任务增加被窗口挤掉，KPI 会“自动变好”；
+- 质量中心可能给管理者错误结论。
+
+**为什么 CI 没发现：**
+
+现有质量 / 训练报告测试主要覆盖小数量任务和单次报告，没有覆盖：
+
+- 51+ terminal Training；
+- 老失败任务被 history window 挤出；
+- Quality Center KPI 必须保持全量累计真相。
+
+**建议最小修复：**
+
+不能把 `/jobs` 改成无限返回。
+
+应和 AUDIT-013 一起提供项目级一次性 aggregate truth，例如 SQL / TaskRepository 聚合：
+
+- terminal_training_count；
+- success_count；
+- failure_count；
+- cancelled_count；
+
+Quality Center 从 aggregate truth 计算 KPI，实时 jobs index 继续保持 bounded。
+
+禁止 per-job N+1 读历史目录。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 100+ terminal Training 与 50-window 外失败任务。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2271,6 +2375,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-041` 起继续编号；
+- 确认后从 `AUDIT-042` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
