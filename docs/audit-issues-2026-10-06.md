@@ -3358,6 +3358,180 @@ Durable ZIP runtime：
 
 ---
 
+
+### AUDIT-053 — Training Create 随机试验模式的数据划分百分比 UI 与 canonical Split runtime 语义不一致
+
+**级别：中**  
+**模块：Training Create / Dataset Split / Frontend Presentation / TrainingPrepare**
+
+**现象：**
+
+当前训练创建页在“从本次训练素材随机抽取试验集”模式下，把：
+
+- `experiment_percent`
+- `validation_percent`
+
+都当成“占原始总素材池的绝对百分比”展示。
+
+例如默认：
+
+- 试验集 20%
+- 验证集 20%
+
+前端 `splitPresentation()` 计算：
+
+`training = 100 - validation - experiment`
+
+因此 UI 明确展示：
+
+- 训练 60%
+- 验证 20%
+- 试验 20%
+
+但 canonical 后端 `build_split_manifest()` 的真实合同不是这个语义。
+
+**真实调用链：**
+
+前端：
+
+`splitState()`
+→ `splitPresentation()`
+→ `trainingSummaryHtml()` / `renderSplit()`
+
+当前计算：
+
+`experiment = s.experiment`
+
+`validation = s.validation`
+
+`training = 100 - validation - experiment`
+
+提交：
+
+`TrainingSubmitRuntime.submit()`
+→ `buildTrainingStartPayload()`
+→ `trainingDraftToRequest()`
+
+提交同样的：
+
+- `split_mode = random_test_from_training_pool`
+- `experiment_percent`
+- `validation_percent`
+
+后端：
+
+`_explicit_training_split()`
+→ `SplitRequest`
+→ TrainingPrepare
+→ `build_split_manifest()`
+
+canonical split 的顺序是：
+
+1. 先从完整训练候选池按 `experiment_percent` 抽试验集；
+2. 再从“扣除试验集后的剩余池”按 `validation_percent` 抽验证集；
+3. 剩余才是训练集。
+
+因此在 20% / 20% 时，理论比例约为：
+
+- 试验：20%
+- 验证：80% × 20% = 16%
+- 训练：80% × 80% = 64%
+
+这不是 UI 当前显示的 60% / 20% / 20%。
+
+**现有后端回归证据：**
+
+`tests/unit/test_training_splits.py`
+
+`test_large_random_split_keeps_exact_component_counts_at_20k_scale`
+
+对 20,000 张素材，明确断言：
+
+- train = 12,800
+- validation = 3,200
+- test = 4,000
+
+即：
+
+- 训练 64%
+- 验证 16%
+- 试验 20%
+
+所以后端语义是明确、稳定且已有测试保护的；当前漂移发生在前端 presentation。
+
+**为什么是 Bug / 前后端不一致：**
+
+训练页把“验证比例”展示成总池比例，但后端实际把它解释为：
+
+“完成试验集留出以后，对剩余训练候选池再切验证集的比例”。
+
+用户看到并确认的比例与最终 Snapshot 真实比例不同。
+
+这个问题不会让数据泄漏，因为 canonical backend 仍正确做 split；但会让用户错误理解训练 / 验证 / 试验样本规模，尤其在调高试验比例时偏差会明显放大。
+
+例如：
+
+- experiment=50%
+- validation=20%
+
+UI 会显示：
+
+- train 30%
+- validation 20%
+- test 50%
+
+而后端真实目标约为：
+
+- train 40%
+- validation 10%
+- test 50%
+
+**影响：**
+
+- Training Create 页面展示与最终冻结 Snapshot 不一致；
+- 用户基于错误比例做训练数据规划；
+- 数据量较小时可能错误判断训练集是否足够；
+- 训练报告中的最终真实 counts 与创建页预期不符，容易被误认为后台“擅自改比例”；
+- 1k / 10k / 20k 规模越大，绝对样本数量差异越明显。
+
+**为什么 CI 没发现：**
+
+后端 split tests 只保护 canonical split truth；
+
+前端 Draft / Submit tests 主要确认：
+
+- `experiment_percent` 原样提交；
+- `validation_percent` 原样提交；
+- split mode / material IDs 正确；
+
+当前没有跨层测试断言：
+
+“前端展示比例必须按后端 sequential split contract 计算”。
+
+因此前后两边各自测试都能通过，但 presentation contract 仍漂移。
+
+**建议最小修复：**
+
+不要修改 canonical backend split 算法，也不要改变已有 20k 回归合同。
+
+优先只修前端 presentation，使随机试验模式的展示遵循后端顺序：
+
+- `test_ratio = experiment_percent`
+- `remaining_ratio = 100 - test_ratio`
+- `validation_ratio = remaining_ratio * validation_percent / 100`
+- `training_ratio = remaining_ratio - validation_ratio`
+
+同时把 UI 文案明确为：
+
+“验证比例作用于扣除试验集后的剩余候选池”。
+
+如果产品希望两个输入都代表“总池绝对比例”，那属于合同变更，需要迁移后端 SplitRequest 语义和所有历史/测试；本轮不建议这样做。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少增加前端 presentation 20/20 → 64/16/20，以及非默认比例的合同测试。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
