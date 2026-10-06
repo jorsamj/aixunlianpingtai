@@ -3672,6 +3672,175 @@ Benchmark reuse 用例明确断言：
 
 ---
 
+
+### AUDIT-055 — 取消已 ASSIGNED / CLAIMED 但尚未 start 的任务不会释放 Node Assignment，可永久形成幽灵 GPU reservation
+
+**级别：高**  
+**模块：Central Scheduler / Agent Assignment / Task Cancellation / GPU Reservation**
+
+**现象：**
+
+Central Scheduler 给一个 QUEUED task 创建：
+
+`task_node_assignments.state = ASSIGNED`
+
+或者 Agent 已 claim 成：
+
+`CLAIMED`
+
+时，TaskRepository 中任务本身仍保持：
+
+`QUEUED`
+
+直到 Agent 调用 `start_execution()` 才原子转：
+
+`QUEUED -> RUNNING`。
+
+如果用户在这个窗口取消任务：
+
+`TaskRepository.request_cancel(task_id)`
+
+会把 QUEUED task 直接改为：
+
+`CANCELLED`
+
+但不会同步释放对应的 active Node Assignment。
+
+结果 assignment 仍保持：
+
+- ASSIGNED；或
+- CLAIMED（lease 到期后又被 `claim_for_node()` 退回 ASSIGNED）。
+
+没有通用清理逻辑把“task 已非 QUEUED/RUNNING，但 assignment 仍 active”的记录变为 RELEASED。
+
+**真实调用链：**
+
+调度：
+
+`CentralTaskAllocator.assign_next()`
+→ INSERT `task_node_assignments(... state='ASSIGNED' ...)`
+
+Agent：
+
+`claim_for_node()`
+→ `ASSIGNED -> CLAIMED`
+→ task 仍是 QUEUED。
+
+此时用户停止：
+
+`TaskRepository.request_cancel()`
+→ 对 QUEUED：
+`tasks.status = CANCELLED`
+→ 清 task worker/lease
+→ **没有调用 `CentralTaskAllocator.release()`**。
+
+之后：
+
+`claim_for_node()`
+
+只会选择：
+
+`assignment.state='ASSIGNED' AND task.status='QUEUED'`
+
+所以 cancelled task 不会再被 Agent claim/start。
+
+但是已有 assignment 也不会被释放。
+
+CLAIMED lease 超时时：
+
+`claim_for_node()` 只做：
+
+`CLAIMED -> ASSIGNED`
+
+不会检查 joined task 已经 CANCELLED。
+
+**为什么是 Bug / 生命周期旁路：**
+
+Node Assignment 是 Agent start 前的 GPU / node reservation truth。
+
+当前取消只修改 TaskRepository truth，没有同步 retirement assignment truth。
+
+更严重的是，占用计算本身没有 join task status：
+
+`_node_active_work_count()`
+
+直接统计所有：
+
+`task_node_assignments WHERE state IN ('ASSIGNED','CLAIMED')`
+
+`_assigned_gpu_ids()`
+
+也直接读取所有 active assignment 的：
+
+`resolved_execution_config.selected_gpu`
+
+因此 cancelled task 的幽灵 assignment 会继续：
+
+- 增加节点 active work count；
+- 把对应 `cuda:N` 标成已占用；
+- 阻止同 GPU 分配给后续真实任务。
+
+**与 AUDIT-015 的区别：**
+
+AUDIT-015 是：
+
+节点 `enabled=false` 后，已 ASSIGNED/CLAIMED 的任务无法 start，且 assignment 不释放。
+
+AUDIT-055 是：
+
+**任务本身被用户取消** 后，task 已经明确成为 CANCELLED，但 assignment 生命周期仍没有跟随结束。
+
+触发原因、正确 owner 和回归合同不同，不能合并成同一问题。
+
+**影响：**
+
+- 取消一个尚未 start 的训练任务后，该 GPU 可能永久显示为已预约；
+- 单 GPU 节点可能因此再也拿不到新的训练任务；
+- 多 GPU 节点会永久少一张可调度 GPU；
+- active work count 长期偏大，节点打分失真；
+- 只能依赖人工调用 assignment release 或数据库修复恢复；
+- CLAIMED lease expiry 不能自愈，因为只会回退到 ASSIGNED。
+
+**为什么 CI 没发现：**
+
+现有 `tests/unit/test_task_node_assignments.py` 已覆盖：
+
+- assignment / claim；
+- CLAIMED lease 到期后可 reclaim；
+- manual release；
+- GPU distinct reservation；
+- legacy worker fencing；
+- concurrent assign；
+
+但没有覆盖：
+
+`assign/claim -> TaskRepository.request_cancel(QUEUED) -> assignment must RELEASE`
+
+所以 Task 状态测试和 Assignment 测试各自都能通过，却缺少跨 owner cancellation contract。
+
+**建议最小修复：**
+
+不要让 TaskRepository 反向依赖 CentralTaskAllocator，避免制造新的双向 owner。
+
+应在 canonical cancellation service / API owner 中，把：
+
+- task cancel；
+- pre-start assignment release
+
+组成同一 lifecycle operation，或者给 assignment 层增加一个基于 task terminal truth 的 bounded reconciliation，在 scheduler/claim 前原子释放不再可执行的 active assignments。
+
+关键合同：
+
+- QUEUED + active ASSIGNED/CLAIMED 被 operator cancel 后，assignment 必须成为 RELEASED；
+- 对应 selected GPU 立即可再次调度；
+- RUNNING execution 仍由 execution lease/cancel handshake 管理，不能误释放正在运行的 task；
+- generation / lease fencing 不能放宽。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 ASSIGNED-cancel、CLAIMED-cancel、GPU 可立即复用三个场景。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
