@@ -2903,6 +2903,118 @@ O(全部图片字节数) 的磁盘 / 对象落地 I/O + hash CPU。
 
 ---
 
+
+### AUDIT-049 — 被 Cleaning preempt 的任务无法记录“用户明确取消”，高优先级任务结束后会被自动复活
+
+**级别：高**  
+**模块：Cleaning / Preemption / Task cancellation / CentralTaskAllocator**
+
+**现象：**
+
+当前 CLEAN 抢占流程把被抢占任务 victim 改为：
+
+`RUNNING -> CANCEL_REQUESTED(stage=preempting)`
+
+并在 `task_preemptions` 中记录：
+
+`WAITING_CANCEL`
+
+设计意图是 victim 保存 checkpoint、结束当前 execution，等 incoming 高优先级清洗任务结束后自动恢复。
+
+问题在于：如果用户在这个等待窗口里明确点击“停止” victim，当前 TaskRepository 没有记录“operator cancelled, do not resume”的独立意图。
+
+**真实调用链：**
+
+Clean A RUNNING
+→ Clean B 以 `queue_policy=preempt` 提交
+→ `CentralTaskAllocator.preempt_for(B)`
+→ A = CANCEL_REQUESTED / preempting
+→ task_preemptions(B,A) = WAITING_CANCEL
+
+此时用户对 A 执行停止：
+→ `TaskRepository.request_cancel(A)`
+
+但 `request_cancel()` 只处理：
+
+- QUEUED / AWAITING_CONFIRMATION -> CANCELLED
+- RUNNING -> CANCEL_REQUESTED
+
+A 已经是 CANCEL_REQUESTED 时不会写任何额外字段，只是原样返回。
+
+Agent/Worker 随后确认取消：
+→ A = CANCELLED
+
+B 最终进入 SUCCEEDED / FAILED / CANCELLED 等 terminal
+→ 下一次 allocator `assign_next()`
+→ `_resume_ready_preemptions_in()`
+→ 只看到：
+   - preemption state = WAITING_CANCEL
+   - victim status = CANCELLED
+   - incoming terminal
+→ 无条件把 A：
+`CANCELLED -> QUEUED`
+并设置：
+`retry_of = task_id`
+
+用户刚刚明确停止的 A 被自动重新启动。
+
+**为什么是 Bug / 套娃：**
+
+这里混淆了两种不同 cancellation owner intent：
+
+1. scheduler preemption 的临时 cancel-for-resume；
+2. 用户明确的永久 cancel。
+
+二者最终都压缩成同一个 `CANCELLED` 状态，而 preemption recovery 没有可辨认的 owner intent。
+
+**影响：**
+
+- 用户明确停止的清洗任务可能重新进入队列；
+- 可能再次占用 Agent / CPU / I/O；
+- 大规模清洗可能在用户以为已停止后继续扫描；
+- 自动恢复行为违反 UI“停止任务”的明确语义；
+- 若用户反复停止，可能形成“停止后又回来”的难以解释状态。
+
+**为什么 CI 没发现：**
+
+现有：
+
+`test_clean_preemption_cancels_recoverable_victim_then_requeues_it_after_preemptor_finishes`
+
+只验证正常自动恢复路径：
+
+preempt -> victim CANCELLED -> incoming finished -> victim QUEUED。
+
+没有覆盖：
+
+preempt -> 用户 stop victim -> incoming finished
+
+也没有断言 operator cancel 必须压制 auto-resume。
+
+**建议最小修复：**
+
+不要新增第二 cancellation runtime。
+
+在 canonical TaskRepository / preemption lineage 中保留明确 cancellation intent，例如：
+
+- preemption cancel reason / generation；
+- operator cancellation generation / terminal override；
+
+当用户对 WAITING_CANCEL victim 明确 stop 时，应把对应 `task_preemptions` 标记 ABANDONED / DO_NOT_RESUME，或写 canonical terminal intent。
+
+`_resume_ready_preemptions_in()` 只有在“最终 CANCELLED 确实属于该次 preemption cancel”时才允许 requeue。
+
+同时增加竞态测试：
+
+- preempt 后立即用户 stop；
+- victim 已 CANCELLED 后、incoming 未结束前用户 stop；
+- incoming cancelled/failed 后也不能复活 operator-cancelled victim。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -3084,6 +3196,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-049` 起继续编号；
+- 确认后从 `AUDIT-050` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
