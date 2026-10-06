@@ -3242,6 +3242,122 @@ v52 review 仍通过读取全部 AnnotationRepository boxes 再计算一次，�
 
 ---
 
+
+### AUDIT-052 — ZIP 导入完成时 Label Schema 被两个 completion/review owner 重复刷新，当前浏览器 CI 已真实红灯
+
+**级别：中～高**  
+**模块：ZIP Import Completion / Import Review / Label Refresh / Frontend Runtime**
+
+**现象：**
+
+当前 Durable ZIP 导入完成后，同一个成功事件会对：
+
+`GET /api/v12/projects/{project_id}/labels`
+
+发起两次完全相同的请求。
+
+当前 HEAD 的 `Frontend Runtime Stabilization / browser-navigation` 已真实失败：
+
+`tests/browser/material-pagination-performance.spec.mjs`
+
+用例：
+
+`v19 background import completion uses scoped labels and material refresh without broad reload`
+
+预期 labels GET 1 次，实际 2 次。
+
+这不是 flaky，也不是测试时序误报；生产调用链中确实存在两个独立 refresh owner。
+
+**真实调用链：**
+
+Durable ZIP runtime：
+
+`reconcile(...)`
+→ `applyCompletion(job, reason)`
+→ `window.completeZipImportReview412?.(id)`
+→ `await window.refreshLabels414?.(false)`
+→ 若当前页为“数据集”，`reloadMaterialPage61()`
+
+同时：
+
+`completeZipImportReview412(id)`
+→ 绑定 review button
+→ 280ms 后自动：
+`window.showImportReview412(jobId)`
+→ `await refreshLabels414(false)`
+→ 再请求同一个：
+`GET /api/v12/projects/{project_id}/labels`
+
+因此一次成功 completion 会产生：
+
+1. completion owner 的 labels refresh；
+2. auto review owner 的 labels refresh。
+
+两者没有共享 in-flight / freshness / completion generation。
+
+**为什么是 Bug / 套娃：**
+
+这里不是两个 Poller 常驻，而是同一个业务完成事件上叠了两个“标签刷新副作用 owner”。
+
+`applyCompletion()` 已明确承担：
+
+- review completion binding；
+- quality invalidation；
+- label refresh；
+- material refresh；
+- completion toast。
+
+但它调用的 review owner 又在自动打开时无条件刷新 labels，形成 completion callback 套娃。
+
+这与当前“一个 domain 一个明确 refresh owner、禁止重复 completion side effect”的前端运行时收口目标冲突。
+
+**影响：**
+
+- 每次 ZIP 导入成功至少多一次 labels API 往返；
+- 标签较多时重复 JSON 解析、状态覆盖和 localStorage persist；
+- completion 与 review 的并发时序更复杂，后续容易再叠加重复 material / review hydration；
+- 当前 HEAD 的 `Frontend Runtime Stabilization` 已因此失败，不能报告 CI 全绿或可部署；
+- 在 10k/20k 导入场景中，本问题会和 AUDIT-051 的 review 全量 hydration 叠加，进一步放大完成后首开成本。
+
+**为什么现有测试之前没拦住：**
+
+现有 `tests/frontend/import-refresh-owner.test.mjs` 主要做静态 owner 结构断言：
+
+- `applyCompletion()` 必须刷新 labels/material；
+- 禁止 broad `loadRelated/loadAll`。
+
+但没有断言：
+
+“同一次 completion + auto review 生命周期中，labels endpoint 只能请求一次”。
+
+当前 Playwright browser test 才首次在真实运行时把两个 owner 同时执行出来并抓到重复 GET，所以现在 CI 已经明确暴露该问题。
+
+**建议最小修复：**
+
+不要删除浏览器断言，也不要把期望从 1 次放宽成 2 次。
+
+保留 Durable ZIP runtime 作为 completion side-effect canonical owner。
+
+最小方向应是让 review 打开复用 completion 已刷新的 label truth，而不是无条件再次 GET，例如：
+
+- `showImportReview412()` 只在 label cache 未加载/已过期时刷新；
+- 或 completion 调用 review 时传入明确的“labels 已刷新”上下文；
+- 如果用户稍后手动打开 review，则仍按 canonical freshness 规则决定是否刷新。
+
+不要新建第二 label cache owner，也不要通过全局 broad reload 掩盖问题。
+
+同时补回归测试覆盖：
+
+- completion 自动打开 review：labels GET 恰好一次；
+- 用户晚些时候手动打开 review：cache fresh 时不重复 GET；
+- cache stale 时允许一次明确 refresh；
+- completion 重复 reconcile 不重复执行 side effects。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
