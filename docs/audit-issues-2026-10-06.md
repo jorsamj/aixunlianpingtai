@@ -19,7 +19,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.119`  
 > 上一批审计记录提交后 VERSION：`42.24.120`  
 > 上一批审计记录提交后 VERSION：`42.24.121`  
-> 本批审计记录提交后 VERSION：`42.24.122`  
+> 上一批审计记录提交后 VERSION：`42.24.122`  
+> 本批审计记录提交后 VERSION：`42.24.123`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1775,6 +1776,67 @@ Prompt Template 的删除已经有显式 DELETE owner；create-time truncation�
 
 ---
 
+
+### AUDIT-035 — Algorithm Blueprint 第 201 条创建会静默丢失最老蓝图，与 Algorithm Asset 分裂
+
+**级别：中**  
+**模块：Algorithm Blueprint / New Algorithm UI / Algorithm metadata projection**
+
+**现象：**
+
+当前“新建算法”页面真实调用：
+
+`POST /api/v42/projects/{project_id}/algorithm-blueprints`
+
+后端先调用 `v12_create_algorithm(...)` 创建正式 Algorithm Asset，再创建 blueprint，并执行：
+
+`blueprints.insert(0, item)`
+→ `_v42_save(..., blueprints[:200])`
+
+因此第 201 个 blueprint 会把最老 blueprint 从持久化 truth 中静默删除，但对应 Algorithm Asset 不会同步删除。
+
+**真实调用链：**
+
+已有 200 个 Blueprint
+→ 新建第 201 个算法
+→ Algorithm Asset 创建成功
+→ 新 blueprint 创建成功
+→ `blueprints[:200]`
+→ oldest blueprint 被物理丢弃
+→ oldest Algorithm Asset 仍存在。
+
+当前前端仍读取 `state.v42.blueprints` 用于：
+
+- Dashboard blueprint 统计；
+- Algorithm list 的 labels / industry 辅助信息；
+- algorithm type / industry fallback；
+- 新建算法相关展示。
+
+**为什么是 Bug / 套娃：**
+
+Algorithm Asset 与 Blueprint 是两个持久化实体，但 Blueprint owner 用 history retention 隐式删除长期配置，且没有同步 lifecycle / 审计动作。
+
+**影响：**
+
+- 老算法对应的 labels/focus_scenes/negative_scenes 等蓝图元数据无提示丢失；
+- Dashboard blueprint 数量失真；
+- Algorithm list 部分辅助元数据退化；
+- Algorithm Asset 与 Blueprint 关系被破坏；
+- 用户无法知道创建新算法导致另一算法蓝图被删。
+
+**为什么 CI 没发现：**
+
+现有新建算法/UI 测试没有 201+ blueprint persistence contract，也没有 Algorithm Asset ↔ Blueprint retention consistency test。
+
+**建议最小修复：**
+
+Blueprint 不得用 `[:200]` 做物理 retention；若它仍是正式业务实体，应持久化全部并由 UI 分页。若未来确认可完全归并到 Algorithm Asset，需另做显式迁移，不能靠截断隐式退役。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1956,6 +2018,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-035` 起继续编号；
+- 确认后从 `AUDIT-036` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
