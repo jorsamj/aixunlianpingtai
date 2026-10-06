@@ -15,7 +15,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.115`  
 > 上一批审计记录提交后 VERSION：`42.24.116`  
 > 上一批审计记录提交后 VERSION：`42.24.117`  
-> 本批审计记录提交后 VERSION：`42.24.118`  
+> 上一批审计记录提交后 VERSION：`42.24.118`  
+> 本批审计记录提交后 VERSION：`42.24.119`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1401,6 +1402,77 @@ Source 是配置实体，不应因新增另一条配置而被隐式删除。
 
 ---
 
+
+### AUDIT-030 — Video Tasks 前端只消费第一页 50 条，把 cursor page 当完整 active truth
+
+**级别：中**  
+**模块：Video Frames / Frontend Pagination / PollRegistry**
+
+**现象：**
+
+后端：
+
+`GET /api/v33/projects/{project_id}/video-tasks`
+
+已经是正确的 Durable Task cursor API：
+
+- 默认 `limit=50`
+- 最大 100
+- 返回 `next_cursor`
+
+但最终前端 `refreshVideo424Delta()` 只请求该 endpoint 的第一页，读取 `response.items` 后直接覆盖 `state.video424`，完全不处理 `next_cursor`。
+
+**真实调用链：**
+
+项目存在 51+ 个 VIDEO_FRAMES task
+→ 一个较老 active task 排在第 51+
+→ 后端第一页只返回最新 50 条
+→ 前端把第一页覆盖成全部 `state.video424`
+→ active task 从页面消失。
+
+PollRegistry 的 `replaceVideo424Timer()` 又只看当前 `state.video424` 是否存在 active task。
+
+如果最新 50 条全部 terminal，但第 51+ 条仍 QUEUED / RUNNING / CANCEL_REQUESTED：
+
+→ 前端判断“没有 active video task”
+→ 停止 `video-frames` polling
+→ 该任务之后即使进度变化也不会自动重新出现。
+
+**为什么是 Bug / 套娃：**
+
+后端已经把“分页”与“任务真相”边界设计正确，但前端 compatibility page 把单页 projection 当全量 active truth。
+
+**影响：**
+
+- 第 51+ 个 active 视频切帧任务从 UI 消失；
+- 轮询可能提前停止；
+- 用户可能重复创建任务；
+- 老任务历史无法通过当前页面继续浏览；
+- 后端 Durable Task 仍真实运行，UI 与 TaskRepository 分裂。
+
+**为什么 CI 没发现：**
+
+现有 video API/frontend/browser tests 覆盖 create/list/stop、row patching、性能，但没有：
+
+- 51+ tasks；
+- `next_cursor` 消费；
+- active task 位于第二页；
+- 第一页全 terminal、第二页仍 active 的 polling 场景。
+
+**建议最小修复：**
+
+不要无界一次性 hydrate 全历史。
+
+- active VIDEO_FRAMES 必须单独完整保留；
+- terminal history 使用 cursor 分页；
+- 前端页面可分页/加载更多；
+- PollRegistry 是否继续轮询只能基于完整 active truth，不能只看第一页 history。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖第二页 active task 与 polling continuity。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1582,6 +1654,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-030` 起继续编号；
+- 确认后从 `AUDIT-031` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
