@@ -10,7 +10,8 @@
 > 续审计核验 VERSION：`42.24.110`  
 > 上一批审计记录提交后 VERSION：`42.24.111`  
 > 上一批审计记录提交后 VERSION：`42.24.112`  
-> 本批审计记录提交后 VERSION：`42.24.113`  
+> 上一批审计记录提交后 VERSION：`42.24.113`  
+> 本批审计记录提交后 VERSION：`42.24.114`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -966,6 +967,87 @@ remote thread 没有：
 
 ---
 
+
+### AUDIT-025 — Deployment Conversion 最近 100 条窗口被当成完整任务 / 产物真相
+
+**级别：中～高**  
+**模块：Conversion task list / Deployment artifacts / Algorithm version deployments / Polling**
+
+**现象：**
+
+`v39_list_deploy_jobs(project_id)` 会扫描全部 `deploy/jobs/*/job.json`，按 `created_at` 倒序后直接：
+
+`return {"items": rows[:100]}`
+
+没有 cursor，也没有“active 全保留 + terminal history bounded”的语义。
+
+这个 bounded 100 条窗口随后被多处当作完整真相：
+
+1. `GET /api/v39/projects/{project_id}/deploy/jobs`：部署转换任务页；
+2. 前端 `pollDeployJobs()`：整体覆盖 `state.deployJobs`，并按当前列表是否仍有 active job 决定是否继续 polling；
+3. `v39_list_deploy_artifacts()`：直接遍历 `v39_list_deploy_jobs()["items"]` 构造部署产物；
+4. `v423_version_deployments()`：同样遍历这 100 条，再按 algorithm/version 过滤版本转换历史。
+
+**真实调用链：**
+
+一个较老的 conversion 仍 RUNNING / WAITING_RESOURCE
+→ 项目后续创建 100+ 个更新的 conversion job
+→ 旧 active job 排到第 101+
+→ `v39_list_deploy_jobs()` 不再返回
+→ 前端任务页看不到它
+→ 如果当前 100 条里没有其它 active，`armDeployPollV39()` 会停止 deploy polling。
+
+对已完成历史也是同样：
+
+某旧算法版本存在有效 ONNX/RKNN/TensorRT/OM/BMODEL conversion
+→ 项目后来累计 100+ 个更新 conversion
+→ 该 job 被窗口挤出
+→ `/deploy/artifacts` 不再列出其产物
+→ `/v42/.../versions/{version_id}/deployments` 也返回空或不完整。
+
+**为什么是 Bug / 套娃：**
+
+“最近 100 条任务列表”本来只是 UI history window，却被复用成：
+
+- active execution visibility truth；
+- artifact discovery truth；
+- per-version conversion history truth。
+
+bounded projection 反过来覆盖了 canonical lifecycle / artifact truth。
+
+**影响：**
+
+- 长时间运行的老 conversion 可从任务页消失；
+- 页面可能提前停止 polling；
+- 老版本已完成转换产物从“部署产物”页消失；
+- 算法版本详情会误显示“暂无部署产物”；
+- 用户可能重复发起转换；
+- 已存在的 ModelArtifact / conversion files 并未真正删除，但 UI/API projection 丢失。
+
+**为什么 CI 没发现：**
+
+现有 conversion UI / API 测试主要覆盖少量 job；没有覆盖：
+
+- 101+ conversion jobs；
+- active job 位于第 101+；
+- 老版本 conversion 位于第 101+；
+- artifact/version projection 仍必须完整。
+
+**建议最小修复：**
+
+不要把 job list 改成一次性无界返回。
+
+- active conversion 必须独立全量保留或按 Durable Task truth 合并；
+- terminal history 用 cursor 分页；
+- version deployments 应按 `algorithm_id + version_id` 定向查询，而不是先截全项目 100 条再过滤；
+- deployment artifacts 应从 canonical ModelArtifact / conversion artifact index 查询，不依赖 UI history window；
+- PollRegistry 只能根据完整 active truth 决定是否停止。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101+ jobs 与 active/history/artifact/version 四条 projection。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1147,6 +1229,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-025` 起继续编号；
+- 确认后从 `AUDIT-026` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
