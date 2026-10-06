@@ -5,7 +5,10 @@
 > 长期分支：`feature/external-algorithm-publishing`  
 > 审计基线 HEAD：`3b5c073f9a2c9c532cbab6cfec3e899c5a4091a5`  
 > 审计基线 VERSION：`42.24.109`  
-> 本文档提交后 VERSION：`42.24.110`  
+> 本文档首批提交 VERSION：`42.24.110`  
+> 续审计核验 HEAD：`0e03819fafe50a02bc57d1980ed0c62d97c95296`  
+> 续审计核验 VERSION：`42.24.110`  
+> 本批审计记录提交后 VERSION：`42.24.111`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -37,8 +40,8 @@
 
 本轮开始时重新核验当前 HEAD：
 
-- GitHub Actions workflows：`23 / 23 completed success`
-- check-runs：`61 / 61 completed success`
+- GitHub Actions workflows：`21 / 21 completed success`
+- check-runs：`55 / 55 completed success`
 - failure：`0`
 - queued：`0`
 - in_progress：`0`
@@ -626,6 +629,162 @@ worker 持续依赖：
 
 ---
 
+
+### AUDIT-015 — Service Node 停用会卡住 pre-start assignment
+
+**级别：高**  
+**模块：Service Node / CentralTaskAllocator / Agent assignment / GPU reservation**
+
+**现象：** 节点 `enabled=true -> false` 只更新节点状态，不释放该节点尚未 start 的 `ASSIGNED / CLAIMED` assignment。已 RUNNING execution 可继续 heartbeat / upload / finalization / finish，disabled node 也确实不能 claim/start 新任务；Bug 只发生在 pre-start 窗口。
+
+**真实调用链：** `PATCH /api/v63/service-nodes/{node_id}` → `ServiceNodeRepository.update(enabled=False)` → assignment 仍为 `ASSIGNED / CLAIMED` → claim/start 返回 `NODE_DISABLED` → `CentralTaskAllocator.assign_next()` 又因已有 active assignment 不再改派。CLAIMED 过期回收目前只在该节点再次进入 `claim_for_node()` 时发生，而 disabled node 已进不去。
+
+**为什么是 Bug / 套娃：** Service Node owner 已停用，但 canonical assignment / GPU reservation truth 仍保持占用，两个生命周期发生分裂。
+
+**影响：** Training / Material Import / Cleaning / Conversion / Deployment Test 可卡在原节点；其它健康节点不能接管；GPU reservation 可能持续占用。
+
+**为什么 CI 没发现：** 已有测试覆盖“disable 后不能 claim 新任务”和“RUNNING 后 disable 仍可 finish”，未覆盖 ASSIGNED 与 CLAIMED-before-start。
+
+**建议最小修复：** true→false 时只由 CentralTaskAllocator 释放 pre-start ASSIGNED/CLAIMED，并与 start transaction race-fence；RUNNING 不取消、不迁移；不新增第二 reservation owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 ASSIGNED / CLAIMED / RUNNING 三个窗口和跨节点重新分配。
+
+---
+
+### AUDIT-016 — Storage Source DELETE 可破坏活动 Durable Import / Rescan
+
+**级别：高**  
+**模块：Storage Source / MATERIAL_IMPORT / Rescan / Credential lifecycle**
+
+**现象：** `DELETE /api/v61/storage-sources/{source_id}` 只统计已落库 MaterialRepository 引用，不检查已创建但未完成的 Durable import/rescan；删除 source 后还会立即删除对应 credential secret。
+
+**真实调用链：** 创建 scan/rescan → request 冻结 `storage_source_id` → task queued → 删除 Storage Source → source row + secret 被删 → `StorageImportHandler._source_and_provider()` 执行时重新 `sources.get(storage_source_id)` / 取 credential → FileNotFound / credential unavailable。
+
+**为什么是 Bug / 套娃：** 删除 owner 只看“已导入完成的素材引用”，忽略“活动 Durable task 引用”，DELETE 成为破坏活动 task 依赖的旁路。
+
+**影响：** queued/running import 或 rescan 可被用户删掉依赖；OSS/S3/MinIO 凭据提前销毁；Durable task truth 与 Storage Source lifecycle 分裂。
+
+**为什么 CI 没发现：** 当前测试只验证 material reference guard 和正常 import/rescan，没有“创建任务后、Worker claim 前删除 source”。
+
+**建议最小修复：** 删除前按 Durable Task truth 检查活动 MATERIAL_IMPORT/rescan 对 `storage_source_id` 的引用；活动引用 409；终态后再删 source/secret；查询保持分页有界。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-017 — Image 单删 / v46 批删绕过 canonical MaterialBatch 删除 owner
+
+**级别：高**  
+**模块：Material deletion / Active Training fence / AnnotationRepository delete protocol**
+
+**现象：** 当前 `DELETE /api/projects/{project_id}/images/{image_id}` 与 `POST /api/v46/projects/{project_id}/images/batch-delete` 直接 unlink，并调用 `AnnotationRepository.remove()` / `MaterialRepository.remove()`。它们没有经过 modern MaterialBatch deletion owner。
+
+**真实调用链：** 当前单删/批删 → 直接删除 Material/Annotation。canonical MaterialBatch 的 `DELETE_INDEX / DELETE_SOURCE` 则会在创建和每批执行前调用 `_assert_not_referenced_by_active_training()`，并执行 `prepare_delete → finalize_delete → material remove → complete_delete`，失败可 restore。
+
+**为什么是 Bug / 套娃：** 已存在唯一 modern Material deletion owner，但旧 HTTP 写入口仍能直接修改同一 Material + Annotation truth，是当前可达的第二删除 owner。
+
+**影响：** 活动 Training 引用素材可被删；本地源文件可提前物理删除；Annotation GT 删除绕过 crash-safe delete protocol。
+
+**为什么 CI 没发现：** MaterialBatch 自身测试通过，但单图/v46 route 不调用该 owner，缺跨入口 owner consistency test。
+
+**建议最小修复：** 单删和批删复用 canonical MaterialBatch delete primitive/owner；不复制第二套 training guard。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-018 — Model Config DELETE 会删除仍被 Durable AI task 引用的 secret
+
+**级别：高**  
+**模块：AI Annotation / Model Config / Secret lifecycle**
+
+**现象：** Durable AI task submit 已正确冻结 `model_config_snapshot`、`model_config_revision` 和 `secret_ref`，但 runtime 仍需按 frozen `secret_ref` 到 Keyring 取真实 secret。`DELETE /api/v35/model-configs/{config_id}` 会直接删除 config 和 secret，完全不检查活动 AI task。
+
+**真实调用链：** v60 annotation task create → request artifact 冻结 `model_config_snapshot.secret_ref` → task queued → 用户删 Model Config → Keyring secret 删除 → Worker `prepare_request(runtime=True)` → `KeyringSecretStore().get(secret_ref)` 为空 → `AI_MODEL_SECRET_UNAVAILABLE`。
+
+**为什么是 Bug / 套娃：** config identity 已 snapshot 化，但 credential lifecycle 仍由 live config delete 单方面控制，Durable task 的冻结输入并不真正可恢复执行。
+
+**影响：** queued / retry / recovery AI task 可因“删除配置”而失败。
+
+**为什么 CI 没发现：** 现有测试验证 live config 修改不影响 frozen snapshot，但测试中的 Keyring 始终返回 frozen secret；没有删除 secret 的窗口测试。
+
+**建议最小修复：** 活动 Durable AI task 引用该 `secret_ref` 时 delete 409；终态后再删 secret；绝不能把 secret 明文复制进 task artifact。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-019 — Dataset DELETE 可在 Training PREPARING 阶段删掉尚未冻结的素材
+
+**级别：高**  
+**模块：Dataset deletion / TRAINING_PREPARE / Dataset Revision input freeze**
+
+**现象：** v12 Training submit 先创建 TRAINING + 独立 TRAINING_PREPARE；真正的 `resolve_training_selection() / freeze_training_inputs() / input-freeze.json` 由 Prepare Worker 随后建立。旧 Dataset DELETE 在这段窗口没有 active Training reference guard。
+
+**真实调用链：** `POST /api/v12/.../train/start` → TRAINING accepted、PREPARE queued、尚无 input-freeze → `DELETE /api/projects/{project_id}/datasets/{dataset_id}` 删除 dataset 素材 → `TrainingPrepareHandler._freeze_request_contract()` → `_selected_project_images()` → 明确报“所选素材不存在”。
+
+**为什么是 Bug / 套娃：** Dataset Revision 主链本身没问题；问题是旧 Dataset lifecycle owner 可在 canonical freeze owner 建立不可变输入前破坏已经受理的训练 selection。
+
+**影响：** 用户看到训练创建成功，随后删除 dataset 会让准备任务失败；删除操作成为对活动 Training 的隐式破坏。
+
+**为什么 CI 没发现：** 现有 freeze/Revision 测试关注 freeze 后不变性，没有覆盖“TRAINING 已受理但 PREPARE 尚未 freeze”的并发窗口。
+
+**建议最小修复：** Dataset delete 复用 active-training reference truth；PREPARING/QUEUED/RUNNING/CANCEL_REQUESTED 且 selection 命中时 fail-closed；不改 Dataset Revision identity。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-020 — Training 单条 DELETE 会隐式取消活动任务，和批量删除合同相反
+
+**级别：高**  
+**模块：Training task lifecycle / frontend-backend consistency**
+
+**现象：** 当前 queued/running/paused 行都显示“删除”；单删确认文案只说删除任务记录。但 `DELETE /api/v12/projects/{project_id}/jobs/{job_id}` 对 active Durable task 会调用 `v48_stop_job()` → `request_cancel()` / terminate process → 再 `rmtree(job_dir)`。批量删除却通过 `_purge_terminal_training_job_record()` 明确只清 terminal task。
+
+**真实调用链：** `TrainingTaskRuntime.deleteTrain428()` → v12 DELETE → `v12_delete_job()` → active → `v48_stop_job()` → canonical cancel/process termination → remove job projection directory。
+
+**为什么是 Bug / 套娃：** 同一页面同一“删除记录”语义存在两套生命周期合同：单删=隐式 cancel，批删=terminal-only cleanup；DELETE 抢了独立 stop/cancel action 的责任。
+
+**影响：** 用户只想删记录却真实停止训练；单删与批删行为不可预测。
+
+**为什么 CI 没发现：** stop 与 batch purge 分开测试，没有跨前端语义测试要求两种删除共享 terminal guard。
+
+**建议最小修复：** 单删与批删共用 terminal purge guard；active task 409/前端禁用删除；取消只走明确 stop/cancel action。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-021 — Annotation material-state 把前 100 个 active task 当成全部真相
+
+**级别：中**  
+**模块：AI Annotation projection / performance correctness**
+
+**现象：** `annotation_material_states()` 调用 `TaskRepository.list(..., limit=100)` 查询 AWAITING_CONFIRMATION/QUEUED/RUNNING/CANCEL_REQUESTED 的 AI_ANNOTATION + MATERIAL_BATCH。Repository 返回 `next_cursor`，但 endpoint 完全不继续读。
+
+**真实调用链：** 查询最多 100 个 image ids → 只读取最近 100 个 active task → 忽略 next_cursor → 若目标 image 只存在第 101+ 个仍待审核/提交的任务 → 返回无 AI 状态。
+
+**为什么是 Bug / 套娃：** 为性能做 bounded query 后，又把 bounded page 错当 canonical active truth；与 AUDIT-013 同类。
+
+**影响：** >100 个待审核/提交 AI task 时，较老任务素材不显示 `awaiting_confirmation / committing`，用户可能重复发起 AI 标注或误判状态。
+
+**为什么 CI 没发现：** 测试覆盖“请求最多100张”和“105条 terminal history 不挤掉 active task”，未覆盖 101+ 条同时 active review task。
+
+**建议最小修复：** 不能无界 hydrate；应按 requested image ids 反向查 active candidate ownership，或做受控 cursor scan + 明确上限/索引；禁止 per-image N+1。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，需覆盖 101+ active review tasks。
+
+---
+
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -701,6 +860,8 @@ policy 创建/修改、旧 feedback 写入和 run 入口已经走 `_legacy_itera
 
 因此“删除节点”当前没有发现和 AUDIT-014 同类的直接生命周期绕过。
 
+另外已确认：节点停用后，已经进入 RUNNING 的 execution 仍可继续 heartbeat / logs / result upload / finalization / finish；这一部分安全。pre-start ASSIGNED / CLAIMED 的停用缺口单独登记为 AUDIT-015。
+
 ### ModelArtifact / External Publish storage owner
 
 External publication 不再持久化第二套 legacy storage truth。
@@ -720,21 +881,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 ## 5. 当前仍在复核、尚未编号
 
-### Service Node 停用语义
-
-已经确认“删除节点”有 busy guard。
-
-下一步仍需确认：
-
-- `enabled=false` 是否只阻止新调度；
-- 已领取 assignment / lease 是否继续安全执行；
-- heartbeat 是否仍可更新；
-- disabled 节点是否还能 claim 新任务；
-- finish / result upload 是否会因为 disabled 被错误拒绝；
-- GPU reservation 是否仍由原 owner 正确释放。
-
-证据未完成前，不编号。
-
 ### 其它待继续项
 
 1. 真实 FastAPI route table 全局 uniqueness；
@@ -746,7 +892,7 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 7. Agent claim/start/upload/finalization/finish 组合测试；
 8. 全局可写 Legacy opener / save / delete / confirm；
 9. 页面状态枚举是否存在其它 legacy/canonical 漂移；
-10. 删除整个 Project / Dataset / Image 是否绕过当前 durable references；
+10. 其它 deletion/retirement API 是否仍绕过 durable references；
 11. 1k / 10k / 20k 下无界 hydration、N+1、O(N²)；
 12. build/cache identity 统一。
 
@@ -756,17 +902,24 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 审计尚未全部完成，当前建议顺序：
 
-1. **AUDIT-002** — Router 非法套娃 / 残缺 Agent Router
+1. **AUDIT-002** — Router 非法套娃 / 27 组重复 method+path / 残缺 Agent Router
 2. **AUDIT-011** — 整算法删除绕过 Version Retirement
-3. **AUDIT-014** — ZIP active job 可被直接 DELETE
-4. **AUDIT-009** — Paddle Training 前端可选、后端必失败
-5. **AUDIT-010** — Training Settings 重复 DOM / 双参数 UI owner
-6. **AUDIT-003 / AUDIT-004** — API Schema 与 runtime 漂移
-7. **AUDIT-005** — Modal close scope
-8. **AUDIT-013** — 训练次数统计 truth
-9. **AUDIT-008** — Legacy Annotation 全局写入口
-10. **AUDIT-006** — build/version truth
-11. **AUDIT-001 / AUDIT-007** — 重复 helper / dead modalStack owner
+3. **AUDIT-017** — Image 删除绕过 MaterialBatch / active Training fence
+4. **AUDIT-015** — Service Node disable 卡死 pre-start assignment / GPU reservation
+5. **AUDIT-014** — ZIP active job 可被直接 DELETE
+6. **AUDIT-020** — Training 单删隐式 cancel，和批删合同冲突
+7. **AUDIT-016** — Storage Source 删除破坏活动 import/rescan
+8. **AUDIT-019** — Dataset delete 破坏 Training PREPARING pre-freeze selection
+9. **AUDIT-018** — Model Config delete 提前销毁 Durable AI task secret
+10. **AUDIT-009** — Paddle Training 前端可选、后端必失败
+11. **AUDIT-010** — Training Settings 重复 DOM / 双参数 UI owner
+12. **AUDIT-021** — AI material-state 只看前 100 个 active task
+13. **AUDIT-003 / AUDIT-004** — API Schema 与 runtime 漂移
+14. **AUDIT-005** — Modal close scope
+15. **AUDIT-013** — 训练次数统计 truth
+16. **AUDIT-008** — Legacy Annotation 全局写入口
+17. **AUDIT-006** — build/version truth
+18. **AUDIT-001 / AUDIT-007** — 重复 helper / dead modalStack owner
 
 修复前仍应完成剩余高风险审计，避免同一 owner 附近还有第二条旁路。
 
@@ -811,8 +964,8 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 继续审计时：
 
-- 从“Service Node 停用语义”开始；
+- Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后才新增 `AUDIT-015+`；
+- 确认后从 `AUDIT-022` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
