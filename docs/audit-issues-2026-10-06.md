@@ -3532,6 +3532,146 @@ UI 会显示：
 
 ---
 
+
+### AUDIT-054 — 固定 Benchmark 复用的前端 payload 与 TrainReq admission 合同互相冲突，真实浏览器路径会在创建阶段失败
+
+**级别：高**  
+**模块：Training Create / Benchmark Reuse / TrainingSubmitRuntime / SplitRequest / TRAINING_PREPARE**
+
+**现象：**
+
+当前训练创建页启用“复用当前固定评测基准”后，前端 `TrainingSubmitRuntime` 会：
+
+- 保留 `split_mode = random_test_from_training_pool`；
+- 删除 `test_image_ids`；
+- 删除 `experiment_percent`；
+- 写入 `benchmark_source_version_id`；
+- 写入 `benchmark_scope_id`。
+
+但 v12 Durable Training admission 在创建 TRAINING / TRAINING_PREPARE 任务之前，仍无条件调用：
+
+`_explicit_training_split(payload)`
+
+而随机试验模式的 canonical `SplitRequest` 明确要求：
+
+`experiment_percent` 必须非空且 0 < value < 100。
+
+因此真实浏览器 Benchmark reuse 请求会在 admission 阶段直接失败，后续 TrainingPrepare 的 Benchmark 解析/替换根本没有机会执行。
+
+**真实调用链：**
+
+前端：
+
+`TrainingSubmitRuntime.submit()`
+→ `benchmarkReuseContext(...)`
+→ `buildTrainingStartPayload(...)`
+→ 当 benchmarkContext 存在：
+  - `delete payload.test_image_ids`
+  - `delete payload.experiment_percent`
+  - 写入 benchmark source/scope identity
+→ `POST /api/v12/projects/{project_id}/train/start`
+
+后端：
+
+`v12_start_train()`
+→ `validate_train_request(payload)`
+→ `_enqueue_explicit_training()`
+→ `_explicit_training_split(payload)`
+→ `SplitRequest(mode=random_test_from_training_pool, experiment_percent=None, ...)`
+→ `SplitRequest.__post_init__()`
+→ 抛出：
+`experiment_percent 必须大于 0 且小于 100`
+→ HTTP 400。
+
+也就是说：
+
+浏览器认为“固定 Benchmark 已经取代随机试验集，所以删除 experiment_percent”；
+
+admission owner 却仍要求先构造一份完整 random split request。
+
+**已有测试之间的直接矛盾：**
+
+前端：
+
+`tests/frontend/training-submit.test.mjs`
+
+Benchmark reuse 用例明确断言：
+
+`Object.hasOwn(sent, 'experiment_percent') === false`
+
+即测试保护“前端删除 experiment_percent”。
+
+后端：
+
+`tests/api/test_training_request.py`
+
+`test_reusable_benchmark_...` 的成功路径 POST 则手工提交：
+
+- `split_mode: random_test_from_training_pool`
+- `validation_percent: 20`
+- `experiment_percent: 20`
+- benchmark source/scope
+
+然后才断言 TrainingPrepare 最终把 frozen payload 改成：
+
+- `split_mode = independent_test_set`
+- benchmark test IDs
+- effective training IDs。
+
+所以两边各自测试都通过，但它们没有用“前端真实构造出来的 payload”做跨层测试。
+
+**为什么是 Bug / 前后端不一致：**
+
+这是明确的 contract split-brain：
+
+- Browser owner 认为 Benchmark identity 已足够，不应再传随机试验比例；
+- Admission owner 仍按随机 split schema 校验；
+- Prepare owner 才真正知道如何把固定 Benchmark 转换成独立试验集。
+
+由于 admission 在 Prepare 之前，当前真实 UI 功能会被前置校验挡死。
+
+**影响：**
+
+- 用户勾选“复用当前固定评测基准”后无法成功创建训练任务；
+- 严格固定 Benchmark 的迭代训练主流程被 UI payload 直接破坏；
+- 用户可能只能关闭复用、重新随机试验，失去版本间严格可比性；
+- 容易误判为 Benchmark Scope、训练素材或服务器异常；
+- 当前单元/API 测试均可能绿色，因为缺少真实前端 payload → API 的合同测试。
+
+**为什么 CI 没发现：**
+
+现有测试被分成两套：
+
+1. 前端测试只验证浏览器 payload 形状，并把删除 `experiment_percent` 当成正确；
+2. 后端测试自己构造一个不同的 payload，仍带 `experiment_percent`，所以 admission 能通过。
+
+没有测试把 `TrainingSubmitRuntime.build/submit` 的 Benchmark payload 原样送入 v12 TrainReq/admission。
+
+**建议最小修复：**
+
+不能靠在前端随便补一个无意义的 20% 只为骗过 admission，也不应让 Benchmark 模式继续伪装成普通 random split。
+
+应收敛单一合同，最小范围可选方向是：
+
+- admission 在识别到完整且合法的 `benchmark_source_version_id + benchmark_scope_id` 时，允许 Benchmark-specific request 先以“训练候选 + validation ratio + benchmark identity”进入 Prepare；
+- 由已有 TrainingPrepare canonical owner 解析固定 Benchmark、排除 benchmark test IDs，并冻结最终 `independent_test_set` SplitManifest；
+- 前端与后端共享同一 Benchmark request contract。
+
+不要新增第二 Split owner，也不要把固定 Benchmark test IDs 下发到浏览器。
+
+回归测试必须新增真实跨层合同：
+
+`TrainingSubmitRuntime Benchmark payload`
+→ v12 start
+→ 202
+→ TrainingPrepare
+→ frozen independent benchmark split。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
