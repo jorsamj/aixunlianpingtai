@@ -9,7 +9,8 @@
 > 续审计核验 HEAD：`0e03819fafe50a02bc57d1980ed0c62d97c95296`  
 > 续审计核验 VERSION：`42.24.110`  
 > 上一批审计记录提交后 VERSION：`42.24.111`  
-> 本批审计记录提交后 VERSION：`42.24.112`  
+> 上一批审计记录提交后 VERSION：`42.24.112`  
+> 本批审计记录提交后 VERSION：`42.24.113`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -865,6 +866,106 @@ bounded history 被放在 operation 过滤之前，又被兼容层当成完整 C
 
 ---
 
+
+### AUDIT-024 — Remote Conversion 仍由 daemon thread 执行，绕过 canonical Durable MODEL_CONVERSION owner
+
+**级别：高**  
+**模块：Model Conversion / Deploy Resource / Durable Task Runtime / Recovery**
+
+**现象：**
+
+同一个：
+
+`POST /api/v39/projects/{project_id}/deploy/jobs`
+
+根据 Deploy Resource 的 mode 分成两套执行 owner：
+
+- `mode=local` / `mode=agent`：写 `request.json`，创建 `TaskKind.MODEL_CONVERSION`，由 Durable Worker lease / heartbeat / recovery / cancellation 驱动；
+- `mode=remote`：不创建 TaskRecord，直接启动 `threading.Thread(target=_sync_remote_deploy_job, daemon=True)`，状态只写 `job.json`。
+
+当前前端仍允许用户新增“远程转换服务器”，检测 ready 后可直接在版本转换弹窗中选择，因此这不是 dead code。
+
+**真实调用链：**
+
+Deploy Resource `mode=remote`
+→ `v39_create_deploy_job()`
+→ `_v39_create_deploy_job_under_version_fence()`
+→ 写 `job.json`
+→ `threading.Thread(..., daemon=True).start()`
+→ `_sync_remote_deploy_job()`
+→ HTTP 调远端转换服务并轮询。
+
+而 local/agent：
+→ `shared_task_repository().create(TaskRecord.new(... TaskKind.MODEL_CONVERSION ...))`
+→ canonical ConversionHandler
+→ lease / heartbeat / process fencing / recover。
+
+**为什么是 Bug / 套娃：**
+
+同一种 MODEL_CONVERSION 存在两个 active runtime owner：
+
+1. canonical Durable Task owner；
+2. legacy in-process remote thread owner。
+
+remote thread 没有：
+
+- durable lease；
+- Worker heartbeat；
+- claim/reclaim；
+- lease-loss fencing；
+- crash/restart recovery；
+- Central Scheduler / Worker visibility。
+
+**额外确认的删除竞态：**
+
+`_sync_remote_deploy_job()` 在线程进入 `try:` 之前先执行：
+
+`_deploy_resource_by_id(job["resource_id"])`
+
+而：
+
+`DELETE /api/v39/deploy/resources/{resource_id}`
+
+没有任何 active conversion reference guard，并会立即删除 secret。
+
+如果资源在“job 已创建 / daemon thread 尚未完成 live resource lookup”窗口被删除：
+
+- lookup 直接抛错；
+- 因异常发生在 `try` 之前，线程自己的 failure/finally 逻辑都不会执行；
+- job.json 可能继续保持 `queued`；
+- `DEPLOY_REMOTE_THREADS` 也可能残留旧 entry。
+
+即使线程已开始运行，平台进程重启也不会自动重建该 daemon thread，remote conversion 没有 Durable recovery owner 接管。
+
+**影响：**
+
+- 平台重启会让 remote conversion 丢执行者；
+- 任务可能永久卡 queued/running；
+- Stop 只能靠原线程观察 `cancel_requested`，重启后没有线程处理；
+- Deploy Resource / API key 删除可破坏活动任务；
+- remote conversion 无法享受当前已经实现的 conversion lease fencing / recovery；
+- UI、job.json 与 Shared Task Repository truth 分裂。
+
+**为什么 CI 没发现：**
+
+现有 conversion unified truth / recovery / process fencing 测试都围绕 `TaskKind.MODEL_CONVERSION` canonical path；远程 Deploy Resource 测试主要覆盖资源检测/UI 展示，没有验证 remote mode 也必须创建 Durable Task。
+
+**建议最小修复：**
+
+不要新增第三套 remote runtime。
+
+- remote resource 也统一创建 `TaskKind.MODEL_CONVERSION`；
+- remote HTTP transport 只是 ConversionHandler 的一种 execution adapter；
+- request artifact 冻结 remote resource snapshot + secret_ref identity；
+- active task 期间 Deploy Resource / secret delete fail-closed；
+- cancellation / restart recovery 全部复用 canonical TaskRepository；
+- 退役 `DEPLOY_REMOTE_THREADS` 作为执行 owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 remote create → TaskRecord、restart recovery、delete resource fence、cancel、lease-loss / retry。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1046,6 +1147,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-024` 起继续编号；
+- 确认后从 `AUDIT-025` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
