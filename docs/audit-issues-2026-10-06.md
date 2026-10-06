@@ -3015,6 +3015,129 @@ preempt -> 用户 stop victim -> incoming finished
 
 ---
 
+
+### AUDIT-050 — Cleaning 详情绕过 canonical 分页结果接口，一次性 hydrate 全部清洗结果
+
+**级别：中～高**  
+**模块：Cleaning Review / MaterialBatch Results / Frontend Hydration / Performance**
+
+**现象：**
+
+canonical MaterialBatch 已经提供：
+
+`GET /api/v62/projects/{project_id}/material-batches/{task_id}/results?cursor=&limit=`
+
+并且：
+
+- 只允许 CLEAN；
+- `limit` 1~500；
+- 按 `image_id` cursor 分页；
+- 返回 `items + next_cursor`。
+
+但当前最终 Cleaning 详情页没有复用这个 owner，而是调用：
+
+`GET /api/v47/projects/{project_id}/clean-tasks/{task_id}/result`
+
+该兼容 endpoint 内部通过：
+
+`_v47_durable_clean_results()`
+
+直接：
+
+`SELECT ... FROM clean_results ... ORDER BY image_id`
+→ `fetchall()`
+→ JSON decode 全部 result_json
+→ 对全部 image_id 一次 `MaterialRepository.get_many(...)`
+→ enrich 全部 material / annotation metadata
+→ 把整批 items 一次返回浏览器。
+
+**真实调用链：**
+
+用户打开一个大 CLEAN 任务详情
+→ `cleanDetailCore429(id)`
+→ GET v47 clean result
+→ 后端一次读完整 clean_results
+→ 一次 hydrate 全部 material rows
+→ 浏览器一次解析完整 JSON
+→ 过滤 failed / issues
+→ 把全部 reviewItems 放入 `state.cleanImageReview429.items`
+→ 最终 DOM 只显示前 60 张。
+
+前端虽然有：
+
+`CLEAN_IMAGE_REVIEW_BATCH_429 = 60`
+
+并按“加载更多”每次显示 60 张，但这只是 DOM 分页，不是数据分页；首屏之前全部数据已经完成服务端读取、网络传输和客户端内存 hydration。
+
+**为什么是 Bug / 套娃：**
+
+当前 compatibility Cleaning read owner 绕过了已经存在的 canonical MaterialBatch cursor API。
+
+这是典型的：
+
+“UI 看起来分页”
+≠
+“后端 / 网络 / state 真正分页”。
+
+而且 Annotation Audit 同一个详情页已经正确使用独立 cursor endpoint，说明当前产品本身已有分页模式。
+
+**规模影响：**
+
+CLEAN MaterialBatch 支持 FILTERED 大范围；explicit large selection 也支持到 100000 的特定操作边界，项目实际目标规模明确包含 1k / 10k / 20k。
+
+20k 清洗结果时，打开详情会一次性发生：
+
+- 20k SQLite result row fetch；
+- 20k result_json decode；
+- 20k material lookup / public projection；
+- 大体积 JSON 序列化与网络传输；
+- 浏览器保存全部 review items；
+- 再对全部 items 做 filter / stats / issue option 聚合。
+
+即使最终只显示 60 张，首屏成本仍与完整 task 大小线性增长。
+
+**影响：**
+
+- 10k / 20k 清洗任务详情首开明显变慢；
+- Web API 线程/进程出现瞬时 CPU / 内存峰值；
+- 大 JSON 响应增加网络和浏览器解析压力；
+- 移动端/低内存浏览器更容易卡顿；
+- 用户只是查看前 60 张，也要为全部结果付出成本；
+- 和“禁止无界 hydration”的当前性能合同冲突。
+
+**为什么 CI 没发现：**
+
+现有 Cleaning 测试覆盖：
+
+- durable create / run / confirm；
+- 单条/小批 result；
+- PollRegistry；
+- upload-cleaning 性能；
+
+但没有验证：
+
+- v47 result endpoint 必须 bounded；
+- 1k / 10k / 20k CLEAN 详情首次读取只拉一页；
+- compatibility UI 必须复用 canonical v62 cursor results。
+
+**建议最小修复：**
+
+不要再造第二套 clean result store。
+
+最小方向：
+
+- Cleaning 详情直接复用 canonical `/material-batches/{task_id}/results`；
+- 首屏 `limit=60~100`；
+- summary / issue counts 如果需要全量，应在 Worker 完成时写 aggregate summary，或用 SQLite aggregate query，不应靠前端 hydrate 全量后统计；
+- material enrichment 仅对当前页 image_ids 批量 `get_many`；
+- “加载更多”使用 `next_cursor`；
+- 删除确认集合继续绑定同一个 selection.sqlite3 / canonical clean result truth，不新增第二结果 owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 1k / 10k / 20k，断言 first-page DB row / material hydration 有界，并验证 next_cursor。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -3196,6 +3319,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-050` 起继续编号；
+- 确认后从 `AUDIT-051` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
