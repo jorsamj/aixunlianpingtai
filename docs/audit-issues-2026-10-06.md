@@ -28,7 +28,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.128`  
 > 上一批审计记录提交后 VERSION：`42.24.129`  
 > 上一批审计记录提交后 VERSION：`42.24.130`  
-> 本批审计记录提交后 VERSION：`42.24.131`  
+> 上一批审计记录提交后 VERSION：`42.24.131`  
+> 本批审计记录提交后 VERSION：`42.24.132`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -2411,6 +2412,101 @@ Quality Center 直接复用 canonical pointer：
 
 ---
 
+
+### AUDIT-044 — Storage Source PATCH 可在活动 MATERIAL_IMPORT / rescan 生命周期中停用或改坏运行依赖
+
+**级别：高**  
+**模块：Storage Source / MATERIAL_IMPORT / Rescan / Credential lifecycle**
+
+**现象：**
+
+AUDIT-016 已确认 DELETE 会忽略活动 Durable import/rescan 引用。
+
+继续复核发现，即使不删除 Source，当前可达：
+
+`PATCH /api/v61/storage-sources/{source_id}`
+
+同样没有活动任务 reference fence，并允许直接修改：
+
+- `enabled`
+- `config`
+- `credentials`
+- `clear_credentials`
+
+当前前端“存储配置”页真实提供：
+
+- 编辑存储源；
+- “停用 / 启用”；
+- 修改 endpoint / bucket / prefix / root；
+- 修改凭据。
+
+**真实调用链：**
+
+创建 Storage Import / rescan
+→ request artifact 只冻结 `storage_source_id`
+→ task 已 QUEUED / 等待 Worker claim
+→ 用户点击“停用”，或 PATCH 清除 / 修改 credential / config
+→ Source row 仍存在，但 live runtime 已改变
+→ Worker `StorageImportHandler._source_and_provider()`
+→ 重新读取 `StorageSourceRepository.get(source_id)`
+→ 若 disabled：直接 `EnvironmentError("storage source is disabled")`
+→ 若 config / credential 已变化：provider / health_check 按新配置执行，可能失败或指向不同后端。
+
+Agent import 在确认后的 publish/indexing 路径中也会再次调用 `_source_and_provider()`，因此 scan 完成并不意味着后续阶段已经完全脱离 live Source。
+
+**为什么是 Bug / 套娃：**
+
+Durable MATERIAL_IMPORT 已经受理后，其运行依赖仍由可随时编辑的 live Storage Source owner 单方面控制。
+
+Source 更新语义没有区分：
+
+- “禁止新任务”；
+- “破坏已经受理任务”。
+
+这与 Service Node 停用应只阻止后续调度、保留已有 execution 的原则同类。
+
+**影响：**
+
+明确成立的窗口包括：
+
+1. task 已创建但尚未 claim：停用 Source 后任务必然无法开始；
+2. task retry / lease recovery：恢复时重新读取 live Source，旧任务可能无法恢复；
+3. Agent review 完成后进入中央 publish/indexing：Source 被停用 / 清凭据后可失败；
+4. config 被改到另一 bucket/root 时，冻结的 object_key 可能被解释到不同后端。
+
+已经实例化 provider、正在进行的单次 I/O 是否会立即受 PATCH 影响取决于 provider 实现；本问题不依赖该窗口成立。
+
+**为什么 CI 没发现：**
+
+现有测试分别覆盖：
+
+- StorageSourceRepository 可以 `enabled=False`；
+- 存储源普通 edit；
+- import/rescan 正常流程。
+
+没有组合测试：
+
+`active MATERIAL_IMPORT + source PATCH`
+
+也没有要求 destructive PATCH 字段尊重 Durable task reference。
+
+**建议最小修复：**
+
+不要新增第二 Storage Import owner。
+
+在 Storage Source PATCH owner 中区分安全字段与运行依赖字段：
+
+- name 等纯展示字段可继续修改；
+- `enabled true→false`、config、secret_ref / credential clear 或替换，在存在活动 / 待确认且仍可能恢复执行的 MATERIAL_IMPORT / rescan 引用时 fail-closed 409；
+- 查询复用 canonical TaskRepository，并保持分页有界；
+- terminal 后再允许破坏性修改；
+- 如果未来需要在线 credential rotation，应设计原子验证/切换合同，而不是让当前任务无保护读取任意新凭据。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 queued / awaiting-confirmation→resume / retry 三个窗口。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2592,6 +2688,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-044` 起继续编号；
+- 确认后从 `AUDIT-045` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
