@@ -13,7 +13,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.113`  
 > 上一批审计记录提交后 VERSION：`42.24.114`  
 > 上一批审计记录提交后 VERSION：`42.24.115`  
-> 本批审计记录提交后 VERSION：`42.24.116`  
+> 上一批审计记录提交后 VERSION：`42.24.116`  
+> 本批审计记录提交后 VERSION：`42.24.117`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1242,6 +1243,84 @@ v42 runtime 没有：
 
 ---
 
+
+### AUDIT-028 — 第 101 个素材源创建会静默物理删除最老 Source 配置
+
+**级别：中～高**  
+**模块：素材接入 / Source Configuration Persistence**
+
+**现象：**
+
+`v42_create_source()` 当前：
+
+`rows.insert(0, item)`
+→ `_v42_save(project_id, "sources", rows[:100])`
+
+这不是 UI 分页，而是直接把 `sources.json` 持久化成最多 100 条。
+
+因此项目已有 100 个 Source 时，再创建第 101 个：
+
+- API 正常返回创建成功；
+- 新 Source 被保留；
+- 最老 Source 被静默从持久化配置中删除。
+
+没有：
+
+- 409；
+- warning；
+- archive；
+- explicit delete；
+- reference/lifecycle check。
+
+**真实调用链：**
+
+100 个现存 Source
+→ 当前“素材接入”页面点击“新增素材源”
+→ POST v42 sources
+→ insert new source
+→ save `rows[:100]`
+→ oldest source 从 source config truth 消失。
+
+若被挤掉 Source 为 auto：
+
+→ startup/source scheduler 后续再也扫描不到它
+→ 自动采集永久停止。
+
+若它当时已有运行中的 collection：
+
+→ 旧 daemon thread 仍可能按 source snapshot 继续本次采集
+→ Source 配置和运行任务进一步分裂。
+
+**为什么是 Bug / 套娃：**
+
+“保留最近 100 条”这种 history retention 被错误用于长期配置 owner。
+
+Source 是配置实体，不应因新增另一条配置而被隐式删除。
+
+**影响：**
+
+- 第 101 个 Source 会导致数据丢失；
+- 自动采集配置可无提示消失；
+- UI 只看到“新增成功”，用户无法知道另一条 Source 被删；
+- running collection 可失去所属 Source 配置；
+- 删除没有审计意图，难以追踪。
+
+**为什么 CI 没发现：**
+
+当前 Source UI/API 没有 100+ source persistence contract test。
+
+**建议最小修复：**
+
+- Source 配置不得用 `rows[:100]` 做物理 retention；
+- 若产品真有数量上限，应在 create 前明确 409 并给出可操作提示；
+- 更合理的是持久化全部 Source，UI 做分页/搜索；
+- Source 删除只能走显式 DELETE owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖第 101 个 create 不得静默删除旧配置。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -1423,6 +1502,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-028` 起继续编号；
+- 确认后从 `AUDIT-029` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
