@@ -21,7 +21,8 @@
 > 上一批审计记录提交后 VERSION：`42.24.121`  
 > 上一批审计记录提交后 VERSION：`42.24.122`  
 > 上一批审计记录提交后 VERSION：`42.24.123`  
-> 本批审计记录提交后 VERSION：`42.24.124`  
+> 上一批审计记录提交后 VERSION：`42.24.124`  
+> 本批审计记录提交后 VERSION：`42.24.125`  
 > 审计阶段：**仅记录问题，尚未开始生产修复。**
 
 ## 1. 审计范围与原则
@@ -1932,6 +1933,104 @@ Detection Batch 并没有独立 batch index，而是每次从整个项目的 `Ta
 
 ---
 
+
+### AUDIT-037 — Training Settings 仍提供“AI 中途介入”，但 canonical submit 与后端都会静默强制关闭
+
+**级别：中～高**  
+**模块：Training Settings / TrainingSubmitRuntime / TrainReq**
+
+**现象：**
+
+当前训练设置弹窗仍真实展示完整“AI 中途介入”配置，包括：
+
+- 启用开关；
+- 介入 Epoch；
+- AI 模型；
+- 每次抽样数；
+- 可追加轮数；
+- 最大介入次数；
+- 自动执行 / 只给建议。
+
+`saveTrainSettings425()` 还会真实校验：
+
+- 开启后必须填写介入轮次；
+- 开启后必须选择 AI 模型；
+
+并把配置写入 `state.train425Config`。
+
+但 canonical：
+
+`buildTrainingEngineParameters()`
+
+直接硬编码：
+
+`ai_intervention_enabled: false`
+
+并完全不提交其它 AI 介入字段。
+
+后端 `validate_train_request()` 又再次无条件执行：
+
+- `payload.ai_intervention_enabled = False`
+- `payload.ai_intervention_epochs = []`
+- `payload.ai_model_config_id = ""`
+
+**真实调用链：**
+
+用户打开训练设置
+→ 勾选“AI 中途介入”
+→ 选择模型 / Epoch / 自动执行
+→ 前端保存成功
+→ TrainingSubmitRuntime build payload
+→ 强制 `ai_intervention_enabled=false`
+→ v12 Training 创建成功
+→ 训练从未执行用户刚配置的 AI 介入。
+
+即使第三方直接调用 API 带上 AI 介入字段：
+→ Pydantic 接受
+→ `validate_train_request()`
+→ 静默改为关闭。
+
+**为什么是 Bug / 套娃：**
+
+这是明确的 UI / API / runtime 合同分裂：
+
+- UI 宣称支持并要求用户配置；
+- Schema 仍公开这些字段；
+- canonical submit 静默丢弃；
+- backend runtime 静默覆盖。
+
+它不会 fail-fast，用户只能在训练结束后发现功能从未生效。
+
+**影响：**
+
+- 用户以为 AI 会在指定 Epoch 介入，实际不会；
+- 用户选的模型 / 轮次 / 行为模式全部无效；
+- 训练结果与界面承诺不一致；
+- 排查时 payload / job truth 也无法解释用户曾开启过该功能；
+- 属于高误导性的 silent no-op。
+
+**为什么 CI 没发现：**
+
+现有测试把“v42.8 起 AI 中途介入禁用”视为 backend 行为，但没有前端合同测试要求：
+
+“既然后端永久禁用，该配置区不得继续作为可用能力展示”。
+
+**建议最小修复：**
+
+当前不要重新实现第二套 AI Training runtime。
+
+最小修复应 fail-closed：
+
+- 从当前 Training Settings 移除 / 禁用“AI 中途介入”可编辑区，并明确当前未开放；
+- TrainReq Schema 同步移除或正式标记 retired 字段；
+- canonical submit 不再保留伪配置；
+- 若未来重新上线，必须重新走一个明确的 Training runtime contract，而不是恢复旧 v42 旁路。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖当前设置 UI 不得呈现可提交的 AI intervention，以及 API 不再宣称支持已退役能力。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -2113,6 +2212,6 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 
 - Service Node 停用语义已确认并登记 AUDIT-015；后续从剩余 T1～T8 审计点继续；
 - 发现疑点先复核；
-- 确认后从 `AUDIT-037` 起继续编号；
+- 确认后从 `AUDIT-038` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
