@@ -13799,4 +13799,132 @@ AUDIT-111 是：
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-112 — Training preflight 的用户触发 drift sync 被错误记为 auto；可提前消费 08:00 / 12:00 / 15:00 正式自动同步时段并漏掉其它项目
+
+**级别：高**  
+**模块：External Algorithm Training Preflight / Auto Sync Schedule / Multi-project Reconciliation**
+
+**现象：**
+
+当前 training_preflight() 在发现外部算法 drift 后直接调用：
+
+self.sync(..., sync_type="auto")
+
+但这次同步并不是由 Auto Sync Reporter 的固定时段调度触发，而是用户打开训练创建流程时触发的 demand/preflight reconciliation。
+
+与此同时 auto_sync_due() 判断 08:00 / 12:00 / 15:00 时段是否已经执行时，只看全局 sync history 中最近一条：
+
+sync_type == "auto"
+
+并明确采用以下语义：
+
+- 最近 auto attempt 的 started_at / finished_at >= 当前 latest_due_slot
+- 则本时段视为已经消费
+- success 和 failure 都会消费该 slot，避免 provider 故障时 Worker heartbeat 持续轰击远端
+
+因此 training preflight 写入的 auto history 会被正式调度器误认为：
+
+“本时段的 scheduled auto sync 已经执行过”。
+
+**真实竞态：**
+
+例如 12:00 时段：
+
+1. 12:00:00 到达新的自动同步 slot；
+2. Worker Reporter 尚未来得及启动 scheduled run；
+3. 用户在项目 A 打开一个外部算法训练弹窗；
+4. preflight 发现该算法名称、分类或 Analysis contract 有 drift；
+5. training_preflight() 同步执行 self.sync(..., sync_type="auto")；
+6. 项目 A 的这次 demand sync 完成并 append_history(sync_type="auto")；
+7. Worker heartbeat 随后调用 auto_sync_due()；
+8. latest_auto 时间已经 >= 12:00；
+9. auto_sync_due() 返回 False；
+10. 正式 scheduled run 不再启动。
+
+在当前多项目实现中，这尤其危险：
+
+- preflight 只同步当前 project_id；
+- 正式 Auto Sync Reporter 原本会遍历全部项目；
+- 项目 A 的一次训练弹窗 preflight 可以让项目 B/C/D 在整个 12:00 时段都不再同步。
+
+如果服务在某一 scheduled slot 到达后暂时没有 Worker heartbeat，用户先触发 preflight，同样可以稳定复现。
+
+**失败也会消费时段：**
+
+sync() 的异常路径同样 append_history(failed)，并保留 sync_type="auto"。
+
+所以 preflight drift sync 即使失败，也可能使 auto_sync_due() 判断该 slot 已被消费。
+
+这会出现：
+
+- 用户训练弹窗 preflight 失败；
+- scheduled reconciliation 也不再补跑；
+- 其它项目直到下一个 15:00 / 次日 08:00 才有机会恢复。
+
+**为什么不是 AUDIT-110：**
+
+AUDIT-110 是 provider-global master data 被按项目重复 fetch，导致 global generation 与 project digest 漂移。
+
+AUDIT-112 是 schedule identity 错误：
+
+用户触发的 training preflight reconciliation 被标成 auto，污染 scheduled slot bookkeeping。
+
+即使后续 AUDIT-110 收口成 single global generation，trigger_source / schedule-slot identity 仍必须准确区分，否则任意 demand refresh 仍可能错误消费 fixed schedule。
+
+**为什么不是 AUDIT-111：**
+
+AUDIT-111 是 GET training-preflight 在 drift 时同步执行完整 reconciliation，造成训练弹窗重型阻塞和 GET mutation。
+
+AUDIT-112 是这次 reconciliation 被错误分类为 sync_type=auto 后，对 08:00 / 12:00 / 15:00 调度状态造成持久副作用。
+
+两者修复点不同：
+
+- 111 关注 read/preflight 与 mutation owner 分离；
+- 112 关注 trigger identity 与 scheduled slot accounting。
+
+**影响：**
+
+- 训练弹窗行为可以改变后台自动同步调度；
+- 多项目场景其它项目可能整整漏掉一个同步时段；
+- preflight 失败也可能阻断本时段自动恢复；
+- 运维看到“最近 auto sync”时实际可能是用户训练触发，不是 scheduled job；
+- 同步历史的 trigger source 审计失真；
+- 08:00 / 12:00 / 15:00 的固定 SLA 不再可信。
+
+**建议最小修复：**
+
+不要通过修改时间窗口或增加频率掩盖。
+
+应明确分离：
+
+- scheduled_auto
+- manual
+- training_preflight / demand_refresh
+
+至少需要：
+
+1. training preflight 不再写 sync_type="auto"；
+2. scheduled slot 只能由真正持有 scheduled slot identity 的 Auto Sync Reporter 消费；
+3. history 保存 trigger_source 和 schedule_slot_id；
+4. auto_sync_due() 判断的不是“最近有一条 auto history”，而是“当前 slot_id 是否已有 scheduled attempt”；
+5. demand/manual refresh 不得改变 scheduled slot 状态；
+6. scheduled failure 是否消费 slot可以继续保留当前 anti-hammer 语义，但必须限定为该 scheduled execution 自己；
+7. 与 AUDIT-110 收口时由 single global generation owner 持有 slot。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 12:00 后 training preflight drift sync 完成，scheduled 12:00 run 仍然 due；
+- preflight drift sync 失败，scheduled run 仍然 due；
+- scheduled 12:00 success 后同 slot 不重复执行；
+- scheduled 12:00 failure 后同 slot按既定 anti-hammer 策略不重复；
+- manual sync 不消费 scheduled slot；
+- 多项目场景 project A demand refresh 后 project B/C 仍被正式 scheduled generation 覆盖；
+- history 能准确区分 scheduled / manual / training_preflight trigger。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
