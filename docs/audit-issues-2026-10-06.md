@@ -7612,6 +7612,177 @@ Service Node retirement 应直接使用 canonical execution identity：
 
 ---
 
+
+### AUDIT-078 — Service Node 的 durable_tasks 投影只认 worker_instances；Agent RUNNING task 在节点页被显示为“0 个执行中任务”
+
+**级别：高**  
+**模块：Service Node / Runtime Projection / Agent Execution / Frontend Truth / Operations UI**
+
+**现象：**
+
+`ServiceNodeRepository._runtime_projection()` 先调用：
+
+`WorkerInstanceService(...).list_runtime()`
+
+再构造：
+
+`worker_to_node[worker_id] = node_id`
+
+只有当 `worker_to_node` 非空时，才查询 RUNNING / CANCEL_REQUESTED tasks，并通过：
+
+`node_id = worker_to_node.get(task.worker_id)`
+
+把 task 投影到某个 Service Node。
+
+这个模型只能识别 `worker_instances` owner。
+
+但 Agent execution 的 canonical worker identity 是：
+
+`worker_id = "agent:<node_id>"`
+
+它来自 `AgentExecutionService.start_execution()`，并不注册到 `worker_instances`。
+
+因此真实 RUNNING Agent task 在 `_runtime_projection()` 中无法找到 node_id，最终不会进入：
+
+`node.durable_tasks`。
+
+**前端确实直接使用这个字段：**
+
+`static/modules/service-node-runtime.js`
+
+节点详情：
+
+`taskRows(node)`
+
+只读取：
+
+`node.durable_tasks`
+
+为空时直接显示：
+
+“当前无执行中的持久任务”。
+
+页面顶部汇总：
+
+```js
+const tasks = nodes.reduce(
+  (sum, node) => sum + (node?.durable_tasks?.length || 0),
+  0
+)
+```
+
+并显示：
+
+“执行中任务 0”。
+
+所以这不是仅影响一个内部 API 字段，而是用户可见的真实状态错误。
+
+**与 AUDIT-077 的关系：**
+
+AUDIT-077 和本条暴露了同一个 identity split 的两个不同后果：
+
+- AUDIT-077：DELETE fence 用 `worker_instances` 判断 active task，导致 RUNNING Agent execution 挡不住删除；
+- AUDIT-078：页面 runtime projection 同样用 `worker_instances` 映射 task，导致 RUNNING Agent execution 在 UI 中不可见。
+
+只修 DELETE SQL 不能修节点页观测；只修页面也不能修 DELETE lifecycle，因此分别登记。
+
+**用户可见场景：**
+
+1. node-A 在线；
+2. Agent Training 成功 start；
+3. task：
+   - status=RUNNING；
+   - worker_id=agent:node-A；
+4. Service Node GET/list；
+5. `workers_by_node` 没有 `agent:node-A`；
+6. `durable_tasks=[]`；
+7. 页面显示：
+   - “当前无执行中的持久任务”；
+   - 顶部“执行中任务 0”；
+8. 同一个页面仍提供“删除”按钮。
+
+更误导的是删除确认文案写着：
+
+“运行中的 Worker/任务存在时服务器会拒绝删除。”
+
+但 AUDIT-077 已证明 Agent RUNNING task 实际不会被该 DELETE fence识别。
+
+所以 UI 同时：
+
+- 看不到真实任务；
+- 又向 operator 提供错误的删除安全预期。
+
+**影响：**
+
+- 训练实际在跑，节点页却显示无任务；
+- 运维人员可能错误判断节点空闲；
+- 顶部执行中任务统计失真；
+- 用户可能在任务运行时执行编辑/删除/维护操作；
+- GPU / CPU 资源占用与任务列表不一致；
+- 故障排查无法从节点页关联到 task_id；
+- 结合 AUDIT-077，可直接提高误删运行节点的概率；
+- 多节点环境下负载观察、调度判断与真实 execution ownership 分裂。
+
+**为什么现有测试没发现：**
+
+`tests/unit/test_service_nodes.py` 当前没有针对：
+
+- `durable_tasks`；
+- `worker_id=agent:<node_id>`；
+- Agent RUNNING task -> node projection
+
+的合同测试。
+
+Agent execution tests 单独验证 canonical worker_id；
+
+Service Node tests 单独验证 worker/runtime registry；
+
+前端 tests 只按 API 返回的 `durable_tasks` 渲染，没有验证后端是否会把 Agent task 填进去。
+
+**建议最小修复：**
+
+不要为了页面显示去伪造 `worker_instances`。
+
+应让 Service Node runtime projection 同时识别两种 canonical execution identity：
+
+1. legacy/local Worker：
+   - 继续通过 `worker_instances.worker_id -> node_id`；
+2. Agent execution：
+   - 对 RUNNING / CANCEL_REQUESTED task 的：
+     `worker_id LIKE 'agent:%'`
+   - 按严格 canonical parser 解析 node_id；
+   - 必须确认对应 service_nodes entity 存在；
+   - 再投影到同一个 `durable_tasks` 结果。
+
+更长期可以抽成一个共享“task execution node identity” helper，让：
+
+- Service Node page；
+- DELETE fence；
+- scheduler/diagnostics
+
+复用同一身份解析，避免再次复制字符串规则。
+
+但不要创建第二套 task truth；TaskRepository 仍是 Durable Task owner。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Agent Training RUNNING -> node.durable_tasks 包含 task；
+- Agent Conversion / Cleaning / Deployment Test 同样可见；
+- CANCEL_REQUESTED 仍显示；
+- terminal task 不显示；
+- legacy/local Worker projection保持；
+- 顶部执行中任务计数包含 Agent；
+- 节点详情不再错误显示“当前无执行中的持久任务”；
+- malformed `agent:` worker_id 不得错误映射任意 node；
+- deleted/missing node 不产生伪造 projection。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
