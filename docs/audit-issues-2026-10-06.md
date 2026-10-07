@@ -18231,3 +18231,244 @@ Paddle 路径同样只把 export_model 输出放入导出工作目录。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-138 — “测试发布 → 发布为算法版本”手工归属路径无训练/产物验证证据即写死 SUCCEEDED + artifact_verified=true；外部算法可被自动发布 worker 当成合格版本推送新畅联
+
+**级别：高**  
+**模块：Test Publish / Algorithm Version Attach / ModelArtifact Eligibility / External Publication / ChangLian**
+
+**现象：**
+
+当前“测试发布”页的“待发布/可导出模型”仍提供：
+
+`归属算法`
+
+按钮。
+
+最终前端：
+
+`window.assignVersion(...)`
+→ 弹窗文案“发布为算法版本”
+→ `window.saveAssign(...)`
+→ `POST /api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions`
+
+请求只提交：
+
+- model_name；
+- model_source='project'；
+- version_name；
+- remark；
+- job_id（可能为空）。
+
+后端 `v12_assign_version()` 的真实行为是：
+
+1. 找到模型文件；
+2. `shutil.copy2(model_path, version_file)`；
+3. 尝试生成 job_report；
+4. 直接构造 Algorithm Version；
+5. 无条件写入：
+   - `training_status = "SUCCEEDED"`
+   - `artifact_verified = True`
+6. `attach_algorithm_version(...)`；
+7. 立即返回。
+
+该路径没有在 attach 前执行：
+
+- Durable Training terminal-success 校验；
+- job_id 与 model 文件归属校验；
+- frozen training lineage / snapshot 校验；
+- ModelArtifact canonical verification owner；
+- source SHA256 / immutable identity 验证；
+- External Publish eligibility service；
+- external algorithm mutation guard。
+
+尤其是：
+
+`v12_update_algorithm()`
+
+会调用：
+
+`assert_algorithm_mutable(...)`
+
+但：
+
+`v12_assign_version()`
+
+没有调用该 guard。
+
+前端算法下拉又直接使用：
+
+`state.algorithms.map(...)`
+
+并未排除 external / CHANG_LIAN 算法。
+
+因此这个兼容入口可以把项目里的本地模型手工挂到外部同步算法上。
+
+**为什么 `artifact_verified=true` 不是 harmless UI 字段：**
+
+External Publication 的正式 publish gate 明确写的是：
+
+`training_status in SUCCESSFUL_VERSION_STATUSES`
+
+且：
+
+`artifact_verified is True`
+
+否则拒绝并提示：
+
+“仅训练成功且模型产物已通过完整性校验的版本可以发布。”
+
+也就是说这两个字段本来就是发布资格真相。
+
+但手工归属接口没有完成这些验证，却直接把两个资格字段写成通过。
+
+**后台会自动把这种版本捞起来：**
+
+`ExternalAlgorithmPublishService.run_auto_publish_once()`
+
+会遍历外部畅联算法的所有 versions。
+
+只要：
+
+- `training_status` 成功；
+- `artifact_verified is True`
+
+就会进入自动发布候选。
+
+即使版本没有：
+
+`external_publish_requested_at`
+
+worker 也会主动：
+
+`update_algorithm_version(..., {"external_publish_requested_at": utc_now()})`
+
+然后根据 publication 状态继续：
+
+`self.publish(..., automatic=True)`。
+
+router 启动的 canonical auto-publish worker 默认每 30 秒做 recovery scan。
+
+所以这不是“手工归属后只是本地展示”。
+
+当外部发布配置开启时，它会进入真实新畅联发布链。
+
+**发布阶段后续会做 SHA256，不代表前置资格正确：**
+
+需要区分两个不同合同：
+
+1. `discover_artifacts()`
+   确实会在发布阶段重新读取 `stored_path` 并计算 SHA256；
+2. `_upload_artifact()`
+   也会通过 canonical ModelArtifact storage owner 做上传/复用。
+
+因此不能说“最终外部上传完全没有 hash”。
+
+真正的 Bug 是：
+
+**一个没有训练成功证据、没有 canonical verification owner 判定过的手工版本，被提前伪装成“训练成功 + 已验证”，从而获得进入发布链的资格。**
+
+后续重新 hash 只能证明“现在这个文件内容是什么”，不能证明：
+
+- 它来自成功训练；
+- 它属于 payload.job_id；
+- 它通过了平台定义的 artifact verification；
+- 它有合法 training lineage；
+- 它应该被自动发布到该外部算法版本。
+
+**更明显的错误场景：**
+
+场景 A — 任意项目模型：
+
+- 项目 models/ 下存在一个 .pt；
+- 用户在“测试发布”点“归属算法”；
+- 不提供真实成功训练 job；
+- 后端仍写：
+  `training_status=SUCCEEDED`
+  `artifact_verified=true`。
+
+场景 B — job_id 与模型不匹配：
+
+- payload.job_id 指向 Training A；
+- model_name 实际来自 Training B 或手工拷入；
+- 当前接口不会证明二者 identity 一致；
+- report 可能来自 A；
+- version_file 来自 B；
+- 版本仍被标记成功且已验证。
+
+场景 C — 外部畅联算法：
+
+- 下拉选择一个同步自畅联的 external algorithm；
+- 当前 assign route 不执行 `assert_algorithm_mutable`；
+- 本地模型被 attach 成该算法版本；
+- auto-publish worker 后续可把它当合格版本同步到远端。
+
+**为什么是 CLOSED 合同的新真实破坏：**
+
+ModelArtifact identity 与 External Publication 主链本身不需要重新设计。
+
+问题恰恰是这个旧 v12 手工 attach 入口绕开了它们的 eligibility contract。
+
+自动训练版本路径已经更严格：
+
+训练完成 attach 后还会：
+
+- 写入真实 training lineage / snapshot；
+- 使用训练 job 的 artifact verification truth；
+- 执行 auto conversion；
+- 显式 `request_external_auto_publish_if_enabled(...)`。
+
+而手工 Test Publish attach 直接写成功/已验证。
+
+这是同一个 Algorithm Version domain 的第二条资格 owner。
+
+**影响：**
+
+- 非训练模型可伪装为“训练成功版本”；
+- job report 与真实 model 文件可能串线；
+- External ChangLian 算法可被旧兼容入口绕过 mutation guard；
+- auto-publish 可把本不应发布的模型推到远端；
+- 外部版本/权重与平台训练 lineage 不一致；
+- 后续回退、转换、评测都会把这个伪成功版本当正式版本；
+- 审计记录无法回答“谁验证了 artifact_verified=true”。
+
+**建议最小修复：**
+
+不要新增第二 ModelArtifact 或 External Publish owner。
+
+1. `v12_assign_version()` 不得自行写：
+   `training_status=SUCCEEDED`
+   `artifact_verified=true`；
+2. 若“归属算法”只允许真实训练产物：
+   - 必须要求 job_id；
+   - 校验 Durable Training terminal status；
+   - 校验 model identity / sha 属于该 job；
+   - 复用 canonical artifact verification truth；
+3. 若产品确实允许导入第三方预训练模型：
+   - 使用独立 provenance，例如 `IMPORTED_VERIFIED`；
+   - 经过明确 ModelArtifact verify/import owner；
+   - 不伪装成 training SUCCEEDED；
+4. external / CHANG_LIAN 算法必须执行已有：
+   `assert_algorithm_mutable`
+   或明确的 external version creation policy；
+5. auto-publish eligibility 必须来自 canonical verified artifact/training provenance，而不是兼容 endpoint 可直接写的布尔字段；
+6. job report、model SHA、artifact identity、version lineage 必须互相绑定；
+7. 当前 Test Publish “发布为算法版本”应复用已有正式 attach/version service，不再直接拼 version dict。
+
+**回归测试建议：**
+
+- 无 job_id 的普通项目模型不能被标成 training SUCCEEDED；
+- job_id 与 model 不匹配时 fail-closed；
+- 未验证 artifact 不能写 `artifact_verified=true`；
+- external algorithm 不可通过 v12 assign 绕过 mutability guard；
+- 手工 imported model 不会被 auto-publish worker误判为训练成功版本；
+- 合法 Training output 仍可 attach；
+- 合法 imported/pretrained flow 有明确 provenance + verification；
+- auto-publish 只消费 canonical eligibility truth；
+- 版本 report/model SHA/lineage 必须一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
