@@ -13504,4 +13504,127 @@ Deployment Resource PUT/DELETE 也没有 active reference query / CAS / retireme
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-110 — 新畅联 Auto Sync 按项目重复拉取同一全局主数据，却共用单份 global cache；多项目可落入不同 digest 并把先同步项目判 stale
+
+**级别：高**  
+**模块：External Algorithm Auto Sync / Master Data Cache / Multi-project Reconciliation / Training Preflight**
+
+**现象：**
+
+当前新畅联主数据本质上是 provider-global truth，包括 Category Tree、Product listAll、Compute Platform listAll、Analysis listAll / getInfo。
+
+ExternalPlatformRepository 也只维护一份全局缓存：
+
+DATA_DIR/external_algorithm_platform/master-data-cache.json
+
+但自动同步 owner ExternalAlgorithmAutoSyncReporter.run_once() 却按项目执行：
+
+for project_id in self._project_ids(): service.sync(project_id=...)
+
+而每一次 service.sync() 都重新从新畅联完整拉取：
+
+1. client.category_tree()
+2. client.products(status="")
+3. client.compute_platforms()
+4. analysis list / per-product summaries
+5. 对每个 analysis 再读取 authoritative detail truth
+
+所以本地有 N 个项目时，同一轮 08:00 / 12:00 / 15:00 自动同步会重复执行 N 次相同 provider master-data fetch。
+
+**更严重的一致性问题：**
+
+每个 service.sync(project_id) 都独立计算 master_data_digest，并在项目 mirror 前写入同一份全局 cache：
+
+self.repository.save_cache(cache)
+
+随后该项目算法被写入自己的 external_master_data_digest。
+
+训练前置校验 assert_external_master_data_current() 又会比较：
+
+- 当前项目算法自己的 external_master_data_digest
+- 全局单份 cache 的 master_data_digest
+
+因此只要 provider 数据在项目 A 与项目 B 两次 fetch 之间发生变化：
+
+1. 项目 A 拉到 generation A / digest A；
+2. global cache 写 digest A；
+3. 项目 A mirror 写 digest A；
+4. 项目 B 再次从 provider 拉取；
+5. provider 此时已经更新，得到 digest B；
+6. global cache 被覆盖成 digest B；
+7. 项目 B mirror 写 digest B；
+8. 自动同步结束后，项目 A 仍是 digest A；
+9. 用户在项目 A 创建训练任务；
+10. assert_external_master_data_current() 比较 A != global B；
+11. 返回 EXTERNAL_MASTER_DATA_STALE / 409。
+
+也就是说：
+
+**一次“全部项目自动同步成功”之后，先同步的项目仍可能立即被系统自己判定为主数据过期。**
+
+**并发手动同步还会进一步放大：**
+
+当前 sync lock 是按 project_id 区分的 .sync-{project_id}.lock。
+
+项目 A 与项目 B 可以同时执行 sync，但二者又共享同一个 master-data-cache.json 和同一 provider master-data generation truth。
+
+文件级 repository lock 只能保证单次写文件不损坏，不能保证“global cache generation + 各项目 mirror”属于同一个同步世代。
+
+因此跨项目并发 manual sync 也可能让 global cache、project A algorithm digest、project B algorithm digest 分别来自不同 provider generation。
+
+**为什么是 Bug / Owner 边界错误：**
+
+当前实现同时把 master data 当成 global cache truth，又把 master-data fetch executor 当成 project-scoped operation。
+
+项目 mirror 确实应该是 project-scoped；但 provider master-data fetch / digest 应该是 generation-scoped/global，而不是每个项目各拉一遍。
+
+**影响：**
+
+- 多项目环境产生 O(project_count × provider_master_data) 的重复远端 I/O；
+- analysis detail 本身是逐条 authoritative GET，项目数会进一步线性放大请求量；
+- 新畅联接口更容易被限流、超时或触发保护；
+- 自动同步整体耗时随项目数线性增长；
+- provider 在一轮同步中发生正常更新时，不同项目得到不同 generation；
+- 先同步项目会在同一轮结束后被训练 preflight 判 stale；
+- 页面看到“同步成功”，训练创建却 409，形成明显业务状态矛盾；
+- 跨项目并发 manual sync 也可能互相覆盖 global cache generation。
+
+**与删除同步合同的关系：**
+
+当前删除判断使用完整 products(status="")，不是分页窗口，这一点是安全的。
+
+AUDIT-110 不是“分页误删”，而是：
+
+同一全局 provider truth 被按 project 重复 fetch/commit，导致 cache generation 与 project mirrors 不能保证一致。
+
+**建议最小修复：**
+
+不要新增第二套 external platform cache。
+
+应收敛为单一 generation owner：
+
+1. 一轮 scheduled auto sync 只从新畅联抓取一次完整 master data；
+2. 冻结 categories、products、analyses、compute platforms、master_data_digest、provider fetched_at / generation id；
+3. 把这一个 frozen generation fan-out mirror 到所有项目；
+4. 每个项目仍使用现有 project delivery fence / purge owner；
+5. 所有项目 mirror 完成后，再把该 generation 标记为 current global cache；
+6. 某项目 mirror 失败时记录 project-level failure，不能伪装成“global generation 已对所有项目生效”；
+7. manual sync 必须明确是“使用 current global generation 重镜像项目”还是“刷新 global generation + fan-out”，不能让多个 project lock 并发刷新同一个 global generation；
+8. 保留现有完整 product set 删除语义，不要改回分页 deletion truth。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 20 个项目的一轮 auto sync：provider master-data endpoints 只调用一次 generation；
+- provider 在项目 mirror 期间发生变化：本轮所有项目仍使用同一 frozen digest；
+- auto sync 完成后所有项目算法 digest == current global cache digest；
+- project B mirror 失败时 project A 不被错误回滚，global generation 状态可解释；
+- 两个项目同时 manual sync 不得形成两个并发 global master-data generation；
+- 1k product / 多 analysis 场景的 provider request count 不随 project_count 成倍增长。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
