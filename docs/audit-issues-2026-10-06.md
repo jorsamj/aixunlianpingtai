@@ -11585,201 +11585,35 @@ Local Storage Import 测试也没有覆盖：
 
 ---
 
-### AUDIT-096 — Training SSE 跳过 canonical queue readiness 投影；REST 的 WAITING_RESOURCE 会被实时流覆盖回 QUEUED
+### AUDIT-096 — 【已撤销：重复 AUDIT-068】Training SSE / REST queue readiness 状态漂移
 
-**级别：中～高**  
-**模块：Training Realtime SSE / Training Queue Truth / Frontend Runtime / Status Projection**
+**状态：REVOKED / DUPLICATE OF AUDIT-068**  
+**原级别：中～高**
 
-**现象：**
+本条在后续对 `AUDIT-068～098` 做全量标题与调用链去重时确认：
 
-当前 Training 列表的 HTTP REST 与 v64 SSE 虽然都声称使用 canonical Durable Task truth，但对 **QUEUED Training 的资源等待状态** 实际走了两条不同投影链。
+**AUDIT-096 与 AUDIT-068 是同一个真实问题，不应重复计数。**
 
-REST：
+AUDIT-068 已经完整记录：
 
-\`GET /api/projects/{project_id}/jobs\`
+- Training SSE 没有复用 canonical `training_queue_truth()`；
+- HTTP/REST 对 QUEUED Training 可投影为 `WAITING_RESOURCE`；
+- SSE 只做基础 `task_to_public`，可返回 `QUEUED`；
+- 前端 realtime update 会把 HTTP 的 WAITING_RESOURCE 覆盖回 QUEUED。
 
-→ \`list_jobs()\`
+AUDIT-096 后续补充的：
 
-→ \`enrich_job_runtime(...)\`
+- stale `resource_wait_reason` 与 QUEUED 状态可形成矛盾组合；
+- SSE 修复必须避免引入 AUDIT-064 所述 N+1 / 全量 queued hydration；
 
-→ \`task_to_public(durable, repository)\`
+都应并入 **AUDIT-068 的修复与回归范围**，不再作为独立问题。
 
-→ 若 \`durable.status == QUEUED\`：
+**处理方式：**
 
-\`public_runtime.update(training_queue_truth(...))\`
-
-这里会根据真实 Worker / capability / resource pool 重新计算 queue readiness。
-
-例如：
-
-- \`training:remote:*\` 当前直接投影为 \`WAITING_RESOURCE\`；
-- 没有在线 Worker → \`WAITING_RESOURCE\`；
-- 没有 Training Worker → \`WAITING_RESOURCE\`；
-- capability 不满足 → \`WAITING_RESOURCE\`；
-- persisted stage=resource_waiting → \`WAITING_RESOURCE\`；
-- 只有真正可排队时才返回 \`QUEUED\`。
-
-但 SSE：
-
-\`GET /api/v64/projects/{project_id}/training-events\`
-
-→ \`_training_event_rows()\`
-
-→ \`_training_event_row(project_id, task)\`
-
-当前只调用：
-
-\`task_to_public(task)\`
-
-**没有传 repository，也没有调用 \`training_queue_truth()\`。**
-
-因此 SSE 只知道：
-
-\`effective_task_status(task)\`
-
-它只有在：
-
-\`task.status == QUEUED && task.stage == "resource_waiting"\`
-
-时才返回 \`WAITING_RESOURCE\`。
-
-对于刚创建的远程训练任务、没有在线 Worker 的普通 QUEUED task、capability 不满足但 stage 尚未被 Scheduler 持久化为 resource_waiting 的 task：
-
-- REST：\`WAITING_RESOURCE\`
-- SSE：\`QUEUED\`
-
-同一 Durable Task 出现两套公开状态真相。
-
-**前端会真实覆盖，而不是只读到两个不同接口：**
-
-\`static/modules/training-progress-stream.js\`
-
-收到：
-
-\`event: training.task\`
-
-后调用：
-
-\`applyUpdate(update)\`
-
-并直接写：
-
-\`task_status = update.status\`
-
-同时替换当前 \`state().jobs[index]\` 后立即 render。
-
-也就是说页面先通过 REST 得到：
-
-\`WAITING_RESOURCE\`
-
-随后 SSE 第一帧完全可以把同一行改回：
-
-\`QUEUED\`。
-
-而 \`trainingDisplayStatus()\` / 排序 / 阶段展示优先消费 task_status，因此用户会看到：
-
-- “等待资源”变成“排队中”；
-- waiting 与 queued 排序发生跳变；
-- stop/action eligibility、阶段文案跟着另一套状态走。
-
-更糟的是 \`resource_wait_reason\` 在前端使用：
-
-\`update.resource_wait_reason ?? current.resource_wait_reason\`
-
-SSE 如果没有新 reason，旧 REST reason 可能被保留。
-
-因此页面可能形成自相矛盾组合：
-
-- task_status = QUEUED
-- resource_wait_reason = “当前没有在线 Worker”
-
-即“状态说可排队、原因又说没有资源”。
-
-**为什么这是前后端一致性 Bug：**
-
-\`training_queue_truth()\` 已经是专门收口 Training queue readiness 的 canonical read model。
-
-REST 正确使用了它；SSE 却绕过它直接投影 TaskRecord 基础状态。
-
-这不是 Scheduler 主链需要重做，也不是要增加第二套 queue owner，而是 realtime read path 没有复用现有 canonical queue truth。
-
-**与 AUDIT-063 / AUDIT-064 / AUDIT-066 的区别：**
-
-- AUDIT-063：Central Scheduler 没有生产自动 allocation driver；
-- AUDIT-064：queue public projection 为 exactness 无界 hydrate 全部 QUEUED task；
-- AUDIT-066：Training jobs REST 在 bounded history 前多次全量扫 job.json；
-- AUDIT-096：**REST 与 SSE 对同一 Training task 公开不同 queue readiness 状态，且 SSE 会直接覆盖 UI。**
-
-所以即使后续修掉 Scheduler driver 和性能问题，096 仍需单独收敛公共状态合同。
-
-**影响：**
-
-- 训练任务状态在“等待资源 / 排队中”之间闪动；
-- 远程训练尤其明显：REST 固定判 WAITING_RESOURCE，而 SSE 可立即改回 QUEUED；
-- 用户误以为任务已经正常进入可执行队列；
-- 资源等待原因与状态可能互相矛盾；
-- 列表排序发生无意义跳动；
-- RecoveryRuntime 接收到被 SSE 改写后的 live task，再传播错误状态；
-- 自动化/UI 测试如果只测 REST 或只测 SSE，都可能各自通过而漏掉跨通道漂移。
-
-**现有测试缺口：**
-
-当前 realtime 测试主要保护：
-
-- SSE 连接；
-- active task coverage；
-- terminal discovery/reconcile；
-- display revision 防旧帧覆盖新帧；
-- progress/epoch/ETA 实时更新。
-
-但缺少同一 queued task 的跨通道合同：
-
-1. REST \`enrich_job_runtime()\`；
-2. SSE \`_training_event_row()\`；
-3. 二者 status / wait reason / queue position 必须一致。
-
-尤其缺少：
-
-- remote training resource key；
-- 0 online Worker；
-- capability mismatch；
-- persisted resource_waiting；
-
-四类 WAITING_RESOURCE 场景。
-
-**建议最小修复：**
-
-不要在前端再猜一次 waiting 状态，也不要复制一份 queue readiness 规则。
-
-应让 REST 与 SSE 共享同一个 Training public projection owner，例如：
-
-1. 抽出单一 helper：
-   \`training_public_runtime(task, repository, read_context)\`；
-2. helper 内统一：
-   - \`task_to_public(...)\`
-   - QUEUED 时 \`training_queue_truth(...)\`；
-3. \`enrich_job_runtime()\` 与 \`_training_event_row()\` 都调用该 helper；
-4. SSE 每个 tick 应一次性复用：
-   - worker_runtime；
-   - queue read context；
-   不能对每个 task 做 N+1；
-5. 与 AUDIT-064 联动：不要为了修 correctness 在 750ms SSE 上新增“每 task 全量 queued_candidates()”热路径；
-6. public status、resource_wait_reason、resource_queue_position、resource_pool identity 必须跨 REST/SSE 一致。
-
-**回归测试建议：**
-
-至少增加：
-
-- remote QUEUED：REST/SSE 都是 WAITING_RESOURCE；
-- 无在线 Worker：REST/SSE 一致；
-- capability mismatch：REST/SSE 一致；
-- 真正可执行 queued：两边都 QUEUED；
-- SSE applyUpdate 不得把 WAITING_RESOURCE 覆盖成 QUEUED；
-- resource_wait_reason 与 task_status 不得形成矛盾组合；
-- 100 个 active task 的 SSE tick 不允许 N+1 Worker/queue 全量扫描。
-
-**是否需要 VERSION：** 是。  
-**是否需要新增回归测试：** 是。
+- 保留本编号作为审计历史，不删除记录；
+- 本条不进入独立修复队列；
+- 后续修复只处理 AUDIT-068；
+- VERSION 已按审计记录规则继续递增。
 
 ---
 
