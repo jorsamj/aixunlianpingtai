@@ -21452,3 +21452,215 @@ Storage Rescan tests 则验证：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-158 — Service Node Token 轮换会立即切断 RUNNING Agent；合法 execution lease 也无法 heartbeat / 上传结果 / finalize
+
+**级别：高**  
+**模块：Service Node / Agent Authentication / Token Lifecycle / Durable Execution / Remote Training & Conversion & Cleaning & Import**
+
+**现象：**
+
+当前服务节点页面对所有节点直接提供：
+
+`轮换 Token`
+
+按钮。
+
+前端提示也明确写着：
+
+> 旧 Token 会立即失效。
+
+后端：
+
+`ServiceNodeRepository.rotate_token(node_id)`
+
+会直接：
+
+- 生成新 token；
+- 覆盖 `service_nodes.token_hash`；
+- `token_version + 1`；
+- 不检查该节点当前是否存在：
+  - ASSIGNED；
+  - CLAIMED；
+  - RUNNING；
+  - CANCEL_REQUESTED；
+  - 正在 finalization 的 Durable Task。
+
+旧 token 随即失效。
+
+**问题在于 RUNNING Agent 的 execution lease 并不能独立完成任务。**
+
+所有运行期控制面请求仍先用当前 node token 认证：
+
+`heartbeat_execution()`
+→ `_owned_execution()`
+→ `_authenticate_node()`
+→ `ServiceNodeRepository.authenticate()`
+→ 校验当前 `token_hash`
+
+同样路径还覆盖：
+
+- append_log；
+- material scan broker；
+- cleaning selection broker；
+- training model upload；
+- result upload prepare；
+- result upload confirm；
+- begin_finalization；
+- finish_execution。
+
+因此节点 N 已经合法持有：
+
+- execution_lease_token；
+- execution_generation；
+- worker_id；
+
+也不能在 node token 被轮换后继续完成当前 execution。
+
+**真实调用链：**
+
+1. Agent 使用 token T1 正常在线；
+2. Remote Training / Conversion / Cleaning / MATERIAL_IMPORT / Deployment Test 已进入 RUNNING；
+3. Agent 持有合法 execution lease；
+4. 管理员进入当前正式“服务节点”页面；
+5. 节点卡片即使展示“执行中任务”仍然显示“轮换 Token”；
+6. 用户点击轮换；
+7. `POST /api/v63/service-nodes/{node_id}/rotate-token`；
+8. 后端立即把 token_hash 从 T1 替换成 T2；
+9. Agent 进程仍配置 T1；
+10. 下一次 heartbeat / log / result upload / finalize 请求：
+    `authenticate(T1)`
+    → 401 `INVALID_NODE_TOKEN`；
+11. RUNNING task 无法续租；
+12. execution lease 最终过期；
+13. Durable recovery 按当前 task 状态做 reclaim/requeue/cancel。
+
+如果 Agent 在失去控制面连接前已经完成昂贵计算、甚至已上传部分业务产物，这会进入重复执行/半提交恢复复杂路径。
+
+**为什么“停用节点仍允许 RUNNING 完成”不能保护：**
+
+当前 `_owned_execution()` 特意使用：
+
+`require_enabled=False`
+
+所以管理员停用节点后，已有 RUNNING execution 可以继续 heartbeat/finalize。
+
+这是合理的 drain 语义。
+
+但 `require_enabled=False` 并没有绕过 token authentication。
+
+因此：
+
+- Disable：允许现有任务自然完成；
+- Rotate Token：立即把现有任务踢断。
+
+两个管理动作的生命周期语义不一致。
+
+**用户真实可达场景：**
+
+现代 Service Node UI：
+
+`static/modules/service-node-runtime.js`
+
+每个节点卡片都直接渲染：
+
+`data-node-action="rotate"`
+
+点击后调用：
+
+`rotateToken(nodeId)`
+→ POST `/rotate-token`
+
+UI 没有根据：
+
+`node.durable_tasks`
+
+禁用该按钮，也没有要求先 drain。
+
+后端同样没有 active task guard。
+
+所以这是当前生产真实可达管理动作，不是内部 API。
+
+**影响：**
+
+- Remote Training 可中途失去 heartbeat；
+- Remote Conversion / Cleaning / Import / Deployment Test 可在结果提交阶段断开；
+- 已完成计算但尚未 finalize 的任务可能被 lease recovery 重新执行；
+- 用户会看到节点突然 offline / task 回队列，而原因只是管理员轮换凭据；
+- 大模型/训练/转换等长任务可能浪费数小时计算；
+- 如果已存在 result upload / canonical commit，可能与 AUDIT-092/093 的恢复窗口叠加，形成重复业务副作用；
+- CANCEL_REQUESTED task 也可能因 Agent 无法 finish CANCELLED 而只能等 lease recovery。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-055/060/070：assignment / node offline / GPU reservation 生命周期；
+- AUDIT-075：Agent start 对永久错误仍重试；
+- AUDIT-076/077：Service Node DELETE 没完整保护 assignment / Agent RUNNING；
+- AUDIT-092/093：result commit/receipt/final finish 的 crash window；
+- AUDIT-158：**Service Node credential rotation 本身**在合法 RUNNING execution 生命周期中立即撤销认证能力。
+
+即使 092/093 全部修好，只要 rotation 仍会让旧 Agent 401，本问题仍独立存在。
+
+**现有测试为什么没有发现：**
+
+`tests/api/test_service_node_api.py`
+
+当前明确验证：
+
+- rotate token 成功；
+- replacement != old token；
+- old token 下一次 heartbeat 返回 401。
+
+这个测试只覆盖 idle node 的安全性。
+
+没有覆盖：
+
+- node 上存在 RUNNING task；
+- node 上存在 CLAIMED assignment；
+- node 已 disabled 但仍在 drain RUNNING task；
+- result upload/finalization 正在进行。
+
+Agent execution tests 又默认 token 在整个 execution 生命周期不变化。
+
+所以两个测试集各自通过，却没有交叉验证 token lifecycle 与 execution lifecycle。
+
+**建议最小修复方向：**
+
+不要新增第二套 Agent auth owner。
+
+最小安全方向优先是 **drain-before-rotate**：
+
+1. rotate-token 后端在同一 repository truth 中检查：
+   - active ASSIGNED / CLAIMED；
+   - RUNNING / CANCEL_REQUESTED Agent task；
+   - 必要时 finalization 状态；
+2. 只要有 active execution/assignment：
+   - 返回 409；
+   - 明确提示“请先停用节点并等待现有任务结束，再轮换 Token”；
+3. 前端根据 canonical active truth：
+   - 有执行中任务时禁用轮换；
+   - 仅做 UX，不能替代后端 guard；
+4. 节点 disabled 但仍有 RUNNING drainage 时同样禁止 rotate；
+5. terminal 后 rotate 正常使 T1 失效、T2 生效；
+6. 不要让旧 token 对新 claim/start 保持无限 grace。
+
+如果未来确实需要无中断 rotate，可设计 versioned/grace token，仅允许旧 token 完成**已经冻结 generation 的 execution**，新 assignment 必须使用 T2；但这比当前最小修复复杂，不应先造第二套 token owner。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- idle node rotate → 成功，T1 401，T2 heartbeat 成功；
+- RUNNING Agent task → rotate 409，T1 仍可 heartbeat/finalize；
+- CANCEL_REQUESTED task → rotate 409，直到 CANCELLED；
+- disabled + RUNNING drainage → rotate 仍 409；
+- ASSIGNED / CLAIMED pre-start assignment → rotation 不得把 assignment 静默遗弃；
+- task terminal 后 rotate → 成功；
+- rotate 失败不得改变 token_version/token_hash；
+- UI 在 active task 时展示明确 drain 提示，但后端仍是最终 fence。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
