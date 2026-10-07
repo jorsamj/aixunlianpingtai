@@ -21045,3 +21045,76 @@ FAILED / PARTIAL_SUCCESS 没有“重试”按钮。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-154 — External auto-publish 每 30 秒无界重扫全部成功版本并重新 SHA256 全部交付文件；版本/转换历史增长后形成常驻磁盘 I/O 放大器
+
+**级别：中高**  
+**模块：External Publish / Recovery Worker / Artifact Discovery / Filesystem I/O / Scale**
+
+**现象：**
+
+`external_algorithm_publish_router()` 启动常驻 auto-publish worker。没有显式 wake 时仍每 30 秒执行 recovery scan。
+
+`run_auto_publish_once()` 会遍历：全部项目 → 全部 EXTERNAL/CHANGLIAN 算法 → 该算法全部训练成功且 artifact_verified 的历史版本。这个本地扫描没有 cursor、dirty set、generation watermark 或 batch budget。
+
+对每一个候选版本都会调用 `publication_requires_sync()`。对于已经 `PUBLISHED` 的正常版本，它继续调用 `discover_artifacts()`；后者会：
+
+- 扫描项目 `deploy/jobs/*/job.json`；
+- 扫描 `deployment/jobs/*/job.json`；
+- 对每个 job 做 algorithm/version identity 过滤；
+- 读取 original model；
+- 读取所有成功 conversion output；
+- 对每个实际文件执行 `_sha256(path)` 全文件哈希；
+- 再查询 artifact mapping / ModelArtifact / public_url truth。
+
+因此即使系统完全没有新训练、没有新转换、远端也没有 drift，已发布历史仍会每轮重新做目录扫描和大文件哈希。
+
+代码虽然给 **远端 reconciliation** 设置了 `DEFAULT_REMOTE_RECONCILE_BATCH` budget，但这个 budget 只限制 provider 远端对账，不限制前面的全项目/全版本本地 discovery + SHA256。
+
+**真实生产可达：**
+
+只要外部平台模式开启、auto publish ready，router worker 就常驻执行；不需要用户点击页面。训练成功版本和转换产物正是平台长期累积的数据，因此该路径会随正常使用持续放大。
+
+例如一个项目累计 200 个已发布版本，每版 original + ONNX + RKNN；即使 30 秒内没有任何变化，worker 仍会反复定位这些版本的 conversion job，并重新读取/哈希数百个模型文件。多个项目时继续线性叠加。
+
+**影响：**
+
+- 大模型/PT/ONNX/RKNN 文件被周期性全量读取，产生持续磁盘带宽和 page-cache 压力；
+- 与 Training / Conversion / Material Import 争抢 I/O；
+- SATA/机械盘/网络盘环境更明显；
+- deploy job history 增长后 `_conversion_jobs()` 对每个版本重复扫描同一目录，形成 versions × jobs 的放大；
+- worker 一轮耗时越长，发布新版本的响应延迟也会被旧历史扫描拖慢；
+- 多项目长期运行时后台成本与“是否有新发布工作”脱钩。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-110：新畅联主数据 auto-sync 按项目重复拉同一全局 master data；
+- AUDIT-111：Training GET preflight 把完整 reconciliation 放进用户关键路径；
+- AUDIT-119：Training SSE 无变化也高频读 job.json；
+- AUDIT-154：External Publish 自己的 30 秒 recovery worker 对全部已发布历史反复做本地 conversion discovery + 大文件 SHA256。
+
+**建议最小修复方向：**
+
+不拆分 External Publish owner，也不要取消 recovery scan。应增加可恢复的 dirty/revision truth：
+
+1. Training completion / Conversion completion 继续通过现有 request marker/wake event 标记具体 version dirty；
+2. 正常运行优先处理 dirty publication/version queue；
+3. recovery scan 只做轻量 metadata/index 检查，并有明确 batch/cursor budget；
+4. ModelArtifact 已有 sha256/size identity 时不要周期性重新读取整个文件；只在 source metadata/revision 变化或完整性复核时重算；
+5. conversion job 应有按 algorithm_id+version_id 可索引的 canonical artifact lookup，避免每个 version 重扫整棵 deploy/jobs；
+6. 远端 reconcile budget 与本地 discovery budget 都要 bounded；
+7. crash recovery 仍可最终覆盖全部历史，但分批推进，不能每 30 秒全量 O(history)。
+
+**应新增回归测试：**
+
+- 100/1k published versions 无变化时单轮只做 bounded recovery page；
+- PUBLISHED 且 artifact revision 未变时不得重新打开模型文件计算 SHA256；
+- 一个新 conversion 完成只 dirty 对应 version；
+- recovery cursor 跨轮最终覆盖历史；
+- 新 publish request 不被大历史扫描长期饿死；
+- 多项目规模下单轮 filesystem reads 有明确上限。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
