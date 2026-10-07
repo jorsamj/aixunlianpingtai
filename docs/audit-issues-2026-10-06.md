@@ -15141,3 +15141,187 @@ AUDIT-068 要求 SSE 与 REST 共享 canonical queue truth。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-120 — Page Visibility 只暂停 Training poll；AI / Video / Cleaning / Source 在隐藏标签页仍持续高频请求，后台客户端会长期制造无效 API 负载
+
+**级别：中**  
+**模块：PollRegistry / Page Visibility / AI Annotation / Video Frames / Cleaning / Source Collection / Frontend Performance**
+
+**现象：**
+
+当前统一 `PollRegistryRuntime` 已监听：
+
+`document.visibilitychange`
+
+但进入：
+
+`document.visibilityState === 'hidden'`
+
+时只清理：
+
+- `training-jobs`
+- `training-clock`
+
+其它当前页面 owner 的轮询没有一起暂停。
+
+已确认至少存在：
+
+- AI 自动标注：约 1800ms；失败重试约 4000ms；
+- Video Frames：约 2000ms；
+- Cleaning：约 2200ms；
+- Source：约 2500ms。
+
+这些 timer 都依赖“当前 state.page / tab owner 仍匹配”，而浏览器标签页隐藏并不会改变这些 state，所以仍满足 owner 条件。
+
+**真实调用链：**
+
+PollRegistry：
+
+`onVisibilityChange()`
+
+当前逻辑：
+
+```js
+if (doc?.visibilityState === 'hidden') {
+  registry.clear('training-jobs');
+  registry.clear('training-clock');
+  return;
+}
+```
+
+没有清：
+
+- `video-frames`
+- `clean-tasks-v47`
+- `sources`
+- AI 的 managed poll key。
+
+Video：
+
+`replaceVideo424Timer()`
+→ active task 时 `startTimeout(..., 2000)`
+→ refresh 后重新 arm。
+
+Cleaning：
+
+`replaceCleanTaskTimer()`
+→ active clean 时 `startTimeout(..., 2200)`
+→ refresh 后重新 arm。
+
+Source：
+
+`replaceSourceTimer()`
+→ 只要页面仍是“素材接入”
+→ `startInterval(..., 2500)`
+
+它甚至不要求存在 active task，因此隐藏标签页可以长期固定请求。
+
+AI：
+
+`AutoLabelPollRuntime.schedule()`
+→ active annotation task
+→ `startTimeout(..., pollDelay=1800)`
+→ `refreshRows()`
+→ 成功后再次 `schedule()`；
+→ 失败后 `retryDelay=4000`。
+
+该 runtime 没有任何：
+
+- `document.visibilityState`
+- `document.hidden`
+
+判断。
+
+**为什么是 Bug / 生命周期不一致：**
+
+同一个 PollRegistry 已经明确把“页面不可见时暂停高频实时请求”作为 Training 的运行时合同，但该 visibility lifecycle 没有覆盖同 registry 下的其它 domain owner。
+
+浏览器自身可能对后台 timer 做 throttling，但这不能作为应用层 polling owner：
+
+- 停止请求；
+- 立即恢复；
+- 首次可见时强制 reconcile；
+
+的可靠合同。
+
+不同浏览器、前台/后台时长、节电策略下节流行为也不同。
+
+**额外恢复不一致：**
+
+标签页重新 visible 后：
+
+`resyncVisiblePage()`
+
+显式支持：
+
+- Training；
+- Video；
+- Cleaning；
+- Source。
+
+但没有 AI label tab 分支。
+
+也就是说，即使后续把 AI timer 在 hidden 时清掉，当前统一恢复 owner 也不会自动重新拉取 AI truth；AI 的 visibility lifecycle 目前完全不在 canonical PollRegistry 管理范围内。
+
+**影响：**
+
+- 用户切到其它浏览器标签后，后台页面仍持续打 API；
+- 多个管理终端 / 大屏 / 长期开着的浏览器会线性放大请求；
+- Source 页面可在完全无业务变化时长期每 2.5 秒请求；
+- active AI / Video / Cleaning 持续造成数据库查询、task projection、JSON 解析与 DOM state work；
+- 与 AUDIT-064、AUDIT-066、AUDIT-089、AUDIT-119 等后端热路径叠加后，单个“没人看的浏览器标签”也可持续触发昂贵请求；
+- 移动端/笔记本增加网络与电量消耗；
+- AI 页重新可见时缺少统一 immediate reconcile，可能短时间继续展示后台期间的旧状态。
+
+**与已有问题的区别：**
+
+- AUDIT-064：后端 task public projection 的 queue hydration 无界；
+- AUDIT-089：ZIP polling endpoint 内部扫描历史 job；
+- AUDIT-119：Training SSE 750ms 高频读取 active job.json；
+- AUDIT-120：浏览器页面已经不可见时，多个前端 poll owner 仍继续触发这些请求。
+
+本条是前端 polling lifecycle / visibility owner 问题，不重复后端单请求成本问题。
+
+**建议最小修复：**
+
+不要给每个模块再加各自一套 visibility listener。
+
+继续让：
+
+`PollRegistryRuntime`
+
+作为唯一页面 polling lifecycle owner。
+
+建议：
+
+1. hidden 时统一 pause 所有 **UI-only realtime poll**：
+   - training-jobs / clock；
+   - video-frames；
+   - clean-tasks-v47；
+   - sources；
+   - auto-label managed key；
+2. Durable Worker / Server-side task 继续后台执行，浏览器只停止读侧 polling；
+3. visible 时按当前 page + tab 做一次 immediate scoped reconcile；
+4. reconcile 完成后由各 canonical owner 重新 arm timer；
+5. AutoLabelPollRuntime 提供明确的 visibility pause/resume hook，或由 PollRegistry 调其 activate/deactivate；不要新增第二 document listener；
+6. 不要暂停必须承担用户可见通知语义的 server-side automation；这里只处理浏览器 UI polling。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Video active → hidden：timer 清除，无新 GET；
+- Cleaning active → hidden：timer 清除；
+- Source page → hidden：2.5s interval 清除；
+- AI active → hidden：1.8s timer 清除；
+- visible 后当前 owner 立即只 refresh 一次；
+- visible 后只重启当前 page/tab 对应 poll；
+- hidden/visible 连续切换不会产生重复 timer；
+- Training 现有 visibility 合同保持；
+- Durable task 在隐藏期间继续在服务器执行，重新可见后能恢复最新状态。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
