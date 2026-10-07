@@ -23475,3 +23475,137 @@ Training Create 已经实现了顺序重放保护：浏览器提交固定 `task_
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-172 — 父 TRAINING 已创建但 TRAINING_PREPARE child 创建失败后不可通过同 task_id 重试恢复；idempotent create 永久跳过缺失 child
+
+**级别：高**  
+**模块：Training Create / TRAINING_PREPARE / Parent-Child Lifecycle / Idempotency / Crash Recovery**
+
+**现象：**
+
+`_enqueue_explicit_training()` 当前先创建父 `TRAINING`，然后再创建确定性 child：
+
+`prepare_task_id = 'trainprep_' + task_id`
+
+真实顺序是：
+
+1. 写父 task `payload.json`；
+2. `TaskRepository.create(TRAINING)`；
+3. 写 child `payload.json`；
+4. `TaskRepository.create(TRAINING_PREPARE)`。
+
+如果第 3/4 步抛异常，代码会调用：
+
+`fail_queued_precondition(parent, 'TRAINING_PREP_TASK_CREATE_FAILED: ...', status=BLOCKED_BY_ENVIRONMENT, stage='training_input_preparation_failed')`
+
+然后把异常继续抛给请求方。
+
+此时父 TRAINING 已经正式存在，但 PREPARE child 可能完全不存在。
+
+**恢复漏洞：**
+
+浏览器/调用方按同一 task_id、同一 payload 重试 `/train/start` 时，函数最前面的 idempotency 分支发现父 TRAINING 已存在且 `request_identity` 相同，就立即返回 202：
+
+`return {'ok': True, 'task': existing_task, 'idempotent': True}`
+
+它在这里直接 return，不再检查：
+
+- `training_prepare_task_id` 对应 child 是否存在；
+- child 是否处于可恢复状态；
+- 父任务是否正是 `training_input_preparation_failed`；
+- child payload 是否已经写好但 row 缺失。
+
+因此一次 parent-create / child-create 中间故障会把同 task_id 固化成“父任务存在、准备任务缺失”的永久半创建状态。
+
+**真实调用链：**
+
+训练弹窗提交固定 task_id
+→ `_enqueue_explicit_training()`
+→ parent `TaskRepository.create()` 成功
+→ child artifact write / child repository INSERT 因磁盘、SQLite busy/IO、异常等失败
+→ parent 变 `BLOCKED_BY_ENVIRONMENT + training_input_preparation_failed`
+→ HTTP 请求失败
+→ 用户/代理重放同 task_id
+→ existing parent + same request_identity
+→ idempotent 202 直接返回
+→ 不补 `trainprep_<task_id>`
+→ Scheduler 永远没有 TRAINING_PREPARE 可领取
+→ parent 永远无法进入 READY/真正训练。
+
+**为什么现有 recovery 不会兜底：**
+
+`training_recovery_api.py` 的 checkpoint recovery 面向训练后段失败，`RECOVERABLE_FAILURE_STAGES` 只包括 `final_validation / post_training` 等可复用 checkpoint 场景。
+
+当前 `training_recovery_tasks.py` 也没有发现“扫描 parent TRAINING 并 ensure 对应 TRAINING_PREPARE child”的 owner。
+
+Scheduler 只能领取已经存在的 child row，不能凭 parent payload 自行创造缺失 child。
+
+所以这是 create protocol 的缺口，不是普通 Worker retry。
+
+**用户真实可达场景：**
+
+- 创建训练时 SQLite/磁盘在 parent 成功后瞬时失败；
+- child task log/artifact 创建异常；
+- 进程在 parent create 和 child create 之间崩溃/被杀；
+- 网络看到第一次请求失败后，浏览器使用固定 task_id 安全重试。
+
+固定 task_id 本来就是为了让网络重放安全；当前恰好在最需要 idempotent recovery 的半提交点无法恢复。
+
+**影响：**
+
+- 用户重试得到 202/idempotent，但任务实际上没有任何 PREPARE worker 会执行；
+- 父任务永久 BLOCKED_BY_ENVIRONMENT；
+- 用户只能放弃 task_id、重新开一个新训练，产生垃圾父任务；
+- 任务中心可显示已受理/失败，但真正缺失的是 parent-child lifecycle，而不是训练数据/GPU；
+- 自动化客户端可能不断重放同 task_id，却永远无法恢复。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-087：用户取消 PREPARING parent 时没有同步取消已经存在的 TRAINING_PREPARE child；
+- AUDIT-140：训练完成归档后 auto-conversion child 的 crash window；
+- AUDIT-171：并发同 task_id create 可覆盖 parent immutable payload；
+- AUDIT-172：parent 已成功、PREPARE child **尚未创建/创建失败** 的半提交状态无法被 idempotent replay 修复。
+
+这是相反方向的 parent-child 缺失问题，不是 087/140/171 的重复。
+
+**现有测试为什么没有发现：**
+
+现有 Training Prepare 集成测试覆盖：
+
+- child 已存在后 Worker 成功/失败；
+- Prepare 失败会把 parent 标成 BLOCKED；
+- remote preparation 各种输入/存储异常。
+
+Training create/idempotency 测试主要覆盖正常 parent+child 创建和顺序重放。
+
+缺少 fault-injection 测试：
+
+`parent create succeeds → child create raises → same task_id POST replay`。
+
+**建议最小修复方向：**
+
+不要新增第二套 Training Prepare owner。让 Training Create 的 idempotent path具备 `ensure child` 语义：
+
+1. existing parent + same request_identity 时，先读取 parent payload 中 frozen `training_prepare_task_id`；
+2. 如果 parent 仍在 PREPARING/prepare-failed 且 child 缺失，幂等地补建同一个确定性 child；
+3. child 已存在则验证 project/kind/payload identity 一致，不重复创建；
+4. parent-child create 最好通过显式 journal / ensure operation 收口，而不是“parent INSERT 后裸 create child”；
+5. 进程启动/bootstrap 可以额外扫描合法半创建 parent 做 reconciliation，但不能成为第二 owner；
+6. 补建成功后应把 parent 从 create-precondition BLOCKED 恢复到 `training_input_pending`，让正常 Prepare handler继续；
+7. 不能把所有 `BLOCKED_BY_ENVIRONMENT` 都自动重试，只对有确定性 `TRAINING_PREP_TASK_CREATE_FAILED` + child 缺失证据的 create half-commit 做恢复。
+
+**应新增回归测试：**
+
+- parent create 成功、child create 注入失败 → parent BLOCKED、child 不存在；
+- 相同 task_id/payload 重放 → child 被补建且只存在 1 个；
+- 补建后 parent 可继续 PREPARE→READY；
+- child payload 已写但 row 缺失 → replay 安全补 row；
+- child row 已存在 → replay 只返回幂等，不重复；
+- child ID 被其它 kind/project 占用 → 明确 409，不篡改；
+- 不同 request_identity 重放仍按现合同 409；
+- 进程在 parent/child 间崩溃后 reconciliation 能恢复。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
