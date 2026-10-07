@@ -3332,6 +3332,27 @@ Durable ZIP runtime：
 
 当前 Playwright browser test 才首次在真实运行时把两个 owner 同时执行出来并抓到重复 GET，所以现在 CI 已经明确暴露该问题。
 
+**后续同 SHA rerun 证据修正：**
+
+继续核对 `4b559a37e72d50f9ec2d84f8f05bdc018a395e9c` 的完整 Actions 历史后发现：
+
+- 首次 `Frontend Runtime Stabilization` run：`browser-navigation` failure，真实抓到 labels GET 两次；
+- 随后对**同一个 SHA** 的 workflow rerun：`browser-navigation` success；
+- rerun 期间没有任何生产代码变化。
+
+因此需要把“CI 红灯”拆成两个事实：
+
+1. **生产 duplicate refresh 仍然是真实 Bug。** 源码调用链已经直接证明 completion owner 与 auto-review owner 都会执行 `refreshLabels414(false)`，所以 AUDIT-052 不撤销；
+2. **当前 browser regression 本身具有时序窗口。** 首次运行能观察到第二次请求，rerun 可能在第二次 refresh 被计入断言前就结束，所以不能再表述为“该 case 每次稳定必红”。
+
+修复时除了收敛唯一 refresh owner，还必须让浏览器回归测试确定性等待：
+
+- completion side effects；
+- 280ms auto review open；
+- review hydration / labels refresh settle；
+
+之后再断言同一次 completion 生命周期 labels GET 恰好一次。不能依赖当前偶发通过作为“问题已消失”的证据。
+
 **建议最小修复：**
 
 不要删除浏览器断言，也不要把期望从 1 次放宽成 2 次。
