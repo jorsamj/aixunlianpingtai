@@ -25303,3 +25303,177 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-183 — Material 多选 Set 支持跨页累积，但“批量标注 / 清洗已选 / 已选无需清洗”重新只在当前页找 row；已选 ID 会被静默丢弃
+
+**级别：高**  
+**模块：Material Pagination / Cross-page Selection / Manual Annotation / Cleaning / MARK_CLEAN_SKIPPED / Frontend bounded truth**
+
+**现象：**
+
+现代素材页的显式多选状态由：
+
+`state.data412Selected`
+
+维护。
+
+这个 Set 明确可以跨页累计：
+
+- `selectAll412()` 只把当前页 IDs 加入 Set，不清空原选择；
+- `setData412/toggleData412` 直接增删全局 Set；
+- 翻页不会清空 Set；
+- 顶部 `已选 N 张` 显示 Set 总数；
+- `batchDelete412()` 会直接把完整 Set 传给 canonical DELETE_INDEX，因此跨页选择本身是现有产品语义，不是偶然残留。
+
+但同一批量模式下另外三个真实动作没有直接消费这个 ID truth。
+
+**路径 A — 批量标注：**
+
+`openBatchAnnotation417()`
+
+先取全部 selected IDs，然后执行：
+
+`filter(id => (state.images || []).some(...id... && ready417(x)))`
+
+所以只有**当前 Material page**中仍有 row 的 ID 会留下。
+
+前一页已选择但当前页不可见的 ID 被静默删除。
+
+后续 `annotationQueue414` 也只保存这个截断后的集合。
+
+**路径 B — 清洗已选：**
+
+`openSelectedClean417()`
+
+虽然把完整 selected IDs 传给：
+
+`openBatch414('clean', ids)`
+
+但 `openBatch414` 在 ids 非空时只构造：
+
+`candidates = recentUploadedMaterials61 + state.images`
+
+再通过 allowed IDs 过滤 rows。
+
+因此：
+
+- 当前页 selected 能找到；
+- recent upload cache 中 selected 能找到；
+- 之前页 selected 如果不在这两个 bounded pools 中，就直接消失。
+
+最终 CLEAN task 收到的是截断后的 `state.batch414Selected`。
+
+**路径 C — 已选无需清洗：**
+
+`openSelectedReady417()`
+→ `openBatch414('ready', ids)`
+
+与路径 B 完全相同，最终 MARK_CLEAN_SKIPPED 也只收到当前 bounded candidate pool 中能重新 join 到 row 的 IDs。
+
+**真实用户场景：**
+
+项目有 500 张素材，page size 约 48。
+
+1. 用户进入批量模式；
+2. 第 1 页点击“全选当前” → selected=48；
+3. 翻第 2 页；
+4. 再“全选当前” → selected=96；
+5. 页面顶部正确显示：
+   `已选 96 张`；
+6. 用户点击“清洗已选”。
+
+此时 `openSelectedClean417` 确实读取 96 IDs。
+
+但 `openBatch414(ids)` 只能从当前第 2 页 `state.images` 找 row。
+
+第 1 页的 48 个 ID 会被静默丢弃。
+
+弹窗会显示大约：
+
+`共 48 张未处理素材 · 已选 48`
+
+而不是提示“其中 48 张无法解析”。
+
+批量标注同样会把前页选择静默过滤掉。
+
+**为什么是 Bug：**
+
+这里不是“仅当前页批量”的产品语义。
+
+系统已经明确保留跨页 Set，并且删除动作正确消费完整 Set。
+
+因此：
+
+`data412Selected`
+
+是跨页 selection truth。
+
+后续动作把它重新与 bounded `state.images` 做 inner join，相当于：
+
+`global selected IDs ∩ current visible page`
+
+然后无提示地执行。
+
+这会造成 UI 选择数量与实际业务 side effect 不一致。
+
+**影响：**
+
+- 用户认为已选 96/500 张，实际只处理当前页；
+- 清洗任务 scope 小于用户选择；
+- “无需清洗”只推进部分 selected material；
+- 批量人工标注队列丢失前页素材；
+- 删除动作能处理完整跨页 selection，而清洗/标注不能，形成同一批量 UI 内部合同漂移；
+- 用户必须手工逐页重复操作，且很难察觉哪些 ID 被漏掉。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-182：未显式多选时，顶部“批量清洗 / 批量无需清洗”把当前 page 冒充整个未处理范围；
+- AUDIT-183：用户已经建立一个**明确的跨页 selected ID Set**，但动作执行前又用 bounded page metadata 把这个真实 selection 截断。
+
+182 是默认 batch scope 错。
+
+183 是 explicit selection truth 在 action handoff 时丢失。
+
+同时 183 还影响“批量标注”，范围超过 182。
+
+**现有测试为什么没有发现：**
+
+现有素材页测试通常覆盖：
+
+- 当前页勾选；
+- 当前页全选/反选；
+- selected count；
+- 单页批量删除/清洗；
+- MaterialPagination page load。
+
+缺少真实序列：
+
+`page1 select → page2 select → action`
+
+并断言 action 接收到两个页面的全部 IDs。
+
+**建议最小修复方向：**
+
+不要为了找 metadata 再全量 hydrate Material。
+
+1. selected IDs 本身已经是 canonical browser selection intent；
+2. CLEAN / MARK_CLEAN_SKIPPED 应直接把 selected IDs 交给 MaterialBatch SELECTED scope；
+3. 如果弹窗需要 filename/thumbnail，只对当前可见页展示 preview，或通过 bounded batch lookup 按选中 IDs 分页取 metadata；
+4. 批量标注需要一个能按 selected IDs 分页解析 Annotation Workbench queue 的 owner，而不是依赖 `state.images`；
+5. 找不到/已删除的 selected ID 必须显式报告 conflict，不得静默过滤；
+6. selection count 与最终 task frozen selection total 必须一致。
+
+**应新增回归测试：**
+
+- page1 选 48 + page2 选 48 → CLEAN frozen selection=96；
+- 同样场景 MARK_CLEAN_SKIPPED=96；
+- processed 跨页 selected → annotation queue=全部 IDs；
+- 其中一个 ID 已删除 → 明确 conflict/缺失提示，不静默变 95；
+- batchDelete 现有跨页行为保持；
+- 不允许修复方案全量 hydrate 10k/20k Material rows。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
