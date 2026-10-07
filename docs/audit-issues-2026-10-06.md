@@ -11263,3 +11263,325 @@ finalization 是故障排查最关键阶段之一。
 
 ---
 
+### AUDIT-095 — Storage Import CandidateStore 跨 retry / execution generation 复用且仅 INSERT OR IGNORE；失败 attempt 的旧候选与旧 hash/status 可污染下一次确认和正式索引
+
+**级别：高**  
+**模块：Storage Import / Remote MATERIAL_IMPORT / ImportCandidateStore / Retry / Generation Isolation / Data Accuracy**
+
+**现象：**
+
+当前 Storage Import 的 canonical 候选数据库固定为：
+
+\`scan/candidates.sqlite3\`
+
+即：
+
+\`MANIFEST_REF = "scan/candidates.sqlite3"\`
+
+它以 task_id 为作用域，不以 execution generation / scan attempt 为作用域。
+
+而：
+
+\`ImportCandidateStore.upsert_many()\`
+
+名字虽然叫 upsert，真实 SQL 却是：
+
+\`INSERT OR IGNORE INTO candidates (...)\`
+
+因此它既不会：
+
+- 删除上一 attempt 已存在、这次已经不存在的 object_key；
+- 更新同 object_key 在新 attempt 中变化后的：
+  - content_sha256；
+  - size_bytes；
+  - etag；
+  - width / height；
+  - status；
+  - error；
+  - duplicate truth。
+
+CandidateStore 本身也没有：
+
+- clear；
+- reset；
+- replace；
+- purge；
+- truncate；
+
+之类用于 fresh scan 的 canonical reset API。
+
+**Local Storage Import 同样复用这个旧真相：**
+
+\`StorageImportHandler._scan_impl()\`
+
+每次直接：
+
+\`ImportCandidateStore(artifact_path(task_id, MANIFEST_REF))\`
+
+然后继续向已有 DB 批量：
+
+\`store.upsert_many(...)\`。
+
+scan 开始前没有删除/替换现有 candidate snapshot。
+
+取消路径甚至会先：
+
+\`_flush_scan_batch(...)\`
+
+把已完成的本批次正式写进 CandidateStore，再返回 CANCELLED。
+
+而：
+
+\`recover()\`
+
+如果没有完整 \`SCAN_RESULT_REF\`，会再次调用：
+
+\`_scan(context, request)\`
+
+继续扫描到同一份旧 CandidateStore。
+
+所以一次失败/崩溃/取消后重新执行时，候选真相不是“重新冻结当前存储扫描结果”，而是“在旧 attempt 上继续 INSERT OR IGNORE”。
+
+**Remote MATERIAL_IMPORT 的跨 generation 问题更明确：**
+
+每个 Agent generation 的 review archive 本身都带：
+
+\`execution_generation\`
+
+并且服务器会严格验证：
+
+- archive SHA；
+- candidate_count；
+- task_id；
+- project_id；
+- generation；
+- storage source；
+- target prefix。
+
+但验证完成以后：
+
+\`commit_material_review_archive()\`
+
+仍把这一 generation 的 rows 写入同一个：
+
+\`scan/candidates.sqlite3\`
+
+并调用：
+
+\`candidate_store.upsert_many(current_generation_rows)\`。
+
+与此形成鲜明对比的是：
+
+\`RemoteMaterialStagingStore\`
+
+对当前 generation 明确使用：
+
+\`replace_many(...)\`
+
+即 staging truth 是当前 generation snapshot，但 CandidateStore truth 却是跨 generation 累积。
+
+**为什么旧数据会真正进入用户确认：**
+
+这不是“数据库里多了几条没人用的历史行”。
+
+\`ImportCandidateStore.selection_facts(keys=None)\`
+
+默认明确执行：
+
+\`INSERT INTO wanted SELECT object_key FROM candidates WHERE status='IMPORTABLE'\`
+
+也就是把 CandidateStore 内**所有当前 IMPORTABLE 行**作为可确认集合。
+
+\`confirm(selected_keys)\`
+
+只检查：
+
+- object_key 在 candidates 表存在；
+- persisted status == IMPORTABLE。
+
+它没有 attempt/generation 字段，无法区分：
+
+“这个候选来自当前扫描”
+
+还是：
+
+“这是上一 generation 失败后遗留的旧候选”。
+
+确认后：
+
+\`pending_index_batch()\`
+
+又直接读取：
+
+\`WHERE selected=1 AND indexed=0\`
+
+继续把这些旧候选送进正式 Material indexing。
+
+所以旧 attempt truth 会穿透：
+
+CandidateStore
+→ 用户确认
+→ selected
+→ image_id assignment
+→ pending index
+→ MaterialRepository / AnnotationRepository。
+
+**两个典型错误场景：**
+
+场景 A — 旧对象已经消失：
+
+generation 1 扫描：
+
+- A.jpg
+- B.jpg
+
+随后失败。
+
+generation 2 真实存储只剩：
+
+- B.jpg
+- C.jpg
+
+当前实现最终 CandidateStore 仍可能是：
+
+- A.jpg（旧）
+- B.jpg
+- C.jpg
+
+用户默认“全部可导入”时，A 仍可进入 selection。
+
+对 Remote Import，当前 generation 的 \`RemoteMaterialStagingStore\` 已经 replace 成 B/C，因此 A 甚至可能没有当前 staging evidence，造成确认后 indexing 中途失败。
+
+场景 B — 同 key 内容已变化：
+
+generation 1：
+
+\`B.jpg sha=OLD, status=IMPORTABLE\`
+
+generation 2：
+
+\`B.jpg sha=NEW\`
+
+由于：
+
+\`INSERT OR IGNORE\`
+
+新 row 被忽略。
+
+CandidateStore 仍认为 B 是旧 SHA / 旧尺寸 / 旧状态。
+
+于是：
+
+- UI review 展示旧 truth；
+- selection digest 计算旧 hash；
+- 后续当前 generation staging / provider 内容却是新 truth；
+- indexing 可能报 evidence mismatch，或把错误 metadata 固化进 Material。
+
+**为什么这是主流程准确性问题：**
+
+Storage Import 的 review/确认阶段本意是：
+
+“用户确认本次扫描冻结出来的素材候选”。
+
+但当前 retry / recovery 之后，用户看到的是：
+
+“多个 attempt/generation 的候选并集，而且同 key 优先保留最早写入的旧元数据”。
+
+这直接破坏了：
+
+- 本次导入范围；
+- 内容 hash；
+- duplicate truth；
+- invalid/importable classification；
+- 标注质量与外部标签 summary；
+- 最终入库准确性。
+
+**与已有问题的区别：**
+
+- AUDIT-067：Storage Import focused poller 切换任务时 owner handoff 丢失；
+- AUDIT-092 / 093：Agent finalization 的 commit/receipt/lease recovery；
+- AUDIT-051：ZIP review 全量 hydration；
+- AUDIT-062：ZIP daemon crash recovery。
+
+AUDIT-095 是 Storage Import 自己的**候选 snapshot generation isolation**问题。
+
+不需要重新设计 CandidateStore owner；恰恰应该让现有 CandidateStore 成为单一、准确的“当前 scan snapshot” owner。
+
+**现有测试缺口：**
+
+\`tests/unit/test_remote_material_import.py\`
+
+目前主要覆盖：
+
+- 单一 generation archive build/commit；
+- SHA / payload tampering；
+- storage_scan metadata；
+- YOLO/COCO/VOC annotation truth。
+
+没有测试：
+
+同一个：
+
+\`task_id + MANIFEST_REF\`
+
+连续提交：
+
+- generation 1：A/B；
+- generation 2：B/C；
+- B 的 hash/status 在 generation 2 改变；
+
+然后断言最终候选必须严格等于：
+
+- B(current)
+- C
+
+且：
+
+- A 已消失；
+- B 使用 generation 2 metadata。
+
+Local Storage Import 测试也没有覆盖：
+
+“scan 部分写入 → crash/cancel → provider 内容变化 → fresh retry”。
+
+**建议最小修复：**
+
+不要新增第二 CandidateStore owner。
+
+应把现有 CandidateStore 变成明确的 scan-generation snapshot：
+
+1. Remote generation：
+   - 先在 generation-scoped 临时 CandidateStore 构建；
+   - 完整验证 candidates / annotations / quality；
+   - 全部成功后原子 promote/replace 当前 \`MANIFEST_REF\`；
+2. Local retry：
+   - 区分“同 generation resume”与“fresh restart”；
+   - fresh restart 必须重建 snapshot，不能和旧候选做 union；
+3. 如果需要复用同一路径，提供明确：
+   \`replace_snapshot(rows)\`
+   或 atomic DB swap；
+   不要把 \`INSERT OR IGNORE\` 当 upsert；
+4. 一旦用户已经 confirmation：
+   - 禁止静默替换其下层 CandidateStore；
+   - 必须保持 confirmation → snapshot identity 不变；
+5. RemoteMaterialStagingStore 与 CandidateStore 必须来自同一 generation identity；
+6. selection digest 应绑定 snapshot/generation identity，而不仅是 object_key 集合。
+
+**回归测试建议：**
+
+至少增加：
+
+- gen1=A/B，gen2=B/C → 最终候选严格 B/C；
+- gen1 B old hash，gen2 B new hash → 最终必须 new；
+- gen1 IMPORTABLE，gen2 INVALID → 最终必须 INVALID；
+- gen1-only A 不得出现在默认 selection；
+- Remote staging 与 CandidateStore keys/metadata 必须同 generation；
+- Local partial scan crash 后 fresh retry 不保留消失对象；
+- confirmation 后不得被新 generation 静默替换；
+- 10k / 20k snapshot replace 使用 streaming / atomic swap，不能退化为全量 Python 内存复制或 O(N²)。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
