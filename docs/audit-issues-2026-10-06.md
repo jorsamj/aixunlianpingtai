@@ -4957,6 +4957,228 @@ AUDIT-062 是正式导入执行阶段的 crash consistency / durable runtime 缺
 
 ---
 
+
+### AUDIT-063 — Central Scheduler 只有手工 `allocate-next` API，没有生产调度驱动；Agent loop 只 claim 已存在 assignment，远程 Durable Task 缺少自动 assignment owner
+
+**级别：高**  
+**模块：Central Scheduler / Service Node / Agent Executor / Remote Training / Remote Conversion / Remote Cleaning / Remote Material Import**
+
+**现象：**
+
+当前 `CentralTaskAllocator.assign_next()` 是 Service Node / Agent 执行前唯一会创建：
+
+`task_node_assignments.state = ASSIGNED`
+
+的 owner。
+
+但是当前生产代码中，它只通过：
+
+`POST /api/v63/scheduler/allocate-next`
+
+暴露为一个显式 HTTP API。
+
+实际 Node Agent executor loop 每隔约 2 秒只调用：
+
+`POST .../assignments/claim`
+
+对应后端：
+
+`AgentExecutionService.claim_assignment()`
+→ `CentralTaskAllocator.claim_for_node(node_id)`
+
+它只会 claim **已经存在的 ASSIGNED assignment**，不会调用 `assign_next()` 创建 assignment。
+
+对当前生产文件的调用审计没有找到任何自动调用 `/api/v63/scheduler/allocate-next` / `assign_next()` 的 owner：
+
+- `app.py`：无 `assign_next()` 调用；
+- `node_agent.py`：无 allocate-next；
+- `node_agent_executor_loop.py`：仅 claim；
+- `node_agent_executor_runtime.py`：仅调用 assignments/claim 与 start；
+- `service_nodes.py`：无 allocate-next；
+- `task_worker.py`：无 allocate-next；
+- `launcher.py`、`start.ps1`、`start.bat`、远端启动脚本：无 allocate-next。
+
+所以当前 repo 内没有发现“持续把 QUEUED Durable Task 转成 Node Assignment”的生产调度 tick。
+
+**真实调用链：**
+
+存在的 allocation owner：
+
+`CentralTaskAllocator.assign_next()`
+→ 选择 eligible node / GPU
+→ INSERT `task_node_assignments(... state='ASSIGNED' ...)`
+
+仅暴露：
+
+`central_scheduler_router()`
+→ `POST /api/v63/scheduler/allocate-next`
+→ `allocator().assign_next()`
+
+Agent 真实 loop：
+
+`NodeAgentExecutorLoop.run_once()`
+→ `client.claim_assignment()`
+→ `POST /api/v63/node-executor/{node_id}/assignments/claim`
+→ `AgentExecutionService.claim_assignment()`
+→ `allocator.claim_for_node(node_id)`
+→ 只 SELECT：
+`state='ASSIGNED' AND task.status='QUEUED'`
+
+没有 assignment 时直接：
+
+`claimed = false`
+
+然后等待下一轮 polling。
+
+因此 Agent 自身不会触发分配。
+
+**测试为何看起来正常：**
+
+当前测试把 allocation 步骤手工补上了。
+
+`tests/api/test_central_scheduler_api.py`：
+
+直接调用：
+
+`POST /api/v63/scheduler/allocate-next`
+
+再检查 assignments。
+
+`tests/api/test_agent_executor_api.py`：
+
+在 Agent claim 前显式：
+
+`service.allocator.assign_next()`
+
+然后才：
+
+`POST .../assignments/claim`
+
+所以测试验证的是：
+
+“已经有人创建 assignment 后，Agent claim/start 能工作”。
+
+没有验证：
+
+“真实生产 Node Agent + Worker 启动后，无人工 HTTP 调用也能自动把 QUEUED task 分配给 Agent”。
+
+**为什么是 Bug / owner 缺失：**
+
+Central Scheduler 当前有完整的：
+
+- eligible node；
+- capability；
+- connection_mode；
+- GPU reservation；
+- strict affinity；
+- preemption；
+- assignment generation；
+
+但缺少生产中的**驱动 owner**。
+
+这会导致：
+
+QUEUED remote-capable task
+→ 永远没有 ASSIGNED row
+→ Agent 每轮 claim 都拿不到任务
+→ task 持续 QUEUED。
+
+更危险的是 TRAINING：
+
+`AssignmentAwareFencedTaskRepository`
+
+只会拒绝“已经存在 active assignment”的 task。
+
+如果 remote Training 还没 assignment，local Worker 仍可能看到它。
+
+而 `NodeScopedGPUResourceManager.admit()` 对：
+
+`resource_key.startswith('training:remote:')`
+
+明确直接：
+
+`return True, None`
+
+所以 local Worker 并不会因为 remote resource key 被 admission 拒绝。
+
+随后 local Training handler 又明确：
+
+如果：
+
+`payload.target != 'local'`
+
+则抛：
+
+`remote training requires a configured NVIDIA training worker`
+
+因此在没有自动 assignment owner 时，存在：
+
+- remote task 长期排队；或
+- local Worker 先 claim 后将 remote training 打成环境失败
+
+两种错误结果。
+
+**影响：**
+
+- Remote Training 可能无法自动进入 Agent；
+- Remote Conversion / Cleaning / Material Import / Deployment Test 等依赖 Central Assignment 的 Agent task 可能长期 QUEUED；
+- Agent 心跳在线、capability 正常也不代表会拿到任务；
+- 用户可能看到“服务节点在线、任务已创建”，但节点永远没有执行；
+- remote Training 还可能被 local Worker 抢 claim 并错误终止；
+- 现有 assignment / Agent API 测试会全部绿色，却不能证明生产自动调度闭环。
+
+**与 AUDIT-015 / 055 / 060 的区别：**
+
+- AUDIT-015：已经 ASSIGNED/CLAIMED 后节点被 disable；
+- AUDIT-055：已经 ASSIGNED/CLAIMED 后 task 被用户取消；
+- AUDIT-060：已经 ASSIGNED/CLAIMED 后节点离线；
+
+AUDIT-063 发生得更早：
+
+**task 还没有 assignment，根本没有生产 owner 自动执行 `assign_next()`。**
+
+这是 Central Scheduler 驱动层缺口，不是 assignment retirement 缺口。
+
+**建议最小修复：**
+
+不要新建第二 Scheduler。
+
+必须复用现有：
+
+`CentralTaskAllocator.assign_next()`
+
+作为唯一 assignment owner，只补一个明确且单例的生产驱动。
+
+可选最小方向：
+
+- 由现有 Worker/Service Node control-plane heartbeat owner 在一次 heartbeat tick 中 bounded 调用 `assign_next()`；
+- 或在 Agent claim 前，由中央端原子尝试 allocation，再 claim 当前 node；
+- 必须有跨进程单 owner / lock，避免多个 Web/Worker 进程同时形成新的 scheduler loop；
+- 每轮分配要 bounded，不允许无界 while 把所有任务一次扫完；
+- allocation 失败不能影响 Agent heartbeat；
+- 仍保留现有 assignment generation / lease / node capability / GPU reservation fencing。
+
+同时必须给 local Worker 增加 remote-task admission fence：
+
+- 有 `task_node_connection_mode(task) == 'agent'` 或 portable `remote_execution` 的 task；
+- 在没有 central assignment 时也不能被 local Worker claim。
+
+否则即使补上 scheduler tick，仍存在 local Worker 与 allocation 的抢占竞态。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+至少增加一个真正的 production-shape 集成测试：
+
+1. 创建在线 Agent node；
+2. 创建一个需要 Agent 的 QUEUED task；
+3. **测试代码不得手工调用 `assign_next()` / allocate-next**；
+4. 启动真实 scheduler/Agent loop；
+5. task 必须自动形成 ASSIGNED → CLAIMED → RUNNING；
+6. remote Training 在 assignment 形成前不得被 local Worker claim。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
