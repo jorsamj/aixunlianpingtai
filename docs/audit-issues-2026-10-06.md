@@ -21273,3 +21273,182 @@ FAILED / PARTIAL_SUCCESS 没有“重试”按钮。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-157 — AI Candidate 不绑定 source content hash；Storage Rescan 换图后旧候选可被人工确认并写成新图片的正式 Ground Truth
+
+**级别：高**  
+**模块：AI Annotation / CandidateStore / Storage Rescan / Human Review / AnnotationRepository / Ground Truth Accuracy**
+
+**现象：**
+
+canonical AI 标注生成阶段会：
+
+`load_task_images()`
+→ 从 MaterialRepository 读取当前 material row
+→ `StorageManager.materialize()`
+→ 对当时真实图片内容调用模型
+→ 把候选结果写入 CandidateStore。
+
+但 CandidateStore 当前保存的 item 只有：
+
+- image_id；
+- filename / url；
+- width / height；
+- boxes；
+- provider / model / request_id / raw_response_hash 等。
+
+它**没有保存生成候选时的 source content identity**：
+
+- 没有 `content_sha256`；
+- 没有 content generation；
+- 没有 storage revision；
+- 没有可在 review commit 时比较的 Material hash。
+
+而当前 Storage Rescan 明确允许：
+
+相同 `material_id`
+→ 相同 `storage_source_id + object_key`
+→ 内容从 H1 变成 H2
+→ 原 material_id 不变
+→ MaterialRepository 覆盖：
+`content_sha256 / size_bytes / etag / width / height`
+
+并只把 Material 标成：
+
+`needs_review=true`
+`annotation_needs_review=true`
+`annotation_review_reason=SOURCE_CONTENT_CHANGED`
+
+这个标记不会让旧 CandidateStore 失效，也不会阻止旧 AI Review Commit。
+
+**真实调用链：**
+
+1. 图片 A 当前内容为 H1；
+2. 用户创建 canonical AI 标注任务；
+3. `load_task_images()` materialize H1；
+4. 模型基于 H1 产生候选框；
+5. CandidateStore 只保存 image_id/boxes，不保存 H1 hash；
+6. 任务进入人工审核；
+7. 在用户点击确认前，外部对象被替换为 H2；
+8. 用户执行 Storage Rescan；
+9. 系统复用 A 的原 material_id，并把 MaterialRepository 的 hash/尺寸更新成 H2；
+10. 旧 AI review 页面仍持有 H1 候选；
+11. 用户点击确认；
+12. `commit_candidate_decisions()` 只读取当前 AnnotationRepository version 作为 `expected_version`；
+13. `write_formal_annotations()` / `AnnotationRepository.upsert_many()` 只做 Annotation version CAS 与标签状态校验；
+14. 没有任何 Material `content_sha256` 比较；
+15. H1 的框被正式写到当前 H2 的 image_id 上。
+
+如果 H2 的尺寸也发生变化，旧 candidate box 仍可能携带按 H1 尺寸解析出的像素坐标；commit 路径同样没有重新基于 H2 内容/尺寸做“候选属于当前 source generation”的证明。
+
+**为什么这是 Ground Truth Bug：**
+
+AnnotationRepository 的 image_id identity 当前不是 immutable-content identity。
+
+Storage Rescan 已经明确允许同一 image_id 的真实图片内容发生代际变化。
+
+因此 AI candidate 仅绑定 image_id 不足以证明：
+
+> 当前正在人工确认的候选，仍然来自这张素材现在的内容。
+
+`expected_version` 只能防止：
+
+“标注 A 被另一个标注写覆盖”。
+
+它不能防止：
+
+“图片内容从 H1 变 H2，但 Annotation version 没变化”。
+
+所以这是两个不同的 revision domain。
+
+**用户真实可达场景：**
+
+- 对象存储图片被上游替换；
+- 用户执行平台已有 Storage Rescan；
+- AI 任务已经生成候选但尚未人工确认；
+- 用户随后在正常 AI Review 页面确认候选。
+
+不需要 legacy API，也不需要内部调用。
+
+**影响：**
+
+- H1 的框可正式落到 H2；
+- 目标位置/类别可能完全错误；
+- H2 尺寸变化时坐标语义进一步失真；
+- Material 虽曾标记 `annotation_needs_review`，AI Commit 又会把新的正式 annotation projection 写回，容易让用户误以为已经重新审核；
+- 后续 Training Picker / Snapshot 会把这些错误 GT 当正式标注；
+- 训练准确率可能出现难以解释的系统性噪声；
+- 任务状态、Annotation version、Candidate journal 都可能完全正常，因此不容易被发现。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-099：Storage Rescan 与**人工 Annotation 保存**的并发 TOCTOU，重点是 Rescan 校验与 Annotation commit 不原子；
+- AUDIT-129：AI task 没冻结 live label catalog；
+- AUDIT-148：partial-scope annotated 正样本进入训练；
+- AUDIT-149：Dataset DELETE 与 AI formal commit 的生命周期 race；
+- AUDIT-152：Cleaning succeeded result 未绑定当前素材 hash；
+- AUDIT-157：AI Candidate 本身未绑定生成时 source hash，导致“旧图片推理结果 → 新图片正式 GT”。
+
+所以 157 是 candidate evidence 与 material content generation 的身份缺失，不是 Annotation version race。
+
+**现有测试为什么没有发现：**
+
+AI tests 主要覆盖：
+
+- immutable image_id order；
+- CandidateStore crash recovery；
+- provider result 不重复计费；
+- label mapping / review scope；
+- Annotation expected_version；
+- Candidate commit journal；
+- stale worker generation fence。
+
+Storage Rescan tests 则验证：
+
+- 同 storage reference 可更新原 Material 的 content hash；
+- CHANGED 时标记 annotation_needs_review。
+
+缺失跨模块测试：
+
+`AI candidate generated on H1 → rescan same material to H2 → human review commit`
+
+因此两边单测都可通过，但组合后 Ground Truth 错绑内容。
+
+**建议最小修复方向：**
+
+不要新增第二 CandidateStore，也不要让 Rescan 删除 AI task。
+
+继续复用现有 canonical owners，给 Candidate evidence 加 source-generation fence：
+
+1. AI generation 时为每个 candidate item 冻结：
+   `source_content_sha256`
+   （必要时同时记录 width/height）；
+2. 人工 review commit 前批量读取当前 MaterialRepository rows；
+3. 当前 `content_sha256` 与 candidate source hash 不一致：
+   - fail-closed；
+   - 该 image_id 不得写入正式 Annotation；
+   - UI 明确提示“素材内容已变化，请重新执行 AI 标注/重新审核”；
+4. Material 不存在时同样 fail-closed；
+5. 已 accepted 的旧 candidate 不得因为 image_id 一样继续复用；
+6. retry/recovery 也必须检查旧 candidate source hash；
+7. 不要自动把旧框按新尺寸缩放后继续提交，这不能证明 H2 与 H1 是同一视觉内容；
+8. Annotation `expected_version` 继续保留，它解决的是另一个并发维度。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- H1 candidate + current H1 → 正常 commit；
+- H1 candidate + Rescan H2 → commit 409/业务冲突，不写 GT；
+- H1 candidate + H2 尺寸变化 → 不得自动缩放并提交；
+- Material 已删除 → review commit 不得创建孤儿 GT；
+- 200 条 batch review 中只有部分 hash 变化 → 变化项 fail-closed，行为需明确且可恢复；
+- retry/recover 读取旧 CandidateStore 时也校验 source hash；
+- unchanged Material 不引入额外逐图片 N+1，必须批量校验；
+- Annotation expected_version 的既有并发测试继续保留。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
