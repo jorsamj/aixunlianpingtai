@@ -7978,6 +7978,143 @@ QUEUED task 的 allocator scale contract。
 
 ---
 
+
+### AUDIT-080 — AI MaterialBatch 的 PARTIAL_SUCCESS“重试”会被旧 review confirmation 短路回 Commit；失败图片不会重新推理，重试语义实际失效
+
+**级别：高**  
+**模块：AI Annotation / MaterialBatch / Retry / Review Confirmation / Candidate Commit**
+
+**现象：**
+
+当前 AI 自动标注的 MaterialBatch 路径使用：
+
+`operation = AI_ANNOTATE`
+
+生成阶段允许部分图片失败。只要至少有成功或 empty 候选，`AnnotationBatch.finish()` 会进入 `AWAITING_CONFIRMATION`，保留成功、empty、failed 的 CandidateStore truth。
+
+用户确认后写入：
+
+`review/confirmation.json`
+
+且：
+
+`accepted = true`
+
+随后 Worker 调用 `commit_confirmed_review(context)` 将人工确认候选写入正式 AnnotationRepository。
+
+如果 generation 仍有 failed candidate，commit 会返回：
+
+`TaskStatus.PARTIAL_SUCCESS`
+
+因为当前代码明确按：
+
+`PARTIAL_SUCCESS if result["review"].get("failed") else SUCCEEDED`
+
+结束任务。
+
+**前后端都明确允许此状态“重试”：**
+
+前端 `annotationTaskView()` 的 `canRetry` 包含 `PARTIAL_SUCCESS`，任务列表真实显示“重试”按钮。
+
+后端：
+
+`POST /api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry`
+
+对 `TaskKind.MATERIAL_BATCH` 也允许 `PARTIAL_SUCCESS`，随后执行：
+
+`TaskRepository.retry(task_id)`
+
+该 retry 复用原 task_id 与原 artifacts，只把 Durable Task 重置为 QUEUED，不会删除旧：
+
+`review/confirmation.json`。
+
+**真实错误链：**
+
+MaterialBatch handler 再次运行时，在任何 failed-row retry / AI provider generation 之前先执行：
+
+```python
+if operation is BatchOperation.AI_ANNOTATE:
+    confirmation = context.artifacts.read_json(
+        context.task.task_id,
+        "review/confirmation.json",
+        default=None,
+    )
+    if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
+        return commit_confirmed_review(context)
+```
+
+因此：
+
+1. 首轮部分图片生成失败；
+2. 用户审核成功结果并确认；
+3. 正式标注入库；
+4. task = PARTIAL_SUCCESS；
+5. UI 显示“重试”；
+6. 用户点击 retry；
+7. repository 把同 task_id 改回 QUEUED；
+8. Worker 重新进入 MaterialBatch；
+9. 旧 confirmation 仍是 accepted=true；
+10. handler 立即再次进入 Commit；
+11. 失败图片不会重新调用模型；
+12. task 很可能再次回到同一个 PARTIAL_SUCCESS。
+
+即当前“重试”实际是重放已确认 Commit 阶段，而不是重试失败 work item。
+
+**为什么是独立 Bug：**
+
+即使 Candidate commit journal 能避免正式 GT 重复写入，用户真正要恢复的是失败图片的 AI generation。
+
+当前 retry lifecycle phase 错误地被旧 confirmation 锁在 Commit 阶段，导致 provider 临时错误、限流、单图失败无法通过“重试”恢复。
+
+**影响：**
+
+- PARTIAL_SUCCESS 后“重试”无法恢复失败图片；
+- failed_count 无法通过此操作下降；
+- 用户可能反复点击重试但始终部分成功；
+- task attempt 增长，却没有新的 inference；
+- 已确认 Commit 被重复进入，产生不必要的 GT 校验 / journal / heartbeat 成本；
+- UI 文案与后端真实执行语义不一致；
+- 运维日志看似“又执行一次”，实际没有重新跑失败图片。
+
+**为什么现有测试没发现：**
+
+现有测试分别覆盖 generation partial、review confirmation、PARTIAL_SUCCESS 可重试、TaskRepository retry 和 commit recovery，但没有完整组合：
+
+`generation 部分失败 -> confirm -> PARTIAL_SUCCESS -> retry`
+
+并断言失败图片真的再次进入 provider inference。
+
+**建议最小修复：**
+
+不要新增第二套 AI task owner，也不要删除 CandidateStore commit journal。
+
+应明确区分 retry phase：
+
+1. `AI_ANNOTATE + PARTIAL_SUCCESS` 的“重试失败图片”只重置 generation failed rows；
+2. 旧 `review/confirmation.json` 不得继续短路新的 generation retry，可归档旧 confirmation 或记录明确 retry phase；
+3. succeeded / empty / 已提交 GT 的 work item 不重复推理；
+4. 新失败项重试成功后重新进入 AWAITING_CONFIRMATION；
+5. 如果产品还需要“重试 Commit”，应提供独立、明确的 commit-recovery action，不与“AI 重试”共用一个按钮/endpoint；
+6. 不能简单删除整个 task artifacts，以免破坏已提交 GT lineage 和审计证据。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 10 张中 2 张 provider failure -> review/confirm -> PARTIAL_SUCCESS；
+- 点击重试后 provider 只再次收到这 2 张；
+- 原 8 张不重复推理；
+- 旧 confirmation 不再短路 generation retry；
+- 重试成功后进入新的 review；
+- 再确认后可最终 SUCCEEDED；
+- commit journal 仍保证正式 AnnotationRepository 不重复写；
+- confirmation 前 CANCELLED/FAILED 的 generation retry 行为不回退。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
