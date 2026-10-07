@@ -15605,3 +15605,116 @@ Durable Task 的真实终态只能由：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-122 — Quality Center 批量检测没有 navigation owner；离开页面后可继续创建 Deployment Test，或在 GET 已 in-flight 时永久卡住 batch
+
+**级别：高**  
+**模块：Quality Center / Navigation Stability / PollRegistry / PageRequestScope / Deployment Test Lifecycle**
+
+**现象：**
+
+当前 `runBenchBatch64()` 是浏览器内长生命周期 async workflow。每张图片会创建 Durable Deployment Test，再通过 `waitForTaskTerminal()` 等待终态；compare 模式继续创建第二 side，之后进入下一张。
+
+但该 batch 没有绑定 NavigationStability action/token、page epoch 或 navigation cancel flag。
+
+导航真实链为：
+
+`NavigationStability.setPage(nextPage)`
+→ `pollRegistry.beforeNavigate(requested)`
+→ `registry.leave(nextPage)`
+
+Deployment Test waiter 的 owner 是“质量中心”，因此离页时会清理当前仍在等待的 one-shot timer，并通过 `onClear` 让 waiter reject `AbortError`。
+
+**分支 A — 导航发生在 polling timer 尚未触发时：**
+
+`runBenchBatch64()` 的内层 catch 不区分 AbortError，会：
+
+- 把当前 row 标成 failed；
+- 写入 error；
+- `run.failed += 1`；
+- 然后继续 batch loop。
+
+它不会设置 `run.cancelled=true`，也不检查当前页面是否仍是质量中心。
+
+于是下一 side / 下一图片会继续执行 `benchPredictOne()`，再次：
+
+`POST /api/v61/projects/{project_id}/deployment-tests`
+
+即：
+
+**用户已经离开质量中心，浏览器仍可能继续创建新的 GPU / Worker / Agent 检测任务。**
+
+同时 `PollRegistry.startTimeout()` 注册时只保存 ownerPages，不验证“当前页面是否仍属于 owner”。由于 `registry.leave()` 已经在本次导航开始时执行过，导航后新注册的 waiter 不会被刚才那次 leave 清掉，因此可以在其它页面继续 polling。
+
+**分支 B — 导航发生在 task GET 已经 in-flight 时：**
+
+PollRegistry one-shot callback 开始时会先从 registry 删除自己的 entry，再执行 callback。
+
+如果此时导航，`PageRequestScope.navigate()` 会 abort 旧页面 GET。对导航导致失效的 GET，PageRequestScope 为避免旧页面 catch/toast，会返回永不 settle 的 `NEVER`。
+
+于是：
+
+- `load()` 永不 resolve/reject；
+- waiter 永不 settle；
+- 当前 poll entry 又已从 registry 删除；
+- navigation 无法再通过 `onClear` 终止它；
+- `runBenchBatch64()` 永久卡在当前 await；
+- `run.running` 可长期保持 true。
+
+所以同一导航动作存在两个真实竞态结果：
+
+1. timer pending → AbortError → batch 错误地继续在别页创建后续 task；
+2. GET in-flight → NEVER → batch 永久悬挂。
+
+**为什么是 Bug / Owner 缺失：**
+
+PollRegistry 只拥有“单次 terminal waiter timer”，不能替代整个 Detection Batch workflow owner；PageRequestScope 只防旧 GET 回写，也不会阻止后续 POST side effect。
+
+当前“页面已离开”和“batch 是否仍允许创建新的 Durable Task”完全解耦。
+
+**与已有问题的区别：**
+
+- AUDIT-107：用户显式点“停止检测”时不 cancel 当前 Durable task；
+- AUDIT-121：仍在当前页面时，单次状态读取错误被误当业务失败；
+- AUDIT-122：页面导航没有终止 batch workflow，导致 off-page task creation 或永久悬挂。
+
+**影响：**
+
+- 离开质量中心后仍继续创建 Deployment Test；
+- 当前 task 未 cancel、下一 task 又创建，资源可重叠；
+- 当前 row 被错误标 failed；
+- 其它页面后台继续出现质量中心 polling；
+- 大批量任务可在用户不可见状态持续执行；
+- in-flight 导航竞态可让 batch 永久保持 running；
+- 用户回到质量中心后可能看到 stale batch 状态并再次启动任务。
+
+**建议最小修复：**
+
+不要新增第二 Deployment Test owner。
+
+1. batch 创建时冻结 project_id、navigation epoch、run generation；
+2. 每次 side/task 创建前检查 owner token 仍 current；
+3. 页面离开时把本地 batch workflow 标记为 aborted，禁止后续 task creation；
+4. navigation AbortError 不能计为模型检测 failed；
+5. terminal waiter 增加独立 generation/abort signal，导航时必须能 settle，不能被 PageRequestScope 的 NEVER 永久悬挂；
+6. PollRegistry 可增加可选 owner-current guard，避免在已经离开 owner page 后注册 UI-only timer；
+7. 当前已创建 Durable task 是否自动 cancel，应与 AUDIT-107 的显式 Stop 语义分开定义；无论是否 cancel，都必须停止创建后续 task。
+
+不要把 POST 纳入通用 GET PageRequestScope 自动 abort，因为 POST 是否已被服务器接受存在不确定性，容易制造重复提交。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- timer pending 时导航离页：waiter Abort，但 batch 不标模型失败、不创建下一 task；
+- GET in-flight 时导航：waiter settle AbortError，`run.running` 最终 false；
+- 导航后不得注册新的 Deployment Test waiter；
+- 导航后 Deployment Test POST 数量不再增加；
+- project switch 同样终止旧项目 batch workflow；
+- AUDIT-107 显式 Stop 与 AUDIT-121 transient read retry 合同保持独立且正确。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
