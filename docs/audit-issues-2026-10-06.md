@@ -12670,3 +12670,167 @@ Annotation path 没有等价的、与正式 GT 同 owner 提交的 operation rec
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-105 — Detection Batch 恢复态遗漏 BLOCKED_BY_ENVIRONMENT / BLOCKED_BY_HARDWARE；后端已终止的部署测试刷新后会被前端重新显示成“运行中”
+
+**级别：中～高**  
+**模块：Quality Center / Deployment Test / Detection Batch / Durable Task Status Contract**
+
+**现象：**
+
+Deployment Test 使用 canonical Durable Task 状态机，Worker 可以真实把任务结束为：
+
+- `BLOCKED_BY_HARDWARE`
+- `BLOCKED_BY_ENVIRONMENT`
+
+例如 `platform_core/deployment/inference_tasks.py::run_deployment_test()` 明确：
+
+- 对 `.rknn / .om / .bmodel` 本地缺板端 Runtime 时抛 `HardwareUnavailableError`；
+- 对不支持的 Runtime / runner 缺失时抛 `EnvironmentError`；
+- `.engine` 执行失败也可转为 `HardwareUnavailableError`。
+
+`Scheduler.run_once()` 又明确映射：
+
+- HardwareUnavailableError -> `TaskStatus.BLOCKED_BY_HARDWARE`
+- EnvironmentError -> `TaskStatus.BLOCKED_BY_ENVIRONMENT`
+
+所以这两个状态对 Deployment Test 是真实生产 terminal truth。
+
+但 Detection Batch 的后端摘要和前端恢复逻辑各自又维护了一套过期 terminal 枚举。
+
+**后端漂移：**
+
+`_public_detection_batch()` 计算 `completed_items` 时只认：
+
+`SUCCEEDED / FAILED / CANCELLED`
+
+因此一个模型侧已经：
+
+`BLOCKED_BY_ENVIRONMENT`
+
+或：
+
+`BLOCKED_BY_HARDWARE`
+
+的 item 不会被计入 completed。
+
+`failed_items` 也只统计严格的 `FAILED`，blocked 没有任何独立计数。
+
+但同一文件中的人工复核 endpoint 已经把 canonical terminal truth 写对了：
+
+`review_detection_batch_item()`
+
+的 `terminal` 集合明确包含：
+
+- SUCCEEDED
+- PARTIAL_SUCCESS
+- FAILED
+- CANCELLED
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+即同一个 Detection Batch owner 内部已经出现两套不同 terminal 定义。
+
+**前端漂移：**
+
+`static/app.js::batchFromDurable64()` 恢复历史批次时：
+
+`pending = statuses.some(status => !['SUCCEEDED','FAILED','CANCELLED'].includes(status))`
+
+随后：
+
+`status = pending ? 'running' : failed ? 'failed' : 'done'`
+
+所以 blocked task 会满足：
+
+`pending === true`
+
+最终恢复成：
+
+**running**
+
+这和后端 Durable Task 真相完全相反。
+
+**真实用户链路：**
+
+1. 用户在质量中心发起检测；
+2. Deployment Test 因 Runtime/硬件不满足进入 BLOCKED_BY_ENVIRONMENT 或 BLOCKED_BY_HARDWARE；
+3. 当前页面的 `benchPredictOne()` 通过 canonical task poller 能识别 terminal；因为不是 SUCCEEDED，会抛错，本次内存态行暂时显示 failed；
+4. 用户刷新页面，或稍后从“历史检测批次”重新打开；
+5. 后端 `_public_detection_batch()` 不把 blocked 算 completed；
+6. 前端 `batchFromDurable64()` 又把 blocked 判为 pending；
+7. 已经终止的检测重新显示为“运行中”。
+
+因此这是一个稳定的“即时态与恢复态不一致”。
+
+**为什么不是 AUDIT-088：**
+
+AUDIT-088 是 UploadTaskCenter 复制了一套过期 Durable 状态枚举，影响 ZIP / Storage Import 等后台上传任务。
+
+AUDIT-105 是 Quality Center Detection Batch 自己再次复制 terminal 集合，影响 Deployment Test 的服务器聚合与历史恢复。
+
+两个 UI owner、API owner 和修复位置完全不同；修复 UploadTaskCenter 不会改变 `_public_detection_batch()` 或 `batchFromDurable64()`。
+
+**影响：**
+
+- 已 blocked 的检测历史永久显示“运行中”；
+- 批次 `completed_items` 永远小于真实 terminal item 数；
+- “X / N 张已完成”的历史摘要失真；
+- blocked 不计 failed，用户看不到批次真实异常数量；
+- 页面刷新前显示 failed，刷新后却变 running，形成明显前后端/恢复态漂移；
+- 用户可能误认为 Worker 仍在执行，反复等待或重新发起检测；
+- 批次完成度如果后续用于自动操作/按钮 enable 条件，会进一步把 terminal task 当 active。
+
+**现有测试为什么没发现：**
+
+当前：
+
+- `tests/browser/quality-detection-workbench.spec.mjs`
+- `tests/frontend/quality-detection-center.test.mjs`
+- `tests/api/test_deployment_test_runtime.py`
+
+均没有覆盖：
+
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+- PARTIAL_SUCCESS
+
+的 Detection Batch 恢复投影。
+
+现有测试主要覆盖成功/失败检测、A/B 模式、历史恢复与人工 review，但没有跨 canonical TaskStatus terminal set 做合同测试。
+
+**建议最小修复：**
+
+不要再给 Detection Batch 手写第三套 terminal 字符串表。
+
+1. 后端 `_public_detection_batch()` 使用 canonical `TERMINAL_STATUSES` / 统一 public task status helper；
+2. completed_items 应统计所有真正 terminal 状态；
+3. blocked 可以：
+   - 纳入 failed_items；或
+   - 更清晰地新增 blocked_items；
+   但不能算 running；
+4. 前端 `batchFromDurable64()` 复用 `task-runtime-truth.js` 的：
+   - canonicalTaskStatus
+   - isCanonicalTaskActive
+   - isCanonicalTaskTerminal
+5. blocked row 显示明确“环境不可用 / 硬件不可用”，而不是统一伪装成普通 FAILED；
+6. PARTIAL_SUCCESS 也必须按 canonical terminal 处理，避免下一轮再次漂移。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 单侧 BLOCKED_BY_ENVIRONMENT；
+- 单侧 BLOCKED_BY_HARDWARE；
+- A 成功 + B blocked；
+- 后端 completed_items 正确；
+- blocked_items / failed presentation 正确；
+- 页面刷新前后的 row status 一致；
+- 从历史批次恢复后 blocked 不显示 running；
+- canonical PARTIAL_SUCCESS terminal 合同也纳入测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
