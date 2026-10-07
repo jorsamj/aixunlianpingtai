@@ -7425,6 +7425,193 @@ Service Node retirement 应由一个明确 lifecycle owner 原子处理：
 
 ---
 
+
+### AUDIT-077 — Service Node DELETE 的 RUNNING 保护只识别 worker_instances；Agent execution 使用 agent:<node_id>，运行中的远程任务也可被直接删节点
+
+**级别：严重**  
+**模块：Service Node / Agent Execution / RUNNING Lifecycle / Authentication / DELETE Fence**
+
+**现象：**
+
+`ServiceNodeRepository.delete()` 当前用于阻止删除“有运行任务的节点”的 SQL 是：
+
+```sql
+SELECT COUNT(*) FROM tasks
+ WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+   AND worker_id IN (
+       SELECT worker_id FROM worker_instances WHERE node_id=?
+   )
+```
+
+这条保护只对注册在 `worker_instances` 的 Worker 成立。
+
+但真正的 Node Agent execution 在 `AgentExecutionService.start_execution()` 中明确写入：
+
+`worker_id = f"agent:{node_id}"`
+
+现有测试 `test_agent_start_is_single_atomic_queued_to_running_transition` 也明确断言：
+
+`task.worker_id == "agent:gpu-agent"`
+
+Node Agent 通过 `service_nodes` heartbeat / token 体系工作，并不把 `agent:<node_id>` 注册成 `worker_instances.worker_id`。
+
+所以一个真实 RUNNING Agent task 不会被 DELETE 的 `active_tasks` 查询命中。
+
+**更严重的是：节点在线也不是 DELETE fence。**
+
+`ServiceNodeRepository.delete()` 没有检查：
+
+- `service_nodes.last_heartbeat_at`；
+- `reachable / online`；
+- Agent execution 的 `worker_id = agent:<node_id>`。
+
+只要：
+
+- 没有 legacy/local live worker；
+- `worker_instances` 子查询找不到匹配 RUNNING task；
+
+就会执行：
+
+`DELETE FROM service_nodes WHERE node_id=?`
+
+因此即使：
+
+- Agent 正在持续 heartbeat；
+- Training / Conversion / Cleaning / Deployment Test 已经 RUNNING；
+
+operator 仍可能直接删掉这个 Service Node。
+
+**删除后的真实破坏链：**
+
+Agent execution 的后续接口都会先执行：
+
+`_authenticate_node(node_id, node_token, ...)`
+
+包括：
+
+- execution heartbeat；
+- logs；
+- material scan/read；
+- cleaning selection；
+- training model upload；
+- result upload；
+- begin-finalization；
+- finish。
+
+节点实体被删除后：
+
+`ServiceNodeRepository.authenticate/get_public`
+
+无法再找到 node。
+
+所以仍在运行的 Agent 会失去控制面认证，后续：
+
+- heartbeat 失败；
+- result upload 失败；
+- finalization 失败；
+- finish 失败。
+
+任务在数据库里却已经是 RUNNING，直到 execution lease 过期后才可能被 recovery 转回 QUEUED。
+
+对于 Training，还可能出现远端训练进程已经真正开始、但控制面节点身份被删掉的执行裂脑窗口。
+
+**为什么 AUDIT-076 不能覆盖：**
+
+AUDIT-076 是：
+
+- task 仍 QUEUED；
+- assignment = ASSIGNED / CLAIMED；
+- 删除节点留下 dangling pre-start assignment。
+
+AUDIT-077 是：
+
+- assignment 已在 start 时 RELEASED；
+- task 已正式 RUNNING；
+- DELETE 的 RUNNING protection 因 worker identity 模型不一致而完全漏掉 Agent execution。
+
+两个生命周期阶段不同：
+
+- 076 修 assignment retirement；
+- 077 必须修 RUNNING execution -> node identity 的 canonical reference fence。
+
+仅修 active assignment DELETE fence 不能保护已经 start 的 Agent task，因为 start 后 assignment 已按当前设计 RELEASED。
+
+**影响：**
+
+- 正在训练的远程 GPU 节点可被直接删除；
+- 正在转换 / 清洗 / 检测的 Agent 任务同样受影响；
+- Agent 后续 heartbeat/log/result/finalization 全部失去认证；
+- 已完成的远端结果可能无法提交；
+- Training 可能浪费数小时 GPU 计算；
+- execution lease 过期后任务可能重排，再次执行同一工作；
+- 对带外部副作用的任务会放大重复执行风险；
+- 页面“删除节点成功”与后台仍有 RUNNING task 的事实矛盾；
+- Service Node retirement 与 Agent execution ownership 完全没有统一引用检查。
+
+**为什么现有测试没发现：**
+
+当前 Service Node DELETE 测试只覆盖：
+
+`test_delete_is_blocked_while_node_has_a_live_worker`
+
+即：
+
+- 创建 `worker_instances` lease；
+- DELETE -> SERVICE_NODE_BUSY；
+- release worker 后 DELETE success。
+
+Agent execution 测试单独确认：
+
+- RUNNING；
+- `worker_id = agent:<node_id>`；
+- assignment 在 execution_started 后 RELEASED。
+
+但没有跨层测试：
+
+`Agent start RUNNING -> ServiceNodeRepository.delete(node_id) -> 必须 409`
+
+所以两套各自测试都绿，identity contract 仍断裂。
+
+**建议最小修复：**
+
+不要伪造一条 `worker_instances` 记录来让 Agent 迁就 legacy Worker 模型。
+
+Service Node retirement 应直接使用 canonical execution identity：
+
+1. DELETE 前检查：
+   - live `worker_instances`；
+   - active ASSIGNED / CLAIMED（AUDIT-076）；
+   - `tasks.status IN (RUNNING,CANCEL_REQUESTED)` 且：
+     `worker_id = 'agent:' || node_id`；
+2. 有任何 active Agent execution 时返回：
+   `SERVICE_NODE_BUSY / 409`；
+3. 如未来支持“强制下线”：
+   - 必须先走 canonical cancel/fence；
+   - 等 execution terminal 或 lease ownership明确释放后才能删除；
+4. token rotation / node disable 可以有独立语义，但 DELETE 不得成为隐式 execution cancel；
+5. 同一事务中 recheck，避免 DELETE 与 start_execution 并发穿透。
+
+如果未来引入统一 execution-node relation，也应由一个 canonical relation owner替代字符串拼接，但本轮不需要重构整个架构。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Agent Training RUNNING -> DELETE node = 409；
+- Agent Conversion RUNNING -> 409；
+- Agent Cleaning / Deployment Test RUNNING -> 409；
+- CANCEL_REQUESTED -> 409；
+- execution terminal 后允许删除；
+- node 在线但无 active task 可按产品合同删除/或要求先 disable；
+- DELETE 与 start_execution 并发时不能删掉刚进入 RUNNING 的节点；
+- 不破坏 legacy live worker 现有保护；
+- 不依赖 active assignment，因为 RUNNING 时 assignment 已 RELEASED。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -7487,15 +7674,19 @@ policy 创建/修改、旧 feedback 写入和 run 入口已经走 `_legacy_itera
 
 当前没发现绕 ModelArtifact owner 的删除旁路。
 
-### Service Node 删除
+### Service Node 生命周期
 
 已确认的安全部分：
 
-- live workers 会阻止删除；
-- RUNNING / CANCEL_REQUESTED execution 不会被普通 DELETE 直接拆掉；
-- 节点停用后，已经进入 RUNNING 的 execution 仍可继续 heartbeat / logs / result upload / finalization / finish。
+- legacy/local `worker_instances` 仍存活时会阻止节点 DELETE；
+- 节点只是 disabled、但实体仍存在时，已经进入 RUNNING 的 Agent execution 仍允许 heartbeat / logs / result upload / finalization / finish。
 
-但后续审计发现：QUEUED task 已存在 ASSIGNED / CLAIMED 时，DELETE 没有检查 assignment，可删除节点并留下 dangling active assignment。该新增缺口已登记为 **AUDIT-076**。
+后续审计又确认两条 DELETE 缺口：
+
+- **AUDIT-076**：QUEUED + ASSIGNED/CLAIMED 时 DELETE 不检查 assignment，可留下 dangling pre-start binding；
+- **AUDIT-077**：RUNNING Agent task 使用 `worker_id=agent:<node_id>`，不在 `worker_instances` 中，DELETE 的 active-task 查询无法识别，可直接删除正在执行任务的节点。
+
+因此 Service Node DELETE 当前不能再视为安全闭环。
 
 节点停用导致 pre-start assignment 卡住的问题仍单独登记为 AUDIT-015 / AUDIT-060。
 
