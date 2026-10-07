@@ -9566,6 +9566,321 @@ Worker Scheduler 只看 PREPARE 子任务自己的状态。
 
 ---
 
+
+### AUDIT-088 — UploadTaskCenter 重复维护一套过期 Durable 状态枚举；PARTIAL/BLOCKED/CANCEL_REQUESTED/AWAITING_CONFIRMATION 被错误判定，后台任务可永久停在“进行中”
+
+**级别：中～高**  
+**模块：Frontend Runtime / UploadTaskCenter / Durable Task Status / PollRegistry / Storage Import**
+
+**现象：**
+
+项目已经有 canonical 前端任务真相模块：
+
+`static/modules/task-runtime-truth.js`
+
+其中明确维护：
+
+**ACTIVE：**
+
+- ACCEPTED
+- QUEUED
+- WAITING_RESOURCE
+- PREPARING
+- RUNNING
+- PAUSING
+- PAUSED
+- RESUMING
+- STOPPING
+- CANCEL_REQUESTED
+- RETRYING
+
+**TERMINAL / 不再自动运行：**
+
+- AWAITING_CONFIRMATION
+- PARTIAL_SUCCESS
+- SUCCEEDED
+- CANCELLED
+- FAILED
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+并提供：
+
+- `canonicalTaskStatus()`
+- `isCanonicalTaskActive()`
+- `isCanonicalTaskTerminal()`
+
+StorageImportProgressRuntime 自己已经通过：
+
+`task-poller.js -> task-runtime-truth.js`
+
+消费这套 canonical truth。
+
+但：
+
+`static/modules/upload-task-center.js`
+
+没有复用它。
+
+该文件重新手写第二套状态 owner：
+
+```js
+const ACTIVE_STATUSES = new Set([
+  'UPLOADING','MERGING','VALIDATING','SELECTING',
+  'QUEUED','WAITING','WAITING_RESOURCE','RUNNING',
+  'SCANNING','EXTRACTING','MAPPING_LABELS',
+  'WRITING_ANNOTATIONS','INDEXING','FINALIZING'
+]);
+
+const TERMINAL_STATUSES = new Set([
+  'DONE','SUCCEEDED','COMPLETED','FINISHED',
+  'FAILED','CANCELLED','CANCELED','INTERRUPTED'
+]);
+```
+
+这套列表已经与 canonical Durable Task 状态漂移。
+
+**明确缺失：**
+
+ACTIVE 漏掉：
+
+- ACCEPTED
+- PREPARING
+- PAUSING
+- PAUSED
+- RESUMING
+- STOPPING
+- CANCEL_REQUESTED
+- RETRYING
+
+TERMINAL/结果态漏掉：
+
+- AWAITING_CONFIRMATION
+- PARTIAL_SUCCESS
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+**真实后果 1：PARTIAL_SUCCESS / BLOCKED_* 变成“既不 active，也不 terminal”**
+
+UploadTaskCenter：
+
+`isUploadTaskActive()`
+
+只查自己的 ACTIVE_STATUSES。
+
+`clearCompletedUploadTasks()`
+
+只查自己的 TERMINAL_STATUSES。
+
+所以当后台 Storage Import / ZIP / Durable upload row 刷到：
+
+- PARTIAL_SUCCESS
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+时：
+
+1. `isUploadTaskActive(row) == false`
+2. Task Center 不再 poll；
+3. `TERMINAL_STATUSES.has(status) == false`
+4. “清空已结束”也不会删除它；
+5. `statusPresentation()` 又没有这些状态映射；
+6. 落入默认：
+   `{label:'进行中', cls:'run'}`
+
+于是后端明明已经：
+
+- 部分完成；或
+- 因环境/硬件阻塞终止；
+
+前端任务中心却显示：
+
+**“进行中”**
+
+并且永远不再刷新。
+
+Storage Import 后端已经真实使用 `PARTIAL_SUCCESS`：confirm 路径甚至明确把：
+
+`TaskStatus.PARTIAL_SUCCESS`
+
+列入可重复确认状态，所以这不是理论枚举。
+
+Agent/remote Durable task 也可以合法进入 BLOCKED_BY_ENVIRONMENT / BLOCKED_BY_HARDWARE。
+
+**真实后果 2：CANCEL_REQUESTED 会让后台轮询在取消过程中提前停掉**
+
+canonical truth 明确把：
+
+`CANCEL_REQUESTED`
+
+视为 active。
+
+这是正确的，因为 Worker 还需要：
+
+- 终止进程/远端操作；
+- 清理资源；
+- 最终发布 CANCELLED。
+
+但 UploadTaskCenter 的 ACTIVE_STATUSES 没有 CANCEL_REQUESTED。
+
+如果某个已 handoff 到 Task Center 的 Durable task：
+
+RUNNING  
+→ CANCEL_REQUESTED
+
+Task Center 一次 poll 取得 CANCEL_REQUESTED 后：
+
+1. 更新 row；
+2. 下一次 `arm()` 执行：
+   `rows.some(isUploadTaskActive(...))`
+3. 返回 false；
+4. PollRegistry 不再启动下一次查询；
+5. 后端随后发布的 CANCELLED 永远不会被该 Task Center 观察到。
+
+而 CANCEL_REQUESTED 也不在 TERMINAL_STATUSES，所以 row：
+
+- 不可清除；
+- 默认显示“进行中”。
+
+形成典型的“取消中状态让前端自己停止观察取消完成”的生命周期错误。
+
+**真实后果 3：AWAITING_CONFIRMATION 没有特殊语义**
+
+Storage Import 的合法流程：
+
+RUNNING  
+→ AWAITING_CONFIRMATION
+
+focused runtime 使用 canonical truth，会正确停止常规 active polling，并显示：
+
+“扫描完成，等待确认建立素材索引”。
+
+但 UploadTaskCenter 自己：
+
+- 不把 AWAITING_CONFIRMATION 当 active；
+- 不把它当 terminal；
+- `statusPresentation()` 也没有“待确认”；
+- 默认显示“进行中”。
+
+再叠加 AUDIT-067 中 Storage Import row 没有 reopen action，用户会看到一个语义错误且不可进入确认流程的 task center row。
+
+**为什么是“重复 Owner”问题：**
+
+这里不是单纯少写几个字符串。
+
+项目已经有：
+
+`task-runtime-truth.js`
+
+作为 canonical browser-side task status owner。
+
+UploadTaskCenter 又自己复制：
+
+- active status set；
+- terminal status set；
+- alias；
+- status presentation；
+
+形成第二套 task-state truth。
+
+后端状态扩展后，canonical module 已更新，而 UploadTaskCenter 没同步，最终漂移。
+
+这正是当前审计目标中的：
+
+**状态枚举漂移 / 重复 Owner / Runtime 不一致。**
+
+**影响：**
+
+- PARTIAL_SUCCESS 被显示为“进行中”；
+- BLOCKED_* 被显示为“进行中”；
+- CANCEL_REQUESTED 后 Task Center 可永久停止轮询，错过 CANCELLED；
+- AWAITING_CONFIRMATION 状态展示错误；
+- “清空已结束”无法清理部分合法终态；
+- 本地 localStorage 会长期保留 zombie rows；
+- MAX_ROWS=20 时这些 zombie row 还会挤掉其它任务，加重 AUDIT-067 的 active task 可发现性问题；
+- 同一个 Durable task 在 focused modal 与 background Task Center 中可呈现不同状态。
+
+**为什么现有测试没发现：**
+
+UploadTaskCenter tests 主要覆盖：
+
+- RUNNING/QUEUED 正常 polling；
+- SUCCEEDED/FAILED/CANCELLED clear；
+- pollOwner yield；
+- ZIP reopen；
+- localStorage persistence。
+
+缺少 canonical status matrix contract：
+
+`TaskStatus enum -> task-runtime-truth -> UploadTaskCenter`
+
+尤其没有覆盖：
+
+- CANCEL_REQUESTED -> CANCELLED 连续轮询；
+- PARTIAL_SUCCESS；
+- BLOCKED_BY_ENVIRONMENT；
+- BLOCKED_BY_HARDWARE；
+- AWAITING_CONFIRMATION。
+
+**建议最小修复：**
+
+不要继续补第三份字符串表。
+
+UploadTaskCenter 应直接复用：
+
+- `canonicalTaskStatus`
+- `isCanonicalTaskActive`
+- `isCanonicalTaskTerminal`
+
+来自：
+
+`task-runtime-truth.js`
+
+同时仅保留上传阶段特有的 browser-only 状态：
+
+- UPLOADING
+- MERGING
+- VALIDATING
+- INTERRUPTED
+- resumeRequired 等
+
+这些状态应作为 UploadTaskCenter 自己的 transfer state，而不是复制 Durable Task state machine。
+
+展示层也应明确：
+
+- AWAITING_CONFIRMATION → 待确认
+- PARTIAL_SUCCESS → 部分完成
+- BLOCKED_* → 阻塞/失败类
+- CANCEL_REQUESTED → 正在取消
+
+并继续 poll CANCEL_REQUESTED，直到真正 terminal。
+
+**回归测试建议：**
+
+至少建立一张 canonical status contract table：
+
+- QUEUED -> active/poll
+- RUNNING -> active/poll
+- CANCEL_REQUESTED -> active/poll
+- CANCELLED -> terminal/clearable
+- PARTIAL_SUCCESS -> terminal/clearable
+- BLOCKED_BY_ENVIRONMENT -> terminal/clearable
+- BLOCKED_BY_HARDWARE -> terminal/clearable
+- AWAITING_CONFIRMATION -> 待确认、不可误显示“进行中”
+
+另覆盖：
+
+RUNNING  
+→ CANCEL_REQUESTED  
+→ CANCELLED
+
+确保 Task Center 不会在中间状态停止 PollRegistry。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
