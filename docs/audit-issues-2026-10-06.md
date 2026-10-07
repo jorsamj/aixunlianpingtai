@@ -19368,3 +19368,270 @@ AUDIT-143 是 Project Summary 为两个 Annotation 统计值逐素材读取 cano
 
 ---
 
+### AUDIT-144 — Dataset Summary 把 confirmed_empty 正式负样本统计成“未标注”，总览会把已完成 Ground Truth 的数据集误判为未标注/混合
+
+**级别：高**  
+**模块：Dataset Summary / Annotation Ground Truth / Dashboard / confirmed_empty**
+
+**现象：**
+
+当前：
+
+`GET /api/projects/{project_id}/datasets`
+
+为了计算每个 dataset 的：
+
+- images；
+- annotated_images；
+- boxes；
+
+会读取正式 AnnotationRepository，然后使用：
+
+`count = len(annotation.get("boxes") or [])`
+
+并且只有：
+
+`if count: row["annotated_images"] += 1`
+
+才把图片计入“已标注”。
+
+这意味着：
+
+`annotation_state = confirmed_empty`
+
+且 boxes=[] 的正式负样本，虽然已经经过用户明确“确认无目标”，仍被 dataset summary 统计成：
+
+`annotated_images += 0`
+
+即“未标注”。
+
+**为什么与 canonical Ground Truth 合同冲突：**
+
+当前 Annotation canonical summary 已明确：
+
+`annotated = state in {"annotated", "confirmed_empty"}`
+
+同时正式保存链：
+
+`_v50_material_annotation_patch()`
+
+对：
+
+- annotated；
+- confirmed_empty
+
+都会设置：
+
+- `processing_status = processed`；
+- `annotated_at`；
+- 正式 AnnotationRepository truth。
+
+训练判断 `is_training_ground_truth(...)` 也会把 confirmed_empty 当作正式 Ground Truth。
+
+所以平台当前存在两套“已标注”语义：
+
+1. Annotation / Material / Training：confirmed_empty = 已完成正式真值；
+2. Dataset Summary：只有 box_count > 0 才算已标注。
+
+这不是展示措辞差异，而是同一个业务事实在不同接口中相互矛盾。
+
+**真实用户可见影响：**
+
+前端总览直接聚合：
+
+`datasets[].annotated_images`
+
+并按：
+
+- annotated == images → “全标注”；
+- annotated > 0 → “混合”；
+- 否则 → “未标注”
+
+给数据集分类。
+
+因此例如一个数据集：
+
+- 100 张图片；
+- 80 张正常 bbox 标注；
+- 20 张 confirmed_empty；
+
+真实 Ground Truth 完成度是 100/100。
+
+当前 summary 却显示：
+
+- images = 100；
+- annotated_images = 80；
+- boxes = 正框数量；
+
+然后把数据集归类成“混合”。
+
+更极端地，一个正式负样本数据集：
+
+- 100 张 confirmed_empty；
+- 0 个框；
+
+会显示：
+
+- annotated_images = 0；
+- 数据集 = “未标注”。
+
+用户会被误导为这些图片还需要人工标注，甚至可能重复进入标注/清洗流程。
+
+**与 AUDIT-143 的区别：**
+
+AUDIT-143 是：
+
+`GET /api/projects/{project_id}`
+
+逐素材单条读取 Annotation 的 N+1 性能问题。
+
+AUDIT-144 是：
+
+`GET /api/projects/{project_id}/datasets`
+
+对 confirmed_empty 的**统计语义错误**。
+
+即使把 AUDIT-143 的 N+1 全部优化掉，AUDIT-144 仍然存在。
+
+**建议最小修复：**
+
+不要用“有无 boxes”推断正式标注状态。
+
+Dataset Summary 应按 canonical Annotation state 统计：
+
+- `annotated` → 已完成；
+- `confirmed_empty` → 已完成；
+- `unannotated` → 未完成。
+
+同时保留：
+
+- boxes = 实际 bbox 数量；
+- confirmed_empty 不增加 boxes。
+
+建议明确拆出：
+
+- ground_truth_images / annotated_images（包含 confirmed_empty）；
+- positive_annotated_images（如业务真的需要“有框图片数”）；
+- confirmed_empty_images。
+
+不要通过把 confirmed_empty 伪造一个框来解决。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 1 annotated + 1 confirmed_empty → annotated_images=2；
+- 100 confirmed_empty → dataset 不得显示“未标注”；
+- confirmed_empty 的 boxes 仍为 0；
+- AnnotationRepository / Material projection / Dataset Summary 三者状态一致；
+- 总览“全标注 / 混合 / 未标注”分类使用正式 GT 完成度。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
+### AUDIT-145 — Dataset List 每次全量读取全部 Material + 全部 Annotation 后才聚合统计；loadRelated 高频触发，20k 素材形成项目级 O(N) Ground Truth hydration
+
+**级别：中～高**  
+**模块：Dataset List / AnnotationRepository / MaterialRepository / Frontend loadRelated / Performance**
+
+**现象：**
+
+当前：
+
+`GET /api/projects/{project_id}/datasets`
+
+虽然最终通常只返回几个 dataset summary，但实现会先：
+
+`images = load_images(project_id)`
+
+即全量 hydrate 项目所有 Material。
+
+随后收集全部 image ids，再按 500 一批执行：
+
+`read_annotations_many(project_id, batch_ids)`
+
+把项目全部正式 Annotation 读入一个 Python dict：
+
+`annotations: Dict[str, Dict[str, Any]]`
+
+最后才在 Python 中遍历所有 images，按 dataset_id 聚合：
+
+- images；
+- annotated_images；
+- boxes。
+
+因此 20,000 张素材时，一次 dataset list 至少包含：
+
+- 全量 Material payload hydration；
+- 40 批 AnnotationRepository.get_many；
+- 20k Python row 遍历；
+- 20k Annotation object 驻留/聚合。
+
+这不是分页读取，因为 endpoint 最终返回的是小型聚合结果，却先把全部明细读进内存。
+
+**为什么是生产热路径：**
+
+前端 `loadRelated()` 会请求：
+
+`/api/projects/{pid}/datasets`
+
+而 `loadRelated()` 会在多类常规 mutation 后执行，包括项目加载、标签变化、导入/上传相关刷新等。
+
+因此项目素材规模扩大以后，“只是刷新几个 dataset 数字”会持续支付全项目 Material + Ground Truth hydration 成本。
+
+**与 AUDIT-143 的区别：**
+
+AUDIT-143：
+
+- Project Detail；
+- 每张图片逐条 AnnotationRepository.get；
+- 典型 N+1。
+
+AUDIT-145：
+
+- Dataset List；
+- 虽然 Annotation 已按 500 批量读取；
+- 但仍然为一个小型 aggregate **全量读取 1k/10k/20k 明细**。
+
+所以把单条 get 改成 get_many 并不能解决这类 aggregate endpoint 的规模问题。
+
+**影响：**
+
+- 10k/20k 项目下总览、项目加载、mutation 后刷新越来越慢；
+- Web 进程产生不必要的 JSON decode / Python dict / Annotation object 内存压力；
+- 与 AUDIT-143、AUDIT-066、AUDIT-100 同时被 `loadRelated()` 触发时，页面刷新成本叠加；
+- dataset 数量即使只有 1～3 个，也要扫描整个项目；
+- 高并发用户同时打开项目时会放大 SQLite read 和 Python GC 压力。
+
+**建议最小修复：**
+
+不要新增第二套 Ground Truth owner。
+
+应继续由 canonical repositories 提供 aggregate truth，但 aggregate 必须在存储层完成，而不是 hydrate 全量对象：
+
+1. MaterialRepository 对 dataset_id 建立可查询/索引化字段，或提供按 dataset group count；
+2. AnnotationRepository 提供按 material/dataset scope 的正式 GT aggregate；
+3. confirmed_empty / annotated 的统计语义按 AUDIT-144 统一；
+4. endpoint 只返回 aggregate rows，不构造 20k Annotation dict；
+5. 如果短期需要批处理过渡，也要 streaming/bounded，不得把全部 annotations 常驻 Python 内存。
+
+不要简单把 500 批改成 1000/5000；那只减少调用次数，不改变全量 hydration。
+
+**回归测试建议：**
+
+至少增加：
+
+- 20,000 materials + 多 dataset；
+- dataset list 聚合结果准确；
+- AnnotationRepository 明细 hydration 次数有明确上界，最好为 aggregate query；
+- 不构造 20k annotation Python dict；
+- confirmed_empty 计入 GT 完成度但 boxes=0；
+- endpoint latency/work 不随“每张 annotation 对象读取”线性增长。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
