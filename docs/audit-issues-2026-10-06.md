@@ -10066,3 +10066,169 @@ ModelArtifactRuntime 仍是 canonical 模型产物 owner。
 - 确认后从 `AUDIT-052` 起继续编号；
 - 如果后续证据推翻已登记项，必须像 AUDIT-012 一样显式撤销；
 - 当前仍以审计为主，不要直接大改生产代码。
+
+### AUDIT-089 — ZIP Import 活动轮询每秒重复全量扫描全部历史 job.json；单次 reconcile 还会调用列表两次，历史增长后形成持续 O(N) I/O / UI 热路径
+
+**级别：中～高**  
+**模块：ZIP Import / v19 Import Jobs / PollRegistry / UploadTaskCenter / Performance**
+
+**现象：**
+
+当前 ZIP Import 列表接口：
+
+\`GET /api/v19/projects/{project_id}/import/jobs\`
+
+不是 bounded active truth，也没有 cursor。
+
+后端每次请求都会：
+
+\`v19_import_jobs_dir(project_id).glob("*/job.json")\`
+
+遍历项目下全部 ZIP Import 任务目录，并对每一条历史任务执行：
+
+- \`read_json(job_file, {})\`；
+- \`_v19_recover_multipart_finalize(project_id, job)\`；
+- \`v19_public_job(...)\`；
+- 最后全量排序并返回所有 jobs。
+
+虽然 terminal job 的 \`image_limit\` 已经是 0，避免了图片预览 hydration，但**任务元数据本身仍然是全历史扫描、全历史返回**。
+
+前端 canonical \`zip-import-runtime.js\` 又把该接口放在活动任务的高频 poll 路径上：
+
+\`installZipImportRuntime(..., pollMs=1000)\`
+
+只要：
+
+\`activeZipJobs(jobs).length > 0\`
+
+就会每约 1 秒：
+
+\`arm() -> reconcile('poll')\`
+
+而 \`reconcile()\` 的真实逻辑是：
+
+1. 先 \`listZipJobs(project)\`；
+2. 把返回的**全部历史 jobs**逐条 \`publishTaskCenterJob()\`；
+3. 执行 \`maybeStart()\` / \`refreshKnown()\`；
+4. 对任何非 bootstrap reconcile（包括每次 poll），再次：
+   \`listZipJobs(project)\`。
+
+所以有活动 ZIP 任务时，一次 1 秒 poll 最坏会做**两轮完整历史扫描**。
+
+同时第一轮列表返回后，前端还会对每一个历史 job 调：
+
+\`UploadTaskCenterRuntime.upsert(task)\`
+
+而 \`upsert()\` 内部又包含：
+
+- merge；
+- sort；
+- \`rows.slice(0, MAX_ROWS)\`；
+- localStorage persist；
+- render；
+- PollRegistry re-arm。
+
+因此累计 ZIP 历史越多，不只是服务器 I/O 线性增长，浏览器也会重复对大量早已终态的历史任务执行无意义的 task-center side effects。
+
+**规模影响：**
+
+当项目累计：
+
+- 1k ZIP jobs；
+- 10k ZIP jobs；
+- 20k ZIP jobs；
+
+即使当前只有 1 个活动导入，前端仍可能每秒触发约两次：
+
+- 全目录 glob；
+- 1k/10k/20k 次 job.json 读取；
+- multipart finalize recovery 检查；
+- public projection；
+- 全量 JSON 响应；
+- 全量历史 merge；
+- 第一轮全量 UploadTaskCenter upsert。
+
+这会形成与“累计历史数量”而不是“当前活动任务数量”绑定的持续热路径。
+
+**与已有问题的区别：**
+
+- AUDIT-051：ZIP 导入完成复核页重新全量 hydrate 10k/20k 素材与标注；
+- AUDIT-061：completed multipart session 缺少 GC；
+- AUDIT-062：ZIP Import daemon thread 缺少 crash recovery；
+- AUDIT-066：Training jobs REST 全量扫描历史 job.json；
+- AUDIT-074：v36 Source Import 列表全量历史扫描再截 100。
+
+AUDIT-089 是 **v19 ZIP Import 自己的活动轮询列表路径**：
+
+“只要当前还有一个 active ZIP job，就持续每秒扫描全部 ZIP 历史，并且一次 reconcile 还会 list 两次”。
+
+生命周期 owner、API、前端 poller 都不同，不能并入上述条目。
+
+**影响：**
+
+- ZIP 历史越多，活动导入时 Web API latency 越高；
+- 大量小文件读取造成 filesystem metadata / inode I/O 压力；
+- 共享 Web 进程被持续占用，拖慢数据集、标签、训练等其它请求；
+- 浏览器收到越来越大的 jobs JSON；
+- UploadTaskCenter 对全历史逐条 upsert，造成不必要的排序、localStorage 写入和 DOM render；
+- 多项目长期运行后，性能会随历史自然退化；
+- 20k 历史下即使当前导入很小，也承担历史规模成本。
+
+**为什么现有 CI 没发现：**
+
+当前 ZIP runtime 测试主要验证：
+
+- queue / start disposition；
+- multipart upload / resume；
+- PollRegistry 单 owner；
+- completion side effect；
+- browser upload 流程。
+
+没有构造：
+
+- 20,000 terminal ZIP job dirs；
+- 1 个 active job；
+- 持续 poll；
+- 对 \`GET /import/jobs\` 的文件读取次数、返回大小、调用次数做规模约束。
+
+因此功能测试可全绿，但生产历史增长后仍会退化。
+
+**建议最小修复：**
+
+不要新建第二套 ZIP owner。
+
+继续保留 v19 ZIP runtime，但把“active truth”和“terminal history”分离：
+
+1. 后端列表至少改成：
+   - active jobs 全量返回；
+   - terminal history bounded；
+   - terminal history 使用 cursor / next_cursor；
+2. 不要在高频 GET 中每次 glob + parse 全历史；
+   - 建议 mutation-time 维护轻量 index；
+   - 或把 startup/recovery 全量扫描移出高频请求；
+3. \`reconcile('poll')\` 一次周期只获取一次 canonical list snapshot；
+   - ambiguous/submitted 特例继续使用已有 targeted \`GET /jobs/{id}\`；
+   - 不要同一 poll 再做第二次全量 list；
+4. UploadTaskCenter 只 publish：
+   - active jobs；
+   - bounded recent terminal；
+   并提供 batch reconcile，避免每个历史 job 单独 persist/render/re-arm；
+5. “清空已结束”仍可走现有 terminal bulk delete，不需要靠返回全历史才能工作。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 20,000 terminal ZIP jobs + 1 active；
+- active poll 的后端 job.json read / hydrate 数量有明确上限；
+- 一次 poll 不允许两次全量 list；
+- active job 始终可见；
+- terminal history cursor 可继续查看；
+- UploadTaskCenter 单次 reconcile 不对 20k terminal rows 逐条 render/persist；
+- 现有 multipart resume、label confirmation、queue ordering、completion 行为保持不变。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
