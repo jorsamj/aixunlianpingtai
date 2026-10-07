@@ -10918,3 +10918,228 @@ AUDIT-092 是：
 
 ---
 
+### AUDIT-093 — Agent 已完成 canonical commit 且 result receipt confirmed 后，最后 finish 前掉线会被 lease recovery 当普通 RUNNING 重置为 QUEUED；下一 generation 可重复执行已成功任务
+
+**级别：高**  
+**模块：Agent Lease Recovery / Finalization / Durable Task / Training / Conversion / Remote Result**
+
+**现象：**
+
+当前 Agent portable result lifecycle 的 happy path是：
+
+1. execution RUNNING；
+2. result upload prepare / upload；
+3. \`confirm_result_upload()\`；
+4. \`begin_finalization()\`；
+5. \`finish(SUCCEEDED / PARTIAL_SUCCESS / AWAITING_CONFIRMATION)\`。
+
+其中第 3 步已经：
+
+- 调用 \`fenced.begin_finalization()\`；
+- 执行 \`result_commit_handler\`；
+- 提交 canonical 业务结果；
+- 写 \`remote-results/{generation}/result.json\`；
+- 写 \`upload.json { confirmed: true, result_ref: ... }\`。
+
+所以在第 3 步返回成功之后，业务结果和 control-plane result receipt 都已经是 durable truth。
+
+但 Task 本身此时仍然是：
+
+- \`status = RUNNING\`
+- \`stage = finalizing_commit\`
+- 仍依赖 Agent 最后显式调用 \`finish(...)\` 才进入 SUCCEEDED。
+
+如果 Agent 在这个极窄但真实的窗口：
+
+\`confirm_result_upload success -> finish request\`
+
+之间：
+
+- 进程崩溃；
+- 服务器断电；
+- 网络断开；
+- Agent 被 kill；
+- finish HTTP 请求永久丢失；
+
+execution lease 最终会过期。
+
+**当前 lease recovery 没有 finalization-specific recovery：**
+
+\`FencedTaskRepository._release_expired_in()\`
+
+对所有：
+
+\`status IN ('RUNNING','CANCEL_REQUESTED')\`
+
+先判断中央可见 process identity。
+
+Agent 远程执行通常没有 control-plane 本地 PID identity，因此：
+
+\`_process_recovery_state(row) -> gone\`
+
+随后普通 RUNNING 一律：
+
+- \`next_status = QUEUED\`
+- \`stage = recovered\`
+- 清 worker / lease / process identity。
+
+代码没有判断：
+
+- \`stage == finalizing_commit\`；
+- \`remote-results/{old_generation}/upload.json.confirmed == true\`；
+- \`result_ref\` 已存在；
+- canonical business commit identity 已存在。
+
+**旧 generation 的 confirmed receipt 也不会在新 claim 前自动收尾：**
+
+\`AgentExecutionService._confirmed_remote_result()\`
+
+虽然能读取：
+
+\`remote-results/{generation}/upload.json\`
+
+但只在当前 execution 调用：
+
+- \`begin_finalization()\`
+- successful \`finish_execution()\`
+
+时使用。
+
+Task 被 requeue 后，下一次 claim 会：
+
+- 创建新 lease；
+- \`attempt / execution_generation +1\`。
+
+旧 generation 的 confirmed receipt 不会自动迁移到新 generation，也没有 pre-claim reconcile 把旧结果 finish 成 success。
+
+因此新的 Agent 会把它当作一个正常 QUEUED 任务重新执行。
+
+**对远程训练尤其严重：**
+
+假设 generation 1 已经：
+
+- 训练完成；
+- 模型上传完成；
+- Algorithm Version 已创建；
+- ModelArtifact 已登记；
+- result receipt confirmed=true；
+
+但 Agent 在 finish 前断电。
+
+lease recovery：
+
+\`generation 1 RUNNING/finalizing_commit -> QUEUED/recovered\`
+
+下一次 Agent claim：
+
+\`generation 2\`
+
+会重新跑训练。
+
+而 remote training version id 又包含 task/generation/snapshot identity，因此 generation 2 可以产生另一个版本，形成：
+
+“同一个用户任务，因为最后 finish 丢失而又完整训练一遍”。
+
+**对 Conversion / Cleaning / Material Import 同样成立：**
+
+- Conversion：已存在 done job/artifact，却重新转换；
+- Cleaning：已提交 review/结果，却重新跑清洗；
+- Material Import：已提交远程结果后可能再次处理；
+- Deployment Test：已验证结果仍可再次运行。
+
+部分 owner 具有幂等保护，但**重复重计算、重复远端 I/O 和不同 generation 的业务 identity**仍会发生，不能依赖每个 handler 各自兜底。
+
+**为什么不是 AUDIT-092：**
+
+AUDIT-092 是：
+
+business commit 已成功，但 post-commit receipt 写入失败，Agent随后可能把 Task 写成 FAILED。
+
+AUDIT-093 是：
+
+business commit + result receipt **都已经成功**，只缺最后 Task terminal finish；Agent 掉线后 lease recovery 把它重新变成 QUEUED，再执行下一 generation。
+
+一个是“成功业务被标失败”，一个是“成功业务被重新执行”。
+
+**现有测试缺口：**
+
+\`tests/unit/test_agent_result_upload.py\`
+
+已有 happy-path：
+
+- confirm result；
+- assert upload.json confirmed=true；
+- begin_finalization；
+- finish SUCCEEDED。
+
+也有 conversion 用例：
+
+- confirmed=true；
+- begin_finalization；
+- 断言 stage=finalizing_commit。
+
+但没有继续模拟：
+
+- 此时 Agent 消失；
+- lease expires；
+- \`release_expired()\`；
+- Task 应根据 confirmed result 自动完成，而不是 requeue。
+
+repository recovery 测试目前明确保护普通 RUNNING：
+
+\`lease expires -> QUEUED / stage=recovered\`
+
+没有 finalizing_commit 例外合同。
+
+所以现有两套测试单独都绿色，但组合后正好暴露这个跨层缺口。
+
+**影响：**
+
+- 已成功远程训练再次完整训练，浪费数小时 GPU；
+- 同 task 产生多个 generation / 多个模型版本；
+- 外部发布可能对多个结果重复触发；
+- Conversion 重复占用算力与对象存储；
+- 用户看到任务从“正在归档”突然重新排队；
+- 成功业务 side effect 与 Task attempt 次数无法一一对应；
+- 重复执行会进一步放大 AUDIT-091 / AUDIT-092 的恢复复杂度；
+- Agent/网络不稳定时问题会自然出现，不需要人工误操作。
+
+**建议最小修复：**
+
+不要取消统一 lease recovery，也不要新建第二 Scheduler。
+
+应给 \`finalizing_commit\` 增加专门 recovery contract：
+
+1. lease expiry 遇到 \`stage=finalizing_commit\` 时，禁止直接 requeue；
+2. 先读取该 execution generation 的 durable result receipt；
+3. 若：
+   - \`upload.json.confirmed=true\`；
+   - result_ref 存在；
+   - business commit identity 可 reconcile；
+   则由 control plane 直接补齐正确 terminal status；
+4. 若 receipt 不完整但 canonical business owner 已 committed：
+   - 进入 AUDIT-092 所述 finalization recovery；
+   - 补 receipt 后终结；
+5. 只有明确证明 business commit 未发生时，才允许重新 QUEUED；
+6. recovery 必须保留原 generation identity，不能把旧成功结果认成新 generation；
+7. Training 的 SUCCEEDED/PARTIAL_SUCCESS 应从 committed result truth恢复，不能猜测。
+
+**回归测试建议：**
+
+至少增加：
+
+- confirm_result_upload 成功后、不调用 finish；
+- 强制 lease expiry；
+- Task 不得变 QUEUED；
+- Training 应直接恢复 SUCCEEDED/PARTIAL_SUCCESS；
+- Conversion 应恢复 SUCCEEDED；
+- 新 Agent 不得 claim 第二 generation；
+- confirmed receipt 缺失但 canonical business已 committed时进入 recovery而非重跑；
+- ordinary RUNNING 任务 lease expiry 仍按现有规则 requeue；
+- CANCEL_REQUESTED recovery 语义保持不变。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
