@@ -19060,3 +19060,177 @@ AUDIT-141 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-142 — 同一 Training task 并发归档时 SQL 幂等会返回已存在版本，但上层仍继续使用自己生成的随机 version_id，导致 job/current delivery identity 指向不存在版本
+
+**级别：高**  
+**模块：Training Completion / Version Archive / Idempotency / Version Identity / Auto Conversion / External Publish**
+
+**现象：**
+
+当前 `AlgorithmSqlStore.attach_version()` 已经为同一训练任务提供幂等逻辑。
+
+attach 时会提取：
+
+`task_id = version.task_id / job_id / training_job_id`
+
+在 SQLite transaction 内先查询：
+
+`SELECT * FROM algorithm_versions WHERE algorithm_id=? AND training_job_id=? LIMIT 1`
+
+如果已经存在，则：
+
+`return self._version_from_row(duplicate)`
+
+也就是说：
+
+**同一个 Training task 即使重复调用 attach，并且本次新生成了不同 version_id，canonical store 仍会返回第一次已经成功归档的真实 version。**
+
+`attach_version_if_current()` 也保留了同样的“duplicate training_job_id 先于 base conflict 处理”的幂等合同。
+
+**但生产归档调用方没有使用返回版本的真实 ID：**
+
+`_v48_archive_training_version()`
+
+会先在函数外生成：
+
+`version_id = uuid.uuid4().hex[:12]`
+
+然后构造 version 并调用：
+
+`version = attach_algorithm_version(..., version)`
+
+如果发生并发归档：
+
+- 调用 A 用随机 ID `version-A`；
+- 调用 B 用随机 ID `version-B`；
+- A 先在 SQL 中插入；
+- B 进入 SQL 后通过 `training_job_id` 查到 A；
+- B 的 `attach_algorithm_version()` 返回的 `version` 实际是 A 的记录：
+  `version["id"] == version-A`。
+
+但 B 回到调用方后没有改用：
+
+`version["id"]`
+
+而是继续使用自己之前生成的局部：
+
+`version_id == version-B`。
+
+当前后续代码明确是：
+
+`job["auto_version_id"] = version_id`
+
+随后：
+
+`update_algorithm_version(..., version_id, {"auto_conversion": ...})`
+
+再随后：
+
+`request_external_auto_publish_if_enabled(..., version_id=version_id)`。
+
+所以底层已经正确实现的幂等返回，在上层立即被错误的 stale local identity 破坏。
+
+**真实并发结果：**
+
+同一个成功 Training task 的两个归档调用同时进入：
+
+1. A、B 都在函数开头看不到 `job.auto_version_id`；
+2. 两边都读取到尚未归档的 algorithm snapshot；
+3. A 生成 `version-A`，B 生成 `version-B`；
+4. A SQL attach 成功；
+5. B SQL attach 检测同 training_job_id，返回 `version-A`；
+6. B 却写：
+   `job.auto_version_id = version-B`；
+7. B 还会基于返回的真实 `version-A` 去执行自动转换，因此可能重复创建 conversion；
+8. B 随后尝试：
+   `update_algorithm_version(..., version-B, ...)`；
+9. `version-B` 根本没有写入 SQL，patch 会失败；
+10. B 后面的 external publish request 同样可能使用不存在的 `version-B`。
+
+最危险的是第 6 步已经可能把错误 ID 落进：
+
+`jobs/{task_id}/job.json`。
+
+以后恢复时函数入口看到：
+
+`job.auto_version_id`
+
+会直接返回，形成持久化错误身份。
+
+**为什么现有 SQL 幂等测试仍然全绿：**
+
+存储层单测已经明确验证：
+
+- 第一次 attach task `train-retry` 得到 v2；
+- 第二次 attach 同一 task、即使传 `v2-different-generated-id`；
+- 返回值仍必须是 v2；
+- 数据库里只保留一个 training_job_id 版本。
+
+这个 store 合同本身是正确的。
+
+缺的是生产 wiring 测试：
+
+`_v48_archive_training_version()`
+
+必须使用 attach 返回的 canonical ID，而不是继续相信调用前生成的 tentative ID。
+
+**与已有问题区别：**
+
+- AUDIT-139：两个**不同 Training task**基于同一旧 base 都能普通 attach，缺少 CAS；
+- AUDIT-140：一个已 attach version 的后处理在 auto conversion 前崩溃，恢复被 `auto_version_id` 短路；
+- AUDIT-142：同一个 Training task **并发/重入归档**时，store 已幂等返回已有版本，但 caller 不采用返回 identity，反而写入不存在的随机 ID。
+
+三者分别对应：
+
+- sibling CAS；
+- post-attach crash journal；
+- same-task idempotent identity propagation。
+
+**影响：**
+
+- job.json 的 `auto_version_id` 可指向数据库不存在的版本；
+- Training 任务与 Algorithm Version 的 lineage 断裂；
+- 自动转换可能被重复创建；
+- conversion summary patch 可能打到不存在版本并失败；
+- external auto publish request 可能引用不存在版本；
+- 后续 recovery 因错误 `auto_version_id` 误判“已归档”，无法自愈；
+- UI 从 job 与 algorithms 两个来源读取时可能出现“任务显示版本 ID，但算法版本页找不到”的前后端真相分裂。
+
+**建议最小修复：**
+
+不要修改 store 的幂等合同；它目前是正确的。
+
+生产 caller 必须把 attach 返回值当 canonical truth：
+
+1. attach 后立即：
+   `canonical_version_id = str(version["id"])`；
+2. 后续所有：
+   - job.auto_version_id；
+   - auto_conversion patch；
+   - external publish request；
+   - conversion source version identity；
+   都必须只用 canonical_version_id；
+3. 修 AUDIT-139 时改用 `attach_version_if_current()` 也必须遵守同样规则；
+4. 同一 task 的并发归档后处理需要 single-flight / idempotent delivery reconciliation，避免两个 caller 同时创建 conversion；
+5. 若 job.json 已存在错误 auto_version_id，恢复时应按 training_job_id 反查 canonical version 并修复，而不是直接 short-circuit。
+
+**回归测试建议：**
+
+至少增加生产级并发测试：
+
+- 同一个 Training job 同时进入两次 `_v48_archive_training_version()`；
+- 两次预生成不同 version_id；
+- SQL 最终只有一个 version；
+- 两个 caller 都必须收敛到同一个 canonical version id；
+- job.auto_version_id 必须等于 SQL version id；
+- conversion 每个 target 最多一个；
+- external publish 只请求 canonical version；
+- crash 后按 training_job_id 能恢复正确 identity；
+- 不允许 stale tentative version_id 进入任何 durable metadata。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
