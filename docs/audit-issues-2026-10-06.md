@@ -14951,3 +14951,193 @@ SSE `applyUpdate()` 当前只更新：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-119 — Training SSE 每 750ms 在签名比较前无条件读取最多 100 个 active job.json；无状态变化也持续产生高频磁盘 I/O
+
+**级别：中～高**  
+**模块：Training Realtime / SSE / job.json / Performance / 1k-20k Scale**
+
+**现象：**
+
+当前 v64 Training realtime endpoint：
+
+`GET /api/v64/projects/{project_id}/training-events`
+
+的 event loop 固定：
+
+`await asyncio.sleep(0.75)`
+
+即每个连接约每秒 1.33 次循环。
+
+每一轮都会先调用：
+
+`_training_event_rows(project_id, repository)`
+
+该函数读取最多 100 个 active Durable Training task，然后逐个调用：
+
+`_training_event_row(project_id, task)`。
+
+而 `_training_event_row()` 对每个 task 都执行：
+
+`job_file = ... / "jobs" / task.task_id / "job.json"`
+
+`worker_job = read_json(job_file, {}) if job_file.exists() else {}`
+
+当前 `read_json()` 没有 cache / mtime gate / revision gate，真实实现就是：
+
+- `path.exists()`
+- `path.read_text(encoding="utf-8")`
+- `json.loads(...)`
+
+之后才构造 display row。
+
+SSE 的去重：
+
+`_training_event_signature(row)`
+
+是在 **job.json 已经读取和解析完成以后** 才比较。
+
+因此即使：
+
+- TaskRecord 没有变化；
+- worker progress 没有变化；
+- browser 最终不会收到任何 training.task event；
+
+服务器仍然会每 750ms 对所有 active task 重新读取并解析 job.json。
+
+**规模影响：**
+
+单个浏览器连接、100 个 active Training 时：
+
+- 100 个 job.json / 0.75 秒；
+- 约 133 次文件读取与 JSON parse / 秒。
+
+多个用户同时打开训练任务页时，成本按连接数线性叠加：
+
+- 3 个浏览器：约 400 次 job.json read / 秒；
+- 5 个浏览器：约 667 次 / 秒。
+
+这还不包括：
+
+- TaskRepository list query；
+- terminal disappearance lookup；
+- Worker/queue truth 后续修复可能引入的额外 projection 成本。
+
+在：
+
+- HDD；
+- NFS / 网络挂载；
+- 大量并发训练；
+- job.json 逐渐包含更多 runtime 字段；
+
+场景下会形成持续 metadata I/O 与 JSON parse 压力。
+
+**为什么是独立问题：**
+
+AUDIT-066 已记录：
+
+`GET /api/projects/{project_id}/jobs`
+
+会在一次 REST refresh 中扫描全历史 job 目录，再截断为 active + recent 50。
+
+AUDIT-119 不同：
+
+- 不扫描 terminal history；
+- 只针对 active task；
+- 但频率是 750ms；
+- 即使没有任何状态变化也持续读盘；
+- 每个 SSE client 都会独立重复同样工作。
+
+所以一个是：
+
+“bounded 输出前做 unbounded history hydration”
+
+另一个是：
+
+“bounded active set 的高频重复 filesystem hydration”。
+
+两者会同时存在。
+
+**与 AUDIT-068 的关系：**
+
+AUDIT-068 要求 SSE 与 REST 共享 canonical queue truth。
+
+修 AUDIT-068 时如果直接在每个 `_training_event_row()` 再做：
+
+- Worker runtime lookup；
+- queue candidates hydration；
+- resource projection；
+
+会进一步放大本条热路径。
+
+因此 realtime projection 必须以“单轮共享 snapshot + 变更驱动/mtime gate”为边界，不能变成 per-task N+1。
+
+**影响：**
+
+- Web 进程长期持续小文件读取；
+- active task 越多，realtime 开销线性增加；
+- 多个浏览器/大屏同时打开时重复放大；
+- 服务器 CPU 消耗在重复 JSON decode；
+- 磁盘/NFS latency 可能反过来拖慢 SSE loop；
+- 训练任务页 realtime 本意是减少 polling，却可能用更高频文件读取换来网络少发 event；
+- 100 active task 下已经足以形成稳定后台负载，不需要 10k history 才触发。
+
+**现有测试缺口：**
+
+当前 realtime tests 主要验证：
+
+- event 内容；
+- stream coverage；
+- terminal reconcile；
+- reconnect / fallback；
+- display revision 防旧数据覆盖。
+
+没有规模合同断言：
+
+- 100 active task；
+- 连续多个 750ms cycle；
+- 没有任何 runtime change；
+- job.json file read count 必须接近 0 / bounded，而不是每轮 100 次。
+
+也没有多 client SSE 的共享 hydration 测试。
+
+**建议最小修复：**
+
+不要新增第二 Training progress owner。
+
+保留：
+
+- TaskRepository = lifecycle truth；
+- worker job.json = worker progress compatibility/artifact；
+
+但 realtime read 应增加明确的 change gate：
+
+1. event loop 先读取 bounded TaskRecord metadata；
+2. 只有 worker progress identity 变化时才读取对应 job.json，例如：
+   - durable display/progress revision；
+   - worker progress revision；
+   - persisted mtime/size token；
+   - 或 canonical task-owned lightweight progress store；
+3. 同一轮多个字段 projection 共享一次 runtime snapshot；
+4. 多 SSE client 如可行应共享 project-level read snapshot，而不是每连接独立全量 hydrate；
+5. terminal final read 仍允许一次强制 hydrate；
+6. 不要靠把 750ms 改成更大的固定间隔来掩盖结构问题。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 100 active Training；
+- 10 个连续 realtime cycles 无变化；
+- job.json 实际读取次数有明确 bounded 上限；
+- 单个 task progress revision 变化时只 hydrate 该 task；
+- terminal task 仍能发送最后一次完整 truth；
+- 多 client 不应线性重复相同 filesystem hydration；
+- 修 AUDIT-068 后 Worker/queue projection 也不能产生 per-task N+1；
+- 1k/10k/20k terminal history 不影响 SSE active-loop 成本。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
