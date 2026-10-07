@@ -5883,6 +5883,295 @@ bounded projection 只发生在**最后一步**。
 
 ---
 
+
+### AUDIT-067 — Storage Import focused poller 切换到第二个任务时未 handoff 旧 active task；UploadTaskCenter 保留 stale pollOwner，旧任务可停止所有前端刷新并卡在待确认
+
+**级别：高**  
+**模块：Storage Import / PollRegistry / UploadTaskCenter / MATERIAL_IMPORT / Multi-task lifecycle**
+
+**现象：**
+
+当前 v61 Storage Import 有两层前端 owner：
+
+1. modal 内 focused owner：
+
+`StorageImportProgressRuntime`
+
+2. modal 关闭后的后台 owner：
+
+`UploadTaskCenterRuntime`
+
+正常 handoff 设计是：
+
+focused runtime 跟踪任务时：
+
+`pollOwner='storage-import-progress'`
+
+关闭 focused modal：
+
+`stop({handoff:true})`
+
+→ 再次 `publishTaskCenter(last, '')`
+
+→ UploadTaskCenter 行的 `pollOwner` 清空
+
+→ Task Center 接管 durable polling。
+
+这个单任务场景是正确的。
+
+但切换到第二个 Storage Import 时：
+
+`StorageImportProgressRuntime.track(taskId)`
+
+第一句是：
+
+`stop({handoff:false})`
+
+然后才把：
+
+`trackedTaskId = newTaskId`
+
+并开始新任务 polling。
+
+如果旧任务仍 active：
+
+- 旧任务此前已被 `publishTaskCenter()` 写入 UploadTaskCenter；
+- 其 row 带：
+  `pollOwner='storage-import-progress'`；
+- `stop({handoff:false})` 只清 focused PollRegistry / trackedTaskId；
+- 不会把旧 row 重新 upsert 为 `pollOwner=''`；
+- focused runtime 随后转而跟踪新 task；
+- 旧 task 的 Task Center row 仍错误声明 focused owner 正在负责。
+
+而 UploadTaskCenter 自己的 polling 明确跳过：
+
+`if (!row?.serverUrl || row?.pollOwner || !isUploadTaskActive(row)) return row`
+
+以及：
+
+`rows.filter(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner)`
+
+因此旧 task：
+
+**focused owner 已经离开，background owner 又因为 stale pollOwner 不接管。**
+
+形成 owner vacuum。
+
+**真实可达链：**
+
+当前 Storage Import modal 的 scan / server ZIP / object storage / local directory 创建按钮，在任务 active 时没有统一 single-flight guard。
+
+用户可以：
+
+1. 创建 Storage Import A；
+2. A 仍 QUEUED / RUNNING；
+3. 再次创建 Storage Import B；
+4. `pollTask(B)`;
+5. `StorageImportProgressRuntime.track(B)`;
+6. 内部：
+   `stop({handoff:false})`;
+7. A focused polling 被停掉；
+8. A Task Center row 仍保留：
+   `pollOwner='storage-import-progress'`;
+9. UploadTaskCenter 不会 poll A；
+10. B 正常成为当前 focused task。
+
+A 的 Durable Worker 仍会继续执行，但浏览器不再自动读取其状态。
+
+**为什么待确认任务尤其危险：**
+
+Storage Import scan 完成后可以进入：
+
+`AWAITING_CONFIRMATION`
+
+并要求用户显式：
+
+`POST /api/v61/projects/{project_id}/storage-imports/{task_id}/confirm`
+
+当前 UI 的确认按钮只由：
+
+`renderStorageImportTask61(task)`
+
+渲染：
+
+`确认建立索引`
+
+所以用户必须重新进入对应 task 的 detail/review 才能：
+
+- 完成标签映射；
+- 接受质量问题；
+- 点击确认建立索引。
+
+但当前 UploadTaskCenter：
+
+`renderUploadTaskCenterRow()`
+
+只有：
+
+`kind === 'zip'`
+
+才：
+
+- 加 `utc-reopenable`；
+- role=button；
+- tabindex；
+- click handler；
+- 调 `ZipImportRuntime.openTask(id)`。
+
+`kind='storage-import'`
+
+没有 reopen handler。
+
+与此同时 Storage Import modal 自己只用：
+
+`localStorage taskKey -> 一个 task_id`
+
+保存最近一次任务。
+
+新任务 B 创建后：
+
+`saveTask(B)`
+
+会覆盖旧任务 A 的恢复 pointer。
+
+所以当 A 后续进入 AWAITING_CONFIRMATION：
+
+- focused runtime 不跟；
+- Task Center 不跟；
+- Task Center 不能点击重开；
+- localStorage 已只记 B；
+- 后端又没有项目级 `GET /storage-imports` list endpoint。
+
+A 仍存在于 TaskRepository，但用户正常 UI 已无法发现/确认它。
+
+**为什么不是 AUDIT-005：**
+
+AUDIT-005 是：
+
+多层 Modal 关闭上层时错误执行 Storage Import cleanup，导致底层 poll 被误停。
+
+AUDIT-067 是另一条 owner handoff：
+
+**同一个 Storage Import focused runtime 从 task A 切换到 task B 时，旧 task A 没有交还给 UploadTaskCenter。**
+
+即使修完 modal scope，AUDIT-067 仍然存在。
+
+**额外放大器：**
+
+UploadTaskCenter 只持久化：
+
+`MAX_ROWS = 20`
+
+并在：
+
+`upsert()`
+
+中：
+
+`rows = rows.slice(0, MAX_ROWS)`
+
+所以大量并发/近期上传任务时，老 Storage Import 还可能被本地 task center history 直接挤掉。
+
+这不是本问题成立的前提，但会进一步降低恢复能力。
+
+**影响：**
+
+- 多个并发 Storage Import 时旧任务停止前端自动刷新；
+- 用户看到 B 正常运行，却不知道 A 已完成/失败/待确认；
+- A 进入 AWAITING_CONFIRMATION 后无法从任务中心点击进入；
+- 已扫描的大批素材可能长期卡在“等待确认”，无法建立正式索引；
+- 用户可能误以为任务丢失，重复创建新的 Import；
+- 重复扫描、远端 I/O、对象存储读取被放大；
+- Durable task truth 与前端 owner/poller truth 分裂。
+
+**现有测试为什么没发现：**
+
+`storage-import-progress.test.mjs`
+
+覆盖：
+
+- 单 task track；
+- PollRegistry one-shot；
+- stop() 默认 handoff 给 task center；
+- lightweight progress；
+- terminal detail render。
+
+但没有覆盖：
+
+`track(A active) -> track(B active)`
+
+以及旧 A 的：
+
+`pollOwner`
+
+是否被清空。
+
+测试甚至明确断言源码存在：
+
+`stop({handoff:false})`
+
+但没有验证它只应该用于“同 task 重绑定”，不能吞掉不同 task 的 owner handoff。
+
+`upload-task-center.test.mjs`
+
+也只验证：
+
+- row.pollOwner 时 task center yield；
+- ZIP reopen；
+- terminal cleanup；
+
+没有覆盖 Storage Import 多任务 owner transfer。
+
+**建议最小修复：**
+
+不要新增第三个 poller。
+
+继续保留：
+
+- StorageImportProgressRuntime = focused owner；
+- UploadTaskCenterRuntime = background owner；
+- PollRegistry = timer owner。
+
+只修 owner transfer：
+
+1. `track(newTaskId)` 前：
+   - 若当前 `trackedTaskId` 非空；
+   - 且与 newTaskId 不同；
+   - 且 currentTask 仍 active；
+   - 必须 `stop({handoff:true})`；
+2. 只有“同一个 task 重新绑定/重绘”才能：
+   `stop({handoff:false})`；
+3. UploadTaskCenter 为 `kind='storage-import'` 增加 reopen action：
+   - 调 canonical storage import modal/detail；
+   - 从 task id GET current Durable truth；
+   - AWAITING_CONFIRMATION 时恢复映射/质量确认 UI；
+4. Storage Import 后端增加 project-scoped cursor list：
+   - 只列 MATERIAL_IMPORT；
+   - active 全可发现；
+   - terminal history bounded/cursor；
+   - 不再只依赖 localStorage 单 task pointer；
+5. Task Center MAX_ROWS 不能让 active durable task 被 terminal/recent history 挤掉：
+   - active 全保留；
+   - terminal history bounded。
+
+**回归测试建议：**
+
+至少增加：
+
+- track A(active) → track B(active)；
+- A 必须被 upsert 成 `pollOwner=''`；
+- Task Center 接管 A polling；
+- B 仍由 focused runtime poll；
+- A 进入 AWAITING_CONFIRMATION 后 Task Center 可点击重开；
+- localStorage 只记录 B 时仍能从后端 list 找到 A；
+- 21+ task center rows 时 active storage-import 不被挤掉；
+- modal close / project switch 仍保持单一 PollRegistry owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
