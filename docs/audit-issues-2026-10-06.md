@@ -25477,3 +25477,71 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-184 — Training SSE 增量签名遗漏 loss/mAP/LR/吞吐率等真实训练遥测；进度/epoch 不变时实时页可持续展示旧指标
+
+**级别：中高**  
+**模块：Training SSE / Training Job Projection / TrainingTaskRuntime / Realtime vs REST truth**
+
+**现象：**
+
+当前 v64 `GET /api/v64/projects/{project_id}/training-events` 每 750ms 调用 `_training_event_rows()`；`_training_event_row()` 通过 `build_training_display_progress(worker_job, runtime)` 构造具有正式业务含义的训练进度，同时将完整 `worker_job['training_progress']` 放进 SSE row。
+
+但是 `_training_event_signature(row)` 的比较字段只包括 durable status/stage/progress、current item、worker、reason、updated_at、epoch/batch、elapsed/ETA、telemetry_source 等，遗漏：
+
+- `row.training_progress.losses`（box/cls/dfl loss）；
+- `row.training_progress.metrics`（mAP50 / mAP50-95）；
+- `row.training_progress.learning_rates`；
+- `row.training_display_progress.throughput`；
+- 整个业务展示用的 `training_progress` 子对象的语义版本/摘要。
+
+签名相同则 `event_stream` 不发送 `training.task`。即使这次读取到的新 `job.json` 里的指标发生改变，服务端依旧静默丢掉指标变化。
+
+**真实调用链：**
+
+训练 Worker 持续写 `job.json.training_progress` 的损失、指标或吞吐率 → SSE loop 读取 worker_job → `build_training_display_progress()` 得到新 throughput，`_training_event_row()` 复制新 training_progress → `_training_event_signature()` 不包含上述数值，且 durable task 的 `updated_at` 可以不随 job.json 的单独遥测变化而更新 → 签名与前一轮相同 → SSE 没有发包 → `TrainingProgressStreamRuntime.applyUpdate()` 不会执行 → 前端 `trainingProgressView()` 继续显示旧的 box/cls/dfl loss、mAP、LR、img/s。
+
+当前现代训练页确实调用 `trainingProgressView(job)`，它消费 `display.throughput`、`progress.losses`、`progress.metrics`、`progress.learning_rates`，不是没人读取的冗余字段。
+
+同时 `training-progress-stream.js` 在 `training.ready` 覆盖当前 active job IDs 时调用 `setTrainingRealtimeActive(true)`，会让 canonical `PollRegistry` 降低/关闭 REST 补偿轮询，所以被过滤的指标更新不保证由下一次 REST 及时纠正。
+
+**用户真实可达场景：**
+
+一项 RUNNING 训练在同一 epoch/batch、相同总体进度（或进度按两位小数取整未变化）下更新了训练 loss、评估 mAP、学习率或 img/s；Durable task 本身没有新的生命周期 heartbeat。SSE 虽然已读取到新的遥测值，却因旧签名完全相同而不派发 `training.task`。若期间没有其它已列入签名的字段变动，该任务行指标就停留在上一次事件。
+
+**影响：**
+
+- 训练详情中的 loss/mAP/LR/吞吐率可延迟刷新或与 REST 真相不一致；
+- 用户误判模型收敛或训练运行速度；
+- “实时流已连接”不能证明“训练遥测也实时”；
+- 有 Worker 遥测变更、但没有 epoch/batch/progress 变更的阶段更明显。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-068：SSE 没复用 `training_queue_truth()`，是 QUEUED/WAITING_RESOURCE 的状态漂移；
+- AUDIT-119：SSE 每 750ms 对全部 active `job.json` 无条件读取，属于昂贵 I/O；
+- AUDIT-120：隐藏页面仍高频轮询；
+- AUDIT-184：**数据已经被 SSE loop 读取并投影出来，但变化检测遗漏当前 UI 真正使用的遥测字段，导致不发送更新**。不能以增加读取频率修补。
+
+**现有测试为什么没发现：**
+
+`tests/api/test_training_event_stream.py` 只验证签名在 `progress_percent` 与 `updated_at` 改变时会改变，没有测试只改变 loss/metrics/LR/throughput。`tests/frontend/training-progress-stream.test.mjs` 直接调用 `applyUpdate()` 检查完整 payload 能更新 UI，但没有覆盖后端签名筛选会不会阻止 payload 发出，因此前后端各自测试通过仍可漏报。
+
+**建议最小修复方向：**
+
+继续复用唯一 `build_training_display_progress()` 和 SSE owner，不新增轮询或第二训练进度 owner。为事件签名增加**稳定且有界的业务遥测摘要**：只包含当前 UI 使用的关键 loss、mAP、LR、throughput 数值以及必要的 phase_progress；对无变化的值保持去重。不能把每轮都会递增的 `display_revision` 直接加入签名，否则会把 750ms 的空读变为 750ms 的无变化广播，加剧 AUDIT-119。应与 AUDIT-068、119 合并考虑共用 source revision/一次投影缓存。
+
+**应新增回归测试：**
+
+- 固定 status/epoch/batch/progress/updated_at，仅改变 box_loss → `_training_event_signature` 不同；
+- 仅改变 cls_loss、dfl_loss、mAP、LR → 分别触发新 SSE signature；
+- 仅改变 throughput → 触发签名变化且前端 `trainingProgressView` 更新；
+- 完全相同的遥测 → 不重复发送；
+- display_revision 自增但业务数据完全没变化 → 不增加无意义事件；
+- SSE covered=true、REST fallback suppressed 时新指标仍能传播；
+- 不回退 AUDIT-068 的 status/reason truth，也不引入每客户端更多 `job.json` 读取。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
