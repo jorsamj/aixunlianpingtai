@@ -14723,7 +14723,7 @@ AUDIT-118 后续新增的 queue metadata 同步建议，归并进 **AUDIT-068** 
 
 ---
 
-### AUDIT-118 — Training SSE 未复用 REST 的 canonical queue truth；WAITING_RESOURCE 可被实时流重新覆盖成 QUEUED，训练页状态发生前后端漂移
+#### 原始证据（AUDIT-118，已撤销）— Training SSE / REST queue truth 状态漂移
 
 **级别：高**  
 **模块：Training Task / SSE / REST Projection / Queue Truth / Frontend Runtime**
