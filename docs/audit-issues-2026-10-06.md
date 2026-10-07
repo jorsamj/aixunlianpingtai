@@ -25545,3 +25545,25 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-185 — Training 批量 mutation 部分成功时无条件清空整个 selection，失败/跳过 ID 丢失
+
+**严重级别：中；模块：TrainingTaskVisibilityRuntime / TrainingTaskRuntime.batchAction / Batch Mutation。**
+
+**现象与真实调用链：** canonical `static/modules/training-task-visibility-runtime.js` 的 `runBatchAction` 传递 `selectedIds` 给 `TrainingTaskRuntime.batchAction(action, ids)`。后者调用 v48 pause/resume/stop 或 batch-delete endpoint，可返回 `{succeeded,failed,skipped,failures[]}`；但是 UI 只判断 `!result.cancelled && (result.succeeded || 0) > 0` 就执行 `selectedIds.clear(); batchMode=false`，不读取失败 ID。即使 A 成功、B 409、C 跳过，A/B/C 全部失选。
+
+**真实可达场景：** 用户选择三个不同执行阶段的训练任务批量暂停/停止；提交时其中一个任务已终态或缺 ProcessIdentity，另一任务操作成功。对 DELETE，后端已专门返回 `skipped_active/missing/failures`，同样有部分成功路径。当前训练任务页由 `TrainingTaskVisibilityRuntime` 负责渲染和事件绑定，不是 legacy zero-reference。
+
+**影响：** 失败和跳过的 ID 被清空，无法直接重试；只显示成功/失败计数而失去对应选择，需重新查找勾选，批量业务结果与 UI selection 不一致。
+
+**为什么不重复：** AUDIT-020 指单条 DELETE 对活动任务的隐式取消；AUDIT-164 指暂停 eligibility/ProcessIdentity 不匹配；AUDIT-183 指素材跨页选中 ID 在 mutation 前被截断。AUDIT-185 是训练批量 mutation 返回部分成功之后的 UI reconciliation 丢失，不同 owner 与时间点。
+
+**现有测试缺口：** `batchAction` 的 backend failure 计数与当前 UI 清空逻辑分别测试，缺少端到端“一成功、一失败、一跳过”的 retained selection 测试。
+
+**建议最小修复：** 不做第二批量 Owner。让现有 `batchAction` 返回 item-level succeeded/failed/skipped ID（已有 failures[]，需完善剩余 ID）；全成功才退出批量模式。部分成功只移除真实成功 ID，保留失败/跳过 ID，并在刷新后重新确认 eligibility；不要从当前 bounded jobs page 猜测结果。
+
+**应新增回归：** A 成功、B 409、C skipped → B/C 仍选中；batch delete 的 skipped_active/missing 保留并提示；全部成功才清空；全部失败、用户取消、刷新失败不丢失败 ID；50 条分页边界仍正确处理 selection。
+
+**是否需要 VERSION：是。是否需要回归测试：是。**
+
+---
