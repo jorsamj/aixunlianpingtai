@@ -24263,3 +24263,102 @@ Online Feedback 测试覆盖 evidence identity/model SHA、stage/confirm/dismiss
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-177 — 标签删除/改编码/合并不检查 Online Feedback pending_review；待复核预测使用历史标签后可永久无法 Confirm
+
+**级别：高**  
+**模块：Label Governance / Online Feedback / Human Review / Label Identity / Lifecycle Dependency**
+
+**现象：**
+
+Online Feedback 的 prediction evidence 会冻结检测结果中的 label 文本，但 Confirm 并不是按冻结时标签合同直接提交。
+
+`confirm_online_feedback()` 在 label_governance_fence 内重新读取当前项目标签，并通过 `_online_feedback_prediction_boxes(current_project, evidence)` 把 prediction label 重新映射到当前 canonical class。
+
+该映射只构造：
+
+- 当前 active label 的 `code -> item`；
+- 当前 active label 的 `display_name -> item`；
+
+不读取 inactive/merged source label，也不根据 `merged_into` 把历史 code 自动解析到新 canonical label。
+
+与此同时，当前标签 DELETE / code rename / label unify retirement 的引用保护主要检查 AnnotationRepository 正式 GT。Online Feedback 中尚未 Confirm 的 `pending_review` 不在 AnnotationRepository，因此不会阻止标签生命周期变更。
+
+**真实可达场景 1 — 软删除：**
+
+1. 项目有 active label `smoke`；
+2. 正式算法版本检测出 smoke；
+3. 用户把结果提交 Online Feedback，形成 `pending_review`；
+4. 当前项目没有任何正式 AnnotationRepository 行再引用 smoke；
+5. 用户在标签管理删除 smoke；
+6. DELETE 因 `label_reference_preview()` 为 0 而成功，把 smoke 置 inactive；
+7. 用户回到反馈工作台点击 Confirm；
+8. `_online_feedback_prediction_boxes()` 只看 active labels，找不到 smoke；
+9. 返回“预测标签 smoke 无法唯一映射到当前项目标签”；
+10. feedback 仍 pending_review，只能 Dismiss。
+
+**真实可达场景 2 — code rename：**
+
+当旧 code 没有正式 GT 引用时，`v12_update_label()` 允许直接把 code 改名。Pending feedback 仍保存旧 prediction label；代码不会自动把旧 code 冻结成 alias，也不会在 Confirm 时按历史 label identity 解析，因此同样可能永久失败。
+
+**真实可达场景 3 — 标签统一/merged：**
+
+当 source label 被 REMAP 后退役为 merged，当前 active catalog 只保留 target。Feedback evidence 若仍使用旧 source code，Confirm 的 mapping 不消费 `merged_into`，所以即使平台已经知道 source→target 的 canonical merge 关系，也可能拒绝这条历史 feedback。
+
+**为什么是 Bug：**
+
+`pending_review` 是平台已经接受的 durable 人工审核工作项。既然 Confirm 明确要求 prediction label 能映射到当前 canonical 标签，那么标签治理就必须：
+
+- 把 pending feedback 当 active lifecycle dependency；或
+- 在 stage 时冻结可审计的 canonical label identity / merge-resolution contract，并在 Confirm 时按受控迁移处理。
+
+当前 Label Governance 与 Online Feedback 之间没有这层合同。
+
+**影响：**
+
+- 待复核反馈会在标签治理后变成无法确认的死任务；
+- 用户只能 Dismiss 本来有效的线上样本；
+- correct feedback 无法提升为正式 GT；
+- supplement candidate / 自动迭代数据闭环丢样本；
+- 标签统一明明有 merged_into 真相，Online Feedback 却无法复用；
+- 工作台持续显示“复核”按钮，但操作稳定 409。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-031：标签停用可破坏 TRAINING_PREPARE 尚未冻结的继承标签合同；
+- AUDIT-085：Label Remap 与 Training Prepare 的 mixed-generation 投影；
+- AUDIT-108：Online Feedback Confirm/Dismiss 并发终态与副作用不原子；
+- AUDIT-129：AI Annotation task 没冻结 live label catalog；
+- AUDIT-176：算法版本 retirement 删除 Online Feedback 的 live version 依赖；
+- AUDIT-177：Label Governance 改变 Online Feedback 的 live label identity 依赖。
+
+**现有测试为什么没有发现：**
+
+标签治理测试主要检查正式 Annotation/confirmed_empty 引用、class_id 稳定与 merge；Online Feedback 测试主要在标签库不变的前提下做 stage/confirm/dismiss。缺少：`pending feedback → delete/rename/merge source label → confirm` 的跨 owner 测试。
+
+**建议最小修复方向：**
+
+不要让 Online Feedback 自己维护第二套标签库。
+
+可选方向：
+
+1. pending feedback lifecycle pin：Label DELETE / code rename / source retirement 前 indexed 查询 pending feedback 的 frozen detection labels，存在引用则 409；
+2. 或在 feedback stage 时冻结 canonical project class identity，并在 Label Remap owner 完成 source→target 后提供统一的历史 identity resolver；
+3. Confirm 继续 fail-closed，不能“找不到 label 就忽略框”；
+4. merged source 若允许自动迁移，必须复用 canonical merged_into/label governance owner，不能靠字符串猜测；
+5. display_name 修改不应破坏以 canonical code 冻结的 feedback。
+
+**应新增回归测试：**
+
+- pending correct feedback 使用 smoke → delete smoke 应阻止，或有明确安全迁移；
+- pending feedback → direct code rename → Confirm 仍可按明确合同完成，或 rename 被阻止；
+- pending feedback source smoke → remap smoke→smoking → Confirm 使用 canonical merge resolution；
+- unrelated label 变更不阻塞 feedback；
+- dismissed/confirmed feedback 不必永久 pin active label；
+- 大量 feedback 使用 indexed/bounded reference query，不全表 hydrate；
+- ambiguous historical alias/merge 必须 fail-closed。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
