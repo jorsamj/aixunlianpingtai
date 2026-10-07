@@ -23129,3 +23129,143 @@ vs
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-169 — 算法产物 OSS 配置可在活动 Remote Training / Agent Conversion 中原地变更；正式模型上传与远程下载仍解析 live StorageSource
+
+**级别：高**  
+**模块：ModelArtifact Storage / Remote Training / Agent Conversion / Storage Credential Lifecycle / Durable Input-Output Contract**
+
+**现象：**
+
+当前“存储配置 → 算法与转换结果存储”是真实生产入口。前端 `ModelArtifactRuntime.saveModelConfig()` 直接：
+
+`PUT /api/v64/model-artifacts/oss-config`
+
+后端 route 直接调用：
+
+`ModelArtifactService.save_artifact_oss_config(payload)`。
+
+该方法对固定专用 source `ARTIFACT_OSS_SOURCE_ID`：
+
+- 原地更新 endpoint；
+- 原地更新 bucket；
+- 原地更新 public_base_url；
+- 原地更新 root_prefix 对应的 ModelArtifact config；
+- 如填写新 AccessKey，则对同一个 `secret_ref` 原地 `credentials.set(...)`。
+
+整个保存路径没有检查活动 TRAINING / MODEL_CONVERSION Durable Task。
+
+**Remote Training 的正式模型上传目标没有在任务创建时冻结。**
+
+Agent 训练完成后才调用：
+
+`prepare_training_model_uploads()`
+→ `_training_model_storage_ref()`
+→ `self.model_artifacts.repository.config()`
+→ 读取当时 live `storage_source_id`
+→ `self.storage_sources_factory().get(source_id)`
+→ 再按 live endpoint/bucket/credential 构造 provider 和 object_key。
+
+也就是说，`best.pt / last.pt` 等正式 ModelArtifact 的目标 storage identity 是训练结束时才决定，而不是任务受理时冻结。
+
+`confirm_training_model_uploads()` 又会再次调用 `_training_model_storage_ref()`，因此 prepare 与 confirm 之间如果配置再次变化，甚至可能用不同 live storage truth 校验。
+
+**Agent Conversion 也依赖 live StorageSource。**
+
+Portable MODEL_CONVERSION request 虽冻结 source model/calibration 的 `storage_source_id/object_key/sha256/size`，但真正 assignment/start 时 `_download_contract()` 会调用：
+
+`_source_provider()`
+→ `storage_sources_factory().get(source_id)`
+→ `storage_credentials_factory().get(source.secret_ref)`。
+
+所以专用 artifact source 的 endpoint/bucket/credential 被 v64 配置页原地修改后，旧 task 中相同 object_key 会被解释到新的 live provider。
+
+**真实用户可达场景 A — Remote Training 静默改上传目标：**
+
+1. 训练任务 T 创建时算法产物 OSS 指向 Bucket A；
+2. Agent 已开始训练，运行数小时；
+3. 管理员在“算法与转换结果存储”把 Endpoint/Bucket 改为 B；
+4. T 完成后请求上传 best.pt / last.pt；
+5. `_training_model_storage_ref()` 此时读取新配置 B；
+6. 正式模型被归档到 B，而不是任务受理时用户预期的 A。
+
+若 B 权限/网络不通，则训练主体已经成功，最终模型归档阶段才失败。
+
+**真实用户可达场景 B — 凭据原地轮换：**
+
+1. Remote Training / Agent Conversion 已 QUEUED 或 RUNNING；
+2. 用户在 v64 页面填写新的 AccessKey；
+3. `save_artifact_oss_config()` 对旧 `secret_ref` 原地覆盖凭据；
+4. 活动 task 后续生成 signed GET/PUT 或确认对象时直接使用新凭据；
+5. 权限范围不同即可让旧任务中途失败。
+
+**真实用户可达场景 C — Agent Conversion source 被重新解释：**
+
+1. conversion request 已冻结 `source.storage_source_id=S, object_key=K, sha256=H`；
+2. S 的 endpoint/bucket 被原地改到另一 Bucket；
+3. assignment 时 `_download_contract()` 用 S 的新 provider 对 K 做 stat；
+4. 若 K 不存在则 task 失败；若新 Bucket 恰好存在同 key 但 hash 不同则 fail-closed；
+5. 即使 hash guard 能阻止读错内容，也不能阻止一个合法配置修改破坏已受理 task。
+
+**为什么是 Bug：**
+
+Durable task 的核心合同是：任务一旦受理，其不可变执行输入和必要输出依赖必须可恢复。当前 source/object identity 部分冻结了，但 provider identity（endpoint/bucket/credential）仍由 live config owner单方面控制。
+
+尤其 Remote Training 的正式模型上传更严重：连输出 storage source/root 都是训练结束后才 late-bind，任务 lineage 无法证明创建时约定的归档目的地。
+
+**影响：**
+
+- 长时 Remote Training 可在最后归档阶段才因存储配置变化失败；
+- 同一任务创建时与完成时的模型存储位置可不一致；
+- Agent Conversion queued/running 可因正常配置编辑失效；
+- credential rotation 没有 old-generation pin；
+- retry/recovery 结果取决于“此刻配置”，而不是原 task durable contract；
+- 运维很难从失败日志解释为何训练本体已完成但模型不存在。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-044：普通 Storage Source PATCH 破坏 active MATERIAL_IMPORT / rescan；
+- AUDIT-047：AI Model Config secret_ref 指向的 Keyring 值被 PUT 原地覆盖；
+- AUDIT-158：Service Node token rotation 破坏 RUNNING Agent heartbeat/result；
+- AUDIT-168：Material DELETE_SOURCE 删除 Agent INT8 calibration object；
+- AUDIT-169：专用 ModelArtifact storage config/credential 作为 Remote Training/Conversion 的 live provider/output 依赖，没有冻结或 lifecycle fence。
+
+所以 169 不是 044 的重复：入口是 v64 专用算法产物配置，受影响 task kinds 与业务副作用也不同；Remote Training 还存在正式模型上传目标 late-binding。
+
+**现有测试为什么没有发现：**
+
+ModelArtifact tests 验证保存配置、健康检查、上传/归档；Remote Training tests 验证模型对象上传证据；Agent Conversion tests 验证 source hash 与 portable download。缺少组合测试：
+
+`active remote task + PUT /api/v64/model-artifacts/oss-config`。
+
+也没有断言 Remote Training create 时必须冻结 artifact storage generation/revision，或 prepare/confirm 必须使用同一 storage identity。
+
+**建议最小修复方向：**
+
+不要复制 secret 明文进 task artifact，也不要新增第二 ModelArtifact owner。
+
+建议：
+
+1. 给专用 artifact storage 配置增加 revision/generation identity；
+2. Remote Training / MODEL_CONVERSION admission 冻结所依赖的 storage source identity + config revision + secret revision reference；
+3. 对活动 task，破坏性配置变更（endpoint/bucket/source/credential/root）要么 409，要么通过 generation pin 让旧 task 继续读旧 provider generation；
+4. Remote Training 的正式 model upload target 必须在 task/remote execution contract 中冻结，不能完成后重新从全局 config 选择；
+5. prepare_training_model_uploads 与 confirm_training_model_uploads 必须使用同一 frozen target；
+6. credential rotation 若要在线支持，应保留旧 secret generation 到所有引用 task terminal；
+7. public_base_url 等纯发布展示字段如可安全独立变更，应与执行 provider 字段区分；
+8. 不要用 hash mismatch 当 lifecycle fence；hash 只能做内容验证，不能替代依赖 pin。
+
+**应新增回归测试：**
+
+- Remote Training 创建于 artifact storage A，运行中改为 B → 要么配置更新 409，要么该 task 仍严格上传 A；
+- Remote Training prepare 与 confirm 之间改配置 → 不得改变 storage_ref；
+- active Agent Conversion source provider config 改变 → 受 lifecycle fence；
+- credential rotation 保留 old generation 或明确阻止；
+- terminal task 后允许按产品策略切换配置；
+- 新任务使用新 storage generation，旧任务继续使用旧 generation；
+- 不把 AccessKey 明文写入 request artifacts。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
