@@ -6676,6 +6676,129 @@ Agent Training 只允许：
 
 ---
 
+
+### AUDIT-071 — 当前“地址 / URL 读取导入”仍由 v36 daemon thread 直接写素材；绕过 canonical MATERIAL_IMPORT，进程重启可留下永久 running 与部分入库
+
+**级别：高**  
+**模块：Material Import / Source Import / Durable Task / Runtime Owner / Crash Consistency**
+
+**现象：**
+
+当前前端最终生效的 `window.importData` 只有一处定义，其中“地址读取”页签仍直接调用：
+
+`POST /api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs`
+
+并由独立 PollRegistry：
+
+`source-import-v36`
+
+每 1.8 秒轮询 v36 JSON job。
+
+这不是已经退役的兼容代码。
+
+后端 `v36_start_source_import_job()` 创建的也不是 Durable Task，而只是：
+
+`source_import_tasks/<job_id>.json`
+
+随后直接启动：
+
+`threading.Thread(target=_v36_run_source_import, ..., daemon=True)`
+
+整个 v36 source-import 区段没有：
+
+- `TaskRecord`
+- `TaskKind.MATERIAL_IMPORT`
+- Durable Task repository
+- lease / generation fencing
+- cancel
+- retry
+- crash recovery
+
+worker 内则直接：
+
+- 下载 / 解压来源；
+- `add_image_record()` 正式写素材；
+- `material_store(project_id).patch(...)` 修改 split；
+- 最后才把独立 JSON job 改为 done。
+
+**真实 crash-consistency 问题：**
+
+如果进程在导入 N 张中的第 K 张后退出：
+
+- 前 K 张已经正式进入素材库；
+- daemon thread 消失；
+- v36 job 仍可能永久保持 `running`；
+- startup 没有恢复扫描；
+- GET job list 也不会像 Durable Worker 一样 reclaim / retry；
+- 用户没有 stop / cancel / resume 操作；
+- 再次点击导入会创建第二个独立线程，造成重复执行风险。
+
+这与平台已经收口的 canonical MATERIAL_IMPORT 生命周期不同，也形成了第二套 Material Import execution owner。
+
+**为什么 AUDIT-026 不能覆盖：**
+
+AUDIT-026 是 v42 Source Collection：
+
+- source scheduler / collect run；
+- 另一套 collection_runs 历史；
+- 另一条定时采集链。
+
+本条是当前数据集导入弹窗直接暴露给用户的 **v36 地址 / URL 导入**，入口、job store、worker 和产品交互均独立存在，因此是另一条真实旁路。
+
+**影响：**
+
+- 服务重启可留下永久 running；
+- 部分素材已入库但任务显示未完成；
+- 用户重试无法判断哪些素材已提交；
+- 同一导入可能重复执行；
+- 无统一取消语义；
+- 无 Worker / Agent capability、资源调度与 execution generation；
+- Material Import 的监控、审计、任务中心和 retention 不能覆盖这条链；
+- 后续再修导入性能 / 幂等时必须维护两套 owner。
+
+**现有前端为何仍可触发：**
+
+`static/app.js` 中当前 `window.importData` 会渲染：
+
+- “上传压缩包”
+- “地址读取”
+
+“地址读取”的“开始导入”直接绑定 `startSourceImportV36()`，后者 POST v36 endpoint。
+
+代码中没有后续第二个 `window.importData=` 覆盖它。
+
+**建议最小修复：**
+
+不要再造第三套 Source Import runtime。
+
+将 v36 当前 UI 的“地址 / URL 读取”提交统一进入现有 canonical MATERIAL_IMPORT / Material Import owner：
+
+- source location 作为冻结 request payload；
+- 下载 / 扫描 / 导入阶段由 durable worker 执行；
+- 复用 cancellation、retry、lease、generation、progress、Task Center；
+- 未标注图片可以直接走正式 import；
+- 检测到标注的数据仍保持现有 fail-closed：必须先进入标签映射确认，不自动映射；
+- v36 endpoint 如需兼容，只做 adapter / 410 / redirect 到 canonical owner，不能继续启动 daemon worker。
+
+迁移时必须保留 URL / 本机路径的产品能力，不能简单删除“地址读取”。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 地址单图 / 目录 / URL ZIP 都创建 canonical Durable Task；
+- worker 中途退出后任务可恢复或明确失败，不永久 running；
+- partial side effects 重试不重复入库；
+- cancellation 生效；
+- 带标注来源仍要求标签映射确认；
+- 前端只存在一个 Material Import poll / task truth owner；
+- 1k / 10k / 20k 地址导入不依赖独立 JSON job 全量历史。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
