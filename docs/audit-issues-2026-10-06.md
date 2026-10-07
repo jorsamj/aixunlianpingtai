@@ -22909,3 +22909,122 @@ canonical 训练任务页由 `TrainingTaskVisibilityRuntime` 渲染。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-167 — INT8 Conversion 校准集仍以 live Material.split 选图；现代版本真实 train/val/test 在 Snapshot，量化可选错数据或误报空集
+
+**级别：高**  
+**模块：Model Conversion / INT8 Calibration / Training Snapshot / Dataset Revision / Model Accuracy / Lineage**
+
+**现象：**
+
+现代 Training 主链已经把一次训练的真实数据角色冻结在 task-local Snapshot / Dataset Revision：
+
+- Snapshot 保存 `ids.train / ids.validation / ids.test`；
+- Algorithm Version 保存 `snapshot_id`、`dataset_revision_id`、`training_lineage`；
+- Training bundle 按 Snapshot role 写入 `dataset/images/train|validation` 和 evaluation test；
+- 训练流程不会把这些 task-local role 回写成全局 `Material.split`。
+
+但当前版本转换的 INT8 校准集完全没有读取 source version 的 Snapshot/Dataset Revision。
+
+非 Agent `_deploy_prepare_calibration()` 按 live MaterialRepository：
+
+`dataset_id == payload.dataset_id`
+且
+`material.split == payload.calibration_split`
+
+筛选校准图。
+
+Agent RKNN 的 `build_rknn_calibration_snapshot()` 也使用同一语义：遍历 live MaterialRepository，按 `dataset_id + split` 取前 N 张。
+
+所以当前 conversion calibration 的“train/val/test”实际上是 legacy/live Material.split，而不是被转换模型自己的 frozen training split。
+
+**真实调用链：**
+
+用户完成现代 exact-material Training
+→ TRAINING_PREPARE 构建 SplitManifest
+→ Snapshot 冻结 train/validation/test image IDs
+→ Dataset Revision 持久化
+→ Algorithm Version 保存 snapshot_id/dataset_revision_id
+→ 用户在该版本点“新建版本转换”
+→ 选择 INT8 + calibration_split=train
+→ `POST /api/v39/.../deploy/jobs`
+→ local/remote `_deploy_prepare_calibration()` 或 Agent `build_rknn_calibration_snapshot()`
+→ 忽略 source version snapshot identity
+→ 重新从 live Material.split 选择校准图片。
+
+**真实用户可达场景 A — 现代训练素材仍 unassigned：**
+
+1. 用户通过 Training Picker 显式选择 1000 张素材；
+2. Snapshot 成功划分 train/validation/test；
+3. MaterialRepository 中这些素材并没有被回写 `split=train`；
+4. 用户对该版本创建 RKNN/Sophon INT8；
+5. UI 默认选择 `calibration_split=train`；
+6. 当前校准 selector 找不到该版本真正的 train IDs；
+7. 可能返回“INT8 转换需要校准图片，但当前选择的数据集/分组没有可用图片”。
+
+**真实用户可达场景 B — live split 有旧数据：**
+
+1. 项目历史兼容流程/旧 supplement 曾把另一批素材写成 `split=train`；
+2. 新版本实际通过 Training Picker 用的是完全不同的一批 frozen image IDs；
+3. 创建 INT8 转换时 calibration selector 却选旧 `split=train` 数据；
+4. calibration snapshot/hash 本身可以完全稳定、转换也可以成功；
+5. 但量化校准数据与 source model 的真实训练/验证数据血缘无关。
+
+**为什么是 Bug：**
+
+INT8 calibration 会直接影响量化 scale/zero-point 和最终模型精度。当前代码已经有 source version 的 immutable Snapshot/Dataset Revision owner，却重新用 live Material.split 推导“训练集”，形成第二套数据角色 truth。
+
+这不是要求校准集必须机械等于训练集；用户当然可以显式选择其它代表性 calibration set。问题是 UI/后端当前把 `train/val/test` 命名成 source-model 数据分组，却实际读取另一个 legacy live 字段，而且没有记录这种偏离。
+
+**影响：**
+
+- 现代训练版本可能无法创建默认 INT8 校准；
+- 可静默使用与 source model 无关的历史素材做量化；
+- 同一 Algorithm Version 在不同时间转换可能因 live Material.split 变化而得到不同校准集合；
+- calibration_snapshot 可稳定证明“用了哪些图”，但不能证明“这些图为何属于该版本 train”；
+- RKNN/Sophon INT8 精度和可复现性受影响；
+- 删除/移动/旧 supplement 对 Material.split 的变更可改变后续 conversion 结果。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-163：旧 Training Report 的 supplement 错把 Material.split=train 当作“进入下一轮训练”，但现代 Training Picker 不消费它；
+- AUDIT-166：校准准备的性能/生命周期问题——先全量 materialize 再 limit；
+- AUDIT-167：canonical Conversion 本身仍把 Material.split 当 source model 的 train/val/test owner，忽略已经存在的 version Snapshot/Dataset Revision，影响量化准确性与血缘。
+
+**现有测试为什么没有发现：**
+
+当前 conversion calibration 测试通常构造带 `split=train` 的 Material rows，因此会正常取到图片。Training Snapshot 测试又单独验证 exact IDs / Dataset Revision。缺少跨层测试：
+
+`source Algorithm Version.snapshot_id`
+→ `INT8 calibration selection`
+
+必须保持同一数据血缘。
+
+也没有测试现代 Training 完成后 Material.split 仍 unassigned 时，版本 INT8 转换是否能从 Snapshot 找到正确校准候选。
+
+**建议最小修复方向：**
+
+不要把现代 Training role 回写到 Material.split，也不要新增第三套 Calibration owner。
+
+1. 对 algorithm-version conversion，默认 calibration source 应优先绑定该 source version 的 `snapshot_id / dataset_revision_id`；
+2. `train / validation / test` 从 frozen Snapshot role IDs 读取；
+3. 校准条目继续按当前 Material/storage identity 做 SHA/size 可用性校验，内容变化 fail-closed；
+4. 若产品允许用户选择“当前数据集任意 live 素材”作为自定义校准集，应显式命名成 custom/live calibration，而不是冒充 source version train split；
+5. conversion job 记录 calibration source type + source snapshot/dataset_revision identity + item hashes；
+6. Agent/local/remote 共用同一 calibration-selection contract；
+7. 不通过重新让 Material.split 成为 Training owner来兼容。
+
+**应新增回归测试：**
+
+- source version Snapshot train IDs 与 Material.split 全 unassigned，INT8 仍能从版本 Snapshot 构建校准集；
+- live Material.split=train 指向其它图片时，不得替换 source version frozen train IDs；
+- validation/test 选择与 Snapshot roles 一致；
+- source material hash 改变后 calibration fail-closed；
+- custom/live calibration 若支持，必须显式标记 source_type，不能伪装 version split；
+- Agent RKNN 与 local/Sophon 使用相同 version lineage semantics；
+- AUDIT-166 的 bounded materialization 同时保持。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
