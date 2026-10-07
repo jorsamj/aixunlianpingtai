@@ -19234,3 +19234,137 @@ attach 时会提取：
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-143 — 项目详情 GET 为统计已标注图片/框数逐素材调用 AnnotationRepository.get；20k 素材形成 N+1 Ground Truth 热路径，且被 loadRelated 高频触发
+
+**级别：中～高**  
+**模块：Project Summary / Annotation Ground Truth / Frontend loadRelated / Performance**
+
+**现象：**
+
+当前项目详情：
+
+`GET /api/projects/{project_id}`
+
+返回的核心统计只有：
+
+- images；
+- annotated_images；
+- boxes；
+- jobs；
+- models。
+
+但为了计算 `annotated_images` 与 `boxes`，当前实现先：
+
+`images = load_images(project_id)`
+
+随后对项目内每一张素材执行：
+
+`read_annotation(project_id, img["id"])`
+
+而 `read_annotation()` 又是：
+
+`_v50_annotation_repository(project_id).get(image_id)`
+
+因此 N 张素材会产生 N 次单条 Ground Truth lookup。
+
+仓库其实已经存在 canonical bounded batch API：
+
+`read_annotations_many(project_id, image_ids)`
+
+→ `AnnotationRepository.get_many(ids)`
+
+并限制单批最多 500 个 image id，但项目详情没有使用批量读取或 repository aggregate。
+
+**为什么这是生产热路径，而不是低频管理接口：**
+
+前端 `loadRelated()` 首先请求：
+
+`/api/projects/${pid}`
+
+而 `loadRelated()` 不只在首开调用。当前真实调用点包括：
+
+- `loadAll()`；
+- 项目切换；
+- 新增 / 编辑 / 删除标签后；
+- 图片上传后；
+- 批量移动数据用途后；
+- 数据集操作后；
+- Cleaning confirm 后；
+- ZIP 导入完成后；
+- 其它 mutation 后的页面 refresh。
+
+所以一个 10k / 20k 素材项目，每次这些常见操作完成后的“刷新相关数据”，都会重新走一次全项目逐图 Annotation lookup。
+
+**与 AUDIT-066 的区别：**
+
+AUDIT-066 是 Training jobs REST 在返回 bounded history 前多次扫描全部历史 `jobs/*/job.json`。
+
+AUDIT-143 是 Project Summary 为两个 Annotation 统计值逐素材读取 canonical Ground Truth。
+
+两者会在同一个 `GET /api/projects/{project_id}` 中叠加，因为该接口还会调用：
+
+`sync_jobs_index(project_id)`。
+
+所以项目越大、训练历史越长，`loadRelated()` 的固定刷新成本会同时受到：
+
+- 素材总量；
+- Annotation 总量；
+- Training 历史总量
+
+三者放大。
+
+**影响：**
+
+- 1k / 10k / 20k 素材规模下项目切换、上传完成、标签修改、清洗确认后的 UI 刷新持续变慢；
+- 大项目会产生大量重复 SQLite/GT 单条读取与 Python 对象构造；
+- Web 请求线程被项目级统计占用，用户会把普通 mutation 误认为“保存很慢”；
+- 前端虽然只需要几个 summary 数字，却付出完整项目 GT hydration 成本；
+- 与 AUDIT-066 同时存在时，项目详情接口成为素材历史和训练历史双线性增长的热点。
+
+**为什么现有批量能力没有保护住：**
+
+当前代码已经明确提供：
+
+`read_annotations_many(...)`
+
+且注释为：
+
+“Bounded formal Ground Truth read through the canonical repository owner.”
+
+说明平台已经认可 bounded batch read 作为正式 Ground Truth 读取方式。
+
+但 `read_project()` 仍保留旧的逐图 `read_annotation()` 循环，没有接入该 canonical batch/aggregate 能力。
+
+**建议最小修复：**
+
+不要新增第二套 Annotation 统计 owner，也不要把 MaterialRepository 的兼容投影反过来当 Ground Truth。
+
+优先继续由 AnnotationRepository 提供 canonical summary，例如：
+
+- repository aggregate：annotated image count + total box count；
+- 或暂时按 500 image ids 分批 `get_many()`，避免 N 次单条 lookup。
+
+同时：
+
+1. 项目详情只读取真正需要的 summary，不 hydrate 每张 annotation；
+2. `sync_jobs_index()` 的历史扫描按 AUDIT-066 独立收口；
+3. 前端现有 `loadRelated()` 行为可保持，不应靠减少刷新来掩盖后端 O(N)；
+4. 增加 1k / 10k / 20k contract，明确 repository query/read 次数有上界，不能随图片数按单条调用线性增长。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 20,000 materials，项目详情返回 images / annotated_images / boxes 正确；
+- 禁止调用 20,000 次 `AnnotationRepository.get`；
+- canonical `get_many` 分批次数 bounded，或单次 aggregate；
+- confirmed_empty 不计入 annotated boxes，但其 Ground Truth 状态不被破坏；
+- 项目无 Annotation、部分 Annotation、全量 Annotation 三种统计一致；
+- 与大量 Training history 并存时，不把 AUDIT-066 的全历史扫描重新引入 aggregate 修复。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
