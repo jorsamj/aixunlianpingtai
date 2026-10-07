@@ -8482,6 +8482,186 @@ WHERE status IN ('success','empty')
 
 ---
 
+
+### AUDIT-083 — AI Candidate 审核首屏虽只取 24 条，但为 label_summary 全量解码整个 CandidateStore；10k/20k 首开仍是 O(N) 热路径
+
+**级别：中～高**  
+**模块：AI Annotation / Candidate Review / Pagination / Label Summary / 1k-20k Performance**
+
+**现象：**
+
+v60 Candidate API 表面已经实现正确分页：
+
+`CandidateStore.read_page(cursor, limit)`
+
+当前前端审核工作台固定：
+
+`limit = 24`
+
+所以打开审核时正文只需要 24 个 candidate。
+
+但后端：
+
+`get_annotation_candidates()`
+
+在第一页 `cursor in {None, "", "0"}` 时额外执行：
+
+`store.label_summary()`
+
+而 `label_summary()` 不是 SQL aggregate，也不是维护好的 summary index。
+
+它内部直接：
+
+`for item in self.iter_items()`
+
+`iter_items()` 每次按 200 条分页读取：
+
+`SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200`
+
+随后对**全部 Candidate rows**执行 `_decode(row)`，再逐个遍历：
+
+`item["boxes"]`
+
+统计 label / boxes / images。
+
+因此：
+
+**打开第一页 24 张 ≠ 只读取 24 张。**
+
+实际是：
+
+- 24 张用于 page body；
+- 再把整个 1k / 10k / 20k CandidateStore 全部读取并 JSON decode 一遍，用来生成 label summary。
+
+**真实首开链：**
+
+前端：
+
+`reviewAiLabel427(id)`
+
+→ `loadReviewPage(0)`
+
+→ `GET .../candidates?limit=24&cursor=0`
+
+后端：
+
+1. `store.read_page(limit=24)`
+2. batch hydrate 当前页缺失 material metadata；
+3. 因为 cursor=0：
+   `response["label_summary"] = store.label_summary()`
+4. `label_summary()`
+   → `iter_items()`
+   → 全 CandidateStore scan + decode；
+5. 首屏响应必须等待该全量统计完成后才能返回。
+
+所以 Candidate pagination 只限制了返回 body，不限制首屏服务器 work。
+
+**提交审核时还有第二轮全量扫描：**
+
+当 decision request 需要正常 label revalidation 时：
+
+`_decide_annotation_candidates()`
+
+会调用：
+
+`store.remap_labels(mapping, label_ids)`
+
+即使 mapping 为空，只要不是“纯全部拒绝且无 mapping”的特殊分支，它仍会：
+
+- BEGIN IMMEDIATE；
+- 按 200 条遍历全部 success/empty candidate；
+- decode 每行 boxes；
+- 校验 label/class_id；
+- 必要时写回。
+
+随后 response/confirmation 路径又会调用 `store.label_summary()`。
+
+因此大 CandidateStore 的一次人工审核可能形成多次 O(N) candidate decode。
+
+**为什么是性能 Bug / 技术债：**
+
+CandidateStore 已经有：
+
+- SQLite durable store；
+- ordinal pagination；
+- `boxes_count`；
+- `summary()` 的 SQL GROUP BY；
+
+说明当前设计本身已经在往 bounded/indexed review truth 收口。
+
+但 `label_summary()` 仍沿用“扫描所有 item JSON”的计算方式，把 20k 数据规模成本重新塞回首屏。
+
+这与 AUDIT-069 不同：
+
+- AUDIT-069：打开 AI Create 时全量 hydrate 项目 Material；
+- AUDIT-083：AI generation 完成后，打开 Candidate Review 首屏时全量扫描 CandidateStore。
+
+两个生命周期阶段、存储 owner、修复位置均不同。
+
+**影响：**
+
+- 10k/20k AI 候选任务审核弹窗首开明显变慢；
+- SQLite 需要多轮 200-row scan；
+- 每行 boxes JSON 都被 decode；
+- 大量检测框时 CPU 与内存分配成本进一步放大；
+- 用户只想看第一页也要支付全任务统计成本；
+- 多次关闭/重开 review 会重复扫描；
+- 决策提交阶段还可能再次全量 revalidation + label summary；
+- AI generation 已后台完成，但人工审核首屏仍可能表现为“卡”。
+
+**为什么现有测试没发现：**
+
+当前 tests 主要验证：
+
+- CandidateStore 分页正确；
+- page limit/cursor；
+- label_summary 内容正确；
+- commit/review semantics。
+
+但缺少：
+
+- 20,000 candidates；
+- 首屏 `GET candidates?limit=24&cursor=0`；
+- candidate decode / row scan count 上限；
+- label summary 是否通过持久化 aggregate/index 获取；
+
+的规模合同。
+
+所以“返回只有 24 条”会让分页测试绿色，但内部仍扫描 20k。
+
+**建议最小修复：**
+
+不要取消 CandidateStore，也不要把 label mapping summary 挪到浏览器全量计算。
+
+继续以 CandidateStore 为唯一候选 truth，增加**同库内的增量 summary/index**：
+
+1. Candidate append/update 时维护：
+   - label → boxes count；
+   - label → image count；
+   - 必要的 candidate revision；
+2. `label_summary()` 直接读取 aggregate table，不再 decode 全 candidates；
+3. edit/remap 时在同一 SQLite transaction 更新 aggregate，保证 summary 与 candidate truth 一致；
+4. 如果不想新增 aggregate table，至少建立一次 generation-finish summary artifact，并用 revision 校验失效，而不是每次首屏重算；
+5. 正式 Commit 前全量 label revalidation 可以保留其安全语义，但它应属于 mutation/finalization 路径，不应污染只读首屏 GET；
+6. 规模测试应明确首屏读取量与 candidate total 解耦。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 20,000 candidates + limit=24 首屏；
+- API response body仍只有 24；
+- label summary准确；
+- 首屏不得调用 `iter_items()` 全量 decode；
+- edit/remap 后 aggregate summary同步正确；
+- reopen review 不重复扫描 20k；
+- final commit 的 label revalidation safety 不被削弱。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
