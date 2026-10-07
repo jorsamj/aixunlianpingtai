@@ -5884,6 +5884,26 @@ bounded projection 只发生在**最后一步**。
 ---
 
 
+#### AUDIT-066 补充证据 — canonical v53 bootstrap 同样把全量 Training history scan 放进首屏读取链
+
+后续继续复核当前最终首屏 owner 时确认：
+
+`static/app.js -> loadCore412()`
+→ `GET /api/v53/bootstrap/snapshot`
+→ 命中 bootstrap 内存 snapshot 后仍调用 `_v53_snapshot_with_live_jobs()`
+→ `_v53_live_jobs(project_id)`
+→ `sync_jobs_index(project_id)`。
+
+因此 AUDIT-066 不只影响训练任务页 `/api/projects/{project_id}/jobs`：当前 canonical 首屏 snapshot 为了覆盖 live Training 状态，也会执行同一个无界 `jobs/*/job.json` 历史扫描。
+
+这意味着 1k / 10k / 20k Training history 会拖慢应用首次 `loadCore412()`、authoritative core refresh 与 bootstrap snapshot 的 live-jobs overlay。
+
+Material/Annotation summary 在 v53 已正确使用 repository summary，没有重新全量 hydrate 素材；真正应修的是 AUDIT-066 已登记的 Training history read model。后续修复 `sync_jobs_index()` 时，必须同时让 `/jobs` 与 v53 bootstrap 复用同一个 bounded/incremental live Training projection，不能只优化训练任务页 endpoint。
+
+该证据并入 AUDIT-066，不新增独立 AUDIT 编号。
+
+---
+
 ### AUDIT-067 — Storage Import focused poller 切换到第二个任务时未 handoff 旧 active task；UploadTaskCenter 保留 stale pollOwner，旧任务可停止所有前端刷新并卡在待确认
 
 **级别：高**  
