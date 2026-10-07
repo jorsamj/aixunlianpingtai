@@ -17871,6 +17871,36 @@ v63 最终 `window.predict` 又继续调用：
 - 兼容 predict endpoint 不得直接 spawn subprocess；
 - 大图片遵守明确 size limit / bounded streaming。
 
+**进一步确认的事件循环阻塞证据：**
+
+该接口本身声明为：
+
+`async def v12_predict_image(...)`
+
+但在 coroutine 内直接同步调用：
+
+`run_predict_by_env(...)`
+→ `subprocess.run(..., timeout=600)`
+
+中间没有：
+
+- `run_in_threadpool`；
+- `asyncio.to_thread`；
+- executor；
+- Durable Worker handoff。
+
+因此问题不只是“一个请求占住一个普通工作线程”。在常见 Uvicorn/ASGI 运行方式下，这段同步 subprocess 会阻塞承载该 async route 的 event loop，直到推理结束、失败或 600 秒 timeout。
+
+这意味着一次较慢的“测试发布 → 开始测试”就可能同时拖慢同一 worker 上的：
+
+- task polling；
+- 登录/session API；
+- 素材/标注读取；
+- 训练任务刷新；
+- 其它 async 上传/网络请求。
+
+所以 AUDIT-135 修复时不能只把 `subprocess.run` 换成 threadpool 就算收口。threadpool 只能缓解 event-loop starvation，仍然保留第二套非 Durable 推理 owner。正确方向仍是统一迁移到 canonical `DEPLOYMENT_TEST`。
+
 **是否需要 VERSION：** 是。  
 **是否需要新增回归测试：** 是。
 
