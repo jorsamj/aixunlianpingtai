@@ -3966,6 +3966,152 @@ AUDIT-056 是：
 
 ---
 
+
+### AUDIT-057 — Label / Material Integrity 的“当前审计恢复”把 bounded generic MaterialBatch page 当 active truth，且专用 POST 无防重，可重复创建项目级 Full Audit
+
+**级别：中～高**  
+**模块：Label Integrity / Material Integrity / MaterialBatch / Polling / Bounded Active Truth**
+
+**现象：**
+
+当前有两套项目级 Full Audit：
+
+- Label Integrity：`AUDIT_LABEL_INTEGRITY`
+- Material Integrity：`AUDIT_MATERIAL_INTEGRITY`
+
+它们的专用创建 endpoint 每次都会无条件创建新的 Durable `MATERIAL_BATCH`：
+
+- `POST /api/v54/projects/{project_id}/labels/integrity/audits`
+- `POST /api/v62/projects/{project_id}/material-integrity/audits`
+
+后端没有：
+
+- “同项目同 operation 已有 active audit”检查；
+- idempotency key；
+- canonical current-audit lookup。
+
+前端恢复当前审计时，却不是按 operation 精确查询，而是在 generic MaterialBatch 的固定窗口里再筛 operation。
+
+Label Integrity：
+
+`GET /api/v62/projects/{project_id}/material-batches?active_only=true&limit=100`
+
+然后：
+
+`find(operation === 'AUDIT_LABEL_INTEGRITY')`
+
+Material Integrity：
+
+`GET /api/v62/projects/{project_id}/material-batches?limit=50`
+
+然后：
+
+`find(operation === 'AUDIT_MATERIAL_INTEGRITY')`
+
+两处都不消费 `next_cursor`。
+
+**真实调用链：**
+
+Label Integrity：
+
+`renderLabelManagement414()`
+→ `resumeLabelIntegrity414()`
+→ generic active MaterialBatch page 100
+→ 未找到 audit 时页面仍显示“运行 Full Audit”
+→ `startLabelIntegrityAudit414()`
+→ 专用 POST
+→ `create_label_integrity_audit()`
+→ `repository.create()`
+
+Material Integrity：
+
+`openMaterialIntegrityAudit47()`
+→ generic MaterialBatch page 50
+→ 未找到 audit 时弹出“尚未运行素材完整性审计”
+→ 用户点击“运行 Full Audit”
+→ `startMaterialIntegrityAudit47()`
+→ 专用 POST
+→ `create_material_integrity_audit()`
+→ `repository.create()`
+
+两个 create owner 都没有查找已有 active audit。
+
+**为什么是 Bug / bounded truth：**
+
+generic MaterialBatch page 只是分页列表，不是“某个 operation 当前是否存在活动任务”的完整 truth。
+
+如果一个项目同时有很多：
+
+- CLEAN；
+- AI_ANNOTATE；
+- REMAP；
+- DELETE；
+- integrity repair；
+- 其它 batch
+
+现有 Full Audit 可以被挤出前 100 / 前 50。
+
+此时 UI 会错误判断“没有当前审计”，而后端也不做第二道防重，于是同一项目会排入第二个、第三个相同 Full Audit。
+
+这些审计本身都是全项目扫描，重复创建会放大 I/O 和 Worker 队列压力。
+
+**影响：**
+
+- 同一项目可能堆积重复 Full Audit；
+- 用户看到的“当前审计”不是 canonical truth；
+- 旧 audit 仍在运行/排队时，新 audit 又进入队列；
+- 大量 MaterialBatch 活动任务时更容易触发；
+- 项目级审计会重复扫描 AnnotationRepository / MaterialRepository；
+- 可能延迟真正的清洗、AI 标注、标签统一等批任务；
+- PollRegistry 只跟踪当前发现的 task_id，旧 audit 可能成为“后台孤立但仍运行”的任务。
+
+**与 AUDIT-023 / AUDIT-021 的区别：**
+
+AUDIT-023 是 Cleaning list 先取最近 100 个 MATERIAL_BATCH 再筛 CLEAN；
+
+AUDIT-021 是 AI material-state 只看前 100 个 active task。
+
+AUDIT-057 是：
+
+**项目级 Integrity audit 的恢复与防重都错误依赖 bounded generic batch page，而专用创建 endpoint 又没有 active-audit fence，最终会真实创建重复 durable 任务。**
+
+根因和生命周期后果不同。
+
+**为什么 CI 没发现：**
+
+现有测试分别验证：
+
+- audit task 可以创建；
+- generic MaterialBatch list 支持 cursor；
+- audit 可以运行并产生结果；
+
+但没有组合：
+
+1. 先创建一个 active integrity audit；
+2. 再创建 100+ / 50+ 其它 batch 把它挤出第一页；
+3. 前端恢复不到；
+4. 再次点击 Full Audit；
+5. 后端是否拒绝重复 active audit。
+
+**建议最小修复：**
+
+不要把前端 limit 改成更大的固定数字。
+
+应建立 operation-aware active truth，优先方向：
+
+- 后端专用 create endpoint 在同一事务内检查同项目同 audit operation 的 active task；
+- 若已有 active audit，返回该 task（幂等）或 409 + canonical task_id；
+- 提供按 `operation` 查询 active batch 的精确 endpoint/filter；
+- 前端恢复逻辑使用 operation-aware query，而不是 generic page 后 `find()`；
+- terminal history 继续 cursor pagination，不与 active truth 混用。
+
+不要新建第二套审计 runtime；仍然使用现有 `MATERIAL_BATCH` owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101+ active batches / 51+ recent batches 时仍能发现已有 audit，且重复 POST 不会创建第二个 active Full Audit。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
