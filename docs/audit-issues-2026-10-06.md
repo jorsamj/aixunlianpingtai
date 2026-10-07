@@ -6529,6 +6529,153 @@ v61 已提供：
 
 ---
 
+
+### AUDIT-070 — Agent Training 在 execution start 后释放 GPU assignment reservation；RUNNING 训练不再占用 selected GPU，第二个 exclusive 任务可再次被分配到同一张卡
+
+**级别：高**  
+**模块：Central Scheduler / Agent Training / GPU Reservation / exclusive policy / Resource Truth**
+
+**现象：**
+
+Central Scheduler 在给 Training 分配节点时，会通过：
+
+`_assigned_gpu_ids(database, node_id)`
+
+排除已经被占用的 GPU。
+
+但该函数只读取：
+
+`task_node_assignments.state IN ('ASSIGNED','CLAIMED')`
+
+里的 `resolved_execution_config.selected_gpu / selected_device`。
+
+Agent 真正调用：
+
+`AgentExecutionService.start_execution()`
+
+完成 `QUEUED -> RUNNING` 后，又会在同一个事务中把当前 assignment 改成：
+
+`state='RELEASED'`
+
+并记录：
+
+`release_reason='execution_started'`
+
+从这一刻开始：
+
+- Task 仍然是 RUNNING；
+- Agent Training 仍然真实占用此前选定的 GPU；
+- 但该 GPU 已经从 `_assigned_gpu_ids()` 的 reservation truth 中消失。
+
+`_node_active_work_count()` 虽然会把 RUNNING Agent task 计入节点 busy count，但它只影响节点评分，不会告诉 `_selected_gpu()` “哪一张 GPU 已被运行中的训练占用”。
+
+因此后续 `assign_next()` 对同一节点再次执行：
+
+`_selected_gpu(node, assigned_gpu_ids=...)`
+
+时，运行中任务所使用的 `cuda:N` 不在 excluded set 里。
+
+**真实危险窗口：**
+
+单 GPU Agent 节点：
+
+1. Training A 被分配到 `cuda:0`；
+2. Agent claim + start；
+3. A 进入 RUNNING；
+4. assignment A 立刻 RELEASED；
+5. heartbeat 仍可能报告 `cuda:0` free VRAM >= 10% 且 utilization < 85%；
+6. Training B 进入 allocator；
+7. `_assigned_gpu_ids()` 返回空集；
+8. `_gpu_is_training_candidate()` 仍认为 `cuda:0` 可用；
+9. B 再次被分配到 `cuda:0`。
+
+这不是纯理论窗口。GPU 利用率在：
+
+- 数据加载；
+- epoch 间隙；
+- validation；
+- CPU / I/O 等待；
+
+都可能低于当前 85% 阈值；显存也完全可能保留超过 10% 空闲。
+
+Telemetry 只能做 capacity / health signal，不能替代 exclusive reservation identity。
+
+**与当前 GPU policy 的冲突：**
+
+Agent Training 只允许：
+
+- `auto`
+- `exclusive`
+
+并明确拒绝 shared。
+
+本地 Worker 的 `GPUResourceManager` 会通过 `gpu_reservations` 对整个 RUNNING lease 保存 reservation，且 exclusive 会阻止同卡并发。
+
+但 remote / Agent Training 的 `resource_key=training:remote:...` 会绕过本地 GPUResourceManager，GPU 独占责任实际落在 Central Scheduler。
+
+当前 Central Scheduler 的 reservation 只活到 execution start，因此 Agent 路径与本地路径的 exclusive 合同并不一致。
+
+**影响：**
+
+- 两个 remote Training 可被安排到同一物理 GPU；
+- exclusive 语义失效；
+- VRAM OOM / CUDA allocation failure；
+- 后启动任务可能挤占先运行任务资源；
+- AUTO batch/workers/cache 是按错误的并发证据计算，可能出现资源决议与真实运行态不一致；
+- `concurrent_reservations` 只统计 node active 数量，不能修复具体 GPU identity 冲突；
+- 双 GPU 节点也可能重复选择正在运行的优质 GPU，而不是空闲的另一张卡；
+- 训练速度、稳定性和 RESOURCE_RUNTIME_MISMATCH 排障都会受到干扰。
+
+**为什么现有测试没发现：**
+
+`tests/unit/test_task_node_assignments.py` 已覆盖：
+
+- 两个仍处于 assignment 阶段的任务不能占同一 GPU；
+- 指定 GPU 已被 active assignment 占用时继续排队；
+- 外部 GPU utilization 过高时不分配；
+- 多 GPU best-GPU 选择。
+
+但这些测试都没有覆盖：
+
+`assignment -> Agent start_execution -> assignment RELEASED + task RUNNING -> 再 assign 第二个 Training`
+
+所以只证明了“启动前 reservation”，没有证明“运行期 reservation”。
+
+`tests/unit/test_node_agent_training_runtime.py` 也验证了 selected GPU identity 和 exclusive 参数会传入 Agent，但没有把它与第二个 Central Scheduler assignment 串起来。
+
+**建议最小修复：**
+
+不要新增另一套 GPU scheduler。
+
+应让 canonical Central Scheduler 的 GPU reservation identity 覆盖完整执行生命周期：
+
+- ASSIGNED / CLAIMED 阶段继续使用当前 assignment snapshot；
+- RUNNING / CANCEL_REQUESTED 的 Agent Training 也必须被 `_assigned_gpu_ids()` 纳入；
+- 运行期 GPU identity 必须按 task + execution_generation 绑定，不能仅凭最新 heartbeat 猜；
+- terminal / fenced generation 后再释放对应 GPU reservation；
+- `exclusive` 必须硬阻止同一物理 GPU UUID / selected device 被第二个训练占用；
+- multi-GPU 节点应允许第二个任务选择真正未占用的另一张卡；
+- 不要把 utilization 阈值当作 exclusive ownership 替代品。
+
+可以复用已经冻结在 assignment / Agent execution resource-resolution 中的 GPU UUID、device 与 generation，避免再造第二个 owner。
+
+**回归测试建议：**
+
+至少增加：
+
+- 单 GPU：A start_execution 后，B 仍不得被分配到同一 GPU；
+- 双 GPU：A 在 cuda:0 RUNNING 时，B 必须选择 cuda:1；
+- A terminal 后，cuda:0 可重新分配；
+- A CANCEL_REQUESTED 期间仍保持 reservation；
+- stale/fenced generation 不得永久占卡；
+- heartbeat utilization 很低、free VRAM 很高时，exclusive reservation 仍然生效；
+- auto/exclusive 两种当前允许策略都不得隐式退化为 shared。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
