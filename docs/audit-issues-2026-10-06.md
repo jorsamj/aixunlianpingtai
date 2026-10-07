@@ -23609,3 +23609,191 @@ Training create/idempotency 测试主要覆盖正常 parent+child 创建和顺�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-173 — Storage Rescan 更新同 material_id 的图片内容时不会失效既有正式 GT；旧图片 Annotation 可继续挂在新内容上并进入训练
+
+**级别：高**  
+**模块：Storage Rescan / Material Identity / Annotation Ground Truth / Training Accuracy**
+
+**现象：**
+
+当前 canonical Storage Rescan 明确允许对同一：
+
+`storage_source_id + object_key`
+
+保留原 `material_id`，但在内容变化时按默认策略：
+
+`changed = update`
+
+更新 MaterialRepository 中的：
+
+- `content_sha256`
+- `size_bytes`
+- `etag`
+- `width / height`
+
+`StorageRescanHandler._classify_rescan_row()` 会把 hash / size / etag 任一变化归类为 `CHANGED`，而 `_apply_rescan()` 会：
+
+`materials.reconcile_storage_batch(...)`
+
+把这个 CHANGED 对象的新内容身份正式写回原 material_id。
+
+问题是：
+
+> 内容 identity 的更新与 Annotation Ground Truth 的有效性没有建立绑定。
+
+对于：
+
+`import_format = images`
+
+`_apply_annotation_rescan()` 直接返回，不会触碰 AnnotationRepository。
+
+因此一张原本：
+
+```text
+material_id = A
+content_sha256 = H1
+AnnotationRepository[A] = smoke boxes for H1
+```
+
+在对象存储相同 key 被替换为另一张图 H2 后，用户执行默认 Rescan：
+
+```text
+material_id = A
+content_sha256 = H2
+AnnotationRepository[A] 仍是 H1 的 smoke boxes
+```
+
+正式 GT 会继续被视为 A 的有效标注。
+
+结构化 YOLO / COCO / VOC Rescan 也没有自动解决这个问题。
+
+内容变化分类 `CHANGED` 与 annotation delta 是两套独立策略：
+
+- `changed = update`
+- `annotation_removed = keep`（默认）
+- `annotation_conflicts = keep`（默认）
+
+因此即使外部新内容已经没有旧 annotation，或 annotation 进入 conflict，默认策略仍可能更新图片字节但保留旧平台 GT。
+
+**真实调用链：**
+
+当前 Storage Source 页面  
+→ 创建：
+
+`POST /api/v61/projects/{project_id}/storage-sources/{source_id}/rescan`
+
+→ Rescan scan/review  
+→ 用户确认默认 policy：
+
+`changed=update`
+
+→ `StorageRescanHandler._apply_rescan()`  
+→ `CHANGED` object 重新校验 source bytes  
+→ invalidate old content cache  
+→ `MaterialRepository.reconcile_storage_batch()`  
+→ 原 material_id 被更新为新 `content_sha256 / size / etag / dimensions`  
+→ 对 images-only rescan：annotation reconcile 不运行  
+→ 对 structured rescan：annotation policy 独立处理，默认 keep 可继续保留旧 GT  
+→ 后续 Training Picker / Snapshot 仍按同 image_id 读取 AnnotationRepository  
+→ 旧图片框可被用于新图片训练。
+
+**用户真实可达场景：**
+
+1. OSS 中 `camera/a.jpg` 原来是图片 H1；
+2. 平台已导入为 material A，并完成人工/AI 正式标注；
+3. 外部系统用同 object_key 覆盖成完全不同图片 H2；
+4. 用户在平台执行“重新扫描”；
+5. 系统识别 CHANGED；
+6. 用户采用默认“内容变化=更新”；
+7. Material A 更新为 H2；
+8. 原 AnnotationRepository[A] 没有被失效；
+9. 训练时 H2 仍携带 H1 的旧框/旧标签。
+
+**为什么这是 Ground Truth Bug：**
+
+Annotation Ground Truth 语义必须至少绑定：
+
+`image identity + content identity`
+
+只绑定稳定 material_id 不够。
+
+Rescan 明确允许 stable material_id 指向新的 content hash，因此旧 GT 不能继续被默认当作同一图片的已确认事实。
+
+否则：
+
+- 框坐标可能完全落在错误目标上；
+- 图片尺寸改变后旧坐标甚至可能越界/语义错误；
+- confirmed_empty 也可能错误迁移到新内容；
+- 新内容真实含 fire，但旧 H1 是 confirmed_empty，会被当成负样本；
+- Training Snapshot 本身无法发现，因为它只看到“正式 Annotation + 当前 Material”。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-099：Rescan 要**写新 Annotation**时，stale check 与 commit 分离，可能覆盖并发人工修改；
+- AUDIT-104：Rescan 已成功写 GT 后 crash，applied marker 未原子提交导致恢复误判失败；
+- AUDIT-152：CLEAN retry 把 H1 的清洗结果复用到 H2；
+- AUDIT-157：AI Candidate 在 H1 生成，H2 后仍可人工确认写入；
+- AUDIT-173：**已经正式存在于 AnnotationRepository 的 H1 Ground Truth，在 Rescan 把 material 内容更新为 H2 时没有失效。**
+
+这是更底层的 material-content / formal-GT identity 绑定缺失。
+
+**现有测试为什么没有发现：**
+
+现有 Rescan 测试重点覆盖：
+
+- CHANGED / MISSING / NEW 分类；
+- content hash 再校验；
+- structured annotation changed/conflict/removed policy；
+- Annotation CAS；
+- crash recovery。
+
+这些测试通常分别验证：
+
+“Material 内容更新正确”
+
+和
+
+“Annotation policy 正确”。
+
+没有组合测试：
+
+`same material_id + content hash H1→H2 + 现有正式 GT`
+
+并断言旧 GT 必须进入 stale/review 状态，不能继续被训练读取。
+
+**建议最小修复方向：**
+
+不要新增第二 Annotation owner，也不要简单删除所有标注。
+
+建议在现有 canonical owners 上补 content identity contract：
+
+1. 正式 Annotation 记录应能关联其确认时的 `source_content_sha256`（或等价 immutable content revision）；
+2. Rescan 对 CHANGED material commit 前必须检查当前正式 GT；
+3. 若 GT 绑定旧 hash：
+   - 不得继续当作当前内容的正式训练 GT；
+   - 应转为明确 stale / needs_review，或由 canonical AnnotationRepository 提供 invalidate-for-content-change 操作；
+4. structured rescan 只有在用户明确确认新的外部 annotation 且新 annotation 与 H2 identity 绑定后，才能用新 GT 替换旧 GT；
+5. confirmed_empty 同样必须失效，不能自动迁移；
+6. Material searchable projection 必须与 Annotation owner 同步更新，避免 UI 仍显示“已标注”；
+7. Training Picker / Snapshot 应 fail-closed 拒绝 content hash 与 GT revision 不匹配的行；
+8. 不要通过“material_id 永远不变所以 annotation 也不变”来继续掩盖内容替换。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- images rescan：H1 annotated → same key H2 changed/update → H1 GT 不得继续作为正式 current GT；
+- H1 confirmed_empty → H2 → 不得继续作为新图负样本；
+- dimensions 改变 → 旧 box 不得继续进入 Snapshot；
+- structured rescan 有新 annotation 且用户确认 → 新 GT 绑定 H2 后可训练；
+- structured rescan annotation_removed=keep 时，内容已 H1→H2 → “keep”不能等于“旧 GT 仍可训练”，只能保留为历史/stale evidence；
+- unchanged hash H1→H1 → 原 GT 保持有效；
+- Training Picker / Snapshot 对 GT-content mismatch fail-closed；
+- Material projection 与 AnnotationRepository stale 状态一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
