@@ -23359,3 +23359,119 @@ StorageSource 表的 `name` 有 `UNIQUE` 约束，而 `update()` 直接执行 SQ
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-171 — Training Create 的 task_id 幂等检查存在并发 TOCTOU；两个同 ID 请求可让失败请求覆盖已创建任务的 immutable payload.json
+
+**级别：高**  
+**模块：Training Create / Client Task ID / Idempotency / ArtifactStore / TaskRepository / TRAINING_PREPARE**
+
+**现象：**
+
+Training Create 已经实现了顺序重放保护：浏览器提交固定 `task_id`，后端计算 `request_identity`；如果 TaskRepository 已有同 ID TRAINING，会读取原 payload 中的 request_identity，相同请求返回 idempotent 202，不同请求返回 409。
+
+这条顺序路径本身正确。
+
+但当前实现是典型 check-then-act：
+
+`shared_task_repository().get(task_id)`
+→ 若不存在，离开检查阶段
+→ 进入 `_algorithm_version_reference_fence(...)`
+→ `atomic_write_json(task_id, 'payload.json', request_payload)`
+→ `TaskRepository.create(...)`。
+
+`_algorithm_version_reference_fence` 只序列化/校验算法 current version，不重新检查 task_id，也不锁 task-owned artifact。
+
+因此两个**并发**的同 task_id 请求 A/B 即使 payload 不同，也都可能在最前面的 `get()` 时看到不存在。
+
+**真实竞态：**
+
+1. A、B 使用相同 `train_xxx` task_id，request_identity 分别为 A/B；
+2. A 执行 `get(task_id)` → None；
+3. B 执行 `get(task_id)` → None；
+4. A 先进入 algorithm-version fence；
+5. A 写 `artifacts/<task_id>/payload.json = payload A`；
+6. A `TaskRepository.create()` 成功，task row 已引用这个 `payload.json`；
+7. A 离开 fence；
+8. B 因同算法 fence 串行，随后进入；它不会重新做 task existence/request_identity CAS；
+9. B 直接把同一路径 `payload.json` 原子替换成 payload B；
+10. B 再调用 `TaskRepository.create()`；SQLite 主键冲突，B 请求失败；
+11. 但 A 的正式 TRAINING task row 仍存在，并且它引用的 `payload_ref='payload.json'` 已经被失败的 B 请求改成 payload B。
+
+所以最终出现：
+
+- TaskRepository identity/created_at/resource_key/priority 来自 A；
+- task-owned payload / request_identity / selected material / labels / resource request 等可能来自 B；
+- B 的 HTTP 请求失败，但它已经改变 A 的不可变训练输入；
+- TRAINING_PREPARE 随后读取的是被覆盖后的 B payload。
+
+**为什么算法版本 fence 不能保护：**
+
+它反而只把两个 caller 串行到“先写 artifact、后 INSERT task”这一段，却没有在锁内重新执行 task-id CAS。B 在等待 fence 前已经通过了旧的 existence check，因此拿到 fence 后仍会覆写 artifact。
+
+**用户真实可达场景：**
+
+- 浏览器/反向代理对同一 POST 做并发重试；
+- 用户双击/两个前端事件同时提交同一弹窗固定 task_id；
+- 同一 iteration draft task_id 在两个标签页同时提交；
+- 第一次网络超时期间用户修改了参数/素材后再次触发相同 task_id 的请求，而第一次实际上仍在服务端执行。
+
+普通前端通常会用 `submitting` 降低双击概率，但网络/代理/多标签页/程序化客户端并不受前端单实例变量保护。后端既然把 task_id 定义为 idempotency key，就必须对并发重放也成立。
+
+**影响：**
+
+- 已创建训练任务的 immutable request 可被一个最终 409/500 的请求篡改；
+- selected material、split、labels、epochs/resource 参数可能与创建响应/用户意图不同；
+- `request_identity` 本身也被覆盖，后续真正的 A 重放会被错误判为 conflicting request，而 B 重放反而可能被视为原请求；
+- TRAINING_PREPARE、Snapshot、lineage、资源解析可能消费与 task row 不一致的输入；
+- job.json 后续又按 A caller 本地变量写入，可能与 payload B 再形成第三份分裂真相。
+
+这是训练准确性与任务不可变性问题。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-151：用户看到的 baseVersionId 没进入请求，属于 iteration-base admission CAS 缺失；
+- AUDIT-139/142：训练完成归档阶段的 version/same-task 并发 identity；
+- AUDIT-171：训练**创建阶段** client task_id 的并发 idempotency TOCTOU，失败请求可以覆盖已创建 task 的 payload artifact。
+
+没有现有 AUDIT 覆盖这个 request artifact overwrite race。
+
+**现有测试为什么没有发现：**
+
+当前代码明确实现了 sequential idempotency 分支，因此单线程测试很容易全部通过：
+
+- 第一次 create；
+- 第二次相同 payload → idempotent；
+- 第二次不同 payload → 409。
+
+但缺少一个 barrier/concurrency test：两个 caller 必须都在 `get(task_id)==None` 后再继续。TaskRepository 的 SQLite PRIMARY KEY 只能保证两条 task row 不会同时存在，不能保护已经在 INSERT 之前写入的 ArtifactStore 文件。
+
+**建议最小修复方向：**
+
+不要新增第二套 Training create owner。最小方向是在现有 create admission 上建立 task-id 级原子 fence：
+
+1. 对 client task_id 使用 task-owned FileLock / repository transactional idempotency owner；
+2. 在锁内重新读取现有 task；
+3. 若存在，比较持久化 request_identity 后只做 idempotent-return / 409；
+4. 若不存在，先准备临时 payload artifact，不得直接覆盖正式路径；
+5. Task row 与 payload identity 必须作为同一 create protocol 发布；
+6. 只有 INSERT 成功后才能把临时 artifact 原子 promote 为该 task 的正式 immutable payload，或让 repository create 同时校验 artifact digest；
+7. create 主键冲突时不得留下/覆盖任何已有 task artifact；
+8. prepare child 的创建也应只基于已经成功绑定的 parent request identity。
+
+不要依赖前端 `submitting` 防并发，也不要简单在 UNIQUE error 后把 payload 写回——那仍会和已启动 Worker 竞态。
+
+**应新增回归测试：**
+
+- 同 task_id + 相同 payload 两个并发 create → 只创建一个 task，payload identity 一致，两边得到同一任务/幂等结果；
+- 同 task_id + 不同 payload，并发 barrier 让两边先通过 precheck → 一个成功，一个 409，成功 task 的 payload 必须保持成功 caller 的内容；
+- loser 在 winner INSERT 后、自己 artifact write 前恢复 → 不得覆盖；
+- loser 已生成临时 artifact 后 winner 完成 → loser cleanup 不得删除 winner artifact；
+- parent TRAINING 与 TRAINING_PREPARE 最终绑定同一 request identity；
+- job.json/request payload/frozen input 的 algorithm/material/resource truth 不分裂；
+- 顺序相同请求重放仍保持现有 idempotent 202；
+- 顺序不同请求重放仍保持 409。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
