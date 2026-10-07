@@ -6345,6 +6345,190 @@ HTTP 和 SSE 都声称在输出“canonical training display truth”，但两�
 
 ---
 
+
+### AUDIT-069 — 打开 canonical AI 自动标注创建弹窗会无条件全量 hydrate 项目素材；20k 项目连“只标刚上传的一小批”也先走旧 /images 全量路径
+
+**级别：中～高**  
+**模块：AI Annotation / Material Pagination / Dataset Scale / 1k-20k Performance**
+
+**现象：**
+
+当前数据集主页面已经正确切到 v61 server-side pagination：
+
+`GET /api/v61/projects/{project_id}/materials?limit=48&cursor=...`
+
+v53 bootstrap 也只返回 material/annotation summary，不再把全项目素材塞进首屏。
+
+训练素材 picker 也已经由 `TrainingMaterialPickerRuntime` 通过：
+
+`GET /api/v62/projects/{project_id}/training-materials`
+
+做 server-side cursor pagination。
+
+但是 canonical AI 自动标注创建入口仍明确绕回旧全量素材接口：
+
+```js
+window.createAiLabel429=async function createAiLabelCanonical429(opts={}){
+  await window.MaterialPaginationRuntime61?.ensureFullPool?.();
+  const result=window.createAiLabelCore429?.(opts);
+  ...
+}
+```
+
+`ensureFullPool61()`
+→ `loadFullPool61()`
+→ `GET /api/projects/{project_id}/images`
+
+这个旧接口不是分页接口。
+
+**旧 /images 的真实成本：**
+
+`list_images(project_id)` 会：
+
+1. `load_images(project_id)` 全量读取项目 Material；
+2. 若任一图片缺 annotation_summary_at，触发历史 annotation index 调度；
+3. 遍历全部图片并执行 `public_material(project_id, img)`；
+4. 补 box_count / annotated / labels / annotation_preview / split / processing_status；
+5. 缺 `size_bytes` 的图片还会通过 StorageManager/provider 做对象 `stat()`；
+6. 汇总 size_patches 后可能回写 MaterialStore；
+7. 最终把完整 public material 数组序列化并发送到浏览器。
+
+所以 20k 素材项目打开 AI 创建弹窗时，会把 20k material rows 全量 hydrate + serialize + network transfer + browser parse。
+
+**更严重的是：即使调用者已经明确给了小范围 IDs，也照样全量读取。**
+
+例如上传完成后的快捷动作会调用：
+
+`createAiLabel427({image_ids: ...})`
+
+而 `createAiLabel427` 已指向 canonical `createAiLabel429`。
+
+canonical wrapper 在查看 `opts.image_ids` 之前就无条件执行：
+
+`ensureFullPool()`。
+
+因此：
+
+“刚上传 100 张，只对这 100 张做 AI 标注”
+
+也会先加载项目全部 20k 素材。
+
+**为什么当前代码这样做：**
+
+旧 `createAiLabelCore429(opts)` 默认范围依赖：
+
+```js
+const ids=opts.image_ids?.length
+  ? opts.image_ids
+  : (state.images||[]).filter(x=>!x.annotated).map(x=>x.id)
+```
+
+参考素材 UI `refs429()` 也直接从 `state.images` 筛已标注图片。
+
+分页后为了不把“当前 48 张”误当全项目，canonical wrapper 选择了“打开弹窗前恢复 full pool”。
+
+这保住了正确性，但把 Material Pagination 的性能收益在 AI 主流程重新抵消。
+
+**为什么是 Bug / 技术债：**
+
+当前平台已经明确以 1k / 10k / 20k 作为素材规模合同。
+
+`MaterialPaginationRuntime` 也明确让 canonical 页面导航不全量 hydrate。
+
+AI Create 是高频主流程，不能仅因为全量加载发生在“用户点击创建”边界，就允许每次创建前做 `O(total_materials)` hydration。
+
+Durable AI Task 最终真正需要的是：
+
+- target image IDs；
+- reference image IDs；
+- labels；
+- frozen model/prompt config。
+
+浏览器不需要持有全项目完整 Material public rows。
+
+**现有后端已经有更轻的能力：**
+
+v61 已提供：
+
+`GET /api/v61/projects/{project_id}/materials/ids`
+
+支持 cursor / limit / query / storage source / processing status / labels / annotated。
+
+参考素材也可以通过：
+
+`GET /api/v61/.../materials?annotated=true&limit=...`
+
+分页读取。
+
+因此没有必要退回旧 `/images` 全量 API。
+
+**影响：**
+
+- 10k/20k 项目打开“创建 AI 标注任务”明显变慢；
+- 浏览器内存瞬时增加；
+- Web 端承担全量 Material projection；
+- JSON 序列化与网络响应显著变大；
+- 对象存储历史素材缺 size_bytes 时还可能触发大量 stat；
+- “上传完成 → 一键 AI 标注”这种本应 O(batch) 的快捷动作也被项目总规模拖慢；
+- 10 秒 fullPool cache 只能降低短时间重复打开，不能消除首次/过期后的全量成本；
+- 创建任务前的同步等待与 Durable Worker 后台化目标相违背。
+
+**现有测试为什么没发现：**
+
+`tests/frontend/material-pagination-runtime.test.mjs` 当前只验证：
+
+- canonical 页面 navigation 不 full hydration；
+- `ensureFullPool` lazy；
+- 10 秒 cache；
+- single-flight；
+- AI wrapper 中存在 `ensureFullPool()`。
+
+也就是说现有测试把“延迟到用户动作再全量 hydrate”当作当前合同，却没有 10k/20k AI-create 性能约束，更没有要求：
+
+“传入明确 image_ids 时不得读取全项目”。
+
+**建议最小修复：**
+
+不要改 CandidateStore / Durable AI 主链。
+
+只移除 AI Create 对 full `state.images` 的依赖：
+
+1. **显式 `opts.image_ids` 场景**
+   - 直接使用这些 ids；
+   - 不得调用 `ensureFullPool()`；
+   - 需要摘要时只 batch get 这批 metadata。
+
+2. **默认“全部未标注素材”场景**
+   - 使用 v61 `/materials/ids?annotated=false` cursor 读取 ID-only truth；
+   - 或由后端 selection owner 冻结 scope，避免 20k IDs 全量塞进浏览器。
+
+3. **参考素材**
+   - 独立 server-side page；
+   - `annotated=true` + query + labels；
+   - 首屏只取固定 40/60 张；
+   - 搜索/筛选走 server query；
+   - 不依赖全项目 `state.images`。
+
+4. `ensureFullPool()`
+   - 继续作为 compatibility escape hatch；
+   - AI Create 不再调用。
+
+**回归测试建议：**
+
+至少增加：
+
+- 20,000 materials 打开 AI Create，不请求旧 `/api/projects/{id}/images`；
+- reference 首屏 metadata 有固定上限；
+- 默认全未标注 scope 只走 ID cursor / server selection；
+- `createAiLabel429({image_ids:[100 ids]})` 不读取另外 19,900 rows；
+- “上传完成 → AI 标注”保持 O(batch)；
+- Durable request 的 image selection truth 仍完整、可追溯。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
