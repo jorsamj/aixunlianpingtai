@@ -8836,6 +8836,265 @@ DELETE_INDEX 在 batch-level fence 后，`_delete_index_rows()` 每 image 再检
 
 ---
 
+
+### AUDIT-085 — 标签统一 REMAP 与 Training Prepare 没有整任务一致性 fence；训练可冻结“半旧标签、半新标签”Snapshot，甚至把已 remap 框投影成负样本
+
+**级别：高**  
+**模块：Label Unification / AnnotationRepository / Training Prepare / Snapshot / Training Accuracy**
+
+**现象：**
+
+当前标签统一：
+
+`REMAP_ANNOTATION_LABELS`
+
+是 Durable MaterialBatch，处理大范围数据时按：
+
+`REMAP_BATCH_SIZE = 100`
+
+逐批执行。
+
+每一批内部：
+
+`AnnotationRepository.remap_labels_if_digests(...)`
+
+会：
+
+- 获取 `label_governance_fence(project_path)`；
+- 对该批 Annotation SQLite 执行 `BEGIN IMMEDIATE`；
+- 原子更新这一批 100 张的 boxes/scope；
+- COMMIT；
+- 释放 governance fence；
+- MaterialRepository projection 随后更新；
+- 再进入下一批。
+
+因此当前合同是：
+
+**单个 100 张批次原子，但整个 1k/10k/20k 标签统一任务不是一个原子事务。**
+
+已处理批次的正式 Annotation 真相会在任务尚未结束时对其他读者可见。
+
+与此同时，来源标签只有在整个 remap：
+
+- 所有选中素材处理完成；
+- 没有 failed；
+- AnnotationRepository / MaterialRepository 均确认没有来源引用；
+
+之后才由：
+
+`_retire_merged_source_labels()`
+
+写成：
+
+- `status = merged`
+- `merged_into = target`
+
+所以 remap 进行中，来源标签和目标标签通常都仍处于 active governance。
+
+**Training Prepare 没有和 remap 共用整任务 fence：**
+
+`TrainingPrepareHandler._freeze_request_contract()`
+
+当前顺序：
+
+1. `resolve_training_selection(project, split)`
+2. `resolve_training_label_contract(...)`
+3. `project_training_rows(...)`
+4. `freeze_training_inputs(...)`
+5. 写 `input-freeze.json`
+
+其中：
+
+`resolve_training_selection()`
+→ `_selected_project_images()`
+
+读取素材时：
+
+- MaterialRepository 按 500 张一批 `get_many`；
+- AnnotationRepository 又按 500 张一批 `get_many`；
+- 没有项目级 read transaction；
+- 没有 `label_governance_fence`；
+- 没有“读取前 annotation revision / 读取后 revision 一致”校验；
+- 也没有查询 active `REMAP_ANNOTATION_LABELS` MaterialBatch。
+
+因此 Training Prepare 可以在 remap 第 N 批和第 N+1 批之间运行，并冻结当前可见的中间状态。
+
+**真实可达场景：**
+
+例如项目中：
+
+- 10,000 张“抽烟”标注；
+- 用户正在统一：
+  `smoke_old -> smoking`
+- remap 已处理 4,000 张，剩余 6,000 张尚未处理。
+
+此时开始 Training Prepare。
+
+AnnotationRepository 对 Training 的读取可能看到：
+
+- 4,000 张已经是 `smoking`；
+- 6,000 张仍是 `smoke_old`。
+
+由于来源标签尚未退役，当前 label governance 同时认为：
+
+- `smoke_old` active；
+- `smoking` active。
+
+Training 不会把这识别为“同一次统一任务的中间态”。
+
+**更严重的是训练投影行为：**
+
+`project_training_rows()`
+
+只保留：
+
+`effective_label_codes`
+
+中的 boxes。
+
+其它 label box 会进入：
+
+`excluded_boxes`
+
+如果一张 annotated 图片只剩 excluded boxes，代码会把本任务投影改成：
+
+- `annotation_state = confirmed_empty`
+- `boxes = []`
+- `negative_origin = redacted_unselected_labels`
+
+因此有三种危险结果：
+
+1. **训练任务仍只选择旧标签 `smoke_old`**
+   - 已 remap 为 `smoking` 的 4,000 张正样本不再属于 allowed code；
+   - 这些目标框被排除；
+   - 部分图片可被投影为 task-local negative；
+   - 同一语义的大量正样本被错误变成负样本/无目标样本。
+
+2. **训练任务只选择新标签 `smoking`**
+   - 尚未 remap 的 6,000 张 `smoke_old` 框被排除；
+   - 同样造成正样本丢失/负样本污染。
+
+3. **旧标签和新标签都被选择**
+   - 同一现实语义在本次 Snapshot 中暂时变成两个训练 class；
+   - 模型会把“抽烟”学成两个类别，正是标签统一原本要消除的问题。
+
+**为什么 Snapshot 自身不能自愈：**
+
+一旦 `freeze_training_inputs()` 写出：
+
+- `input_freeze_id`
+- `snapshot_id`
+- `dataset_revision_id`
+- frozen images / boxes / label schema
+
+后续 Training 会以这份 freeze 作为 durable truth。
+
+即使 remap 随后全部完成并将 `smoke_old -> smoking` 正式退役，已经冻结的 Training Snapshot 不会自动重建。
+
+因此这是“稳定冻结了一个业务中间态”，不是 transient UI 闪烁。
+
+**为什么现有 digest / CAS 也不能防住：**
+
+remap 自己有：
+
+- source_digest；
+- result_digest；
+- `ANNOTATION_CHANGED_DURING_REMAP`；
+- per-image CAS。
+
+这些保护的是：
+
+**remap 不覆盖并发 Annotation 写入。**
+
+Training freeze 只是只读，不会改变 annotation digest，因此不会触发 remap CAS 冲突。
+
+反过来 Training 也没有记录“我读的 10k AnnotationRepository 必须处于同一 repository revision”。
+
+所以双方各自局部一致，但跨 owner 的 Snapshot 一致性没有建立。
+
+**与已有 AUDIT 的区别：**
+
+- AUDIT-031：标签 disable 会破坏 PREPARING inherited training label contract；
+- AUDIT-032：canonical label code rename 破坏历史 lineage；
+- AUDIT-059：label-unify recovery / duplicate remap task；
+- AUDIT-085：**正在执行中的合法 remap 与 Training Prepare 并发，Training 冻结半完成标签变换的 Annotation truth。**
+
+即使 031/032/059 全部修复，本问题仍存在。
+
+**影响：**
+
+- 同一语义被训练成两个 class；
+- 正样本被过滤为 excluded boxes；
+- 甚至被投影成 task-local confirmed_empty，直接污染正负样本；
+- mAP / precision / recall 可能异常下降；
+- 用户刚完成标签统一后看到的训练成果可能仍包含旧标签污染；
+- Snapshot/dataset revision 看起来合法、可复现，但其业务语义来自中间态；
+- 数据量越大、remap 时间越长，竞态窗口越大；
+- 10k/20k 标签统一时尤其容易在“后台运行期间”创建训练任务触发。
+
+**为什么现有测试没发现：**
+
+现有测试分别保护：
+
+- remap 100/500 批处理、digest CAS、retirement；
+- Training label contract；
+- Training input freeze；
+- Snapshot reproducibility。
+
+缺少跨 owner 并发测试：
+
+1. 10k Annotation 中 remap 完成前 4k；
+2. 暂停 remap；
+3. 运行 Training Prepare；
+4. 再继续 remap；
+5. 断言 Training 不允许冻结混合 source/target truth。
+
+**建议最小修复：**
+
+不要把整个 20k remap 放进一个长 SQLite transaction，也不要新增第二 Annotation owner。
+
+优先建立可恢复、可观测的 project-level label mutation fence：
+
+1. `REMAP_ANNOTATION_LABELS` publish/run 时登记 active label-governance mutation：
+   - project_id；
+   - source labels；
+   - target labels；
+   - annotation revision / mutation generation；
+2. Training Prepare 在冻结 label contract / Annotation truth 前：
+   - 检查是否存在与所选素材/标签相关的 active remap；
+   - 命中时 fail closed 或等待该 Durable Task terminal；
+3. Training freeze 至少记录：
+   - annotation repository revision；
+   - label governance revision/generation；
+4. 完成 500-chunk/多次读取后再次校验 revision：
+   - 若期间发生变化则丢弃本次读取并重试；
+   - 不能把跨 revision 的 rows 写进同一 Snapshot；
+5. remap terminal 后再允许新的 Training Prepare 使用已经完成的 canonical merged label truth。
+
+如果实现 revision-stable read，则必须同时覆盖：
+
+- AnnotationRepository revision；
+- label metadata/governance revision；
+
+只检查其中一个仍可能得到 boxes 与 label schema 不一致。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 10k source label，remap 40% 时并发 Training Prepare；
+- Prepare 必须等待/409/重试，不能生成 mixed Snapshot；
+- remap 完成后 Training Snapshot 只包含 target label；
+- 不出现 source+target 两个 training class；
+- 不把已 remap 正样本投影为 task-local negative；
+- revision 在 Training 分段读取期间变化时必须检测并重新读取；
+- remap FAILED/PARTIAL_SUCCESS 时 Training 必须明确 fail closed，不能猜测混合语义。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
