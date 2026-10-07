@@ -11960,3 +11960,189 @@ Material Integrity 是质量中心后续人工处理的证据来源，不是“�
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-098 — MaterialBatch AI Candidate 写入缺少 execution commit fence；check_active 通过后失去 lease / 被取消的旧 Worker 仍可提交迟到候选
+
+**级别：高**  
+**模块：AI Annotation / MaterialBatch / CandidateStore / Worker Lease / Cancellation Fencing**
+
+**现象：**
+
+当前平台有两条使用同一个 CandidateStore 的 AI generation 路径：
+
+1. 普通 `TaskKind.AI_ANNOTATION`；
+2. MaterialBatch 的 `operation=AI_ANNOTATE`。
+
+普通 AI Annotation 已经实现正确的 commit fence：
+
+`store.write_session(commit_guard=lambda: _assert_generation_commit(context))`
+
+CandidateStore 每次 SQLite append 会在同一个 `BEGIN IMMEDIATE -> write -> commit_guard -> COMMIT` 事务内重新证明：
+
+- 当前 execution generation；
+- Worker lease；
+- cancellation / ownership。
+
+因此“模型调用完成以后才失去 lease”的旧 Worker 无法把迟到结果提交进 Candidate truth。
+
+但 MaterialBatch AI 使用的是：
+
+`AnnotationBatch.process()`
+
+流程为：
+
+1. `check_active(...)`；
+2. materialize / decode；
+3. 再次 `check_active(...)`；
+4. 调 provider `annotate_one(...)`；
+5. provider 返回后再次 `check_active(...)`；
+6. `self.store.append_items([item])`；
+7. `manifest.transition([image_id], "succeeded")`。
+
+第 6 步没有传 CandidateStore 已经提供的：
+
+`commit_guard=`
+
+所以第 5 步只是一次普通 heartbeat/check，不是数据库 commit fence。
+
+**真实竞态窗口：**
+
+`check_active()`
+
+内部通过：
+
+`context.repository.heartbeat(task_id, lease_token, ...)`
+
+证明当下 lease 仍有效。
+
+但 heartbeat 返回后，到 CandidateStore 真正 COMMIT 之间存在时间窗口：
+
+- Candidate SQLite 等待 `BEGIN IMMEDIATE`；
+- WAL / fsync；
+- 磁盘抖动；
+- 另一 review/read/write 连接竞争；
+- Worker 网络/调度延迟。
+
+CandidateStore SQLite connection timeout 本身可到 30 秒。
+
+在这个窗口内，如果：
+
+- 用户请求 cancel；
+- Worker lease 到期；
+- execution generation 被 recovery/retry 替换；
+- 另一 Worker 已重新取得同一 task；
+
+旧 Worker仍会继续执行：
+
+`append_items([item])`
+
+并 COMMIT 成功，因为这个事务没有再向 TaskRepository 验证 lease token。
+
+之后它还可能继续执行：
+
+`manifest.transition(..., "succeeded")`
+
+进一步把 selection item 标成完成。
+
+**为什么现有“provider 后再 check_active”仍不够：**
+
+这是典型 TOCTOU：
+
+`check -> ownership changes -> commit`
+
+检查和提交不是同一个 fence。
+
+而 CandidateStore 自身的 API 已经专门支持：
+
+`append_items(..., commit_guard=...)`
+
+和：
+
+`write_session(commit_guard=...)`
+
+其注释也明确说明：
+
+“Candidate rows 在独立 SQLite 中，仅拿到 artifact path 不足以 fence 后续 SQLite commit；生产 AI annotation handler 应提供 WorkerContext-backed guard，防止 stale/late model output 在 lease loss 后提交。”
+
+MaterialBatch AI 当前正好绕过了这个机制。
+
+**普通 AI Annotation 已经证明正确合同：**
+
+`annotation_task_service.py` 的 canonical generation 使用：
+
+`with store.write_session(commit_guard=lambda: _assert_generation_commit(context)) as append_candidate:`
+
+并在 provider 返回后：
+
+- 先检查 cancel；
+- 再进入带 commit_guard 的 CandidateStore transaction。
+
+所以 AUDIT-098 不是要求设计新机制，而是 MaterialBatch adapter 没有复用已经存在的 fencing contract。
+
+**现有测试缺口：**
+
+`tests/unit/test_annotation_batch_cancel_fencing.py` 已覆盖：
+
+1. materialize 期间 cancel -> 不调用 provider；
+2. provider 调用期间 cancel -> provider 返回后 check_active 抛 InterruptedError，CandidateStore 不写。
+
+但没有覆盖：
+
+`provider 后 check_active 成功 -> append_items 开始/等待锁 -> 此时 cancel 或 lease loss -> COMMIT 必须失败`
+
+所以当前测试能证明前两个窗口安全，却恰好漏掉 commit-time window。
+
+**可能后果：**
+
+- CANCEL_REQUESTED / CANCELLED 后 CandidateStore 仍出现新的 success/empty 候选；
+- lease recovery 后旧 Worker 与新 Worker 对同一 image_id 竞争 upsert，后提交者覆盖前者；
+- stale generation 的 provider 输出可能覆盖当前 generation 的候选；
+- manifest item 可能被旧 Worker错误推进到 succeeded；
+- 后续 retry 看到旧 success/empty candidate 时会按“已持久化，避免重复计费”直接跳过 inference，从而把迟到 stale candidate 当成有效恢复证据；
+- CandidateStore truth、BatchSelection truth 与 TaskRepository execution generation 发生分裂。
+
+**与 AUDIT-080 的区别：**
+
+AUDIT-080 是：
+
+`PARTIAL_SUCCESS -> retry`
+
+被旧 review confirmation 短路，失败图片根本不重新推理。
+
+AUDIT-098 是：
+
+**正在 generation 的 Worker 已失去执行权后，仍可能把 provider result 写进 CandidateStore。**
+
+一个是 retry phase 语义错误，一个是 commit fencing / stale Worker 并发错误。
+
+**建议最小修复：**
+
+不要新增第二 CandidateStore，也不要另造 AI runtime。
+
+复用现有 CandidateStore fencing 能力：
+
+1. MaterialBatch `AnnotationBatch` 接收一个 execution commit guard；
+2. success/empty/failed candidate 的 `append_items` 都必须：
+   `commit_guard=lambda: _check_active(context, ...)`；
+3. guard 必须在 CandidateStore SQLite transaction 内、COMMIT 前执行；
+4. BatchSelection 的 `running -> succeeded/failed` transition 也要有同等级 execution fence，避免 Candidate commit 安全后 selection transition 又出现第二个 TOCTOU；
+5. cancellation control-flow 不能被转成普通 failed candidate；
+6. 保留“candidate durability 后避免重复计费”的恢复语义，不要通过删除 CandidateStore 解决。
+
+**回归测试建议：**
+
+至少增加：
+
+- provider 返回后第一次 check_active 成功；
+- 在 CandidateStore transaction/commit_guard 时模拟 CANCEL_REQUESTED -> 无 candidate commit；
+- 模拟 lease token 被替换 -> stale Worker 无 candidate commit；
+- 新 generation 已提交 candidate 后，旧 Worker迟到不得覆盖；
+- failed candidate 写入同样受 fence；
+- Candidate commit 成功但 selection transition 前失去 lease时，旧 Worker不得推进 selection；
+- 现有 materialize/inference cancellation 测试保持；
+- 普通 AI_ANNOTATION 的 commit_guard 合同保持一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
