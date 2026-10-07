@@ -10426,3 +10426,250 @@ AUDIT-090 是**单次 VideoFrameHandler 事务在失败/取消时立即产生的
 
 ---
 
+### AUDIT-091 — Remote Training 在算法版本 attach 前就正式登记 ModelArtifact；后续标签合同/版本冲突失败可留下“有模型产物、无算法版本”的半提交
+
+**级别：高**  
+**模块：Remote Training / ModelArtifact / Algorithm Version / Result Commit / Crash Consistency**
+
+**现象：**
+
+当前远程训练结果的 canonical commit：
+
+\`RemoteExecutionTransportService._commit_training_result()\`
+
+不是“先完整验证，再一次性发布版本与产物”。
+
+真实顺序是：
+
+1. 校验远程 result/model evidence；
+2. 下载 primary model 到项目 \`models/\`；
+3. 对 best / last 等模型逐个调用：
+   \`ModelArtifactRuntime.register_verified_remote_artifact(...)\`；
+4. ModelArtifactRepository 立即创建正式 artifact row，并标成：
+   \`storage_status = UPLOADED\`；
+5. 之后才继续构建 / 校验：
+   - frozen label schema；
+   - label contract；
+   - snapshot label schema；
+   - evaluation truth；
+   - training lineage；
+   - version payload；
+6. 最后才调用：
+   \`attach_version_if_current(...)\`
+   把算法版本真正写入算法版本 truth。
+
+因此 ModelArtifact 的正式发布发生在算法版本生命周期之前。
+
+**已确认 ModelArtifact owner 不会替调用方补这个约束：**
+
+\`ModelArtifactRuntime.register_verified_remote_artifact()\`
+
+只验证：
+
+- SHA256；
+- size；
+- storage_source；
+- object evidence；
+- artifact identity；
+
+然后直接：
+
+\`self.repository.upsert({... version_id ...})\`
+
+并：
+
+\`storage_status='UPLOADED'\`。
+
+它不会检查：
+
+“这个 algorithm_id/version_id 是否已经存在于 algorithms truth”。
+
+所以 artifact row 可以合法存在于 ModelArtifactRepository，但对应 algorithm version 根本不存在。
+
+**可达失败窗口 1 — 标签合同校验发生在 artifact 注册之后：**
+
+artifact 注册完成后，代码才检查：
+
+\`contract_codes != frozen_label_codes\`
+
+→ 抛：
+
+\`REMOTE_TRAINING_LABEL_CONTRACT_MISMATCH\`
+
+以及：
+
+\`snapshot_codes != frozen_label_codes\`
+
+→ 抛：
+
+\`REMOTE_TRAINING_LABEL_SNAPSHOT_MISMATCH\`。
+
+这两个异常都会让本次 result commit 失败，但此前已经登记的 ModelArtifact 不会 rollback。
+
+**可达失败窗口 2 — 多模型逐个注册不是原子提交：**
+
+\`uploaded_models\` 被逐条：
+
+\`register_verified_remote_artifact()\`
+
+例如：
+
+- best 注册成功；
+- last 在 provider.stat / SHA / repository write 等任一步失败；
+
+则 best 已经是正式 canonical ModelArtifact，last 未完成，算法版本也尚未 attach。
+
+形成“同一个训练结果只提交了一部分模型产物”的状态。
+
+**可达失败窗口 3 — 算法版本并发冲突发生在最后：**
+
+所有 ModelArtifact、primary local model、evaluation/lineage 都准备后，最终：
+
+\`attach_version_if_current(... expected_current_version_id=...)\`
+
+仍可能因为并发版本推进抛：
+
+\`ALGORITHM_VERSION_CONFLICT\`
+
+并转换成：
+
+\`REMOTE_TRAINING_BASE_VERSION_STALE\`。
+
+此时：
+
+- ModelArtifact rows 已存在；
+- primary model 本地文件已存在；
+- 但新算法版本没有 attach。
+
+**额外本地半成品：**
+
+primary model 在 artifact registration 之前已经下载并原子 rename 到：
+
+\`projects/{project}/models/remote_<task>_g<generation>_<role>_<sha>.pt\`
+
+如果后续 commit 失败，这个模型文件同样没有当前算法版本 owner。
+
+文件名虽然是 deterministic、后续同 task recovery 可复用，但如果任务最终失败且不恢复，它就是无 version owner 的本地模型残留。
+
+**为什么是 Bug / Owner 生命周期冲突：**
+
+ModelArtifact 是 canonical 模型产物 owner，但它的记录应当从属于一个真实存在的算法版本 lifecycle。
+
+当前 commit 顺序允许：
+
+\`ModelArtifact(version_id=V) = UPLOADED\`
+
+同时：
+
+\`Algorithm.versions\` 中根本没有 \`V\`。
+
+这会让：
+
+- ModelArtifact inventory；
+- external publication；
+- conversion source discovery；
+- rollback / retirement；
+- artifact GC；
+
+面对一个没有版本 owner 的正式产物。
+
+这不是普通 task staging，而是 canonical ModelArtifactRepository 已经被写入。
+
+**与 AUDIT-065 的区别：**
+
+AUDIT-065 是 Durable Task terminal artifact / task-runtime 文件缺少统一 retention/GC。
+
+AUDIT-091 是**业务 canonical owner 的事务半提交**：
+
+- ModelArtifactRepository 已正式登记；
+- algorithm version 尚未创建。
+
+不能依赖未来 task artifact GC 解决，因为这些 rows 已经不是 task-runtime staging。
+
+**与已 CLOSED ModelArtifact identity 的关系：**
+
+本问题不要求重新设计 ModelArtifact identity。
+
+现有 deterministic identity 是正确方向。
+
+问题是 publication/commit ordering：
+
+canonical ModelArtifact 被过早发布。
+
+应修 commit lifecycle，不应新建第二套 artifact owner。
+
+**现有测试为什么没发现：**
+
+\`tests/unit/test_remote_execution_transport.py\`
+
+happy-path 训练 commit 明确断言：
+
+- \`len(model_artifacts.registered) == 2\`；
+- algorithm version attach 成功；
+- version 含正确 label schema / lineage / evaluation。
+
+但当前没有测试：
+
+- 在 artifact registration 之后故意制造 \`LABEL_CONTRACT_MISMATCH\`；
+- 在第 2 个 model artifact registration 失败；
+- 在所有 artifact 注册后让 \`attach_version_if_current()\` 抛 conflict；
+
+并断言：
+
+“ModelArtifactRepository 不得留下任何无版本 owner 的正式记录”。
+
+现有 base-version-stale 测试是在 artifact registration **之前**就失败，因此覆盖不到这个窗口。
+
+**影响：**
+
+- 模型资产页可能出现对应版本不存在的 artifact；
+- conversion / publication / retirement 查询可能拿到 dangling version_id；
+- 部分 best/last 已登记、另一部分缺失；
+- 本地 models 目录产生无 version owner 的模型文件；
+- 远程训练 UI 显示 commit 失败，但模型资产 truth 已发生不可见副作用；
+- retry / crash recovery 必须额外处理历史半提交，否则状态依赖失败发生位置；
+- 长期运行可积累无法由正常算法版本删除链回收的 canonical artifact rows。
+
+**建议最小修复：**
+
+不要新增第二 ModelArtifact owner，也不要放宽既有版本冲突保护。
+
+优先调整 remote training commit 为“验证阶段”和“发布阶段”：
+
+1. 在任何 canonical ModelArtifact write 前完成所有纯校验：
+   - frozen label schema；
+   - label contract；
+   - snapshot schema；
+   - evaluation inputs；
+   - lineage inputs；
+   - base/current version fence；
+   - 完整 best/last evidence；
+2. 多模型 evidence 必须先全部验证成功，再进入 publication；
+3. algorithm version + ModelArtifact 应由一个明确 commit owner 协调：
+   - 要么先以 version delivery fence 保留版本生命周期，再批量登记 artifacts；
+   - 要么提供 compensating rollback，任何后续异常删除本次 generation 新建的 artifact rows；
+4. 只有 commit 全部完成后才触发 external auto publish；
+5. primary local model 也必须：
+   - task-scoped staging；
+   - 或在 commit failure 时按 deterministic ownership 做 cleanup；
+6. crash recovery 必须保持幂等：
+   - 已 attach version + artifacts 时重新进入直接 reconcile；
+   - 不得重复版本，不得重复 artifact，不得误删其他 generation。
+
+**回归测试建议：**
+
+至少增加：
+
+- best 注册成功、last 注册失败 → 无半提交 artifact；
+- artifact 全成功、label contract mismatch → 无 dangling artifact/version；
+- artifact 全成功、snapshot mismatch → 无 dangling artifact/version；
+- artifact 全成功、final attach conflict → artifact rollback 或明确可恢复 staging；
+- primary local model 在失败路径不形成无 owner 文件；
+- crash after version attach before task finish → recovery 幂等；
+- retry generation 不删除上一代已经被真实 version 引用的 artifact。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
