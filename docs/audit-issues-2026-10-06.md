@@ -24168,3 +24168,98 @@ completion 之后的 refresh 必须建立一个比 mutation 更新的 read gener
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-176 — 算法版本 retirement 不检查 Online Feedback pending_review 引用；版本删除后持久化人工待复核反馈永久无法 Confirm
+
+**级别：高**  
+**模块：Algorithm Version Retirement / Online Feedback / Human Review / Prediction Evidence / Lifecycle Dependency**
+
+**现象：**
+
+当前 Online Feedback 是持久化人工审核工作流。OnlineFeedbackRepository 明确保存 status、algorithm_id、version_id、model_sha256、prediction_id，并为 `(algorithm_id, version_id, created_at)` 建立索引。
+
+用户将正式算法版本的真实 Deployment Test 提交抽检后，feedback 进入 `pending_review`，等待人工 Confirm / Dismiss。
+
+但当前算法版本 DELETE / rollback 的 `_algorithm_version_active_references()` 只验证 active TRAINING、MODEL_CONVERSION、DEPLOYMENT_TEST，完全没有检查 OnlineFeedbackRepository 中 `status='pending_review'` 对目标 algorithm/version 的引用。因此版本可以在人工反馈尚未处理时被正常删除。
+
+**删除后为什么这条 feedback 无法继续 Confirm：**
+
+`confirm_online_feedback()` 每次确认都会调用 `_online_prediction_evidence(project_id, staged['prediction_id'])`。该函数明确执行 `_algorithm_version_for_action(project_id, evidence['algorithm_id'], evidence['version_id'])`，随后重新计算 `_online_feedback_version_model_sha256(version)` 并要求与 evidence/model SHA 一致。
+
+一旦版本已被 DELETE / rollback retirement 删除，`_algorithm_version_for_action()` 找不到 version，Confirm 返回 404/409；feedback 仍保持 `pending_review`。Dismiss 不依赖 live version，因此用户最终只能忽略，不能把已经提交的正确/误检证据提升为正式素材/GT。
+
+**真实调用链：**
+
+Quality Center 正式算法版本检测成功
+→ `POST /api/v64/.../deployment-tests/{task_id}/feedback-evidence`
+→ 冻结 prediction evidence：algorithm_id/version_id/model_sha256/input_sha256
+→ `POST /api/v63/.../online-feedback`
+→ OnlineFeedbackRepository.stage()
+→ status=pending_review
+→ 用户暂未处理
+→ 另一个用户 DELETE 历史版本，或 rollback 删除当前版本
+→ version dependency check 看不到 pending feedback
+→ 算法版本及专属模型产物成功 retirement
+→ feedback 仍出现在待复核工作台
+→ 用户点击确认
+→ `_online_prediction_evidence()` 重新要求 version 存在
+→ 稳定失败。
+
+**为什么这是生命周期 Bug：**
+
+系统同时建立了两个互相矛盾的合同：
+
+1. Online Feedback 把 `pending_review` 当作需要人工处理的 durable business queue；
+2. Confirm 又要求来源 algorithm version 仍是可验证的正式版本。
+
+既然确认阶段依赖 version 生命周期，那么 pending feedback 就必须是版本 retirement 的 active dependency；或者 feedback staging 时必须把后续确认所需的不可变证据完整冻结，使 Confirm 不再依赖 live version。当前两者都没有做到。
+
+**更早的同类窗口：**
+
+完成的 Deployment Test 在用户点击“提交抽检反馈”前也可能被版本删除，随后 feedback-evidence promotion 因版本不存在而无法执行。这个阶段仍可解释为“历史检测尚未进入人工反馈工作流”。但已经成功 stage 成 pending_review 的反馈不同：平台已经接受并持久化了用户的复核任务，之后再由版本 retirement 把它变成不可处理待办，属于明确 lifecycle drift。
+
+**影响：**
+
+- pending_review 可永久卡死；
+- 工作台持续显示复核按钮，但 Confirm 稳定失败；
+- 用户只能 Dismiss 合法反馈，造成反馈样本丢失；
+- confirmed feedback / supplement candidate 数据闭环被截断；
+- 版本删除成功与人工审核队列真相不一致；
+- 历史 prediction evidence 仍在磁盘，却因为 live version metadata 被删而无法使用。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-056：最近 100 条 bounded history 会把旧 pending_review 挤出 UI；
+- AUDIT-108：Confirm 与 Dismiss 并发时终态 CAS 和 Material/Annotation side effect 不原子；
+- AUDIT-135：旧同步 predict 是第二推理 Runtime；
+- AUDIT-175：external version retirement 的 remote-delete/local-delete saga crash consistency；
+- AUDIT-176：版本 retirement 没把已经存在的 pending human-review feedback 当 active dependency，导致 durable feedback 被删除来源版本后永久无法 Confirm。
+
+**现有测试为什么没有发现：**
+
+Online Feedback 测试覆盖 evidence identity/model SHA、stage/confirm/dismiss、Material/Annotation promotion、幂等与并发；版本 retirement 测试覆盖 active Training、Conversion、Deployment Test、external deletion 与 cleanup。缺少跨 owner 测试：`pending_review feedback → delete/rollback source version → confirm`。
+
+**建议最小修复方向：**
+
+不要新增第二 Online Feedback owner。两种可接受方向必须择一并保持单一合同：
+
+1. **Lifecycle pin（最小）**：在 `_algorithm_version_active_references()` 中通过 OnlineFeedbackRepository 查询目标 version 的 pending_review；存在时禁止 delete/rollback，并返回明确引用数量/原因。confirmed/dismissed 不必永久 pin。
+2. **Immutable evidence self-containment（更彻底）**：staging 时冻结后续 Confirm 所需的正式 model identity / label contract 等不可变证据，使 Confirm 不再依赖 live version，但仍保持完整 fail-closed 校验。
+
+不要通过“Confirm 找不到版本时跳过 SHA 校验”来修，这会放宽现有安全合同。
+
+**应新增回归测试：**
+
+- pending_review 引用 v1 → DELETE v1 返回 409；
+- current v2 有 pending_review → rollback 删除 v2 返回 409；
+- Dismiss pending 后 → version 可删除；
+- Confirm pending 后 → version 可按现有 retention policy 删除；
+- unrelated version 的 pending feedback 不阻塞目标 version；
+- pending feedback 数量很大时使用 indexed existence/count query，不全表 hydrate；
+- 若采用 immutable evidence 方案，version 删除后 Confirm 仍完整验证 frozen model/evidence identity；
+- 保留现有 model SHA fail-closed 测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
