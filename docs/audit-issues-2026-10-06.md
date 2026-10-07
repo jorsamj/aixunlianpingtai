@@ -17157,3 +17157,149 @@ AUDIT-130 是**任务创建前上传体的内存 admission / streaming 问题**�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-131 — Video Task 上传虽按 1MiB 流式写盘，但没有文件大小/磁盘配额边界，且 TaskRecord 在完整上传后才创建；断连/写盘失败会留下无 owner 的 partial artifact
+
+**级别：高**  
+**模块：Video Frames / Durable Task Admission / Upload Lifecycle / Disk Safety / Artifact Ownership**
+
+**现象：**
+
+当前正式 Video Task 创建入口：
+
+`POST /api/v33/projects/{project_id}/video-tasks`
+
+已经避免了 `await video.read()` 全量内存化，采用：
+
+`while True -> await video.read(1024 * 1024) -> fp.write(chunk)`
+
+所以它没有 AUDIT-130 的大文件 OOM 问题。
+
+但这里仍缺两个关键 lifecycle 边界：
+
+1. **没有任何最大视频大小 / 项目配额 / 剩余磁盘 admission；**
+2. **TaskRecord 在整个视频完全写完之后才创建。**
+
+真实顺序是：
+
+- 生成 task_id；
+- 直接建立：
+  `task_runtime/artifacts/<task_id>/inputs/<filename>`
+- 流式写完整视频；
+- 检查非空；
+- 写 `payload.json`；
+- 最后才：
+  `TaskRepository.create(TaskRecord.new(...))`
+
+因此上传阶段产生的文件在 Durable Task truth 建立以前就已经存在。
+
+**真实失败场景：**
+
+场景 A — 客户端断开：
+
+- 上传已写入数 GB；
+- `await video.read(...)` 抛异常/请求取消；
+- 当前代码没有 try/finally cleanup；
+- endpoint 没有 TaskRecord；
+- partial video 留在 task artifact root。
+
+场景 B — 磁盘写满 / OSError：
+
+- `fp.write(chunk)` 中途失败；
+- partial file 已经存在；
+- TaskRepository 尚未有对应 task；
+- 没有 terminal task 可供 retention/GC owner处理。
+
+场景 C — 合法但超大视频：
+
+- 当前没有 byte limit；
+- 客户端可持续写到磁盘耗尽；
+- 即使最终任务成功创建，控制面磁盘已可能被单个任务占满。
+
+**为什么 AUDIT-065 不能覆盖：**
+
+AUDIT-065 是：
+
+**已经存在 Durable Task 的 terminal artifact 缺统一 retention/GC。**
+
+AUDIT-131 发生在：
+
+**TaskRecord 创建以前。**
+
+partial artifact 没有数据库 task identity，因此基于 terminal status 的 GC 根本看不到它。
+
+ArtifactStore 当前只有：
+
+`delete_task(task_id)`
+
+这种“已知 task_id 删除”能力，没有 orphan artifact root reconciliation。
+
+**影响：**
+
+- 断线上传可永久残留大文件；
+- 重复断连会累积无 TaskRecord 的孤儿目录；
+- 恶意或误选超大视频可耗尽控制面磁盘；
+- 磁盘耗尽会影响：
+  - TaskRepository SQLite；
+  - Annotation/Material 数据；
+  - Training artifacts；
+  - Web/Worker 日志；
+- 用户 UI 中没有对应任务记录，无法主动删除这些 partial files；
+- 运维只能人工查文件系统。
+
+**现有测试缺口：**
+
+`tests/api/test_video_tasks.py`
+
+当前只覆盖：
+
+- 小视频成功流式落盘并创建 QUEUED Durable task；
+- list/cancel 使用持久化 repository。
+
+没有覆盖：
+
+- 上传超过大小限制；
+- client disconnect；
+- write OSError / ENOSPC；
+- TaskRepository.create 失败后的 upload artifact rollback；
+- orphan task artifact reconciliation。
+
+**建议最小修复：**
+
+不要新增第二上传 owner。
+
+在现有 v33 create owner 内：
+
+1. 定义明确的最大视频上传 bytes，或项目级可配置 quota；
+2. chunk 写盘时累计字节数，超过上限立即：
+   - 停止读取；
+   - 删除当前 task artifact root；
+   - 返回 413；
+3. 上传阶段使用 try/finally / rollback：
+   - 只要 TaskRecord 尚未成功 publish，异常就删除 pre-task artifact；
+4. TaskRepository.create 失败时同样 rollback；
+5. 如需支持很大视频，应采用显式 multipart/resumable upload owner，而不是无限单请求流；
+6. 增加统一 orphan artifact reconciliation：
+   - artifact root 存在；
+   - TaskRepository 无 task_id；
+   - 超过安全 grace period；
+   - 才允许 GC；
+   - 不得误删仍在进行的 staged upload。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 超限视频返回 413 且 artifact root 不存在；
+- 模拟 upload read exception 后 partial file 被清理；
+- 模拟 fp.write ENOSPC 后 partial file 被清理；
+- 模拟 TaskRepository.create 失败后 payload/video 均 rollback；
+- 合法小视频仍按 1MiB bounded streaming 创建任务；
+- orphan GC 只清超过 grace period 且数据库无 task row 的目录；
+- 并发上传不互相误删。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
