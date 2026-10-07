@@ -20955,3 +20955,93 @@ Cleaning recovery 测试主要验证 succeeded row 不重复执行、failed row 
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-153 — CLEAN PARTIAL_SUCCESS 明确提示“请重试”，但 canonical 清洗页面没有 retry 入口；用户只能重新创建整批任务
+
+**级别：中高**  
+**模块：Cleaning UI / MaterialBatch Retry / Partial Success / Frontend-Backend Contract**
+
+**现象：**
+
+canonical CLEAN MaterialBatch 后端已经实现 item-level retry：`POST /api/v62/projects/{project_id}/material-batches/{task_id}/retry` 允许 `FAILED / PARTIAL_SUCCESS / CANCELLED / BLOCKED_*` 重新排队；CLEAN retry 时只把 `failed/running` selection rows 重置为 pending，已 succeeded rows 保持不动。
+
+v47 清洗兼容投影也明确把 Durable `PARTIAL_SUCCESS` 映射成：
+
+- `status = failed`
+- `status_text = 部分失败，请重试`
+
+说明产品合同本身要求用户对部分失败任务执行 retry。
+
+但当前 canonical 清洗页面没有暴露这一动作。
+
+`cleanTaskRow427()` 的操作列只有：
+
+- 始终显示“详情”；
+- `status==='awaiting_confirmation'` 时额外显示“审计结果”。
+
+FAILED / PARTIAL_SUCCESS 没有“重试”按钮。
+
+`showCleanTaskProgress429()` / 清洗详情同样没有 retry 动作。
+
+仓库虽然已经存在 `window.retryMaterialBatch62()`，会调用 canonical MaterialBatch retry endpoint，但清洗 UI 没有任何引用把它接到用户操作。
+
+**真实调用链：**
+
+1. 用户创建 1k/10k CLEAN；
+2. 大多数图片成功，少量图片因对象存储瞬断、分析超时、临时 I/O 等失败；
+3. Durable task 结束为 PARTIAL_SUCCESS；
+4. 清洗列表显示“部分失败，请重试”；
+5. 用户打开任务行或详情；
+6. 页面只有“详情/关闭”，没有 retry；
+7. 用户无法使用后端已经实现的失败项增量恢复；
+8. 实际只能重新创建一个新的整批 CLEAN，导致已成功素材再次被读取和分析。
+
+**影响：**
+
+- 临时错误无法从正常 UI 恢复；
+- 少量失败会迫使 1k/10k/20k 整批重扫；
+- 重复对象读取、图片解码、dHash/模糊/亮度等计算；
+- 远程 Agent Cleaning 同样失去 item-level resume 的用户入口；
+- 状态文案“请重试”与操作能力矛盾；
+- 用户容易误判系统卡住或只能删除任务重来；
+- 新建整批任务增加重复历史、日志和结果存储。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-038：确认接口缺少运行状态 guard；
+- AUDIT-049：Cleaning preempt/cancel 语义；
+- AUDIT-050：详情全量 hydrate；
+- AUDIT-086：删除失败后仍推进 processed；
+- AUDIT-152：retry 复用旧 succeeded result 时未绑定当前 content hash；
+- AUDIT-153：即使 retry 本身存在，canonical 清洗 UI 根本没有把 retry action 暴露给用户。
+
+所以 153 是 frontend action owner 缺失，不是 152 的 retry data-integrity 问题。
+
+**建议最小修复方向：**
+
+不要新增第二 Cleaning retry owner，直接复用现有 MaterialBatch runtime/endpoint：
+
+1. Cleaning view 增加统一 `canRetry`；
+2. 对后端允许重试的 FAILED / PARTIAL_SUCCESS / CANCELLED / BLOCKED 状态显示“重试失败项”；
+3. 点击后调用同一 task_id 的 canonical `/material-batches/{task_id}/retry`；
+4. 不新建第二 CLEAN task；
+5. retry 后继续由 PollRegistry 接管轮询；
+6. succeeded rows 保持 resume 语义，数据一致性同时按 AUDIT-152 加 hash fence；
+7. SUCCEEDED / awaiting_confirmation / done 不显示 retry；
+8. status text 与 canRetry 由同一 helper/后端 truth 驱动，避免再维护重复枚举。
+
+**应新增回归测试：**
+
+- PARTIAL_SUCCESS → 页面显示“重试失败项”；
+- 点击后只调用 canonical retry endpoint；
+- 同一 task_id 从 terminal 回 QUEUED/RUNNING；
+- succeeded rows 不重跑，仅 failed/running rows重试；
+- FAILED/CANCELLED/BLOCKED 的按钮 eligibility 与后端一致；
+- SUCCEEDED/awaiting_confirmation 不显示 retry；
+- 10k 中 2 项失败时 UI retry 不重新创建任务；
+- retry 后仅一个 PollRegistry owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
