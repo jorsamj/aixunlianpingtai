@@ -15718,3 +15718,190 @@ PollRegistry 只拥有“单次 terminal waiter timer”，不能替代整个 De
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-123 — PageRequestScope 用 NEVER 吞掉导航 abort；GET 调用方的 finally / single-flight 清理永不执行，可永久卡死 loading=true 与 refreshPromise
+
+**级别：高**  
+**模块：PageRequestScope / Navigation / Async Cleanup / Storage Sources / Online Feedback / Frontend Runtime**
+
+**现象：**
+
+当前 `PageRequestScope.fetch()` 会自动接管同源 API 的 GET/HEAD。
+
+页面导航时：
+
+`PageRequestScope.navigate()`
+
+会 abort 当前 controller，并递增 page generation。
+
+对于这种“因为页面导航而失效”的 GET，catch 并不是 reject AbortError，而是：
+
+```js
+if (isAbortError(error) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
+  this.abortedRequests += 1;
+  return NEVER;
+}
+```
+
+其中：
+
+`const NEVER = new Promise(() => {})`
+
+即 Promise 永远不会 resolve / reject。
+
+设计意图是避免旧 app.js 调用方 catch 后弹出“请求失败” toast，但副作用是：
+
+**任何依赖 await 后 finally / promise.finally 做运行时清理的调用方都会永久停在 await。**
+
+**明确可复现 1 — Storage Sources：**
+
+`loadStorageSources61()` 当前：
+
+1. 如果 `state.storageSourcesLoading61` 为 true，直接返回已有 snapshot；
+2. 否则设置：
+   `state.storageSourcesLoading61=true`
+3. await：
+   `api('/api/v61/storage-sources')`
+4. 仅在 `finally`：
+   `state.storageSourcesLoading61=false`
+
+如果用户在第 3 步 GET in-flight 时切换页面：
+
+- PageRequestScope abort GET；
+- fetch 返回 NEVER；
+- `api()` 永远不返回；
+- `loadStorageSources61()` 永远不进入 finally；
+- `storageSourcesLoading61` 永久保持 true。
+
+之后用户重新进入“存储配置”：
+
+`loadStorageSources61()`
+
+第一句命中：
+
+`if(state.storageSourcesLoading61) return state.storageSources61`
+
+因此不会再发任何 GET。
+
+如果这是首次加载：
+
+- 页面可能长期只看到空/旧 snapshot；
+- “刷新”也无法恢复，因为 loading flag 仍是 true。
+
+只有整页 reload / 手工重置 state 才能恢复。
+
+**明确可复现 2 — Online Feedback：**
+
+`loadOnlineFeedback63()` 用：
+
+- `state.onlineFeedback63RefreshPromise`
+- `state.onlineFeedback63RefreshProjectId`
+
+实现 single-flight。
+
+它创建：
+
+`task = api(...).then(...).catch(...).finally(...)`
+
+并且只有在 `.finally()` 中清：
+
+- `onlineFeedback63RefreshPromise=null`
+- `onlineFeedback63RefreshProjectId=''`
+
+如果导航期间该 GET 被转成 NEVER：
+
+- then 不执行；
+- catch 不执行；
+- finally 也永远不执行；
+- 同项目再次打开质量中心时：
+  `if(refreshPromise && refreshProjectId===projectId) return refreshPromise`
+- 返回的仍是同一个 NEVER。
+
+于是这个项目的“线上抽检 / 反馈”读取可以永久失去刷新能力，直到页面重载或别的路径覆盖该 state。
+
+**为什么是系统性问题：**
+
+问题不属于 Storage Sources 或 Online Feedback 单一模块，而是 PageRequestScope 对“导航失效请求”的统一语义。
+
+所有类似模式都有风险：
+
+- `loading=true; try { await GET } finally { loading=false }`
+- `refreshPromise = GET.finally(()=>refreshPromise=null)`
+- UI button disabled → await GET → finally enable；
+- modal hydration state → await GET → finally clear；
+- long-running workflow 中 await GET。
+
+只要该 GET 在导航时 in-flight，就可能永远没有清理机会。
+
+AUDIT-122 已展示同一 NEVER 语义在 Quality Center terminal waiter 中会让整个 batch 永久悬挂；AUDIT-123 记录的是更基础的：
+
+**普通 GET single-flight / loading owner 被永久毒化。**
+
+**为什么这是 Bug：**
+
+“旧页面结果不能回写新页面”是正确要求。
+
+但实现不应通过一个永不 settle 的 Promise 来保证。
+
+一个异步调用一旦永不 settle：
+
+- finally 不执行；
+- resource/owner 不释放；
+- single-flight 槽位不释放；
+- 调用者没有任何机会识别 navigation cancellation。
+
+这等价于把“取消”变成“永久 pending”，破坏正常 JavaScript async lifecycle。
+
+**影响：**
+
+- 页面切换时容易产生永久 loading flag；
+- single-flight promise 永久占位；
+- 回到原页面后无法重新请求；
+- 用户点击刷新无效；
+- 旧数据/空数据长期显示；
+- 运行中的按钮、loading 动画、局部状态可能无法复位；
+- 长时间使用单页应用时问题会累积；
+- 只有整页刷新才能恢复，容易被误判为后端接口失效。
+
+**建议最小修复：**
+
+不要删除 NavigationStability / PageRequestScope，也不要允许旧请求回写。
+
+应把“导航取消”改成**可 settle 的取消语义**。
+
+最小方向：
+
+1. GET 因 navigation abort 时 reject 一个明确的：
+   - AbortError；或
+   - `NavigationSupersededError`
+2. 保证 caller 的：
+   - catch；
+   - finally；
+   - single-flight cleanup
+   一定可以执行；
+3. 为避免 legacy catch/toast：
+   - 在统一 `safe()` / UI action guard 中识别 navigation-abort 并静默；
+   - 或调用方在 catch 前用 NavigationStability token 判断是否仍 current；
+4. 不要在 fetch 底层用 NEVER 阻断 Promise settlement；
+5. 所有 loading/single-flight owner 都应在 finally 释放；
+6. 对 stale response 继续使用 generation guard，禁止旧页面 mutation。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Storage Sources GET in-flight → 导航 → finally 执行，loading=false；
+- 返回存储配置后可以重新 GET；
+- Online Feedback GET in-flight → 导航 → refreshPromise 清空；
+- 返回同项目可重新加载；
+- navigation abort 不弹业务失败 toast；
+- stale response 不写入新页面；
+- multiple rapid navigation 不留下 pending Promise；
+- PageRequestScope stats 仍记录 abortedRequests；
+- AUDIT-122 的 terminal waiter 也必须能收到可识别 AbortError，不再永久挂起。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
