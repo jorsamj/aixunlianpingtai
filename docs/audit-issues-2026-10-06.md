@@ -13927,4 +13927,168 @@ AUDIT-112 是这次 reconciliation 被错误分类为 sync_type=auto 后，对 0
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-113 — “畅联云数据”手动刷新执行 Product→Version→Weight 全量 N+1 水合并一次性渲染完整 DOM；数据规模增长后请求数和页面成本无界
+
+**级别：中～高**  
+**模块：畅联云数据 / Provider Browser / Remote API Hydration / Frontend Performance**
+
+**现象：**
+
+当前“畅联云数据”页面设计为只读、手动刷新，这个产品方向本身正确；页面进入时不会自动请求远端。
+
+但点击“手动刷新畅联云”后，前端会一次性构造完整远端对象树。
+
+真实调用链：
+
+1. 并行读取两组产品：
+   - provider/products?status=1
+   - provider/products?status=0
+2. mergeProducts() 合并所有产品；
+3. 对每一个 product，调用：
+   - provider/versions/by-product/{productId}
+4. 对该产品返回的每一个 version，再调用：
+   - provider/weights/by-version/{versionId}
+5. 等所有 product/version/weight 都完成后，才把完整 hydrated tree 写入 snapshot；
+6. render() 通过：
+   snapshot.products.map(productHtml).join("")
+   一次性生成全部 Product、Version、Weight DOM。
+
+mapLimit(products, 4) 和 mapLimit(versions, 4) 只限制并发度，并没有限制总工作量。
+
+**请求复杂度：**
+
+若远端有：
+
+- P 个算法产品；
+- 总计 V 个算法版本；
+
+一次手动刷新大约需要：
+
+2 + P + V
+
+次平台 HTTP 请求。
+
+例如：
+
+- 1,000 个产品；
+- 平均每个产品 5 个版本；
+
+则一次刷新约：
+
+2 + 1,000 + 5,000 = 6,002 次 HTTP 请求。
+
+即使并发限制为 4，总请求数仍然线性增长，刷新完成时间会非常长。
+
+**后端没有聚合：**
+
+当前 provider proxy 只是逐条透传：
+
+provider_versions_by_product()
+→ client.version_list_by_product(product_id)
+
+provider_weights_by_version()
+→ client.weight_list_by_version(algo_version_id)
+
+没有服务端 batch、cursor hydration 或按展开加载。
+
+因此所有 N+1 都真实打到新畅联。
+
+**前端还有第二层无界成本：**
+
+所有请求完成后，snapshot 保存完整树：
+
+products[]
+  -> versions[]
+     -> weights[]
+
+随后 render() 一次性将全部：
+
+- 产品 details；
+- 版本 section；
+- 权重卡片；
+- 文件地址；
+- 下载链接
+
+拼成一个巨大 innerHTML。
+
+即使 details 默认折叠，内部 DOM 仍然已经创建。
+
+所以大规模下会同时产生：
+
+- 大量远端 I/O；
+- 大量 JS 对象；
+- 大字符串拼接；
+- 大量 DOM node；
+- 浏览器 layout/style 成本；
+- refresh 前长时间无增量结果。
+
+**为什么是 Bug / 性能技术债：**
+
+这个页面的目标只是“只读查看远端数据”，不要求一次刷新把整个新畅联数据库完整复制到浏览器。
+
+当前结构把“浏览/查看”实现成一次全量递归 hydration。
+
+它在小数据测试下可以工作，但没有 1k/10k 规模上限。
+
+并且和主数据同步不同，这些版本/权重只是用户查看用途，不应该主动为未展开的产品产生远端请求。
+
+**与 AUDIT-110 的区别：**
+
+AUDIT-110 是后台 Auto Sync 对 provider-global master data 按项目重复拉取，并产生 digest generation 问题。
+
+AUDIT-113 是“畅联云数据”只读页面自身的浏览策略：
+
+一个用户手动刷新就会按 Product→Version→Weight 递归 N+1 拉取并完整渲染。
+
+即使 AUDIT-110 完全修复，这个浏览页仍然会有独立的 N+1 / DOM 问题。
+
+**影响：**
+
+- 新畅联产品越多，手动刷新越慢；
+- 大量版本/权重时可能需要成千上万次 provider 请求；
+- 容易触发远端限流、网关超时或 Token 续期压力；
+- Web 服务作为 proxy 会承受大量并发转发；
+- 浏览器内存和 DOM 规模随远端历史数据持续增长；
+- 用户只想看一个产品，也必须等待所有产品全部水合；
+- 任意中间请求失败会使整个 refresh Promise 失败，已成功读取的数据也不会渐进展示；
+- 在移动端或低性能终端更容易明显卡顿。
+
+**建议最小修复：**
+
+不要新增第二套远端数据缓存 owner，也不要把全部数据同步到本地数据库只为解决页面展示。
+
+建议按浏览语义改成分层、按需读取：
+
+1. 首屏只加载 Product 列表：
+   - 分页或 cursor；
+   - 显示产品基础信息；
+2. 用户展开某 Product 时，再加载其 Version；
+3. 用户展开某 Version 时，再加载其 Weight；
+4. 每一层独立：
+   - loading；
+   - error；
+   - retry；
+   - cache TTL；
+5. 已展开结果可做 bounded client cache；
+6. 支持搜索/分页，不生成全部远端 DOM；
+7. 若 provider 有 listAll，只把它用于确实需要全量 truth 的后台 reconciliation，不要用于普通浏览 UI；
+8. 页面摘要如需全量 count，应使用 provider aggregate/count 字段或专用统计接口，而不是通过完整 hydration 得到。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 1,000 products 首次刷新只产生 bounded Product 请求，不发 1,000 个 versions 请求；
+- 未展开 Product 不请求 versions；
+- 未展开 Version 不请求 weights；
+- 展开一个 Product 只加载该 Product；
+- 展开一个 Version 只加载该 Version weights；
+- 10k products 时 DOM node 数与当前可见页面规模成比例；
+- 单个 Product/Version 加载失败不使其它已加载数据消失；
+- 重复展开在 TTL 内不重复请求。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
