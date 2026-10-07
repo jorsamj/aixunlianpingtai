@@ -24895,3 +24895,236 @@ Training Task 详情
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-181 — Logout 只删除浏览器 Cookie、不撤销服务端签名会话；退出前 Cookie 可被 replay，并通过滚动续期一直存活到 30 天 hard expiry
+
+**级别：高**  
+**模块：ChangLian Login / Logout / Signed Session / Session Revocation / Authentication Lifecycle**
+
+**现象：**
+
+当前畅联云登录体系使用：
+
+`SignedSessionManager`
+
+签发 HttpOnly 的：
+
+`mc_changlian_session`
+
+Cookie。
+
+Session claim 内已经包含随机：
+
+`jti`
+
+以及：
+
+- `iat`
+- `created_at`
+- `exp`
+- `hard_exp`
+
+默认生命周期为：
+
+- idle TTL：7 天；
+- absolute TTL：30 天；
+- renew window：24 小时。
+
+但是当前 `SignedSessionManager.verify()` 只验证：
+
+1. HMAC signature；
+2. username；
+3. `exp`；
+4. `hard_exp`。
+
+它完全没有：
+
+- server-side session ledger；
+- revoked jti store；
+- blacklist；
+- logout generation；
+- per-user session generation；
+- revoke API。
+
+虽然 token 中已经生成 `jti`，但 verify/renew 都不读取任何撤销状态。
+
+**Logout 当前真实行为：**
+
+`POST /api/auth/logout`
+
+仅执行：
+
+`response.delete_cookie(SESSION_COOKIE_NAME, path="/", samesite="lax")`
+
+它：
+
+- 不接收/解析当前 session claim；
+- 不记录当前 jti 已撤销；
+- 不撤销 session family；
+- 不通知 SignedSessionManager；
+- 也没有可见的上游 logout/revoke 动作。
+
+因此 logout 的真实语义只是：
+
+> 告诉当前浏览器删除自己的 Cookie。
+
+并不是：
+
+> 让服务端拒绝这次已退出的 session。
+
+**真实复现链：**
+
+1. 用户登录；
+2. 得到 Cookie C；
+3. 浏览器测试/攻击者/代理在 logout 前复制 C；
+4. 用户点击“退出登录”；
+5. 当前浏览器收到 Set-Cookie delete，页面回登录页；
+6. 但服务端没有保存任何 C.jti 的 revoke truth；
+7. 使用保存的 C 再请求任意受保护 API；
+8. middleware：
+   `_CHANGLIAN_AUTH_SESSIONS.verify(C)`
+9. HMAC/exp/hard_exp 仍合法；
+10. 请求继续通过。
+
+**滚动续期使窗口更长：**
+
+这不是简单“最多再活 7 天”。
+
+`GET /api/auth/session`
+
+对仍有效 token 会调用：
+
+`SignedSessionManager.renew(claims)`
+
+renew 会重新 issue 一个新 token，保留原：
+
+`created_at / hard_exp`
+
+但生成新的：
+
+`jti`
+
+和新的 idle `exp`。
+
+因为 logout 没有撤销旧 jti，也没有撤销整个 session lineage，所以退出前复制的 C 只要在其当前 idle expiry 前被使用，就可以通过正常 session refresh 获得 C2、C3……，一直续到原 session 的 30 天 absolute hard expiry。
+
+所以 logout 后已复制会话的实际可用窗口可接近：
+
+`30 天 absolute lifetime`
+
+而不是“当前浏览器已立即退出”。
+
+**为什么是 Bug：**
+
+用户明确点击“退出登录”时，安全语义应至少是：
+
+> 当前这一个登录会话不能再用于访问受保护资源。
+
+当前实现只完成 browser-side credential removal，没有完成 server-side session invalidation。
+
+对于自包含 signed-cookie session，如果产品选择不支持服务端 revoke，则“退出登录”本质上只能防止当前浏览器继续发送 token，无法撤销已泄露/复制的 bearer credential。
+
+当前代码已经专门生成 `jti`，但完全没有消费，说明 session identity 已存在，却缺少 lifecycle owner。
+
+**用户真实可达场景：**
+
+场景 1 — 多标签页/自动化工具保存 Cookie：
+
+用户在一个浏览器退出，但另一个持有旧 Cookie 的客户端仍可继续访问。
+
+场景 2 — Cookie 被代理/调试工具/恶意扩展/已控制设备复制：
+
+用户发现风险后点击退出，以为会话已终止，但复制 Cookie 仍有效。
+
+场景 3 — session refresh：
+
+保存的旧 Cookie 在 7 天 idle expiry 前访问 `/api/auth/session`，可获得新的滚动 token，并持续到 30 天 hard expiry。
+
+**影响：**
+
+- Logout 不具备服务端撤销能力；
+- 被复制的 session 在用户主动退出后仍能访问平台；
+- 用户无法通过“退出登录”终止已泄露 session；
+- rolling renewal 会扩大风险窗口；
+- 审计上“用户已退出”与“该 session 仍可认证”同时成立；
+- 后续若增加更敏感的模型删除、发布、存储凭据操作，风险进一步增大。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-115：一个**已经失效**的 session 返回 401 后，前端普通业务 API 不会立即跳回登录页；
+- AUDIT-181：用户主动 logout 后，原 session 在**服务端实际上没有失效**，旧 Cookie replay 仍会被 verify 接受。
+
+115 是：
+
+`invalid session -> frontend UX 不同步`
+
+181 是：
+
+`logout -> session 根本没有被 invalidated`
+
+根因与修复点完全不同。
+
+**现有测试为什么没有发现：**
+
+`tests/browser/changlian-login-auth.spec.mjs`
+
+当前会：
+
+1. 登录；
+2. 读取并确认 session Cookie 存在；
+3. 点击 logout；
+4. 通过同一 browser context 请求 protected API；
+5. 断言 401。
+
+这个测试只能证明：
+
+> 浏览器成功删除了 Cookie。
+
+它没有：
+
+- 保存 logout 前 Cookie value；
+- logout 后手工恢复同一个 Cookie；
+- replay 到 protected API；
+- 验证旧 jti 已被拒绝。
+
+Unit test 主要验证签名、expiry、rolling renew，也没有 revocation test。
+
+**建议最小修复方向：**
+
+不要把畅联云密码/上游 token 存浏览器，也不要为了 logout 把整个 auth 体系改成另一套。
+
+最小方向可以继续保留 signed-cookie session，但补一个唯一的 server-side revoke truth：
+
+1. 使用现有 `jti` 作为 session identity；
+2. logout 时读取当前 Cookie/claims；
+3. 原子记录当前 jti / session family 已撤销，至少保留到 hard_exp；
+4. `verify()` 在 HMAC/expiry 后检查 revoke truth；
+5. rolling renew 应保持可追踪的 session family，不能通过生成新 jti 绕过旧会话 logout；
+6. logout 后任何旧 token / renewed descendant 都必须拒绝；
+7. revoke store 要有按 hard_exp 的 GC，不能形成无界 blacklist；
+8. 若上游畅联登录接口有正式 logout/revoke 能力，再额外调用；但上游能力不能替代本平台本地 session 撤销；
+9. logout endpoint 应保持幂等。
+
+如果不希望维护逐 jti blacklist，也可以采用：
+
+`session_family_id + revoked_at / generation`
+
+等 bounded session ledger，但不要新增第二套认证 owner。
+
+**应新增回归测试：**
+
+- 登录拿 Cookie C → logout → 恢复 C → protected API 必须 401；
+- C 在 renew window 内 → logout → C 不得换取 C2；
+- 已经产生 C2 后 logout session family → C 与 C2 均失效；
+- logout 幂等；
+- revoke 记录到 hard_exp 后可 GC；
+- 两个独立登录 session：退出 A 不误杀 B（如果产品定义支持多会话）；
+- session key rotation / expiry 现有测试继续保持；
+- 当前浏览器 logout 后 Cookie 仍正常删除；
+- 不把 password/upstream token 放进 browser storage。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
