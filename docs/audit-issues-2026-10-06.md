@@ -16986,3 +16986,174 @@ AUDIT-129 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-130 — 当前 Quality Center Deployment Test 与 RKNN 实机验证对 UploadFile 使用无上限 await file.read()；超大伪图片可一次性进入 Web 进程内存并导致 OOM/服务退出
+
+**级别：高**  
+**模块：Quality Center / Deployment Test / RKNN Hardware Verification / Upload Safety / Web Stability**
+
+**现象：**
+
+当前两个仍由正式前端直接调用的图片验证入口：
+
+- `POST /api/v61/projects/{project_id}/deployment-tests`
+- `POST /api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests`
+
+都采用：
+
+`input_path.write_bytes(await file.read())`
+
+也就是先把整个 multipart 文件一次性读成 Python bytes，再写磁盘。
+
+当前应用没有：
+
+- 全局 request body size limit；
+- 这两个 endpoint 自己的 max image bytes；
+- 基于 `UploadFile.size` 的 admission guard；
+- streaming copy + bounded byte counter。
+
+前端 file input 也只有：
+
+`accept="image/*"`
+
+没有大小限制。
+
+因此文件扩展名/浏览器 MIME 不能形成安全边界。
+
+**真实生产调用链：**
+
+Quality Center：
+
+`runDeploymentTest(...)`
+→ FormData append(file)
+→ `POST /api/v61/.../deployment-tests`
+→ FastAPI UploadFile
+→ `await file.read()`
+→ 整个文件进入 Web 进程内存
+→ `Path.write_bytes(...)`。
+
+RKNN 实机验收：
+
+`submitRknnHardwareVerify()`
+→ FormData append(file)
+→ `POST /api/v39/.../hardware-tests`
+→ `await file.read()`
+→ 整体内存化
+→ 写入 predictions/task directory。
+
+两个入口都在当前 `static/app.js` 中有真实用户动作，不是已退役 Legacy API。
+
+**为什么是稳定性 Bug：**
+
+FastAPI `UploadFile` 的价值之一是底层可以 spool 到临时文件，避免大 body 全量常驻内存。
+
+但调用：
+
+`await file.read()`
+
+会重新把整个内容读入 bytes。
+
+例如一个被命名成：
+
+`huge.jpg`
+
+的数百 MB / 数 GB 文件，即使最终根本不是合法图片，也会在任何真正的图像解析/推理校验之前先占用同等量级的 Python heap。
+
+并发两个或多个请求会线性放大。
+
+**额外问题：**
+
+v61 Deployment Test 还在文件已经整体写入：
+
+`predictions/{task_id}/input.*`
+
+之后才校验：
+
+- detection_batch_id；
+- detection_item_index；
+- detection_item_total；
+- detection_side。
+
+因此批次参数非法时：
+
+- API 返回 400；
+- 但 prediction_dir/input file 已经创建；
+- 没有 task row 可供后续 retention owner 清理。
+
+这会形成 pre-task orphan artifact。
+
+该点不是 AUDIT-130 成立的前提，但会放大超大文件磁盘占用。
+
+**影响：**
+
+- 单个误选超大文件可显著抬高 Web RSS；
+- 多个并发请求可触发 OOM killer / Python 进程退出；
+- Web 与 Worker 若共享机器，会拖累训练任务控制面；
+- 无效文件也会先消耗全部上传内存和磁盘 I/O；
+- v61 参数错误可留下没有 Durable task identity 的 orphan prediction file；
+- Quality Center 批量测试场景会自然提高并发/连续调用概率。
+
+**与已有问题的区别：**
+
+- AUDIT-036：Detection Batch 结果索引/扫描复杂度；
+- AUDIT-065：已经创建的 Durable Task 缺 terminal artifact retention/GC；
+- AUDIT-107/121/122：Quality Center 任务取消、等待、导航 lifecycle。
+
+AUDIT-130 是**任务创建前上传体的内存 admission / streaming 问题**。
+
+即使实现 terminal GC，本问题仍会在 TaskRecord 创建以前发生。
+
+**现有测试缺口：**
+
+当前 Deployment Test / RKNN verification 测试主要覆盖：
+
+- 模型/板卡合同；
+- Durable task 创建；
+- inference/receipt；
+- artifact identity；
+- version fence。
+
+没有覆盖：
+
+- 100MB/1GB 伪图片；
+- request memory bound；
+- chunked streaming；
+- 上传超过上限时 413；
+- 参数校验失败后不留 prediction orphan。
+
+**建议最小修复：**
+
+不要新增新的上传 owner。
+
+两个当前入口统一复用一个 bounded UploadFile streaming helper：
+
+1. 在写磁盘时按固定 chunk 读取；
+2. 累计 bytes，超过明确 image upload limit：
+   - 立即停止；
+   - 删除 partial file；
+   - 返回 413；
+3. 如果 `UploadFile.size` 可用，先做 early reject，但不能只信该字段；
+4. 参数/identity 校验尽量前移到落盘前；
+5. 落盘成功后再做真实图片 decode/格式校验；
+6. TaskRecord 创建失败时清理该 task pre-stage directory；
+7. 前端同步展示允许的最大图片大小，只做 UX 提示，后端仍是最终边界。
+
+旧 Legacy import API 的全量 read 可在退役/清理阶段另行处理，不应阻塞当前两个正式入口先修。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 超限文件返回 413，Web 进程不全量 hydrate body；
+- streaming helper 的峰值读取 chunk bounded；
+- partial upload 自动删除；
+- 合法小图 v61 正常创建 Durable task；
+- 合法小图 v39 正常创建硬件验证 task；
+- detection batch 参数非法时不创建 prediction input orphan；
+- 多请求并发时每请求内存占用不随文件总大小线性增长。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
