@@ -18075,3 +18075,159 @@ Ultralytics / Paddle 在 CPU 机器、机械盘、冷文件缓存或依赖较多
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-137 — “测试发布 → 导出包”仍直接执行第二套 ONNX / Paddle Inference 转换 Runtime；绕过 canonical MODEL_CONVERSION / ModelArtifact / Scheduler
+
+**级别：高**  
+**模块：Test Publish / Model Export / ONNX / Paddle Inference / MODEL_CONVERSION / ModelArtifact**
+
+**现象：**
+
+当前“测试发布”页的“待发布/可导出模型”仍真实渲染：
+
+`导出包`
+
+按钮。
+
+最终前端 owner 已从旧 v30 覆盖为：
+
+`window.openExportModel`
+→ `window.submitExportModel`
+→ `POST /api/v32/projects/{project_id}/model-export`
+
+但 v32 后端并不是 canonical Conversion adapter，而只是：
+
+`return v30_export_model_package(project_id, payload)`
+
+再直接进入：
+
+`_do_export_model_package()`。
+
+当用户选择：
+
+`ultralytics_onnx`
+
+时：
+
+`_do_export_model_package()`
+→ `_try_export_ultralytics_onnx()`
+→ 生成临时 `export_onnx.py`
+→ `subprocess.run(..., timeout=900)`
+→ `YOLO(...).export(format="onnx", ...)`
+
+当用户选择：
+
+`paddledet_infer`
+
+时：
+
+`_try_export_paddledet_infer()`
+→ 直接调用 PaddleDetection `tools/export_model.py`
+→ `subprocess.run(..., timeout=900)`。
+
+所以“导出包”不是简单复制已有 canonical 产物，而是在 Web API 路径中再次真实执行模型转换。
+
+**为什么是重复 Conversion owner：**
+
+平台已经存在 canonical：
+
+`MODEL_CONVERSION`
+→ conversion task / Worker / Agent
+→ Resource / Scheduler
+→ ModelArtifact identity
+→ 外部发布/权重追加
+→ 转换结果审计。
+
+但 Test Publish 的 v32 export 路径：
+
+- 不创建 MODEL_CONVERSION Durable Task；
+- 不进入 Scheduler / Agent；
+- 不使用 conversion resource admission；
+- 不冻结 canonical conversion artifact identity；
+- 不登记 ModelArtifact；
+- 不参与 vendor/chip mapping；
+- 不参与外部算法版本权重追加；
+- 没有统一 cancel / retry / recovery；
+- 直接把转换结果写进：
+  `projects/{project}/exports/export_.../converted/`
+  或 `inference_model/`
+  然后压进 ZIP。
+
+因此同一个 `.pt -> .onnx` 实际存在两套生产转换合同。
+
+**实际副作用：**
+
+`_try_export_ultralytics_onnx()` 甚至会同时扫描：
+
+- export work dir；
+- `model_path.parent`
+
+下最近的 `*.onnx`
+
+再复制到 export ZIP。
+
+转换结果只是包内文件，没有 canonical artifact_id / source model hash + conversion config identity。
+
+Paddle 路径同样只把 export_model 输出放入导出工作目录。
+
+这意味着用户可以拿到一个“转换成功”的 ONNX/Paddle Inference 包，但平台的：
+
+- 部署转换列表；
+- ModelArtifact；
+- 算法版本交付链；
+- 新畅联权重记录
+
+完全不知道这份产物存在。
+
+**与已有问题区别：**
+
+- AUDIT-024：Remote Conversion 的 daemon thread 绕过 canonical Durable MODEL_CONVERSION；
+- AUDIT-137：当前“测试发布”UI 仍提供另一条 request-scoped model-export 转换路径。
+
+即使修完 Remote Conversion daemon，Test Publish 这条 Web export 仍会独立执行 ONNX/Paddle conversion。
+
+**影响：**
+
+- 同一个源模型、相同目标格式可能得到两个没有统一 identity 的转换结果；
+- 转换参数、环境、opset、dynamic/simplify 等与 canonical artifact lineage 分裂；
+- 用户下载的 ONNX 可能无法在平台部署产物页找到；
+- 外部发布不会追加这份权重；
+- 多个用户可并发启动最长 900 秒转换，不受 Scheduler 资源治理；
+- Web threadpool 可被长转换长期占用；
+- 没有统一停止按钮、崩溃恢复和任务历史；
+- exports 目录还会继续留下源模型副本、转换文件、日志和 ZIP；
+- 后续如果用户把该包重新导入，会形成“平台外生成、平台内再识别”的循环技术债。
+
+**建议最小修复：**
+
+不要新增第三套 Conversion owner。
+
+保留“导出包”作为 packaging UI，但把“生成新模型格式”与“打包已有资产”分开：
+
+1. `platform_package / paddledet_weight / sophon_prepare` 可以继续是轻量打包；
+2. `ultralytics_onnx / paddledet_infer` 若目标文件不存在：
+   - 创建 canonical MODEL_CONVERSION；
+   - 等待/链接其 ModelArtifact；
+   - 转换完成后再把 canonical artifact 复制/引用进 export ZIP；
+3. 如果相同 source identity + conversion config 已有 canonical artifact，直接复用；
+4. v32 endpoint 不再直接调用任何真实模型转换 subprocess；
+5. packaging 结果记录所引用的 artifact_id / sha256 / conversion task identity；
+6. “导出包”取消/失败不影响 canonical artifact；
+7. 不允许 exports ZIP 成为第二产物真相。
+
+**回归测试建议：**
+
+- Test Publish 选择 ONNX 后只创建/复用 canonical MODEL_CONVERSION；
+- v32 model-export 不直接执行 `YOLO.export` / `export_model.py`；
+- 相同 config 复用已有 ModelArtifact；
+- 转换中的导出遵守 Scheduler / Resource truth；
+- 转换失败后 export 不伪装成 canonical success；
+- export metadata 包含 artifact_id + sha256；
+- 新畅联发布仍只消费 canonical ModelArtifact；
+- 1k 次导出不会制造 1k 份重复 ONNX conversion truth。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
