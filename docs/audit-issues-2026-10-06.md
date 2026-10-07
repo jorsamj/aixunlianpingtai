@@ -11782,3 +11782,181 @@ REST 正确使用了它；SSE 却绕过它直接投影 TaskRecord 基础状态�
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-097 — Material Integrity 长扫描不校验 Material / Annotation revision 漂移，可提交混合世代结果却标记 snapshot_only=true
+
+**级别：中～高**  
+**模块：Material Integrity / Snapshot Consistency / MaterialRepository / AnnotationRepository / 10k-20k Scale**
+
+**现象：**
+
+当前 `AUDIT_MATERIAL_INTEGRITY` 启动时会记录：
+
+- `material_revision = materials.current_revision()`
+- `annotation_revision = annotations.current_revision()`
+- `total = materials.summary()["total"]`
+
+随后执行两类长扫描：
+
+1. 从 MaterialRepository 查询重复 content hash，并批量读取 AnnotationRepository；
+2. 通过 `materials.list_page(cursor=..., limit=BATCH_SIZE)` 分页扫描全部素材，再逐条 materialize / hash / decode 校验存储对象。
+
+问题在于，这个流程并没有真正冻结 Material / Annotation truth。
+
+`MaterialRepository.list_page()` 每一页都会单独：
+
+`with closing(self._connect()) as database`
+
+读取完即关闭 connection；后续页再重新打开新 connection。
+
+因此 10k / 20k 素材的 Full Audit 会跨很多独立 SQLite read snapshot。审计期间发生的导入、删除、素材更新、标注修改可以被后续页看见，而早期页仍保留旧世代结果。
+
+审计使用的 `material-integrity.sqlite3` 虽然从头到尾有自己的 `BEGIN IMMEDIATE`，但它只锁住**审计结果数据库**，并不能冻结：
+
+- `materials.sqlite3`
+- AnnotationRepository
+- 外部存储对象
+
+所以它不是业务 truth 的快照事务。
+
+**最关键的不一致：**
+
+Material Integrity 在开始时记录 revision，但完成前没有重新检查：
+
+- `materials.current_revision()`
+- `annotations.current_revision()`
+
+是否仍等于开始值。
+
+最终却写入：
+
+`metadata = { material_revision, annotation_revision, snapshot_only: True }`
+
+然后直接 COMMIT 并把 Durable Task 标为成功。
+
+也就是说，元数据声明的是“某个 revision 的 snapshot”，实际内容可能是多个 revision 混合出来的结果。
+
+**与 Label Integrity 的直接对比：**
+
+现有 `run_label_integrity_audit()` 已经采用正确的 fail-closed 合同。
+
+它在开始时冻结：
+
+- annotation revision；
+- AnnotationRepository fingerprint；
+- material revision；
+- governance fingerprint；
+
+在提交结果前重新读取全部 truth identity。只要任一变化，就抛出：
+
+`LABEL_INTEGRITY_TRUTH_CHANGED_DURING_AUDIT`
+
+要求重跑，而不是发布一个混合世代的成功审计。
+
+Material Integrity 当前缺少同等级 fence。
+
+**真实可发生场景：**
+
+例如一个 20k 素材项目执行 Material Integrity：
+
+1. audit 开始，记录 material revision = 100；
+2. 先扫描到 A/B 是重复素材，并读取当时的 Annotation；
+3. 审计继续扫描存储对象；
+4. 用户此时批量导入新素材、删除 A、修改 B 的标注，revision 变成 101/102；
+5. 后续 `list_page()` 使用新 connection，看到新的 Material truth；
+6. audit 最后仍以 revision=100 / snapshot_only=true 成功发布。
+
+最终结果可能同时包含：
+
+- 早期页面的旧素材/旧 Annotation 关系；
+- 后期页面的新素材状态；
+- 已经删除或已经改变的 duplicate group；
+- 基于变化前后不同 object metadata 得出的 hash/decode evidence。
+
+**为什么是 Bug：**
+
+Material Integrity 是质量中心后续人工处理的证据来源，不是“近似统计”。
+
+用户会根据它处理：
+
+- `DUPLICATE_IDENTICAL`
+- `DUPLICATE_ANNOTATION_CONFLICT`
+- `MATERIAL_OBJECT_MISSING`
+- `CONTENT_HASH_MISMATCH`
+- `INVALID_IMAGE`
+
+如果审计不是一个一致 truth generation，结果自身就可能互相矛盾。
+
+更严重的是 metadata 会误导调用方认为结果严格对应某个 material/annotation revision。
+
+**与 AUDIT-057 / AUDIT-058 的区别：**
+
+- AUDIT-057：当前 Full Audit 的发现/恢复使用 bounded task page，且缺少 active dedupe；
+- AUDIT-058：完成后的 groups/items 前端不消费 next_cursor；
+- AUDIT-097：**单次 Full Audit 执行过程中没有 snapshot/revision fence，可能成功提交混合世代证据。**
+
+三者分别属于 task lifecycle、结果分页和数据一致性，不能互相替代。
+
+**影响：**
+
+- 大项目审计耗时越长，撞上并发 mutation 的概率越高；
+- duplicate conflict 可能出现 false positive / false negative；
+- 已删除素材仍可能留在已完成 audit 中；
+- 新增素材可能只参与后半段 object scan，却没参与前半段 duplicate analysis；
+- Annotation 修改可能导致 duplicate classification 与最终详情 truth 不一致；
+- 用户基于旧/混合结果做删除、保留、人工复核时容易误判；
+- `snapshot_only=true` 和 revision metadata 失去可信度。
+
+**现有测试为什么没发现：**
+
+现有 `tests/api/test_material_integrity.py` 主要验证：
+
+- audit 能创建和运行；
+- duplicate annotation conflict 能生成；
+- groups/items API 正常；
+- Material delete 与 Training reference 等其它 fence。
+
+没有覆盖：
+
+`audit running -> material/annotation revision changes -> audit must not publish success`
+
+而 Label Integrity 已经有明确 truth-change fail-closed 设计，说明这个一致性要求在项目里本身已有先例。
+
+**建议最小修复：**
+
+不要为 Material Integrity 新建第二套 snapshot owner，也不要持有一个 20k 素材全程的长时间 SQLite 写锁。
+
+优先复用 Label Integrity 的 revision/fingerprint fence 模式：
+
+1. audit 开始冻结：
+   - material revision；
+   - annotation revision；
+   - 必要时 AnnotationRepository fingerprint；
+2. 完成所有扫描、准备提交 `material-integrity.sqlite3` 前，再读取当前 identity；
+3. 任一 truth generation 已变化：
+   - 不发布 SUCCEEDED；
+   - 返回明确 `MATERIAL_INTEGRITY_TRUTH_CHANGED_DURING_AUDIT`；
+   - 提示重新运行；
+4. 只有前后 identity 一致，才写 `snapshot_only=true` 并 COMMIT；
+5. 对存储对象证据继续绑定 frozen material row 的：
+   - storage_source_id；
+   - object_key；
+   - content_sha256 / etag；
+   避免把 mutation 后对象状态误归到旧 row；
+6. 不要通过阻塞所有 Material 写操作来“保证一致”，避免 Full Audit 变成 10k/20k 项目的长时间全局锁。
+
+**回归测试建议：**
+
+至少增加：
+
+- Material revision 在 audit 中途变化 -> task 不得 SUCCEEDED；
+- Annotation revision 在 duplicate analysis 后变化 -> task 不得发布 snapshot；
+- 无 truth change -> 正常成功；
+- fail 后 retry 能重建全新结果，不继承旧 audit rows；
+- 20k 分页扫描保持 bounded 内存/连接使用；
+- revision fence 不引入长时间 MaterialRepository writer lock。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
