@@ -14380,4 +14380,156 @@ AUTH_REQUIRED / 401。
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-116 — AI 自动标注“参考已有标注/参考图”只保存 reference_image_ids，Durable Worker 推理完全不读取参考图；用户选择的视觉示例实际不生效
+
+**级别：高**  
+**模块：AI Annotation / Reference Images / Multimodal Prompt / Frontend-Backend Contract**
+
+**现象：**
+
+当前 AI 自动标注创建弹窗明确提供：
+
+“参考已有标注（可选）”
+
+并说明：
+
+“参考图只用于视觉示例，不会自动添加或改变本次标签”。
+
+用户可以从已标注素材中选择参考图片。
+
+提交时前端明确发送：
+
+reference_image_ids: [...state.ai429RefSelected]
+
+所以从 UI 语义看，这些图片应作为视觉 few-shot / reference examples 参与模型判断。
+
+**但后端真实执行链没有使用这些参考图。**
+
+annotation_runtime.prepare_request() 只做：
+
+- 读取 reference_image_ids；
+- 去重；
+- 将它们写回 prepared request。
+
+后续没有：
+
+- 校验这些 reference images 是否存在；
+- materialize reference images；
+- 读取 reference image bytes；
+- 读取 reference image annotation；
+- 构造 multimodal few-shot message；
+- 把 reference images 交给 provider。
+
+annotation_task_service.run_ai_annotation() 只加载：
+
+runtime_request["image_ids"]
+
+即真正待标注图片。
+
+annotate_one() 对每张当前图片只执行：
+
+provider.annotate(
+  image_bytes=current_image_bytes,
+  prompt=prompt,
+  output_schema=...
+)
+
+没有 reference_image_ids，也没有 reference image bytes / annotations。
+
+因此用户勾选 0 张、1 张或 20 张参考图，在其它输入完全相同时，当前模型请求内容完全相同。
+
+**这是明确的前后端功能失效：**
+
+前端把参考图作为 AI 标注创建流程中的正式功能暴露给用户；
+
+后端 request schema 也接受并持久化 reference_image_ids；
+
+但实际模型推理路径完全忽略这些 ID。
+
+这不是“参考图效果不明显”，而是：
+
+**参考图根本没有进入推理。**
+
+**额外问题：提交时也不验证 reference image truth**
+
+_v60 的 _annotation_create_payload() 会对主 image_ids：
+
+- 分 500 条 material_store.get_many；
+- 检查缺失；
+- 缺失立即 400。
+
+但 reference_image_ids 没有同样的存在性/项目归属/annotation-ready 校验。
+
+这也侧面证明它们目前只是被保存的无效字段，而不是执行依赖。
+
+**为什么 Prompt Template 冻结不是问题：**
+
+现代 v60 Prompt Template 本身是安全的：
+
+prepare_request(runtime=False) 会从服务端 Prompt Library 读取模板，写入：
+
+- prompt_template_snapshot
+- prompt_template_version_id
+
+浏览器提交的 snapshot 会被剥离。
+
+所以模板修改不会改变已排队任务。
+
+AUDIT-116 针对的是另一条独立功能合同：
+
+reference images 虽被 UI 和 request 暴露，但根本没有被 Durable AI runtime 消费。
+
+**影响：**
+
+- 用户以为参考图会帮助模型理解场景/目标外观，实际没有任何作用；
+- 对烟火、抽烟、积水等视觉差异较大的业务，用户可能错误依赖参考图提高准确率；
+- 调参和效果对比会被误导，因为“选参考图/不选参考图”模型输入完全一致；
+- UI 增加了选择成本，却没有产生推理收益；
+- 参考图相关状态、选择逻辑和 request 字段成为技术债；
+- 后续评测时容易错误归因“多模态 few-shot 没效果”，实际上功能从未接通。
+
+**建议最小修复：**
+
+先明确产品合同，不要继续保留“看起来支持”的半功能。
+
+如果要支持参考图：
+
+1. admission 时验证每个 reference_image_id：
+   - 同项目；
+   - material 存在；
+   - 文件可读取；
+   - 必须具备已确认正式标注；
+2. 冻结 reference identity / annotation revision，避免排队后参考内容漂移；
+3. 在 Worker 侧 bounded materialize；
+4. 将参考图片 + canonical annotation/labels 组成 provider-neutral reference examples；
+5. Provider adapter 明确声明是否支持 multimodal reference/few-shot；
+6. 不支持的 Provider：
+   - UI 禁用参考图；
+   - 或 admission 明确 422；
+   - 不能静默忽略；
+7. 对参考图数量、总像素/总 bytes 设置上限，避免单任务 prompt 爆炸；
+8. 保持主 image 与 reference images 的语义分离，参考图不能直接写入候选结果。
+
+如果当前阶段不准备支持视觉参考：
+
+- 应暂时从 UI 删除“参考已有标注”选择；
+- 同时删除无效 request field；
+- 不能继续让用户以为它会影响推理。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 选择 reference image 后 provider mock 能实际收到 reference content；
+- 不选 reference 时不产生额外参考 payload；
+- reference material 不存在时 admission fail-closed；
+- reference annotation revision 在执行前变化时按冻结合同处理；
+- 不支持 reference 的 provider 不得静默忽略；
+- 10/20 张参考图时请求大小有明确上限；
+- 选参考图与不选参考图的 provider request contract 必须可观察到差异。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
