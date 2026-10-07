@@ -12834,3 +12834,174 @@ AUDIT-105 是 Quality Center Detection Batch 自己再次复制 terminal 集合�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-106 — Detection Batch 只持久化成功创建的 side，没有 batch-level expected sides；compare 第二侧在 Task 创建前失败后，刷新会把原本失败的图片恢复成完成
+
+**级别：高**  
+**模块：Quality Center / Detection Batch / Deployment Test Creation / Durable Recovery**
+
+**现象：**
+
+质量中心的 A/B compare 模式在浏览器里按图片串行创建两个独立 Deployment Test：
+
+1. 先 `benchPredictOne(... side='A')`；
+2. A 完成后再 `benchPredictOne(... side='B')`；
+3. 任一侧抛错，当前内存态 row 进入 `failed`。
+
+但服务端没有 Detection Batch header / manifest，也没有持久化：
+
+- 本批次 mode 是 compare / a / b；
+- 每个 item 的 expected_sides；
+- 哪一侧在 Durable Task 创建前失败。
+
+每个已成功创建的 Deployment Test request 只保存：
+
+- batch_id；
+- item_index；
+- item_total；
+- side；
+- original_filename。
+
+因此服务器只能知道“实际存在了哪些 task”，不知道“原本应该存在哪些 task”。
+
+**真实可达失败链：**
+
+compare 模式中 A 已经成功创建并完成后，B 的 `POST /deployment-tests` 在 `TaskRepository.create()` 之前有多个真实失败点：
+
+- `_resolve_v61_test_model()` 找不到模型；
+- Runtime / inference environment 解析失败；
+- 输入/批次参数校验失败；
+- remote execution staging 抛 `RemoteExecutionTransportError`；
+- request artifact 写入失败；
+- repository create 前的其它 I/O/环境错误。
+
+尤其 remote staging 当前明确发生在：
+
+`shared_task_repository().create(...)`
+
+之前；失败时还会删除刚写的 input 文件并直接返回 PlatformError。
+
+所以 B 可以做到：
+
+**从未形成任何 Durable TaskRecord。**
+
+此时浏览器当前页面知道这是 compare，并把图片标成 failed；但服务端历史中只剩一个成功的 A task。
+
+**刷新后的错误恢复：**
+
+`_public_detection_batch()` 只按真实存在的 task 分组：
+
+`item["models"][side] = public_result`
+
+如果只有 A，它无法知道 B 缺失是错误还是用户本来就选择 A-only。
+
+随后：
+
+- `completed_items` 只检查 `item["models"]` 中已经存在的模型；
+- A=SUCCEEDED 时该 item 会被算作 completed；
+- `failed_items` 也不会增加。
+
+前端 `batchFromDurable64()` 同样只读取：
+
+`item.models.A / item.models.B`
+
+如果历史中只有成功 A：
+
+- statuses = [SUCCEEDED]
+- pending = false
+- failed = false
+- row.status = done
+
+于是同一张 compare 图片：
+
+**运行当时 = failed**  
+**刷新/历史恢复后 = done**
+
+B 侧只显示“—”，与合法的 A-only 检测无法区分。
+
+**额外影响：人工复核也无法识别 compare 不完整：**
+
+`review_detection_batch_item()` 只遍历当前能找到的 rows。
+
+如果 compare 的 B 根本没有 TaskRecord，而 A 已 SUCCEEDED：
+
+- 所有“现存 rows”都 terminal；
+- 至少一个现存 row 成功；
+- review endpoint 会允许人工核验。
+
+也就是说一个本应是“A/B 对比失败”的 item，可以在刷新后被当成完整结果继续人工复核。
+
+**为什么不是已有问题：**
+
+- AUDIT-036：Detection Batch 用全项目 DEPLOYMENT_TEST bounded scan 代替 batch index，导致任务存在但扫描不到。
+- AUDIT-105：任务已经存在且 terminal，但 BLOCKED_* 枚举被恢复层误判为 running。
+- AUDIT-106：**目标 side 连 TaskRecord 都没有创建成功，而 batch intent 又从未 durable 化**。服务端根本不知道缺失 side 是异常还是设计如此。
+
+修复 036/105 都不能恢复缺失的 compare intent。
+
+**现有测试为什么没发现：**
+
+`tests/browser/quality-detection-workbench.spec.mjs` 当前覆盖：
+
+- compare A/B 都创建成功；
+- A-only；
+- B-only；
+- 正常历史 batch 恢复；
+- 人工 review。
+
+它明确验证 compare 会发送 A、B 两次请求，但没有覆盖：
+
+`A success -> B create request fails before task_id -> reload history`
+
+前端/unit/API 测试也没有 `expected_sides` / batch manifest 合同。
+
+**影响：**
+
+- compare 的真实失败在刷新后变成“完成”；
+- completed_items / failed_items 与真实用户意图不一致；
+- 历史记录不再具备审计可信度；
+- 缺失 B 无法与 A-only 区分；
+- 不完整 compare item 可进入人工核验；
+- 用户可能基于单侧结果误认为 A/B 对比已完成；
+- 批量 1k/10k 图片时，任何局部 create/staging 失败都可能被历史恢复静默洗掉。
+
+**建议最小修复：**
+
+不要新增第二 Scheduler，也不要把 Detection Batch 做成另一套任务系统。
+
+应增加单一、轻量的 batch intent owner：
+
+1. 在创建第一条 side task 之前，先持久化 batch header/manifest；
+2. 至少冻结：
+   - batch_id；
+   - mode = compare/a/b；
+   - total item count；
+   - 每 item expected_sides；
+   - original_filename / stable item identity；
+3. side task 创建成功后把 task_id 绑定到对应 item+side；
+4. side 创建失败也要持久化 creation_failed/error，不能只留在浏览器内存；
+5. `_public_detection_batch()` 按 manifest 聚合：
+   - expected side 缺失不能算 complete；
+   - compare 缺任一 side 必须显示 incomplete/failed；
+6. review endpoint 必须按 expected_sides 校验完整性；
+7. 前端恢复不能通过“现在有哪些 task”反推当初 mode；
+8. manifest 只承担 batch aggregation intent，不成为 Deployment Test 执行 owner。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- compare：A SUCCEEDED，B 在 TaskRepository.create 前返回 4xx/5xx；
+- 刷新后 item 仍为 failed/incomplete；
+- completed_items 不增加为完整 compare；
+- review 被拒绝；
+- A-only 只有 A 时仍正确 done；
+- B-only 只有 B 时仍正确 done；
+- compare A+B 都成功时正常 done；
+- 1k item 下 manifest/query bounded，不重新引入全项目 scan。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
