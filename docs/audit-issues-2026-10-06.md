@@ -18714,3 +18714,201 @@ SQL store 也已经提供正确 CAS owner。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-140 — Training 版本归档先持久化 auto_version_id、后创建自动转换任务；进程在中间崩溃后 recovery 会永久跳过用户已请求的自动转换
+
+**级别：高**  
+**模块：Training Completion / Algorithm Version Archive / Auto Conversion / Crash Recovery / Delivery Lifecycle**
+
+**现象：**
+
+当前训练成功后的版本归档顺序是：
+
+`_v48_archive_training_version()`
+
+1. 复制训练产物并构造 Algorithm Version；
+2. `attach_algorithm_version(...)`；
+3. 立即：
+   `job["auto_version_id"] = version_id`
+   并写回：
+   `jobs/{job_id}/job.json`；
+4. 然后才调用：
+   `_v48_auto_convert_version(...)`；
+5. 自动转换函数逐个创建 MODEL_CONVERSION job；
+6. 再把 summary 写入：
+   `version.auto_conversion`
+   与：
+   `job.auto_conversion`；
+7. 最后才请求 external auto publish。
+
+但该函数入口第一条幂等判断是：
+
+`if not job or job.get("auto_version_id") or job.get("never_started"): return None`
+
+所以 `auto_version_id` 实际被同时当成：
+
+“版本已经 attach”
+
+和：
+
+“整个版本交付后处理都已经完成”
+
+两个不同生命周期阶段的完成标志。
+
+**真实 crash window：**
+
+如果进程在步骤 3 之后、步骤 4 之前退出：
+
+- Algorithm Version 已存在；
+- job.json 已有 `auto_version_id`；
+- 用户创建训练时提交的 `auto_convert_targets` 仍在 job；
+- 但一个 MODEL_CONVERSION 都还没有创建。
+
+服务重启后，训练任务再次被 hydrate / recovery 时：
+
+`_v48_archive_training_version()`
+
+看到：
+
+`job.auto_version_id`
+
+立即返回。
+
+因此已经请求的自动转换不会再次创建。
+
+**多目标时还有 partial window：**
+
+例如用户请求：
+
+- rockchip；
+- ascend；
+- sophon。
+
+`_v48_auto_convert_version()` 是逐个调用：
+
+`v39_create_deploy_job(...)`
+
+如果：
+
+- 第一个 conversion job 已创建；
+- 进程在第二个/第三个创建前崩溃；
+
+重启后同样因为 `auto_version_id` 已存在而跳过整个 auto conversion。
+
+最终只完成部分目标，但没有 recovery owner 自动补齐缺失目标。
+
+**第三个窗口：**
+
+即使所有 conversion jobs 都已经创建，如果进程在：
+
+`_v48_auto_convert_version()`
+
+返回以后、但在：
+
+`update_algorithm_version(... {"auto_conversion": summary})`
+
+之前崩溃，则：
+
+- Conversion Task 实际已经存在；
+- Algorithm Version 没有 `auto_conversion` journal；
+- job.json 也没有 summary；
+- recovery 仍因 `auto_version_id` 直接返回。
+
+后续 UI /审计无法可靠回答：
+
+“这个版本自动创建过哪些转换任务”。
+
+**为什么 external publish 不是同一个问题：**
+
+External Publication 有独立的：
+
+`ExternalAlgorithmPublishService.run_auto_publish_once()`
+
+会周期性扫描成功且已验证的外部算法版本，即使缺少 `external_publish_requested_at` 也能补请求并继续 reconcile。
+
+因此 external publish 具有独立恢复 owner。
+
+当前自动转换没有发现同类：
+
+- version delivery reconciler；
+- requested-target journal；
+- missing-target recovery；
+- idempotent ensure-conversion owner。
+
+当前 `app.py` 中 `_v48_auto_convert_version()` 只有：
+
+- 函数定义；
+- `_v48_archive_training_version()` 这一处调用。
+
+`auto_conversion` 也只在该归档尾部写入。
+
+**为什么不是 AUDIT-046：**
+
+AUDIT-046 是：
+
+自动转换请求只冻结 vendor，没有冻结芯片 / SoC / resource identity。
+
+AUDIT-140 是：
+
+即使用户请求本身合法，Training completion 在版本 attach 与 conversion creation 之间缺少 crash-consistent lifecycle journal，崩溃后会永久漏执行全部或部分自动转换。
+
+两者分别是“请求身份冻结”和“后处理恢复”。
+
+**影响：**
+
+- 训练任务显示成功、算法版本已经生成，但用户勾选的自动转换可能完全没有任务；
+- 多目标转换可能只创建一部分；
+- 重启后无法自动补齐；
+- Algorithm Version 的 `auto_conversion` metadata 与真实 conversion jobs 可能分裂；
+- 用户只能人工发现后再手动补转换；
+- 外部发布可能先继续推进，而原计划的芯片转换交付缺失；
+- “训练成功 → 自动转换”主流程不满足 crash recovery / exactly-once-or-idempotent-delivery 合同。
+
+**建议最小修复：**
+
+不要新增第二 Conversion owner。
+
+应把版本后处理变成明确的可恢复状态机 / journal，至少区分：
+
+- version_attached；
+- auto_conversion_pending；
+- auto_conversion_reconciling；
+- auto_conversion_completed / partial / failed；
+- external_publish_requested。
+
+最小实现方向：
+
+1. 版本 attach 时把用户请求的 `auto_convert_targets` 冻结到 version delivery metadata；
+2. 不要用 `auto_version_id` 作为整个后处理完成标志；
+3. 提供 idempotent：
+   `ensure_auto_conversions(version_id)`；
+4. 对每个 target 用 canonical source version identity 查找已有 active/terminal conversion，再决定：
+   - 复用；
+   - 补建；
+   - 记录失败；
+5. startup/recovery 或 version-delivery reconciler 对 pending/partial 自动补齐；
+6. conversion job 创建与 version.auto_conversion journal 之间必须可重放；
+7. 修复 AUDIT-139 后，只有 CAS attach 成功的版本才能进入后处理。
+
+**回归测试建议：**
+
+至少注入以下 crash points：
+
+- version attach 后、auto conversion 前崩溃；
+- 第 1/3 个 target 创建后崩溃；
+- 全部 conversion 创建后、summary patch 前崩溃；
+- summary patch 后、external publish request 前崩溃。
+
+重启后必须满足：
+
+- 请求目标最终全部可追踪；
+- 不重复创建相同 conversion；
+- 已有 conversion 被复用；
+- version.auto_conversion 与真实 jobs 一致；
+- 未通过 version CAS 的 sibling training 不进入自动转换。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
