@@ -5650,6 +5650,239 @@ Durable task 自身另有：
 
 ---
 
+
+### AUDIT-066 — 训练任务页 GET 在返回 bounded history 前会多次全量扫描所有 jobs/*/job.json；轮询下形成与累计历史线性增长的热路径
+
+**级别：中～高**  
+**模块：Training Task List / sync_jobs_index / Legacy Queue Dispatch / Polling / Performance**
+
+**现象：**
+
+当前 canonical 训练任务页真实数据源：
+
+`GET /api/projects/{project_id}/jobs`
+
+看起来最终只保留：
+
+- 全部 active Training；
+- 最近 50 条 terminal history。
+
+这个 bounded 输出由：
+
+`_training_job_index_rows(..., history_limit=50)`
+
+保证。
+
+但真正请求链在“截断前”做了多次全量历史扫描：
+
+```
+list_jobs(project_id)
+  -> sync_jobs_index(project_id)
+  -> _v48_dispatch_training_queues(project_id)
+  -> sync_jobs_index(project_id)
+  -> read jobs/index.json
+```
+
+**第一次 `sync_jobs_index()`：**
+
+直接遍历：
+
+`jobs_dir.iterdir()`
+
+对项目下每个任务目录：
+
+`jobs/<task_id>/job.json`
+
+逐个：
+
+- read_json；
+- enrich_job_runtime；
+- durable task lookup；
+- runtime/public truth projection。
+
+扫描完**全部历史 job**之后，才：
+
+`_training_job_index_rows(jobs)`
+
+把 terminal history 截到 50。
+
+**中间 `_v48_dispatch_training_queues()`：**
+
+又遍历：
+
+`_v48_all_job_files(project_id)`
+
+即项目所有 job.json。
+
+对每个 job：
+
+- read_json；
+- 调 `_durable_training_task(...)` 判断是不是 modern Durable task；
+- modern Durable task 虽然随后 `continue`，但文件和 TaskRepository lookup 已发生；
+- legacy queued/running job 继续参与 dispatch。
+
+**第二次 `sync_jobs_index()`：**
+
+dispatch 后又重复执行一次完整 job 目录扫描与 enrich。
+
+所以一次：
+
+`GET /jobs`
+
+最坏至少会对全部 Training job history 做：
+
+- 两次完整 filesystem directory scan；
+- 两轮 job.json parse；
+- 多轮 TaskRepository get / public projection；
+- 加上一轮 legacy dispatch 全量扫描。
+
+最终却只输出：
+
+“全部 active + 最近 50 terminal”。
+
+**前端会周期性触发这个路径：**
+
+`TrainingTaskRuntime.refresh()`
+
+直接：
+
+`fetch('/api/projects/<pid>/jobs')`
+
+当前 PollRegistry：
+
+- realtime stream coverage 完整时，仍会做较低频 reconcile；
+- realtime coverage 不完整 / SSE 异常时，fallback 约每 **2 秒**刷新一次；
+- 手动刷新、页面进入、mutation 后也会触发 refresh。
+
+因此累计历史 job 数量越多：
+
+`GET /jobs`
+
+耗时越高。
+
+尤其当项目累计达到：
+
+1k / 10k / 20k Training history
+
+时，页面每次刷新仍然扫描这些历史目录，即使 UI 实际只需要：
+
+- active task；
+- 最近 50 terminal。
+
+**为什么是 Bug / bounded truth 性能问题：**
+
+`_training_job_index_rows(history_limit=50)`
+
+本身设计是正确的：
+
+它明确说明：
+
+“Retain every live task plus a bounded terminal history”。
+
+问题在于：
+
+bounded projection 只发生在**最后一步**。
+
+前面的 truth hydration 仍是无界的。
+
+这和 AUDIT-064 不同：
+
+- AUDIT-064：TaskRepository public projection 为 queue exactness 无界 hydrate 全部 QUEUED task；
+- AUDIT-066：Training jobs REST 每次从 filesystem 无界读取全部历史 job.json，再构造最近窗口。
+
+两条路径会叠加：
+
+`list_jobs()`
+→ 全量 job filesystem scan
++
+`repository.queued_candidates()`
+→ 全量 queued TaskRecord hydration。
+
+**影响：**
+
+- 训练历史越多，训练任务页首开越慢；
+- active polling 会持续产生大量磁盘 I/O / JSON parse；
+- SSD/HDD 较慢、NFS/挂载盘场景更明显；
+- 10k/20k job 目录时，Web 请求线程可能长期被目录遍历占用；
+- API latency 增高会拖慢：
+  - 页面状态刷新；
+  - pause/stop 后刷新；
+  - recovery hydration；
+  - 其它共享 Web 请求；
+- filesystem 上大量小文件还会形成 inode / metadata I/O 压力。
+
+**现有测试为什么没发现：**
+
+当前：
+
+`tests/browser/training-task-performance.spec.mjs`
+
+主要验证：
+
+- 一次手动 refresh 只产生一个 `GET /jobs`；
+- 页面 shell / row 不被不必要重建；
+- mutation 后 refresh 次数正确。
+
+它把 `GET /jobs` 本身 mock 掉了。
+
+所以“浏览器只发 1 次请求”是绿色的，但服务器这一请求内部可能做 20k history scan。
+
+`test_training_startup_performance_contract.py`
+
+关注训练启动性能，不覆盖 task-list history hydration。
+
+目前没有：
+
+- 1k / 10k / 20k job history；
+- `GET /jobs` bounded filesystem work；
+- query count / file read count；
+
+的后端规模合同。
+
+**建议最小修复：**
+
+不要新增第二套 Training task owner。
+
+应继续以：
+
+- TaskRepository 作为现代 Durable task truth；
+- job.json 作为 worker/job compatibility/detail artifact；
+
+但训练任务列表不能每次重建全量 index。
+
+建议最小方向：
+
+1. modern Durable Training：
+   - active / recent terminal 直接由 TaskRepository cursor/indexed query 获取；
+   - 只对最终要展示的 task ids hydrate 对应 job.json；
+2. legacy job：
+   - 保留一个明确 bounded compatibility index；
+   - 不在每个 GET 中重新 glob 全历史；
+3. `sync_jobs_index()` 改为 mutation-time / worker-finalization-time 增量维护；
+4. 若仍需启动修复扫描：
+   - 只在 startup/recovery owner 做；
+   - bounded/cursor；
+   - 不放进高频 GET；
+5. `_v48_dispatch_training_queues()` 只扫描真正 legacy queued/running candidates，不应遍历所有 modern terminal history；
+6. 保留现有“全部 active + 最近 50 terminal”UI语义，不要通过扩大 history limit 解决。
+
+**回归测试建议：**
+
+至少增加：
+
+- 20,000 terminal training job dirs + 3 active；
+- GET /jobs 只 hydrate 3 active + bounded recent terminal；
+- file read count / repository query count 有明确上限；
+- active polling 不触发全量 filesystem scan；
+- legacy queued job 仍能正常 dispatch；
+- modern Durable jobs 不再经过 legacy全历史 dispatch scan；
+- 现有前端单请求/稳定 DOM 合同保持。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
