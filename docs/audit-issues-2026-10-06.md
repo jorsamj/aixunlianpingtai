@@ -20370,3 +20370,204 @@ AnnotationRepository
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-149 — Dataset DELETE 与 AI Review/Commit 没有共享生命周期 fence；并发提交可让删除半完成，或在 Material 删除后重新制造 orphan Annotation
+
+**级别：高**  
+**模块：Dataset lifecycle / AnnotationRepository / AI Candidate Review / Ground Truth Commit / MaterialRepository**
+
+**现象：**
+
+当前：
+
+`DELETE /api/projects/{project_id}/datasets/{dataset_id}`
+
+已经实现了较完整的可恢复删除：
+
+- 对目标 dataset 加 coordination lock；
+- 给 Material rows 写 delete claim；
+- 把 AnnotationRepository 当前 GT 做 `prepare_delete()` backup；
+- 把本地文件移动到 staging；
+- 再执行 `finalize_delete()`；
+- 删除 Material rows 与 dataset metadata；
+- 失败时依赖 journal 做恢复。
+
+但这个 Dataset delete coordination lock **不是 Annotation Ground Truth 的写 fence**。
+
+canonical AI 人工审核提交走：
+
+`commit_candidate_decisions()`
+→ `write_formal_annotations()`
+→ `app.write_annotations_many()`
+→ `AnnotationRepository.upsert_many()`
+
+这条链既：
+
+- 不拿 Dataset delete lock；
+- 不检查目标 image_id 对应 Material 仍存在；
+- 也不检查该 image_id 是否正处于 dataset delete claim / delete backup 生命周期。
+
+`AnnotationRepository.prepare_delete()` 当前只是持久化 backup，并不会阻止后续 `upsert_many()`。
+
+因此 Dataset DELETE 与 AI Review/Commit 可真实并发。
+
+**真实调用链 / 竞态 A — staging 期间 AI Commit：**
+
+1. 用户对某批素材完成 AI 候选推理，任务进入人工审核；
+2. 这些素材属于可删除的非 default dataset；
+3. 用户/另一个操作触发 Dataset DELETE；
+4. DELETE：
+   - claim Material rows；
+   - `prepare_delete(token, image_ids)` 备份当前 GT；
+   - 释放 dataset coordination lock 后开始文件 staging；
+5. 在 staging 期间，AI Review 点击“确认入库”；
+6. `commit_candidate_decisions()` 正常调用 `AnnotationRepository.upsert_many()`；
+7. 同一个 image_id 的 `content_digest` 发生变化；
+8. Dataset DELETE 随后进入 `finalize_delete(token)`；
+9. `finalize_delete()` 检测：
+   `backup.content_digest <> annotations.content_digest`
+   后抛出冲突。
+
+问题在于 Dataset DELETE 的这一段 finalize 路径没有把这种并发 annotation conflict 纳入正常 rollback 分支。
+
+当前显式 rollback 只覆盖“文件 staging 失败”。
+
+因此该请求可以在：
+
+- 文件已经被移到 staging；
+- Material rows 仍带 delete claim；
+- annotation backup/journal 仍存在；
+
+的半删除状态异常退出，之后只能依赖后续 recovery 触发修复。
+
+**真实调用链 / 竞态 B — finalize 后 AI Commit：**
+
+更窄但语义更严重的窗口是：
+
+1. Dataset DELETE 已完成：
+   `AnnotationRepository.finalize_delete(token)`
+   并删除目标 GT；
+2. Material rows 也在 finalize 阶段从 MaterialRepository 移除；
+3. Dataset metadata 尚未完成最终移除/cleanup；
+4. AI Review/Commit 此时执行；
+5. `AnnotationRepository.upsert_many()` 不验证 Material owner 是否存在，因此可重新插入相同 image_id 的正式 GT；
+6. Material projection `MaterialRepository.patch()` 对已不存在的 Material 不会重新建立 Material identity；
+7. Dataset DELETE 继续完成 metadata 删除并返回成功。
+
+最终可留下：
+
+`AnnotationRepository 有正式 GT`
+但
+`MaterialRepository 没有该 image_id`
+
+即 orphan Annotation Ground Truth。
+
+**为什么生产真实可达：**
+
+现代 AI 标注的 canonical 主链本身就是：
+
+AI Candidate
+→ 人工 Review
+→ Commit
+→ AnnotationRepository。
+
+Dataset 页面仍提供非 default dataset 的 DELETE。
+
+AI review task 冻结的是 image IDs / Candidate truth，不会因为 Dataset delete 开始而自动取消或失效。
+
+所以不需要依赖 legacy prelabel runtime，也不需要直接调用内部函数。
+
+只要：
+
+- AI task 已经对一批 Material 产出 Candidate；
+- 这些 Material 属于随后被删除的数据集；
+- Dataset DELETE 与人工 Commit 时间重叠；
+
+即可进入竞态。
+
+**影响：**
+
+- Dataset 删除请求可能异常停在半删除 journal；
+- 文件可能已经进入 staging，但 Material/Annotation truth 尚未完成一致恢复；
+- AI task 可以在 Dataset 已删除后重新制造 orphan Annotation；
+- Annotation summary / label reference / integrity audit 可能统计到无 Material owner 的 GT；
+- 后续标签治理、Training preflight、Material Integrity 会看到分裂真相；
+- 用户可能看到“数据集删除成功”，但后台 GT 已被另一个合法操作重新写回。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-019：Dataset DELETE 与 **TRAINING_PREPARE** 缺少 active selection fence，导致尚未 freeze 的训练素材被删；
+- AUDIT-084：MaterialBatch DELETE_SOURCE 与 **Training admission** 是单向 TOCTOU；
+- AUDIT-090：VideoFrameHandler 自己先写 Annotation/对象、后写 Material，取消/异常可留下孤儿；
+- AUDIT-102：合法 Annotation 写之间的 GT commit 与 Material projection 可逆序；
+- AUDIT-149：Dataset DELETE 自己的 delete transaction/journal 与 **AI Review formal GT commit** 不共享 lifecycle fence，导致删除半提交或删后 GT 复活。
+
+所以 149 是独立的 deletion-vs-annotation writer race，不是 019/084/090/102 的重复。
+
+**现有测试为什么没有发现：**
+
+现有 Dataset deletion 测试主要覆盖：
+
+- 文件 staging 失败后的 rollback；
+- delete journal recovery；
+- Annotation backup/finalize/restore；
+- dataset write admission；
+- Training PREPARING dependency。
+
+AnnotationRepository delete 测试也验证了：
+
+- backup digest conflict 会 fail-closed；
+- newer GT 不会被旧 delete token 静默删除。
+
+这些单组件测试本身正确。
+
+缺失的是跨 owner 并发测试：
+
+`Dataset DELETE prepare/staging/finalize`
+与
+`AI Review → AnnotationRepository.upsert_many`
+
+交错执行。
+
+特别没有覆盖：
+
+- prepare_delete 后 annotation digest 改变时 Dataset DELETE 是否完整 rollback；
+- finalize_delete 后、metadata cleanup 前 annotation 再写入；
+- AI Commit 是否必须验证 Material identity 仍存在。
+
+**建议最小修复方向：**
+
+不要新增第二 Annotation owner，也不要让 Dataset delete 直接管理 AI task internals。
+
+应复用现有 canonical owners，补一个共享生命周期 fence / delete claim contract：
+
+1. Dataset DELETE 对 claim 的 image_ids 建立可被 AnnotationRepository formal write 检查的 deletion fence；
+2. 所有正式 Annotation 写 owner：
+   - 手工标注；
+   - AI Review Commit；
+   - Storage Import/Rescan；
+   在 commit 前必须 fail-closed 检查 image_id 仍有 Material owner，且不处于 active delete claim；
+3. 或将 Material existence + delete claim 作为 AnnotationRepository formal-write admission 的统一 guard，但不要新增第二 GT repository；
+4. Dataset delete finalize 遇到 Annotation conflict 时必须走明确 rollback/recovery 状态，而不是从 staging 状态裸异常退出；
+5. 删除成功后不得允许旧 AI review task 把已删除 image_id 重新写成正式 GT；
+6. 不要靠“前端隐藏删除按钮”解决，后端必须有 fence；
+7. 不要自动把 AI task 判成功并丢弃用户审核结果；应返回明确 conflict，要求刷新素材范围。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- Dataset delete `prepare_delete` 后，AI Commit 修改同 image_id → delete fail-closed 且 Material/文件/GT 全部一致恢复；
+- Dataset delete 已 finalize Material/GT 后，旧 AI Commit → formal annotation write 被拒绝，不得创建 orphan Annotation；
+- AI Commit 先完成，Dataset delete 后开始 → delete 可基于最新 GT 正常备份并完成；
+- Dataset delete 先完成，AI review 页面晚点提交 → 返回明确 409/业务冲突；
+- 手工 Annotation save 与 Dataset delete 的相同竞态也走同一 guard；
+- Storage Rescan / structured import formal Annotation write 不得绕过同一 deletion fence；
+- crash recovery 后 delete claim 清理完成，正常 Annotation 写恢复可用；
+- 不放宽现有 AnnotationRepository digest conflict fail-closed 测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
