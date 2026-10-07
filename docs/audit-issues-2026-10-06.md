@@ -20889,3 +20889,69 @@ Bug 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-152 — CLEAN retry 保留旧 succeeded 结果却不校验当前素材 hash；Storage Rescan 换内容后可把旧清洗判断应用到新图片
+
+**级别：高**  
+**模块：Cleaning / MaterialBatch Retry / Storage Rescan / Material Identity / Training Candidate Accuracy**
+
+**现象：**
+
+canonical CLEAN MaterialBatch 的 retry 语义是 resume：`context.task.retry_of` 时只把 `failed/running` selection row 复位为 pending，已 `succeeded` 的 row 保持 succeeded。对应 `clean_results` 也继续保留；`clean_batch()` 只有在 row 被重新处理时才 materialize 当前素材并计算/验证新 SHA。
+
+这在“同一个 material_id 的内容不可变”时是合理的 crash recovery。但当前 Storage Import/Rescan 明确允许对相同 `(storage_source_id, object_key)` 复用原 material_id，并在 indexing 时覆盖该 Material 的 `content_sha256 / size_bytes / etag / width / height`。因此 Material identity 并不保证 content generation immutable。
+
+**真实调用链：**
+
+1. CLEAN 对 image A(H1) 扫描成功，`selection.state=succeeded`，`clean_results.metrics.sha256=H1`；同批其它图片失败，所以任务成为 PARTIAL_SUCCESS/failed compat。
+2. 外部对象同 source/key 内容变化为 H2；用户执行 canonical Storage Rescan，系统复用 A 的原 material_id，并把 MaterialRepository 的 content_sha256 等更新为 H2。
+3. 用户对失败清洗重试。生产 UI/上传批次路径是真实可达的：v47 将 PARTIAL_SUCCESS 映射成 `failed / 部分失败，请重试`；上传批次使用确定性 clean_task_id，失败后再次保存决策时 `_v62_publish_clean_compat()` 会对同一 Durable task 调 `repository.retry(task_id)`。
+4. MaterialBatch Handler 看到 retry_of，只复位 failed/running；A 仍 succeeded，因此不会重新进入 `clean_batch()`，也不会比较 H1 与当前 H2。
+5. 最终详情仍把旧 A 的 clean_results 作为当前清洗结果；`_v47_durable_clean_results()` 只把 live Material 的 URL/annotation 信息叠到旧 result 上，不校验 result.metrics.sha256。
+6. 用户确认清洗时，`v47_confirm_clean()` 同样不核对 source hash：用户按旧结果选择 delete_ids 可删除现在的 H2；而 frozen selection 中仍存在的图片都会被标记 `processing_status=processed / cleaned_at`。
+
+**影响：**
+
+- 旧 H1 的模糊/亮度/损坏/重复判断可被错误应用到新 H2；
+- H1 被判坏图时，用户可能删除已经换成正常内容的 H2；
+- H1 被判正常时，H2 即使已损坏也可能直接被确认 processed；
+- near/exact duplicate 的旧关系也可能与当前素材内容不一致；
+- Training Picker 后续会把 `processed` 当清洗完成，导致未经当前内容清洗的数据进入训练候选；
+- 状态、task generation 都可能完全正常，因此问题很难从任务状态察觉。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-086：清洗确认时删除失败项仍被错误标记 processed/cleaned；
+- AUDIT-095：Storage Import CandidateStore 跨 retry generation 保留旧 candidate/hash；
+- AUDIT-097：Material Integrity 长扫描缺 revision fence；
+- AUDIT-152：Cleaning 自己的 succeeded result 被 resume 语义永久保留，而同 material_id 的 content generation 可被 Rescan 更新，导致旧清洗证据作用到新内容。
+
+**现有测试为什么没有发现：**
+
+Cleaning recovery 测试主要验证 succeeded row 不重复执行、failed row 可重试，这恰好固定了当前 resume 行为；Storage Rescan 测试则验证同 storage reference 可以更新现有 material metadata。两边没有跨模块测试“CLEAN partial success → rescan same material to new hash → retry/confirm”。Remote Cleaning 的 generation commit 反而会逐项比较 source_sha256，但本地 retry 没有对应 fence。
+
+**建议最小修复方向：**
+
+不要取消 resume，也不要新增第二 Cleaning owner。应把 CLEAN 成功证据绑定 source generation：
+
+1. clean_results 已有 metrics.sha256，可把它作为 succeeded result 的 source identity；
+2. retry 开始时，对所有 succeeded rows 批量比较 result source_sha256 与当前 Material content_sha256；
+3. hash 已变化的 row 必须重置 pending，并清理该 row 旧 clean_result/hash-index contribution 后重新分析；
+4. confirm 前再次做最终 hash fence，避免 scan/retry 完成后到人工确认之间又发生 Rescan；
+5. delete_ids 只允许删除与当前 content hash 一致的 reviewed result；
+6. 未变化的 succeeded row 继续复用，保持大批量 retry 性能；
+7. Remote Cleaning 与 Local Cleaning 应复用同一 source-evidence 语义，不另造结果 owner。
+
+**应新增回归测试：**
+
+- H1 succeeded + H2 failed → material H1→H3 rescan → retry 时 H1 row 必须重新扫描；
+- 未变化 succeeded row retry 时不得重复分析；
+- result H1、current H2 时 confirm 必须 409/要求重新清洗，不得 mark processed；
+- stale result 的 delete_ids 不得删除新 H2；
+- same source/key rescan 更新 content_sha256 后，clean_result_task_id 不得被当成当前内容有效证据；
+- 10k/20k retry 校验必须批量化，不能逐条 N+1。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
