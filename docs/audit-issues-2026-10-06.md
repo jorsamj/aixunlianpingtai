@@ -25128,3 +25128,178 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-182 — “批量清洗 / 批量无需清洗”把当前 48 条 Material page 当成全部未处理素材；全选范围随分页变化，10k/20k 只能逐页操作
+
+**级别：中高**  
+**模块：Material Pagination / Batch Cleaning / MARK_CLEAN_SKIPPED / Frontend bounded truth / Selection Scope**
+
+**现象：**
+
+现代素材页已经由 server-side Material Pagination 接管。
+
+当前 `state.images` 不再代表整个项目 / 整个筛选结果，而只代表当前 Material page。
+
+但是未处理素材页顶部仍真实插入两个生产按钮：
+
+- `批量清洗 → openBatch414('clean')`
+- `批量无需清洗 → openBatch414('ready')`
+
+这两个入口都**不传 image_ids**。
+
+而 `openBatch414(mode, ids=null)` 在没有显式 ids 时直接：
+
+`const candidates = state.images || []`
+
+随后：
+
+1. 从这一页中过滤：
+   - 非 annotation_index_pending；
+   - 未 processed；
+   - 未 annotated；
+2. 把这些当前页 rows 存入：
+   `state.batch414Rows`
+3. 默认全选：
+   `state.batch414Selected = new Set(rows.map(...))`
+4. 弹窗显示：
+   `共 N 张未处理素材 · 已选 N`
+5. “全选”也只重新选择：
+   `state.batch414Rows`
+6. 提交时只把这些 ID 交给：
+   - CLEAN；
+   - canonical MATERIAL_BATCH + MARK_CLEAN_SKIPPED。
+
+所以后端 Durable owner虽然可以处理大范围任务，但前端根本没有把整个当前 filter/scope 交给它。
+
+**真实调用链：**
+
+数据集 → 未处理素材  
+→ MaterialPaginationRuntime 只加载当前 page（当前默认约 48 条）  
+→ `decorateDatasetControls414()`  
+→ 页面顶部显示“批量清洗 / 批量无需清洗”  
+→ 点击 `openBatch414('clean'|'ready')`  
+→ `ids=null`  
+→ `candidates=state.images`  
+→ 当前页 N 条  
+→ 弹窗宣称“共 N 张未处理素材”  
+→ “全选”只全选这一页  
+→ `confirmBatch414()`
+→ CLEAN 或 MARK_CLEAN_SKIPPED 只收到当前页 IDs。
+
+**用户真实可达场景：**
+
+项目有 10,000 张未处理素材。
+
+当前 page size 48。
+
+用户进入“未处理素材”，看到顶部“批量清洗”。
+
+点击后弹窗显示：
+
+`共 48 张未处理素材 · 已选 48`
+
+用户点“开始清洗”。
+
+最终只创建一个 48 张的 CLEAN task。
+
+其余 9,952 张完全不在 selection 中。
+
+翻到第 2 页再点相同按钮，又只处理第 2 页。
+
+如果当前页还叠加搜索/标签等 filter，批量范围又随当前浏览器页状态变化。
+
+**为什么是 Bug / bounded truth 漂移：**
+
+“当前页选择”本身可以是一种合法产品动作，但当前 UI：
+
+- 按钮叫“批量清洗 / 批量无需清洗”；
+- 弹窗写“共 N 张未处理素材”；
+- 有“全选 / 反选”；
+
+却没有任何“仅当前页”的语义提示。
+
+更重要的是平台已经建立：
+
+- server-side Material filter；
+- MaterialSelectionSpec；
+- FILTERED scope；
+- Durable MaterialBatch；
+
+正是为了 1k/10k/20k 不在浏览器维护全量 ID。
+
+当前 UI 仍把 bounded page list 重新当成 batch truth，绕过了这些能力。
+
+**影响：**
+
+- 10k/20k 批量清洗退化成逐页 48 张操作；
+- 用户会误以为“全选”覆盖所有未处理素材；
+- 多页项目很容易只清洗第一页后就创建 Training；
+- 其它页仍是 unprocessed，但用户以为已经完成批量治理；
+- “无需清洗”同样只推进当前页；
+- 浏览器换页后同一按钮含义变化；
+- 后端已有 FILTERED 大范围能力无法被真实产品入口使用。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-050：Cleaning 详情读取时全量 hydrate 结果；
+- AUDIT-051：ZIP Import Review 曾把 10k/20k 全量 hydrate 到浏览器；
+- AUDIT-161：“无需清洗”存在同步 v52 mutation 旁路，形成第二 mutation owner；
+- AUDIT-182：即使走 canonical Durable MaterialBatch，**前端 batch selection 本身仍被当前 Material page 截断**。
+
+161 解决“谁执行 mutation”。
+
+182 解决“用户的批量范围到底是谁”。
+
+两者都需要修，但不是同一问题。
+
+**现有测试为什么没有发现：**
+
+当前测试主要覆盖：
+
+- MaterialPagination 只加载 bounded page；
+- CLEAN MaterialBatch 可以接受 selected/FILTERED selection；
+- MARK_CLEAN_SKIPPED Durable owner；
+- 当前页多选和最近上传批次。
+
+没有跨模块测试：
+
+`server total > page size`
+→ 顶部“批量清洗”
+→ 应表达 current filter 全量 scope，而不是只传当前 page IDs。
+
+也没有断言：
+
+- UI 文案如果仅当前页，必须明确“当前页”；
+- “全选”不能把 bounded page 冒充全量 filter。
+
+**建议最小修复方向：**
+
+不要重新全量 hydrate 10k/20k image IDs。
+
+应直接复用现有 canonical MaterialSelectionSpec / FILTERED owner：
+
+1. 顶部“批量清洗 / 批量无需清洗”默认表达当前 server-side filter scope；
+2. 将当前 dataset/tab/filter 条件转换成 FILTERED selection_spec；
+3. 后端冻结 selection.sqlite3；
+4. 若用户只想处理当前页，提供明确的“当前页”动作；
+5. 当前显式勾选模式继续使用 SELECTED IDs；
+6. 弹窗显示服务端 aggregate total，而不是 `state.batch414Rows.length`；
+7. “全选”应表示“当前筛选结果全选”，并使用 scope + exclusions / selection token，不在浏览器创建 20k Set；
+8. recent-upload batch 的显式 IDs 语义保持不变。
+
+**应新增回归测试：**
+
+- 10k unprocessed、page size=48，顶部批量清洗 → task selection total=10k；
+- 10k unprocessed、点击“仅当前页” → total=48；
+- filter 后 1,200 条 → FILTERED task total=1,200；
+- 显式勾选 7 张 → SELECTED total=7；
+- MARK_CLEAN_SKIPPED 同样遵守 scope；
+- 翻页不改变已创建 FILTERED selection；
+- 前端不得为了“全选”请求/保存 10k image IDs；
+- recent-upload explicit batch 继续只处理本批 IDs。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
