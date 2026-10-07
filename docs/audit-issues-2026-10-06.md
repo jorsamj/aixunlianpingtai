@@ -23797,3 +23797,211 @@ Rescan 明确允许 stable material_id 指向新的 content hash，因此旧 GT 
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-174 — Source Import 终态局部刷新可被旧 Material page in-flight 去重吞掉；导入成功后当前素材页继续显示导入前旧快照，且 CI 已真实红灯
+
+**级别：中高**  
+**模块：Source Import / Material Pagination / Completion Refresh / Request Coalescing / Frontend Runtime**
+
+**现象：**
+
+当前 v36 “地址读取” Source Import 完成后，`refreshSourceImportTasksV36()` 的终态分支已经刻意避免 broad reload，并只做：
+
+- `refreshLabels414(false)`
+- 当前在“数据集”页时 `reloadMaterialPage61()`
+
+这个设计方向本身是对的。
+
+但 canonical Material Pagination Runtime 的：
+
+`loadMaterialPage61()`
+
+会按：
+
+```text
+[projectId, filterSignature, cursor, page]
+```
+
+生成 `flightKey`，并执行：
+
+```text
+if (pageLoadFlight && pageLoadFlightKey === flightKey) {
+    return pageLoadFlight
+}
+```
+
+也就是说，同一页同一筛选只要已经有请求在 flight，后续“刷新”不会建立新 generation，也不会等待旧请求结束后再强制 refetch，而是直接复用旧 Promise。
+
+`reloadMaterialPage61()` 虽然语义叫 reload，但当前仅：
+
+- invalidate full-pool cache；
+- `loadMaterialPage61({reset:true})`；
+
+它没有让当前 page flight 失效，也没有 `force` / refresh generation。
+
+因此 Source Import completion 的局部刷新可能被**导入完成前已经启动的旧 Material GET**吞掉。
+
+**当前 HEAD 已有真实 CI failure：**
+
+GitHub Actions：
+
+`Frontend Runtime Stabilization / browser-navigation`
+
+run:
+
+`37643621523`
+
+job:
+
+`112868578169`
+
+失败用例：
+
+`tests/browser/source-import-completion-scope.spec.mjs`
+
+真实断言：
+
+> terminal source import did not refresh the current paged material domain
+
+结果：
+
+```text
+Expected: > 0
+Received: 0
+materialGets = 0
+```
+
+同时该测试的：
+
+`labelGets > 0`
+
+通过，说明终态 completion 分支已经执行；缺失的是当前分页素材域的新 GET。
+
+**真实调用链：**
+
+数据集页已有分页素材加载  
+→ `loadMaterialPage61()` 发起旧 `/api/v61/.../materials` 请求  
+→ `pageLoadFlight` 保持 active  
+→ v36 Source Import 任务从 queued/running 进入 done  
+→ `refreshSourceImportTasksV36()` 命中 terminal branch  
+→ `refreshLabels414(false)` 正常发新请求  
+→ `reloadMaterialPage61()`  
+→ reset 后得到与旧 flight 相同的 `flightKey`  
+→ `loadMaterialPage61()` 直接 `return pageLoadFlight`  
+→ **没有发新的 /materials GET**  
+→ 旧 flight 返回的是导入完成前的素材列表  
+→ 页面继续显示旧结果。
+
+**为什么这不是普通请求去重：**
+
+请求 coalescing 只在多个调用要求“同一时刻的同一份数据”时安全。
+
+Source Import completion 是明确的 mutation boundary：
+
+> 后端素材域刚刚发生了变化。
+
+completion 之后的 refresh 必须建立一个比 mutation 更新的 read generation。
+
+当前 key 只包含“查询条件”，不包含：
+
+- mutation generation；
+- material repository revision；
+- force-refresh epoch；
+- completion token。
+
+因此它错误地把：
+
+“导入前读”
+
+和
+
+“导入后必须重新读”
+
+当成同一请求。
+
+**用户真实可达场景：**
+
+1. 用户打开数据集页；
+2. 当前分页素材请求尚未完成；
+3. 后台地址读取任务恰好完成；
+4. 页面轮询读到 `done`；
+5. completion owner 触发局部刷新；
+6. 刷新被旧 flight 合并；
+7. 用户看到任务“导入完成”，但当前素材列表里没有新增图片；
+8. 只有后续手动刷新、切页或其它事件再次触发 Material GET 后才出现。
+
+大项目、对象存储延迟、网络慢时窗口更明显。
+
+**影响：**
+
+- “任务已完成”与素材页可见真相不一致；
+- 用户可能误以为导入失败或重复导入；
+- 导入后立即进行清洗/标注时看不到新素材；
+- CI timing window 会间歇性红灯；
+- rerun 绿不能证明源码没有问题，因为竞态取决于旧 flight 是否已在 completion 前结束。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-052：ZIP completion 对 Label Schema 有两个 owner，导致重复 GET；
+- AUDIT-067：Storage Import focused/background pollOwner handoff 丢失；
+- AUDIT-120：非当前页面 poller/visibility 生命周期；
+- AUDIT-143/159：页面刷新造成重型读取；
+- AUDIT-174：completion owner 已正确选择“局部素材刷新”，但 canonical Material Pagination 的 in-flight coalescing 缺 mutation generation，使这个刷新本身被旧读吞掉。
+
+**现有测试为什么有时通过：**
+
+用例已经正确锁定：
+
+- 不允许 broad project reload；
+- labels 必须刷新；
+- current paged materials 必须刷新。
+
+它是否红灯取决于 completion 时刻是否仍存在相同 `pageLoadFlight`。
+
+如果旧素材请求先结束：
+
+- `pageLoadFlight=null`
+- completion 会发新 GET
+- 测试通过。
+
+如果旧请求仍在：
+
+- completion 复用旧 Promise
+- `materialGets=0`
+- 测试失败。
+
+这正是竞态测试应暴露的生产 bug，不应通过延长 sleep 或放宽断言修测试。
+
+**建议最小修复方向：**
+
+不要恢复 broad `loadRelated()`，也不要新增第二 Material page owner。
+
+继续复用 `MaterialPaginationRuntime61`，补明确的 mutation-aware refresh 语义：
+
+1. `reloadMaterialPage61()` / runtime.refresh({force:true}) 必须能创建新的 read generation；
+2. force refresh 不得直接复用 mutation 前的同-key `pageLoadFlight`；
+3. 可选择：
+   - bump refresh epoch 并纳入 flight key；或
+   - 让旧 serial stale，再启动新 flight；或
+   - 等旧 flight settle 后立即执行一次强制 refetch；
+4. completion 刷新只继续读取当前分页域和 summary，不允许退回全项目 hydrate；
+5. stale old flight 即使晚返回，也不得覆盖 force refresh 的新 generation；
+6. ZIP Import / Storage Import / AI Commit / Label Remap 等 mutation completion 若调用同一个 reload owner，也应自动继承同一修复，而不是每个业务各造一套 workaround。
+
+**应新增/保留回归测试：**
+
+至少覆盖：
+
+- page material GET 仍 in-flight 时 Source Import terminal → 必须出现 completion 后新 material GET；
+- old flight 晚于 new force refresh 返回 → old result 不得覆盖新页；
+- old flight 已完成 → completion 只发 bounded material GET，不 broad reload；
+- labels + materials 均局部刷新；
+- Source Import completion 不触发 project/datasets/images/algorithms/publish/model-config broad fan-out；
+- ZIP/Storage Import/AI Commit 调用 `reloadMaterialPage61()` 时也具备 force freshness；
+- 不放宽当前 `source-import-completion-scope.spec.mjs` 断言。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
