@@ -11143,3 +11143,123 @@ repository recovery 测试目前明确保护普通 RUNNING：
 
 ---
 
+### AUDIT-094 — Generic Agent finalization owner 把 Training 专属文案写给 Conversion / Cleaning / Material Import / Deployment Test，业务页会直接展示错误“训练已完成”状态
+
+**级别：中**  
+**模块：Durable Task / Agent Finalization / Frontend Presentation / Status Contract**
+
+**现象：**
+
+\`TaskRepository.begin_finalization()\` 是所有 Agent portable task 共用的 finalization owner。
+
+但进入 \`finalizing_commit\` 时，它无条件写：
+
+\`current_item='训练已完成，正在归档已验证产物'\`
+
+没有根据 \`TaskKind\` 区分：
+
+- TRAINING；
+- MODEL_CONVERSION；
+- MATERIAL_IMPORT；
+- MATERIAL_BATCH / Cleaning；
+- DEPLOYMENT_TEST。
+
+同一个 repository 的 \`request_cancel()\` 又在任何：
+
+\`status=RUNNING && stage=finalizing_commit\`
+
+场景统一抛：
+
+\`训练已完成并正在归档，无法再停止\`
+
+因此 generic lifecycle owner 泄漏了 Training 专属 presentation。
+
+**为什么是前后端真实可见问题：**
+
+这些字段不是内部 debug metadata。
+
+例如 Storage Import 页面轮询当前 Durable task 后直接构造：
+
+\`runtime = [mode, worker_id, resource_wait_reason, task.current_item || task.stage]\`
+
+所以远程 Storage Import 在 result commit 阶段会显示：
+
+**“训练已完成，正在归档已验证产物”**
+
+即使当前用户做的是素材扫描/导入。
+
+UploadTaskCenter 的 durable normalization 同样把：
+
+\`task.current_item || task.message || task.error\`
+
+作为 detail 展示。
+
+其它统一任务投影也会保留 \`current_item\`，所以这个错误状态文本可以传播到任务中心和业务详情页。
+
+**停止操作同样漂移：**
+
+finalizing_commit 阶段本来正确地应该禁止取消，因为 canonical commit 已经开始。
+
+但 Conversion / Cleaning / Material Import / Deployment Test 用户点停止后，得到的后端错误却是：
+
+“训练已完成并正在归档，无法再停止”。
+
+行为正确，业务类型和文案错误。
+
+**为什么不是单纯美观问题：**
+
+finalization 是故障排查最关键阶段之一。
+
+错误文案会让现场人员误判：
+
+- 素材导入为什么突然进入训练；
+- 转换是不是错误触发了 Training；
+- 清洗任务是不是被错误路由到训练 Worker；
+- Deployment Test 是否串到了 Training runtime。
+
+这会掩盖真实的 Agent finalization 状态，并增加运维误判。
+
+**与 AUDIT-092 / AUDIT-093 的区别：**
+
+- AUDIT-092：business commit 成功后 task receipt 写失败，可能假 FAILED；
+- AUDIT-093：成功 finalization 在 finish 前掉线会被错误 requeue；
+- AUDIT-094：即使生命周期没有失败，generic finalization 的**公共展示合同**也错误写成 Training 文案。
+
+修复范围仅是 projection/presentation contract，不应和事务恢复改动混在一起。
+
+**建议最小修复：**
+
+不要在各前端页面重新维护一套 finalization 文案。
+
+应由 canonical task projection / lifecycle owner 根据 TaskKind 生成中性或 kind-aware 文案，例如：
+
+- 通用：\`执行已完成，正在归档已验证结果\`；
+- 或按 kind：
+  - Training：正在归档训练模型；
+  - Conversion：正在归档转换产物；
+  - Material Import：正在提交导入结果；
+  - Cleaning：正在归档清洗结果；
+  - Deployment Test：正在归档验证结果。
+
+取消拒绝错误也应使用中性表达：
+
+\`任务已进入结果提交阶段，无法再停止\`
+
+避免前端再根据 kind 猜测。
+
+**回归测试建议：**
+
+至少增加：
+
+- 每个 Agent TaskKind 调 \`begin_finalization()\`；
+- public \`current_item\` 不出现错误的“训练”文案；
+- Storage Import 页面显示正确 finalization 文案；
+- Conversion finalizing 时 stop 返回非 Training 专属错误；
+- Training 自身仍显示合理文案；
+- finalization cancel fence 行为保持不变。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
