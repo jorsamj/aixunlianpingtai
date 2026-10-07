@@ -4257,6 +4257,145 @@ AUDIT-058 是“某次已经完成的 audit 的结果展示/处理”只消费�
 
 ---
 
+
+### AUDIT-059 — 标签统一任务恢复只看前 100 个 active MaterialBatch，且 remap 创建无 active-source 防重，可重复提交同一批标签统一
+
+**级别：中～高**  
+**模块：Label Unify / REMAP_ANNOTATION_LABELS / MaterialBatch / PollRegistry / Bounded Active Truth**
+
+**现象：**
+
+标签管理页面刷新/重新进入后，当前后台统一任务通过：
+
+`GET /api/v62/projects/{project_id}/material-batches?active_only=true&limit=100`
+
+恢复。
+
+然后前端只在这 100 条里：
+
+`find(activeLabelRemap414)`
+
+其中 `activeLabelRemap414` 要求：
+
+- operation = `REMAP_ANNOTATION_LABELS`
+- `retire_sources_on_success === true`
+- status 为 active。
+
+前端不消费 `next_cursor`。
+
+如果当前标签统一任务被其它 100+ active MaterialBatch 挤出第一页：
+
+- 页面恢复不到它；
+- banner 被清空；
+- PollRegistry 无法重新 arm；
+- 用户看到的界面会像“没有正在运行的标签统一任务”。
+
+此时用户可以再次选择相同 source labels → target，并再次提交。
+
+**真实调用链：**
+
+页面恢复：
+
+`renderLabelManagement414()`
+→ `resumeLabelUnify414()`
+→ generic active MaterialBatch page 100
+→ `find(activeLabelRemap414)`
+→ 未找到则 `renderLabelRemapBanner414(null)`
+
+再次提交：
+
+`startLabelUnify414()`
+→ `POST /api/v54/projects/{project_id}/labels/unify`
+→ `_v54_start_unify()`
+→ `create_annotation_remap_by_labels(... retire_sources_on_success=True)`
+
+后端 remap create：
+
+- 校验来源/目标标签当前 active；
+- 从 AnnotationRepository 冻结 live reference snapshot；
+- 冻结 selection.sqlite3；
+- 写 request/checkpoint；
+- 构造 `MATERIAL_BATCH`；
+- **直接 `repository.create(task)`**。
+
+没有查找：
+
+- 同项目；
+- 同 operation；
+- 同 source_labels；
+- 同 target_label
+
+是否已经存在 active remap。
+
+**为什么是 Bug / bounded truth：**
+
+当前 UI 的 active-task 恢复使用 bounded generic page，而 create owner 又没有 idempotency/fence。
+
+这会把一个本来单一的标签治理事务拆成多个 durable remap：
+
+1. 第一个 remap 仍 queued/running；
+2. 页面因为第一页截断“忘记”它；
+3. 用户再次提交相同标签；
+4. 第二个 remap 再次冻结 selection/revision；
+5. 两个任务进入同一个 materials resource queue。
+
+因为来源标签只在完整成功后 retire，第二次提交发生时来源仍可能保持 active，所以 admission 不一定能拦住重复请求。
+
+**可能结果：**
+
+- 重复任务排队，占用 Worker/资源；
+- 第二个任务在第一任务改完 AnnotationRepository 后因 revision/CAS 失败；
+- 或第一任务完成退役 source 后，第二任务在执行阶段 fail-closed；
+- UI 出现“刚创建的统一失败”，用户误以为第一次统一也失败；
+- 大规模 remap 会重复构建 selection / checkpoint，增加磁盘和数据库 I/O；
+- 多次刷新/重复点击可继续堆积更多重复 remap。
+
+**与 AUDIT-057 的区别：**
+
+AUDIT-057 是项目级 Label/Material Integrity Full Audit 的发现/防重问题。
+
+AUDIT-059 是真正会修改 Ground Truth 和治理状态的 `REMAP_ANNOTATION_LABELS` 统一任务。
+
+两者虽然都由 bounded generic MaterialBatch page 触发，但写入语义、风险和正确防重 key 不同：
+
+- integrity audit：按 project + operation 防重；
+- label remap：至少按 project + source label set + target + active lifecycle 防重。
+
+**为什么 CI 没发现：**
+
+现有测试保护：
+
+- remap selection freeze；
+- AnnotationRepository CAS；
+- retirement 双清零；
+- PollRegistry 单 owner；
+- 大批量 remap 分批处理。
+
+但缺少：
+
+1. 100+ active MaterialBatch；
+2. 一个 active `REMAP_ANNOTATION_LABELS` 被挤出第一页；
+3. 页面刷新恢复；
+4. 重复提交相同 source/target；
+5. 后端必须返回已有 task 或拒绝重复创建。
+
+**建议最小修复：**
+
+不要把 `limit=100` 改成更大常数。
+
+建议：
+
+- 给 MaterialBatch list 增加 operation filter，或增加 operation-aware active query；
+- `resumeLabelUnify414()` 按 `REMAP_ANNOTATION_LABELS` 精确恢复；
+- remap create owner 在 publication 前检查同 project + canonical source set + target 的 active task；
+- 如果是同一请求，返回已有 task（幂等）或明确 409 + task_id；
+- 不创建第二个 Remap runtime，不改变现有 AnnotationRepository/CAS owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101+ active batch 时 remap 仍可恢复，以及重复 source/target 不会创建第二个 active task。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
