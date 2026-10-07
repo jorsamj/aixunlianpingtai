@@ -24005,3 +24005,166 @@ completion 之后的 refresh 必须建立一个比 mutation 更新的 read gener
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-175 — 算法版本删除/回退先破坏性删除新畅联远端 Version、后提交本地版本事务；中间崩溃/本地 commit 失败后 auto-publish 会把用户刚删除的远端版本重新发布
+
+**级别：高**  
+**模块：Algorithm Version Retirement / ChangLian Remote Delete / External Publication / Saga Recovery / Auto Publish**
+
+**现象：**
+
+当前本地算法版本删除与回退都在 `model_delivery_version_fence` 内按以下顺序执行：
+
+1. dependency check；
+2. `publish_service.delete_version_for_rollback()`；
+3. 新畅联 `version_remove()` 真正删除远端 Version；
+4. publication（若存在）尝试 patch 为 `DELETED`；
+5. 才执行本地 `AlgorithmSqlStore.delete_version_with_operation()` 或 `rollback_version()`，并在这个阶段才持久化本地 version operation journal。
+
+因此远端 destructive action 与本地 durable delete/rollback intent 之间存在 crash window。
+
+**关键恢复语义目前方向相反：**
+
+`publication_requires_sync()` 对 status != `PUBLISHED`（除 BLOCKED_CONFIG）返回 true。
+
+`auto_retry_due()` 对 `DELETED` 立即返回 true。
+
+所以如果：
+
+- 新畅联删除成功；
+- publication 已标成 `DELETED`；
+- 本地 version transaction 随后失败或进程崩溃；
+
+那么本地算法版本仍然存在，下一轮 `run_auto_publish_once()` 会把这个版本视为“需要发布”，再次调用 `publish(... automatic=True)`，从而把用户刚删除的远端 Version 重建。
+
+如果进程更早崩溃在：
+
+`client.version_remove()` 成功
+→ publication 还没 patch DELETED
+
+之间，本地 publication 仍是 `PUBLISHED`。后续 `reconcile_published_remote()` 发现 `external_algo_version_id` 已不在远端版本列表，会把 publication 降为 `PENDING / REMOTE_VERSION_MISSING`；随后同一个 auto-publish owner仍会重新发布。
+
+所以两种 crash 点最终都倾向：
+
+> 恢复“发布”，而不是恢复用户的“删除/回退”。
+
+**真实调用链：**
+
+`DELETE .../versions/{version_id}`
+或
+`POST .../versions/{target}/rollback`
+→ `model_delivery_version_fence`
+→ `delete_algorithm_version()/rollback_algorithm_version()`
+→ dependency_check
+→ `delete_version_for_rollback()`
+→ `client.version_remove([external_version_id])`
+→ remote Version 已永久删除
+→ （crash / AlgorithmSqlStore commit error）
+→ local algorithm version/current pointer 仍保留
+→ 无 durable delete-intent journal
+→ auto publisher 扫到该 local successful version
+→ publication DELETED/PENDING 或后续 remote reconcile 降级
+→ `publication_requires_sync=true`
+→ `publish(... automatic=True)`
+→ 远端 Version 被重新创建。
+
+**现有异常处理为什么不够：**
+
+正常 Python exception 路径已经会抛：
+
+- `ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE`
+- `ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE`
+
+并提示联系运维。
+
+但这只是同步请求错误文案，不是 durable recovery state。
+
+而且真正的进程 crash / kill -9 发生时，catch 根本不会运行；version operation 又是在 remote delete **之后**才写，因此重启后没有任何 durable intent 能告诉系统：
+
+> 这个 local version 正处于“远端已删、待完成本地 retirement”。
+
+**为什么现有 reconciliation 不能修：**
+
+- External master-data sync 只会在外部 Product 整体消失时 purge local external algorithm，不会因某一个发布版本缺失而继续本地 version retirement；
+- External publication remote reconciliation 的明确目标是“修复发布映射”，远端 Version missing 时会降为 PENDING，交回 publish owner；
+- auto-publish 对 DELETED/PENDING local publication 都会重新同步，只要 local algorithm version 仍存在且成功可发布。
+
+因此现有 recovery owner会“复活远端版本”，而不是完成删除 saga。
+
+**用户真实可达场景：**
+
+1. 一个外部算法 current=v2，v1 为历史版本；
+2. v1/v2 已发布到新畅联；
+3. 用户删除 v1，或从 v2 回退 v1（产品合同要求删除 current v2）；
+4. 新畅联 version_remove 成功；
+5. 服务器在本地 AlgorithmSqlStore transaction 前崩溃，或本地事务因磁盘/SQLite I/O 失败；
+6. 重启后本地仍认为被删版本存在；
+7. auto-publish 再次创建远端版本；
+8. 用户看到“删除/回退失败”，但远端版本过一会又出现，且可能获得新的 external_algo_version_id / Weight IDs。
+
+**影响：**
+
+- 删除/回退用户意图不具备 crash consistency；
+- 远端版本可能被自动复活；
+- remote/local version identity 发生新一轮重绑定；
+- Weight 映射可能全部重新创建；
+- 审计上无法证明一次 delete 是否最终被尊重；
+- 运维重试可能再次执行 remote delete，增加歧义；
+- 回退场景尤其危险：local current 仍可能指向本应被删除的 current version。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-091/092/093：Remote Training / Agent result finalization 的半提交与恢复；
+- AUDIT-139：训练完成 attach current_version_id 的 CAS；
+- AUDIT-154：auto-publish 的无界扫描/磁盘 I/O；
+- AUDIT-175：版本 retirement saga 中 **remote destructive delete 发生在 durable local delete intent 之前**，且现有 auto-publish reconciliation 会执行相反动作——重新发布。
+
+**现有测试为什么没有发现：**
+
+当前测试主要覆盖：
+
+- remote delete 失败时不得只删本地；
+- ambiguous remote identity fail-closed；
+- local transaction 抛异常时返回明确错误；
+- publication remote drift 后能够自动 repair/re-publish；
+- rollback/delete dependency fences。
+
+缺少 fault-injection 组合：
+
+`remote version_remove success → crash/local commit failure → process restart → auto-publish/reconcile`
+
+以及最终必须保持“删除意图”的断言。
+
+**建议最小修复方向：**
+
+不要新增第二套 publication owner。
+
+应在现有 algorithm version operation / publication owner上把 retirement 做成 durable saga：
+
+1. 在调用 remote `version_remove` 前，先原子持久化 `delete_pending / rollback_pending` operation，冻结 algorithm/version/external_version identity 和 expected current；
+2. publication/auto-publish 必须把 active retirement intent 当硬 fence，禁止重新发布；
+3. remote delete 成功后持久化 `remote_deleted` phase；
+4. 再提交本地 AlgorithmSqlStore delete/rollback；
+5. 重启/startup/retry 根据 phase 查询远端 exact identity：
+   - 已删 → 继续本地 retirement；
+   - 仍在 → 幂等重试 remote delete；
+   - ambiguous → fail-closed 等人工处理；
+6. operation 完成后再允许清理 publication/model artifacts；
+7. 不要用“把 auto-publish 关掉”作为修复，也不要新增第二 reconciliation runtime。
+
+**应新增回归测试：**
+
+- remote delete 成功后、本地 commit 前 crash → 重启后不得 auto-republish；
+- publication 已 DELETED、本地版本仍在 → active retirement intent 阻止 auto publish；
+- publication 仍 PUBLISHED、remote 实际已缺失 → reconciliation 不得降 PENDING 后重新发布，应继续 retirement；
+- local commit transient fail → retry saga 幂等完成；
+- rollback current v2→v1 的同一 fault window；
+- remote delete 未真正成功 → 不得提交本地 retirement；
+- ambiguous external identity → 保持 fail-closed；
+- retirement 完成后 publication/model artifact cleanup 仍由现有 owner执行。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
