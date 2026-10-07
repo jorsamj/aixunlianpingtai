@@ -20024,3 +20024,349 @@ confirmed_empty scope 必须覆盖当前 frozen schema。
 
 ---
 
+
+### AUDIT-148 — annotated partial-scope 正样本可穿透 Training Snapshot；未审核类别会被检测训练隐式当成背景，且 selected-label 投影还能伪造负样本 scope
+
+**级别：高**  
+**模块：Annotation Scope / AI Review / Structured Import / Training Label Contract / Training Projection / Snapshot / Training Accuracy**
+
+**现象：**
+
+当前 Annotation Ground Truth 已经把：
+
+`annotation_scope`
+
+作为“这张图实际确认过哪些 canonical 标签”的正式真相保存。
+
+这不是单纯的展示/provenance 字段。
+
+canonical AI Review 在：
+
+`annotation_task_service._canonical_review_scope()`
+
+中甚至明确写明：
+
+> Resolve the labels this human-confirmed AI task actually reviewed.
+
+AI 候选人工确认后，`commit_candidate_decisions()` 会把本次 `review_scope` 与已有 scope 合并，再写入 AnnotationRepository。
+
+因此如果本次 AI 任务只审核：
+
+`["smoke"]`
+
+即使最终图片有 smoke 正框，它的正式 GT 也可以合法是：
+
+```text
+annotation_state = annotated
+annotation_scope = ["smoke"]
+boxes = [smoke ...]
+```
+
+结构化 COCO / VOC / YOLO 导入同样会把用户确认的：
+
+`label_mapping.values()`
+
+冻结成 `import_scope`，所以“项目已有 smoke + fire，但这批外部数据只确认 smoke”也是当前真实可达状态。
+
+人工标注工作台与这两条路径不同：当前手工保存会把当时全部 active labels 写入 scope，因此手工全量审核通常不会触发本问题。
+
+**真正的训练漏洞：**
+
+`snapshots._lock_scope_to_schema()`
+
+当前只对：
+
+`state == confirmed_empty`
+
+执行“scope 必须覆盖本次全部 schema codes”的 fail-closed。
+
+对于任何：
+
+`state != confirmed_empty`
+
+包括正式 `annotated` 正样本，代码在检查 box label 没超出 schema 后直接：
+
+`return raw_scope`
+
+完全没有验证：
+
+`schema_codes - annotation_scope`
+
+是否为空。
+
+所以：
+
+```text
+frozen schema = ["smoke", "fire"]
+
+image A:
+annotation_state = annotated
+annotation_scope = ["smoke"]
+boxes = [smoke]
+```
+
+会被 Snapshot 正常接受。
+
+但目标检测训练文件只会写 smoke 框。
+
+对 YOLO / 常规 object detection loss 来说，图片中没有标注出来的 `fire` 不会被理解成“这个类别尚未审核”，而会参与背景学习；如果图里真实存在 fire，就形成未经确认的 false negative。
+
+即使图里恰好没有 fire，系统也没有任何 Ground Truth 证据证明 fire 已被确认不存在。
+
+**Training selected-label projection 还有第二个更危险的同根路径：**
+
+`training_label_tasks.project_training_rows()`
+
+在 source state 为 `annotated` 时：
+
+1. 如果仍有 selected_boxes：
+   - 保留正框；
+   - scope 只做：
+     `(raw_scope ∩ allowed) ∪ selected_box_labels`
+   - 仍不检查 allowed schema 是否被 scope 完整覆盖。
+2. 如果所有正框都属于本次未选择标签：
+   - `selected_boxes = []`
+   - `excluded_boxes != []`
+   - 代码会把该图片直接投影成：
+     `annotation_state = confirmed_empty`
+   - 并强行设置：
+     `annotation_scope = sorted(allowed)`
+
+这会制造一个更明确的假负样本。
+
+例如：
+
+```text
+项目标签: smoke, fire
+
+正式 GT:
+scope = ["smoke"]
+boxes = [smoke]
+
+本次训练只选择 fire
+```
+
+当前 task-local projection 会：
+
+- 删除/遮盖 smoke 区域；
+- 把图片改成 confirmed_empty；
+- 自动写：
+  `scope = ["fire"]`
+
+但用户从来没有确认过：
+
+`fire 不存在`
+
+也没有任何 AI/人工审核覆盖 fire。
+
+这与“不能自动扩展 confirmed_empty scope”的既定安全合同直接冲突。
+
+**真实调用链：**
+
+路径 A — AI 自动标注：
+
+`POST /api/v60/.../annotation-tasks`
+→ AI Candidate
+→ 人工 Review
+→ `commit_confirmed_review()`
+→ `_canonical_review_scope()`
+→ `commit_candidate_decisions()`
+→ `write_formal_annotations()`
+→ AnnotationRepository partial `annotation_scope`
+→ Training Create
+→ `project_training_rows()`
+→ `build_snapshot()`
+→ `_lock_scope_to_schema()`
+→ annotated partial scope 被接受
+→ dataset materialization
+→ YOLO label file
+→ Training loss
+
+路径 B — 当前结构化导入：
+
+COCO / VOC / YOLO
+→ 用户 label mapping
+→ `_v18_confirmed_import_scope()`
+→ `add_image_record(... annotation_scope=import_scope)`
+→ AnnotationRepository
+→ Training Create
+→ 同上。
+
+**为什么这是 Bug，而不是允许“每张图只标一个类”的产品选择：**
+
+`annotation_scope` 已经被正式定义成“实际审核范围”。
+
+如果系统希望把一张图片用于 `smoke + fire` 的 detection loss，则该图片必须有证据证明：
+
+- smoke 已审核；
+- fire 也已审核。
+
+否则 label file 中缺失 fire 的语义无法表达“unknown / not reviewed”。
+
+当前训练格式没有 per-class unknown mask。
+
+因此把 partial-scope positive 直接送进多类别 loss，会把：
+
+“fire 未审核”
+
+错误压缩成：
+
+“fire 不存在”。
+
+这是训练 Ground Truth 语义损失，而不是单纯 UI 状态问题。
+
+**用户真实可达场景：**
+
+场景 1 — AI 单标签审核后进入多标签训练：
+
+1. 项目已有：
+   `smoke`
+   `fire`
+2. 用户创建 AI 标注任务，只显式选择：
+   `smoke`
+3. AI 在图片 A 发现 smoke；
+4. 用户人工确认候选；
+5. 正式 GT：
+   `annotated + scope=["smoke"] + smoke box`
+6. 创建 smoke + fire 训练；
+7. Picker 把 A 当正式 annotated 素材；
+8. Training projection 保留 smoke box；
+9. Snapshot 不检查缺少 fire scope；
+10. 训练真实开始；
+11. fire 未审核区域被隐式当背景。
+
+场景 2 — selected-label 投影伪造负样本：
+
+1. 同一张 A 只审核 smoke；
+2. 本次训练有效 schema 只包含 fire；
+3. smoke box 被列入 excluded_boxes；
+4. `project_training_rows()` 把 A 改成 confirmed_empty；
+5. 自动生成：
+   `scope=["fire"]`
+6. Snapshot 因为 scope 已被伪造完整而通过；
+7. A 作为 fire 负样本进入训练。
+
+场景 3 — 外部数据导入：
+
+1. 项目已有 smoke + fire；
+2. 导入一批只映射/确认 smoke 的 COCO/VOC/YOLO 数据；
+3. 导入结果保留：
+   `annotation_scope=["smoke"]`
+4. 后续 smoke + fire 训练仍可接受这些 annotated 图片；
+5. 未审核 fire 被训练成背景。
+
+**影响：**
+
+- 多标签目标检测可能产生系统性 false negative；
+- 新增/继承标签后，旧 partial-scope 正样本会污染新类别；
+- 单标签 AI 审核数据混入多标签训练时，准确率可能被悄悄拉低；
+- selected-label 训练可把“只审核了被排除标签”的正样本伪造成另一个类别的正式负样本；
+- Snapshot 仍会成功，所以不像 AUDIT-147 那样 fail-closed；
+- 用户看到训练成功，也很难从任务状态发现 Ground Truth 已被错误解释。
+
+这是训练准确性主链问题。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-085：标签 REMAP 与 Training Prepare 并发导致 mixed-generation projection；
+- AUDIT-129：AI task 没冻结 live label catalog；
+- AUDIT-144 / 146：confirmed_empty 的统计/质量展示错误；
+- AUDIT-147：partial-scope **confirmed_empty** 被 Picker 错判可训练，但最终 Snapshot 会正确拒绝，因此不会污染训练；
+- AUDIT-148：partial-scope **annotated 正样本** 在 Snapshot 仍被接受，并且 selected-label projection 还能主动伪造新负样本 scope，最终会真实进入 loss。
+
+所以 148 不是 147 的重复。
+
+147 是：
+
+`Picker eligibility 漂移 → 提交失败`
+
+148 是：
+
+`Ground Truth scope 丢失 → Snapshot 仍成功 → 真实训练污染`
+
+**现有测试为什么没有发现：**
+
+`tests/unit/test_snapshots.py`
+
+当前开头的 deterministic snapshot 测试反而明确固定了旧行为：
+
+- schema 同时包含：
+  `fire + smoke`
+- train 图片只有 fire box；
+- 其 inferred `annotation_scope=["fire"]`
+- 测试要求 Snapshot 成功。
+
+因此测试只验证：
+
+“box label 属于 schema”
+
+没有验证：
+
+“图片 scope 覆盖 schema”。
+
+另一方面：
+
+`test_confirmed_empty_scope_is_locked_in_snapshot`
+
+已经覆盖 confirmed_empty 的 scope 锁定，但没有给 annotated positive 做对应的 completeness test。
+
+AI Review 测试又主要验证：
+
+- review scope 被正确持久化；
+- partial review 合并；
+- Candidate → formal GT；
+
+这些测试本身是对的，却没有继续串到 Training Snapshot，因而没有发现 partial scope 在训练层失去语义。
+
+**建议最小修复方向：**
+
+不要新增第二套 Annotation owner，也不要自动替用户扩 scope。
+
+正确方向应继续复用：
+
+AnnotationRepository
+→ frozen training label contract
+→ Snapshot
+
+这条 canonical owner 链。
+
+最小原则：
+
+1. 对任何会进入普通 detection label file 的图片，不论：
+   - annotated；
+   - confirmed_empty；
+   都必须证明 `annotation_scope` 覆盖本次 frozen effective schema；
+2. `scope=["*"]` 继续按既有 wildcard 语义处理；
+3. annotated partial scope：
+   - 如果本次 effective schema 是其 scope 的子集，可以训练；
+   - 如果 effective schema 含未审核标签，必须 fail-closed / 标成需补充审核；
+4. `project_training_rows()` 不得因为：
+   “所有现有正框都被排除”
+   就自动把 source annotated 图片的 scope 改成全部 allowed labels；
+5. 若 source scope 并未覆盖 allowed schema，则不能投影成 task-local confirmed_empty；
+6. 不要自动把旧 scope 从：
+   `["smoke"]`
+   扩成：
+   `["smoke","fire"]`；
+7. Training Picker / selection summary 也应复用同一个 schema-aware scope eligibility，避免修完 Snapshot 后再次出现前端可选、后端拒绝；
+8. 不要通过“忽略 annotation_scope”或“只要有任意正框就认为整图全类别已标完”来修。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- schema=[smoke]，annotated scope=[smoke] + smoke box → 可训练；
+- schema=[smoke,fire]，annotated scope=[smoke] + smoke box → 不得进入 Snapshot；
+- schema=[smoke,fire]，annotated scope=[smoke,fire] + smoke box → 可训练，fire 的缺框才是有证据的负信息；
+- scope=["*"] + 正框 → 按 wildcard 合同可训练；
+- AI Review 只审核 smoke，训练 smoke+fire → Picker/Snapshot 均不得把该图片当完整 GT；
+- AI Review 只审核 smoke，训练 schema 仅 smoke → 可训练；
+- source annotated scope=[smoke] + smoke box，本次 selected schema=[fire] → 不得投影成 confirmed_empty scope=[fire]；
+- structured import 只确认 smoke mapping，后续 smoke+fire 训练 → 不得静默进入 loss；
+- 手工标注工作台写入完整 active scope 后，多标签训练保持可用；
+- 不得放宽 AUDIT-147 对 confirmed_empty partial scope 的既有 fail-closed 测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
