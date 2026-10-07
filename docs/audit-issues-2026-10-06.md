@@ -14091,4 +14091,140 @@ AUDIT-113 是“畅联云数据”只读页面自身的浏览策略：
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-114 — “畅联云数据”停用算法状态过滤写成 status=0，但 canonical 新畅联合同以 status=2 表示 inactive；已下架产品会从只读页完全漏失
+
+**级别：中～高**  
+**模块：畅联云数据 / External Product Status / Frontend-Backend Contract**
+
+**现象：**
+
+当前“畅联云数据”页面刷新时固定请求两组产品：
+
+- /provider/products?status=1
+- /provider/products?status=0
+
+并把两组 merge 后作为页面的完整产品集合。
+
+也就是说，前端把：
+
+- status=1 当启用；
+- status=0 当停用。
+
+但 canonical 后端同步合同已经明确采用：
+
+- status=1：active；
+- status=2：inactive / 下架。
+
+platform_core/external_algorithm_platform.py 的删除同步注释明确写着：
+
+status=2 means inactive; complete absence means deleted.
+
+并且现有单元测试：
+
+test_remote_status_two_is_retained_as_inactive_not_deleted
+
+明确构造：
+
+status: 2
+
+并断言：
+
+- external_active is False；
+- external_status == "2"；
+- 版本仍然保留；
+- 不能把它当远端删除。
+
+因此“畅联云数据”的 status=0 过滤与 canonical provider status contract 不一致。
+
+**现有前端测试还把错误固化：**
+
+tests/frontend/changlian-data-browser.test.mjs
+
+当前 mock 和 URL 断言都明确要求：
+
+/products?status=0
+
+所以即使 provider 按真实合同返回 inactive status=2，测试仍会绿色，因为测试模拟的是错误状态值。
+
+**真实影响：**
+
+当新畅联存在：
+
+productId=p1, status=2
+
+时：
+
+1. enabled 请求 status=1 不会返回 p1；
+2. disabled 请求 status=0 也不会返回 p1；
+3. mergeProducts() 根本拿不到 p1；
+4. 页面不会请求 p1 的 versions；
+5. 更不会请求这些 version 下的 weights；
+6. 用户在“畅联云数据”里看不到这个已停用产品及其历史版本/权重。
+
+但主数据同步却会正确保留该算法为：
+
+external_active=False
+external_status="2"
+
+于是同一系统形成明显矛盾：
+
+- 算法列表 / mirror truth 知道它“已下架”；
+- 畅联云只读数据页却像它根本不存在。
+
+**为什么是 Bug / 前后端不一致：**
+
+“畅联云数据”页面的产品定位是：
+
+只读查看远端算法产品、版本、转换结果。
+
+停用/下架产品依然是远端真实数据，而且它们的历史版本、权重仍有审计价值。
+
+status=2 不是 deleted。
+
+只有完整 products(status="") 返回集合中完全缺失，才代表删除。
+
+所以浏览页不能把 status=2 漏掉。
+
+**影响：**
+
+- 已下架算法从只读页消失；
+- 用户无法查看其历史版本和权重/转换结果；
+- 页面统计的“算法产品 / 版本 / 权重”数量偏小；
+- 运维会误以为远端已经删除；
+- 与算法列表中的“已下架”状态互相矛盾；
+- 容易干扰排查外部删除同步、版本回退和发布历史。
+
+**建议最小修复：**
+
+不要在前端硬编码另一套 provider 状态枚举。
+
+优先方向：
+
+1. 如果 provider products(status="") 能返回完整 active + inactive 集合：
+   - 浏览页直接使用这一完整只读集合；
+2. 如果必须按状态拆：
+   - 使用 canonical provider status 常量；
+   - active=1；
+   - inactive=2；
+3. 不要把 status=0 继续当作“停用”的隐式本地约定；
+4. 把 provider product status normalization 提取为单一共享合同；
+5. UI 对 status=2 明确展示“已停用/已下架”，而不是删除；
+6. 完整缺失与 inactive 必须继续严格区分。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- provider 返回 status=2 产品时，畅联云数据页可见；
+- status=2 产品仍加载 versions / weights；
+- 页面统计包含 inactive 产品；
+- active=1 与 inactive=2 都正确展示；
+- complete absence 才视为不存在；
+- 前端测试不再断言错误的 status=0；
+- 与 test_remote_status_two_is_retained_as_inactive_not_deleted 使用同一状态合同。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
