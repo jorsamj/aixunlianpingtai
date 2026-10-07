@@ -12214,3 +12214,91 @@ AUDIT-100 是另一条独立 endpoint：`GET /api/projects/{project_id}/models` 
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-101 — training_options 在请求线程内串行探测全部 Legacy Server 并递归扫描本地训练资源；单次页面 hydration 最坏可阻塞约 80 秒以上
+
+**级别：高**  
+**模块：Training Options / Training Create Hydration / Legacy Server Health / Paddle Resource Scan / Web Latency**
+
+**现象：**
+
+当前 `GET /api/training_options?project_id=...` 是训练页、训练资源页和训练创建 hydration 的公共配置入口。
+
+这个 GET 在 Web 请求线程内同步完成多类重工作：
+
+1. project models：调用 `list_models_internal(project_id)`，会触发 AUDIT-100 的全量 Training job history 扫描；
+2. PaddleDetection：调用 `scan_paddledet_algorithms(pd_dir)`，递归扫描 configs 下的 yml；
+3. Paddle weights：调用 `scan_paddle_weights(pd_dir)`，递归发现本地权重；
+4. legacy Training Server：对 `SERVERS_FILE` 中每一条服务器顺序调用 `_remote_capabilities(server)`；
+5. `_remote_capabilities()` 内同步执行 `requests.get(base_url + /api/remote/health, timeout=4)`。
+
+第 4 项是最明显的阻塞源：循环没有并发、没有健康缓存、没有上一次 sampled_at truth。
+
+AUDIT-040 已确认 legacy server 当前最多物理保留 20 条。因此 20 台不可达/超时服务器时，一次 training_options 理论上可连续等待接近 `20 × 4s = 80s`，还没算 DNS、连接建立、Paddle 扫描和模型历史 I/O。
+
+**真实前端影响：**
+
+`static/app.js -> extras412()` 在训练任务、训练资源、自动迭代页面都会请求 training_options。
+
+`TrainingCreateHydrationRuntime` 也把它作为训练创建所需 common input；虽然该 runtime 已正确提供 5 分钟 TTL 和 in-flight 去重，但首次 hydration、缓存过期、force refresh 仍必须等待这一个后端请求完成。
+
+训练资源保存/检测后也会再次刷新 training_options。
+
+因此前端已有缓存只能减少请求次数，不能解决单次请求自身被外部网络和递归磁盘扫描阻塞的问题。
+
+**为什么不是 AUDIT-022：**
+
+AUDIT-022 关注的是 legacy server 被返回为 ready target，但 Durable Training 实际由 Central Scheduler/Service Node owner 执行，属于资源语义错误。
+
+AUDIT-101 关注的是同一个 legacy compatibility 列表在**读取配置时同步做网络探测**，把外部服务器健康延迟直接放进用户页面关键路径。
+
+即使后续只把 legacy server 标成诊断用途，只要 training_options 继续同步探测它们，首开卡顿仍存在。
+
+**与 AUDIT-100 的关系：**
+
+AUDIT-100 是 training_options 间接调用的其中一个 filesystem 放大器；AUDIT-101 是整个 Training Options 聚合接口的同步 I/O 设计问题，尤其是 N 台 legacy server 的串行远端请求。
+
+**影响：**
+
+- 训练任务/训练资源页面长时间 loading；
+- 训练创建首次打开可能一直停在“正在读取训练资源”；
+- 一台坏服务器增加约 4 秒尾延迟，多台线性叠加；
+- Web worker/thread 被外部服务器故障拖住；
+- 同时多个浏览器请求会重复向同一 legacy server 做 health GET，形成放大；
+- Paddle 配置目录很大时再叠加递归 filesystem 扫描；
+- 用户可能误判平台卡死并重复点击创建/刷新。
+
+**现有安全点：**
+
+TrainingCreateHydrationRuntime 的 5 分钟 TTL、project-scoped in-flight dedupe 和 AbortController 是正确的，不应回退或删除。这些只需要继续保留，问题应在后端 read model 收口。
+
+**为什么现有测试没发现：**
+
+现有 training hydration / training server frontend 测试主要验证 scoped refresh、TTL/in-flight、navigation fencing 和 payload，不会启动 20 个慢/不可达远端服务器测 API latency。
+
+也没有看到“多 legacy server timeout + training_options 必须 bounded latency”的后端合同。
+
+**建议最小修复：**
+
+不要在 training_options 里新建另一套资源探测线程，也不要把 timeout 从 4 秒简单改成更小数字。
+
+1. legacy remote health 应由已有 Resource Discovery / Service Node runtime 的后台采样 owner 维护 sampled truth；
+2. training_options 只读取最近一次健康快照，不主动远程 GET；
+3. stale snapshot 可以显示 UNKNOWN/STALE，并提供显式刷新，不阻塞普通页面 hydration；
+4. Paddle 算法/权重发现也应读取 Resource Discovery cache，目录扫描只在显式 scan 或后台 discovery 执行；
+5. project model 列表复用 AUDIT-100 修复后的直接 provenance/index；
+6. Training Options GET 应成为 bounded read-only projection，不能做远端网络 I/O。
+
+**回归测试建议：**
+
+- 20 条 legacy server 配置，其中全部 health endpoint 超时，training_options 仍在固定短延迟内返回 cached/stale truth；
+- 普通页面 hydration 不触发 requests.get(remote/health)；
+- 显式资源刷新仍可更新 health snapshot；
+- 大 PaddleDetection configs 目录不会在普通 training_options GET 中递归扫描；
+- 5 分钟 frontend TTL/in-flight 去重合同保持；
+- cluster_scheduler / Service Node 当前真实可用性仍正确展示。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
