@@ -6902,6 +6902,104 @@ canonical import owner 必须在每次成功写 material 时直接累计本任�
 
 ---
 
+
+### AUDIT-073 — v36 split 计算在遍历每张项目素材时重复构造 set(imported_ids)；大批量导入退化为 O(project_images × imported_images)
+
+**级别：中～高**  
+**模块：Source Import / Dataset Split / Performance / 10k–20k Scale**
+
+**现象：**
+
+`_v36_apply_split_policy()` 当前先读取整个项目：
+
+`images = load_images(project_id)`
+
+随后构造本任务 image map 时写成：
+
+`{x.get("id"): x for x in images if x.get("id") in set(imported_ids)}`
+
+这里的 `set(imported_ids)` 位于 comprehension 条件内部。
+
+Python 会对 **每一条 project image** 再执行一次集合构造，而不是自动把它提升到循环外。
+
+因此复杂度不是预期的：
+
+`O(project_images + imported_images)`
+
+而是近似：
+
+`O(project_images × imported_images)`
+
+并伴随大量临时 set 分配 / 回收。
+
+**20k 场景：**
+
+例如：
+
+- 项目已有 / 最终约 20,000 张；
+- 本次地址导入约 20,000 张；
+
+这一行理论上会反复处理约 4 亿次 imported-id 元素来重建集合，尚未计入：
+
+- 前置 `load_images()`；
+- `_v36_run_source_import()` 的 before/after 两次全量项目读取；
+- 对每个 imported id 的 annotation 判断；
+- 最后的 material patch。
+
+这会直接把 split finalize 阶段变成 CPU / allocator 热点，表现为任务长时间停在：
+
+“正在分类训练/评测/试验集”。
+
+**现有测试缺口：**
+
+`tests/api/test_v36_source_import_guard.py` 当前只用 1 张图片验证：
+
+- annotated directory/ZIP fail-closed；
+- plain image directory 仍可导入。
+
+前端/browser 测试主要验证：
+
+- PollRegistry owner；
+- terminal completion 只做 scoped refresh；
+- 不 broad reload。
+
+没有 1k / 10k / 20k split finalize 性能合同，因此该 O(N×M) 路径没有被发现。
+
+**与 AUDIT-071 / 072 的关系：**
+
+- AUDIT-071：v36 是独立 daemon execution owner；
+- AUDIT-072：before/after project diff 会把并发任务素材误归属；
+- 本条：即使 ownership 已修正，只要保留当前 comprehension 写法，大批量 split 仍会出现独立的算法复杂度问题。
+
+因此不是重复问题。
+
+**建议最小修复：**
+
+在迁移到 canonical Material Import owner 时：
+
+- task-owned IDs 本身应已有稳定集合 / ledger；
+- 如仍需要过滤 project rows，至少先：
+  `imported_id_set = set(imported_ids)`
+  只构造一次；
+- 更优的是直接按 task-owned IDs 做 indexed MaterialRepository 查询，不先全量 `load_images(project_id)`；
+- annotation state 也应批量读取，不做逐 ID 文件 / repository N+1；
+- split patch 继续使用 bulk patch。
+
+**回归测试建议：**
+
+至少增加：
+
+- 1k / 10k / 20k imported IDs 的 split finalize；
+- 断言不会为每张 project image 重建 imported-id set；
+- 大项目、小批导入应与项目总历史近似解耦；
+- 大批导入应使用 batch/indexed annotation state；
+- 性能测试不能只测 1 张 happy path。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
