@@ -16173,3 +16173,58 @@ if (cacheFresh) {
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-125 — Component Scan 可并发启动且 latest.json 无 generation fence；较老慢任务后完成会把“最新组件检测”倒退成旧快照
+
+**级别：中～高**  
+**模块：Component Scan / Concurrency / latest.json / Generation Fencing / Frontend Cache**
+
+**现象：**
+
+当前 POST /api/v40/system/components/scan 每次调用都会无条件创建新的 scan_id、写 queued JSON、创建 daemon thread 并启动。COMPONENT_SCAN_THREADS 只是保存线程引用，没有 active scan single-flight、generation、CAS 或 canonical current_scan_id。
+
+_v40_scan_write(scan_id, data) 只要看到 status=done，就无条件覆盖 COMPONENT_SCAN_DIR/latest.json；它不比较 created_at、generation、scan_id 或“最后一次用户请求”。
+
+因此 latest 的真实语义是“最后完成并写盘的 scan”，而不是“最后创建的 scan”。
+
+**真实竞态：**
+
+- Scan A 先创建，但远程资源/工具探测较慢；
+- Scan B 后创建，却更快完成；
+- B 先写 latest.json = B；
+- A 随后完成，又无条件写 latest.json = A；
+- GET /api/v40/system/components/latest 最终返回更早创建的 A。
+
+组件扫描包含 Python module probe、subprocess version check、npu-smi、本地/远程 Deploy Resource 探测和 RKNN-Toolkit2 检测，耗时天然不保证按创建顺序完成。前端只禁用当前页面按钮，无法阻止第二浏览器、第二标签页、刷新后重复启动或直接 API 调用，所以并发真实可达。
+
+**与 AUDIT-124 的区别：**
+
+AUDIT-124 是单个 scan 内部 v40→v41 两阶段过早发布 done；AUDIT-125 是不同 scan 之间没有 generation fence。即使 124 修完、每个 scan 只写一次最终 done，125 仍然存在。
+
+**影响：**
+
+- “最新检测”可以倒退成旧环境快照；
+- 新旧扫描结果在多管理端下互相覆盖；
+- 前端 terminal cache TTL 5 分钟会继续放大旧 latest；
+- 多个并发 scan 重复执行 SDK、subprocess 和远程探测，产生额外资源消耗；
+- 用户刚重新检测完成，刷新后却可能看到较老结果。
+
+**建议最小修复：**
+
+不要新增第二 Component Scan runtime。start 时生成单调 generation/sequence，并记录 canonical latest_requested_generation。每个 scan 的历史 JSON可以正常完成，但只有 generation 仍等于当前 latest requested generation 的 scan 才能更新 latest.json。更早 generation 后完成只能作为历史记录，不能覆盖 latest。若产品只允许一个系统检测同时运行，也可以在 active scan 时复用现有 scan 或返回明确 active scan id，但不能只靠前端按钮 disabled。
+
+同时与 AUDIT-124 一起保证：单个 scan 只有最终完整结果才能首次发布 status=done。
+
+**回归测试建议：**
+
+- A 先创建、B 后创建、B 先完成、A 后完成，latest 必须仍是 B；
+- A/B 历史详情都可读取；
+- 多标签页同时 POST 不让 latest 逆序；
+- failed 旧 scan 不影响新 scan latest；
+- RKNN 后处理完成后才允许该 generation 发布 done；
+- 5 分钟前端 cache 只能缓存 generation 当前的最终 snapshot。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
