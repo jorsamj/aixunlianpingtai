@@ -7104,6 +7104,150 @@ AUDIT-071 迁移到 canonical Durable MATERIAL_IMPORT 后，应直接复用：
 
 ---
 
+
+### AUDIT-075 — Agent start 对不可恢复的任务 payload / 执行合同错误仍按临时错误循环重试；任务可永久停在 QUEUED
+
+**级别：高**  
+**模块：Node Agent / AgentExecution / Task Assignment / Durable Task Lifecycle / Retry Semantics**
+
+**现象：**
+
+Agent HTTP 客户端已经明确提供：
+
+`NodeExecutorHTTPError.retryable`
+
+并把 transport failure、408 / 425 / 429、5xx 标记为可重试；普通 4xx 默认不可重试。
+
+但 `NodeAgentExecutorLoop.run_once()` 在：
+
+`client.start_execution(task_id, assignment_token)`
+
+失败时，对所有 `NodeExecutorHTTPError` 统一：
+
+```python
+except NodeExecutorHTTPError as error:
+    self._set_error(f"{error.code}: {error}")
+    return True
+```
+
+完全没有读取 `error.retryable`。
+
+因此临时网络错误和任务自身永久损坏被使用同一 lease-expiry 重试策略。
+
+**真实永久错误路径：**
+
+`AgentExecutionService.start_execution()` 在真正执行 `QUEUED -> RUNNING` 之前读取 task-owned payload。
+
+至少以下错误发生时 task 仍保持 QUEUED：
+
+- `TASK_PAYLOAD_UNAVAILABLE`：request artifact 缺失、无法读取或 JSON 损坏；
+- `REMOTE_EXECUTION_PAYLOAD_INVALID`：远程 request / resolver 结果不是 object；
+- 其它由冻结 request 本身导致、等待或换 Agent 也不会自动恢复的 contract error。
+
+现有测试 `test_missing_payload_never_transitions_task_to_running` 已直接证明：
+
+- start 返回 `TASK_PAYLOAD_UNAVAILABLE`；
+- task 仍是 `TaskStatus.QUEUED`。
+
+测试只保护“坏 payload 不得进入 RUNNING”，没有定义它应如何结束生命周期。
+
+**真实循环：**
+
+1. assignment：ASSIGNED；
+2. Agent claim：ASSIGNED -> CLAIMED；
+3. start_execution 读取坏 request.json；
+4. 返回不可重试 4xx；
+5. task 仍 QUEUED；
+6. assignment 仍 CLAIMED；
+7. claim lease 到期后 `claim_for_node()` 自动 CLAIMED -> ASSIGNED；
+8. 后续再次 claim / start；
+9. 相同永久错误再次发生。
+
+没有 owner：
+
+- 把 task 转为 FAILED / BLOCKED；
+- 持久化稳定 task-level error；
+- 终止该任务的自动调度。
+
+所以一个已经无法执行的 Durable Task 可以无限显示“排队中”。
+
+**为什么不是正常 lease retry：**
+
+对于以下情况等待 lease expiry 是合理的：
+
+- Agent runner 暂时不 ready；
+- capability heartbeat race；
+- 网络故障；
+- 控制面 5xx。
+
+当前代码也明确把 stale / temporarily unsupported runtime 留给 lease expiry 恢复。
+
+但 payload 丢失 / 损坏属于 task-owned permanent precondition failure；重新 claim 同一任务不会修复 request artifact。
+
+更关键的是：代码已经拥有 `retryable` 分类信号，但 executor 没消费它，说明错误分类与 retry lifecycle 已脱节。
+
+**影响：**
+
+- UI 长期显示 QUEUED，而任务实际永远不可执行；
+- assignment 周期性 CLAIMED / ASSIGNED，产生无意义调度；
+- 用户正常 task detail 看不到稳定根因，只可能在 Agent last_error 中短暂看到；
+- claim/start API、日志、调度机会被持续消耗；
+- 排障容易被误判为 GPU 忙或 Agent 不在线；
+- 后续新增 permanent 4xx contract error 会自动继承同一错误生命周期。
+
+**与既有问题的区别：**
+
+- AUDIT-055：取消 pre-start task 后 assignment 不释放；
+- AUDIT-060：node offline 后 assignment 不迁移；
+- AUDIT-063：Central Scheduler 缺生产 allocation driver；
+- AUDIT-070：RUNNING Agent Training 的 GPU reservation 被过早释放。
+
+本条是：
+
+**assignment 已成功 claim，但 execution start 因不可恢复的 task-owned request/payload 错误失败后，没有 terminal/block lifecycle。**
+
+**建议最小修复：**
+
+不要让 Agent 直接写中央 TaskRepository，也不要增加第二 retry scheduler。
+
+由 control-plane canonical execution owner 分类 start failure：
+
+1. transient / retryable：
+   - transport；
+   - 408 / 425 / 429 / 5xx；
+   - heartbeat / capability 等可恢复 race；
+   - 保持 lease expiry / reassignment。
+
+2. permanent task-owned precondition：
+   - payload missing / corrupt；
+   - frozen remote execution contract invalid；
+   - 明确不可恢复 request schema error；
+   - 原子：
+     - fail/block QUEUED task；
+     - 持久化稳定 error code/message；
+     - release active assignment；
+     - 停止自动 claim retry。
+
+不能简单把所有 4xx 都 terminal；可能因平台配置/升级恢复的错误必须显式保留 retryable 分类。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- payload artifact 缺失：CLAIMED -> start -> BLOCKED/FAILED + assignment RELEASED；
+- payload JSON 损坏同样 fail-closed；
+- invalid frozen remote request 不再无限 QUEUED；
+- transport timeout / 5xx 仍可重试；
+- capability 暂时撤销仍可恢复；
+- permanent failure 后不会再次 claim 同 task；
+- public task truth 展示稳定错误；
+- execution generation / lease fencing 不放宽。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
