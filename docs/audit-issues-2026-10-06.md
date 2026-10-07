@@ -16426,3 +16426,195 @@ AUDIT-124 是单个 scan 内部 v40→v41 两阶段过早发布 done；AUDIT-125
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-127 — v53 Bootstrap 的 force=true 可与现有预加载线程并发运行且共享全局 status/snapshot；旧线程晚到可把新 bootstrap 从 ready 倒退回 running/failed 并触发 503
+
+**级别：高**  
+**模块：Startup Bootstrap / Snapshot / Concurrency / Generation Fencing / First Paint**
+
+**现象：**
+
+当前 canonical 启动预加载 owner：
+
+`_v53_start_bootstrap(preferred_project_id="", force=False)`
+
+虽然持有：
+
+`_V53_BOOTSTRAP_LOCK`
+
+但该锁只保护“是否创建线程”这一瞬间。
+
+当已有线程仍存活时：
+
+`if _V53_BOOTSTRAP_THREAD and _V53_BOOTSTRAP_THREAD.is_alive() and not force: return`
+
+也就是说：
+
+**只要请求传 `force=true`，就会故意绕过已有线程 single-flight，再启动一条新的 bootstrap daemon thread。**
+
+随后：
+
+`_V53_BOOTSTRAP_THREAD = threading.Thread(...)`
+
+还会把全局 thread handle 直接替换成新线程。
+
+旧线程并没有停止，也没有 generation / cancellation / superseded 标记。
+
+**两个线程共享同一套可写全局真相：**
+
+所有 bootstrap worker 都直接修改：
+
+- `_V53_BOOTSTRAP_STATUS`
+- `_V53_BOOTSTRAP_SNAPSHOT`
+
+而且没有：
+
+- generation；
+- request sequence；
+- compare-and-swap；
+- “仅最新请求可发布” fence。
+
+`_v53_set_bootstrap()` 每次直接：
+
+`_V53_BOOTSTRAP_STATUS.update(... status="running" / "ready" ...)`
+
+worker 成功时又无条件：
+
+- `_V53_BOOTSTRAP_SNAPSHOT = snap`
+- `_V53_BOOTSTRAP_STATUS.update(status="ready", ...)`
+
+worker 异常时无条件：
+
+- `_V53_BOOTSTRAP_STATUS.update(status="failed", ...)`
+
+**真实竞态：**
+
+1. Startup Bootstrap A 正在执行；
+2. API 调用：
+   `POST /api/v53/bootstrap/start {"force": true}`
+   启动 B；
+3. B 更快完成：
+   - 发布 Snapshot B；
+   - status = ready；
+4. A 此时仍在执行；
+5. A 下一次调用 `_v53_set_bootstrap(...)`：
+   - 直接把共享 status 从 ready 改回 running；
+6. 如果 A 最后失败：
+   - 又把 status 改成 failed；
+7. 此后普通：
+   `GET /api/v53/bootstrap/snapshot`
+   看到全局 status 非 ready，可返回 503：
+   `平台数据仍在启动预加载`。
+
+也存在反向情况：
+
+- 最新的 B 失败；
+- 更旧的 A 随后成功；
+- 系统最终又显示 ready，
+- 从而隐藏最新一次 force bootstrap 的失败。
+
+因此当前 truth 是：
+
+“最后一个写共享 dict 的线程”
+
+而不是：
+
+“最新一次 bootstrap request 的 generation”。
+
+**为什么前端函数本身不能兜底：**
+
+前端已有：
+
+`loadStartupSnapshot413(force=true)`
+
+会调用：
+
+`POST /api/v53/bootstrap/start`
+`{force:true}`
+
+随后：
+
+`waitReady()`
+
+轮询的也是同一个共享 `/bootstrap/status`。
+
+虽然当前普通首次初始化使用 `force=false`，但 force 已是公开 API / canonical 前端能力；第二客户端、调试/恢复调用或后续页面复用都能触发。
+
+服务端不能依赖“现在没有常用按钮调用 force”来保证 single-flight。
+
+**与其它 generation 问题的区别：**
+
+AUDIT-125 是 Component Scan 多 scan 之间 latest.json 缺 generation fence。
+
+AUDIT-127 是平台首屏 Bootstrap 自身的全局：
+
+- status；
+- snapshot；
+- first-paint readiness
+
+缺 generation fence。
+
+它直接影响整个平台初始化可用性，owner 和修复位置不同。
+
+**影响：**
+
+- 已 ready 的平台可被旧 bootstrap 线程重新打回 running；
+- 旧线程异常可把新成功 bootstrap 改成 failed；
+- `/bootstrap/snapshot` 可从正常响应退化成 503；
+- 首屏可能重新进入“平台数据仍在启动预加载”；
+- 新旧线程可互相覆盖 snapshot；
+- force 恢复操作的成功/失败结果不具备稳定语义；
+- 全局 `_V53_BOOTSTRAP_THREAD` 只指向新线程，旧线程成为不可追踪的并发 writer。
+
+**现有测试缺口：**
+
+当前 bootstrap tests 主要覆盖：
+
+- 项目选择；
+- label mutation 后 snapshot truth；
+- algorithm revision overlay；
+- platform version/build identity。
+
+没有覆盖：
+
+- A running → force B；
+- B 先 ready，A 后 progress；
+- B ready，A 后 failed；
+- B failed，A 后 ready；
+- latest generation only publication。
+
+**建议最小修复：**
+
+不要新增第二 Bootstrap owner。
+
+在现有 v53 owner 内增加明确 generation / single-flight 语义：
+
+1. 每次 start 分配单调 generation；
+2. global 保存 current requested generation；
+3. worker 的：
+   - progress；
+   - ready；
+   - failed；
+   - snapshot publish
+   都必须携带 generation；
+4. 只有仍等于 current generation 的 worker 能修改 canonical status/snapshot；
+5. 被 supersede 的旧线程可以自然结束，但只能丢弃其 publication；
+6. 如果产品根本不需要并发 force，可直接在已有线程 active 时复用当前 thread/status，而不是启动第二条；
+7. `waitReady()` 应观察对应 generation，而不是任意全局 writer 的状态。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- A running，force B，B ready，A 后 progress → status 必须仍 ready(B)；
+- B ready，A 后 failed → snapshot/status 仍为 B；
+- B failed，A 后 ready → 最新 B 的 failed 不能被 A 隐藏；
+- 旧 generation 不得覆盖 snapshot；
+- 普通非 force 启动保持 single-flight；
+- 多客户端并发 start 时 canonical generation 单调且可观察。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
