@@ -7248,6 +7248,183 @@ except NodeExecutorHTTPError as error:
 
 ---
 
+
+### AUDIT-076 — Service Node 删除未检查 ASSIGNED / CLAIMED；可删除仍持有 pre-start assignment 的离线节点并永久留下悬空任务绑定
+
+**级别：高**  
+**模块：Service Node / Central Scheduler / Node Assignment / DELETE Lifecycle / GPU Reservation**
+
+**现象：**
+
+`ServiceNodeRepository.delete(node_id)` 当前只检查：
+
+1. 当前节点是否还有未过期 `worker_instances`；
+2. 是否存在通过这些 worker_id 关联的 `RUNNING / CANCEL_REQUESTED` task。
+
+满足任一条件才返回：
+
+`SERVICE_NODE_BUSY / 409`。
+
+但 Central Scheduler 在 Agent 真正 start 之前，任务仍保持：
+
+`TaskStatus.QUEUED`
+
+同时通过独立表保存：
+
+- `task_node_assignments.state = ASSIGNED`；
+- 或 `CLAIMED`。
+
+Service Node DELETE 完全没有查询这张 assignment 表。
+
+**更关键的是数据库没有外键保护：**
+
+`task_node_assignments.node_id TEXT NOT NULL`
+
+没有：
+
+`REFERENCES service_nodes(node_id)`
+
+所以：
+
+`DELETE FROM service_nodes WHERE node_id=?`
+
+不会因为 active assignment 而失败，也不会级联 release。
+
+**真实可达场景：**
+
+1. Training / Conversion / Cleaning 等 Durable Task 仍是 QUEUED；
+2. Central Scheduler 已为它创建：
+   `ASSIGNED -> node-A`；
+3. node-A 随后离线，worker lease 过期；
+4. 当前没有 RUNNING task；
+5. operator 删除 node-A；
+6. `ServiceNodeRepository.delete()` 认为：
+   - live_workers = 0；
+   - active_tasks = 0；
+7. service_nodes 中 node-A 被删除；
+8. `task_node_assignments` 中：
+   `task_id -> node-A, state=ASSIGNED/CLAIMED`
+   仍然存在。
+
+**为什么任务不会自动换节点：**
+
+`CentralTaskAllocator.assign_next()` 只选择：
+
+```sql
+WHERE task.status='QUEUED'
+AND NOT EXISTS (
+  SELECT 1 FROM task_node_assignments
+  WHERE assignment.task_id=task.task_id
+    AND assignment.state IN ('ASSIGNED','CLAIMED')
+)
+```
+
+因此只要这条悬空 assignment 仍 active：
+
+- task 虽然 QUEUED；
+- 即使 node-B 在线且能力完全匹配；
+- allocator 也不会给它创建新 assignment。
+
+原 node-A 已经被删除，不可能再 heartbeat / claim。
+
+最终形成：
+
+**QUEUED task + active assignment 指向不存在的 node。**
+
+**与 AUDIT-060 的区别：**
+
+AUDIT-060 是：
+
+- 节点仍存在但 OFFLINE；
+- active assignment 不自动 release / reassign。
+
+AUDIT-076 是更强的 DELETE lifecycle bypass：
+
+- operator 已把节点实体永久删除；
+- assignment 仍保留为 active；
+- task 仍被 `NOT EXISTS active assignment` fence 排除。
+
+即使未来修复一般 offline reassignment，本条 DELETE 如果不纳入同一 retirement contract，仍可能制造 dangling assignment。
+
+**与之前“Service Node 删除安全”结论的修正：**
+
+此前审计确认：
+
+- live Worker 会阻止删除；
+- RUNNING / CANCEL_REQUESTED execution 不应被直接删除节点破坏。
+
+这部分仍成立。
+
+但该结论没有覆盖：
+
+**QUEUED + ASSIGNED/CLAIMED 的 pre-start 生命周期。**
+
+因此“Service Node 删除当前没有生命周期绕过”的旧结论需要收窄；本条即为新发现的 pre-start 删除旁路。
+
+**影响：**
+
+- QUEUED Training 可永久不再调度；
+- 预留的 GPU / node assignment truth 成为孤儿；
+- 任务页面长期表现为排队/等待资源，但没有可执行节点 owner；
+- 新节点即使资源充足也不能接手；
+- operator 只能知道 task_id 后手工调用 assignment release 或直接修数据库；
+- node assignment history 与 service node inventory 出现 referential drift；
+- 批量删除/重建节点时可能积累多个 dangling assignment；
+- 与 AUDIT-055 / 060 / 063 叠加时，Agent 调度可出现非常难排查的“队列永远不动”。
+
+**现有测试缺口：**
+
+`tests/unit/test_service_nodes.py` 当前 DELETE 只验证：
+
+- live worker -> SERVICE_NODE_BUSY；
+- worker release 后可以删除。
+
+没有覆盖：
+
+- node 有 ASSIGNED task；
+- node 有 CLAIMED task；
+- node 已离线但 assignment 仍 active；
+- DELETE 后 task 是否能重新分配。
+
+assignment 测试与 service-node 测试分开，因此跨 owner retirement contract 没有被保护。
+
+**建议最小修复：**
+
+不要通过给 assignment 表随意加 `ON DELETE CASCADE` 解决，因为静默删除 reservation 会丢失 release reason / audit lineage。
+
+Service Node retirement 应由一个明确 lifecycle owner 原子处理：
+
+1. DELETE 前检查 active `ASSIGNED / CLAIMED`；
+2. 如果仍 active：
+   - 默认 409 SERVICE_NODE_BUSY；
+   - 或明确执行受审计的 assignment release/requeue 流程后再删；
+3. release 必须写：
+   - released_at；
+   - release_reason，例如 `node_deleted`；
+4. task 保持 QUEUED 后，应允许 canonical scheduler 重新选择其他 eligible node；
+5. strict manual node affinity 的 task：
+   - 不能静默 spill 到其他机器；
+   - 应转为明确 WAITING_RESOURCE / BLOCKED，并提示指定节点已删除；
+6. DELETE 与 concurrent claim/start 必须在同一数据库事务/fence 下避免 race。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- ASSIGNED task 时删除 node -> 409；
+- CLAIMED task 时删除 node -> 409；
+- 显式 retirement/release 后删除成功；
+- 自动可迁移 task release 后可分配到 node-B；
+- strict requested_node_id 指向已删除节点时不 spill；
+- DELETE 与 claim/start 并发时不能产生 dangling active assignment；
+- assignment history 保留 release_reason；
+- 现有 RUNNING execution 保护不回退。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
@@ -7312,18 +7489,15 @@ policy 创建/修改、旧 feedback 写入和 run 入口已经走 `_legacy_itera
 
 ### Service Node 删除
 
-`ServiceNodeRepository.delete()` 已检查：
+已确认的安全部分：
 
-- live workers；
-- RUNNING / CANCEL_REQUESTED tasks。
+- live workers 会阻止删除；
+- RUNNING / CANCEL_REQUESTED execution 不会被普通 DELETE 直接拆掉；
+- 节点停用后，已经进入 RUNNING 的 execution 仍可继续 heartbeat / logs / result upload / finalization / finish。
 
-存在时返回：
+但后续审计发现：QUEUED task 已存在 ASSIGNED / CLAIMED 时，DELETE 没有检查 assignment，可删除节点并留下 dangling active assignment。该新增缺口已登记为 **AUDIT-076**。
 
-`SERVICE_NODE_BUSY / 409`
-
-因此“删除节点”当前没有发现和 AUDIT-014 同类的直接生命周期绕过。
-
-另外已确认：节点停用后，已经进入 RUNNING 的 execution 仍可继续 heartbeat / logs / result upload / finalization / finish；这一部分安全。pre-start ASSIGNED / CLAIMED 的停用缺口单独登记为 AUDIT-015。
+节点停用导致 pre-start assignment 卡住的问题仍单独登记为 AUDIT-015 / AUDIT-060。
 
 ### ModelArtifact / External Publish storage owner
 
