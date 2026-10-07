@@ -17504,3 +17504,96 @@ Online Feedback confirm 是同步 endpoint，batch 内没有 async yield。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-133 — 普通图片 upload_request 收据先持久化 PROCESSING，但没有 lease/heartbeat/过期恢复；Web 崩溃可让同一请求 ID 永久不可重试，并产生“素材已提交但收据仍处理中”分裂真相
+
+**级别：高**  
+**模块：Plain Image Upload / Idempotency Receipt / Crash Consistency / Recovery**
+
+**现象：**
+
+普通图片上传支持 upload_request_id 用于网络异常后的幂等恢复。
+
+当前顺序是：
+
+1. begin_upload_request()；
+2. 立即把 JSON receipt 持久化为 upload_request_status = PROCESSING；
+3. 才开始图片解析、Storage upload、batch commit；
+4. 所有素材 commit 成功后 complete_upload_request() -> SUCCEEDED；
+5. 普通 Python Exception 时 fail_upload_request() -> FAILED。
+
+但 PROCESSING receipt 没有 owner/process identity、lease_expires_at、heartbeat、generation、attempt、stale timeout、startup reconciliation 或 takeover/resume API。
+
+所以 PROCESSING 不是 durable running truth，只是一枚不会自动恢复的静态 JSON 状态。
+
+**真实 crash 窗口：**
+
+场景 A：receipt 已创建、material commit 前进程退出。receipt 会永久停留 PROCESSING；部分 source objects 可能已上传，而请求内 rollback 已没有机会执行。
+
+场景 B 更严重：当前成功顺序明确是 _v50_end_image_batch(save=True) 完成 MaterialRepository / AnnotationRepository commit，之后才 complete_upload_request(... SUCCEEDED)。如果进程恰好在两者之间退出，素材已经正式存在，但 receipt 仍然 PROCESSING。
+
+同一 request_id 重试时，upload_images() 对既有 PROCESSING 只返回 UPLOAD_REQUEST_IN_PROGRESS / 409，不会 replay 已提交素材，也不会接管旧 attempt。
+
+**前端无法恢复：**
+
+recoverMaterialUploadRequest() 只会轮询 GET /api/v55/projects/{project_id}/upload-batches/{request_id}。状态如果一直 PROCESSING，达到 maxPolls 后只会提示“服务器仍在处理当前批次，结果尚未确认；请勿重复选择上传”。
+
+但服务器此时可能已经没有任何 request coroutine、Worker 或 lease 在处理它。
+
+v55 当前只有 receipt GET 和后续 decisions，没有 stale PROCESSING recovery owner。
+
+**用户重新选择上传还会放大重复风险：**
+
+正常 UI 每次新的上传动作都会生成新的随机 request seed。如果旧 crash 已发生在 material commit 之后，用户重新选择相同图片会使用新 request_id 并再次创建素材记录，而旧 receipt 仍永久 PROCESSING。
+
+因此当前幂等机制在最需要它的进程级故障场景失效。
+
+**与 AUDIT-131 / 132 的区别：**
+
+- AUDIT-131：Video pre-task upload 无大小边界且异常会留下无 task orphan；
+- AUDIT-132：普通图片 async 请求共享 threading.local batch，导致并发串批；
+- AUDIT-133：即使单请求、batch isolation 完全正确，只要 Web 在 receipt PROCESSING 生命周期中退出，幂等恢复仍永久卡死。
+
+**影响：**
+
+- 上传进度永久显示服务器处理中；
+- 相同 request_id 无法重试；
+- 用户无法确认服务器到底有没有完成入库；
+- crash 前已上传的对象可能成为 orphan；
+- crash 后已正式 commit 的 materials 可能被再次上传成重复素材；
+- 清洗决策 API 对 PROCESSING 明确返回 409，上传→清洗链无法继续；
+- 服务重启本应是可恢复场景，但当前 receipt 没有恢复 owner。
+
+**现有测试缺口：**
+
+现有测试覆盖成功 replay、manifest 冲突、partial per-file failure、receipt SUCCEEDED 查询，但没有覆盖 begin PROCESSING 后进程死亡、material commit 后 receipt complete 前故障、stale PROCESSING startup recovery 或 takeover/reconciliation。
+
+**建议最小修复：**
+
+不要为普通上传另造第二套 Durable Task。继续使用 UploadBatchStore，但 PROCESSING 必须具备可恢复状态机：
+
+1. receipt 增加 attempt/generation、owner_instance_id、heartbeat_at/lease_expires_at；
+2. 上传过程中按 bounded cadence heartbeat；
+3. GET/retry/startup 发现 PROCESSING lease 过期时执行 reconciliation；
+4. materials 已全部 commit 时，根据 request-owned evidence 完成 SUCCEEDED；
+5. 尚未 commit 时清理该 attempt 的 staged objects，再允许新 attempt；
+6. material commit 与 receipt completion 之间增加可恢复 commit marker/journal；
+7. takeover 必须 generation fenced，不能两个 request 同时继续；
+8. 前端 recovery 观察 recovered/taken_over 状态，而不是无限轮询静态 PROCESSING。
+
+如果暂时不实现 lease，至少也必须让 PROCESSING 带 started_at，并在确认无活跃 owner 后提供 stale fail/retry/reconcile；不能永久 409。
+
+**回归测试建议：**
+
+- receipt PROCESSING → crash before material commit → restart 可清理并重试；
+- material commit 成功 → crash before receipt SUCCEEDED → restart 返回原 image ids，不重复创建；
+- stale PROCESSING 不得永久 409；
+- live PROCESSING 仍拒绝第二 owner；
+- takeover generation 防并发；
+- Local / OSS storage 均不留下不可追踪 staged object。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
