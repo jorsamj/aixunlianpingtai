@@ -8115,6 +8115,149 @@ if operation is BatchOperation.AI_ANNOTATE:
 
 ---
 
+
+### AUDIT-081 — AI 任务前端对 SUCCEEDED 一律显示“重试”，但后端禁止成功的 MaterialBatch 重试；点击按钮稳定返回 409
+
+**级别：中**  
+**模块：AI Annotation / Frontend Action Eligibility / MaterialBatch / API Contract**
+
+**现象：**
+
+AI 自动标注任务列表与详情都使用：
+
+`annotationTaskView(task)`
+
+决定是否显示“重试”。
+
+当前前端逻辑是：
+
+```js
+canRetry: new Set([
+  'PARTIAL_SUCCESS',
+  'SUCCEEDED',
+  'CANCELLED',
+  'FAILED',
+  'BLOCKED_BY_ENVIRONMENT',
+  'BLOCKED_BY_HARDWARE'
+]).has(status)
+```
+
+它完全不区分任务类型。
+
+而 v60 public task 已明确返回：
+
+`kind = task.kind.value`
+
+所以前端实际上有能力区分：
+
+- `AI_ANNOTATION`
+- `MATERIAL_BATCH`
+
+但当前没有使用该字段。
+
+**后端合同与前端不同：**
+
+`POST /api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry`
+
+对普通 `AI_ANNOTATION` 允许：
+
+- CANCELLED
+- FAILED
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+- PARTIAL_SUCCESS
+- SUCCEEDED
+
+并创建新的 task_id。
+
+但对 `MATERIAL_BATCH` 明确只允许：
+
+- CANCELLED
+- FAILED
+- PARTIAL_SUCCESS
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+`SUCCEEDED` 不在允许集合中。
+
+因此成功的 MaterialBatch AI 标注任务：
+
+1. API 返回 `kind=MATERIAL_BATCH`；
+2. status = `SUCCEEDED`；
+3. 前端 `canRetry=true`；
+4. 列表和详情真实显示“重试”按钮；
+5. 用户点击后 `retryAiTask60()` 直接 POST retry endpoint；
+6. 后端进入 MaterialBatch 分支；
+7. 返回 409：
+   “只有未完成的批处理任务可以重试”。
+
+这是稳定可复现的前后端 action-contract 漂移。
+
+**为什么与 AUDIT-080 不同：**
+
+AUDIT-080 是：
+
+- MaterialBatch = PARTIAL_SUCCESS；
+- 前后端都允许 retry；
+- 但 retry lifecycle 被旧 confirmation 错误短路到 Commit。
+
+AUDIT-081 是：
+
+- MaterialBatch = SUCCEEDED；
+- 前端错误宣称可 retry；
+- 后端明确禁止；
+- 用户点击后稳定 409。
+
+一个是 retry 执行语义错误，一个是 action eligibility 漂移，修复点不同。
+
+**影响：**
+
+- 成功任务页面显示一个必失败按钮；
+- 用户会认为系统支持“重新跑一次成功任务”，实际不支持；
+- 每次点击都产生无意义 409 和 toast；
+- UI 能力提示与 API 合同不一致；
+- 以后如果 MaterialBatch / standalone AI 的 retry policy继续分化，单一 status-only eligibility 会继续出错。
+
+**为什么现有测试没发现：**
+
+前端 view test 只按 status 验证 `canRetry`，没有加入 `kind` 维度。
+
+后端 API test 则分别验证不同 task kind 的允许状态。
+
+缺少跨层合同：
+
+`kind + status -> frontend action -> endpoint result`
+
+所以两边各自测试都可以绿色。
+
+**建议最小修复：**
+
+不要放宽后端去允许成功 MaterialBatch 重试来迎合错误按钮。
+
+应让 frontend action eligibility 与 canonical API policy一致：
+
+- `AI_ANNOTATION + SUCCEEDED`：按现有后端合同可显示 retry；
+- `MATERIAL_BATCH + SUCCEEDED`：不显示 retry；
+- `MATERIAL_BATCH + PARTIAL_SUCCESS`：保留 retry，但要同时修 AUDIT-080 的 phase semantics；
+- eligibility helper 明确消费 `task.kind`，不要只看 status。
+
+更稳妥的方向是把 task kind/status action capability 投影为后端字段，前端只消费 capability，但本轮最小修复不需要重构整个 API。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- AI_ANNOTATION + SUCCEEDED -> retry button visible；
+- MATERIAL_BATCH + SUCCEEDED -> retry button hidden；
+- MATERIAL_BATCH + PARTIAL_SUCCESS -> retry button visible；
+- 点击可见按钮时后端不返回“当前状态禁止重试”；
+- 列表与详情使用同一 eligibility helper。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
