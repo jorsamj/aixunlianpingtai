@@ -24362,3 +24362,208 @@ Online Feedback 的 prediction evidence 会冻结检测结果中的 label 文本
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-178 — Storage Source 破坏性 PATCH 只按 Import/Rescan 思路治理；已受理 Cleaning / AI Annotation / TRAINING_PREPARE 仍会在执行期读取 live Source/Secret
+
+**级别：高**  
+**模块：Storage Source / Material Read Dependency / Cleaning / AI Annotation / TRAINING_PREPARE / Credential lifecycle**
+
+**现象：**
+
+已有 AUDIT-044 已确认 Storage Source PATCH 会破坏活动 MATERIAL_IMPORT / rescan，因为这两类任务只冻结 `storage_source_id`，Worker 执行时重新读取 live Source。
+
+继续横向审计发现，相同的可变运行依赖并不只存在于 Import/Rescan。当前至少三条现代主链都在任务已经受理之后，才通过 `StorageManager` 解析素材所引用的 live Storage Source：
+
+- canonical CLEAN MaterialBatch；
+- canonical AI Annotation MaterialBatch；
+- TRAINING_PREPARE 冷路径素材校验 / bundle materialization。
+
+`PATCH /api/v61/storage-sources/{source_id}` 当前本身没有任何 active-task dependency guard，并允许立即修改：
+
+- `enabled`；
+- `config`（endpoint / bucket / prefix / local root 等）；
+- credentials；
+- `clear_credentials`。
+
+更关键的是 `StorageManager.provider_for(source_id)` 的语义：
+
+1. 第一次访问某 source 时才 `StorageSourceRepository.get(source_id)`；
+2. 再按当时的 `secret_ref` 读取 Keyring；
+3. 创建 provider；
+4. 之后只在该 `StorageManager` 实例内缓存 provider。
+
+因此“Durable Task 已创建”并不等于“存储读取依赖已冻结”。
+
+**真实调用链 A — Cleaning：**
+
+`POST /api/v47/.../clean-tasks`
+→ canonical MATERIAL_BATCH operation=CLEAN
+→ Worker 创建 `StorageManager`
+→ `clean_batch()`
+→ 每张尚无成功 clean_result 的素材调用 `manager.materialize(material)`
+→ `provider_for(storage_source_id)`
+→ 首次命中该 source 时读取 live Source + live Keyring credential。
+
+如果任务 QUEUED / WAITING_RESOURCE 时用户在“存储配置”修改 endpoint、停用 source 或清 credential，任务开始后会直接按新配置运行；这不是创建时用户提交任务所对应的依赖。
+
+对于一个 CLEAN selection 跨多个 storage source 的情况，provider 又是按 source 懒加载的：source A 已初始化、source B 尚未初始化时发生 PATCH，可形成同一任务内 A 使用旧配置、B 使用新配置的 mixed dependency。
+
+**真实调用链 B — AI Annotation：**
+
+`POST /api/v60/.../annotation-tasks`
+→ MATERIAL_BATCH / AI_ANNOTATE
+→ `AnnotationBatch.__init__()` 创建 `StorageManager`
+→ `AnnotationBatch.process()`
+→ `self.manager.materialize(image)`
+→ 首次访问 source 时读取 live Source/secret
+→ 再调用视觉 Provider。
+
+所以已经排队的 AI 任务可因为之后的 Storage Source credential/config 修改而失败；若一个 task 跨多个 source，同样可能使用不同世代的 source 配置。
+
+这与 AI Model Config 的 secret freeze 是两件事：模型 Provider credential 即使冻结，**输入图片存储 credential** 仍是 live 的。
+
+**真实调用链 C — TRAINING_PREPARE：**
+
+Training Create
+→ 父 TRAINING + TRAINING_PREPARE
+→ submit-time 只冻结 Material row / content_sha256 / selection identity，不复制全部源文件字节
+→ Prepare Worker 冷路径创建 `StorageManager(credentials=SecretCredentialStore(...))`
+→ 对 frozen images 逐张 `storage.materialize(row)`
+→ provider 首次创建时读取 live Storage Source / Keyring
+→ 校验 `resolved.content_sha256 == frozen_sha256`
+→ 构建 portable dataset bundle。
+
+content SHA fence 能防止“读到了不同图片内容”，但不能让被修改/清掉的 credential、endpoint、bucket 自动恢复。
+
+因此在 bundle cache miss / prepared bundle 不存在的正常路径上：
+
+- task 创建后 source 被 disabled；
+- credential 被 clear / rotate；
+- endpoint / bucket / root 被改错；
+
+都会让本来已合法受理的 PREPARE 后续失败。
+
+**为什么是 Bug / 生命周期旁路：**
+
+Storage Source 已经是素材的 canonical storage owner，但 PATCH owner 当前只把“配置可编辑”当普通 CRUD，没有建立：
+
+`active material consumer -> source configuration generation`
+
+这个生命周期合同。
+
+对于 Durable Task，受理后至少要满足二者之一：
+
+1. 运行依赖已冻结到可恢复的 generation；或
+2. destructive config mutation 会被所有仍可能读取该 Source 的活动任务 fence。
+
+当前两者都没有。
+
+而 `StorageManager` 的 task-local provider cache 又让变更语义变得时序相关：
+
+- provider 已初始化：可能继续用旧配置；
+- provider 尚未初始化：会吃新配置；
+- retry/recover 新建 manager：一定重新读 live 配置。
+
+这会让同一 Durable request 的结果依赖“PATCH 发生在第几张图之前”，违反可重放性。
+
+**用户真实可达场景：**
+
+场景 1：
+
+1. 用户从 OSS 素材创建 10k 张 CLEAN；
+2. 任务处于 QUEUED；
+3. 用户到“存储配置”更新 AK/SK 或勾选停用；
+4. CLEAN 被 Worker 领取；
+5. 第一张 materialize 就按新配置读源，可能失败。
+
+场景 2：
+
+1. AI Annotation 已创建并排队；
+2. 用户认为修改 Storage Source 只影响以后导入；
+3. 清除 credential；
+4. AI Worker 开始 materialize 输入图；
+5. 候选生成产生批量 failed items / PARTIAL_SUCCESS。
+
+场景 3：
+
+1. Training Create 已返回 202，TRAINING_PREPARE 在后台；
+2. Snapshot/input-freeze 已记录 frozen SHA；
+3. 用户编辑素材存储源 endpoint/bucket；
+4. Prepare 在 bundle cache miss 时 materialize；
+5. 读取失败，训练任务从“已受理”变成 preparation failure。
+
+场景 4：
+
+一个任务同时引用 source A / B：处理完 A 后用户修改 B；后半批首次访问 B 时使用新配置，形成同一 task mixed-generation storage dependency。
+
+**影响：**
+
+- 已受理 CLEAN / AI / Training Prepare 可被无关的存储配置操作中途破坏；
+- retry / recover 结果可能与第一次 execution 不同；
+- 任务失败会被误判成图片、模型或 Worker 故障；
+- 10k/20k 长任务窗口更明显；
+- 一个任务可混用不同世代的 Source 配置；
+- Training 的 frozen content identity 虽能 fail-closed，却无法保证依赖可恢复，因此仍会造成不必要且不可预期的 Prepare failure。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-016：Storage Source DELETE 忽略活动 MATERIAL_IMPORT / rescan；
+- AUDIT-044：Storage Source PATCH 破坏 **MATERIAL_IMPORT / rescan** 自己的 source lifecycle；
+- AUDIT-047：AI Model Config PUT 原地覆盖的是 **模型 Provider** 的 secret；
+- AUDIT-169：算法/转换产物 OSS 配置在 Remote Training / Agent Conversion 中可变；
+- AUDIT-170：Storage Source PATCH 内部是 **Keyring 先写、SQLite 后写** 的原子性问题；
+- AUDIT-178：已经入库的 Material 被 **Cleaning / AI Annotation / TRAINING_PREPARE** 消费时，素材读取依赖仍由 live Storage Source/secret 控制。
+
+因此 178 不是 044 的重复：044 的 task owner 是 Import/Rescan，178 的 task owner 是已存在 Material 的下游消费者，而且 Training/AI/Cleaning 的失败阶段、恢复语义和用户影响不同。
+
+**现有测试为什么没有发现：**
+
+现有测试分别验证：
+
+- Storage Source CRUD / credential 更新；
+- Cleaning 正常 materialize；
+- AI Annotation 对 storage-backed image 正常推理；
+- TRAINING_PREPARE 能按 frozen SHA materialize；
+- source content hash 改变时 Training fail-closed。
+
+但没有组合测试：
+
+`Durable Task 已受理 -> Storage Source destructive PATCH -> Worker 首次/后续 provider_for()`。
+
+也没有覆盖跨多个 source 的 lazy provider initialization 世代混合。
+
+**建议最小修复方向：**
+
+不要新增第二 Storage owner，也不要给 Cleaning/AI/Training 各做一套 source snapshot。
+
+应在现有 Storage Source lifecycle 上建立统一 material-consumer dependency fence：
+
+1. 纯展示字段（例如 name）可继续在线修改；
+2. `enabled true→false`、config、credential replace/clear 属于 destructive runtime dependency mutation；
+3. 修改前查询所有仍可能 materialize 该 source 的 active Durable Task，包括至少：
+   - MATERIAL_IMPORT / rescan（延续 AUDIT-044）；
+   - MATERIAL_BATCH CLEAN；
+   - MATERIAL_BATCH AI_ANNOTATE；
+   - TRAINING_PREPARE / 仍未完成 bundle materialization 的 Training；
+4. 有引用时 fail-closed 409，或未来实现明确的 immutable source generation / version pin；
+5. retry/recover 必须继续使用原 task 已验证的 source generation，而不是任意 live config；
+6. 不要靠把 credential 复制进普通 task payload 明文解决；secret 仍应由 Secret owner 管理，但要有 immutable generation/ref contract；
+7. provider 已初始化的进程与尚未初始化的 provider 必须看到同一 generation 语义。
+
+**应新增回归测试：**
+
+- QUEUED CLEAN 引用 source S，PATCH S config/disable/clear credential → 409；
+- RUNNING CLEAN 尚未初始化第二 source，PATCH 第二 source → 409；
+- QUEUED AI_ANNOTATE 引用 S，credential rotate/clear → 409；
+- RUNNING AI 跨 source 时不得混用两个 config generations；
+- TRAINING_PREPARE 在 bundle cache miss 且引用 S 时，destructive PATCH → 409；
+- TRAINING_PREPARE 已完成 portable bundle、不再读取 source 后，可按明确 pin 生命周期允许修改；
+- terminal task 后允许正常修改；
+- name-only PATCH 不被误阻止；
+- retry/recover 保持原 source generation；
+- AUDIT-170 的 Keyring/SQLite 原子性回归测试继续独立保留。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
