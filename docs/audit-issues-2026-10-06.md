@@ -7783,6 +7783,201 @@ Service Node tests 单独验证 worker/runtime registry；
 
 ---
 
+
+### AUDIT-079 — CentralTaskAllocator.assign_next 每分配 1 个任务先 fetchall 全部 QUEUED，并对不匹配候选重复读取 request artifact；10k/20k 队列形成调度 O(N) + N×文件 I/O 热点
+
+**级别：中～高**  
+**模块：Central Scheduler / Queue Scale / Artifact Hydration / N+1 / Performance**
+
+**现象：**
+
+`CentralTaskAllocator.assign_next()` 的第一步是：
+
+```sql
+SELECT task.* FROM tasks task
+ WHERE task.status='QUEUED'
+   AND NOT EXISTS (...active assignment...)
+ ORDER BY ...
+```
+
+随后直接：
+
+`.fetchall()`
+
+即每次只想分配 **1 个 task**，却先把全局所有尚未 assignment 的 QUEUED TaskRecord 一次性 hydrate 到 Python。
+
+接着按顺序逐个 candidate 做 eligibility 计算。
+
+对于每一个无法立即分配的候选，会调用多组 helper：
+
+- `task_node_capability(task, artifacts)`
+- `task_remote_execution_contract(task, artifacts)`
+- `task_node_connection_mode(task, artifacts)`
+- `task_requested_node_id(task, artifacts)`
+  - 内部再调用 `task_scheduling()`
+- Training 还会调用 `_requested_training_device(task, artifacts)`
+
+这些 helper 各自独立执行：
+
+`artifacts.read_json(task.task_id, task.payload_ref, ...)`
+
+也就是说同一个 candidate 的同一个 request artifact，单次 assign 尝试可能被重复读取/解析多次。
+
+**最差场景：**
+
+假设队列里有 20,000 个 QUEUED task，而当前：
+
+- 对应 capability 没有 online node；
+- manual affinity 指向 offline node；
+- GPU device 不满足；
+- remote execution contract 与 node connection mode 不匹配。
+
+`assign_next()` 会：
+
+1. 一次性 fetchall 20,000 TaskRecord；
+2. 从队首开始逐个检查；
+3. 对大量 candidate 多次打开/解析 request JSON；
+4. 对 candidate 反复执行 online-node / ranking SQL 与资源判断；
+5. 最终可能只得到：
+   `None`。
+
+即“没有任务能运行”反而是最昂贵的调度请求之一。
+
+**为什么属于独立 Bug / 性能债：**
+
+AUDIT-064 是：
+
+- public task list 为 queue position 全量 hydrate QUEUED task；
+- 属于 API/UI projection 热路径。
+
+AUDIT-079 是：
+
+- **scheduler 自己的 allocation 热路径**；
+- 每成功分配 1 个任务，或每次证明“当前无任务可分配”，都可能扫描全队列。
+
+两个 owner 和修复点不同。
+
+另外这也不同于 AUDIT-063：
+
+- AUDIT-063 是 production allocation driver 缺失；
+- AUDIT-079 是 allocator 本身的规模复杂度。
+
+未来补上 production driver 后，如果直接高频调用当前 `assign_next()`，本问题会被放大。
+
+**额外 N+1 / 重复 I/O：**
+
+当前 task scheduling metadata 没有一次解析后复用。
+
+例如 Training candidate 可在同一轮中重复读取 payload 来获得：
+
+- remote_execution；
+- scheduling.mode/node_id；
+- connection mode requirement；
+- requested_device。
+
+这不是 5 个不同 truth owner，而是同一个 immutable/frozen request 的重复 hydration。
+
+1k / 10k / 20k 队列下会制造大量：
+
+- filesystem open/stat/read；
+- JSON decode；
+- SQLite query；
+- Python object allocation。
+
+**影响：**
+
+- queued task 累积后 scheduler allocation latency 线性升高；
+- 无可用节点时尤其慢；
+- 20k 队列可形成明显 Web/API 阻塞；
+- production allocator driver 补齐后可能持续占用控制面线程；
+- SQLite transaction `BEGIN IMMEDIATE` 覆盖整段扫描，长时间持有写事务；
+- assignment / claim / operator scheduler API 更容易互相等待；
+- 文件系统在慢盘/NFS环境下放大；
+- 任务越多，调度吞吐反而下降。
+
+**事务放大：**
+
+`assign_next()` 在开始全量 SELECT 之前已经：
+
+`BEGIN IMMEDIATE`
+
+之后才：
+
+- fetchall；
+- artifact reads；
+- node queries；
+- ranking；
+- 最终 INSERT assignment / commit。
+
+所以外部文件 I/O 也发生在一个 IMMEDIATE transaction 生命周期里。
+
+这会把“读取 20k request metadata”的时间变成 SQLite 写锁占用时间。
+
+**现有测试为什么没发现：**
+
+`tests/unit/test_task_node_assignments.py` 有大量：
+
+- assign；
+- claim；
+- GPU selection；
+- preemption；
+- affinity；
+- capability；
+- race
+
+功能测试，但没有：
+
+- 1,000；
+- 10,000；
+- 20,000
+
+QUEUED task 的 allocator scale contract。
+
+也没有断言：
+
+- 每次 assign 最大读取多少 TaskRecord；
+- 同一个 payload 最多 read_json 几次；
+- 无 eligible node 时 SQL / file read 上限；
+- transaction 内不能做无界文件 hydration。
+
+**建议最小修复：**
+
+不要新增第二 Scheduler，也不要把 eligibility 复制到别处。
+
+保持 `CentralTaskAllocator` 为唯一 assignment owner，但把 selection 做成 bounded/indexed pipeline：
+
+1. SQL 先按：
+   - status；
+   - active assignment absence；
+   - kind / capability 可预索引字段；
+   - priority/order
+   做 bounded candidate window；
+2. 一次只取有限 candidate，例如 50/100，必要时 cursor 向后推进；
+3. 同一 candidate 的 payload 在一次 allocation cycle 内只解析一次，构造成 scheduling snapshot；
+4. 能持久化/索引的稳定 scheduling metadata，应在 task admission 时冻结，不要每次从 JSON 重算；
+5. 不要在 `BEGIN IMMEDIATE` 内做大规模 filesystem I/O：
+   - 先 bounded read/preflight；
+   - 最终 assignment 时再用短事务 recheck task/node/generation；
+6. 保留 deterministic priority / affinity / GPU fencing；
+7. 没有 eligible node 时应 bounded 返回，而不是扫描整个全局队列。
+
+**回归测试建议：**
+
+至少增加：
+
+- 20,000 queued + 1 eligible：bounded candidate hydration；
+- 20,000 queued + 0 eligible：仍有明确 query/read 上限；
+- 单 candidate request artifact 单 allocation cycle 只读取一次；
+- transaction duration 不包含无界 artifact scan；
+- strict priority / manual affinity 不改变；
+- GPU reservation / capability / connection-mode filtering 不回退；
+- concurrent allocator 仍只能创建一个 active assignment。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
