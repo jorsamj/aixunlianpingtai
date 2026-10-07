@@ -4758,6 +4758,205 @@ AUDIT-061 是：
 
 ---
 
+
+### AUDIT-062 — 正式 ZIP Import 仍由 daemon thread 执行且没有 crash recovery；进程重启可永久卡 running，并留下已写 Annotation / 素材文件但未提交 MaterialRepository 的半成品
+
+**级别：高**  
+**模块：ZIP Import / Crash Consistency / Annotation Ground Truth / MaterialRepository / Runtime Durability**
+
+**现象：**
+
+v19 ZIP 上传完成、标签映射确认后，正式导入通过：
+
+`threading.Thread(target=v19_import_worker, daemon=True)`
+
+执行。
+
+这一步没有进入 Durable Task runtime，也没有 lease / heartbeat / generation / startup recovery。
+
+更严重的是，导入过程不是“全部只写内存，最后一次原子落盘”。
+
+当前 batch 机制是：
+
+- MaterialRepository record 暂存在当前线程的 `_IMAGE_BATCH_CTX.batch`；
+- 但每张图片的物理素材对象会立即写入 storage；
+- 对结构化导入，正式 AnnotationRepository Ground Truth 也会立即 `write_annotation()`；
+- 只有最终 `_v50_end_image_batch(save=True)` 才把 buffered MaterialRepository rows 一次提交。
+
+正常 Python exception 时，代码会调用：
+
+`_v50_end_image_batch(save=False)`
+
+删除已写素材文件和 AnnotationRepository rows。
+
+但如果 Web 进程被 kill / 宕机 / 容器重启：
+
+- in-memory batch 直接消失；
+- except/finally cleanup 不会执行；
+- job.json 保持 `status=running`；
+- 已写物理素材 / AnnotationRepository 副作用可能遗留；
+- MaterialRepository 尚未有对应 row。
+
+**真实调用链：**
+
+开始：
+
+`POST /api/v19/projects/{project_id}/import/jobs/{job_id}/start`
+→ `v19_update_job(status='running')`
+→ daemon：
+`v19_import_worker(...)`
+
+Worker：
+
+`_v50_begin_image_batch(project_id)`
+
+每张图片：
+
+`add_image(...)`
+
+在 active batch 下：
+
+1. 先写 storage object/source file；
+2. 把 material record 放进：
+   `batch["records"]`
+3. structured annotation path 直接：
+   `write_annotation(...)`
+   → 正式 AnnotationRepository 已持久化。
+
+最终：
+
+`_v50_end_image_batch(save=True)`
+→ MaterialRepository `upsert_many(records)`
+
+正常失败：
+
+`_v50_end_image_batch(save=False)`
+→ `_v50_cleanup_buffered_image_batch_files()`
+→ 删除 source file
+→ 删除 AnnotationRepository rows。
+
+进程级 crash 时第 4 步和 rollback 都不会发生。
+
+**重启后也无法自动恢复：**
+
+当前只有：
+
+`_v19_recover_multipart_finalize()`
+
+它只处理：
+
+- `merging`
+- `validating`
+
+并且只在 import job list/detail GET 时触发。
+
+对正式 import 的：
+
+`status=running`
+
+没有任何：
+
+`_v19_recover_import`
+
+或 startup reconciliation。
+
+再次调用 `/start` 时：
+
+`if job.get("status") == "running": return v19_public_job(...)`
+
+也不会创建新 worker。
+
+所以重启后任务可以永久显示 running，但实际上已经没有线程。
+
+**为什么是 Bug / 生命周期与 Ground Truth 一致性问题：**
+
+这不仅是“进度卡住”。
+
+结构化 ZIP 导入在最终 MaterialRepository commit 之前已经写了正式 Annotation GT 和物理素材。
+
+因此 crash 可能产生：
+
+- AnnotationRepository 有 image_id；
+- MaterialRepository 没有该 image_id；
+- storage object 已存在；
+- import job 永久 running；
+- 后续同一 ZIP 重试又可能生成新 image_id / 重复物理对象。
+
+这直接破坏 Annotation / Material 的跨 owner consistency。
+
+**与现有 CLOSED Annotation GT 合同的关系：**
+
+AnnotationRepository 仍然是唯一正式 GT owner，本问题不是新建第二 Annotation owner。
+
+问题在于 ZIP runtime 对 AnnotationRepository 的写入事务边界不具备进程级 crash durability：
+
+“Annotation 已提交”与“Material batch 最终提交”之间存在不可恢复窗口。
+
+这是 CLOSED 架构之外的真实 crash-consistency Bug。
+
+**与 AUDIT-014 的区别：**
+
+AUDIT-014：
+
+用户主动 DELETE 活动 ZIP job，直接删 job directory，破坏仍在运行的 daemon Worker。
+
+AUDIT-062：
+
+即使用户什么都不做，只要 Web 进程崩溃/重启，daemon Worker 消失且没有 recovery，同时可能留下半提交 GT / storage side effects。
+
+**与 AUDIT-061 的区别：**
+
+AUDIT-061 是终态完成后 multipart upload metadata 不 retirement 的长期小文件泄漏。
+
+AUDIT-062 是正式导入执行阶段的 crash consistency / durable runtime 缺失，严重度更高。
+
+**影响：**
+
+- ZIP 导入任务可永久卡在 running；
+- 正式 AnnotationRepository 出现 dangling image_id；
+- 物理素材文件 / OSS 对象可能孤立；
+- MaterialRepository 与 Annotation GT 数量不一致；
+- 重试可能产生重复素材或额外孤儿；
+- 10k/20k 大导入执行时间更长，进程重启窗口更大；
+- 生产滚动部署、服务异常退出都会触发，而不仅是极端故障。
+
+**为什么 CI 没发现：**
+
+现有 ZIP tests 主要覆盖：
+
+- multipart resume；
+- background finalize；
+- bounded preview；
+- 10k 前端 contract；
+- 正常异常时 rollback；
+- 页面恢复/polling。
+
+但没有真正的“进程在第 N 张结构化素材写完 Annotation 后被 kill”故障注入测试。
+
+普通 exception 测试会执行 Python rollback，所以看不出进程级 crash 的问题。
+
+**建议最小修复：**
+
+不要新建第二 ZIP owner。
+
+应把当前 v19 ZIP job 的执行状态提升为真正可恢复的单一 runtime contract，最小方向：
+
+1. 正式 import 至少要有 persisted execution generation / checkpoint；
+2. 启动时对 `running` job 做 reconciliation，不能把 job.json 的 running 当活线程真相；
+3. 将“本次 job 已创建的 image_id / storage object / annotation identity”持久化成 rollback journal，而不是只放 ThreadLocal；
+4. crash 后：
+   - 要么从安全 checkpoint 重放；
+   - 要么先按 journal 完整清理本 generation 副作用，再回到 retryable 状态；
+5. 最终 MaterialRepository commit 与 Annotation/material side effects 要有明确 commit marker；
+6. 已提交完成的 generation 必须幂等，避免重启重复导入。
+
+如果可以复用现有 Durable MATERIAL_IMPORT 的 task/lease/checkpoint 能力，应优先收敛到已有 canonical owner，而不是再创造另一套 scheduler/runtime。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，必须增加 kill/restart 故障注入：结构化 ZIP 在中途持久化 Annotation 后崩溃，重启后不得永久 running，也不得留下 orphan GT/storage。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
