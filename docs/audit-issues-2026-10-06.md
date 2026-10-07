@@ -8662,6 +8662,180 @@ CandidateStore 已经有：
 
 ---
 
+
+### AUDIT-084 — MaterialBatch DELETE_SOURCE 的 Training fence 是单向 TOCTOU；新训练可在检查后创建，源文件先被删、后续索引删除才被阻止
+
+**级别：高**  
+**模块：MaterialBatch / DELETE_SOURCE / Training Prepare / Lifecycle Fence / Physical Storage**
+
+**现象：**
+
+canonical MaterialBatch 删除已经比旧 v46/v47 旁路安全：创建 DELETE_INDEX / DELETE_SOURCE 时会调用：
+
+`_assert_not_referenced_by_active_training(...)`
+
+Worker 每批处理前也再次检查活动 `TaskKind.TRAINING`。
+
+但当前 fence 只有：
+
+**删除方查询“现在是否已经有训练引用”**
+
+训练创建方并不会反向查询：
+
+**这些素材是否正在被 DELETE_INDEX / DELETE_SOURCE task 占用。**
+
+两边也没有共享 material-lifecycle lock / deletion reservation。
+
+因此这是一个典型 check-then-act TOCTOU。
+
+**DELETE_SOURCE 的真实危险顺序：**
+
+MaterialBatch worker：
+
+1. `manifest.rows()` 取本批素材；
+2. `_assert_not_referenced_by_active_training(project, ids, ...)`
+3. 当时没有 Training → 检查通过；
+4. `manifest.transition(ids, "running")`
+5. 进入 `_delete_sources(...)`
+6. 对每个素材调用远端/本地：
+   `provider.delete(object_key)`
+7. 标记：
+   `source_deleted=1`
+8. 最后才调用：
+   `_delete_index_rows(...)`
+9. `_delete_index_rows()` 对每个 image 再次调用 active-training fence；
+10. 才删除 AnnotationRepository / MaterialRepository identity。
+
+问题在第 2 与第 6 步之间。
+
+**训练创建是可并发进入的：**
+
+当前 `_enqueue_explicit_training()`：
+
+- 解析 split；
+- 构造 `requested_split.train_image_ids/test_image_ids`；
+- 直接建立 `TaskKind.TRAINING(QUEUED)`；
+- 再建立 `TRAINING_PREPARE`；
+
+但没有查询 active MaterialBatch DELETE task，也没有 acquisition/reservation 与删除方互斥。
+
+因此可达时序是：
+
+A. DELETE_SOURCE batch-level fence 通过；  
+B. 用户在这之后提交 Training，Training task 成功进入 QUEUED/PREPARING；  
+C. DELETE_SOURCE 执行 `provider.delete(object_key)`，物理源文件被删除；  
+D. 删除方随后进入 `_delete_index_rows()`；  
+E. 第二次 Training fence 此时终于看见 B 创建的 TRAINING；  
+F. index/annotation delete 被拒绝；  
+G. MaterialRepository 记录仍存在，但其 source object 已经不存在；  
+H. Training PREPARE / 后续训练仍引用这条素材。
+
+这不是理论上的“最后一条 SQL 竞态”：`provider.delete()` 可能是 OSS / 网络存储 I/O，批级检查到物理删除之间的窗口可以明显放大。
+
+**失败后的状态尤其危险：**
+
+当 `_delete_index_rows()` 因新 Training reference 抛错时，外层会把 deletable rows 标为 failed。
+
+但此前：
+
+- 物理 source object 已经删除；
+- `selection.source_deleted=1` 已持久化；
+- MaterialRepository row 仍存在；
+- AnnotationRepository 也仍可能存在；
+- Training task 已经是 canonical active truth。
+
+于是系统会出现：
+
+**索引/GT 看起来还在，真实文件已经不在。**
+
+这会破坏后续：
+
+- Training input source availability；
+- 质量检查；
+- 图片预览；
+- 再扫描/重试；
+- source availability truth。
+
+**DELETE_INDEX 也存在较小 TOCTOU：**
+
+DELETE_INDEX 在 batch-level fence 后，`_delete_index_rows()` 每 image 再检查一次，所以窗口更小。
+
+但 check 与 `prepare_delete/finalize_delete/materials.remove_many` 仍不在与 Training admission 共享的事务/fence 中。
+
+核心根因仍是：
+
+**删除 owner 与训练 admission owner 没有双向 material lifecycle reservation。**
+
+**与现有 AUDIT 的区别：**
+
+- AUDIT-017：旧 image delete / v46 deletion 绕过 canonical MaterialBatch 与 active Training fence；
+- AUDIT-019：Dataset delete 可破坏 PREPARING Training；
+- AUDIT-084：即使走 canonical MaterialBatch DELETE_SOURCE，现有 active-Training check 仍存在并发竞态，而且会出现“source 已删、index 因新训练而保留”的半删除状态。
+
+所以不能用“已经有 active training check”判定该链闭环。
+
+**影响：**
+
+- 训练创建成功后，素材物理文件仍可能被并发删除；
+- Material/Annotation truth 与真实 source object 分裂；
+- TRAINING_PREPARE 或真正训练阶段可能因源文件不存在失败；
+- DELETE_SOURCE task 自身可能 PARTIAL/FAILED，但不可逆 source deletion 已发生；
+- 重试需要依赖“object missing after previous attempt”恢复逻辑，但无法恢复被训练需要的原文件；
+- OSS / 远程 source 的删除延迟会扩大竞态窗口；
+- 用户层面表现可能是“训练刚创建成功，稍后突然数据源丢失”。
+
+**为什么现有测试没发现：**
+
+当前删除测试主要覆盖：
+
+- 删除前已有 active Training → 409；
+- source delete retry / missing object 幂等；
+- shared object protection；
+- annotation/material two-phase delete；
+- worker cancellation/recovery。
+
+缺少并发合同：
+
+1. DELETE_SOURCE 通过第一次 Training fence；
+2. 暂停在 provider.delete 前；
+3. 并发创建 Training；
+4. 恢复 delete；
+5. 验证源文件不能被删，或者 Training admission 必须被拒绝/等待。
+
+**建议最小修复：**
+
+不要再加第三套 Material owner。
+
+需要建立一个**双向 lifecycle fence**，可复用现有 Durable Task truth：
+
+1. DELETE_INDEX / DELETE_SOURCE publish 后，对 frozen selection 建立 durable deletion reservation；
+2. Training admission 在创建 TRAINING task 前，检查其 requested image IDs 是否命中 active deletion reservation；
+3. 如果命中：
+   - 409 明确提示素材正在删除；或
+   - 等待删除终态后重新解析 selection；
+4. 删除 Worker 在不可逆 `provider.delete()` 前必须在同一 canonical fence 下确认没有 Training reservation；
+5. Training task 一旦 admission 成功，对素材引用也必须让删除方稳定可见，直到 Training terminal / freeze contract允许释放；
+6. 不要依赖“多检查几次”缩小窗口；必须让 check + ownership acquisition 具备原子/可串行化语义。
+
+如果暂时无法引入 material-level reservation table，至少应先让 Training admission 查询 active DELETE MaterialBatch selection.sqlite3，并在删除任务 active 时 fail closed；但长期仍需解决 check-to-provider.delete 的原子性。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- DELETE_SOURCE fence pass 后并发 Training admission；
+- Training 创建成功则 provider.delete 必须不得发生；
+- provider delete ownership已获得时，新 Training admission必须被拒绝；
+- DELETE_INDEX 同样不能与新 Training freeze交叉；
+- source_deleted=1 时不能留下 active Training reference；
+- OSS provider 慢调用下仍保持合同；
+- cancel/retry 不遗留永久 deletion reservation。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
