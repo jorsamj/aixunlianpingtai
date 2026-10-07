@@ -21200,3 +21200,76 @@ FAILED / PARTIAL_SUCCESS 没有“重试”按钮。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-156 — 成功 Conversion 行仍显示“删除”，但后端明确禁止删除任何已产生成果的转换记录；点击稳定 409
+
+**级别：中**  
+**模块：Deployment Conversion UI / Conversion Lifecycle / ModelArtifact / Action Eligibility**
+
+**现象：**
+
+当前部署转换页面 `jobRow(j)` 用：
+
+`const isRun=['queued','waiting_resource','running'].includes(j.status)`
+
+然后对所有 `!isRun` 的任务统一渲染：
+
+`删除 -> deleteDeployJob(job_id)`
+
+因此一个正常成功的 `status='done'` Conversion 行会同时出现：
+
+- 日志；
+- 下载部署包；
+- 删除。
+
+但后端 `DELETE /api/v39/projects/{project_id}/deploy/jobs/{job_id}` 对成功转换有明确且更严格的生命周期合同：
+
+`if status in SUCCESSFUL_CONVERSION_STATUSES: raise CONVERSION_JOB_DELIVERY_IMMUTABLE (409)`
+
+原因是成功 Conversion 的 job/output 已成为算法版本交付链、ModelArtifact 和发布映射的可审计组成部分，不能单独删除；需要通过算法版本删除/回退 owner 统一退役。
+
+因此 UI 的成功任务“删除”按钮是一个必失败动作。
+
+**真实调用链：**
+
+用户完成 ONNX/RKNN 转换 → job.status=done → 页面 `jobRow()` 认为 `isRun=false` → 显示“下载部署包”同时也显示“删除” → 用户点击删除 → `DELETE /deploy/jobs/{id}` → backend 检测 successful conversion → HTTP 409 `CONVERSION_JOB_DELIVERY_IMMUTABLE`。
+
+**影响：**
+
+- 用户看到系统提供一个实际上永远不能成功的操作；
+- 容易误以为删除功能或权限异常；
+- 对 RKNN/ONNX 成功产物尤其常见；
+- 页面与已经收口的 ModelArtifact / Version lifecycle 合同冲突；
+- 后续若 UI 重试删除，仍只会重复 409。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-025：Conversion 最近 100 条被当完整历史；
+- AUDIT-109：Deploy Resource PATCH/DELETE 可破坏活动 Conversion；
+- AUDIT-137：测试发布另走第二套转换 Runtime；
+- AUDIT-156：canonical Conversion 页面 action eligibility 与 canonical DELETE lifecycle 直接不一致。
+
+**建议最小修复方向：**
+
+不要放宽后端成功成果不可单删的保护。只修前端动作合同：
+
+1. 把 Conversion action eligibility 抽到统一 helper；
+2. `done / successful delivery` 不显示“删除”；
+3. 成功任务只保留日志、下载、板端验证/验收等合法动作；
+4. `failed / stopped / blocked` 且无 canonical artifact reference 时才允许显示删除；
+5. 如果后端因 artifact reference 仍拒绝删除，前端应能展示准确原因，但不要预先声称可删；
+6. 不要用 `!isRun` 代替 `canDelete`。
+
+**应新增回归测试：**
+
+- status=done → 有下载、无删除；
+- successful RKNN/ONNX → DELETE 不被 UI 触发；
+- failed 且无 artifact refs → 显示删除并可成功；
+- stopped → 按后端合同显示删除；
+- blocked_by_hardware 若已有交付产物/引用时不得错误显示可删；
+- queued/running/waiting_resource → 只显示停止，不显示删除。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
