@@ -12498,3 +12498,155 @@ AUDIT-103 是另一个独立 endpoint：即使 training_options 完全优化成 
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-104 — Storage Rescan 正式 Annotation 提交与 task-owned applied marker 分离；GT 已成功后崩溃会在恢复时把自己的提交判成外部冲突并把任务置 FAILED
+
+**级别：高**  
+**模块：Storage Rescan / Annotation Ground Truth / Crash Recovery / Idempotency**
+
+**现象：**
+
+当前 Storage Rescan 的外部标注 apply 流程把“正式业务提交”和“任务自己已处理该 delta 的 checkpoint”分成了多个独立事务。
+
+`StorageRescanHandler._apply_annotation_rescan()` 对每批最多 500 条 delta 的真实顺序是：
+
+1. `store.pending_annotation_deltas(...)` 读取 `applied=0`；
+2. 读取当前 Material / Annotation；
+3. 校验 review 时冻结的 `platform_annotation_hash / state`；
+4. `annotations.upsert_many(annotation_rows, return_rows=True)` —— **正式写 AnnotationRepository GT**；
+5. `materials.patch(patches)` —— 写 external_annotation provenance / Material projection；
+6. `store.mark_annotation_applied(batch)` —— 最后才把 task-owned manifest 中 delta 标成 `applied=1`；
+7. `context.check(force=True)`。
+
+这三个写入分别属于：
+
+- AnnotationRepository SQLite；
+- MaterialRepository SQLite；
+- RescanCandidateStore task manifest SQLite。
+
+它们之间没有原子 receipt。
+
+**真实崩溃窗口：**
+
+假设 review 时平台标注为 A，Rescan 确认要写外部标注 B。
+
+1. Worker 读取 pending delta；
+2. stale-review 校验通过；
+3. `AnnotationRepository.upsert_many()` 已成功把正式 GT 从 A 写成 B；
+4. 进程在 `mark_annotation_applied()` 前退出、机器重启、Worker 被杀或 Python 崩溃；
+5. task manifest 中该 delta 仍是 `applied=0`；
+6. Durable Task recovery 调 `StorageRescanHandler.recover()`；
+7. `recover()` 对 storage_rescan 只是再次 `run(context)`；
+8. accepted task 再次进入 `_apply_rescan() -> _apply_annotation_rescan()`；
+9. 同一个 delta 再次被 `pending_annotation_deltas()` 取出；
+10. 此时 `current_hash/current_state` 已经是本任务上一次成功写入的 B；
+11. 但 delta 内冻结的 `platform_annotation_hash/state` 仍是 review 时的 A；
+12. 代码命中：
+   `platform annotation changed after rescan review; create a new rescan`；
+13. `run()` 捕获 ValueError，写入 `STORAGE_RESCAN_CONFLICT`，最终返回 `TaskStatus.FAILED`。
+
+结果是：
+
+**任务报告 FAILED，但它已经修改了正式 Annotation Ground Truth。**
+
+如果崩溃发生在 Annotation GT commit 之后、`materials.patch(patches)` 之前，还会形成：
+
+- AnnotationRepository 已是 B；
+- external_annotation provenance / Material projection 仍可能是旧值；
+- recovery 又因为自己的 GT commit 与 review hash 不同而拒绝继续补齐。
+
+**为什么是 Bug / crash consistency：**
+
+Durable task 的 recover 合同要求 side effect 可以：
+
+- 原子提交；或
+- 通过 idempotency receipt 在重放时识别“这是自己已经完成的提交”。
+
+当前 Rescan annotation path 两者都没有。
+
+`applied=1` 本来承担 task checkpoint，但它发生在 canonical GT commit 之后，而且存放在另一个 SQLite 文件，因此存在不可避免的 crash gap。
+
+**与 Material metadata reconcile 的对比：**
+
+同一个 Storage Rescan 的 `MaterialRepository.reconcile_storage_batch()` 已经有更接近正确的幂等机制：
+
+- 使用 `material_storage_audit`；
+- key 包含 `task_id + image_id`；
+- 重放时已存在 audit 的 material 不会再次应用。
+
+Annotation path 没有等价的、与正式 GT 同 owner 提交的 operation receipt。
+
+**与已有问题的区别：**
+
+- AUDIT-099：在 stale check 通过后，另一个人工 writer 可以抢先修改 GT；Rescan 因缺少 commit-time `expected_version` 仍可能覆盖对方——这是并发 lost update。
+- AUDIT-102：两个合法 GT version 的 Material projection side effect 可逆序——这是 derived projection monotonicity。
+- AUDIT-104：**没有任何其他 writer 也会发生**；同一 Rescan 自己已经成功写 GT，但由于 applied marker 没和 GT 原子记录，崩溃恢复把自己的提交误认成外部变化并把任务置 FAILED。
+
+三者触发条件和修复层不同。
+
+**影响：**
+
+- 正式 Annotation 已改变，但任务状态显示 FAILED；
+- 用户可能认为失败后“没有生效”，再次创建 Rescan 或手工修改，造成二次变更；
+- 崩溃发生在 GT commit 与 provenance patch 之间时，GT / Material provenance 可长期不一致；
+- 10k / 20k rescan 以 500 条 batch 多次提交，批次数越多，暴露于 commit-marker crash window 的次数越多；
+- 修复 AUDIT-099 时如果只简单加 `expected_version`，恢复重放反而会更稳定地冲突，因为旧 expected_version 已被本任务自己的首次 commit 消耗；
+- Durable Task 的“失败/成功”语义不再代表业务 side effect 是否发生，影响审计与人工处置。
+
+**现有测试为什么没发现：**
+
+`tests/unit/storage/test_rescan_tasks.py` 已覆盖：
+
+- stale platform annotation 在 apply 前被拒绝；
+- YOLO / COCO / VOC delta 分类与正常 apply；
+- remote rescan review；
+- canonical evidence 防篡改。
+
+但当前没有覆盖：
+
+`Annotation GT commit 成功 -> 进程在 mark_annotation_applied 前退出 -> recover`
+
+也没有“同一 task replay 必须识别已提交 Annotation side effect”的 idempotency 测试。
+
+**建议最小修复：**
+
+不要把 `mark_annotation_applied()` 简单提前到 GT commit 之前；那会把问题反转成：
+
+`applied=1` 已写，但 GT 尚未写就崩溃，恢复将永远跳过真正业务提交。
+
+应让 canonical Annotation owner 同时拥有一个可恢复的 idempotency receipt，最小方向：
+
+1. 为 Rescan annotation apply 生成稳定 operation identity，例如：
+   `task_id + object_key/image_id + confirmed source_digest/policy generation`；
+2. AnnotationRepository 在**与 GT 写入同一个 SQLite transaction**中记录 operation receipt；
+3. receipt 保存至少：
+   - task_id / operation token；
+   - image_id；
+   - resulting annotation version；
+   - resulting content_digest；
+   - intended external source digest；
+4. recovery 重新遇到 `applied=0` 时：
+   - 若同 task receipt 存在，且当前 GT 仍匹配 receipt，视为“业务提交已完成”，只补齐缺失 Material provenance，然后安全地 `mark_annotation_applied`；
+   - 若 receipt 存在但当前 GT 已被后续人工 version 改变，fail-closed，不能再覆盖；
+   - 若 receipt 不存在，才走正常 review hash + expected_version CAS；
+5. receipt 必须跟 Annotation GT 原子提交；如果只写 ArtifactStore / RescanCandidateStore，仍会重建同一个 crash gap；
+6. 保持每批 <=500，不能引入逐图事务或 N+1；
+7. 与 AUDIT-099 的 expected_version 修复一起设计，但不要新增第二 Annotation owner。
+
+**回归测试建议：**
+
+至少增加：
+
+- GT commit 后、Material provenance 前模拟 crash；
+- GT + provenance 后、mark_annotation_applied 前模拟 crash；
+- recover 后任务可完成，且 GT 不重复增 version；
+- same-task receipt + current GT match → idempotent resume；
+- same-task receipt 存在但用户随后人工修改 GT → recover 必须拒绝覆盖用户新 version；
+- 500-row batch 中部分已 receipt、部分未提交时可安全续跑；
+- final task status 与真实 side effects 一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
