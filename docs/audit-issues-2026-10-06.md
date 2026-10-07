@@ -13005,3 +13005,170 @@ B 侧只显示“—”，与合法的 A-only 检测无法区分。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-107 — Quality Center “停止检测”只停止浏览器后续循环，不取消当前 Durable Deployment Test；GPU/Worker/板端任务会继续执行到终态
+
+**级别：中～高**  
+**模块：Quality Center / Detection Batch / Deployment Test Cancellation / Frontend Runtime**
+
+**现象：**
+
+质量中心批量检测运行期间，页面明确显示：
+
+`停止检测`
+
+按钮，并绑定：
+
+`stopBenchBatch64()`
+
+但当前实现只有：
+
+`state.benchBatch64.cancelled = true`
+
+没有记录当前正在等待的 Deployment Test task_id，也没有调用已经存在的 canonical 后端取消接口：
+
+`POST /api/v61/projects/{project_id}/deployment-tests/{task_id}/cancel`
+
+因此“停止检测”只会阻止后续 side / 后续图片继续创建，无法取消当前已经创建并正在执行的 Durable Task。
+
+**真实调用链：**
+
+`runBenchBatch64()`
+
+对每张图片：
+
+1. row 进入 running；
+2. `await benchPredictOne(...)`；
+3. `benchPredictOne()` 创建 Deployment Test；
+4. 获得 task_id；
+5. 调：
+   `taskPoller.waitForTaskTerminal(... delay=900, maxAttempts=700)`
+6. 一直等待该 task 成为 terminal；
+7. await 返回后，外层代码才再次检查：
+   `if (run.cancelled) break`。
+
+所以用户在第 5 步点击“停止检测”时：
+
+- 浏览器只修改一个本地 boolean；
+- 当前 await 不会被中断；
+- 当前 task 不会 request_cancel；
+- Worker/GPU/远程板端任务继续运行；
+- PollRegistry 继续轮询；
+- 最多等当前 side 结束后才停止进入下一 side / 下一图片。
+
+compare 模式尤其明显：
+
+- A 正在运行时点停止：A 继续跑完，但 B 不再创建；
+- B 正在运行时点停止：B 继续跑完；
+- 单模型模式：当前检测仍完整跑完。
+
+**后端其实已经有正确 lifecycle owner：**
+
+`cancel_deployment_test()`
+
+明确：
+
+`shared_task_repository().request_cancel(task_id)`
+
+Deployment Test Worker 又会在进程循环内检查：
+
+`context.cancel_requested()`
+
+并安全终止 bound process。
+
+所以缺口不在后端能力，而在前端“停止”动作没有连接 canonical cancellation owner。
+
+**为什么是 Bug / 前后端动作合同漂移：**
+
+UI 文案是“停止检测”，不是“本张完成后停止后续图片”。
+
+用户合理预期当前正在执行的推理也会停止。
+
+而当前实际语义是：
+
+“设置 stop-after-current 标记”。
+
+不仅文案与行为不一致，还绕过了已有 Durable cancellation contract。
+
+**资源影响：**
+
+Deployment Test 最长轮询配置当前约为：
+
+`700 × 900ms ≈ 10.5 分钟`
+
+实际 Worker/远程任务可持续较长时间。
+
+用户已经明确停止后，仍可能继续占用：
+
+- GPU；
+- deployment.runtime Worker；
+- 远程板端执行资源；
+- 进程/日志/输出 I/O；
+- PollRegistry 网络请求。
+
+在 1k/10k 图片批量检测中，停止动作通常就是为了立即释放资源；当前行为达不到目的。
+
+**额外 UI 不一致：**
+
+`stopBenchBatch64()` 本身也不调用 `summary64()` / render。
+
+所以点击按钮后，当前 summary 不一定立即切换成“本次检测已停止”，而是继续显示运行态，直到当前 await 最终结束并进入 finally。
+
+这进一步强化了“按钮点了但没有真正停止”的体验问题。
+
+**现有测试为什么没发现：**
+
+当前：
+
+- `tests/browser/quality-detection-workbench.spec.mjs`
+- `tests/frontend/quality-detection-center.test.mjs`
+
+没有覆盖：
+
+- stopBenchBatch64；
+- “停止检测”按钮；
+- Deployment Test cancel endpoint；
+- RUNNING -> CANCEL_REQUESTED -> CANCELLED 的质量中心 UI。
+
+浏览器验收只覆盖正常 compare / A-only / B-only 完成路径。
+
+**建议最小修复：**
+
+不要新增第二 cancel owner。
+
+继续使用现有：
+
+- TaskRepository.request_cancel；
+- Deployment Test cancel API；
+- canonical task poller。
+
+前端只需要把当前执行身份纳入 batch runtime：
+
+1. `benchPredictOne()` 创建 task 后立即把 task_id 写入当前 run/row/side；
+2. `stopBenchBatch64()`：
+   - 先设置 batch cancelled，阻止后续创建；
+   - 若存在当前 active task_id，POST canonical cancel endpoint；
+3. 继续通过 taskPoller 等待最终 CANCELLED，不要在 CANCEL_REQUESTED 时假装已经结束；
+4. stop 操作应立即 rerender summary，显示“正在停止当前检测…”；
+5. cancel API 失败时明确提示，并继续展示真实 Durable 状态；
+6. compare 模式只取消当前 active side，不创建尚未开始的另一 side；
+7. project switch / 页面卸载不要偷偷自动 cancel，除非产品明确要求；本问题只修显式用户 Stop。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- A running 时点击停止 -> 发 exactly one cancel POST；
+- task 先 CANCEL_REQUESTED 后 CANCELLED，前端保持真实过渡；
+- compare 模式 A 被取消后 B 不创建；
+- B running 时停止只取消 B；
+- A-only / B-only 同样取消当前 task；
+- cancel API 失败时显示错误且不伪装“已停止”；
+- 重复点击停止不重复 cancel；
+- 已 terminal task 不再发 cancel。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
