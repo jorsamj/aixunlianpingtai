@@ -18472,3 +18472,245 @@ ModelArtifact identity 与 External Publication 主链本身不需要重新设�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-139 — 正确的 Training Version CAS 已实现并有并发单测，但生产归档仍调用普通 attach；两个基于同一旧版本的训练都可成功并互相覆盖 current_version_id
+
+**级别：高**  
+**模块：Training Completion / Algorithm Version / Iteration Lineage / current_version_id / Concurrency**
+
+**现象：**
+
+当前算法版本存储层已经明确实现：
+
+`AlgorithmSqlStore.attach_version_if_current(...)`
+
+它的业务合同就是：
+
+“训练完成归档时，只有训练创建时冻结的 base version 仍然是当前版本，才允许把新版本挂上去。”
+
+实现中使用：
+
+`BEGIN IMMEDIATE`
+
+并在同一事务内读取：
+
+`algorithms.current_version_id`
+
+然后比较：
+
+`expected_current_version_id`
+
+如果当前版本已经变化，则抛：
+
+`ALGORITHM_VERSION_CONFLICT`
+
+首训场景同样受保护：创建任务时没有 base version，而归档时如果已经出现任何版本，也会拒绝旧首训任务覆盖当前版本。
+
+**更关键的是，现有单元测试已经把正确合同写得非常清楚：**
+
+`test_atomic_training_attach_...`
+
+构造两个并发 Training completion，都基于：
+
+`base_version_id = v1`
+
+并发调用：
+
+`attach_version_if_current(..., expected_current_version_id="v1")`
+
+测试明确要求：
+
+- 只能一个 `ok`；
+- 另一个必须 `ALGORITHM_VERSION_CONFLICT`；
+- 最终只能新增一个 child version；
+- `current_version_id` 必须指向该唯一 child。
+
+还测试了：
+
+- 同一个 training task retry 必须幂等；
+- 首训任务在归档前已经出现版本时必须拒绝。
+
+所以“训练版本 CAS”不是未来设计，而是当前仓库已经实现、已有测试保护的 canonical contract。
+
+**但生产 Training completion 没有接上它：**
+
+当前：
+
+`_v48_archive_training_version(project_id, job)`
+
+在完成：
+
+- artifact_verified 检查；
+- 模型复制；
+- SHA256；
+- training_lineage；
+- evaluation；
+- base_version_id 记录
+
+之后，最终仍调用：
+
+`attach_algorithm_version(...)`
+
+而不是：
+
+`attach_version_if_current(...)`
+
+普通 `attach_version()` 虽然也使用 SQLite `BEGIN IMMEDIATE`，但它只保证单次写入事务完整。
+
+它**不会比较 frozen base 与当前 current_version_id**。
+
+其行为是：
+
+1. 插入新 version；
+2. 无条件：
+   `UPDATE algorithms SET current_version_id = new_version_id`。
+
+所以两个任务会串行写成功，而不是一成一拒。
+
+**真实并发场景：**
+
+初始：
+
+`current_version_id = v1`
+
+用户几乎同时创建：
+
+- Training A，base=v1；
+- Training B，base=v1。
+
+两者都合法启动，因为任务创建时 v1 确实是当前版本。
+
+若 A 先完成：
+
+- A 归档 v2；
+- current_version_id = v2。
+
+随后 B 完成。
+
+正确合同应当是：
+
+- B 的 frozen base=v1 已过期；
+- 保留 B 的训练结果用于审计；
+- 但不得自动把 B 作为新的 current version；
+- 返回/记录 `ALGORITHM_VERSION_CONFLICT`。
+
+当前生产实现却会：
+
+- 普通 attach B 为 v3；
+- 无条件 current_version_id = v3。
+
+于是 B 直接覆盖了 A，形成：
+
+`v1 -> A(v2)`
+
+随后又被一个**同样基于 v1、而不是基于 v2**的 sibling：
+
+`B(v3)`
+
+取代。
+
+这不是合法的串行迭代链，而是 sibling result 覆盖 current pointer。
+
+**首训也有同类问题：**
+
+算法最初没有版本时，同时创建两个首训任务。
+
+正确 `attach_version_if_current(expected_current_version_id=None)` 会保证：
+
+- 第一个归档成功；
+- 第二个发现当前已经存在版本并冲突。
+
+当前普通 attach 则两者都能成功，后完成者成为 current。
+
+**额外的版本编号漂移：**
+
+归档前代码还在事务外读取：
+
+`algo.get("versions")`
+
+并计算：
+
+`version_no = len(versions)+1`。
+
+两个并发任务读取同一旧快照时，可以都计算出同一个 version_no。
+
+`algorithm_versions` 当前没有 `(algorithm_id, version_no)` 唯一约束。
+
+因此 sibling versions 不仅 lineage 冲突，还可能出现重复业务 version_no。
+
+手工 v12 “发布为算法版本”也采用相同的事务外：
+
+`len(algo.get("versions", []))+1`
+
+所以该编号问题会被兼容入口进一步放大。
+
+**为什么是 Runtime 装配 Bug，不是重新设计 Training Picker：**
+
+Training 创建阶段已经冻结：
+
+- `base_version_id`；
+- training lineage；
+- Dataset Snapshot / Revision。
+
+SQL store 也已经提供正确 CAS owner。
+
+缺口仅在 completion 归档最后一步仍装配到旧：
+
+`attach_algorithm_version`
+
+而不是 canonical：
+
+`attach_version_if_current`。
+
+不需要改 Training Picker、Dataset Revision 或重新设计算法版本体系。
+
+**影响：**
+
+- 同一算法并发训练结果可以互相覆盖 current version；
+- “当前版本的下一次迭代”可能从错误 sibling 开始；
+- UI 看到的当前版本取决于完成时序，而不是合法 lineage；
+- auto conversion 会对两个 sibling 都可能启动；
+- external auto publish 也可能把两个不合法 sibling 当正式版本推送；
+- rollback/version history 中会出现非线性 lineage；
+- version_no 可能重复；
+- 用户难以判断哪个版本真正继承了哪个版本；
+- 已有 CAS 单测绿色却无法保护生产，因为生产没有调用该方法。
+
+**建议最小修复：**
+
+不要新增第二 Algorithm Version owner。
+
+1. `_v48_archive_training_version()` 必须改用已有：
+   `attach_version_if_current()`；
+2. `expected_current_version_id` 使用任务创建时冻结的：
+   `base_version_id`；
+3. 首训明确传 `None`，复用已有“当前不得已经出现版本”的合同；
+4. 同 task retry 继续复用已有 training_job_id 幂等逻辑；
+5. 如果发生 `ALGORITHM_VERSION_CONFLICT`：
+   - 不删除已训练模型/报告；
+   - 标记“训练成功但版本归档冲突/需人工处理”；
+   - 不 auto convert；
+   - 不 auto publish；
+6. version_no 也应在同一事务/owner 内原子分配，或使用已有稳定时间/identity；不能在外部用旧 `len()+1` 快照计算；
+7. 手工版本 attach 与 Training attach 应明确分离 provenance，但都不能产生重复业务版本身份。
+
+**回归测试建议：**
+
+除现有 SQL store 单测外，必须增加生产 wiring 测试：
+
+- 两个 Durable Training 都 frozen base=v1；
+- A 先完成并归档；
+- B 后完成；
+- B 必须得到 `ALGORITHM_VERSION_CONFLICT`；
+- current 必须仍是 A；
+- B 不触发 auto conversion / external publish；
+- 两个并发首训只能一个成为首版本；
+- retry 同一 Training task 仍幂等；
+- version_no 不重复；
+- crash/recovery 后 CAS 语义不丢失。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
