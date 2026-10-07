@@ -22034,3 +22034,163 @@ Material Integrity 是“Full Audit”的证据 owner。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-161 — “无需清洗”仍有同步 v52 mutation 旁路；10k/20k 整个筛选集可绕过 canonical MARK_CLEAN_SKIPPED Durable owner
+
+**级别：中高**  
+**模块：Materials / Cleaning Decision / MaterialBatch / Frontend Owner / 1k-20k Scale**
+
+**现象：**
+
+平台已经存在 canonical 素材批处理 owner：
+
+`MATERIAL_BATCH + MARK_CLEAN_SKIPPED`
+
+它具备：
+
+- selection freeze；
+- repository revision；
+- Durable Task；
+- 500/批处理；
+- Task Center；
+- progress / cancel / retry；
+- 大 explicit selection 上限 100000。
+
+当前批量“无需清洗”弹窗与导入复核也已经优先走：
+
+`window.runMaterialBatch62('MARK_CLEAN_SKIPPED', ...)`
+
+但当前正式素材页仍保留另一套生产 mutation owner：
+
+`window.markReady412()`
+→ `POST /api/v52/projects/{project_id}/images/mark-ready`
+→ `v52_mark_ready()`
+→ `MaterialRepository.get_many(ids)`
+→ `MaterialRepository.patch_many(... batch_size=500)`
+
+这是同步 HTTP mutation，不创建 MaterialBatch。
+
+**真实生产入口至少有三条：**
+
+1. 未处理素材卡片：
+   “无需清洗”
+2. 图片详情：
+   “无需清洗”
+3. 未处理素材页顶部：
+   “当前素材无需清洗”
+
+并且 `window.markReady412` 只有这一个定义，后续 runtime 没有覆盖它。
+
+因此不是 zero-reference legacy。
+
+**大规模问题：**
+
+顶部“当前素材无需清洗”执行：
+
+`markReady412(dataRows412().map(x => x.id))`
+
+而 `dataRows412()` 返回的是当前筛选条件下的**全部素材**，分页只发生在后续：
+
+`renderData412Cards()`
+→ `all.slice(pageStart, pageEnd)`
+
+所以：
+
+- 页面虽然一次只渲染一页；
+- 但按钮会把整个 10k/20k filter result 的 IDs 一次塞进同步 POST。
+
+这绕过了项目已经专门为 1k/10k/20k 设计的 Durable MaterialBatch。
+
+**两个 owner 写的业务字段本质相同：**
+
+canonical batch：
+
+`mark_ready(row, decided_at)`
+
+写：
+
+- processing_status=processed；
+- clean_skipped=true；
+- clean_decision=skipped；
+- clean_decision_at；
+- updated_at。
+
+v52 direct endpoint 又独立手写同一套字段。
+
+因此这是明确的 duplicate mutation owner，而不是查询辅助函数。
+
+**用户真实可达场景：**
+
+1. 导入 20,000 张未处理素材；
+2. 进入“数据集 → 未处理”；
+3. 页面只显示分页；
+4. 点击顶部“当前素材无需清洗”；
+5. 浏览器实际收集整个 dataRows412；
+6. 一个同步 HTTP 请求携带全部 IDs；
+7. 后端在 Web request 生命周期内直接 patch 全部 Material rows；
+8. 没有后台任务卡片、真实进度、取消或重试。
+
+同一用户若改走“批量无需清洗”弹窗，则又会进入完全不同的 Durable owner。
+
+**影响：**
+
+- 同一业务动作两套生命周期；
+- 10k/20k 同步 mutation 造成 Web 请求卡顿/超时风险；
+- 请求中断时用户无法从 Task Center 判断真实完成范围；
+- 没有 durable item-level failed truth / retry；
+- 没有统一 selection freeze / repository revision evidence；
+- 单张、顶部批量、导入复核的审计与运行行为不一致；
+- 后续若 canonical MARK_CLEAN_SKIPPED 增加 lifecycle guard，v52 旁路仍会绕过；
+- 继续形成“修 canonical owner 但旧按钮仍能绕过”的技术债。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-038/086/152/153：Cleaning scan/confirm/retry 语义；
+- AUDIT-057 等：MaterialBatch active discovery；
+- AUDIT-161：已经存在 canonical `MARK_CLEAN_SKIPPED` owner 后，当前素材 UI 仍直接调用同步 v52 mutation，形成第二 owner 和 20k 旁路。
+
+**现有测试为什么没有发现：**
+
+前端测试分别验证：
+
+- MaterialBatch runtime 可执行 MARK_CLEAN_SKIPPED；
+- 素材页存在“无需清洗”操作；
+- direct v52 endpoint 能正确修改字段。
+
+没有 contract test 强制：
+
+> 所有生产“无需清洗”入口必须只经过 canonical MaterialBatch owner。
+
+也没有 20k 浏览器测试断言：
+
+顶部“当前素材无需清洗”不得一次同步 POST 20k image_ids 到 v52 direct endpoint。
+
+**建议最小修复方向：**
+
+不要新增第三套 owner。
+
+1. 把 `markReady412()` 改成 canonical MaterialBatch adapter：
+   - 单张也可创建 MARK_CLEAN_SKIPPED；
+   - 批量直接复用 runMaterialBatch62；
+2. v52 direct `images/mark-ready`：
+   - 若无其它外部合同依赖，应 retire/410；
+   - 若暂时兼容，至少不得再被生产 UI 调用；
+3. 顶部整个筛选集操作应使用 FILTERED selection，避免先在浏览器构建 20k IDs；
+4. Task Center / PollRegistry 继续复用现有 MaterialBatch owner；
+5. 不要通过给 v52 加更大 body limit/更长 timeout 来“修性能”。
+
+**应新增回归测试：**
+
+- 单张“无需清洗”只创建 MARK_CLEAN_SKIPPED task；
+- 卡片/详情/顶部/导入复核全部走同一 owner；
+- 20k filtered 操作浏览器不构建/POST 20k explicit IDs；
+- v52 direct endpoint 不再被当前静态生产代码引用；
+- MaterialBatch success 后 UI 状态正确刷新；
+- partial/failure 有 Task Center truth；
+- 不能用 fallback 到 direct endpoint 掩盖 MaterialBatch runtime 未加载。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
