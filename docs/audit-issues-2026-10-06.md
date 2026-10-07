@@ -17597,3 +17597,100 @@ v55 当前只有 receipt GET 和后续 decisions，没有 stale PROCESSING recov
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-134 — 普通图片上传没有 Storage Source revision/fence；上传中 PATCH/DELETE 存储源后，缓存 provider 可继续写旧位置，但最终 Material 只引用新/已删除 source_id，导致刚上传素材立即不可读
+
+**级别：高**  
+**模块：Plain Image Upload / Storage Source Lifecycle / Material Identity / Concurrency**
+
+**现象：**
+
+普通图片 upload_images() 在一个 batch 内复用 _v50_storage_manager(project_id)。StorageManager 又会在首次 provider_for(source_id) 后把真实 provider 缓存在 self._providers。
+
+也就是说一旦本批次开始向某个 Local/OSS/S3 source 写入，后续文件可以继续使用创建时的旧 root / bucket / endpoint / credentials。
+
+与此同时，PATCH /api/v61/storage-sources/{source_id} 与 DELETE /api/v61/storage-sources/{source_id} 没有和普通 /images 上传建立任何 source revision/fence。
+
+普通上传也不是 Durable Task，现有针对 Storage Import/Rescan 的 active dependency 保护看不到它。
+
+**真实竞态 A — PATCH：**
+
+1. Upload A 选择 source S，root/bucket = OLD；
+2. batch 内 StorageManager 创建并缓存 OLD provider；
+3. 管理员把同一个 source_id S PATCH 到 NEW root/bucket/endpoint；
+4. Upload A 仍可通过 cached provider 继续把对象写到 OLD；
+5. add_image_record 最终只保存 storage_source_id = S 与 object_key；
+6. 后续读取素材时新 StorageManager 按当前 S 配置解析到 NEW；
+7. NEW 下没有该 object_key，于是刚成功上传的素材立即 SOURCE_OBJECT_NOT_FOUND / unavailable。
+
+更危险的是，如果 NEW 下碰巧存在同 object_key，完整性校验会因 SHA 不一致 fail-closed；也就是说 identity 已经发生漂移。
+
+**真实竞态 B — DELETE：**
+
+如果 source 在 provider 已缓存后被 DELETE：
+
+- 当前上传仍可能继续向旧 provider 写；
+- batch commit 不会再次确认 source_id 仍存在；
+- Material row 仍可保存 storage_source_id=S；
+- 后续任何 materialize/open_reader 都无法再 resolve S。
+
+因此 API 可能返回 uploaded_count 成功，但素材马上不可预览、不可标注、不可训练。
+
+**rollback 也会受影响：**
+
+_v50_cleanup_buffered_image_batch_files() rollback 时不是复用原 batch 的 cached provider，而是重新调用 storage_manager(project_id)。
+
+如果 source 已 PATCH，它会按 NEW provider 删除相同 object_key，而真正上传对象在 OLD；如果 source 已 DELETE，cleanup 直接找不到 provider。
+
+结果可能同时出现：
+
+- OLD 位置留下 orphan object；
+- cleanup 报错；
+- 或错误尝试操作 NEW 位置同 key 对象。
+
+**为什么与 AUDIT-016 / AUDIT-044 不重复：**
+
+- AUDIT-016：Storage Source DELETE 可破坏活动 Storage Import/Rescan；
+- AUDIT-044：Storage Source PATCH 可破坏活动 Import/Rescan dependency；
+- AUDIT-134：普通图片 /images 上传是 request-scoped 非 Durable 流程，provider 被 request 内缓存，现有 Durable reference 检查无法观察它。
+
+即使修完 016/044，只保护 Material Import/Rescan task，普通上传 race 仍然存在。
+
+**影响：**
+
+- 上传接口返回成功但素材立即不可读；
+- Local root / OSS bucket 切换时最容易出现；
+- 批量上传中一部分文件可能写 OLD，一部分在配置变化后失败，形成难以解释的混合结果；
+- rollback 可能无法清理旧 provider 对象；
+- MaterialRepository 中 source identity 不再能唯一重建真实内容位置；
+- 用户后续在标注、清洗、训练阶段才发现源文件不可用。
+
+**现有测试缺口：**
+
+tests/api/test_storage_upload.py 只覆盖选定 storage source 正常上传、disabled source、scan；tests/api/test_upload_batch_performance_truth.py 只覆盖 batch/receipt 性能和幂等。没有覆盖上传进行中 PATCH/DELETE source。
+
+**建议最小修复：**
+
+不要新增第二 Storage owner。应让普通上传也参与 canonical Storage Source lifecycle fence：
+
+1. 上传 admission 时冻结 source_id + immutable source revision/config digest；
+2. 从第一字节写入到 Material batch commit 期间，对该 revision 持有 reference/lease；
+3. PATCH/DELETE 遇到 active upload reference 时明确 409，或创建新 revision 而不是原地改写；
+4. batch commit 前再次确认 source revision 未变化；
+5. rollback 必须使用本 attempt 冻结的 provider/revision 删除自己写入的对象，不能重新按 live source_id 解析；
+6. receipt/recovery 也应记录 source revision，和 AUDIT-133 的 crash recovery 共用同一 frozen evidence。
+
+**回归测试建议：**
+
+- Upload A 使用 OLD source，处理中 PATCH 到 NEW 必须被 fence 或 A 明确失败且 OLD 对象清理；
+- 上传中 DELETE source 必须 409，不能生成 dangling Material；
+- rollback 始终删除原 frozen provider 下对象；
+- source revision 改变后不得把 OLD object 记录成 NEW source truth；
+- Local / OSS / S3 都覆盖；
+- 与并发上传 AUDIT-132 修复组合测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
