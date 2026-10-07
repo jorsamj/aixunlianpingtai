@@ -25480,7 +25480,7 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 ### AUDIT-184 — Training SSE 增量签名遗漏 loss/mAP/LR/吞吐率等真实训练遥测；进度/epoch 不变时实时页可持续展示旧指标
 
-**级别：中高**  
+**级别：中**  
 **模块：Training SSE / Training Job Projection / TrainingTaskRuntime / Realtime vs REST truth**
 
 **现象：**
@@ -25544,6 +25544,11 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要 VERSION：** 是。  
 **是否需要新增回归测试：** 是。
 
+
+**2026-10-08 复核补充（QUALIFIED，非撤销）：**
+
+现代 `TrainingRecoveryRuntime` 在详情打开且任务 active 时，会用自己的 canonical `training-task-detail` PollRegistry timer 每 1.5 秒执行 `refreshOpenDetail()`，其中 `readJob()` 提供 REST 遥测，因此该机制能**缓解**本 AUDIT 对“打开详情”场景的可见延迟。本问题不是“详情必然永久不更新”，而是 SSE 作为训练增量公共流漏掉有意义的指标变化；若详情 REST 正常，它最多体现为 SSE 及时性缺口，可能由下一轮 1.5 秒 REST 刷新纠正。原记录中“持续展示旧指标”应理解为没有其它签名字段触发、且未收到成功 REST 补偿期间的 SSE 缺口，不应夸大为正常详情页必然永久卡死。此补充与下一条 AUDIT-186 的高频日志轮询性能问题相互独立。
+
 ---
 
 ### AUDIT-185 — Training 批量 mutation 部分成功时无条件清空整个 selection，失败/跳过 ID 丢失
@@ -25565,5 +25570,31 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **应新增回归：** A 成功、B 409、C skipped → B/C 仍选中；batch delete 的 skipped_active/missing 保留并提示；全部成功才清空；全部失败、用户取消、刷新失败不丢失败 ID；50 条分页边界仍正确处理 selection。
 
 **是否需要 VERSION：是。是否需要回归测试：是。**
+
+---
+
+### AUDIT-186 — 训练详情即使只看概览，也每 1.5 秒无条件读取并回传最多 12 万字符日志；活动任务详情产生持续 I/O 与带宽放大
+
+**严重级别：中高。模块：TrainingRecoveryRuntime / PollRegistry / Training Log REST / Performance / Read-Only Owner。**
+
+**现象及真实调用链：** canonical `static/modules/training-recovery-runtime.js` 的 `scheduleDetailRefresh()` 在 active 任务详情打开时每 1500ms 调用 `refreshOpenDetail({includeRecovery:false})`。该函数无条件执行 `Promise.all([readJob(taskId), recoveryPromise, readLog(taskId)])`，没有区分用户查看概览还是展开 `[data-training-tech-log]`。`readLog()` 始终 GET `/api/projects/{project_id}/jobs/{job_id}/log`。
+
+后端 `job_log()` 在每次 GET 都调用 `_tail_training_log_text(train.log)`，并为 Durable task 再调用 `_tail_training_log_text(task.log_ref)`。每个文件会读取最多 `4 * 120000 + 4` 字节再解码；最终 response 可达 120000 字符。日志没有变化时依旧重复执行这两次尾部 I/O、文本合并及完整响应，不存在 ETag/增量 cursor/变化签名。
+
+**生产可达场景：** 用户打开正在执行的训练任务“详情”，默认 overview 未打开日志区；只要保持详情，PollRegistry 会每 1.5 秒重读 job 和完整日志。若 log 已累计到长文本，单个客户端可持续收到同样的 120k 字符；多个运维用户同时看任务时，磁盘 I/O 与传输按连接数放大。远程训练还可能在日志读取前触发 `sync_remote_job()`，扩大 Web 请求成本。
+
+**为什么是 Bug：** 详情概览需要状态/进度，但不需要在日志区未展开时不断读取大文本。当前 canonical `TrainingRecoveryRuntime` 已经区分 `openFocus`、`[data-training-tech-log]`，却没有把展开状态用于日志读取 admission；这是同一前端 owner 内的额外无效请求，不是日志 retention 的正常成本。
+
+**影响：** 活动训练详情产生不必要的 1.5s 日志请求；累计大日志导致磁盘重复 seek/read、JSON/字符串构造与网络带宽放大；多用户同时查看时加重 Web 线程和 I/O；用户只是观察训练进度也承担日志全文传输成本。
+
+**和已有 AUDIT 区别：** AUDIT-066 是训练列表历史全扫描；AUDIT-119 是 SSE 对最多 100 个 active job.json 的 750ms 读取；AUDIT-179 是训练报告 30 次同步 VLM；AUDIT-184 是 SSE telemetry signature 缺漏。AUDIT-186 则是独立的**详情 REST 日志传输**无条件 1.5s 刷新、无需展开也请求，修复点位于详情 readLog gate / bounded delta，不是 SSE。
+
+**现有测试为何漏掉：** 详情测试主要检查任务状态与日志能展示、定时器能工作，没有断言 overview 阶段 `readLog` 调用次数为 0，也没有 1.5s × 多轮相同日志时只增量拉取变化的 I/O contract；单请求日志读取本身已有 120k 上限，容易误以为高频使用也安全。
+
+**建议最小修复：** 保留现有唯一 TrainingRecoveryRuntime、PollRegistry 和 job log endpoint。概览刷新只请求 `readJob()`；仅用户展开技术日志且详情仍打开时按明确频率获取日志。日志增量能力可复用原 endpoint 补 ETag/offset/last-modified/有限尾部协议，不新增第二日志 Owner。避免每 1.5s 反复下载同一 120k 文本；切换任务/关闭详情清理原 timer。
+
+**需新增回归测试：** active 训练仅打开 overview 轮询 5 次 → `readJob` 更新但 `readLog` 调用 0 次；展开日志才读取；日志不变 5 个周期不重复整段传输；日志追加只得到有界增量；关闭日志/切换任务/关闭 modal 停止日志请求；多客户端/大日志量 I/O 与传输受限；训练 status/ETA 的 1.5s 更新不受影响。
+
+**是否需要 VERSION：是。是否需要新增回归测试：是。**
 
 ---
