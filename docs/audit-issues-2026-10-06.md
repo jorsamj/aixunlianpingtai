@@ -13172,3 +13172,166 @@ Deployment Test 最长轮询配置当前约为：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-108 — Online Feedback confirm 在终态 CAS 前先写 Material/Annotation；并发 dismiss 可赢得 finalize，形成“反馈已忽略但正式真值已被写入”
+
+**级别：高**  
+**模块：Online Feedback / Human Review / Annotation Ground Truth / Concurrency**
+
+**现象：**
+
+当前线上抽检反馈的 Confirm 与 Dismiss 共用：
+
+`OnlineFeedbackRepository.finalize()`
+
+作为 feedback row 的终态 owner。
+
+Repository 自身使用 `BEGIN IMMEDIATE`，单纯状态更新是串行的；但 Confirm 的业务副作用并不在这个终态事务内，而是发生在 finalize **之前**。
+
+Confirm 的真实顺序：
+
+1. `repository.get(feedback_id)`，确认当前是 `pending_review`；
+2. 校验 prediction evidence；
+3. 查找或创建 Material；
+4. 对 `correct / false_positive`：
+   - 调 `write_annotation()` 写正式 Annotation Ground Truth；
+5. 更新 Material processing state / online_feedback_refs；
+6. 最后才调用：
+   `repository.finalize(... status='confirmed')`。
+
+Dismiss 的顺序则很短：
+
+1. `repository.get()` 看见 pending_review；
+2. 直接：
+   `repository.finalize(... status='dismissed')`。
+
+因此两者之间存在真实竞态窗口。
+
+**更关键的 Repository 行为：**
+
+`OnlineFeedbackRepository.finalize()` 发现当前记录已经是任意 terminal 时：
+
+`if current["status"] in TERMINAL_STATUSES: return current, True`
+
+它不会验证：
+
+“当前 terminal 是否等于本次调用想提交的 `status`”。
+
+所以 Confirm 最后想提交 confirmed 时，如果 Dismiss 已先提交 dismissed，Confirm 不会冲突，而是把 dismissed 当成“幂等成功”。
+
+**真实竞态：**
+
+1. 浏览器 A 打开反馈并点击“确认”；
+2. Confirm 读取到 pending_review；
+3. Confirm 已把预测框写入 AnnotationRepository，或已把素材写成 confirmed_empty；
+4. 在 Confirm 调 finalize 前，浏览器 B 仍基于旧页面点击“忽略”；
+5. Dismiss 也曾读到 pending_review，并抢先 `finalize(status='dismissed')`；
+6. Confirm 随后调用 `finalize(status='confirmed')`；
+7. Repository 看到已经 terminal=dismissed，直接返回 `idempotent=True`；
+8. Confirm API 也返回 `ok:true`，但返回的 feedback 实际是 dismissed。
+
+最终状态：
+
+- Online Feedback：**已忽略**
+- Annotation Ground Truth：**已经被 Confirm 写入/修改**
+- Material processing / online_feedback_refs：也可能已经按 Confirm 路径更新
+
+这是明确的业务状态 split-brain。
+
+**反向竞态也存在：**
+
+Dismiss 先读取 pending_review 后，Confirm 抢先 finalize=confirmed；随后 Dismiss 调 finalize(dismissed) 时，同样会把 confirmed 当成 idempotent terminal 返回。
+
+虽然这个方向不会撤销已经确认的 side effect，但 Dismiss API 仍可能返回 `ok:true`，即“用户点击忽略看似成功，实际上记录已确认”。
+
+**为什么是高风险：**
+
+线上反馈设计的核心合同是：
+
+- pending_review：不修改正式训练真值；
+- confirmed：人工确认后才允许写 Material / Annotation；
+- dismissed：明确不进入正式真值链。
+
+AUDIT-108 直接破坏这个合同：反馈最终是 dismissed，却仍可能产生正式 GT side effect。
+
+这会影响后续：
+
+- 训练 Snapshot；
+- Supplement Feedback Candidate；
+- Material processing_status；
+- negative sample / confirmed_empty；
+- label reference；
+- 审计解释。
+
+**为什么已有幂等保护不够：**
+
+Confirm 当前对“GT 已经由同一次确认写入，但 finalize 失败后重试”有 matching-truth 恢复：
+
+- existing annotated boxes 与 prediction 一致时承认；
+- confirmed_empty 已存在时不重复写。
+
+这能处理单线程 crash/retry，但不能区分：
+
+- 同一次 Confirm 的恢复；
+- 另一个 Dismiss 已经取得终态所有权。
+
+缺的是 feedback lifecycle 的 commit ownership，不是 Annotation 内容幂等。
+
+**现有测试为什么没发现：**
+
+当前测试覆盖：
+
+- normal confirm；
+- confirm idempotency；
+- existing matching/different truth；
+- pending feedback 可 dismiss 且无 side effect；
+- 标签 retirement 与 truth commit；
+- browser confirm/dismiss 正常流程。
+
+但没有覆盖：
+
+`confirm side effect 已发生但 finalize 未执行 -> concurrent dismiss finalize -> confirm finalize`
+
+也没有测试：
+
+“finalize(desired=confirmed) 遇到 terminal=dismissed 必须冲突，而不是 idempotent”。
+
+**建议最小修复：**
+
+不要新增第二 Online Feedback owner。
+
+最小方向应把“谁拥有本次终态提交权”前置冻结：
+
+1. OnlineFeedbackRepository 增加明确的 review claim / transition，例如：
+   `pending_review -> confirming`
+   或带 generation/token 的 CAS；
+2. Confirm 必须先原子取得 confirming ownership，之后才允许写 Material/Annotation；
+3. Dismiss 只能从 `pending_review` 原子转 dismissed，不能跨过 confirming；
+4. Confirm 完成业务副作用后再：
+   `confirming -> confirmed`；
+5. 如果业务副作用失败，明确回滚到 pending_review 或进入 recoverable confirming 状态；
+6. `finalize()` 的“terminal 即幂等”必须校验 terminal 与 desired status 一致：
+   - confirmed + desired confirmed -> idempotent；
+   - dismissed + desired dismissed -> idempotent；
+   - confirmed vs dismissed -> 409 conflict；
+7. recovery 要用稳定 operation token，避免重复 GT 写入；
+8. 不应通过在整个 Material/Annotation 操作期间持有 OnlineFeedback SQLite write lock 来解决，以免形成长事务和跨库死锁风险。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Confirm 取得 ownership 后 Dismiss -> 409；
+- Dismiss 先成功后 Confirm -> 409 且无 Material/Annotation side effect；
+- Confirm 已写 GT、finalize 暂时失败后的 same-operation retry 可恢复为 confirmed；
+- terminal confirmed 再 Confirm -> idempotent；
+- terminal dismissed 再 Dismiss -> idempotent；
+- terminal confirmed 再 Dismiss / terminal dismissed 再 Confirm -> 必须 conflict；
+- correct / false_positive / needs_correction 三类反馈；
+- 两线程/barrier 真实并发测试，不只顺序模拟。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
