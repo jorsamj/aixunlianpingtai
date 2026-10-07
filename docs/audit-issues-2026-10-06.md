@@ -6172,6 +6172,179 @@ UploadTaskCenter 只持久化：
 
 ---
 
+
+### AUDIT-068 — Training SSE 未复用 canonical training_queue_truth；同一 QUEUED 任务可在 HTTP 中显示 WAITING_RESOURCE、随后被实时流覆盖回 QUEUED
+
+**级别：中～高**  
+**模块：Training Task / SSE / Queue Truth / Frontend Runtime / 前后端一致性**
+
+**现象：**
+
+当前训练任务页同时存在两条读取链：
+
+1. canonical HTTP 列表：
+
+`GET /api/projects/{project_id}/jobs`
+
+2. v64 实时流：
+
+`GET /api/v64/projects/{project_id}/training-events`
+
+HTTP 列表在 `enrich_job_runtime()` 中会对 Durable Training task 调用：
+
+`task_to_public(durable, repository)`
+
+并且当任务仍为 QUEUED 时继续调用：
+
+`training_queue_truth(durable, repository, ...)`
+
+所以当：
+
+- 没有在线 Worker；
+- 在线 Worker 不支持所需 capability；
+- remote target 的 Worker 路由尚未建立；
+- 或任务明确处于 resource_waiting；
+
+HTTP 会把该任务投影为：
+
+`status = WAITING_RESOURCE`
+
+并补齐：
+
+- `resource_wait_reason`
+- `resource_queue_position`
+- `resource_pool_key`
+- `resource_pool_label`
+
+这是当前 canonical Training queue presentation truth。
+
+但 SSE 的 `_training_event_row()` 只做：
+
+`runtime = task_to_public(task)`
+
+没有传 repository，也没有调用 `training_queue_truth()`。
+
+因此对于 persisted status 仍为 QUEUED、stage 又没有被持久化为 `resource_waiting` 的任务，SSE 会发：
+
+`status = QUEUED`
+
+即使同一个任务刚刚在 HTTP 列表里被正确显示成：
+
+`WAITING_RESOURCE`。
+
+**真实前端覆盖链：**
+
+`training-progress-stream.js`
+
+收到 `training.task` 后：
+
+`applyUpdate(update)`
+
+会直接写：
+
+`task_status = String(update.status ...).toUpperCase()`
+
+因此一个 HTTP 已 hydrate 成：
+
+- `task_status = WAITING_RESOURCE`
+- UI = “等待资源”
+
+的任务，下一条 SSE 只要携带：
+
+- `status = QUEUED`
+
+就会把前端 `task_status` 覆盖回 QUEUED。
+
+`resource_wait_reason` 因为前端用了 nullish fallback，可能仍保留旧 reason，于是同一行甚至可能形成：
+
+- 状态：排队中；
+- 原因：当前没有在线 Worker / 指定远程服务器路由尚未建立；
+
+这种自相矛盾的组合。
+
+同时 `training.ready` 的 coverage 只按 task_id 判断。只要 active task id 都在 SSE 返回的前 100 内，PollRegistry 会认为 realtime coverage 完整并降低 HTTP fallback 频率，所以这个错误状态不一定会立即被 canonical GET 修回来。
+
+**为什么是前后端不一致 / duplicate projection owner：**
+
+HTTP 和 SSE 都声称在输出“canonical training display truth”，但两者的 queue readiness projection 不同：
+
+- HTTP：TaskRepository + Worker runtime + `training_queue_truth()`
+- SSE：仅 `task_to_public(task)`
+
+也就是说同一个 Training task 有两个不同的 queue presentation owner。
+
+尤其 AUDIT-063 已经确认 remote scheduler 路由存在生产驱动缺口；在这种情况下，remote QUEUED task 更容易长期处于“应该显示 WAITING_RESOURCE”的状态，因此这里不是纯展示边角问题。
+
+**影响：**
+
+- 训练任务页“排队中 / 等待资源”状态可来回跳；
+- remote training 可从“等待远程路由”被实时流改回普通排队；
+- 没有在线 Worker 时页面可能误导用户为正常队列等待；
+- resource_wait_reason 与 task_status 可互相矛盾；
+- 排序会变化：`visibleTrainingJobs()` 对 waiting 和 queued 使用不同 rank；
+- 停止/批量操作虽然目前都允许 queued/waiting，但运维判断、资源排障和任务优先级观察会失真；
+- HTTP 与 SSE 之间缺乏单一 queue truth owner，后续继续扩字段时容易再次漂移。
+
+**现有测试为什么没发现：**
+
+`tests/frontend/training-progress-stream.test.mjs`
+
+当前只覆盖：
+
+- RUNNING progress update；
+- unknown task reconcile；
+- terminal reconcile；
+- stream error fallback；
+- display revision 防旧数据覆盖。
+
+该测试中没有：
+
+- WAITING_RESOURCE；
+- resource_wait_reason；
+- QUEUED → WAITING_RESOURCE queue projection；
+
+因此没有覆盖：
+
+`HTTP WAITING_RESOURCE row -> SSE QUEUED event -> UI must remain canonical waiting truth`
+
+的跨读取链合同。
+
+后端也缺少测试断言：
+
+`_training_event_row()`
+
+对 QUEUED Training 必须与 `enrich_job_runtime()` 使用相同的 `training_queue_truth()`。
+
+**建议最小修复：**
+
+不要在浏览器再实现一份 Worker readiness 判定，也不要新增第三套 queue projection。
+
+应让 SSE 复用 canonical backend truth：
+
+- `_training_event_rows()` 已经持有 repository；
+- 对每个 Training task 构造 event row 时传入 repository / worker_runtime / bounded queued candidate context；
+- QUEUED Training 与 HTTP 一样调用 `training_queue_truth()`；
+- SSE 与 HTTP 共用同一 projection helper；
+- 不要通过前端“如果已有 WAITING_RESOURCE 就拒绝 QUEUED”来掩盖后端漂移，否则真实 queue 状态变化也可能无法更新。
+
+同时应避免为了修这个问题在 750ms SSE 循环里重新引入 AUDIT-064 的全量 queued hydration；Worker runtime / queue context 应按一次 event-loop iteration bounded/shared 复用，而不是每 task N+1。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 无在线 Worker：HTTP 与 SSE 都返回 WAITING_RESOURCE；
+- remote resource key：HTTP 与 SSE 都保留相同 wait reason；
+- capability 不匹配：两条读取链一致；
+- Worker 恢复可用后 WAITING_RESOURCE → QUEUED/RUNNING 正常转换；
+- 前端收到 SSE 后不会把 canonical waiting row错误覆盖回 queued；
+- 100 个 active stream 周期内 Worker runtime / queue hydration 不出现 per-task N+1。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
