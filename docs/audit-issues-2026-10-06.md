@@ -12302,3 +12302,114 @@ TrainingCreateHydrationRuntime 的 5 分钟 TTL、project-scoped in-flight dedup
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-102 — Annotation GT commit 与 Material searchable projection 分属两个事务；并发合法写入可逆序投影，让素材页状态/标签倒退到旧版本
+
+**级别：中～高**  
+**模块：AnnotationRepository / MaterialRepository Projection / Concurrency / Material Pagination**
+
+**现象：**
+
+AnnotationRepository 已是正式 Annotation Ground Truth owner，MaterialRepository 内 annotation_state、annotation_scope、annotation_hash、annotated、box_count、labels 只是 searchable projection。
+
+但 GT commit 与 Material projection 当前不是同一原子操作，也没有 projection generation / annotation version fence。
+
+两条生产路径都存在相同窗口：
+
+1. AnnotationRepository.upsert_many(project_material=True)：
+   - 先在 annotations.sqlite3 中 BEGIN IMMEDIATE -> 写 GT -> COMMIT；
+   - 事务释放后才调用 MaterialRepository.patch(projections)。
+
+2. app 的 write_annotation / write_annotations_many：
+   - 先用 project_material=False 写 canonical GT；
+   - 得到 saved row 后构造 _v50_material_annotation_patch；
+   - 再单独 material_store(project_id).patch(...)。
+
+因此 Annotation DB 只保证 GT writer 的提交顺序，不能保证事务结束后的 Material side effect 顺序。
+
+**真实竞态：**
+
+同一 image 初始 version=5：
+
+1. Writer A 提交 GT A -> version=6；
+2. A 尚未 patch Material；
+3. Writer B 基于 version=6 合法提交 GT B -> version=7；
+4. B 先 patch Material -> projection=B；
+5. A 后恢复执行，旧 projection A 再 patch；
+6. 最终 AnnotationRepository=B/version7，但 MaterialRepository=A/version6 对应状态。
+
+即使 A/B 都正确使用 expected_version，这个问题仍成立：它们可以是两个合法连续版本，只是 projection side effect 逆序完成。
+
+**为什么不是无关缓存：**
+
+v61 canonical Material API 直接使用 MaterialRepository：
+
+- GET /api/v61/projects/{project_id}/materials
+- GET /api/v61/projects/{project_id}/materials/ids
+
+并支持 annotated / label / processing status / cursor 等过滤。
+
+MaterialRepository._write_row() 还会同步重建 material_labels、material_annotation_scopes、annotated、box_count 等索引。
+
+因此 stale projection 会真实影响：
+
+- 素材页显示；
+- 已标注/未标注筛选；
+- label/scope 筛选与统计；
+- 基于 /materials/ids?annotated=... 的批量选择和 AI target discovery。
+
+**训练主链当前有安全缓冲：**
+
+training_tasks::_selected_project_images() 在最终冻结训练输入前会再次从 AnnotationRepository 批量读取正式 GT，并覆盖 Material row 中的 annotation_state/scope/hash/boxes。
+
+所以本问题不应表述为“训练一定使用旧 GT”；但训练前素材选择、AI 目标发现和其它只读 Material index 的 consumer 仍会看到漂移。
+
+**现有测试缺口：**
+
+test_annotation_repository_scope.py 覆盖单次写入后 GT 与 Material projection 一致；SQLite lifecycle 并发测试覆盖 repository 初始化/WAL/schema owner。
+
+没有覆盖：
+
+GT A commit -> GT B commit -> projection B -> projection A
+
+这种两个合法 Annotation version 的 projection side effect 逆序。
+
+**影响：**
+
+- 素材页可显示旧 annotation_state / labels；
+- annotated=false 可能重新包含已经正式标注的图片，导致重复 AI 标注；
+- annotated=true / label filter 可能漏掉刚保存的素材；
+- Material label/scope index 与 AnnotationRepository reference truth 不一致；
+- 漂移已持久化进 SQLite，普通页面刷新不会自愈；
+- 人工标注、AI Commit、Storage Rescan 等正式写入口并发越多，窗口越真实。
+
+**与 AUDIT-099 的区别：**
+
+AUDIT-099 是 Storage Rescan 在写 Annotation GT 本身时缺少 commit-time expected_version，可能产生 GT lost update。
+
+AUDIT-102 是即使 GT 两次写入都完全合法，GT commit 后的 Material projection 仍可逆序，导致 derived index 落后于 canonical GT。
+
+**建议最小修复：**
+
+不要把 MaterialRepository 升格为第二 GT owner，也不要跨两个 SQLite 文件持长事务。
+
+复用单一 projection primitive，增加单调 annotation_version：
+
+1. Annotation commit 返回 canonical version；
+2. Material projection 持久化 annotation_version；
+3. MaterialRepository.patch_annotation_projection(...) 在同一 writer transaction 内仅允许当前 projection version < incoming version 时更新；
+4. version 相等 + digest 相同幂等；
+5. 当前 version > incoming version 时迟到旧 projection 必须 no-op；
+6. payload、material_labels、material_annotation_scopes 同事务更新；
+7. app manual write、AnnotationRepository direct projection、AI Commit、Storage Rescan 共用该 primitive；
+8. 不新增第二 projection owner/poller。
+
+**回归测试建议：**
+
+至少覆盖 A(version6) / B(version7) GT 顺序提交后，让 B projection 先落盘、A 后到，最终 Material 必须保持 B；同时验证 annotated、label、scope indexes 不倒退，并保持 500-row batch bounded transaction。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
