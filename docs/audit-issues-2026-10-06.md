@@ -19635,3 +19635,192 @@ AUDIT-145：
 
 ---
 
+### AUDIT-146 — Quality Center / 训练素材质量只按“有框”计算标注完整度，confirmed_empty 正式负样本被当成未标注并错误拉低质量分
+
+**级别：高**  
+**模块：Quality Center / Training Data Quality / Annotation Ground Truth / confirmed_empty / Quality Score**
+
+**现象：**
+
+当前：
+
+`_v44_dataset_quality(project_id, req)`
+
+已经从 canonical AnnotationRepository 批量取得每张图片的正式 Annotation：
+
+`ann = annotations.get(image_id) or {}`
+
+并读取/清洗：
+
+`ann["boxes"]`
+
+但构造交给：
+
+`compute_quality(candidates)`
+
+的 candidate row 时，只写入：
+
+- boxes；
+- valid_box_count；
+- invalid_box_count；
+- split；
+- material fields；
+
+没有把 canonical：
+
+`annotation_state`
+
+显式带给 quality owner。
+
+而 `platform_core/quality.py::compute_quality()` 当前统计：
+
+`if boxes: annotated_images += 1`
+
+完全不判断：
+
+- annotated；
+- confirmed_empty；
+- unannotated。
+
+所以：
+
+`confirmed_empty + boxes=[]`
+
+会被 Quality Center 当成“未标注”。
+
+**为什么是准确性 Bug：**
+
+平台 canonical Ground Truth 已明确：
+
+`confirmed_empty`
+
+是人工确认的正式负样本：
+
+- AnnotationRepository 正式保存；
+- Material projection 标为 `annotated=true`；
+- `processing_status=processed`；
+- Training Picker 标为 `training_state=trainable`；
+- 训练 Ground Truth 判定允许进入训练。
+
+但 Quality Center 又把同一张图当成：
+
+“没有标注”。
+
+于是同一个素材在：
+
+- Training Picker：可训练正式 GT；
+- Material 页面：已标注/已处理；
+- Quality Center：未标注；
+
+三条主链出现直接冲突。
+
+**对质量分的直接影响：**
+
+`compute_quality()` 的：
+
+`annotation_completeness`
+
+权重为 20%，计算公式：
+
+`annotated_images / image_count * 100`
+
+假设本次训练素材：
+
+- 80 张带目标 bbox；
+- 20 张人工 confirmed_empty 负样本；
+
+真实 GT 完成度应为：
+
+100 / 100。
+
+当前却计算：
+
+80 / 100 = 80%。
+
+因此综合质量分被无依据拉低。
+
+同时 API 返回的：
+
+`quality.annotated_images`
+
+也会显示 80，而不是正式 GT 100。
+
+**真实用户可达路径：**
+
+当前前端：
+
+`trainDataQuality424()`
+
+和后续训练素材质量入口会：
+
+`POST /api/v44/projects/{project_id}/data-quality`
+
+并把：
+
+`q.annotated_images`
+
+直接展示为“已标注”。
+
+Quality Center：
+
+`GET /api/v44/projects/{project_id}/quality-center`
+
+同样调用：
+
+`_v44_dataset_quality(project_id)`
+
+并展示：
+
+- 已标注；
+- 数据质量；
+- 标注完整度雷达；
+- overall score。
+
+因此这是当前 UI 可见的错误，不是只存在于内部辅助函数。
+
+**与 AUDIT-144 的区别：**
+
+AUDIT-144 是：
+
+Dataset List 的 `annotated_images` / “全标注、混合、未标注”分类错误。
+
+AUDIT-146 是：
+
+Quality owner 的 `annotation_completeness` 和 overall quality score 错误。
+
+两者虽然根因都涉及 confirmed_empty，但修复 owner、影响指标和回归合同不同。
+
+**建议最小修复：**
+
+不要重新设计 Quality Center。
+
+应让 `_v44_dataset_quality()` 把 canonical Annotation state 明确传给 `compute_quality()`，例如 candidate row 带：
+
+`annotation_state = ann["annotation_state"]`
+
+然后 quality 统计区分：
+
+- ground_truth_images：annotated + confirmed_empty；
+- positive_annotated_images：有有效 bbox；
+- confirmed_empty_images：正式负样本。
+
+`annotation_completeness` 应以 Ground Truth 完成度计算，而不是“有框率”。
+
+box_validity / label_balance 仍只基于真实 bbox，不应给 confirmed_empty 伪造框。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 80 annotated + 20 confirmed_empty → annotation completeness = 100%；
+- annotated_images/ground_truth_images = 100；
+- box_count 仍只统计真实 bbox；
+- 20 confirmed_empty 不生成任何 label count；
+- Training Picker 与 Quality Center 对同一批素材的 GT eligibility 一致；
+- 纯 unannotated 素材仍正确降低 completeness。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
