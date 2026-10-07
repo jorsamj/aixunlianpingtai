@@ -20571,3 +20571,244 @@ AnnotationRepository delete 测试也验证了：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-150 — Training Submit readiness 忽略服务端 eligible_count；全是“已清洗待标注”素材也可创建任务，TRAINING_PREPARE 随后必失败
+
+**级别：中高**  
+**模块：Training Create / TrainingMaterialSummaryRuntime / TrainingSubmitRuntime / TRAINING_PREPARE / Selection Truth**
+
+**现象：**
+
+当前训练创建页面已经有一套服务端权威素材摘要：
+
+`POST /api/v62/projects/{project_id}/training-materials/selection-summary`
+
+它会对当前 draft 中用户实际选中的 image_ids 返回：
+
+- `selectable_count`
+- `eligible_count`
+- `pending_annotation_count`
+- `label_codes`
+- `eligible_total`
+
+前端 `TrainingMaterialSummaryRuntime` 也已经消费这份真相，并在创建弹窗里显示：
+
+`可直接训练 X / 待标注 Y`
+
+因此页面在提交之前其实已经知道：
+
+> 本轮是否至少存在一张可进入监督训练的正式 Ground Truth 素材。
+
+但真正控制“开始训练”按钮的：
+
+`trainingSubmitReadiness()`
+
+目前只检查：
+
+- algorithmId；
+- benchmark loading/error；
+- `materialIds.length >= 2`；
+- iteration base 是否 blocked；
+- submitting 状态。
+
+它完全不读取：
+
+`TrainingMaterialSummaryRuntime.summaryFor(...).eligible_count`
+
+也不要求 server summary 已完成。
+
+所以只要用户勾了至少 2 张素材，即使全部都是：
+
+`processed + unannotated`
+
+按钮也会显示可提交。
+
+**后端 canonical 合同却明确不同：**
+
+`resolve_training_selection()`
+
+允许“已清洗待标注素材”保留为 task intent：
+
+- 它们进入 `pending_annotation_image_ids`；
+- 不会被伪造成空 YOLO label；
+- 不会进入当前 effective supervised train set。
+
+但是它明确要求：
+
+`effective_train`
+
+至少有 1 张正式 GT。
+
+如果全部所选素材都只是 pending annotation，则固定抛出：
+
+> 已清洗未标注素材可以选入训练任务，但本轮没有任何正式标注素材可用于监督训练；请先完成至少一部分人工标注或 AI 标注审核确认
+
+因此：
+
+```text
+UI readiness: 可提交
+server selection-summary: eligible_count = 0
+POST /train/start: 202 已受理
+TRAINING_PREPARE: 必失败
+```
+
+**真实调用链：**
+
+用户在 canonical Training Material Picker 选择 2+ 张已清洗未标注素材  
+→ `TrainingMaterialSummaryRuntime.refresh()`  
+→ server summary 已返回：
+`eligible_count=0`
+`pending_annotation_count=N`  
+→ 创建弹窗也显示“可直接训练 0 / 待标注 N”  
+→ `TrainingSubmitRuntime.updateReadiness()`  
+→ `trainingSubmitReadiness()` 只看 `materialIds.length >= 2`  
+→ “开始训练”仍启用  
+→ `POST /api/v12/projects/{project_id}/train/start`  
+→ `_enqueue_explicit_training()`  
+→ 先创建父 `TRAINING`  
+→ 再创建 `TRAINING_PREPARE`  
+→ 返回 HTTP 202  
+→ 前端关闭训练弹窗并提示“训练任务已进入后台队列”  
+→ Prepare Worker  
+→ `resolve_training_selection()`  
+→ `effective_train=[]`  
+→ 必然失败。
+
+**为什么这是 Bug：**
+
+“已清洗未标注素材可被选择”本身不是 Bug。
+
+这是当前有意设计：
+
+- 用户可以提前把待标注素材纳入 task intent；
+- 系统会把它们保留在 `pending_annotation_image_ids`；
+- 但绝不能把它们当负样本；
+- 当前真正训练只消费 formal GT。
+
+Bug 是：
+
+> 前端明明已经从 canonical backend 拿到 `eligible_count=0`，却没有把这份真相接入唯一 Submit readiness owner。
+
+因此这是明确的跨层 admission drift。
+
+用户得到的是“任务受理成功”的交互，然后后台立即进入一个本来在提交前就能确定的失败。
+
+**用户真实可达场景：**
+
+1. 导入一批图片；
+2. 完成清洗，素材变为 processed；
+3. 尚未人工标注，也未完成 AI 候选审核；
+4. 创建训练任务；
+5. 选择 2 张或更多这些素材；
+6. 页面显示：
+   `可直接训练 0 / 待标注 N`
+7. 但“开始训练”按钮仍可点击；
+8. 点击后弹窗关闭、任务中心出现任务；
+9. TRAINING_PREPARE 随后失败。
+
+同样适用于：
+
+- 100 张 pending-only；
+- 1k / 10k / 20k pending-only；
+- 迭代训练已有 inherited labels，但本次所选图片没有任何 formal GT。
+
+即使存在上一版本继承标签，也不能凭空把未标注图片变成监督训练数据，所以后端仍会拒绝 effective_train 为空。
+
+**影响：**
+
+- 制造“假成功创建 → 后台秒失败”的用户体验；
+- 用户容易误以为 Worker/GPU/资源调度故障；
+- 产生无意义 TRAINING + TRAINING_PREPARE Durable Task 历史；
+- 任务中心、CI/运维统计会累积本可在前端 admission 阶段避免的失败；
+- 大规模项目中可能重复创建多个注定失败的 Prepare；
+- 页面展示的 `eligible_count` 与唯一 submit owner 实际 admission 互相矛盾。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-053 / 054：split/benchmark 请求合同不一致；
+- AUDIT-147：partial-scope confirmed_empty 被 Picker 计为 eligible，但 Snapshot 最终拒绝；
+- AUDIT-148：partial-scope annotated 正样本错误穿透 Snapshot，真实污染训练；
+- AUDIT-150：即使 `eligible_count=0` 本身完全计算正确，Submit readiness 仍忽略它，让 pending-only selection 创建一个必失败的 Prepare。
+
+所以 150 不是 147 的延伸。
+
+147 是“eligible truth 算错”。
+
+150 是“eligible truth 已算对，但提交 owner 不消费”。
+
+**现有测试为什么没有发现：**
+
+`tests/frontend/training-submit.test.mjs`
+
+当前测试甚至明确写：
+
+`submit readiness depends only on canonical draft, base and submitting state`
+
+并固定：
+
+- 默认 2 张 material → ready=true；
+- 1 张 material → ready=false。
+
+测试没有提供任何：
+
+- material summary；
+- eligible_count；
+- pending_annotation_count。
+
+所以它只验证“选了几张”，没有验证“这些素材是否至少有一张可用于监督训练”。
+
+另一方面：
+
+`tests/frontend/training-material-summary-runtime.test.mjs`
+
+只验证 summary runtime：
+
+- 请求 selection-summary；
+- 显示 pending_annotation_count；
+- 显示“可直接训练 / 待标注”。
+
+两套测试各自都绿，但没有跨模块合同测试：
+
+`TrainingMaterialSummaryRuntime → TrainingSubmitRuntime readiness`。
+
+后端 resolve_training_selection 的 fail-closed 逻辑本身是正确的，不应放宽。
+
+**建议最小修复方向：**
+
+不要把 pending 素材禁止选择，也不要把未标注素材自动当负样本。
+
+最小方向应是：
+
+1. 继续保留 TrainingMaterialSummaryRuntime 作为当前 selected-material summary owner；
+2. TrainingSubmitRuntime readiness 必须消费与当前 selection signature 匹配的 server summary；
+3. summary 尚未 ready 时：
+   - submit 应暂时不可用；
+   - 显示“正在核验本次训练素材”；
+4. `eligible_count <= 0` 时：
+   - 禁止提交；
+   - 明确提示“至少需要 1 张正式标注/确认负样本素材”；
+5. `eligible_count > 0` 且同时存在 pending annotation 时：
+   - 仍允许提交；
+   - pending 素材继续按现合同保留，不进入当前监督 Snapshot；
+6. 不要在浏览器自行重新判断 annotation_state；
+7. 不新增第二套 selection owner；
+8. 后端 `resolve_training_selection()` 的 fail-closed 保持不变，作为最终防线。
+
+**应新增回归测试：**
+
+至少覆盖：
+
+- 2 张 processed + unannotated，summary eligible_count=0 → submit disabled；
+- 10k pending-only → submit disabled，不创建 Durable Task；
+- 1 张 formal GT + N 张 pending，eligible_count=1 → submit allowed；
+- summary 仍 loading / selection signature stale → submit disabled；
+- 切换选中素材后旧 summary 不得继续解锁按钮；
+- inherited labels 存在但 selected materials eligible_count=0 → 仍不得提交；
+- eligible_count>0 的正常首次训练/迭代训练保持可提交；
+- 后端 pending-only 仍继续 fail-closed，不放宽 resolve_training_selection。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
