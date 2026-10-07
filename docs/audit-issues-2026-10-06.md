@@ -21118,3 +21118,85 @@ FAILED / PARTIAL_SUCCESS 没有“重试”按钮。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-155 — Durable MATERIAL_IMPORT 已实现安全取消，但服务器目录/ZIP/对象存储导入 UI 完全没有取消入口；大任务只能后台跑到底
+
+**级别：中高**  
+**模块：Storage Import / MATERIAL_IMPORT / Cancellation / UploadTaskCenter / Frontend-Backend Contract**
+
+**现象：**
+
+当前 `StorageImportHandler` 是 Durable `TaskKind.MATERIAL_IMPORT`，并且在真实执行链中多次主动检查 `context.cancel_requested()`：扫描对象、解包、远程 publisher、候选绑定、标签映射、Annotation/Material commit 前后、索引循环等都具备安全停止点。
+
+平台还已经提供统一 canonical API：
+
+`POST /api/v62/projects/{project_id}/tasks/{task_id}/cancel`
+
+会进入 `TaskRepository.request_cancel()`，必要时还会安全终止已登记的本地进程。
+
+但当前服务器素材导入 UI 没有把这套能力暴露给用户。
+
+`serverImportView()` 只返回 `active / canConfirm / terminal`，没有 `canCancel`。
+
+`renderImportTask()` 只会渲染：
+
+- 进度/状态；
+- 待确认时“确认建立索引”；
+- 失败信息。
+
+没有“取消任务/停止导入”。
+
+`StorageImportProgressRuntime` 只负责 track/stop polling；`stop()` 只是停止浏览器轮询并 handoff 到 UploadTaskCenter，不会取消后台 Durable Task。
+
+`UploadTaskCenter` 当前对 storage-import 也只展示任务状态，没有 cancel action。
+
+**真实调用链：**
+
+用户启动 server ZIP / directory scan / remote storage scan → 创建 Durable MATERIAL_IMPORT → 弹窗开始轮询 → 用户发现路径/格式/范围选错，或任务耗时过长 → 关闭弹窗只停止 focused polling → UploadTaskCenter 继续显示后台任务 → 页面没有任何 cancel 按钮 → Worker 仍继续扫描/下载/解包/检查/等待确认。
+
+即使任务正在 `QUEUED / WAITING_RESOURCE / RUNNING`，用户也无法通过正常产品入口调用系统已经存在的 canonical cancel。
+
+**影响：**
+
+- 10k/20k 对象存储扫描选错后无法停止；
+- 大 ZIP 解包/远程 Agent 导入会继续消耗网络、磁盘、CPU；
+- 错误任务会继续占用 Storage/Agent 队列和资源；
+- 用户关闭弹窗容易误以为已经停止；
+- 后端大量 cancellation checkpoints 实际失去产品价值；
+- 运维只能手工调用 API 或等待任务自然结束。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-067：Storage Import focused poller handoff/owner 问题；
+- AUDIT-075/092/093/095：Agent/Import retry、finalization、generation correctness；
+- AUDIT-153：Cleaning 后端已有 retry，但 UI 没有 retry；
+- AUDIT-155：MATERIAL_IMPORT 后端已有 cancel，并且 Worker 已实现 cancellation checkpoints，但 UI 没有 cancel。
+
+**建议最小修复方向：**
+
+不要新增 Storage Import cancel owner。直接复用统一 Durable Task cancel：
+
+1. `serverImportView()` 增加基于 canonical task truth 的 `canCancel`；
+2. QUEUED / WAITING_RESOURCE / RUNNING / CANCEL_REQUESTED 前的可取消状态显示“取消任务”；
+3. 点击调用 `/api/v62/projects/{project_id}/tasks/{task_id}/cancel`；
+4. StorageImportProgressRuntime 继续只负责 polling，不自己改 task 状态；
+5. UploadTaskCenter 对 storage-import active task也可暴露同一 cancel action，方便关闭弹窗后仍可停止；
+6. AWAITING_CONFIRMATION 是否允许 cancel 应与 TaskRepository 合同统一决定；
+7. 已终态不显示 cancel；
+8. cancel 后继续轮询到 CANCELLED，不要点击后立即从 UI 隐藏。
+
+**应新增回归测试：**
+
+- QUEUED storage import 显示 cancel，点击后进入 CANCELLED；
+- RUNNING directory scan cancel 后停止后续对象读取；
+- server ZIP extracting cancel 后不继续扫描/建立索引；
+- Agent storage scan cancel 传播到 Durable task/assignment；
+- 关闭弹窗只 handoff polling，不应等价于 cancel；
+- UploadTaskCenter 可取消仍 active 的 storage-import；
+- terminal task 不显示取消；
+- cancel 期间不产生第二 poller/第二 task owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
