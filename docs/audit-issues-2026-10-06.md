@@ -15325,3 +15325,283 @@ AI：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-121 — waitForTaskTerminal 把一次状态读取失败直接当成等待流程失败；后台 Durable Task 仍运行，前端却可误报失败并继续创建后续任务
+
+**级别：高**  
+**模块：Task Poller / Durable Task Read Path / Quality Center / AI Review / RKNN Verification / Frontend Runtime**
+
+**现象：**
+
+当前通用前端 helper：
+
+`static/modules/task-poller.js`
+
+中的：
+
+`waitForTaskTerminal()`
+
+用于等待 Durable Task 从 active 状态进入真实 terminal。
+
+但它对轮询读取异常的处理是：
+
+```js
+try {
+  task = await load(task);
+  onUpdate(task);
+  if (isTaskActive(task)) scheduleNext();
+  else settle('resolve', task);
+} catch (error) {
+  onError(error);
+  settle('reject', error);
+}
+```
+
+也就是说：
+
+**任何一次 `load()` 失败，都会立刻结束整个 terminal waiter。**
+
+没有：
+
+- retryable transport error 判断；
+- 5xx retry；
+- 短暂断网恢复；
+- consecutive failure budget；
+- backoff；
+- “状态暂时未知”语义；
+- 重新按 task_id reconcile。
+
+这与 Durable Task 本身的生命周期完全无关。
+
+后台任务可能仍处于：
+
+- QUEUED；
+- WAITING_RESOURCE；
+- RUNNING；
+- CANCEL_REQUESTED；
+
+但浏览器已经停止等待。
+
+**真实生产调用 1 — Quality Center Deployment Test：**
+
+当前 canonical：
+
+`window.benchPredictOne()`
+
+会：
+
+1. POST 创建：
+   `/api/v61/projects/{project_id}/deployment-tests`
+2. 得到真实 Durable `taskId`
+3. 调：
+   `waitForTaskTerminal(... delay=900, maxAttempts=700)`
+4. `load()` 每轮 GET：
+   `/api/v62/projects/{project_id}/tasks/{taskId}`
+
+如果任意一次 GET 因：
+
+- 短时网络抖动；
+- 网关 502/503；
+- Web worker 瞬时重启；
+- 浏览器临时连接失败；
+
+抛错，waiter 立即 reject。
+
+上层 `runBenchBatch64()` 的 catch 随即：
+
+- `row.status='failed'`
+- 写入 error；
+- `run.failed += 1`
+- 继续下一图片 / 下一 side。
+
+但该 Deployment Test：
+
+**没有被 cancel。**
+
+因此会形成：
+
+- UI 报“该图片检测失败”；
+- 原 Durable task 仍继续占用 GPU / Worker / Agent；
+- batch 又继续创建新 Deployment Test；
+- 同一批检测资源可出现不必要重叠；
+- 原任务后续成功，当前 batch row 仍保留前端假失败。
+
+这与 AUDIT-107 不同：
+
+- AUDIT-107：用户主动点击“停止检测”时未 cancel 当前 task；
+- AUDIT-121：用户什么都没做，只是一次**读侧网络错误**，前端就放弃等待并把业务标成 failed。
+
+**真实生产调用 2 — AI 任务详情：**
+
+`showAiTask60()`
+
+打开详情后：
+
+`waitForTaskTerminal(... delay=1600)`
+
+任何一次 task detail GET 失败都会直接进入外层 catch：
+
+- toast error；
+- detail waiter 结束；
+- list poller 被重新激活。
+
+后台 AI task 仍可能正常运行。
+
+因此用户看到的错误不是任务真实 failure，只是状态读取 failure。
+
+**真实生产调用 3 — AI Review Commit：**
+
+用户确认候选后：
+
+`POST .../decisions`
+
+如果后端返回：
+
+`queued_for_commit=true`
+
+说明：
+
+**人工审核决定已经正式接受，后台正在把候选写入 AnnotationRepository。**
+
+前端随后用：
+
+`waitForTaskTerminal(... delay=700)`
+
+等待 commit task terminal。
+
+如果此时单次 GET 失败：
+
+- waiter reject；
+- 外层 catch 直接 toast error；
+- 前端停止跟踪；
+- 后台 Commit 仍继续；
+- 用户容易误以为“审核入库失败”。
+
+如果用户因此重复操作，还会增加重复提交/状态困惑风险。
+
+**真实生产调用 4 — RKNN 实机验证：**
+
+`submitRknnHardwareVerify()`
+
+创建 hardware-test 后：
+
+`waitForTaskTerminal(... delay=900, maxAttempts=700)`
+
+一旦读取失败就进入 catch，并把状态区域显示为 error。
+
+真实板端 Agent task 仍可能继续执行并最终 SUCCEEDED。
+
+因此“读取链故障”和“板端验收失败”被错误折叠为同一 UX 结果。
+
+**为什么是 Bug / 前后端合同漂移：**
+
+Durable Task 的真实终态只能由：
+
+- canonical TaskRepository；
+- Worker / Agent execution；
+- finalization；
+
+决定。
+
+浏览器 GET 失败只能说明：
+
+“当前无法读取 task truth”。
+
+它不能推导：
+
+“task 已失败”。
+
+当前 helper 把：
+
+`read failure`
+
+错误提升成：
+
+`terminal waiter failure`
+
+而多个业务调用方又把 waiter reject 当成本次业务操作失败，破坏了 Durable Task 的容错价值。
+
+**影响：**
+
+- 短时网络抖动导致前端假失败；
+- Quality Center 可能继续创建后续 GPU/Agent task，与仍运行的旧 task 重叠；
+- AI Review 已经入库中的任务被显示成失败/异常；
+- RKNN 实机任务继续跑但 UI 提前退出；
+- 用户可能重复点击重试/重新创建任务；
+- 状态页和后台真实 TaskRepository 长时间不一致；
+- 生产环境反向代理、Wi-Fi、移动网络下更容易触发；
+- Durable Worker 的 lease/recovery 正确也无法弥补前端读侧一次性失败。
+
+**为什么现有测试没发现：**
+
+当前 task-poller tests/调用方测试主要覆盖：
+
+- active → terminal；
+- timeout attempt limit；
+- PollRegistry owner clear / AbortError；
+- 正常任务完成。
+
+缺少：
+
+- 第 N 次 GET 抛一次 retryable network error；
+- 下一次 GET 恢复；
+- waiter 必须继续；
+- Quality Center 不得把读失败记为模型检测失败；
+- 已接受 AI review 不得因为 status GET 失败被当成 commit failure。
+
+**建议最小修复：**
+
+不要在各业务页面各自造 retry loop。
+
+继续让：
+
+`waitForTaskTerminal()`
+
+作为统一 terminal waiter owner，但增加“读侧错误 ≠ 业务终态”的合同。
+
+建议：
+
+1. 区分 error 类型：
+   - AbortError / PollRegistry clear：立即结束，保持当前正确行为；
+   - 401/session expiry：交给统一登录/session owner（同时关联 AUDIT-115）；
+   - 404 task genuinely missing：明确 terminal read error，可 fail；
+   - network / fetch failure / 502 / 503 / 504：视为 retryable；
+2. retryable error：
+   - 调 `onError` 展示“状态读取暂时失败，正在重试”；
+   - 保留 last known task；
+   - bounded exponential/backoff 或固定短延迟；
+   - 设置 consecutive failure budget / total deadline；
+3. retry budget 用尽后：
+   - 返回“状态未知 / 无法确认”错误；
+   - **不能把 Durable Task 自己标成 FAILED**；
+4. Quality Center：
+   - waiter 读失败时不能把 row 当模型推理 failed；
+   - 在 task truth 未确认前不能继续创建会冲突的后续 side/task；
+   - 应按 task_id reconcile 后再决定；
+5. AI Review：
+   - decisions 已 accepted 后，poll error 只代表“入库状态暂时未知”；
+   - 不允许把它文案化成“审核提交失败”；
+6. RKNN Verify：
+   - 区分 “board task FAILED” 与 “无法读取 board task”。
+
+不要通过无限重试掩盖真实故障，必须 bounded。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- active task → 第 2 次 load network error → 第 3 次恢复 RUNNING → 最终 SUCCEEDED；
+- 502/503/504 可 bounded retry；
+- 404 明确失败；
+- PollRegistry clear 仍立即 AbortError；
+- retry budget 耗尽返回 status unknown，不篡改 task status；
+- Quality Center 单次 GET 失败不增加 `run.failed`，不创建下一 side；
+- AI review commit 单次读取失败后可继续等到 SUCCEEDED；
+- RKNN verify 单次读取失败后仍可得到最终验收成功；
+- 重连期间不得创建重复 task。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
