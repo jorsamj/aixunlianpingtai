@@ -3841,6 +3841,131 @@ AUDIT-055 是：
 
 ---
 
+
+### AUDIT-056 — v63 线上反馈工作台把“最近 100 条混合历史”当成完整待复核队列，旧 pending_review 可永久从 UI 消失
+
+**级别：中～高**  
+**模块：Online Feedback / Review Queue / Frontend Workbench / Bounded Truth**
+
+**现象：**
+
+当前 v63 线上抽检 / 反馈工作台固定请求：
+
+`GET /api/v63/projects/{project_id}/online-feedback?limit=100`
+
+没有 cursor，也没有按 `status=pending_review` 单独获取活动待办。
+
+后端 `OnlineFeedbackRepository.list()` 默认又是：
+
+`ORDER BY created_at DESC, id DESC LIMIT ?`
+
+即把：
+
+- pending_review；
+- confirmed；
+- dismissed
+
+三种状态混在同一个最近 N 条窗口里。
+
+因此只要后续反馈持续产生，较老但仍未处理的 `pending_review` 可以被较新的 confirmed / dismissed / pending 记录一起挤出前 100。
+
+**真实调用链：**
+
+前端：
+
+`loadOnlineFeedback63()`
+→ `GET /api/v63/projects/{project_id}/online-feedback?limit=100`
+→ `state.onlineFeedback63 = result.items`
+→ `feedbackRows63()`
+→ 只有当前这 100 条里的 `pending_review` 才渲染“复核”按钮。
+
+页面摘要也只对这 100 条计算：
+
+`待复核 rows.filter(item => item.status === 'pending_review').length 条`
+
+后端：
+
+`list_online_feedback(project_id, status="", limit=100)`
+→ `OnlineFeedbackRepository.list(status="", limit=100)`
+→ `SELECT * FROM online_feedback ORDER BY created_at DESC,id DESC LIMIT ?`
+
+虽然 API 本身支持传：
+
+`status=pending_review`
+
+但当前工作台没有使用该 active queue filter，也没有消费 cursor。
+
+**为什么是 Bug / bounded truth：**
+
+线上反馈的 `pending_review` 不是普通历史展示，它是需要人工处理的活动工作队列。
+
+“最近 100 条所有状态”只能作为 history preview，不能承担完整 active review truth。
+
+当前一旦 pending 被窗口挤掉：
+
+- 它仍在数据库里；
+- 仍是 `pending_review`；
+- 但工作台再也不展示它；
+- 用户也没有分页 / 下一页 / 仅待复核过滤器去找它。
+
+除非知道 feedback_id 并直接拼 detail URL，否则正常 UI 无法恢复处理。
+
+**影响：**
+
+- 101+ 条反馈后，旧待复核记录可能永久积压；
+- UI 显示的“待复核 N 条”不是项目真实待办数量；
+- 线上反馈无法按完整生命周期清空；
+- confirmed feedback candidate、后续补数据链会漏掉长期未复核样本；
+- 生产现场如果外部系统持续回传抽检，问题会随时间自然出现，不需要极端并发。
+
+**与 AUDIT-042 的区别：**
+
+AUDIT-042 是：
+
+“已确认反馈进入 Supplement Candidate Set 时最多取 500 条”。
+
+AUDIT-056 是：
+
+“反馈还处于 pending_review 阶段时，人工审核工作台只看最近 100 条混合历史”。
+
+前者是 Candidate 构建截断，后者是 active review queue 截断，生命周期阶段和正确 owner 不同。
+
+**为什么 CI 没发现：**
+
+现有前端逻辑把：
+
+`limit=100`
+
+视为正常列表加载，并只测试当前返回项的展示 / 复核操作。
+
+缺少 101+ feedback 的合同测试：
+
+- 100 条较新 confirmed/dismissed；
+- 1 条更老 pending_review；
+- 工作台仍必须能发现并处理这个 pending。
+
+**建议最小修复：**
+
+不要简单把 100 改成 1000 或无限。
+
+应把 active review truth 和 terminal history 分离：
+
+- pending_review：完整可分页工作队列，至少提供 cursor / next_cursor / total；
+- confirmed / dismissed：普通历史分页；
+- 工作台默认应优先加载完整 pending queue，再按需加载 terminal history；
+- 摘要里的“待复核 N 条”应来自 aggregate / indexed count，而不是当前页面长度。
+
+如果保留单一 endpoint，至少应支持：
+
+- `status=pending_review&cursor=...&limit=...`
+- 返回 `next_cursor` 与真实 total；
+- 前端消费分页或提供明确“加载更多”。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101+ mixed history 时旧 pending 仍可发现、可复核。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
