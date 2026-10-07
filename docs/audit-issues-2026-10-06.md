@@ -20812,3 +20812,80 @@ Bug 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-151 — Training Create 不提交用户看到的 baseVersionId；弹窗打开后 current version 前进时可静默改用新版本继承标签/权重
+
+**级别：高**  
+**模块：Training Create / Iteration Base / Inherited Labels / Admission CAS / Training Lineage**
+
+**现象：**
+
+当前训练创建弹窗明确维护 `trainingDraft.baseVersionId`，并用它展示“上一版本继承”标签和当前迭代基础版本。TrainingLabelRuntime 的继承标签预览也会请求 `/api/v62/projects/{project_id}/training-labels/inherited?...&base_version_id={draft.baseVersionId}`。
+
+但最终构造训练请求的 `trainingDraftToRequest()` 没有把 `baseVersionId` 放进 POST payload；当前 `TrainReq` 也没有 `base_version_id` / `expected_current_version_id` 这样的 admission CAS 字段。因此用户看到并确认的 base identity 在浏览器→后端边界被丢失。
+
+后端 `POST /api/v12/projects/{project_id}/train/start` → `_enqueue_explicit_training()` 会重新读取 live algorithm，并直接以 `resolve_current_version_id(asset_algorithm)` 作为 `reference_version_id`。`_algorithm_version_reference_fence(... require_current=True)` 只能保证后端受理过程中这个 live current 不再变化，不能证明它等于用户打开弹窗时看到的版本。后续 `resolve_training_label_contract()` 又通过 `_iteration_base()` / `choose_algorithm_iteration_base()` 按当前算法状态选择实际 base。
+
+**真实调用链：**
+
+用户 A 在 current=v1 时打开训练弹窗 → draft.baseVersionId=v1 → UI 展示 v1 inherited labels → 期间用户 B/另一任务把 current 推进到 v2 → A 浏览器尚未刷新 algorithms state → A 点击开始训练 → `TrainingDraftRuntime.sync()` 仍基于浏览器 stale state 得到 v1 → `trainingDraftToRequest()` 丢弃 baseVersionId → server 读取 live current=v2 → 请求不会因 v1 已过期而 409 → Prepare 按 v2 继承 label schema / verified weights 并冻结 lineage。
+
+首次训练同样存在：用户打开弹窗时无版本，以为是 mother-model first run；提交前另一个任务先生成 v1；请求没有“expected no base”的 CAS，后端可静默把它改成基于 v1 的 iteration。
+
+**为什么是 Bug：**
+
+它改变的不只是展示，而是训练真实语义：inherited labels、effective label schema、base model weights、requested-new-label 判定和 lineage 都可能与用户确认时不同。当前代码冻结的是“服务器受理时的 current”，不是“用户确认时的 expected base”。
+
+**用户真实可达场景：**
+
+并发训练、自动迭代、另一个客户端完成训练、回退/版本推进都可能在训练弹窗打开到点击提交之间改变 current version。无需 legacy path，也无需内部 API。
+
+**影响：**
+
+- 用户看到 v1 标签却真实按 v2 训练；
+- 首训可静默变迭代；
+- 新增标签在 v1/v2 下可能从 new 变 inherited；
+- 权重初始化来源发生变化；
+- lineage 虽记录实际 base，却无法证明该 base 是用户确认的版本；
+- 并发越多越容易发生。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-139 是训练已经冻结 base 后，在 completion/attach 阶段对 current_version_id 做 CAS，防止两个 child 都覆盖 current；
+- AUDIT-151 是更早的 create admission：用户确认的 expected base 根本没有进入请求，任务一开始就可能选择另一个 base。
+
+即使最终归档 CAS 完全正确，也无法知道“实际冻结的 v2 并不是用户提交时看到的 v1”。
+
+**现有测试为什么没有发现：**
+
+`training-draft.js` 测试验证 draft 内存在 baseVersionId，但 `trainingDraftToRequest()` 测试没有要求该身份进入 request。后端 version fence / completion CAS 测试验证 live-current 原子性和 finalization stale protection，却没有覆盖 browser expected v1 vs server live v2 的 admission mismatch。Inherited-label preview 测试也没有把 preview identity 串到 train/start。
+
+**建议最小修复方向：**
+
+不要新增第二套 iteration-base owner。继续由现有 `choose_algorithm_iteration_base / resolve_training_label_contract` 作为实际 base 解析 owner，但补 admission expectation：
+
+1. Training Draft 请求显式提交 `expected_base_version_id`（或等价 CAS 字段）；
+2. 首训也要显式表达 expected no-base；
+3. `_enqueue_explicit_training()` 在现有 algorithm-version fence 内比较 browser expected base 与 canonical current；
+4. 不一致直接 409，要求刷新并重新确认继承标签；
+5. 比较成功后才允许创建 TRAINING / TRAINING_PREPARE；
+6. frozen payload / label contract / lineage 继续记录这个同一 base；
+7. Benchmark reuse 自己的 version/scope 校验不能替代通用 base CAS；
+8. 不要靠前端定时刷新掩盖，后端必须 CAS。
+
+**应新增回归测试：**
+
+- expected v1 + server current v1 → 可创建；
+- expected v1 + server current v2 → 409，且不创建 TRAINING/PREPARE；
+- expected no-base + server no-base → 首训可创建；
+- expected no-base + server 已有 v1 → 409，不得静默变迭代；
+- expected v1 + server rollback 到其它版本 → 409；
+- inherited preview v1 后 current 变 v2，再提交必须拒绝；
+- Benchmark reuse 同时通过 benchmark identity 与通用 base CAS；
+- idempotent task replay 必须保持同一 expected base identity；
+- completion CAS 现有测试继续保留。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
