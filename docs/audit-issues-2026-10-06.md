@@ -15820,6 +15820,69 @@ if (isAbortError(error) && (controller.signal.aborted || !this.isCurrent(generat
 
 于是这个项目的“线上抽检 / 反馈”读取可以永久失去刷新能力，直到页面重载或别的路径覆盖该 state。
 
+**补充证据 — Upload Task Center 这个跨页面全局 owner 也会被 page scope 误伤：**
+
+安装顺序已确认：
+
+`installPageRequestScope()`
+
+先于：
+
+`installUploadTaskCenter()`
+
+执行。
+
+所以 Upload Task Center 的默认：
+
+`fetchImpl = globalThis.fetch`
+
+实际捕获的是已经被 PageRequestScope 包装后的 fetch。
+
+Task Center 本身明确是跨页面 owner：
+
+- pollOwners 覆盖几乎所有主页面；
+- visibility 自己管理 hidden/visible；
+- active ZIP / Storage Import 应在用户切到其它业务页面后继续显示进度。
+
+但 `PageRequestScope.navigate()` 会在任何页面导航时 abort 当前 controller，不区分：
+
+- 页面局部 GET；
+- 跨页面全局 Task Center GET。
+
+如果导航恰好发生在：
+
+`poll()`
+→ `Promise.all(active.map(refreshDurable))`
+→ `fetchImpl(row.serverUrl)`
+
+期间，则 refreshDurable 的 GET 会被转成 NEVER。
+
+结果：
+
+- refreshDurable 永不返回；
+- Promise.all 永不 settle；
+- `poll()` 永远到不了末尾 `arm()`；
+- one-shot PollRegistry callback 开始时当前 entry 已移除；
+- Task Center 的后台自动刷新可永久停止。
+
+它只有在后续：
+
+- 新任务 upsert；
+- visibility change；
+- project switch；
+- 手工 runtime.refresh
+
+等其它事件重新触发 `arm()` 时才可能恢复。
+
+这证明 PageRequestScope 当前不仅会毒化页面局部 loading flag，还会破坏本应跨页面存活的全局 owner。
+
+修复时应明确区分：
+
+- page-scoped request；
+- app-global/background owner request。
+
+Upload Task Center 的 Durable status GET 不应被普通页面导航取消。
+
 **为什么是系统性问题：**
 
 问题不属于 Storage Sources 或 Online Feedback 单一模块，而是 PageRequestScope 对“导航失效请求”的统一语义。
