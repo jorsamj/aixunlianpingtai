@@ -17303,3 +17303,204 @@ ArtifactStore 当前只有：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-132 — 普通图片批量上传在 async endpoint 中使用 threading.local 作为 batch owner；并发请求可互相覆盖 batch context，导致串批、提前 commit 或跨请求 rollback 删除对方素材
+
+**级别：严重 / 高**  
+**模块：Plain Image Upload / Batch Atomicity / Async Concurrency / MaterialRepository / Storage Rollback**
+
+**现象：**
+
+普通图片上传：
+
+`POST /api/projects/{project_id}/images`
+
+是：
+
+`async def upload_images(...)`
+
+但它用：
+
+`_IMAGE_BATCH_CTX = threading.local()`
+
+保存当前批次。
+
+请求进入后：
+
+`_v50_begin_image_batch(project_id)`
+
+直接执行：
+
+`_IMAGE_BATCH_CTX.batch = {...}`
+
+后续所有：
+
+- `_v50_active_image_batch()`
+- `_v50_storage_manager()`
+- `_v50_annotation_repository()`
+- `_v50_queue_image_patch()`
+- `_v50_end_image_batch()`
+
+都从这个 thread-local 读取当前 batch。
+
+**问题在于：threading.local 只能隔离 OS thread，不能隔离同一 event-loop thread 上的 async coroutine。**
+
+而 `upload_images()` 在 batch 已建立以后，明确执行：
+
+`await file.seek(0)`
+
+所以请求 A 可以在 batch 生命周期中让出事件循环，请求 B 随后在同一线程执行并覆盖：
+
+`_IMAGE_BATCH_CTX.batch`。
+
+**真实竞态示例：**
+
+同一项目并发 Upload A / Upload B：
+
+1. A：
+   `_v50_begin_image_batch()`
+   → thread-local = batch A
+2. A：
+   `await file.seek(0)`
+   → coroutine suspend
+3. B：
+   `_v50_begin_image_batch()`
+   → **同一 thread-local 被改成 batch B**
+4. B 也在 seek / I/O 处让出；
+5. A 恢复；
+6. A 调 `add_image_record()`；
+7. `_v50_active_image_batch(project_id)` 看到的是 **batch B**；
+8. A 的 material/annotation deferred truth 被写入 B 的 batch buffer。
+
+之后任何一边调用：
+
+`_v50_end_image_batch(save=True/False)`
+
+都会操作“当时 thread-local 指向的那一个 batch”，而不是调用方自己的 request batch。
+
+**可能后果：**
+
+- A 的记录被 B commit；
+- A 提前把 B 的 buffered records 一起 commit；
+- B 恢复后发现 batch 已被 A 清成 None，于是后续图片直接绕过 batch，单条写入；
+- A/B response 的 uploaded 列表与真正 commit owner 分离；
+- upload_request receipt 与真实 material commit 不再同事务语义；
+- 更严重的是异常 rollback：
+  `_v50_end_image_batch(save=False)`
+  会调用：
+  `_v50_cleanup_buffered_image_batch_files(... records)`
+  并删除 batch 中的 source objects / annotations；
+- 如果 batch 里混入另一个请求的图片，**一个请求失败可能删除另一个请求已经上传的素材文件。**
+
+这是数据正确性问题，不只是性能问题。
+
+**为什么项目锁没有保护普通上传：**
+
+v19 ZIP import 使用：
+
+`_v50_project_import_lock(project_id)`
+
+并在同步 Worker 中调用 batch owner。
+
+Online Feedback confirm 是同步 endpoint，batch 内没有 async yield。
+
+但普通：
+
+`upload_images()`
+
+没有包在 project import lock 内，且自身是 async。
+
+因此不能用“其它调用方安全”来证明该入口安全。
+
+**为什么前端 64 files/chunk 不能避免：**
+
+前端把大批上传拆成 64-file chunk 只限制单请求规模。
+
+用户：
+
+- 多浏览器标签页；
+- 多客户端；
+- 网络重试；
+- 前端并发 chunk；
+- API 直接调用
+
+都可以产生并发请求。
+
+而且较大的 UploadFile 更可能被 Starlette spool 到磁盘，`await file.seek()` 需要 threadpool I/O，更容易真实让出 event loop。
+
+**现有 rollback 本身是正确的，但 owner 隔离错误：**
+
+`_v50_end_image_batch(save=False)`
+
+会正确尝试删除：
+
+- Storage source object；
+- AnnotationRepository row；
+- annotation file。
+
+问题不是 cleanup 缺失，而是：
+
+**cleanup 可能拿到别的请求的 batch。**
+
+这比简单 orphan 更危险。
+
+**现有测试缺口：**
+
+当前上传测试覆盖：
+
+- batch SQLite 性能；
+- upload_request_id 幂等 replay；
+- manifest reuse conflict；
+- partial failure；
+- Storage upload；
+- 前端 64-file chunk。
+
+没有覆盖：
+
+- 两个 async `/images` 请求交错；
+- coroutine/task-local isolation；
+- A failure 不得 rollback B；
+- A/B receipt 必须只包含自己的 image ids。
+
+**建议最小修复：**
+
+不要新增第二 Material owner。
+
+应把 batch context 从：
+
+`threading.local()`
+
+改为真正的 request/task-local owner，例如：
+
+- `contextvars.ContextVar`，且使用 token set/reset；
+- 或更直接：把 explicit batch object 作为参数沿调用链传递。
+
+关键合同：
+
+1. 每个请求拥有唯一 batch identity；
+2. async await 前后 batch identity 不变；
+3. batch end 只能 commit/rollback 自己的 records；
+4. ContextVar 必须在 finally 中按 token reset，防止 context 泄漏；
+5. v19 同步 Worker / Online Feedback 继续复用同一个 canonical batch abstraction；
+6. 不允许新增平行 MaterialRepository 写 owner。
+
+**回归测试建议：**
+
+至少增加确定性交错测试：
+
+- A begin → suspend；
+- B begin → suspend；
+- A add/commit；
+- B add/commit；
+- 最终 A/B 各自只拥有自己的 image；
+- A rollback + B success → B source object/material/annotation 全部仍存在；
+- B rollback + A success 同理；
+- 两个 upload_request_id receipt 不串 image ids；
+- Local storage 与 remote storage provider 都保持 isolation；
+- 64-file chunk 并发时无串批。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
