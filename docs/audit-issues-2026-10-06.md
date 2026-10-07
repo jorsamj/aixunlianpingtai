@@ -23028,3 +23028,104 @@ INT8 calibration 会直接影响量化 scale/zero-point 和最终模型精度。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-168 — Agent RKNN INT8 已受理后校准对象仍可被 MaterialBatch DELETE_SOURCE 删除；active dependency fence 只保护 Training
+
+**级别：高**  
+**模块：Agent MODEL_CONVERSION / RKNN INT8 Calibration / MaterialBatch DELETE_SOURCE / Lifecycle Dependency Fence**
+
+**现象：**
+
+Agent Rockchip INT8 conversion 在创建时会生成 durable calibration snapshot，冻结每张校准素材的 `image_id / storage_source_id / object_key / size_bytes / sha256`，并把它嵌入 `remote_execution.conversion.calibration`。
+
+但这些 calibration bytes 并没有在任务创建时复制到 conversion-owned staging。真正给 Agent 生成执行 payload 时，`_resolve_conversion_execution_payload()` 才逐项调用 `_download_contract()`，重新访问对应 storage source/object。
+
+与此同时，canonical MaterialBatch `DELETE_INDEX / DELETE_SOURCE` 的依赖保护只有 `_assert_not_referenced_by_active_training()`：它只枚举 `TaskKind.TRAINING` 的 QUEUED/RUNNING/CANCEL_REQUESTED，完全不检查活动 `MODEL_CONVERSION` 的 calibration snapshot。
+
+因此校准对象已经被 conversion request 冻结，并不等于被 lifecycle pin。
+
+**真实调用链：**
+
+用户创建 Agent RKNN INT8 conversion
+→ `build_rknn_calibration_snapshot()` 验证 object size/SHA 并冻结 refs
+→ `stage_model_conversion(... calibration_snapshot=...)`
+→ 创建 `MODEL_CONVERSION` Durable Task
+→ task 进入 QUEUED / WAITING_RESOURCE
+
+并发用户对校准素材执行 canonical `DELETE_SOURCE`
+→ `create_batch()`
+→ `_assert_not_referenced_by_active_training()`
+→ 因只扫描 TRAINING，检查通过
+→ Worker `_delete_sources()` 删除 provider object
+
+之后 Agent conversion 被分配
+→ `_resolve_conversion_execution_payload()`
+→ calibration item `_download_contract()`
+→ storage source/object 已不存在
+→ 已受理 conversion 才失败。
+
+即使删除发生在 conversion RUNNING 前几秒，同样没有共享 reservation/fence。
+
+**为什么是 Bug：**
+
+calibration snapshot 已经是 `MODEL_CONVERSION` 的 frozen execution input。任何会物理删除这些 bytes 的 owner 都必须尊重该 active dependency。当前删除 owner只认识 Training，导致同一 Material 的生命周期依赖按 task kind 分裂。
+
+Hash 校验只能发现“对象没了/变了”，不能防止一个合法平台操作在已受理任务之后主动破坏 frozen input。
+
+**用户真实可达场景：**
+
+1. 从 OSS/S3 素材中选择/生成 RKNN INT8 校准集；
+2. Agent 节点忙，conversion 长时间排队；
+3. 用户在素材治理中执行“删除源文件”；
+4. MaterialBatch deletion 正常受理，因为这些 image_ids 不被 active Training 引用；
+5. conversion 轮到执行时才报对象不可用。
+
+**影响：**
+
+- 已受理 Agent conversion 可被后续正常素材操作破坏；
+- Queue 等待越久风险越高；
+- 用户看到的失败会被误判为 Agent/OSS 网络问题；
+- retry 若对象已物理删除无法恢复；
+- calibration snapshot 的“durable frozen input”语义不完整。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-084：DELETE_SOURCE 与 **Training** 的 fence 还是单向 TOCTOU；
+- AUDIT-109：Deployment Resource 修改/删除可破坏 Remote Conversion；
+- AUDIT-167：校准集选择使用错误的 live Material.split；
+- AUDIT-168：即使校准 image IDs/hash 已正确冻结，**active Agent conversion 对这些 object bytes 没有 deletion dependency fence**。
+
+**现有测试为什么没有发现：**
+
+MaterialBatch deletion 测试重点验证 active Training reference；Agent conversion tests 验证 calibration snapshot/hash/download contract。没有跨 owner 并发测试：
+
+`MODEL_CONVERSION calibration refs`
+vs
+`DELETE_SOURCE physical deletion`。
+
+**建议最小修复方向：**
+
+不要给 Conversion 再造一套 Material deletion owner。
+
+1. canonical Material deletion dependency checker 扩展成通用 active-task input reference owner；
+2. 识别至少 TRAINING frozen image IDs 和 MODEL_CONVERSION calibration image/object refs；
+3. DELETE_SOURCE/DELETE_INDEX publish 与每批执行前都 fail-closed；
+4. 更稳妥可在 conversion 生命周期建立 durable input pin/reservation，由同一 deletion owner查询；
+5. conversion terminal/cancel 后释放 pin；
+6. 若未来 calibration bytes 改为 conversion-owned staging，则 deletion fence 可只 pin staging lifecycle，不必长期锁 Material source；
+7. 不要通过“Agent start 时发现 404 后自动换校准图”修，这会破坏 snapshot identity。
+
+**应新增回归测试：**
+
+- Agent INT8 conversion QUEUED 且 calibration image 命中 DELETE_SOURCE → 409；
+- RUNNING conversion 同样禁止物理删除；
+- conversion CANCELLED/SUCCEEDED/FAILED 后按 retention 合同可删除；
+- 非 calibration Material 不被误锁；
+- DELETE_INDEX 若会让 execution resolve 失去 source metadata，也走同一 dependency contract；
+- hash/object identity 不允许自动换图；
+- AUDIT-084 的 Training deletion tests 继续保持。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
