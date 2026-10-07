@@ -22519,3 +22519,180 @@ TrainingRecoveryRuntime 测试主要验证：
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-164 — Training UI 仅按 RUNNING 显示“暂停”；准备/后处理/Remote Agent 阶段没有中央 ProcessIdentity，点击暂停稳定 400/409
+
+**级别：中高**  
+**模块：Training Task Actions / Pause-Resume / Durable Task Stage / Remote Agent / Process Identity / Frontend Eligibility**
+
+**现象：**
+
+canonical 训练任务页由 `TrainingTaskVisibilityRuntime` 渲染。
+
+其单任务操作当前判断非常宽：
+
+`taskActions(job)`
+→ `trainingDisplayStatus(job) === 'running'`
+→ 直接显示：
+`<button onclick="pauseTrain428(id)">暂停</button>`
+
+批量操作的 `trainingBatchActionEligible(job, 'pause')` 也同样只判断：
+
+`status === 'running'`。
+
+但 Durable Training 的 `RUNNING` 不是“本地 Trainer 子进程现在一定可 suspend”的同义词。
+
+当前同一 RUNNING 生命周期包含：
+
+- device_admission
+- preparing_materials
+- materializing
+- starting_trainer
+- trainer_startup
+- training
+- finalizing
+- final_validation
+- recovering_checkpoint
+- cleaning_training_process
+- finalizing_commit
+- 以及 Remote Agent execution。
+
+这些阶段已经被同一个前端 `STAGE_LABELS` 明确识别。
+
+**后端 pause 合同却更严格：**
+
+`POST /api/v48/projects/{project_id}/jobs/{job_id}/pause`
+
+对 Durable task 要求：
+
+1. `durable.status is RUNNING`；
+2. `durable.stage != paused`；
+3. `_durable_process_identity(durable)` 必须取得：
+   - process_pid；
+   - process_create_time；
+   - process_command_hash；
+4. `ProcessController.suspend_tree(identity)` 成功。
+
+如果 process identity 尚未登记，直接：
+
+`400 训练进程身份尚未登记`。
+
+如果 PID 已退出/身份变化，则：
+
+`409 训练进程身份校验失败`。
+
+所以前端 eligibility 和后端实际可暂停条件不是一个合同。
+
+**真实用户可达场景 A — 本地训练启动前：**
+
+1. Durable TRAINING Worker 已领取任务，task_status=RUNNING；
+2. 当前 stage 仍是 device_admission / materializing / starting_trainer；
+3. Trainer subprocess 尚未登记完整 ProcessIdentity；
+4. 训练任务页显示状态“训练中/运行中”，并渲染“暂停”；
+5. 用户点击；
+6. 后端 `_durable_process_identity()` 直接 400。
+
+**真实用户可达场景 B — 本地训练后处理：**
+
+1. Trainer subprocess 已结束；
+2. Durable Task 仍 RUNNING，进入 finalizing / final_validation / finalizing_commit；
+3. 页面仍按 status=running 显示“暂停”；
+4. ProcessController 对已经退出的 PID 校验失败；
+5. 用户得到 409。
+
+**真实用户可达场景 C — Remote Agent Training：**
+
+1. 中央 TaskRepository 通过 Agent execution 把 TRAINING 置为 RUNNING；
+2. 真正训练进程在远端 Agent 节点；
+3. 中央 Durable task 不具备可由本机 ProcessController suspend 的本地 Trainer ProcessIdentity；
+4. canonical Training UI 仍显示“暂停”；
+5. 点击稳定失败。
+
+**为什么是 Bug：**
+
+暂停不是纯 status transition，而是一个具备执行能力前置条件的动作。
+
+前端把：
+
+`RUNNING == pauseable`
+
+当成 eligibility truth，后端则实际要求：
+
+`RUNNING + local suspendable process identity + correct phase`。
+
+这是明确 action-contract drift。
+
+而且当前系统已经有：
+
+- canonical task phase；
+- process identity；
+- execution mode / worker / Agent truth。
+
+不需要再造第二套 owner，只是 UI 没消费现有能力信息。
+
+**影响：**
+
+- 用户在训练启动/收尾阶段看到无法执行的“暂停”；
+- Remote Agent Training 全程可能出现无效暂停按钮；
+- 批量暂停会把不可暂停任务纳入 eligible 集合，产生逐项失败；
+- 用户容易误判为训练进程异常或权限问题；
+- action eligibility 与 Durable lifecycle 漂移。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-075：Agent start 对 retryable/non-retryable 错误分类不消费；
+- AUDIT-087：停止 PREPARING parent 没同步取消 TRAINING_PREPARE child；
+- AUDIT-088：UploadTaskCenter 状态枚举漂移；
+- AUDIT-093：Agent canonical commit 后 lease recovery 可重复执行；
+- AUDIT-164：当前 Training Task 页面把所有 RUNNING 都声明为可暂停，但实际只有存在正确本地 ProcessIdentity 的 training phase 可暂停。
+
+所以本条不是 Agent lease，也不是 stop/cancel lifecycle，而是 pause action eligibility。
+
+**现有测试为什么没有发现：**
+
+`training-task-runtime` / visibility 测试主要按 display status 验证按钮：
+
+- running → pause；
+- paused → resume；
+- queued → stop。
+
+没有加入：
+
+- task stage；
+- process_pid/create_time/command_hash；
+- execution mode / Agent worker identity。
+
+后端 pause 测试又单独验证 process identity/fail-closed。
+
+两边测试都能通过，但没有跨层测试：
+
+`前端显示 pause` ⇒ `后端当前一定可 pause`。
+
+**建议最小修复方向：**
+
+不要放宽后端 ProcessIdentity fail-closed。
+
+正确方向：
+
+1. 把 pause capability 作为 canonical task public truth 的显式 action/capability，或让前端基于现有 phase + execution truth 判断；
+2. 只有中央本地 Trainer 进程已登记且处于真正 training/paused transition 可控阶段时显示 pause；
+3. Remote Agent Training 若当前协议没有远程 suspend/resume，就不要展示暂停/继续；
+4. preparing/finalizing/final_validation 等阶段只保留“停止/取消”中后端真正支持的动作；
+5. 批量 pause eligibility 必须复用同一个 capability owner；
+6. 不要通过捕获 400 后 toast 来当正常交互。
+
+**应新增回归测试：**
+
+- RUNNING + stage=training + valid local process identity → pause visible/accepted；
+- RUNNING + device_admission，无 process identity → pause hidden/disabled；
+- RUNNING + starting_trainer，无 process identity → pause hidden/disabled；
+- RUNNING + finalizing，process 已退出 → pause hidden/disabled；
+- Remote Agent RUNNING，无 remote pause capability → pause hidden/disabled；
+- PAUSED + valid local process → resume visible；
+- batch pause 只挑选真正 pauseable tasks；
+- 后端 process identity fail-closed 保持不变。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
