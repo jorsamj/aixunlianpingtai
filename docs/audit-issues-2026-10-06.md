@@ -25598,3 +25598,75 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **是否需要 VERSION：是。是否需要新增回归测试：是。**
 
 ---
+
+
+---
+
+## 2026-10-08 审计覆盖及修复路线图（阶段性收口）
+
+> 目的：为下一阶段集中修复建立可执行优先级；**只整理审计，不代表已修复，不改变生产代码，也不宣布可部署。**  
+> 分类基线：远端 c0ca1f4e2f369bd07505f83f866742401884d09b / VERSION 42.24.280 / 最新 AUDIT-186。  
+> 后续并发提交必须重新读取 HEAD、AUDIT 尾部并更新分级；本小节不是后续新 AUDIT 的编号起点。
+
+### A. 去重与状态
+
+- 历史编号 AUDIT-001～AUDIT-186，连续且无重复编号，共 186 条。
+- 显式撤销（不计待修）：AUDIT-012、AUDIT-037、AUDIT-096、AUDIT-118，共 4 条；其中 096/118 均与 068 重复。故**有效审计条目 182 条**。
+- AUDIT-001、AUDIT-007 为低优先级结构债，当前不应当成已经证明影响用户行为的生产 Bug；不因旧命名/zero-reference 而增记。
+- 本次抽查候选 CLEAN retry、删除与训练竞争、Agent auto-allocation 缺口、Central allocator 20k 全扫描均已有 AUDIT-152/084/063/079；没有新的独立可登记问题，不重用编号。
+- P0～P3 是**修复顺序的初步影响分级，不是原始严重级别的替换**。P0 表示部署前需修复或通过严格隔离证明生产不可达；部分场景有触发前置条件。
+
+### B. P0～P3 待修分级（互斥分组、每条只出现一次）
+
+| 分类 | 条数 | 处理定位 |
+|---|---:|---|
+| P0 — 数据准确性 / 正式 GT / 不可逆数据与安全 | 58 | 阻断误训练、错误版本继承、GT 污染、不可逆删除、鉴权凭据风险 |
+| P1 — Durable 生命周期 / Agent / 无法恢复 | 44 | 稳定恢复、取消/lease/claim/finalization fence、节点依赖及资源 |
+| P2 — 前后端与 API 合同 | 51 | 防假成功、错误按钮状态、遗漏任务、SSE/REST 投影漂移 |
+| P3 — 大规模性能与可证明的结构债 | 29 | 有界分页、消除 10k/20k 热路径全量 I/O、历史 metadata GC |
+| **有效合计** | **182** | 排除 4 个撤销编号 |
+
+**P0（58）：** AUDIT-008、AUDIT-011、AUDIT-014、AUDIT-016、AUDIT-017、AUDIT-018、AUDIT-019、AUDIT-028、AUDIT-029、AUDIT-031、AUDIT-032、AUDIT-034、AUDIT-035、AUDIT-038、AUDIT-040、AUDIT-042、AUDIT-044、AUDIT-046、AUDIT-047、AUDIT-062、AUDIT-072、AUDIT-080、AUDIT-082、AUDIT-084、AUDIT-085、AUDIT-086、AUDIT-090、AUDIT-091、AUDIT-095、AUDIT-098、AUDIT-099、AUDIT-102、AUDIT-108、AUDIT-110、AUDIT-117、AUDIT-129、AUDIT-132、AUDIT-134、AUDIT-137、AUDIT-138、AUDIT-139、AUDIT-141、AUDIT-142、AUDIT-148、AUDIT-149、AUDIT-151、AUDIT-152、AUDIT-157、AUDIT-167、AUDIT-169、AUDIT-170、AUDIT-171、AUDIT-173、AUDIT-175、AUDIT-176、AUDIT-177、AUDIT-178、AUDIT-181。
+
+**P1（44）：** AUDIT-002、AUDIT-015、AUDIT-020、AUDIT-024、AUDIT-026、AUDIT-027、AUDIT-039、AUDIT-049、AUDIT-055、AUDIT-060、AUDIT-063、AUDIT-065、AUDIT-067、AUDIT-070、AUDIT-071、AUDIT-075、AUDIT-076、AUDIT-077、AUDIT-087、AUDIT-092、AUDIT-093、AUDIT-097、AUDIT-104、AUDIT-106、AUDIT-107、AUDIT-109、AUDIT-111、AUDIT-112、AUDIT-121、AUDIT-122、AUDIT-123、AUDIT-125、AUDIT-127、AUDIT-130、AUDIT-131、AUDIT-133、AUDIT-135、AUDIT-140、AUDIT-158、AUDIT-160、AUDIT-164、AUDIT-168、AUDIT-172、AUDIT-179。
+
+**P2（51）：** AUDIT-003、AUDIT-004、AUDIT-005、AUDIT-006、AUDIT-009、AUDIT-010、AUDIT-013、AUDIT-021、AUDIT-022、AUDIT-023、AUDIT-025、AUDIT-030、AUDIT-033、AUDIT-036、AUDIT-041、AUDIT-043、AUDIT-052、AUDIT-053、AUDIT-054、AUDIT-056、AUDIT-057、AUDIT-058、AUDIT-059、AUDIT-068、AUDIT-074、AUDIT-078、AUDIT-081、AUDIT-088、AUDIT-094、AUDIT-105、AUDIT-114、AUDIT-115、AUDIT-116、AUDIT-124、AUDIT-126、AUDIT-128、AUDIT-144、AUDIT-146、AUDIT-147、AUDIT-150、AUDIT-153、AUDIT-155、AUDIT-156、AUDIT-163、AUDIT-165、AUDIT-174、AUDIT-180、AUDIT-182、AUDIT-183、AUDIT-184、AUDIT-185。
+
+**P3（29）：** AUDIT-001、AUDIT-007、AUDIT-045、AUDIT-048、AUDIT-050、AUDIT-051、AUDIT-061、AUDIT-064、AUDIT-066、AUDIT-069、AUDIT-073、AUDIT-079、AUDIT-083、AUDIT-089、AUDIT-100、AUDIT-101、AUDIT-103、AUDIT-113、AUDIT-119、AUDIT-120、AUDIT-136、AUDIT-143、AUDIT-145、AUDIT-154、AUDIT-159、AUDIT-161、AUDIT-162、AUDIT-166、AUDIT-186。
+
+### C. 按 Canonical Owner 合并修复，按次序验收
+
+1. **R0 正式 Ground Truth / Material 内容代际及删除 fence（P0）：** 017、019、084、085、090、098、099、102、108、148、149、152、157、173。复用 AnnotationRepository + MaterialRepository；source hash/content-generation、review/snapshot/delete 共享不可逆写入栅栏；严禁新增第二份 Annotation owner。统一测试图片内容 H1 到 H2 Rescan、candidate/clean/GT、并发 Commit/Delete、已确认负样本。
+2. **R1 Training Admission → Snapshot → Version CAS（P0）：** 031、032、046、053、054、072、085、129、139、141、142、147、148、150、151、165、167。提交 readiness 与 Snapshot 同口径；正/负样本 scope 不做伪扩展；selected-label projection 不得制造负样本；冻结 baseVersionId/权重/标签，版本归档 CAS 与同 task 幂等同验收。
+3. **R2 Import / Source / Secret / Algorithm retirement（P0/P1）：** 011、014、016、018、044、047、062、071、080、082、095、132～134、169～171、175～178、181。统一引用/凭据/对象存储的任务依赖 fence，避免 source/secret 变更及删除期间产生半提交；ZIP、v36、普通 Upload 的既有 owner 整合时禁止增加 Runtime；修复 logout 服务端撤销。
+4. **R3 Agent / Assignment / GPU / Execution（P1）：** 049、055、060、063、070、075～079、092、093、158、168。中央 allocator 必须有自动调用 owner，Node assignment→execution handoff 不丢 GPU 排他占用；完整覆盖 node offline、token rotation、lease expiration、result receipt 与 finish 的 crash recovery。不得让 terminal business commit 被同 task 新 generation 重放。
+5. **R4 UI / SSE / REST / 任务详情（P2）：** 005、021、023、025、030、033、036、056～059、067、068、081、088、094、105、115、121～128、144、146、150、153、155、156、163、164、174、180、182～185。每页确立唯一 PollRegistry/Modal/selection truth；REST/SSE status 归一并覆盖缺失状态，跨页选择保持；前端不可对已知必失败动作报告可提交。
+6. **R5 1k/10k/20k 有界性能（P3，部分问题依赖 R0～R4）：** 045、048、050、051、064、066、069、073、079、083、089、100、101、103、111、113、119、120、136、143、145、154、159、162、166、179、186。重点消灭全量 fetchall 后截断、N+1 GT、循环重 SHA/读日志/探测硬件、每次 Poll 刷新全局历史、Web 请求线程串行 VLM；使用现有 Owner 的 bounded SQL/异步 Durable，不以新增缓存第二份 truth 掩盖成本。
+
+同一 AUDIT 可作为不同修复批次的回归依赖，**不表示重复登记问题**。业务代码变更应采用独立的修复提交，不要一次性修改全部模块。
+
+### D. T1～T7 覆盖证据与证据边界
+
+| 范围 | 源码核验与审计条目 | 尚未提供的运行证据 |
+|---|---|---|
+| T1 Training Accuracy | training_tasks.py、training_splits.py、material_batches.py；031/032/085/139/142/147～151/165/167 | 真实训练端到端 + 组合型 label/scope/权重 CAS 矩阵 |
+| T2 Retry/Recover | TaskRepository.retry、MaterialBatch retry/selection、AI Candidate；080/095/098/152/172 | 模拟断电/恢复、源 hash 变化、跨 generation receipt 重放 |
+| T3 Agent | task_node_assignments.py、agent_execution.py、fenced_repository.py、node_agent_executor_loop.py；049/055/060/063/070/075～079/092/093/158 | 双 GPU/多节点真实注入故障、节点离线及重连 |
+| T4 Frontend Owners | 静态入口与 Runtime 调用证据来自 005/067/088/120/123/163/182～185；本轮未全量浏览器复跑 | 最新 HEAD 的 Real Chrome 页面/Modal/导航长时间运行 |
+| T5 DELETE/PATCH | material_batches.py 删除方检查；011/016～020/084/090/109/149/168～178 | 并发事务/OSS/Keyring 真实故障注入 |
+| T6 1k/10k/20k | allocator assign_next fetchall；064/079/100/143/145/154/159/162/166/186 | 1k/10k/20k 实际 p50/p95、磁盘读写、内存和带宽基准 |
+| T7 SSE/REST | 068/094/105/119/128/184/186；Training SSE signature 与详情轮询已单独登记 | SSE 断连/重连/慢客户端与 REST 连续状态一致性 E2E |
+
+**覆盖结论：** 主要高风险模块具备可追溯的静态源码和入口级审计线索；**不能认定所有分支组合、运行时竞态和性能上限已被完整验证**。当前仅有 GitHub Actions / check-runs 通过，尚无本节提出的真实环境故障注入与规模验收结果。
+
+### E. 发布阻断与验收门禁
+
+- **必须优先修复或隔离全部实际可达 P0**，尤其 085/084/108/132/138/139/142/148/149/151/152/157/170/171/173/175/181；每个问题补回归并确认并发/fail-closed。
+- Agent/远程生产环境不能在 055/060/063/070/092/093/158 等关键 P1 未修时宣称资源安全/自动恢复可靠；涉及源数据依赖的 168/169/178 也属于真实 Agent 部署阻断。
+- 对 147/150/165 的 Training 表单准入使用同一 server authoritative preview 与 Prepare 真相；禁止靠“接收后后台失败”替代 admission。
+- 部署前必须有目标 HEAD 的所有 Actions/check-runs completed-success、目标硬件回归、素材/算法版本完整性测试、Keyring/OSS 演练；queued/in_progress/cancelled 一律不算通过。
+- CI 全绿不是修复证据；本阶段禁止 merge main、tag、release、生产部署及降低断言。
+
+**状态：AUDIT PHASE — REGISTERED / REPAIR NOT STARTED；Stage-1 Repair Roadmap READY；不是“全仓无 Bug”结论。**
+
+**本次文档收口提交版本：42.24.281；未新增 AUDIT 编号，未修改任何生产源文件或测试。**
