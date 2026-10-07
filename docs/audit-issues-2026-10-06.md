@@ -12146,3 +12146,71 @@ AnnotationRepository 是当前唯一正式 Annotation Ground Truth owner。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-100 — 模型列表 API 为建立 model→training 映射每次全量扫描所有历史 job.json；训练/发布/部署页面随累计训练历史线性变慢
+
+**级别：中～高**  
+**模块：Model List / Training History / Page Extras / Filesystem Performance / 10k-20k Scale**
+
+**现象：**
+
+当前 `GET /api/projects/{project_id}/models` 直接调用 `list_models_internal(project_id)`。
+
+这个函数为了给 `projects/{project_id}/models/*` 中的当前模型补 job_id、job_name、framework、config_path、family_key、num_classes、report_ready，会先构造 `model_to_job`。
+
+构造方式是每次请求都执行 `for jf in jobs_dir.glob("*/job.json")`，遍历项目下**全部历史训练任务目录**；每个 job 都要 read_json、遍历 job.models、对模型路径做 Path.resolve，并写入 path/name 两套映射。之后才真正遍历当前 models 目录。
+
+所以该接口成本不是“当前模型数量”，而是 **O(累计 Training history + 当前 model files)**。即使当前只有十几个模型，项目累计 1k / 10k / 20k 次训练后，每次请求仍重新读取所有历史 job.json。
+
+**当前前端是常用入口：**
+
+`static/app.js -> extras412()` 在进入训练任务、测试发布、部署转换、部署产物时都会加载 `/api/projects/{id}/models`；`refreshCurrentPage413()` 也会重新触发当前页 extras。
+
+因此训练历史越长，这四个常用页面首开/刷新越慢。
+
+**为什么不是 AUDIT-066：**
+
+AUDIT-066 是 `GET /api/projects/{project_id}/jobs` 在返回 active + 最近 50 terminal 前多次全量扫描 Training job history。
+
+AUDIT-100 是另一条独立 endpoint：`GET /api/projects/{project_id}/models` 为建立 model→job metadata 映射，再单独扫描全部历史 job.json。即使修完 AUDIT-066，模型 API 仍保留同量级 filesystem I/O。
+
+进入“训练任务”页面时，jobs 与 models 还可能同时加载，因此同一批历史目录会在一次页面加载中被重复遍历。
+
+**影响：**
+
+- 训练历史越多，训练任务页仍会线性变慢；
+- 测试发布、部署转换、部署产物被无关的全部 Training history 拖慢；
+- 10k/20k 个小 job.json 产生大量 inode lookup、文件 open、JSON parse、path resolve；
+- 机械盘、云盘、NFS/挂载盘环境更明显；
+- 多标签页/多用户会重复做同一历史扫描；
+- 当前模型数量很少也无法降低历史扫描成本。
+
+**为什么现有测试没发现：**
+
+现有 browser/frontend 性能测试主要保护请求次数、DOM 稳定和页面刷新行为，通常 mock `/models`，不会测服务器内部读取多少历史文件。
+
+当前没有看到“20,000 terminal training job dirs + 少量 current models”条件下，对 GET /models 的 bounded file-read / repository-query 合同。
+
+**建议最小修复：**
+
+不要新增第二 Model owner，也不要把 history limit 改成更大的固定数。
+
+1. 训练成功/模型归档时增量持久化 model→job provenance；
+2. 或复用已有 ModelArtifact / algorithm version / bounded Training index 的 lineage；
+3. GET /models 只读取当前模型及其直接 provenance；
+4. legacy 无 provenance 模型如需兼容，只允许一次性或 bounded fallback，不得每个 GET 全历史 glob；
+5. 如果与 AUDIT-066 共享增量 Training history index，只保留一个 canonical owner，不能再造第三套缓存。
+
+**回归测试建议：**
+
+- 20,000 terminal training job dirs + 10 current models；
+- GET /models 的 job metadata 读取数量有明确上限；
+- job_id/framework/report_ready 仍正确；
+- legacy provenance fallback bounded；
+- 训练任务页同时加载 jobs + models 时不再产生两轮全历史扫描；
+- Windows / Linux 路径 identity 保持正确。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
