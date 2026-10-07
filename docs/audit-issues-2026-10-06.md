@@ -13627,4 +13627,176 @@ AUDIT-110 不是“分页误删”，而是：
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-111 — Training Create 的 GET preflight 在 drift 时同步执行完整新畅联 reconciliation；打开训练弹窗可阻塞在全量远端 I/O，并触发本地 purge / mirror 写操作
+
+**级别：高**  
+**模块：Training Create / External Algorithm Preflight / ChangLian Reconciliation / HTTP Semantics / First-open Performance**
+
+**现象：**
+
+外部新畅联算法打开训练创建弹窗时，TrainingCreateHydrationRuntime 会把 external preflight 作为打开表单的前置条件。
+
+当前 main.mjs 的真实装配为：
+
+preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api})
+
+而 preflightTraining() 会发起：
+
+GET /api/v63/external-algorithm-platform/training-preflight
+
+trainingPreflightFresh() 的默认 freshness 只有 30 秒。
+
+训练创建 start() 在 preflight 不新鲜时，会显示“正在准备训练配置”，然后同步等待：
+
+Promise.all([hydrate(), preflight(aid)])
+
+只有 preflight 返回后才真正 openTrainingForm()。
+
+**后端的关键问题：**
+
+training_preflight() 先实时读取：
+
+- product_info(product_id)
+- analyses(product_id)
+- 每个 analysis 的 authoritative detail
+
+然后比较本地与远端：
+
+- analysis contract
+- product name
+- product code
+- category id
+
+只要发现 drifted=True，就直接在当前 GET 请求里同步调用：
+
+self.sync(project_id=..., algorithms_path=..., sync_type="auto")
+
+这个 sync 不是轻量刷新。
+
+它会继续执行完整 provider reconciliation，包括：
+
+1. category_tree
+2. products(status="")
+3. compute_platforms
+4. 全量 analyses / analysis detail truth
+5. removed external algorithm detection
+6. 对远端已删除算法设置 delete-pending
+7. local_purger.purge()
+8. Durable Task cancel / terminal cleanup
+9. ModelArtifact / publication / remote object cleanup
+10. global cache commit
+11. project algorithm mirror
+
+所以一个名字、分类、Analysis 配置等普通 drift，就会把“打开训练弹窗”的 GET preflight升级成一次完整可写 reconciliation。
+
+**为什么是 Bug：**
+
+这里同时存在两个合同问题。
+
+第一，关键交互路径被无界放大。
+
+用户只是打开训练任务创建弹窗，但请求耗时可能取决于：
+
+- 新畅联产品总量；
+- analysis 总量；
+- analysis detail N 次请求；
+- 本地被删除算法的历史任务/模型数量；
+- OSS / publication cleanup；
+- provider 网络延迟。
+
+训练弹窗因此会长时间停留在准备中。
+
+第二，GET preflight 不是 read-only。
+
+GET /training-preflight 在 drift 时会修改甚至删除本地状态。
+
+它可以：
+
+- 修改 global master-data cache；
+- 修改 algorithms mirror；
+- 标记 external_delete_pending；
+- 请求取消 Durable Task；
+- 删除 terminal task/artifact；
+- 删除 ModelArtifact / publication / remote object。
+
+这与 GET 的安全/idempotent读取语义不匹配，也意味着浏览器重试、预热、重复打开等“读操作”可能触发重 reconciliation。
+
+**真实前端可达性：**
+
+这不是孤立后端函数。
+
+当前生产 bootstrap 明确把 ExternalAlgorithmPlatformRuntime.preflightTraining 注入 TrainingCreateHydrationRuntime。
+
+对于外部新畅联算法：
+
+- 30 秒内可能复用 preflight cache；
+- 超过 30 秒、首次打开、cache 被清空、项目切换后都会重新 preflight；
+- start() 必须等 preflight 成功才能打开真实训练表单；
+- prewarm() 也可能提前触发该 GET。
+
+因此问题直接位于训练创建用户主流程。
+
+**与 AUDIT-110 的区别：**
+
+AUDIT-110 是：
+
+新畅联 provider-global master data 被 Auto Sync 按项目重复 fetch，导致 generation/digest 跨项目不一致。
+
+AUDIT-111 是：
+
+训练创建的单算法 GET preflight 在发现 drift 时，同步升级成完整 reconciliation，并把全量远端 I/O、purge 和 mirror 放进弹窗打开关键路径。
+
+即使 AUDIT-110 修成单一 global generation，AUDIT-111 仍需解决 GET preflight 不应同步承担完整 mutation owner 的问题。
+
+**影响：**
+
+- 外部算法训练创建首开或 30 秒后重开明显变慢；
+- provider 产品/Analysis 越多，preflight 延迟越大；
+- 网络抖动可直接让训练弹窗“正在准备”长时间等待；
+- 一个目标算法 drift 会导致无关产品也被完整拉取；
+- GET 请求可能触发本地训练/转换任务取消和成果清理；
+- 浏览器或代理对 GET 的安全重试语义与实际副作用冲突；
+- prewarm 与用户实际点击可能把 reconciliation 放到意料之外的时间点；
+- 训练创建的可用性被新畅联全局同步健康度直接绑死。
+
+**建议最小修复：**
+
+不要新增第二套 External Platform owner，也不要取消训练前实时资格核验。
+
+应把“单算法训练资格检查”和“全局 reconciliation”分开：
+
+1. training-preflight 只做 bounded、read-only 的单算法实时核验：
+   - product detail
+   - analysis list/detail
+   - status==1
+   - analysisType==1
+   - 必要身份/合同对比
+2. 如果发现 drift：
+   - 返回明确 drift / sync_required truth；
+   - 或提交/复用 canonical external sync operation；
+   - 不在 GET 请求线程里直接 self.sync()
+3. Training Create 可以：
+   - 资格仍满足时用当前实时单算法 truth 打开表单；
+   - 必须等待同步时显示独立、可恢复的同步任务状态；
+4. 全局 cache / purge / mirror 继续由唯一 External Algorithm reconciliation owner 执行；
+5. GET endpoint 必须保持无破坏性副作用；
+6. preflight freshness 可保留，但不能拿 30 秒 cache 掩盖重型同步；
+7. 和 AUDIT-110 一起收口时，drift 应触发单一 global generation，而不是在 Training Create 内复制同步 executor。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- external training first-open preflight 只访问目标 product / analyses，不触发 products 全量 listAll；
+- drifted product 时 GET preflight 不调用 local_purger / cache commit / mirror mutation；
+- 1k products 环境下 Training Create first-open provider request count 有固定上限；
+- provider 正常但存在名称/分类 drift 时，弹窗不会同步等待全局 reconciliation；
+- remote product inactive / 无 visual analysis 仍必须 fail-closed；
+- 真正的 sync operation 完成后，再打开训练可读取新 mirror；
+- GET preflight 重试不会产生删除/取消任务副作用。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
