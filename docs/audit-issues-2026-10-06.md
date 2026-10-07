@@ -9307,6 +9307,265 @@ AUDIT-086：
 
 ---
 
+
+### AUDIT-087 — 停止 PREPARING Training 只取消父 TRAINING，不取消 TRAINING_PREPARE 子任务；用户已停止后仍可继续构建/归档/上传大批训练输入
+
+**级别：中～高**  
+**模块：Training Lifecycle / TRAINING_PREPARE / Cancellation / Remote Staging / Resource Consumption**
+
+**现象：**
+
+当前 Durable Training 创建时会建立两个任务：
+
+1. 父任务：
+   `TaskKind.TRAINING`
+2. 输入准备子任务：
+   `TaskKind.TRAINING_PREPARE`
+
+子任务 ID 固定：
+
+`trainprep_{training_task_id}`
+
+父任务 payload 也明确记录：
+
+`training_prepare_task_id`
+
+训练创建后，父 TRAINING 先保持：
+
+- status = QUEUED
+- stage = training_input_pending
+- required_capabilities = training.input.ready
+
+直到 PREPARE 子任务完成输入冻结/构建后，才通过：
+
+`activate_prepared_training()`
+
+把父任务释放到真正训练队列。
+
+**当前停止入口只取消父任务：**
+
+前端 TrainingTaskRuntime 的 Stop：
+
+`POST /api/v48/projects/{project_id}/jobs/{job_id}/stop`
+
+后端 `v48_stop_job()` 对 Durable Training 只执行：
+
+`shared_task_repository().request_cancel(job_id)`
+
+即只取消父 `TRAINING`。
+
+它没有：
+
+- 读取 `training_prepare_task_id`；
+- 查找对应 `TRAINING_PREPARE`；
+- 对 PREPARE 子任务执行 request_cancel；
+- 建立 parent-child cancellation propagation。
+
+父任务仍在 QUEUED 时，`request_cancel()` 会立即把它改成：
+
+`CANCELLED`
+
+但 PREPARE 子任务如果已 RUNNING，会继续：
+
+`RUNNING`
+
+自己的 lease / heartbeat 完全不受父任务取消影响。
+
+**安全边界：父任务不会被重新激活**
+
+这一点当前实现是正确的，不应误报。
+
+`TrainingPrepareHandler._target()`
+
+会检查父任务：
+
+- CANCELLED → `InterruptedError`
+- 非 QUEUED → fail closed
+
+最终：
+
+`TaskRepository.activate_prepared_training()`
+
+也在 `BEGIN IMMEDIATE` 事务内明确要求：
+
+`current.status is TaskStatus.QUEUED`
+
+因此 PREPARE 子任务不能把已取消父 TRAINING 重新变回可执行状态。
+
+**真正的问题是：取消传播太晚，资源工作继续发生。**
+
+PREPARE handler 并不是所有重型阶段都持续检查父任务。
+
+当前 `_prepare_bundle()` 在“逐图片 source materialize”时会对每张调用：
+
+`self._target(context, training_task.task_id)`
+
+所以这一阶段取消响应相对及时。
+
+但之后多个重型阶段没有父任务取消检查。
+
+**本地训练路径：**
+
+素材读取完成后：
+
+1. `materialize_portable_dataset(...)`
+   - 可处理 1k / 10k / 20k 图片；
+   - progress callback 只 heartbeat PREPARE 子任务；
+   - 不调用 `_target()` 检查父 TRAINING；
+2. 写：
+   - snapshot.json
+   - dataset-revision.json
+   - prepared-input.json
+3. `_resolve_local_resources(...)`
+4. 把父任务 payload 写成：
+   `training_input_state = READY`
+5. 最后才调用：
+   `activate_prepared_training()`
+
+如果用户在第 1～4 步期间停止父任务：
+
+- 页面中的父 TRAINING 已经是 CANCELLED / stopped；
+- PREPARE 子任务仍继续 CPU / 磁盘工作；
+- 甚至可以把父 payload 写成 READY；
+- 直到 `activate_prepared_training()` 才因为父任务不再 QUEUED 而失败。
+
+父 canonical status 最终仍是 CANCELLED，但 artifact/payload lifecycle 已经继续向前推进。
+
+**远程训练路径窗口更明显：**
+
+bundle 准备完成后：
+
+1. PREPARE 调一次：
+   `self._target(...)`
+2. `create_training_bundle_archive(...)`
+3. `stage_training_bundle_object(...)`
+   - 上传训练 ZIP 到 OSS/S3/MinIO
+4. `_prepare_base_model(...)`
+   - 可能再次读取/上传基础模型
+5. 之后才再次：
+   `self._target(...)`
+
+如果用户在第 1 次检查之后停止训练：
+
+- 父任务立即 CANCELLED；
+- PREPARE 子任务仍继续压缩 bundle；
+- 继续产生网络上传；
+- 继续准备/上传 base model；
+- 直到第 5 步才发现父任务已取消。
+
+在 10k/20k 图片或慢 OSS/MinIO 下，这个窗口可能很长。
+
+**Worker 本身也不会把父取消解释成子取消：**
+
+Worker Scheduler 只看 PREPARE 子任务自己的状态。
+
+只有当：
+
+`context.task.status == CANCEL_REQUESTED`
+
+时才走：
+
+`_finish_cancel_if_safe()`
+
+父 TRAINING 的 CANCELLED 并不会自动改变子 PREPARE 的状态。
+
+当 PREPARE 之后某次 `_target()` 因父 CANCELLED 抛出 `InterruptedError` 时，由于子任务自己仍是 RUNNING，而不是 CANCEL_REQUESTED，Scheduler 会把这个 `InterruptedError` 当成普通异常：
+
+`_finish_error_or_cancel(... TaskStatus.FAILED ...)`
+
+因此一次正常用户“停止训练”还可能留下：
+
+- 父 TRAINING = CANCELLED
+- PREPARE 子任务 = FAILED
+
+而不是 parent/child 一致的 cancelled lifecycle。
+
+**影响：**
+
+- 用户点击“停止”后，服务器 CPU / 磁盘仍可能继续处理大量训练数据；
+- 远程训练仍可能继续上传大 ZIP / base model，产生 OSS 流量与 staging 对象；
+- PREPARE Worker 槽位继续被占用，影响后续训练创建；
+- 父任务页面已经显示停止，但后台仍有真实资源工作，用户感知与执行真相不一致；
+- 本地路径可能在取消后继续写 snapshot / dataset revision / READY payload；
+- 远程路径可能留下已上传但无人使用的 staging object，虽然后续可由现有 GC 清理，但属于无意义副作用；
+- 子任务最终可能 FAILED，而父任务是 CANCELLED，审计与运维状态不一致；
+- 20k 数据、慢磁盘、远程对象存储时浪费最明显。
+
+**与已有问题的区别：**
+
+- AUDIT-020：Training 单条 DELETE 会隐式取消 active Training，和批量 DELETE 合同冲突；
+- AUDIT-019：Dataset DELETE 可破坏尚未 freeze 的 Training Prepare；
+- AUDIT-087：用户明确执行合法 Stop 后，取消只到父 TRAINING，不传播到其输入准备子任务。
+
+这是 parent-child cancellation contract 缺口，不是删除语义或输入依赖变化。
+
+**为什么现有测试没发现：**
+
+当前 tests 已保护：
+
+- parent TRAINING 在 PREPARE 完成前不可被普通 Worker claim；
+- prepare 成功后 activate parent；
+- parent 已 CANCELLED 时 activate fail closed；
+- source materialize 期间检查 parent status。
+
+但缺少：
+
+1. PREPARE 已 RUNNING；
+2. 父 Training 被 stop；
+3. 子 PREPARE 必须立即进入 CANCEL_REQUESTED/CANCELLED；
+4. 后续 bundle/archive/upload 不得继续。
+
+尤其缺少故障注入点：
+
+- portable dataset materialization 中途 cancel；
+- ZIP archive 中途 cancel；
+- OSS upload 中途 cancel；
+- base model staging 中途 cancel。
+
+**建议最小修复：**
+
+不要创建第二套 TrainingPrepare owner。
+
+应把 parent-child cancellation 纳入现有 Training lifecycle service：
+
+1. 停止父 TRAINING 时，如果：
+   - `training_input_state == PREPARING`
+   - 且 `training_prepare_task_id` 对应子任务仍 active
+   - 同一 operation 内对 PREPARE 子任务也执行 request_cancel；
+2. PREPARE handler 的长阶段要消费自身 canonical cancellation truth：
+   - freeze contract；
+   - materialize portable dataset；
+   - archive；
+   - object upload；
+   - base model staging；
+3. 对不能立即中断的 provider 上传：
+   - 在完成后先检查 cancellation；
+   - 不再发布 READY / activate parent；
+   - staging 对象交给已有 Remote Staging GC / retirement owner，禁止再造一套清理机制；
+4. parent/child race 必须明确：
+   - prepare activate 事务先赢 → 父进入真实 Training 队列，再按普通 Training cancel；
+   - parent cancel 先赢 → prepare 必须 cancel，不能继续 publish READY；
+5. 子任务因父用户取消而退出时应收口为 CANCELLED，而不是 FAILED。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- PREPARE queued 时 stop parent → parent + child 都 CANCELLED；
+- PREPARE running/materialize 时 stop → 后续图片停止处理；
+- portable dataset materialization 中途 stop；
+- remote archive/upload 中途 stop；
+- stop 后不得继续上传 base model；
+- stop 后父 payload 不得从 PREPARING 被发布为 READY；
+- activate 与 cancel 并发只允许一个明确赢家；
+- 20k 输入取消后 Worker 槽位可及时释放；
+- staging cleanup 继续复用已有 GC owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
