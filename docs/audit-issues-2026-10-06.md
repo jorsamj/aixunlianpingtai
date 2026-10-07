@@ -14227,4 +14227,157 @@ status=2 不是 deleted。
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-115 — 已打开页面的本地会话失效后，业务 API 401 不触发统一登录跳转；前端可最长约 30 分钟保持“已登录外观”但所有操作持续失败
+
+**级别：中**  
+**模块：ChangLian Login / Frontend API Runtime / Session Expiry / Authentication UX**
+
+**现象：**
+
+当前登录体系有两条前端请求路径：
+
+1. static/auth-session.js
+   - GET /api/auth/session
+   - 负责展示当前畅联云账号；
+   - 每 30 分钟执行一次 session keepalive；
+   - 如果该接口返回未认证，会跳转 /login。
+
+2. static/app.js 的全局业务 api()
+   - 承担算法、训练、素材、标注、存储、转换等绝大多数业务请求；
+   - 对所有非 2xx 响应只解析错误并 throw；
+   - 不识别 HTTP 401；
+   - 不触发 auth-session refresh；
+   - 不跳转登录页。
+
+因此，如果页面已经打开后本地 session 在运行中失效：
+
+- 业务 API 会立即开始返回 401；
+- 但页面顶部仍保持原来的用户名和“已登录”外观；
+- 用户点击任何功能只会得到普通错误提示；
+- 只有下一次 30 分钟 keepalive 调用 /api/auth/session 时，页面才会被带回登录页。
+
+**真实代码：**
+
+static/auth-session.js：
+
+SESSION_REFRESH_INTERVAL_MS = 30 * 60 * 1000
+
+只有 hydrateAuthIdentity() 会在：
+
+!response.ok || !body.authenticated
+
+时：
+
+window.location.replace('/login?next=%2F')
+
+而 static/app.js 的全局 api() 逻辑是：
+
+fetch
+→ if !response.ok
+→ 解析 message/detail/solution
+→ throw Error
+
+没有对 response.status === 401 做任何认证状态处理。
+
+**真实可达场景：**
+
+至少包括：
+
+- local idle / hard expiry；
+- 服务端主动改变 session policy；
+- session 签名 key / session owner 发生受控轮换；
+- 用户在另一个上下文完成退出或 cookie 被浏览器清理；
+- 长时间打开页面后再恢复操作。
+
+页面本身不会重新加载，因此服务端 middleware 对页面导航的 redirect 保护不会被触发。
+
+下一次业务请求只会得到 API 401。
+
+**现有测试为什么没发现：**
+
+tests/browser/changlian-login-auth.spec.mjs 当前覆盖：
+
+- 未登录访问根页面会跳登录；
+- 登录成功；
+- 刷新后保持登录；
+- logout button；
+- logout 后直接调用 protected API 得到 401；
+- 受保护 data URL 跳登录。
+
+但没有覆盖：
+
+登录成功并保持当前 SPA 页面
+→ session cookie 在后台失效/删除
+→ 用户点击一个普通业务操作
+→ 第一个 401 是否立即触发登录跳转。
+
+tests/frontend/changlian-login-ui.test.mjs 还明确断言 30 分钟 keepalive 存在，但没有要求全局业务 request owner 处理 401。
+
+**为什么是前后端状态漂移：**
+
+服务端 truth 已经是：
+
+AUTH_REQUIRED / 401。
+
+但 SPA shell 在最长一个 keepalive 周期内仍显示：
+
+- 原用户名；
+- 原 session life；
+- 正常业务按钮；
+- 正常页面状态。
+
+即前端 authentication state 没有在业务请求边界跟随后端 truth 收敛。
+
+**影响：**
+
+- 用户会连续看到“操作失败/请先登录”而不知道应该重新登录；
+- 训练创建、标注保存、素材管理等操作可反复失败；
+- 用户可能重复点击提交按钮，以为是业务 Bug；
+- 已编辑但未保存的表单在最终跳登录时可能丢失；
+- 现场容易误判为接口异常、训练异常或权限异常；
+- session keepalive 最长 30 分钟，恢复延迟明显过大。
+
+这不是认证绕过：
+
+服务端依然正确拒绝 401。
+
+问题是浏览器认证状态与服务端状态没有即时一致。
+
+**建议最小修复：**
+
+不要新增第二套 auth owner。
+
+继续让 auth-session.js 作为唯一 browser session owner，并给全局 request runtime 一个轻量入口，例如：
+
+- 任意受保护业务请求遇到 401 / AUTH_REQUIRED；
+- 只触发一次 canonical auth-session invalidation；
+- 清理 keepalive；
+- 可记录当前安全 next path；
+- 立即 replace 到 /login。
+
+关键要求：
+
+1. 不能把所有 401 都盲目吞掉；
+2. 登录接口自身的 401/认证失败仍应在登录页展示错误；
+3. Agent/machine endpoints 不经过 browser redirect owner；
+4. 多个并发请求同时 401 时只执行一次跳转；
+5. 跳转前避免重复 toast / mutation retry；
+6. 不在 localStorage/sessionStorage 保存凭据。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 登录后保持 SPA 页面，删除/使 session cookie 失效；
+- 下一个普通业务 GET 返回 401 时立即跳 /login；
+- mutation POST 返回 401 时也立即跳转且不自动重试 mutation；
+- 5 个并发业务请求同时 401 只触发一次 auth invalidation；
+- 普通 403/409/422 仍按业务错误展示，不跳登录；
+- /api/auth/login 的登录失败仍留在登录页；
+- Agent Bearer API 不被 browser auth runtime 接管。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
