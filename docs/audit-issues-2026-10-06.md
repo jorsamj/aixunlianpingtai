@@ -11980,3 +11980,169 @@ AUDIT-098 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-099 — Storage Rescan 标注覆盖的冲突检查与 AnnotationRepository commit 分离；校验通过后人工保存仍可被迟到 Rescan 静默覆盖
+
+**级别：高**  
+**模块：Storage Rescan / AnnotationRepository / Optimistic Concurrency / Ground Truth**
+
+**现象：**
+
+当前 YOLO / COCO / VOC Storage Rescan 在应用外部标注时，已经有一层看起来正确的“平台标注已变化则拒绝覆盖”保护：
+
+`StorageRescanHandler._apply_annotation_rescan()`
+
+会先批量读取：
+
+`current_annotations = annotations.get_many(material_ids)`
+
+然后对准备写入的 `ANNOTATION_NEW / ANNOTATION_CHANGED / ANNOTATION_CONFLICT / ANNOTATION_REMOVED` 比较：
+
+- review 时冻结的 `platform_annotation_hash`；
+- review 时冻结的 `platform_annotation_state`；
+- apply 时刚读取的 `current_hash`；
+- apply 时刚读取的 `current_state`。
+
+不一致时会抛：
+
+`platform annotation changed after rescan review; create a new rescan`
+
+这能阻止“用户在 review 完成以后、apply 开始以前已经改过标注”的普通 stale overwrite。
+
+但冲突检查和真正 AnnotationRepository 写入不是同一个事务，也没有使用 AnnotationRepository 已提供的 `expected_version` 乐观锁。
+
+真实顺序是：
+
+1. `annotations.get_many(material_ids)`；
+2. 比较 `content_digest / annotation_state`；
+3. 构造 `annotation_rows`；
+4. **中间没有任何 Annotation lock / CAS**；
+5. `annotations.upsert_many(annotation_rows, return_rows=True)`。
+
+而 `annotation_rows` 只包含：
+
+- `image_id`
+- `boxes`
+- `annotation_state`
+
+没有把第 1 步读到的：
+
+`current_annotation.version`
+
+作为：
+
+`expected_version`
+
+传给 `AnnotationRepository.upsert_many()`。
+
+**AnnotationRepository 本身已经有正确能力：**
+
+`AnnotationRepository.upsert_many()`
+
+对每一行都支持可选：
+
+`expected_version`
+
+并在同一个 `BEGIN IMMEDIATE` 事务内重新读取当前 version；只要实际 version 与 expected 不同，就抛 `AnnotationConflictError`，拒绝 stale write。
+
+Storage Rescan adapter 当前没有使用这项 canonical concurrency contract。
+
+**真实竞态窗口：**
+
+1. Rescan review 冻结平台标注 A，version=5；
+2. 用户确认“外部标注变化 → 更新”；
+3. Worker 进入 `_apply_annotation_rescan()`；
+4. `get_many()` 读到 A/version=5，hash/state 校验通过；
+5. 此时人工标注工作台保存新标注 B，AnnotationRepository 变为 version=6；
+6. Rescan 继续执行 `upsert_many(annotation_rows)`；
+7. 因为没有 `expected_version=5`，Repository 会正常把外部标注 C 写进去，并将 version 再加一；
+8. 人工刚保存的 B 被静默覆盖。
+
+所以当前保护仍然是典型：
+
+`read/check -> concurrent manual write -> unconditional upsert`
+
+TOCTOU。
+
+**为什么是 Ground Truth Bug：**
+
+AnnotationRepository 是当前唯一正式 Annotation Ground Truth owner。
+
+人工标注保存已经依赖 version/CAS 防止 concurrent modification；Storage Rescan 作为另一个写入 adapter，却先在 owner 外做一次检查，然后不把检查到的 version 带进 owner transaction。
+
+因此同一 Ground Truth 对不同写入口具有不同的并发安全等级。
+
+这不是要求重做 Annotation GT 架构，而是 Rescan 没有复用已经 CLOSED 的 canonical optimistic-lock contract。
+
+**现有测试为什么没有挡住：**
+
+`tests/unit/storage/test_rescan_tasks.py` 已有：
+
+`test_yolo_rescan_rejects_platform_annotation_edit_after_review`
+
+该测试证明的是：
+
+- review 后先修改平台 Annotation；
+- 再进入 `_apply_annotation_rescan()`；
+- 第一次 `get_many()` 就能看到新 digest；
+- 因而 fail-closed。
+
+它没有覆盖真正的竞态窗口：
+
+`get_many/check 已经成功 -> 在 upsert_many commit 前人工修改 Annotation`
+
+测试中也没有要求 Rescan 写入携带 `expected_version`。
+
+所以当前测试保护的是“apply 前 stale”，不是“commit-time stale”。
+
+**影响：**
+
+- 人工标注员刚保存的框可能被后台 Storage Rescan 覆盖；
+- `ANNOTATION_CONFLICT + overwrite` 场景风险尤其高，因为用户本来就授权覆盖旧冲突，但不等于授权覆盖确认后的新人工修改；
+- 10k/20k rescan 分批 apply 时窗口长期存在，任务运行越久越容易和人工工作台并发；
+- Annotation version 会正常递增，看起来像合法写入，事后很难从普通 UI 识别这是 lost update；
+- MaterialRepository 的 Annotation projection 也会随后跟着 Rescan 新值更新，进一步掩盖人工写入被覆盖的事实；
+- 训练若在之后冻结 Snapshot，会使用被迟到 Rescan 改写后的 Ground Truth。
+
+**与已有问题的区别：**
+
+- AUDIT-085：REMAP 与 Training Prepare 缺少整任务一致性 fence；
+- AUDIT-097：Material Integrity 审计长扫描缺少 revision fence；
+- AUDIT-098：MaterialBatch AI Candidate 缺 execution commit fence；
+- AUDIT-099：**Storage Rescan 在写正式 Annotation Ground Truth 时缺少 AnnotationRepository commit-time version CAS。**
+
+触发 owner、写入对象和修复机制都不同。
+
+**建议最小修复：**
+
+不要新增第二 Annotation owner，也不要给整个 Rescan 持有长时间 Annotation DB 锁。
+
+直接复用现有 `AnnotationRepository.upsert_many(expected_version=...)`：
+
+1. `get_many()` 读取 current Annotation 时同时保留 `version`；
+2. 对每条真正要覆盖的 `annotation_rows` 写入：
+   `expected_version=current_annotation.version`；
+3. legacy / SQLite 不存在时使用 owner 已定义的 version=0 语义；
+4. `upsert_many()` 在自己的 `BEGIN IMMEDIATE` 内做最终 CAS；
+5. 任一行 version 已变化，应整批 rollback，并返回明确的 rescan conflict，要求重新 review；
+6. 不要把冲突降级成“跳过该图后继续成功”，否则用户确认的 batch review truth 会被部分提交；
+7. Material projection 继续由 AnnotationRepository 成功 commit 后统一更新，不新建 projection owner。
+
+**回归测试建议：**
+
+至少增加：
+
+- review/apply 初始 version=5；
+- 第一次 `get_many()` 返回后模拟人工保存到 version=6；
+- Rescan `upsert_many` 必须抛 conflict，人工 version=6 内容保持不变；
+- `ANNOTATION_CHANGED`、`ANNOTATION_CONFLICT overwrite`、`ANNOTATION_REMOVED clear` 都覆盖；
+- 无并发修改时正常写入；
+- 多行 batch 中任意一行 version 漂移时整批回滚；
+- 现有 `test_yolo_rescan_rejects_platform_annotation_edit_after_review` 保持；
+- 500 行 batch 下仍为单事务 CAS，不引入逐图 N+1 写事务。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
