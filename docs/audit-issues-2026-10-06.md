@@ -19824,3 +19824,203 @@ box_validity / label_balance 仍只基于真实 bbox，不应给 confirmed_empty
 
 ---
 
+### AUDIT-147 — Training Picker 把任意 confirmed_empty scope 都标成可训练，但最终 Snapshot 要求负样本覆盖本次全部标签；新增标签后会出现“选择器可选、提交必失败”
+
+**级别：高**  
+**模块：Training Picker / confirmed_empty / Annotation Scope / Training Input Freeze / Frontend-Backend Contract**
+
+**现象：**
+
+当前现代 Training Picker 对正式负样本的可训练判断只看：
+
+`annotation_state == confirmed_empty`
+
+以及“存在至少一个 scope reference”。
+
+单行 projection：
+
+`_public_picker_material()`
+
+直接返回：
+
+`annotated = annotation_state in {"annotated", "confirmed_empty"}`
+
+以及：
+
+`training_state = "trainable"`
+
+只要 state 是 confirmed_empty，就不再验证：
+
+`annotation_scope`
+
+是否覆盖本次训练实际冻结的标签 schema。
+
+Picker 的 Ground Truth SQL 同样只要求：
+
+`annotation_state='confirmed_empty' AND scope_ref=1`
+
+即只要该负样本曾经确认过至少一个标签，就进入 `require_ground_truth` 结果。
+
+Selection Summary 的：
+
+- eligible_count；
+- eligible_total；
+
+又来自：
+
+`AnnotationRepository.training_ground_truth_summary()`
+
+其中 confirmed_empty eligibility 同样是：
+
+`MAX(... confirmed_empty AND scope_ref=1) = 1`
+
+没有按当前训练标签 schema 做完整覆盖检查。
+
+**但最终训练合同更严格，而且是正确的：**
+
+`freeze_training_inputs()`
+
+默认使用：
+
+`_label_schema(project)`
+
+冻结当前全部 active label schema。
+
+随后：
+
+`build_snapshot()`
+→ `_lock_scope_to_schema()`
+
+对 confirmed_empty 明确规定：
+
+- scope 含 `*` → 展开为本次全部 schema；
+- 否则必须覆盖 `schema_codes` 的每一个标签；
+- 少任何一个都会 fail-closed：
+
+`负样本 {image_id} 未确认本次算法的全部标签`
+
+这样做是正确的，因为 YOLO 的空 label 文件语义是：
+
+“本次训练的所有类别在该图片中均不存在”。
+
+Partial negative scope 不能静默投影为所有类别的背景。
+
+**真实可复现场景：**
+
+1. 项目初始只有标签：
+   `smoke`
+2. 用户对图片 A 执行“确认无目标”；
+3. AnnotationRepository 冻结：
+   `annotation_state = confirmed_empty`
+   `annotation_scope = ["smoke"]`
+4. 后续项目新增标签：
+   `fire`
+5. 当前 active training schema 变为：
+   `["smoke", "fire"]`
+6. 打开现代 Training Picker；
+7. 图片 A 仍被显示：
+   `training_state = trainable`
+8. Selection Summary 仍把 A 计入：
+   `eligible_count / eligible_total`
+9. 用户正常选择 A 并提交训练；
+10. Training Freeze 执行：
+    `_lock_scope_to_schema(...)`
+11. 发现：
+    `fire` 不在旧负样本 scope；
+12. 创建/准备阶段失败。
+
+所以前端和后端对同一素材给出相反结论：
+
+- Picker：可训练；
+- Snapshot：不可作为本次 schema 的负样本。
+
+**为什么这不是训练准确性漏洞：**
+
+最终 Snapshot 已经 fail-closed，所以不会把未确认的 `fire` 静默训练成背景。
+
+因此这里不是数据污染，而是：
+
+**训练创建前后的 eligibility contract 不一致。**
+
+这仍然是高优先级主流程 Bug，因为用户在选择器中得到的是明确错误的“可训练”反馈。
+
+**现有测试缺口：**
+
+`tests/api/test_training_material_picker_api.py`
+
+已经覆盖：
+
+- confirmed_empty 能被当前页正式读取；
+- confirmed_empty 可以成为 GT；
+- selection summary 的 eligible_count；
+
+但测试中的 confirmed_empty 没有构造：
+
+“scope 只包含旧标签 A，同时当前项目 active schema 已扩展为 A+B”。
+
+而 Picker Router 当前只接收：
+
+- get_project；
+- data_dir；
+
+实际 eligibility 逻辑没有把 project active label schema 纳入计算。
+
+另一方面：
+
+`tests/api/test_training_ground_truth_gate.py`
+
+已经保护最终 Snapshot 的严格合同：
+
+confirmed_empty scope 必须覆盖当前 frozen schema。
+
+所以两套测试各自是绿的，但跨层契约仍漂移。
+
+**与已有问题的区别：**
+
+- AUDIT-031：标签停用可能破坏 PREPARING 中的 inherited training contract；
+- AUDIT-129：AI Annotation task 创建后标签 catalog 未冻结；
+- AUDIT-144 / 146：confirmed_empty 被 Dataset/Quality 错算成未标注；
+- AUDIT-147：Training Picker **反过来过度乐观**，把 partial-scope confirmed_empty 直接判为本次训练可用。
+
+触发点和修复 owner 均不同。
+
+**建议最小修复：**
+
+不要放宽最终 Snapshot 的 fail-closed 合同。
+
+应让 Training Picker 的 eligibility 与最终冻结使用同一套负样本 scope 规则。
+
+最小方向：
+
+1. Picker 获取当前训练标签 schema identity；
+2. confirmed_empty 只有在：
+   - scope = `*`；或
+   - scope 覆盖本次全部 schema codes
+   时，才显示 `trainable`；
+3. Selection Summary 的：
+   - eligible_count；
+   - eligible_total；
+   - pending_annotation_count
+   使用同一个 schema-aware eligibility；
+4. partial-scope confirmed_empty 应显示明确状态，例如：
+   “负样本范围需重新确认：新增标签 fire 未确认”；
+5. 如果 Training Create 支持显式 label contract/subset schema，则 Picker 必须按**本次实际 frozen schema**计算，而不是硬编码全项目标签；
+6. 不要通过把旧 scope 自动扩成新标签来修复，那会制造未经人工确认的负样本。
+
+**回归测试建议：**
+
+至少增加：
+
+- project schema=[smoke]，scope=[smoke] → trainable；
+- 后续 schema=[smoke,fire]，旧 scope=[smoke] → Picker 不得 trainable；
+- 同场景 eligible_count/eligible_total 不得把该图片算入；
+- scope=["*"] → 对扩展后的 schema 仍可按既有 wildcard 合同展开；
+- scope=[smoke,fire] → 可训练；
+- Picker eligibility 与 `freeze_training_inputs()` 对同一图片/同一 schema 必须一致；
+- 不得放宽 Snapshot 的 missing-scope 拒绝测试。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
