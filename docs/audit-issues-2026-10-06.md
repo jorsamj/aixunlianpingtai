@@ -22194,3 +22194,163 @@ v52 direct endpoint 又独立手写同一套字段。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-162 — Label Integrity “创建后台修复”在返回 202 前同步冻结全部候选；20k 异常标签会把重型 GT 规划压在 Web 请求线程
+
+**级别：中高**  
+**模块：Label Integrity / Repair Admission / MaterialBatch / 1k-20k Scale / Request Latency**
+
+**现象：**
+
+标签完整性页面把修复动作描述为：
+
+> 创建一个 durable repair task
+
+前端用户点击确认后：
+
+`POST /api/v54/projects/{project_id}/labels/integrity/audits/{audit_task_id}/repairs`
+
+预期是快速受理，再由 MaterialBatch Worker 后台完成。
+
+但后端 `create_orphan_repair()` 在真正：
+
+`repository.create(task)`
+
+之前同步调用：
+
+`_freeze_orphan_repair()`
+
+而这个函数已经完成了大规模重活：
+
+1. 从审计 SQLite：
+   `SELECT DISTINCT image_id ...`
+   并 `.fetchall()` 全部 repair candidates；
+2. 把全部 candidate IDs 构造成 Python list；
+3. 每 500 张调用：
+   `AnnotationRepository.get_many()`；
+4. 对每一张：
+   - 重建 reference map；
+   - 找 relevant mappings；
+   - 计算 `record_digest`；
+   - 调 `plan_label_mappings()`；
+   - 生成完整 per-image repair plan JSON；
+5. 所有 plan 先累计到：
+   `frozen: list[tuple[str,str]]`
+   内存列表；
+6. 再创建 selection.sqlite3；
+7. 一次 executemany 把全部 frozen plan 写入 selection；
+8. 写 request/checkpoint；
+9. 最后才 `repository.create(task)` 并返回 202。
+
+因此 Durable Worker 只后台执行“已经全部 freeze 完的 repair”，而最重的 repair admission/freeze 仍是同步 HTTP 工作。
+
+**真实规模：**
+
+用户项目目标明确包含：
+
+- 1k；
+- 10k；
+- 20k 素材。
+
+历史标签统一/迁移正是可能波及大量图片的场景。
+
+如果 Full Audit 找到 20k 张都引用历史 source label，则一次“统一创建后台修复”会在 API 请求里：
+
+- fetchall 20k IDs；
+- batch-read 20k Annotation GT；
+- 对 20k records 做 plan/digest；
+- 在 Python 内持有 20k plan JSON；
+- 再写 20k selection rows。
+
+用户看到的会是：
+
+点击“确认创建后台修复”
+→ 按钮/Modal 长时间等待 POST 返回
+→ Durable Task 甚至还没正式创建。
+
+**为什么这是 Bug：**
+
+项目已经明确把大批量标签治理收口到 Durable MaterialBatch，目的就是：
+
+- 页面快速受理；
+- 后台执行；
+- 可观察进度；
+- 可取消/恢复；
+- 避免大规模 Web request 阻塞。
+
+当前实现只把第二阶段 remap 放到了 Worker，第一阶段的 20k freeze 仍同步执行，破坏了同一产品合同。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-057：Label/Material Integrity active audit 发现与防重；
+- AUDIT-058：Material Integrity 结果分页；
+- AUDIT-059：标签统一 active task bounded discovery / 防重；
+- AUDIT-097：Material Integrity revision consistency；
+- AUDIT-162：Label Integrity repair 的**创建请求本身**同步执行全量候选 freeze/plan，导致“后台任务”在真正入队前仍有 O(N) Web 热路径。
+
+**影响：**
+
+- 10k/20k repair 创建弹窗长时间 loading；
+- Web worker 被占用；
+- 反向代理/浏览器超时后用户不知道任务究竟是否已创建；
+- 超时重试可能导致重复 admission 竞争；
+- Python 同时保留大量 plan JSON，增加内存峰值；
+- Task Center 在 freeze 完成前看不到任何任务，无法展示真实进度。
+
+**现有测试为什么没有发现：**
+
+现有 Label Integrity repair 测试主要验证：
+
+- mapping 合法性；
+- active repair 防重；
+- source digest CAS；
+- 同一 image 聚合一次写；
+- 目标标签身份冻结；
+- retry/fail-closed。
+
+测试数据量很小。
+
+没有 1k/10k/20k contract，未断言：
+
+- POST repairs 的工作量必须 bounded；
+- TaskRecord 必须在大规模 freeze 前可见；
+- 不允许 `.fetchall()` 全候选并把所有 plan 先堆入 Python list；
+- 创建阶段需要可观测进度。
+
+**建议最小修复方向：**
+
+不要新增第二 repair owner。
+
+继续用 MATERIAL_BATCH / AnnotationRepository canonical owner，但把生命周期拆清：
+
+1. POST 只做 bounded validation：
+   - mappings；
+   - audit identity；
+   - active repair guard；
+   - 必要的轻量 revision token；
+2. 快速创建 Durable repair/preparation task；
+3. Worker 内按 cursor/500 批：
+   - 重新读取当前 GT；
+   - freeze source digest；
+   - 生成 plan；
+   - 增量写 selection.sqlite3；
+4. freeze 完成后写 frozen marker，再进入 remap execution；
+5. preparation 期间支持真实 progress/cancel；
+6. 不要持有 20k plan 的 Python list；
+7. 如果仍需 create-time CAS，冻结 revision/token，而不是同步复制所有 records。
+
+**应新增回归测试：**
+
+- 20k candidates 的 POST admission 不做 20k GT hydration；
+- task 在 preparation 开始前已可从 Task Center 查询；
+- selection freeze 使用 bounded batches；
+- cancellation during preparation 不留下可执行的半冻结 selection；
+- retry/recovery 可继续/重建 freeze；
+- source digest CAS 与 label governance fence 继续保留；
+- 不能通过延长 HTTP timeout 让性能测试通过。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
