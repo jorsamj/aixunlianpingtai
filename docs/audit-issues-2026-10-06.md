@@ -14693,6 +14693,36 @@ syncReferenceLabels417() 还会动态插入文案：
 ---
 
 
+### AUDIT-118 — 【已撤销：重复 AUDIT-068】Training SSE / REST queue truth 状态漂移
+
+**状态：REVOKED / DUPLICATE OF AUDIT-068**  
+**原级别：高**
+
+后续对统一审计文档做去重时确认：
+
+**AUDIT-118 与 AUDIT-068 是同一个真实问题，不应重复计数。**
+
+AUDIT-068 已经完整记录：
+
+- Training SSE 未复用 canonical `training_queue_truth()`；
+- HTTP/REST 可把 persisted QUEUED 投影为 `WAITING_RESOURCE`；
+- SSE 只做基础 `task_to_public(task)`，可能重新发出 `QUEUED`；
+- 前端 `applyUpdate()` 会把 SSE status 写入 `task_status`；
+- stale wait reason / queue metadata 可能与 QUEUED 状态混合；
+- 修复时必须避免在 750ms realtime loop 里重新引入 AUDIT-064 的无界 queued hydration。
+
+AUDIT-118 后续新增的 queue metadata 同步建议，归并进 **AUDIT-068** 的修复与回归范围，不再作为独立 issue。
+
+**处理方式：**
+
+- 保留本编号作为审计历史；
+- 不删除本条后续原始证据；
+- 本条不进入独立修复队列；
+- 后续只修 AUDIT-068；
+- VERSION 仍按正式审计记录规则递增。
+
+---
+
 ### AUDIT-118 — Training SSE 未复用 REST 的 canonical queue truth；WAITING_RESOURCE 可被实时流重新覆盖成 QUEUED，训练页状态发生前后端漂移
 
 **级别：高**  
