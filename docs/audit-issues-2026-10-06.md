@@ -13335,3 +13335,173 @@ Confirm 当前对“GT 已经由同一次确认写入，但 finalize 失败后�
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-109 — Deployment Resource PATCH / DELETE 未冻结 Remote Conversion 依赖；已创建任务可在启动竞态中改投新服务器 / 新 API Key 或直接失败
+
+**级别：高**  
+**模块：Deployment Resource / Remote Conversion / SecretStore / Task Dependency Lifecycle**
+
+**现象：**
+
+v39 创建部署转换任务时，用户已经明确选择：
+
+- `resource_id`；
+- 远程转换服务器；
+- 对应 API Key；
+- 已检测通过的 target capability。
+
+任务也会在 `job.json` 中保存：
+
+- `resource_id`；
+- `resource` snapshot。
+
+但这个 snapshot 实际来自：
+
+`_deploy_resource_public(resource)`
+
+它会明确删除：
+
+- `api_key`；
+- `secret_ref`。
+
+因此 `mode=remote` 的真实执行线程不能只依赖任务快照，而是在稍后进入：
+
+`_sync_remote_deploy_job(project_id, job_id)`
+
+时重新调用：
+
+`_deploy_resource_by_id(job["resource_id"])`
+
+并再次从当前 Deployment Resource / SecretStore 读取：
+
+- 当前 `base_url`；
+- 当前 `secret_ref`；
+- 当前 API Key。
+
+与此同时：
+
+`PUT /api/v39/deploy/resources/{resource_id}`
+
+和：
+
+`DELETE /api/v39/deploy/resources/{resource_id}`
+
+都没有检查该资源是否被 QUEUED / RUNNING remote conversion 引用。
+
+DELETE 还会立即删除：
+
+`SecretStore[secret_ref]`。
+
+**真实可达竞态：**
+
+创建 remote conversion：
+
+1. API 校验当前资源为 ready；
+2. 写入 job.json；
+3. 创建 daemon thread：
+   `threading.Thread(target=_sync_remote_deploy_job, ...).start()`；
+4. HTTP 创建请求已经可以返回；
+5. 线程随后才重新按 resource_id 读取 Deployment Resource。
+
+在 3～5 之间，用户或另一个请求可以：
+
+- PUT 同一个 resource，修改 base_url / kind / tool config / API Key；
+- DELETE resource，并删除 secret_ref。
+
+于是同一已创建 job 可能出现：
+
+**PATCH 场景：**
+
+- 创建时用户选择服务器 A / Key A；
+- 线程实际开始前资源被改成服务器 B / Key B；
+- job 最终把源模型上传给 B，而不是创建时已确认的 A。
+
+**DELETE 场景：**
+
+- job 已成功创建；
+- resource 随即被删除；
+- `_sync_remote_deploy_job()` 再取 resource 时直接 404；
+- remote conversion 在真正启动前失败。
+
+这说明“用户提交时确认的执行资源”不是 frozen task dependency。
+
+**为什么不是 AUDIT-024：**
+
+AUDIT-024 记录的是：
+
+> Remote Conversion 仍使用 daemon thread，形成第二执行 owner / 缺少 Durable 生命周期。
+
+AUDIT-109 记录的是另一个独立合同：
+
+> 即使暂时保留现有 remote thread，Deployment Resource / credential 也没有按任务创建时冻结，PATCH/DELETE 可以改变或销毁已接受任务的执行依赖。
+
+把 remote conversion 改成 Durable Task 以后，如果仍然只保存 resource_id 并在执行时读取 mutable resource，这个问题依然会存在。
+
+**为什么不是 AUDIT-046：**
+
+AUDIT-046 是 auto-convert 对 vendor/chip/resource identity 冻结不足。
+
+AUDIT-109 是用户已经明确创建一条 v39 remote conversion 后，Deployment Resource CRUD 对该具体已接受任务缺少 dependency fence，并且 secret 会被 DELETE 立即销毁。
+
+**影响：**
+
+- 已创建任务可能实际发送到不同于创建时确认的远程服务器；
+- API Key 可在任务创建后被无提示替换；
+- 删除资源可让刚受理的转换任务启动失败；
+- 审计记录中的 `job.resource` 与真实执行 endpoint / credential 可能不一致；
+- 如果远程转换服务器属于不同安全域，可能把模型发送到错误目标；
+- 用户会看到“任务创建成功”，随后却因配置 CRUD 竞态失败，难以定位；
+- 前后端都无法准确解释“这个任务到底冻结了哪一个执行资源版本”。
+
+**现有代码为什么没有自动保护：**
+
+任务中的 `resource` 使用 public projection：
+
+`_deploy_resource_public()`
+
+会剥离 credential identity。
+
+remote runner 又不是从 immutable task artifact 获取 frozen endpoint + secret version，而是执行时重新：
+
+`_deploy_resource_by_id(resource_id)`。
+
+Deployment Resource PUT/DELETE 也没有 active reference query / CAS / retirement fence。
+
+**建议最小修复：**
+
+不要新建第二套 Deployment Resource owner。
+
+应让 remote conversion 在 admission 时冻结“可执行资源引用”：
+
+1. 至少冻结：
+   - resource_id；
+   - resource revision / updated_at；
+   - mode / kind；
+   - base_url identity；
+   - secret_ref + immutable secret version / credential snapshot reference；
+   - detected target capability；
+2. remote execution 只能使用该 frozen execution contract；
+3. Deployment Resource PATCH：
+   - 只影响后续新任务；
+   - 不得静默改变已受理任务；
+4. Deployment Resource DELETE：
+   - 若仍有未终态任务依赖该 resource / secret version，必须 409 fail-closed；
+   - 或执行资源进入 retired 状态，待引用归零后 GC；
+5. 不要把明文 API Key 写入 job.json；
+6. 后续把 AUDIT-024 的 remote thread 收口到 Durable Task 时，继续复用同一 frozen resource dependency，而不是重新 lookup mutable config。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- create remote conversion → 立即 PATCH resource：任务仍使用创建时冻结的 endpoint / credential identity；
+- create → DELETE resource：DELETE 在 active dependency 存在时 409，任务不受影响；
+- terminal 后允许资源退役 / 删除；
+- API Key rotation 不影响旧任务，只影响新任务；
+- job audit 能显示 frozen resource revision / identity，但不泄露 secret；
+- 并发 create + PATCH / DELETE 使用明确 CAS/fence，不存在 TOCTOU。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
