@@ -17694,3 +17694,184 @@ tests/api/test_storage_upload.py 只覆盖选定 storage source 正常上传、d
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-135 — “测试发布”仍使用同步 /api/v12/predict 作为第二推理 Runtime；直接在 Web 请求内执行 subprocess 并绕过 Durable DEPLOYMENT_TEST / Scheduler / 取消与资源治理
+
+**级别：高**  
+**模块：Test Publish / Model Test / Inference Runtime / DEPLOYMENT_TEST / Scheduler / Resource Governance**
+
+**现象：**
+
+当前平台已经有一条 canonical 模型检测主链：
+
+`质量中心 / 检测台`
+→ Durable `DEPLOYMENT_TEST`
+→ TaskRepository
+→ Scheduler / Worker / Agent
+→ 可轮询、可取消、可恢复、可记录历史结果。
+
+当前最终前端的 `window.benchPredictOne` 也已经覆盖旧实现，走持久化 Deployment Test。
+
+但“测试发布”页面仍保留另一条完全独立的同步推理 Runtime。
+
+当前菜单/页面仍真实可达“测试发布”，v63 最终：
+
+`renderTest = window.renderTest = renderTestCanonical63`
+
+仍调用：
+
+`window.renderTestCore30()`
+
+而 `renderTestCore30()` 明确渲染：
+
+`模型测试`
+
+以及：
+
+`<button ... onclick="predict()">开始测试</button>`
+
+v63 最终 `window.predict` 又继续调用：
+
+`window.predictCore30()`
+
+最终请求：
+
+`POST /api/v12/projects/{project_id}/predict`
+
+因此这不是零引用 Legacy helper，而是当前 UI 仍能直接进入的第二推理 owner。
+
+**后端真实调用链：**
+
+`v12_predict_image()`
+
+先直接：
+
+`in_path.write_bytes(await file.read())`
+
+随后：
+
+`python_path = resolve_inference_python(...)`
+
+→ `run_predict_by_env(...)`
+
+而 `run_predict_by_env()` 直接在 Web 请求生命周期里执行：
+
+`subprocess.run(..., timeout=600)`
+
+也就是说，一个“开始测试”HTTP 请求可以由 Web 进程同步持有真实模型推理子进程最长约 10 分钟。
+
+整个路径没有创建：
+
+- TaskRecord；
+- DEPLOYMENT_TEST；
+- Scheduler admission；
+- resource reservation；
+- Agent assignment；
+- queue position；
+- WAITING_RESOURCE truth；
+- cancellation lifecycle；
+- execution generation / lease；
+- Durable result/recovery history。
+
+**为什么是重复 Runtime / 生命周期旁路：**
+
+当前同一种“模型检测”行为实际有两套执行合同：
+
+1. 质量中心 / 检测台：
+   - canonical Durable DEPLOYMENT_TEST；
+   - 受 Scheduler、资源、TaskRepository、Worker lifecycle 管理。
+
+2. 测试发布 / 模型测试：
+   - Web request 直接 subprocess；
+   - 不进入任何 Durable execution owner。
+
+所以即使 Scheduler 已经认为 GPU 被训练或 Deployment Test 占用，“测试发布”仍可以直接启动另一个真实推理进程。
+
+这与当前“一个 domain 一个 canonical runtime owner”的收口目标直接冲突。
+
+**额外风险：**
+
+该同步接口还使用：
+
+`await file.read()`
+
+无上限把测试图片一次性读入 Web 进程内存。
+
+这与 AUDIT-130 的上传内存问题表现相似，但不是同一个问题：
+
+- AUDIT-130：canonical Quality Center Deployment Test / RKNN 板端验证入口自身缺少上传大小上限；
+- AUDIT-135：整个“测试发布”仍保留第二套同步推理 owner，绕过 Durable execution；无界 read 只是这条旁路附带的额外风险。
+
+**影响：**
+
+- 同一个模型在“检测台”和“测试发布”拥有完全不同的排队/资源/失败/恢复语义；
+- 多个用户可通过“测试发布”同时直接启动推理 subprocess，绕过 GPU reservation；
+- 训练 / 转换 / Deployment Test 与同步 predict 可真实争抢 CPU/GPU/显存；
+- 页面关闭、浏览器断线、代理超时都没有 Durable task 可供恢复；
+- 用户无法停止已经进入 subprocess 的测试；
+- Web worker/request 可被最长 600 秒真实推理占用；
+- 没有 canonical task history，故障后很难审计“任务到底执行到哪一步”；
+- 正式算法版本的 online feedback evidence 也可以由这条不受 Durable runtime 管理的推理路径产生；
+- 大图片还可通过无界 `await file.read()` 放大 Web 进程内存压力。
+
+**为什么现有测试没有拦住：**
+
+当前 Deployment Test 相关回归主要保护：
+
+- v61 Durable task create；
+- Worker runtime；
+- detection batch；
+- Quality Center polling/result。
+
+但“测试发布”保留的是较早的 `predictCore30` 兼容层。
+
+后续 v63 为了线上反馈，又显式把：
+
+`window.predict`
+
+绑定回：
+
+`predictCore30`
+
+因此质量中心主链已经 Durable 化，并不代表“测试发布”也已完成迁移。
+
+缺少一个跨页面合同测试：
+
+“所有当前可达的真实模型推理入口都必须创建 canonical DEPLOYMENT_TEST，不允许直接 subprocess。”
+
+**建议最小修复：**
+
+不要新增第三套推理 owner，也不要重新设计 Deployment Test。
+
+直接让“测试发布”的单模型测试复用当前 canonical Deployment Test runtime：
+
+1. “开始测试”调用统一的 Deployment Test create；
+2. 使用现有 PollRegistry / task detail / result renderer 等待结果；
+3. 单模型和检测台共享同一 Scheduler / Resource / cancellation contract；
+4. online feedback evidence 从 canonical Deployment Test result/evidence 生成；
+5. 对 `/api/v12/projects/{project_id}/predict`：
+   - 先证明外部 zero-reference；
+   - 若无外部兼容需求，退役/410；
+   - 若必须保留兼容，则只能作为“创建 Durable Deployment Test”的 adapter，不能再直接执行 subprocess；
+6. 上传大小/流式处理与 AUDIT-130 一起收口，不能把无界 read 带进新入口。
+
+**回归测试建议：**
+
+至少增加：
+
+- “测试发布 → 开始测试”必须创建 Durable DEPLOYMENT_TEST；
+- 当前 UI 不再直接请求 `/api/v12/.../predict` 执行推理；
+- 测试发布与质量中心并发时共享同一个资源/Scheduler 真相；
+- GPU 已被占用时，两边都进入同一 WAITING_RESOURCE / queue 语义；
+- 单模型测试可取消；
+- 刷新/重连后可恢复同一个 task；
+- Web/Worker 重启后 canonical result 仍可恢复；
+- 正式算法版本测试仍能生成合法 online feedback evidence；
+- 兼容 predict endpoint 不得直接 spawn subprocess；
+- 大图片遵守明确 size limit / bounded streaming。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
