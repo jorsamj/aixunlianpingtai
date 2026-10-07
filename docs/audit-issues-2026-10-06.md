@@ -8258,6 +8258,230 @@ AUDIT-081 是：
 
 ---
 
+
+### AUDIT-082 — AI 候选分页审核的“采用已选择”会把所有未访问页候选静默拒绝；看第一页即可终结其余 1k/10k 候选审核
+
+**级别：高**  
+**模块：AI Annotation / Candidate Review / Pagination / Ground Truth Confirmation / Frontend-Backend Contract**
+
+**现象：**
+
+当前 v60 AI 候选结果后端已经正确提供分页：
+
+`GET /api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=...&cursor=...`
+
+返回：
+
+- `items`
+- `next_cursor`
+- `total`
+
+前端审核工作台也按 24 张一页加载：
+
+`review.limit = 24`
+
+`loadReviewPage(offset)`
+
+但“采用已选择”最终提交语义与分页浏览状态冲突。
+
+每次访问一页时，前端只把**当前页**非 failed 候选加入：
+
+`review.decisions`
+
+并默认：
+
+`accepted = item.accepted === false ? false : true`
+
+也就是说第一次打开审核页时，当前首屏最多 24 张会进入 decisions；其它尚未访问的页不会进入 decisions。
+
+用户随后点击：
+
+“采用已选择”
+
+触发：
+
+`completeAiReview60('partial')`
+
+前端构造：
+
+```js
+decisions = [...review.decisions]
+body = {
+  decisions,
+  reject_unmentioned: true,
+  accept_unmentioned: false,
+  commit: true,
+  ...
+}
+```
+
+后端收到后先应用显式 decisions，再执行：
+
+`store.decide_unmentioned(False, exclude=decided_ids)`
+
+而 `CandidateStore.decide_unmentioned()` 是一条**全库 UPDATE**：
+
+```sql
+UPDATE candidates
+SET accepted = 0
+WHERE status IN ('success','empty')
+  AND image_id NOT IN (SELECT image_id FROM excluded)
+```
+
+所以所有：
+
+- 未访问页；
+- 未加载到浏览器；
+- 用户从未看到；
+- 用户从未作出人工判断；
+
+的 reviewable candidates 会被一次性写成 rejected。
+
+随后 summary 中 `unreviewed=0`，且 `commit=true`，任务继续进入正式 Commit / terminal lifecycle，用户失去继续审核这些未看候选的机会。
+
+**真实可达场景：**
+
+例如一个任务有 1,000 张候选：
+
+1. 用户打开审核；
+2. 前端只 GET 第 1 页 24 张；
+3. 这 24 张默认进入 decisions=true；
+4. 用户查看首屏后点击“采用已选择”；
+5. payload 只显式包含这 24 张；
+6. 后端把其余约 976 张 reviewable candidate 全部 `accepted=false`；
+7. `unreviewed=0`；
+8. 任务进入 Commit；
+9. 976 张未看候选不再处于待审核状态。
+
+在 10k/20k 场景中后果同样成立，只是被静默拒绝的数量更大。
+
+**为什么是 Bug，而不是“全部拒绝未选项”的正常语义：**
+
+页面同时提供了明确的全局操作：
+
+- “全部拒绝”
+- “全部接受”
+
+而中间按钮文案是：
+
+“采用已选择”
+
+用户合理理解是：
+
+“提交我已经选择/审核的候选”。
+
+分页 UI 又明确显示：
+
+- 当前页；
+- 上一页 / 下一页；
+- “本页全选 / 本页全不选”。
+
+在这种交互下，未访问页并不能等同于“用户明确未选择”。
+
+当前实现把：
+
+**not loaded / not reviewed**
+
+错误折叠成：
+
+**explicitly rejected**。
+
+这破坏了 AI Candidate → Human Review → Commit 的人工确认语义。
+
+**额外问题：默认第一页本身也被隐式选中：**
+
+`loadReviewPage()` 对每个非 failed item 在没有既有 decision 时默认写入 true。
+
+因此用户甚至不需要逐张点击“采用”；只打开第一页再点“采用已选择”，当前页默认接受、其余所有页默认拒绝。
+
+这与“AI 不得未经人工确认直接进入 Ground Truth”的产品合同非常接近边界风险：至少人工确认范围并没有覆盖被默认接受/拒绝的整批候选。
+
+**影响：**
+
+- 大任务绝大多数候选可在用户未查看时被永久拒绝；
+- AI 标注召回率被人为大幅降低；
+- 训练 Ground Truth 会缺失本可使用的候选标注；
+- 用户以为只提交已选项，实际提交了“全局拒绝其余项”；
+- 任务一旦进入 commit/terminal，未审核项无法继续原任务审核；
+- 1k/10k/20k 越大，误拒绝比例越高；
+- 数据集质量问题可能被误归因于模型“不准/漏检”，实际上是审核 UI 生命周期造成的数据丢失。
+
+**与现有分页设计的关系：**
+
+后端 `read_page()` 本身是正确的，问题不在 cursor pagination。
+
+问题是：
+
+- frontend local decisions 只代表 visited pages；
+- backend `reject_unmentioned` 却解释为 entire candidate store；
+- 两者 scope 不一致。
+
+这属于典型的“分页 selection scope 与全局 mutation scope 漂移”。
+
+**为什么现有测试没发现：**
+
+现有 CandidateStore tests 可单独证明：
+
+`decide_unmentioned(False)`
+
+能正确拒绝所有未提及项。
+
+前端 review tests则通常验证：
+
+- 可分页；
+- 当前页选择；
+- accept/reject controls；
+- decisions payload。
+
+但缺少真实跨页合同：
+
+- 1000 candidates；
+- 只访问第 1 页；
+- 点击“采用已选择”；
+- 第 2～N 页必须仍是 unreviewed，而不是 rejected。
+
+**建议最小修复：**
+
+不要取消 CandidateStore 分页，也不要把 10k/20k 候选全部塞进浏览器。
+
+应把三种意图明确拆开：
+
+1. **全部接受**
+   - 可以继续使用 server-side `accept_unmentioned=true`；
+2. **全部拒绝**
+   - 可以继续使用 server-side `reject_unmentioned=true`；
+3. **采用已选择**
+   - 只能提交显式 visited/selected decisions；
+   - 未提及候选必须保持 `accepted IS NULL / unreviewed`；
+   - `commit` 只能在 `summary.unreviewed == 0` 时真正终结审核；
+   - 如果仍有未审核项，应返回当前 summary 并让用户继续分页审核。
+
+如果产品希望支持“采用这些，其他全部拒绝”，必须使用明确文案：
+
+“采用已选择并拒绝其余全部”
+
+并二次确认总数量，不能让“未访问”隐式等于“拒绝”。
+
+同时建议 front-end 不要在首次加载每个候选时自动写 `decision=true`；UI 可视觉预选，但只有用户明确批量/单项动作后才进入显式 decision truth，避免人工确认范围含糊。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 1,000 candidates，只访问第一页 24 张；
+- “采用已选择”后第 25～1000 张仍 `unreviewed`；
+- task 仍保持 AWAITING_CONFIRMATION；
+- 翻页继续审核后才能最终 commit；
+- “全部接受”仍可 server-side 一次接受所有 reviewable；
+- “全部拒绝”仍可 server-side 一次拒绝所有 reviewable；
+- visited-page explicit reject/accept 精确生效；
+- 10k/20k 下不做全量浏览器 hydration。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
