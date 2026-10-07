@@ -17905,3 +17905,173 @@ v63 最终 `window.predict` 又继续调用：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-136 — /api/v16/inference_envs 每次 GET 都重新启动 Python 子进程 import Ultralytics/ppdet/paddlex；测试发布/检测台/质量中心页面刷新会反复触发重型 Runtime 探测
+
+**级别：中～高**  
+**模块：Inference Environment / Test Publish / Quality Center / Detection Bench / Runtime Discovery / Performance**
+
+**现象：**
+
+当前：
+
+`GET /api/v16/inference_envs`
+
+直接调用：
+
+`inference_env_items()`
+
+而其默认参数是：
+
+`probe_modules=True`
+
+每次请求都会重新执行真实模块探测。
+
+Ultralytics 路径：
+
+`_module_available(sys.executable, "ultralytics")`
+
+内部直接：
+
+`subprocess.run([python_path, "-c", "import ultralytics ..."], timeout=20)`
+
+如果配置了 Paddle 环境，还会继续：
+
+`_module_available(py, "ppdet")`
+
+以及：
+
+`_module_available(py, "paddlex")`
+
+因此一次普通 GET 最多会启动多个新的 Python 解释器，并真实 import 深度学习框架。
+
+当前函数没有：
+
+- TTL cache；
+- last verified snapshot；
+- in-flight single-flight；
+- generation；
+- 显式 force refresh 参数；
+- 与已有 Resource Discovery verified truth 的复用。
+
+**当前前端真实调用范围：**
+
+最终页面 extras：
+
+`extras412(pageOverride)`
+
+对：
+
+- 测试发布；
+- 部署测试；
+- 检测台；
+- 质量中心
+
+都会同时加载：
+
+`/api/v12/projects/{id}/test_models`
+
+和：
+
+`/api/v16/inference_envs`
+
+另外：
+
+`refreshTestPageDataV3()`
+
+会再次调用 `extras412('测试发布')`。
+
+质量中心切换到模型检测时，也会通过当前 focused page extras 重新读取推理环境。
+
+训练资源刷新链中：
+
+`refreshTrainingResourceTruthV3()`
+
+同样直接请求：
+
+`/api/v16/inference_envs`。
+
+因此这不是仅在“组件检测”按钮下显式运行的重操作，而是普通页面 hydration / refresh 的一部分。
+
+**为什么是性能 Bug：**
+
+“读取当前已选择、已验证的推理环境状态”本应是轻量 read truth。
+
+当前实现却把 read API 和真实 capability probe 绑定在一起：
+
+`GET page truth`
+→ spawn python
+→ import torch/ultralytics
+→ 可能再 spawn Paddle probes
+→ 才返回页面状态。
+
+Ultralytics / Paddle 在 CPU 机器、机械盘、冷文件缓存或依赖较多环境下，Python 启动和框架 import 本身就可能明显耗时并占用 CPU/RAM。
+
+并发打开多个页面/浏览器时，还可能同时产生多组探测进程。
+
+**与已有问题的区别：**
+
+- AUDIT-101：`training_options` 会串行探测 legacy training server/resource；
+- AUDIT-103：`/api/system/recommendation` GET 会启动 Python/torch probe；
+- AUDIT-136：`/api/v16/inference_envs` 为页面展示环境状态，每个 GET 重新 import Ultralytics/ppdet/paddlex。
+
+三个 endpoint 的触发链和正确 owner 不同，不能依赖修复其中一个自动解决另外两个。
+
+**影响：**
+
+- “测试发布 / 检测台 / 质量中心”首开和手动刷新延迟被放大；
+- 页面看似只刷新模型列表，后台实际重复启动深度学习 Python；
+- 多浏览器并发会产生 probe storm；
+- GPU/CPU 内存紧张机器上可能与真实训练/推理竞争资源；
+- Paddle 环境存在时单请求可能连续执行多个最长 20 秒的模块探测；
+- Web threadpool 会被这些同步 GET 占用；
+- 用户容易把页面慢误认为模型检测、Scheduler 或网络异常；
+- 与 AUDIT-135 的同步 Test Publish 推理并存时，“打开页面”和“点击测试”都会产生额外进程成本。
+
+**为什么现有收口没有覆盖：**
+
+已有 Resource Discovery 已经把“主动扫描/探测”设计成明确 runtime，但 v16 inference env 仍保留早期“GET 时现查”的兼容逻辑。
+
+`get_active_ultralytics_env()` 本身已经是轻量的已选择环境读取，并明确注释：
+
+“Read-only callers must never launch a probe”。
+
+但 `inference_env_items()` 随后又对该 read projection 之外重新执行 `_module_available`，导致 read-only API 仍然有真实 probe side effect。
+
+**建议最小修复：**
+
+不要新增第二套 Runtime Discovery owner。
+
+应把 v16 endpoint 收敛成轻量投影：
+
+1. 默认 GET 只读取：
+   - selected environment；
+   - 最近一次 verified capability snapshot；
+   - 文件/path 是否仍存在等低成本检查；
+2. 真正 import probe 只由已有显式 Resource Discovery /“重新检测环境”动作触发；
+3. 若短期仍需 v16 自检：
+   - 至少加入 bounded TTL；
+   - 同一 python_path + environment revision 使用 single-flight；
+   - 支持 `force=true` 明确刷新；
+4. 配置变更时 invalidate cache；
+5. 不要把“页面刷新”当 capability scan trigger；
+6. 结果必须带 verified_at / stale 状态，让 UI 区分“上次验证可用”与“刚刚实时探测”。
+
+**回归测试建议：**
+
+至少增加：
+
+- 连续 100 次 GET /api/v16/inference_envs 不应启动 100 个 Python probe；
+- 相同 environment revision 在 TTL 内只 probe 一次；
+- 并发 20 个 GET single-flight；
+- 显式 force / Resource Discovery 才重新 probe；
+- Paddle 环境 ppdet/paddlex 不在普通页面 GET 上重复 import；
+- 测试发布/质量中心切页不触发 probe storm；
+- environment path/config 变化后 cache 正确失效；
+- API 返回的 verified/stale truth 与实际最近一次检测一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
