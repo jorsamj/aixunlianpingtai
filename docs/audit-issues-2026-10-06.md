@@ -22354,3 +22354,168 @@ v52 direct endpoint 又独立手写同一套字段。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-163 — 训练任务详情仍调用旧 trainingReport425；同一训练存在两个 Report Owner，旧“补充弱标签数据”直接改 legacy split，却不会进入现代 Training Picker / Iteration Candidate Set
+
+**级别：高**  
+**模块：Training Report / Training Recovery / Iteration Decision / Training Picker / Material Split / Duplicate Owner**
+
+**现象：**
+
+当前同一个正式训练任务存在两套仍真实可达的报告入口：
+
+1. 算法版本页：
+   `openVersionReport429()` → `openJobReport429()`
+2. 训练任务详情：
+   `TrainingRecoveryRuntime` 中 `[data-training-report-task]` → `window.trainingReport425()`
+
+`window.trainingReport425` 又被绑定到旧 `trainingReportCore425`。
+
+因此这不是 zero-reference legacy code；现代 Training Recovery 详情页仍主动调用它。
+
+两套 Report Owner 不只是 UI 样式不同。旧 `trainingReport425` 在存在 weak labels 且旧 job 里 `quality_gate.auto_supplement=true` 时，会展示：
+
+`补充弱标签数据`
+
+点击后调用：
+
+`supplementTrain424(job_id)`
+→ `POST /api/v44/projects/{project_id}/jobs/{job_id}/supplement`
+
+而该后端会：
+
+- 从 live `load_images(project_id)` 遍历素材；
+- 对每张 `split=unassigned` 素材重新读取 live Annotation；
+- 只要标注标签与旧训练报告 weak_labels 相交，就加入候选；
+- 最多取 `supplement_count`；
+- 直接把 MaterialRepository 的 `split` 改成 `train`；
+- 在 job.json 记录 `supplemented_image_ids`；
+- 返回 `changed=N`；
+- 前端提示“已补充 N 张到训练集”。
+
+**但现代训练主链已经不再以 Material.split=train 作为下一轮训练输入 owner。**
+
+当前 Training Create 已收口为：
+
+`TrainingMaterialPickerRuntime`
+→ 用户显式选择 image_id
+→ `TrainingDraft.materialIds`
+→ server selection-summary / eligible truth
+→ TRAINING_PREPARE
+→ frozen Snapshot / Dataset Revision。
+
+所以旧 `/supplement` 把素材改成 `split=train`，并不会自动把这些 image_ids 注入下一次 Training Draft，也不会自动成为下一轮 frozen Snapshot。
+
+与此同时，当前版本页已经有另一套正式迭代流程：
+
+`iteration_decision`
+→ 用户确认 next action
+→ persistent `confirmed_iteration_action`
+→ supplement candidate/adoption 证据
+→ 后续 Training Create。
+
+旧 report 的 `/v44/.../supplement` 完全绕过这套现代 iteration decision / Candidate Set / adoption truth。
+
+**真实调用链：**
+
+训练任务完成并形成版本
+→ 用户进入“训练任务”
+→ 打开训练任务详情
+→ `TrainingRecoveryRuntime` 显示“查看训练报告”
+→ 点击
+→ `window.trainingReport425(task_id)`
+→ 旧 report 根据 `weak_labels` 和 `auto_supplement` 显示“补充弱标签数据”
+→ 用户点击
+→ `POST /api/v44/.../supplement`
+→ live 扫描 Annotation
+→ Material.split 从 `unassigned` 改成 `train`
+→ toast：`已补充 N 张到训练集`
+→ 下一次现代 Training Create 并不会自动带上这些 image_ids。
+
+同一个 task 如果从算法版本页打开报告，则走 `openJobReport429()`，没有这个旧补充动作，并且版本独立评测页面使用新的 persistent iteration decision。
+
+所以用户从两个现行入口打开“训练报告”，不仅看到不同 UI，还得到不同可执行业务动作。
+
+**为什么是 Bug / 重复 Owner：**
+
+平台已经明确收口：Training Picker / Draft / Snapshot 是训练输入 owner；现代 iteration decision 是版本后续动作 truth。
+
+旧 report 仍能直接把 Material.split 当作“补充到训练集”的 owner，相当于又恢复了一套 split-based training-input semantics。
+
+但 split 已经不是当前训练 selection truth，于是产生：
+
+- UI 宣称操作成功；
+- MaterialRepository 的 split 真被改了；
+- 现代下一轮训练却没有获得这些素材；
+- job.json 还记录 `supplemented_image_ids`，形成第三份看似“已采用”的事实；
+- 用户可能误以为已经补数据并直接继续训练。
+
+这是典型的旧 Owner 仍通过现代入口存活，并对当前主链产生真实副作用。
+
+**影响：**
+
+- “补充成功”与下一轮真实训练输入不一致；
+- 用户可能基于错误前提继续训练；
+- Material.split 被无意义改写，影响仍读取 legacy split 的其它兼容页面/统计；
+- 同一训练报告入口行为不一致；
+- weak-label 后续动作绕过 persistent iteration decision / Candidate Set / adoption audit；
+- live Annotation 在点击时重新读取，也不再绑定原版本的 frozen Snapshot / Dataset Revision。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-042：Supplement Feedback Candidate 只暴露最近 500 条，讨论的是 modern feedback candidate bounded truth；
+- AUDIT-045：算法综合报告扫描全部 job history 的性能；
+- AUDIT-135：测试发布存在第二套同步推理 Runtime；
+- AUDIT-151：训练创建时 baseVersion admission CAS 缺失；
+- AUDIT-163：现代 Training Recovery 仍把用户导向旧 Training Report owner，并暴露已经脱离当前 Training Picker / Iteration truth 的 legacy supplement mutation。
+
+所以本条不是 report 性能，也不是 candidate pagination，而是当前可达的重复 Report / Training-input Owner。
+
+**现有测试为什么没有发现：**
+
+TrainingRecoveryRuntime 测试主要验证：
+
+- 详情打开；
+- recovery/status/log；
+- “查看训练报告”按钮可点击。
+
+但没有断言它必须委托给当前 canonical report owner。
+
+旧 v44 supplement 测试若存在，只会验证：
+
+- weak label 能筛出素材；
+- split 被改成 train；
+- job 记录 supplemented_image_ids。
+
+它不会验证：
+
+`supplemented_image_ids` 是否真正进入下一次 TrainingDraft / Snapshot。
+
+新的版本迭代决策测试又单独验证 `iteration_decision / confirmed_iteration_action`，没有检查旧 report 仍可绕过它。
+
+**建议最小修复方向：**
+
+不要再设计第三套报告。
+
+1. TrainingRecoveryRuntime 的“查看训练报告”统一委托当前 canonical `openJobReport429`（或其抽出的唯一 Report Runtime）；
+2. 旧 `trainingReport425/trainingReportCore425` 从生产入口物理退役或 410 adapter；
+3. 旧 `/api/v44/.../supplement` 不得再通过 `split=train` 表示“进入下一轮训练”；
+4. weak-label 补数据必须复用当前版本的 iteration decision / Candidate Set / adoption owner；
+5. 真正选择到下一轮训练时，必须转成明确 image_ids 并进入 TrainingDraft / Snapshot；
+6. 不要通过让现代 Training Picker重新默认选择所有 `split=train` 来兼容旧语义，这会重新引入第二套 selection owner；
+7. 如果 legacy endpoint 需要暂时保留，只能返回明确 410/迁移提示，不能继续修改 Material.split。
+
+**应新增回归测试：**
+
+- Training Recovery 详情点击“查看训练报告”与算法版本页使用同一 report owner；
+- 当前生产 bundle 中 `trainingReport425` 不再由 TrainingRecoveryRuntime 调用；
+- weak-label 后续动作只能进入 persistent iteration decision / Candidate Set；
+- legacy `/v44/.../supplement` 不得继续把 Material.split 直接改成 train；
+- 选择补充素材后，下一轮 TrainingDraft 明确包含被用户确认采用的 image_ids；
+- 未确认采用的 weak-label candidate 不得进入 Snapshot；
+- 同一训练从任务详情和版本页打开报告，业务动作集合一致。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
