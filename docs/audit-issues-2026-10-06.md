@@ -16795,3 +16795,194 @@ Resource Discovery presentation 应直接基于 canonical terminal truth，或�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-129 — AI Durable Task 只冻结 label code，Worker 执行时重新读取 live project label catalog；排队期间标签停用/治理可让已受理任务失败或改变 Prompt/class_id 语义
+
+**级别：高**  
+**模块：AI Annotation / Durable Request Freeze / Label Governance / Prompt Truth / Candidate Identity**
+
+**现象：**
+
+现代 v60 AI Annotation 在提交时已经正确冻结：
+
+- model_config_snapshot；
+- model_config_revision；
+- prompt_template_snapshot；
+- prompt_template_version_id。
+
+但标签合同没有按同样方式冻结。
+
+`annotation_runtime.prepare_request(..., runtime=False)`
+
+在 Web admission 时会：
+
+1. 读取当前项目 `meta.json`；
+2. 根据当前 label catalog 验证用户显式提交的 label code；
+3. 最终 request 只保存：
+   `"labels": ["fire", ...]`
+
+不会保存：
+
+- class_id；
+- display_name_zh；
+- aliases；
+- label catalog revision；
+- schema snapshot / digest。
+
+随后 Worker 真正执行时：
+
+`prepare_request(..., runtime=True)`
+
+**再次读取当前项目 `meta.json`**，重新执行：
+
+`catalog = [item for item in label_catalog(project) if item["code"] in labels]`
+
+再生成：
+
+- `label_catalog`
+- `label_ids`
+- `label_aliases`
+
+并把这份 execution-time catalog 用于 Prompt 和候选结果语义。
+
+因此 Durable Task 的 label schema 不是 submit-time frozen truth，而是执行时 live truth。
+
+**真实失败场景：**
+
+1. 用户创建 AI task，显式选择：
+   `fire`
+2. admission 验证通过，task 已进入 Durable QUEUED；
+3. 在 Worker claim 前，用户进行标签治理：
+   - 停用 fire；
+   - retirement；
+   - 合并到其它 canonical label；
+4. Worker 执行 `runtime=True`；
+5. `label_catalog(project)` 只返回当前 active labels；
+6. `fire` 已不存在于 available_codes；
+7. 触发：
+   `AI 标注标签必须显式使用当前标签库中的英文编码...`
+8. 已经受理成功的 Durable AI task 直接 FAILED。
+
+这不是用户提交无效，而是**提交成功之后的 live schema 变化回写到旧任务执行合同**。
+
+**即使 code 仍存在，也可能改变执行语义：**
+
+如果排队期间只修改：
+
+- display_name_zh；
+- aliases；
+- label metadata/order；
+
+Worker 会使用修改后的 catalog 构造：
+
+- Prompt 的 `labels_json`；
+- `label_aliases`；
+- `label_ids/class_id`。
+
+因此同一个 request.json 中虽然 `labels=["fire"]` 没变：
+
+- 模型看到的中文/别名提示可以变；
+- candidate label normalization 可以变；
+- class_id 投影也依赖 execution-time catalog。
+
+任务结果不再能仅凭 request artifact 重放。
+
+**为什么是前后端/冻结合同 Bug：**
+
+当前代码注释明确宣称：
+
+`Freeze public task input at submit`
+
+而 Model Config / Prompt Template 也确实执行了 snapshot。
+
+但 label schema 是模型推理输入的一部分，却没有冻结。
+
+这造成一个 Durable request 同时包含：
+
+- frozen model；
+- frozen prompt template；
+- **live label catalog**。
+
+冻结边界不一致。
+
+**与已有问题的区别：**
+
+- AUDIT-031：Label disable 可破坏 Training PREPARING 的 inherited training label contract；
+- AUDIT-085：Annotation REMAP 与 Training Prepare 之间缺 label-governance fence；
+- AUDIT-116：AI reference_image_ids 没进入模型视觉推理；
+- AUDIT-117：前端参考图错误自动改变 requested labels。
+
+AUDIT-129 是：
+
+**AI Durable Task 已经合法受理后，Worker 又重新解析 live label schema。**
+
+即使用户从不使用参考图、Training 完全不参与，这个问题仍成立。
+
+**影响：**
+
+- queued/waiting AI task 可因后续标签停用而失败；
+- 同一 task retry 时间不同可能得到不同 Prompt；
+- label aliases/display 修改可改变模型识别行为；
+- candidate class_id/label normalization 依赖执行时 schema；
+- 审计无法证明某个 AI 候选实际使用的是提交时哪一版标签字典；
+- 大量 AI task 排队时，后台标签统一/治理会批量影响已受理任务；
+- 与 10k/20k 标签治理后台任务并发时尤其难以解释和复现。
+
+**现有测试缺口：**
+
+`tests/unit/test_annotation_runtime.py`
+
+已经覆盖：
+
+- submit 冻结 Model Config snapshot/revision；
+- live Model Config 修改后仍使用 frozen snapshot；
+- snapshot tamper fail-closed；
+- reference images 不替用户选 labels。
+
+但没有覆盖：
+
+- submit 后标签停用；
+- submit 后 display/alias 修改；
+- submit 后 label order/class_id 变化；
+- retry 使用同一 frozen label schema。
+
+**建议最小修复：**
+
+不要新增第二 Label owner。
+
+应在现有 annotation_runtime freeze owner 中，把任务所需 label schema 一并冻结，例如：
+
+1. submit 时为 requested labels 冻结最小 catalog：
+   - canonical code；
+   - canonical class identity；
+   - display_name_zh；
+   - aliases；
+2. 保存 `label_schema_snapshot` + digest/revision；
+3. Worker runtime 优先且只使用 frozen snapshot 构造：
+   - Prompt；
+   - label_ids；
+   - label_aliases；
+4. live project schema 只用于 admission：
+   - 新任务是否允许创建；
+   - 不得回写旧 Durable task；
+5. Candidate → Review → Commit 时仍必须映射到**当前 canonical AnnotationRepository label truth**：
+   - 如果 frozen label 在 commit 时已被 retirement/merge，应该进入明确 review/remap/fail-closed 合同；
+   - 不能静默把旧 class_id 直接写进正式 GT；
+6. 不要把整个项目 label schema 全量复制到每个 task，只冻结 requested labels 的最小稳定 identity。
+
+**回归测试建议：**
+
+至少增加：
+
+- submit fire → live fire disabled → queued task 仍按 frozen inference schema运行，或在 commit/review 阶段以明确治理合同处理，不能在 Worker 启动时随机失败；
+- submit 后 display_name/aliases 修改 → runtime Prompt 仍等于 submit-time snapshot；
+- submit 后 unrelated labels 增删不影响 task；
+- retry 仍复用同一 label schema digest；
+- candidate commit 时 retired/merged label fail-closed 或显式 remap，不能绕过 canonical label governance；
+- snapshot tamper 必须拒绝。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
