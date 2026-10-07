@@ -4591,6 +4591,173 @@ AUDIT-060：
 
 ---
 
+
+### AUDIT-061 — ZIP multipart completed session 永不 GC，终态 Import Job 删除也不清理，形成无界 orphan upload metadata
+
+**级别：中**  
+**模块：ZIP Multipart / Import Job Cleanup / Filesystem Lifecycle / Long-running Storage Hygiene**
+
+**现象：**
+
+浏览器大 ZIP 上传使用：
+
+`ZipMultipartRepository`
+
+分片合并成功后：
+
+`assemble(upload_id, destination)`
+
+会：
+
+- 把合并后的 ZIP 写到 Import Job 自己的 `source.zip`；
+- 删除 `import_uploads/{upload_id}/parts`；
+- 把 multipart meta 标成：
+  - `status = completed`
+  - `expires_at = None`
+- 永久保留：
+  `import_uploads/{upload_id}/upload.json`
+
+multipart GC 的实现又明确：
+
+`status == completed -> _expired() == False`
+
+因此 completed upload session 永远不会被 GC。
+
+与此同时，Import Job 的终态清理：
+
+`DELETE /api/v19/projects/{project_id}/import/jobs`
+
+只：
+
+`shutil.rmtree(job_file.parent)`
+
+单任务 DELETE 也只删：
+
+`v19_job_dir(project_id, job_id)`
+
+两处都不会删除：
+
+`project/import_uploads/{upload_id}`
+
+所以成功 multipart import 的 upload metadata 会永久孤立。
+
+**真实调用链：**
+
+上传：
+
+`create_or_resume()`
+→ `import_uploads/{upload_id}/upload.json`
+→ 多个 `parts/*.part`
+
+完成：
+
+`POST .../uploads/{upload_id}/complete`
+→ `_v19_finalize_multipart_upload()`
+→ `repository.assemble(upload_id, job_dir/source.zip)`
+→ meta:
+`status='completed'`
+`expires_at=None`
+→ 删除 parts
+→ 保留 upload.json。
+
+GC：
+
+`cleanup_expired_if_due()`
+→ `_expired(meta)`
+→ 如果 `status == completed`：
+`return False`
+
+永久跳过。
+
+后续：
+
+`create_or_resume()`
+
+只会复用：
+
+`existing.get('status') != 'completed'`
+
+所以 completed session 也不会用于断点续传复用。
+
+终态 job 删除：
+
+只清 job directory，不触碰 multipart repository。
+
+**为什么是 Bug / 生命周期泄漏：**
+
+completed upload metadata 在完成合并后仅用于短期幂等/恢复。
+
+一旦对应 Import Job 已进入终态并被用户清理：
+
+- source ZIP 已被删除；
+- job.json 已被删除；
+- session 不再可 resume；
+- create_or_resume 也不会复用它；
+- 但 upload metadata 永久存在。
+
+这是典型的 owner 生命周期不闭环：
+
+`Import Job` 被删除，
+`Multipart Upload Session` 却没有跟随 retirement。
+
+**影响：**
+
+- 每次成功 multipart ZIP 导入永久多一个目录 + upload.json；
+- 长期运行后 `import_uploads` 目录数量无界增长；
+- 项目备份、目录扫描、迁移、磁盘 inode 使用持续增加；
+- 用户执行“清空已完成导入记录”时并没有真正清干净相关上传元数据；
+- 1k/10k 次导入后会形成明显的目录/元数据技术债。
+
+分片本身会在 assemble 后删除，所以这不是大文件容量泄漏；主要是**无界 orphan metadata / inode 生命周期问题**。
+
+**与 AUDIT-014 的区别：**
+
+AUDIT-014 是：
+
+单个 ZIP Import Job DELETE 可以删除仍在活动中的 job directory，破坏正在执行的 Worker。
+
+AUDIT-061 是：
+
+成功完成后的 multipart session 在终态 job retirement 后反而**永远不被删除**。
+
+一个是删得太早，一个是永远不删。
+
+**为什么 CI 没发现：**
+
+现有 multipart 测试重点验证：
+
+- create/resume；
+- 分片重试；
+- assemble；
+- incomplete TTL GC；
+- completed upload 不被“上传阶段 GC”误删。
+
+但没有跨 owner lifecycle 测试：
+
+1. multipart 完成；
+2. import job 完成；
+3. terminal job 被清理；
+4. 对应 completed multipart metadata 应一起 retirement。
+
+**建议最小修复：**
+
+不要让普通上传 TTL GC 直接无条件删除 completed sessions，因为 finalize/recovery 的短窗口仍需要它们。
+
+正确方向是建立显式 retirement：
+
+- 当 Import Job 达到终态并超过安全保留期，或用户明确删除终态 job 时；
+- 由 Import Job cleanup owner 调用 multipart repository 的显式 `retire(upload_id)`；
+- 仅允许删除 `status=completed` 且对应 job 已终态/不存在的 session；
+- 活动 `merging/validating/selecting/running` 绝不能被清；
+- 可增加 bounded orphan reconciliation，处理历史遗留 completed session。
+
+不要引入第二套 ZIP owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，覆盖 terminal job delete/clear 后 completed multipart session 被 retirement，同时活动 finalize session不被删除。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
