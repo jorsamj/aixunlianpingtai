@@ -16618,3 +16618,180 @@ AUDIT-127 是平台首屏 Bootstrap 自身的全局：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-128 — Resource Discovery 已复用 canonical active truth，但终态展示仍只识别 FAILED/CANCELLED；BLOCKED_BY_ENVIRONMENT 会停止轮询却继续显示“运行中”样式且隐藏失败原因
+
+**级别：中**  
+**模块：Training Resources / Resource Discovery / Durable Task Status Projection / Frontend Consistency**
+
+**现象：**
+
+`static/modules/resource-discovery.js`
+
+已经正确复用：
+
+- `canonicalTaskStatus()`
+- `canonicalTaskPhase()`
+- `isCanonicalTaskActive()`
+
+因此 Resource Discovery 不再维护第二套 active-status owner。
+
+但该页面的**终态 presentation**仍然重新手写了一套不完整判断：
+
+`terminalMessage`
+
+只在：
+
+- `FAILED`
+- `CANCELLED`
+
+时生成。
+
+状态 pill class 也只特殊识别：
+
+- SUCCEEDED / PARTIAL_SUCCESS → ok
+- FAILED → err
+- CANCELLED → warn
+- 其它全部 → run
+
+因此合法 Durable terminal：
+
+- `BLOCKED_BY_ENVIRONMENT`
+- `BLOCKED_BY_HARDWARE`
+
+会进入以下矛盾状态：
+
+1. `isCanonicalTaskActive(task) == false`
+2. PollRegistry 不再继续轮询；
+3. 页面不展示 indeterminate progress；
+4. 但状态 pill 仍使用 `run` 样式；
+5. 文本直接显示技术枚举 `BLOCKED_BY_ENVIRONMENT`；
+6. `terminalMessage == ''`；
+7. 后端 `task.error` 和可操作失败说明不显示。
+
+也就是：
+
+**任务已经 terminal，前端视觉/文案却仍按“运行中/普通状态”投影。**
+
+**BLOCKED_BY_ENVIRONMENT 是真实可达状态：**
+
+统一 Scheduler 对 handler 异常明确分类：
+
+- `HardwareUnavailableError -> BLOCKED_BY_HARDWARE`
+- `EnvironmentError -> BLOCKED_BY_ENVIRONMENT`
+
+Python 3 中 `EnvironmentError` 是 `OSError` 的兼容别名。
+
+Resource Discovery 本身包含真实 I/O：
+
+- 显式目录扫描；
+- task-local SQLite manifest；
+- cache publication；
+- Python executable probe；
+- artifact path / directory creation；
+- 本地文件系统读取。
+
+这些路径出现 OSError 时，Scheduler 可以合法把任务结束为：
+
+`BLOCKED_BY_ENVIRONMENT`。
+
+所以这不是只存在于通用枚举里的理论状态。
+
+**真实调用链：**
+
+Backend：
+
+ResourceDiscoveryHandler
+→ 文件系统 / 本地运行环境异常
+→ `EnvironmentError/OSError`
+→ Scheduler `_finish_error_or_cancel(... BLOCKED_BY_ENVIRONMENT ...)`
+→ Durable task terminal。
+
+Frontend：
+
+`pollTask()`
+→ 收到 BLOCKED_BY_ENVIRONMENT
+→ `isCanonicalTaskActive(task) == false`
+→ 停止下一次 PollRegistry timeout
+→ `progressBody(task,...)`
+→ 不进入 FAILED/CANCELLED failure branch
+→ pill class 落入 `run`
+→ 不显示 `discoveryFailureMessage(task)`。
+
+**为什么与 AUDIT-088 / AUDIT-105 不重复：**
+
+- AUDIT-088：UploadTaskCenter 自己维护过期 active/terminal 状态集合，导致部分终态被误判；
+- AUDIT-105：Detection Batch 前端 terminal enum 漏 BLOCKED，影响批次生命周期；
+- AUDIT-128：Resource Discovery **active 判断已经正确**，但独立的 terminal presentation 仍漂移，导致“停止轮询但显示为运行态且无错误原因”。
+
+owner、页面和具体后果都不同。
+
+**影响：**
+
+- 训练资源检测已经因环境问题终止，但用户看不到明确失败态；
+- 页面不再轮询，状态不会自行变化，用户容易误以为“还在处理”；
+- 真正的 `task.error` 被隐藏，排查 Python 环境、路径权限、磁盘/文件系统问题更困难；
+- 资源检测是训练创建前的重要诊断入口，错误状态会误导用户继续尝试训练；
+- canonical Durable status truth 与页面视觉/文案 truth 不一致。
+
+**现有测试缺口：**
+
+`tests/frontend/resource-discovery-runtime-truth.test.mjs`
+
+当前明确覆盖：
+
+- failed；
+- cancelled；
+- permission error；
+- canonical active truth；
+- PollRegistry owner。
+
+但没有覆盖：
+
+- BLOCKED_BY_ENVIRONMENT；
+- BLOCKED_BY_HARDWARE；
+- blocked terminal pill class；
+- blocked error copy。
+
+测试名称虽然写“failed cancelled and permission states”，实际没有 blocked 合同。
+
+**建议最小修复：**
+
+不要新增新的状态集合。
+
+Resource Discovery presentation 应直接基于 canonical terminal truth，或至少统一一个：
+
+`isFailureTerminal(status)`
+
+覆盖：
+
+- FAILED
+- BLOCKED_BY_ENVIRONMENT
+- BLOCKED_BY_HARDWARE
+
+并：
+
+1. blocked 状态使用 error/warn terminal 样式，不得使用 run；
+2. 显示 `task.error` 的安全可操作摘要；
+3. 根据 blocked type 给出：
+   - 环境不可用；
+   - 硬件不可用；
+   的中文说明；
+4. PollRegistry 停止语义保持现状；
+5. 不把 BLOCKED 状态重新归为 active。
+
+**回归测试建议：**
+
+至少增加：
+
+- BLOCKED_BY_ENVIRONMENT → active=false、pill 非 run、展示环境失败说明；
+- BLOCKED_BY_HARDWARE → active=false、pill 非 run、展示硬件失败说明；
+- FAILED / CANCELLED 现有 copy 保持；
+- SUCCEEDED / PARTIAL_SUCCESS 仍是 success；
+- blocked terminal 后不得重新 arm polling。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
