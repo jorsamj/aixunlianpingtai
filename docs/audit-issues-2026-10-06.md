@@ -6799,6 +6799,109 @@ AUDIT-026 是 v42 Source Collection：
 
 ---
 
+
+### AUDIT-072 — v36 Source Import 用“项目导入前后全量 ID 差集”猜本任务 imported_ids；并发导入的新素材会被误归属并被错误改写 split
+
+**级别：高**  
+**模块：Material Import / Dataset Split / Concurrency / Data Correctness**
+
+**现象：**
+
+`_v36_run_source_import()` 没有保存“本任务实际成功写入的 material IDs”，而是：
+
+1. 启动时：
+   `before_ids = {id for id in load_images(project_id)}`
+2. 自己执行下载 / 图片写入；
+3. 完成后再次：
+   `after = load_images(project_id)`
+4. 用：
+   `imported_ids = [id for id in after if id not in before_ids]`
+   推断“本任务导入的素材”。
+
+这个差集是 **整个 project 的时间窗口差集**，不是 task ownership truth。
+
+因此只要 v36 运行期间另一个合法入口也向同一项目加入素材，例如：
+
+- ZIP Material Import；
+- 普通多图上传；
+- 视频抽帧；
+- Source Collection；
+- 其他并行地址导入；
+
+这些并发新增的 image id 同样不在 `before_ids` 中，会被 v36 当成自己的 `imported_ids`。
+
+随后 v36 会把整组 guessed IDs 交给：
+
+`_v36_apply_split_policy(...)`
+
+并执行：
+
+`material_store(project_id).patch(patches)`
+
+直接修改 split。
+
+**真实数据污染：**
+
+当前 UI 默认 split policy 是：
+
+`annotated_train_unannotated_test`
+
+所以一个与 v36 无关的并发素材，可能被：
+
+- 有框：重分到 train / val；
+- 暂时还没写完 annotation：误判为 unannotated，直接改成 test。
+
+如果用户选择 ratio，则所有被误归属的并发素材都会按 v36 的 ratio 重新切 train / val / test。
+
+也就是说，任务 A 可以修改任务 B 刚刚导入素材的 dataset split。
+
+这违反了 Dataset Revision / Material Import 已经收口的“任务只能提交自己冻结/拥有的数据”边界。
+
+**为什么 AUDIT-071 不能完全覆盖：**
+
+AUDIT-071 是 execution owner / crash recovery 问题。
+
+本条即使把 daemon thread 换成 Durable Task，如果仍保留“before/after 全项目差集”算法，数据污染仍然存在，因此需要单独记录。
+
+**影响：**
+
+- 并发导入时 split 被跨任务篡改；
+- 标注尚未完成投影的素材可能被误判无标注并放入 test；
+- 训练集 / 验证集 / 试验集边界失真；
+- 后续训练 Dataset Revision 可冻结到错误 split；
+- 问题具有时序性，单任务测试难复现；
+- 20k 大批量导入时间窗口更长，发生概率更高。
+
+**建议最小修复：**
+
+不要再通过 project snapshot 差集推断 ownership。
+
+canonical import owner 必须在每次成功写 material 时直接累计本任务的真实 ID：
+
+- `add_image_record()` 返回的 id 立即进入 task-owned result / checkpoint；
+- split 只能作用于该 task-owned ID 集；
+- retry / resume 复用同一 task ledger；
+- 其他任务新增的素材永远不能进入当前任务的 split patch；
+- 最终 report 也应从 task ledger 计算，而不是重新扫描全项目猜测。
+
+迁移 AUDIT-071 到 Durable MATERIAL_IMPORT 时，应顺便删除 before/after project-diff 机制，而不是原样搬过去。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- v36/新 canonical source import 与 ZIP import 同时运行；
+- A 导入期间 B 新增素材，A 的 result IDs 不包含 B；
+- A split patch 绝不修改 B 的 split；
+- B annotation 尚未提交完成时也不能被 A 判成 unannotated；
+- 两个 Source Import 并发时各自 ledger 完全隔离；
+- retry/resume 后 task-owned IDs 不重复、不串任务。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
