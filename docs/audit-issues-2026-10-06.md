@@ -15968,3 +15968,208 @@ AUDIT-122 已展示同一 NEVER 语义在 Quality Center terminal waiter 中会�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-124 — Component Scan 在 RKNN 后处理完成前提前发布 status=done；前端可停止轮询并缓存缺失 RKNN-Toolkit2 的“伪终态”5 分钟
+
+**级别：中～高**  
+**模块：Component Scan / RKNN-Toolkit2 / Backend Completion Semantics / Frontend Polling / Cache Consistency**
+
+**现象：**
+
+当前 v40/v41 组件检测实际存在两阶段执行：
+
+第一阶段是原始 v40：
+
+`_v40_run_component_scan(scan_id)`
+
+第二阶段 v41 又保存旧函数并重新定义同名函数：
+
+```python
+_v41_old_component_scan = _v40_run_component_scan
+
+def _v40_run_component_scan(scan_id):
+    _v41_old_component_scan(scan_id)
+    ...
+    # 再检测 RKNN-Toolkit2
+    comps.append(...)
+    caps.append(...)
+    scan.update(...)
+    _v40_scan_write(scan_id, scan)
+```
+
+问题在于旧 v40 实现结束时已经执行：
+
+- `scan.update(status="done", progress=100, stage="检测完成", ...)`
+- `_v40_scan_write(scan_id, scan)`
+
+而 `_v40_scan_write()` 在：
+
+`status == "done"`
+
+时还会立即覆盖：
+
+`latest.json`
+
+所以系统在 **RKNN-Toolkit2 尚未检测之前**，已经向 API 和 latest snapshot 发布了一次完整终态 `done`。
+
+随后 wrapper 才继续：
+
+- 检查 local Rockchip resource；
+- 检查 remote Rockchip resource；
+- 调 `_detect_local_deploy_resource()` / `_detect_remote_deploy_resource()`；
+- 生成 `rknn_toolkit2` component；
+- 生成“瑞芯微 RKNN” capability；
+- 重算 summary；
+- 再次写同一个 status=done。
+
+**真实前端竞态：**
+
+组件检测页面每约 650ms：
+
+`pollComponentScanV40(id)`
+
+读取：
+
+`GET /api/v40/system/components/scan/{id}`
+
+只要某一轮恰好落在：
+
+“旧 v40 已写 done”
+→
+“v41 RKNN 后处理尚未写回”
+
+这个窗口，前端就会读取到：
+
+- status = done；
+- progress = 100；
+- stage = 检测完成；
+- 但 components 中没有 `rknn_toolkit2`；
+- capabilities 中没有最终“瑞芯微 RKNN”结果；
+- summary 也是未包含该项的旧统计。
+
+前端看到 `done` 后立即：
+
+- 不再 arm 下一轮 poll；
+- 启用“重新检测”按钮；
+- toast “组件检测完成”。
+
+因此后端稍后虽然把完整 RKNN 结果写回同一 scan JSON，当前页面也不会再读取。
+
+**5 分钟缓存会继续放大：**
+
+前端 `COMPONENT_SCAN_CACHE_TTL_MS = 5*60*1000`。
+
+一旦前端在竞态窗口缓存了第一次 done snapshot：
+
+`persistComponentScanCacheV40()`
+
+再次进入组件检测页时：
+
+```js
+const cacheFresh =
+  !!state.componentScan &&
+  !componentScanActive() &&
+  loadedAt ... < 5min
+
+if (cacheFresh) {
+  clearComponentScanPollV40();
+  return true;
+}
+```
+
+也就是说，虽然服务器上的：
+
+- scan JSON；
+- latest.json
+
+已经被 wrapper 补成完整 RKNN 结果，浏览器仍可以在 5 分钟内持续显示旧的“伪终态”。
+
+**为什么是 Bug / 前后端终态合同破坏：**
+
+`done` 应代表：
+
+“该 scan 的所有 canonical 检测阶段已经结束，结果不会再变化。”
+
+当前却存在：
+
+`done -> components/capabilities/summary 继续变化`
+
+即 terminal record 仍被后续业务逻辑修改。
+
+这会破坏：
+
+- 前端停止轮询条件；
+- latest snapshot 的原子性；
+- terminal cache 合法性；
+- 用户对“检测完成”的理解。
+
+这是典型的“终态过早发布”，不是普通展示延迟。
+
+**影响：**
+
+- Rockchip 用户可能看到“检测完成”，却缺少 RKNN-Toolkit2 检测项；
+- “瑞芯微 RKNN” capability 可暂时缺失；
+- summary 总数 / ready / missing 统计可能少一项；
+- 用户可能误以为 RKNN 资源未纳入组件检测；
+- 再次进入页面仍因 5 分钟 terminal cache 显示旧结果；
+- 自动截图/验收测试如果在第一次 done 时抓取，也会得到不完整 truth；
+- latest.json 短时间内对其它消费者同样暴露中间终态。
+
+**为什么 CI 不容易发现：**
+
+单元/接口测试通常：
+
+- 调 scan；
+- 等线程完全结束；
+- 最后读取 JSON。
+
+这样只能看到 wrapper 第二次写入后的最终结果。
+
+缺少合同测试去观察：
+
+- 第一次出现 status=done 的那一刻；
+- 后续是否还能发生内容变化。
+
+只要测试不在两个阶段之间采样，就捕捉不到竞态。
+
+**建议最小修复：**
+
+不要新增第二 Component Scan owner，也不要让前端针对 RKNN 特判多轮 done。
+
+应统一后端完成语义：
+
+1. 原始 v40 scan 核心不要自行最终 `status=done`；
+2. 把基础检测拆成“running 阶段结果”，由最外层 canonical runner 在所有扩展检测完成后一次性：
+   - 计算最终 components；
+   - capabilities；
+   - summary；
+   - atlas；
+   - RKNN；
+   - 写 `status=done`；
+3. `latest.json` 只能在真正最终终态时发布一次；
+4. 如果暂时保留 wrapper，旧阶段完成时最多写：
+   - status=running；
+   - stage=检查 RKNN-Toolkit2；
+   - progress < 100；
+5. terminal record 写出后禁止再修改业务结果。
+
+前端无需增加额外 workaround；只要后端 `done` 恢复真正终态语义，现有 650ms polling + 5min terminal cache 就可以继续成立。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- scan 从 queued/running 到 done 过程中第一次观察到 done 时，已经包含 `rknn_toolkit2`；
+- 第一次 done 之后 scan content/revision 不再变化；
+- latest.json 只发布最终完整 snapshot；
+- local RKNN ready；
+- remote RKNN ready；
+- RKNN missing；
+- 前端读到 done 后停止 polling时结果必须完整；
+- terminal cache 5 分钟内复用的必须是真正最终 snapshot。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
