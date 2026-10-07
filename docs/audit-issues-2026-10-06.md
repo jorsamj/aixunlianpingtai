@@ -14692,3 +14692,232 @@ syncReferenceLabels417() 还会动态插入文案：
 
 ---
 
+
+### AUDIT-118 — Training SSE 未复用 REST 的 canonical queue truth；WAITING_RESOURCE 可被实时流重新覆盖成 QUEUED，训练页状态发生前后端漂移
+
+**级别：高**  
+**模块：Training Task / SSE / REST Projection / Queue Truth / Frontend Runtime**
+
+**现象：**
+
+当前训练任务有两条同时生效的读路径：
+
+1. REST：
+   `GET /api/projects/{project_id}/jobs`
+2. SSE：
+   `GET /api/v64/projects/{project_id}/training-events`
+
+两条路径都声称输出 canonical training display truth，但实际对 QUEUED Training 的资源状态解释不一致。
+
+REST 的 `enrich_job_runtime()` 会：
+
+`task_to_public(durable, repository)`
+
+然后对 QUEUED Training 继续执行：
+
+`training_queue_truth(durable, repository, ...)`
+
+该 canonical projection 会根据真实 runtime 判断：
+
+- 当前没有在线 Worker；
+- 没有可执行 Training 的 Worker；
+- Worker capability 不满足；
+- `training:remote:...` 路由尚未建立；
+- durable stage 已进入 resource_waiting；
+
+并把展示状态投影为：
+
+`WAITING_RESOURCE`
+
+同时给出：
+
+- resource_wait_reason；
+- resource_queue_position；
+- resource_queue_position_exact；
+- resource_pool_key；
+- resource_pool_label。
+
+但 SSE 的 `_training_event_row()` 当前只调用：
+
+`runtime = task_to_public(task)`
+
+没有传 repository，也没有调用 `training_queue_truth()`。
+
+因此对同一个 persisted `QUEUED` task：
+
+- REST 可以返回 `WAITING_RESOURCE`；
+- SSE 却返回基础 `QUEUED`。
+
+**前端会真实覆盖 REST 状态：**
+
+`training-progress-stream.js`
+
+收到 `training.task` 后：
+
+`applyUpdate(update)`
+
+会把：
+
+`update.status`
+
+写入：
+
+`task_status`
+
+而统一状态读取：
+
+`canonicalTaskStatus(task)`
+
+明确优先：
+
+`task.task_status ?? task.status`
+
+所以即使页面刚通过 REST 得到：
+
+`WAITING_RESOURCE`
+
+只要初始 SSE event 到达，就会把 `task_status` 改回：
+
+`QUEUED`
+
+随后 `trainingDisplayStatus()` 会把它展示为：
+
+“排队中”
+
+而不是：
+
+“等待资源”。
+
+这不是只少了一个辅助字段，而是同一个 Durable Task 在两个 canonical read owner 中得到不同用户可见状态。
+
+**典型可复现场景：**
+
+场景 A — 没有在线 Worker：
+
+- TaskRepository persisted status = QUEUED；
+- REST `training_queue_truth()` → WAITING_RESOURCE / “当前没有在线 Worker”；
+- SSE `task_to_public(task)` → QUEUED；
+- 前端收到 SSE 后从“等待资源”切回“排队中”。
+
+场景 B — 指定远程训练：
+
+- resource_key = `training:remote:<server>`；
+- REST 当前明确投影：
+  `WAITING_RESOURCE`
+  / “指定远程服务器的 Worker 路由尚未建立”；
+- SSE 仍可发 `QUEUED`。
+
+场景 C — capability 不匹配：
+
+- 有在线 Worker，但不满足 requested capabilities；
+- REST → WAITING_RESOURCE；
+- SSE → QUEUED。
+
+**额外前端不一致：**
+
+SSE `applyUpdate()` 当前只更新：
+
+- task_status；
+- persisted_status；
+- phase；
+- progress；
+- worker；
+- lease；
+- resource_wait_reason；
+- 时间 / error 等。
+
+它没有同步更新：
+
+- resource_queue_position；
+- resource_queue_position_exact；
+- resource_pool_key；
+- resource_pool_label。
+
+因此发生漂移后可能形成混合状态：
+
+- `task_status = QUEUED`（来自 SSE）；
+- pool / queue metadata 仍是上一轮 REST 的 waiting truth；
+- resource_wait_reason 因 nullish merge 还可能继续保留旧 reason。
+
+也就是同一行可能同时携带：
+
+“排队中” + 上一次“等待资源”的 metadata。
+
+**为什么是 Bug / 前后端不一致：**
+
+`_training_event_row()` 的注释明确写：
+
+“Build the same canonical training display truth used by HTTP reads.”
+
+但实现并没有走 HTTP read 使用的 queue projection。
+
+因此当前存在两个训练状态解释 owner：
+
+- REST owner：`training_queue_truth()`
+- SSE owner：`effective_task_status()` / raw TaskRecord stage
+
+这违反“同一个 durable truth 只做一次 canonical projection”的收口目标。
+
+**影响：**
+
+- 训练任务页状态可在“等待资源 / 排队中”之间闪烁；
+- 用户无法准确判断任务到底只是排队，还是根本没有可执行资源；
+- remote training 的“路由尚未建立”提示可能被实时流弱化；
+- capability / Worker 配置问题可能被误认为普通排队；
+- queue position / pool metadata 与状态可能互相矛盾；
+- realtime coverage 完整后 PollRegistry 会让 SSE 成为主要更新源，错误状态可持续存在直到下一次 REST reconcile；
+- 运维现场容易错误判断 Scheduler / Worker / GPU 是否正常。
+
+**与已有问题的区别：**
+
+- AUDIT-063：Central Scheduler 缺生产 assignment driver，是调度执行链问题；
+- AUDIT-064：task public projection 为 exact queue truth 做无界 queued hydration，是性能问题；
+- AUDIT-066：Training jobs REST 每次扫描全量 job history，是性能问题；
+- AUDIT-118：REST 与 SSE 对**同一个 Training Task 的资源等待状态投影不一致**，属于 read-model contract split。
+
+不需要重新设计 Scheduler 或 TrainingTaskRuntime。
+
+**建议最小修复：**
+
+不要在前端再补第二套资源判断。
+
+应让 SSE 与 REST 共享同一个 Training public projection，例如：
+
+1. 抽出单一 helper：
+   - `task_to_public(...)`
+   - 对 Training QUEUED 统一叠加 `training_queue_truth(...)`；
+2. `enrich_job_runtime()` 与 `_training_event_row()` 都调用该 helper；
+3. SSE event 同步携带并更新：
+   - status；
+   - resource_wait_reason；
+   - resource_queue_position；
+   - resource_queue_position_exact；
+   - resource_pool_key；
+   - resource_pool_label；
+4. 不要让浏览器根据 Worker 数量自行重新推导 WAITING_RESOURCE；
+5. 保留 persisted_status=QUEUED，展示状态与持久化状态继续分离。
+
+同时要注意 AUDIT-064：不能为了 SSE 每 750ms projection 又重新引入全量 `queued_candidates()` hydration。queue truth 必须使用 bounded/indexed query 或共享一次 runtime snapshot。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- persisted QUEUED + no online Worker：
+  REST 与 SSE 都必须 WAITING_RESOURCE；
+- remote resource key：
+  REST 与 SSE reason 完全一致；
+- capability mismatch：
+  REST 与 SSE status/reason 一致；
+- resource 可用：
+  两边都为 QUEUED；
+- SSE applyUpdate 后：
+  task_status / pool / queue position / wait reason 同步更新，不保留混合旧 truth；
+- REST reconcile → SSE event 不得把 waiting 行重新改回 queued；
+- 100 active Training SSE 仍保持 bounded；
+- 1k/10k/20k 全局 queued task 下不能因 realtime projection 退化为 O(N) 每 750ms 扫描。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
