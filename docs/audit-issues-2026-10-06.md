@@ -12413,3 +12413,88 @@ AUDIT-102 是即使 GT 两次写入都完全合法，GT commit 后的 Material p
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-103 — system/recommendation 每次 GET 都同步启动 Python 并 import torch；首次训练创建把最多 8 秒 CUDA 探测放进表单打开关键路径
+
+**级别：中～高**  
+**模块：Training Create Hydration / System Recommendation / CUDA Probe / Web Latency**
+
+**现象：**
+
+当前 `GET /api/system/recommendation` 每次请求都会同步执行：
+
+`subprocess.run([sys.executable, '-c', 'import json,torch; ...'], timeout=8)`
+
+子进程需要完整启动 Python、import torch、调用 `torch.cuda.is_available()`，CUDA 可用时还会读取 `torch.cuda.get_device_name(0)`。
+
+这虽然避免了损坏/缓慢的 CUDA runtime 直接冻结主 Web 进程，但普通 GET 本身仍会一直等待子进程结束；最坏到 8 秒 timeout 才返回“CUDA 探测超时”。
+
+**真实前端关键路径：**
+
+`TrainingCreateHydrationRuntime.start()` 在 `state.rec == null` 时把：
+
+- `/api/training_options?project_id=...`；
+- `/api/system/recommendation`；
+
+并行放进训练创建 hydration。
+
+现有 `tests/frontend/training-create-hydration.test.mjs` 还明确保护：首次训练打开会先显示 shell，必须等 options 和 recommendation 两个 promise 都完成后才调用 canonical `openTrainingForm()`。
+
+因此 recommendation 不是后台装饰信息；首次训练创建实际会等待它。
+
+前端已经有正确的缓存行为：一旦 `state.rec` 有值，后续内部打开不会再请求 recommendation。问题是**第一次请求本身做昂贵的实时硬件探测**。
+
+**为什么不是 AUDIT-101：**
+
+AUDIT-101 是 `/api/training_options` 在 GET 内串行探测 legacy remote servers、递归扫描 Paddle/模型资源，最坏可被外部网络拖到约 80 秒以上。
+
+AUDIT-103 是另一个独立 endpoint：即使 training_options 完全优化成 bounded cache read，首次 TrainingCreateHydration 仍要等 `/api/system/recommendation` 的 Python+torch 子进程，最长约 8 秒。
+
+**影响：**
+
+- 首次打开训练创建弹窗会长期停在“正在准备训练配置”；
+- Windows / CUDA runtime 初始化慢时尤为明显；
+- 没有 GPU 的控制端也要为每次冷 recommendation 请求 import torch；
+- 多浏览器/多用户同时首次进入训练时会并发启动多个 Python+torch 子进程；
+- 子进程会额外占 CPU、内存和 DLL/动态库加载 I/O；
+- 用户容易把“硬件推荐探测慢”误认为训练弹窗或训练资源接口卡死。
+
+**现有安全点：**
+
+- child process + timeout 的 fail-safe 方向是对的，不能改回 Web 进程内直接 import/probe；
+- TrainingCreateHydrationRuntime 的 state cache / in-flight 行为也应保留；
+- 问题在于把硬件发现放在同步 read endpoint，而不是已有 sampled/cached resource truth。
+
+**为什么现有测试没发现：**
+
+前端 hydration 测试只用可控 Promise mock recommendation，并验证并行等待/缓存，不会运行真实 Python+torch。
+
+当前没有看到后端合同要求 `/api/system/recommendation`：
+
+- 不启动新 Python 进程；
+- 使用缓存硬件 truth；
+- 在固定短延迟内返回。
+
+**建议最小修复：**
+
+不要简单把 8 秒 timeout 改成 1 秒，也不要在前端复制 GPU 探测逻辑。
+
+1. GPU/CUDA 可用性由已有 Resource Discovery / Service Node / scheduler resource truth 的后台采样 owner维护；
+2. `/api/system/recommendation` 只读取最近一次 sampled hardware snapshot 并计算 recommendation；
+3. snapshot 缺失或 stale 时快速返回 `cuda=unconfirmed`，后台触发/提示显式资源扫描；
+4. 本机控制端无 GPU 不应影响远程 scheduler-owned Training target；
+5. 显式“重新检测资源”可以启动 Durable Resource Discovery，但普通训练创建 GET 不得等待 torch import。
+
+**回归测试建议：**
+
+- monkeypatch `subprocess.run` 为慢调用，普通 recommendation GET 不应直接触发它；
+- 无缓存硬件 truth 时快速返回 unconfirmed recommendation；
+- 后台 discovery 完成后 recommendation 能读取新 GPU truth；
+- 首次 TrainingCreateHydration 不因 CUDA probe 阻塞 8 秒；
+- 后续 `state.rec` 缓存复用合同保持；
+- Windows CPU-only、Linux GPU、远程 scheduler 三种场景均覆盖。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
