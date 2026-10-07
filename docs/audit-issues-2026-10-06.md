@@ -21830,3 +21830,207 @@ Quality tests 主要验证计算结果值。
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-160 — Material Integrity 部分扫描失败仍无条件 SUCCEEDED；结果页不显示 scan_failures，可把未完整核验的 Full Audit 展示成“未发现异常”
+
+**级别：高**  
+**模块：Material Integrity / Durable Task Status / Audit Completeness / Storage I/O / Quality Truth**
+
+**现象：**
+
+当前 `_run_material_integrity_audit()` 在逐素材核验过程中已经区分两类结果：
+
+1. 可以形成正式问题证据的异常：
+   - INVALID_IMAGE；
+   - CONTENT_HASH_MISMATCH；
+   - MATERIAL_OBJECT_MISSING；
+   这些会写入 issue_items。
+2. 无法完成本次核验的运行时/存储错误：
+   - 未归类 StorageError；
+   - provider/runtime 异常；
+   - 其它 Exception；
+   这些不会生成“素材有问题”的证据，而是：
+   `scan_failures += 1`。
+
+checkpoint 也明确把它投影为：
+- succeeded = processed - scan_failures；
+- failed = scan_failures。
+
+但任务结尾无论 `scan_failures` 是 0、1 还是 1000，都执行：
+
+`append_task_log(... TaskStatus.SUCCEEDED)`
+`return TaskStatus.SUCCEEDED, RESULT_REF`
+
+result.json 虽然包含：
+
+`"scan_failures": scan_failures`
+
+但 Durable terminal status 仍是 SUCCEEDED。
+
+**前端进一步丢失这份不完整性真相：**
+
+当前素材页：
+
+`openMaterialIntegrityAudit47()`
+
+只按 task.status 判断：
+
+- QUEUED / WAITING_RESOURCE / RUNNING / CANCEL_REQUESTED → 进行中；
+- status != SUCCEEDED → “最近一次审计未完成”；
+- SUCCEEDED → 直接加载问题组并展示审计结果。
+
+SUCCEEDED 页面只显示：
+
+- 已核验素材 = result.scanned_images；
+- 受影响素材；
+- 问题组。
+
+完全没有显示：
+
+`result.scan_failures`
+
+并且 groups 为空时直接显示：
+
+> 未发现重复或异常素材
+
+所以：
+
+```text
+20,000 张素材
+19,800 张真实核验完成
+200 张 provider/runtime 读取失败
+0 个已确认异常 issue group
+```
+
+当前可以得到：
+
+`TaskStatus.SUCCEEDED`
+
+并在 UI 显示：
+
+`已核验素材 20000`
+`未发现重复或异常素材`
+
+但真实情况是：
+
+> 有 200 张根本没有完成完整性判断。
+
+**真实调用链：**
+
+用户在“数据集 → 重复与异常素材”点击：
+`运行 Full Audit`
+→ `POST /api/v62/.../material-integrity/audits`
+→ Durable MATERIAL_BATCH / AUDIT_MATERIAL_INTEGRITY
+→ `_run_material_integrity_audit()`
+→ StorageManager.materialize / CleaningAnalysisRuntime
+→ 部分不可分类错误：
+`scan_failures += 1`
+→ result.json 写入 scan_failures
+→ task 仍 SUCCEEDED
+→ 用户再次打开“重复与异常素材”
+→ 前端只看到 SUCCEEDED
+→ 不展示 scan_failures
+→ 可能显示“未发现重复或异常素材”。
+
+**为什么这是 Bug：**
+
+Material Integrity 是“Full Audit”的证据 owner。
+
+这里的 scan failure 不是：
+
+“已核验后确认没有问题”。
+
+而是：
+
+“本轮没有得到足够证据判断这一张素材”。
+
+把两者压缩成 SUCCEEDED，会破坏审计完整性语义。
+
+尤其该页面后续还允许用户基于审计结果：
+
+- 查看重复；
+- 删除素材；
+- 保留某一 Ground Truth；
+- 判断项目是否已清理干净。
+
+因此“审计完整完成”和“部分无法检查”必须严格区分。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-057：Full Audit active-task 恢复/防重问题；
+- AUDIT-058：结果分页后续页不可见；
+- AUDIT-097：长扫描不校验 Material/Annotation revision，可能形成 mixed-generation snapshot；
+- AUDIT-160：即使 repository revision 完全稳定，部分素材发生不可判定读取失败时，任务仍被标成 SUCCEEDED，且 UI 隐藏 scan_failures。
+
+097 是“扫描到的是不同世代”。
+
+160 是“有些素材根本没扫描成功却宣称 Full Audit 成功”。
+
+**影响：**
+
+- Full Audit 可产生假“全绿”；
+- 存储源临时错误/权限问题/远端抖动可能被掩盖；
+- 用户可能基于不完整审计继续训练或清理；
+- 20k 数据中少量失败很难人工发现；
+- 运维只看 task status 会认为审计成功；
+- 重新审计的必要性不会被 UI 提示。
+
+**现有测试为什么没有发现：**
+
+现有 Material Integrity 测试主要验证：
+
+- 重复图片分组；
+- annotation conflict；
+- invalid image；
+- missing object/hash mismatch；
+- cursor pagination；
+- background task creation。
+
+这些都属于“可以形成明确 issue_type”的业务异常。
+
+缺少测试：
+
+- provider 抛未知 StorageError；
+- analysis runtime 发生非 ImageDecodeError；
+- scan_failures > 0 的 terminal status；
+- 前端对不完整审计的展示。
+
+因此 result 中虽然已有 scan_failures 字段，但 status/UI 从未消费它。
+
+**建议最小修复方向：**
+
+不要把未知读取失败伪造成某个素材质量问题。
+
+应保留两类真相：
+
+1. 已确认素材异常 → issue group；
+2. 本轮未能完成核验 → audit scan failure。
+
+最小方向：
+
+- `scan_failures == 0` → SUCCEEDED；
+- `0 < scan_failures < processed` → PARTIAL_SUCCESS（或已有等价“不完整”终态）；
+- 全部/关键阶段无法扫描 → FAILED；
+- public result 暴露 scan_failures / succeeded；
+- UI 对 PARTIAL_SUCCESS 显示：
+  “审计部分完成，N 张未能核验，请修复环境后重试”；
+- groups 为空但 scan_failures > 0 时绝不能显示“未发现异常”；
+- retry 应只重试未完成项或明确重新发起完整 audit，但不能把旧 partial 当 complete truth；
+- 不新增第二套 Material Integrity owner。
+
+**应新增回归测试：**
+
+- 100 张全部可扫描 → SUCCEEDED；
+- 99 成功 + 1 未知 provider error → 非 SUCCEEDED / PARTIAL_SUCCESS；
+- 0 成功 + 全部运行时失败 → FAILED；
+- known missing object 仍形成 MATERIAL_OBJECT_MISSING，不计为未知 scan failure；
+- PARTIAL_SUCCESS 页面明确显示失败数量；
+- groups=0 + scan_failures>0 不得显示“未发现重复或异常素材”；
+- retry/re-run 后全部成功才能升级为 SUCCEEDED；
+- 与 AUDIT-097 revision fence 同时成立，不得用忽略 scan failures 的方式规避 revision 校验。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
