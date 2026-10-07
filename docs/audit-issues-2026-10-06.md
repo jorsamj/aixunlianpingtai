@@ -24567,3 +24567,169 @@ Storage Source 已经是素材的 canonical storage owner，但 PATCH owner 当�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-179 — 训练报告“模型辅助错误归因”在单个 HTTP 请求内串行执行最多 30 次 VLM 推理；最长可占用约 90 分钟且无 Durable lifecycle
+
+**级别：中高**  
+**模块：Training Report / AI Error Cause Analysis / VLM / Web Request Lifecycle / Durable Task / Performance**
+
+**现象：**
+
+当前训练报告仍真实展示：
+
+`模型辅助分析原因`
+
+按钮。
+
+前端：
+
+`runAiCause425(job_id)`
+
+会直接同步等待：
+
+`POST /api/v45/projects/{project_id}/jobs/{job_id}/error-cause-analysis`
+
+请求完成。
+
+后端 `v45_error_cause_analysis()` 在一个普通 FastAPI 同步请求中：
+
+1. 取最多 30 个 error samples；
+2. 对每张图片逐张调用 `_v35_call_model()`；
+3. 所有调用是串行执行；
+4. 每张 `requests.post(..., timeout=180)`；
+5. 只有整个 for-loop 完成后，才一次性把：
+   `report['ai_error_analysis']`
+   写回 `job.json`。
+
+因此最坏情况下：
+
+`30 × 180 秒 ≈ 5400 秒 ≈ 90 分钟`
+
+都被压在一个 HTTP 请求生命周期内。
+
+**真实调用链：**
+
+Training Task 详情  
+→ `trainingReport425(id)`  
+→ 当前 report UI 显示“模型辅助分析原因”  
+→ `openAiCause425(id)`  
+→ 用户可选择 1~30 张，默认 12 张  
+→ `runAiCause425(id)`  
+→ POST v45 error-cause-analysis  
+→ `v45_error_cause_analysis()`  
+→ for error sample  
+→ `_v35_call_model()`  
+→ `requests.post(... timeout=180)`  
+→ 下一张  
+→ 全部结束后写 `job.json`  
+→ 浏览器才收到响应。
+
+**为什么是 Bug / 生命周期旁路：**
+
+这已经不是普通轻量同步查询，而是多次外部 AI 推理的长任务。
+
+平台已经为 AI Annotation / MaterialBatch / Deployment Test / Training 建立 Durable Task 生命周期，但这里仍把多项昂贵外部推理塞在 Web request 中，形成独立的非 Durable 执行 owner。
+
+当前没有：
+
+- task_id；
+- queue；
+- progress；
+- cancellation；
+- lease；
+- retry generation；
+- checkpoint；
+- per-image durable result；
+- crash recovery；
+- browser refresh recovery。
+
+所以同一类“多图片 AI 工作”在这里重新出现第二种生命周期。
+
+**用户真实可达场景：**
+
+1. 训练完成后打开训练报告；
+2. 报告存在 error_samples；
+3. 已配置视觉模型；
+4. 点击“模型辅助分析原因”；
+5. 输入 30；
+6. VLM 每张耗时几十秒，或某些请求接近 timeout；
+7. 页面长时间卡在一个请求上，没有真实进度，也不能安全停止。
+
+这不是 legacy-only endpoint：当前 `trainingReportCore425` 仍直接渲染这个按钮并调用 v45。
+
+**影响：**
+
+- 单个请求可能持续数分钟到约 90 分钟；
+- 长时间占用 Web worker/thread 与连接；
+- 反向代理 / 浏览器 / 网络超时可让用户得到失败体验，但服务端仍可能继续执行；
+- 服务重启会丢失本轮全部未提交结果；
+- 前 1~29 张已经消耗的模型调用费用/时间不会形成 durable checkpoint；
+- 用户刷新页面无法知道是否仍在运行；
+- 重复点击可并发重复发起同一批昂贵推理；
+- 最终只在循环结束后写 job，无法逐项恢复。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-047：Model Config secret freeze；
+- AUDIT-069/083：AI 图片池/Candidate Review 的 10k 性能；
+- AUDIT-116/117/129：AI Annotation reference/label contract；
+- AUDIT-163：训练报告仍调用 legacy supplement，形成第二套 iteration/data owner；
+- AUDIT-179：训练报告中的多图片 VLM 错误归因本身是**同步 Web 长任务 owner**，缺失 Durable lifecycle。
+
+因此即使修复 163 的 supplement，179 仍然独立存在。
+
+**现有测试为什么没有发现：**
+
+现有报告/UI 测试主要验证：
+
+- 按钮存在；
+- request payload；
+- report 持久化；
+- 单次模型调用返回结构。
+
+没有覆盖：
+
+- 12/30 张真实串行耗时；
+- 单图 180 秒 timeout 累加；
+- 浏览器 disconnect；
+- 服务进程重启；
+- 重复点击；
+- 中途取消；
+- 第 N 张失败后的 checkpoint/retry。
+
+**建议最小修复方向：**
+
+不要新增第二 AI Runtime。
+
+应复用现有 Durable Task / PollRegistry 基础设施：
+
+1. 把“错误原因分析”建成明确的 Durable task kind/operation，或纳入已有合适的 AI batch owner；
+2. request 只负责创建任务并快速返回 202；
+3. 冻结：
+   - job/version identity；
+   - error sample IDs；
+   - model config identity/secret generation；
+   - prompt contract；
+4. per-image 结果增量持久化；
+5. 支持进度、取消、retry/recover；
+6. 前端复用统一 Task poll truth，不自己造 timer；
+7. 完成后再由单一 report owner原子关联分析结果；
+8. 同一 job + 同一分析输入应支持 idempotency，避免重复计费。
+
+**应新增回归测试：**
+
+- 30 个样本创建请求快速 202，不串行等待模型；
+- per-image progress 可恢复；
+- 第 5 张失败后 retry 不重复前 4 张已确认结果；
+- cancel 后不再发起后续 VLM 请求；
+- Worker crash/restart 可继续；
+- browser refresh 可恢复任务；
+- 重复点击同一 input 不产生重复昂贵执行；
+- report 只关联 completed/verified 分析结果；
+- 单个 provider timeout 不把 Web 请求占用累计到整批任务结束。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
