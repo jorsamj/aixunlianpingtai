@@ -7000,6 +7000,110 @@ Python 会对 **每一条 project image** 再执行一次集合构造，而不�
 
 ---
 
+
+### AUDIT-074 — v36 Source Import 列表先全量读取全部历史 JSON、再截最新 100；旧 active task 可从前端消失并让 PollRegistry 提前停轮询
+
+**级别：中～高**  
+**模块：Source Import / Active Task Truth / Polling / History Scale**
+
+**现象：**
+
+v36 job list 当前实现为：
+
+`_v36_load_source_jobs(project_id)`
+
+先：
+
+- `glob("*.json")`
+- 对全部历史 job 做 `stat()`
+- 按 mtime 排序
+- 对全部文件逐个 `read_json()`
+
+然后 endpoint 才：
+
+`return {"items": items[:100]}`
+
+也就是：
+
+- 服务端请求成本随累计历史线性增长；
+- 返回给浏览器的 active truth 却只剩“最近更新的 100 条”。
+
+前端 `refreshSourceImportTasksV36()` 随后直接以这 100 条判断：
+
+`state.sourceImportTasks.some(t => ['queued','running'].includes(...))`
+
+如果没有，就：
+
+- clear `SOURCE_IMPORT_POLL_KEY_V36`
+- 当成全部任务已 terminal
+- 执行完成后的 labels/material scoped refresh。
+
+**旧 active task 消失场景：**
+
+v36 大目录导入在“正在解析目录 / 正在写素材”阶段没有逐图片持续刷新 job mtime。
+
+如果它运行较久，同时产生 100 个 mtime 更新更晚的 source-import job，则这个仍真实 running 的旧任务可以被挤到第 101 条以后：
+
+- backend 不返回它；
+- 前端任务表看不到它；
+- 前端判断当前没有 queued/running；
+- PollRegistry 停止主动轮询；
+- 用户得到“当前导入都结束”的错误视图。
+
+这与“最新 100 历史”作为“全部 active truth”混用了两个不同语义。
+
+**额外性能问题：**
+
+即便 endpoint 最终只返回 100 条，它仍在每次 GET 前把全部历史 JSON 文件排序并读完。
+
+因此历史达到 1k / 10k 后，1.8 秒轮询会反复做：
+
+- directory glob；
+- N 次 stat；
+- N 次 JSON read / parse；
+- N log N 排序。
+
+截断并没有限制服务端工作量。
+
+**影响：**
+
+- 旧 running source import 从 UI 消失；
+- PollRegistry 提前停止；
+- active task 状态不可观测；
+- terminal refresh 可在真实导入仍运行时触发；
+- 历史越多，轮询接口越慢；
+- 结合 AUDIT-071 的 daemon owner，用户也没有统一任务中心可以找回这条任务。
+
+**建议最小修复：**
+
+AUDIT-071 迁移到 canonical Durable MATERIAL_IMPORT 后，应直接复用：
+
+- status-indexed active query；
+- cursor-paged terminal history；
+- active tasks 永远完整返回或独立查询；
+- browser 不从 bounded terminal page 推断“是否还有 active”。
+
+如果 v36 兼容 endpoint 暂时保留，也至少需要：
+
+- active 与 history 分开读取；
+- active 不受 100 条上限影响；
+- terminal history 使用真正分页 / cursor；
+- 不得每 1.8 秒全量扫描整个 JSON 历史目录。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 1 个旧 running + 100/200 个更新更晚 terminal job，旧 running 仍必须可见；
+- browser 不得因 bounded history 缺失 active 而停 PollRegistry；
+- 1k / 10k 历史时 list 请求只读取 bounded page / indexed active truth；
+- active 完成后才触发 terminal scoped refresh。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
