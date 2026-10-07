@@ -10673,3 +10673,248 @@ happy-path 训练 commit 明确断言：
 
 ---
 
+### AUDIT-092 — Agent result confirm 先提交正式业务结果、后写 Task result receipt；receipt I/O 失败后 Agent 可把已成功发布的训练/转换任务终结为 FAILED
+
+**级别：高**  
+**模块：Agent Finalization / Durable Task / Remote Result Publication / Training / Conversion / Material Import / Cleaning**
+
+**现象：**
+
+当前 Agent portable result protocol 在：
+
+\`AgentExecutionService.confirm_result_upload()\`
+
+中先通过：
+
+\`self.fenced.begin_finalization(...)\`
+
+赢得 finalization gate。
+
+随后会调用：
+
+\`self.result_commit_handler(...)\`
+
+把远程执行结果真正提交给业务 canonical owner。
+
+按 task kind，这个 handler 可执行：
+
+- TRAINING：算法版本 + ModelArtifact / lineage / evaluation；
+- MODEL_CONVERSION：conversion job / artifact；
+- MATERIAL_IMPORT：远程导入正式结果；
+- MATERIAL_BATCH：远程清洗 review commit；
+- DEPLOYMENT_TEST：RKNN board verification truth。
+
+但**业务 commit 完成以后**，control plane 才继续写：
+
+1. \`remote-results/{generation}/result.json\`；
+2. \`remote-results/{generation}/upload.json\` 中：
+   \`confirmed = true\` / \`result_ref\`。
+
+也就是说：
+
+**canonical 业务真相先落地，Durable Task 的“本次业务 commit 已成功”receipt 后落地。**
+
+如果这两次 task artifact 写入中的任意一步发生 I/O 异常，业务 commit 已无法回滚，但 \`confirm_result_upload()\` 会向 Agent 返回失败。
+
+**真实顺序：**
+
+\`confirm_result_upload()\`
+
+→ 校验 remote result object
+
+→ \`fenced.begin_finalization()\`
+
+→ task stage = \`finalizing_commit\`
+
+→ \`result_commit_handler(...)\`
+
+→ **正式业务 owner 已 commit**
+
+→ \`artifacts.atomic_write_json(task_id, result_ref, result)\`
+
+→ \`artifacts.atomic_write_json(task_id, state_ref, state{confirmed:true})\`
+
+→ 返回 confirmed=true。
+
+故障窗口明确存在于：
+
+“业务 commit 已成功”
+
+和：
+
+“task result receipt 已 durable”
+
+之间。
+
+**为什么会真的变成 FAILED，而不是只卡住：**
+
+\`begin_finalization()\` 只把：
+
+\`stage = finalizing_commit\`
+
+但 task 的 status 仍是：
+
+\`RUNNING\`。
+
+而 \`FencedTaskRepository.finish()\` 的终态更新条件仍是：
+
+\`status IN ('RUNNING','CANCEL_REQUESTED')\`
+
+没有禁止：
+
+\`RUNNING + stage=finalizing_commit -> FAILED\`。
+
+以远程训练 runner 为例：
+
+\`NodeAgentTrainingRunner.run()\`
+
+调用：
+
+\`client.confirm_result_upload(...)\`
+
+若这里因为 control-plane receipt 写盘失败抛异常，会进入通用 exception 分支：
+
+→ \`_finish_best_effort(lease, "FAILED", error=...)\`
+
+所以最终可形成：
+
+- Algorithm Version 已经存在；
+- ModelArtifact 已经存在；
+- 外部发布请求甚至可能已经标记；
+- 但 Durable TRAINING task 最终 status = FAILED。
+
+其它 Agent runner / executor 的异常路径同样会 best-effort publish FAILED，因此不是训练专属风险。
+
+**可达故障示例：**
+
+业务 commit 成功后：
+
+- task_runtime/artifacts 磁盘空间耗尽；
+- atomic rename / fsync 失败；
+- 权限变化；
+- 临时文件创建失败；
+- 文件系统只读；
+- artifact store 短暂 I/O error；
+
+都可以使 result receipt 写入失败。
+
+这些故障与业务模型存储、算法版本文件可能位于不同目录/卷，因此“业务 commit 成功但 task artifact write 失败”完全可达。
+
+**为什么是 Task truth / Business truth split-brain：**
+
+当前 UI、重试入口、统计和恢复首先看 Durable Task status。
+
+如果 task 被标为 FAILED，用户会自然认为：
+
+“这次远程训练/转换没有产生可用结果”。
+
+但 canonical 业务 owner 可能已经成功：
+
+- Training version 已创建；
+- Conversion job 已 done；
+- Cleaning result 已应用；
+- Material Import 已正式入库。
+
+用户点击 retry 后可能再创建下一 generation，从而产生重复或冲突的业务结果。
+
+**与 AUDIT-091 的区别：**
+
+AUDIT-091 是：
+
+**业务 commit 内部前半段失败**——ModelArtifact 已登记，但 Algorithm Version 还没 attach。
+
+AUDIT-092 是：
+
+**业务 commit 已完整成功**，但 Durable Task 的 post-commit receipt 写入失败，然后 Task 被错误终结为 FAILED。
+
+一个是业务 owner 内部半提交；一个是 business commit 与 task terminal truth 之间的事务断裂。
+
+两者修复点不同，不能合并。
+
+**与 cancellation finalization fence 的关系：**
+
+当前 \`begin_finalization()\` 已正确解决：
+
+“取消和成功 commit 谁先赢”。
+
+它会拒绝后来的 cancel，因此这个部分不用重做。
+
+问题是 fence 只保护：
+
+\`cancel vs commit\`
+
+没有保护：
+
+\`commit success vs task FAILED publication\`。
+
+**影响：**
+
+- 训练任务显示失败，但新算法版本实际上已经生成；
+- 用户 retry 可再生成第二个版本/第二批业务副作用；
+- Conversion 显示失败但 conversion job/artifact 已成功；
+- 成功率统计被污染；
+- 自动告警/运维看到假失败；
+- external publication 与本地 task 状态可能互相矛盾；
+- recovery 不能仅根据 task status 判断业务是否已提交；
+- audit trail 无法回答“这个 FAILED task 是否其实已经发布结果”。
+
+**现有测试缺口：**
+
+当前测试主要覆盖：
+
+- cancel 在 finalization 前赢；
+- stale execution generation 被 fence；
+- result object SHA/size；
+- happy-path confirm → finish success；
+- commit handler 直接抛错时不应发布成功。
+
+但缺少关键 fault injection：
+
+\`result_commit_handler 已返回成功\`
+
+→ 下一次 \`ArtifactStore.atomic_write_json\` 抛异常
+
+→ 系统必须**不能**把 task 作为普通 FAILED 处理。
+
+也缺少 restart recovery：
+
+“业务 owner 已有 deterministic committed version/job，但 task receipt 缺失”时，control plane 应重新构造 receipt 并完成正确终态。
+
+**建议最小修复：**
+
+不要新增第二 Task owner，也不要撤销现有 finalization fence。
+
+应扩展 finalization contract，使“业务 commit 已发生”成为可恢复的 durable truth：
+
+1. canonical commit handler 必须返回 deterministic commit identity；
+2. commit owner 应提供：
+   - \`reconcile_committed(task_id, generation)\`
+   或等价幂等查询；
+3. 一旦业务 commit 成功：
+   - 后续 task receipt I/O 失败不能允许普通 \`finish(FAILED)\` 覆盖事实；
+   - task 应进入明确 recovery state，例如 \`finalizing_commit_recovery\`；
+4. Worker/Agent 重连后：
+   - 先按 deterministic identity 查询 canonical business truth；
+   - 若已 committed，补写 result receipt 并 finish SUCCEEDED/PARTIAL_SUCCESS；
+   - 若明确未 committed，才允许 FAILED；
+5. 如果需要 commit receipt，必须由现有 owner 协调，不要新建平行业务数据库；
+6. 对 Training / Conversion / Cleaning / Material Import / Deployment Test 共用同一 finalization recovery contract。
+
+**回归测试建议：**
+
+至少增加：
+
+- Training business commit 成功后，result.json write fault；
+- upload-state confirmed write fault；
+- task 不得最终变成普通 FAILED；
+- restart 后能从 algorithm version / deterministic version id 恢复 success receipt；
+- Conversion job 已 done + receipt fault → 恢复 SUCCEEDED；
+- commit handler 真正失败时仍可 FAILED；
+- cancel 在 begin_finalization 前仍然正确赢；
+- stale generation 不得借 recovery 认领新 generation 的结果。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
