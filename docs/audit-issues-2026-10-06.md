@@ -5402,6 +5402,254 @@ AI 页面一次 50 条 refresh 至少会：
 
 ---
 
+
+### AUDIT-065 — Durable Task 缺少统一 terminal retention / artifact GC owner；AI 候选、MaterialBatch selection、Video 原始文件与 frames、Deployment Test predictions 可长期无界占盘
+
+**级别：中～高**  
+**模块：Task Runtime / ArtifactStore / AI Annotation / MaterialBatch / Video Frames / Deployment Test / Storage Retention**
+
+**现象：**
+
+当前 Durable Task Runtime 有：
+
+`ArtifactStore.delete_task(task_id)`
+
+和：
+
+`TaskRepository.delete_terminal(task_id)`
+
+两个底层能力。
+
+但是生产代码里真正把二者组成完整生命周期删除的，目前明确只有 Training 专用路径：
+
+`_purge_terminal_training_job_record()`
+
+→ `shared_task_repository().delete_terminal(... kind=TRAINING)`
+
+→ `shared_task_artifacts().delete_task(job_id)`
+
+→ `shutil.rmtree(job_dir)`
+
+其它主要 Durable Task owner：
+
+- AI Annotation；
+- MaterialBatch / Cleaning / Integrity Audit / Label Remap；
+- Video Frames；
+- Deployment Test；
+
+没有统一：
+
+- terminal delete API；
+- retention policy；
+- background GC；
+- 按 finished_at / age 的 prune；
+- artifact archive/retire owner。
+
+Worker startup、Worker supervisor、Task Runtime Scheduler、Web startup 中也没有发现 terminal task artifact GC。
+
+因此 terminal Durable Task 会永久保留 task row / task artifact 目录，除非某个业务模块额外手工清理。
+
+**这不是“小 JSON 累积”：**
+
+1. **AI Annotation**
+
+`CandidateStore`
+
+直接写：
+
+`task_runtime/artifacts/<task_id>/candidates/items.sqlite3`
+
+其中持久化：
+
+- 每张图的候选状态；
+- boxes；
+- item_json；
+- review/commit metadata；
+- manifest。
+
+大批量 AI 标注任务会形成真实 SQLite 文件。
+
+2. **MaterialBatch / Cleaning / Integrity / Label Remap**
+
+创建时写：
+
+`selection.sqlite3`
+
+并冻结完整素材 selection。
+
+1k / 10k / 20k 素材批处理会持续形成每任务独立 selection DB、checkpoint、result/audit artifacts。
+
+3. **Video Frames**
+
+创建任务时原始视频直接上传到：
+
+`task_runtime/artifacts/<task_id>/inputs/<filename>`
+
+Worker 又把抽帧中间结果写到：
+
+`task_runtime/artifacts/<task_id>/frames/`
+
+成功后：
+
+`VideoFrameHandler.run()`
+
+只写 `result.json` / checkpoint 并返回 `SUCCEEDED`。
+
+没有删除：
+
+- 原始上传视频；
+- task-local frames 目录。
+
+虽然最终正式素材已通过 StorageManager 写入 MaterialRepository 对应存储，但任务临时输入和抽帧副本仍保留。
+
+4. **Deployment Test**
+
+测试图片与结果图不是写在 ArtifactStore，而是：
+
+`projects/<project_id>/predictions/<task_id>/input.*`
+
+`projects/<project_id>/predictions/<task_id>/result.jpg`
+
+Durable task 自身另有：
+
+`task_runtime/artifacts/<task_id>/request.json`
+及 log/result artifacts。
+
+当前 API 只有：
+
+- create；
+- get；
+- cancel；
+- feedback evidence promotion；
+
+没有 terminal delete / retention owner，因此 predictions 目录也会长期累积。
+
+**为什么是 Bug / 技术债：**
+
+当前 Durable Task 已经成为：
+
+- Training；
+- AI Annotation；
+- Cleaning；
+- Material Import；
+- Video；
+- Deployment Test；
+- Integrity Audit；
+
+等主链共同依赖的统一 Runtime owner。
+
+但“任务执行 owner”已经统一，“任务终态数据保留 owner”却没有统一。
+
+结果是：
+
+`TaskRepository`
+
+和：
+
+`ArtifactStore`
+
+生命周期不对称：
+
+创建任务时统一创建 Durable truth + artifacts；
+
+终态后除了 Training 外没有统一 retire contract。
+
+长期运行时磁盘占用只增不减。
+
+**影响：**
+
+- AI 大批量标注会留下大量 candidate SQLite；
+- 清洗 / Integrity / Remap 会留下 selection/result DB；
+- 视频切帧会重复保留原视频 + frames + 正式素材副本；
+- Deployment Test 高频测试会持续生成 predictions/<task_id>；
+- 运行数月后 `/data/platform-data` 可被 terminal task artifacts 持续吃满；
+- 磁盘满后会反向影响：
+  - SQLite commit；
+  - training artifact；
+  - Material upload；
+  - Remote staging；
+  - log / checkpoint；
+  - Worker heartbeat/恢复；
+- 用户没有统一界面或后台机制清掉这些历史 artifacts。
+
+**为什么不能简单“任务成功就删”：**
+
+部分 terminal artifacts 仍有审计/恢复价值：
+
+- AI review candidate；
+- Material Integrity 审计结果；
+- Deployment Test evidence；
+- Video task result metadata；
+- Training lineage。
+
+所以正确方案不是每个 handler `finally: rmtree(...)`。
+
+必须有明确 retention owner：
+
+- 哪些 artifact 要长期留；
+- 哪些只用于执行临时态；
+- terminal 后立即可删哪些；
+- 哪些按 N 天保留；
+- 哪些被版本/反馈/审计引用时必须 pin；
+- 删除 task row 前如何保证下游引用已解除。
+
+**建议最小修复：**
+
+不要在每个模块新增一套 GC。
+
+复用现有：
+
+`TaskRepository`
++
+`ArtifactStore`
+
+增加单一 Task Retention owner，例如：
+
+- terminal task retention policy；
+- bounded GC scan；
+- pinned/referenced task protection；
+- artifact-size accounting；
+- project/global retention quota。
+
+最低限度应做到：
+
+1. terminal task 按 kind 定义 retention：
+   - transient execution artifacts；
+   - audit/evidence artifacts；
+   - pinned lineage artifacts；
+2. Video 成功后立即删除可重建的：
+   - 原始 task-local source video；
+   - task-local frames；
+   前提是正式 MaterialRepository 已 commit 且 result evidence 已校验；
+3. Deployment Test：
+   - feedback evidence 已 promotion 后，predictions 可进入 shorter retention；
+   - 未 promotion 的历史测试按 age GC；
+4. AI Candidate：
+   - AWAITING_CONFIRMATION 必须 pin；
+   - SUCCEEDED/CANCELLED/FAILED terminal 后按 retention；
+5. MaterialBatch：
+   - active/retryable task 必须 pin；
+   - terminal 且无后续审计引用后按 retention；
+6. GC 必须 bounded / cursor 化，不能一次扫全目录；
+7. task row / artifact / auxiliary directory 必须原子或 journal 化 retirement，避免“删 row 留文件”或“删文件留可点击记录”。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- Video SUCCEEDED 后 transient input/frames 能按策略 retire；
+- AI AWAITING_CONFIRMATION 不得被 GC；
+- terminal AI task 超过 retention 后 candidate DB 可清；
+- MaterialBatch retry window 内不得被清；
+- Deployment Test promoted evidence 不被错误删除；
+- 10k terminal tasks GC 使用 bounded page，不 full-scan；
+- Training 现有专用删除语义保持不回退。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
