@@ -22813,3 +22813,99 @@ canonical 训练任务页由 `TrainingTaskVisibilityRuntime` 渲染。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-166 — 非 Agent INT8 转换在创建 Durable Task 前全量 materialize 校准候选；calibration_count=100 也可同步触发 20k 素材 I/O
+
+**级别：中高**  
+**模块：Model Conversion / INT8 Calibration / Admission Performance / StorageManager / Durable Task Lifecycle**
+
+**现象：**
+
+当前版本转换弹窗的正式入口 `submitConvert428()` 会 POST `/api/v39/projects/{project_id}/deploy/jobs`。对于非 Agent 的 Rockchip / Sophon INT8（代码还覆盖 TensorRT INT8 分支），后端在真正创建 `MODEL_CONVERSION` Durable Task 之前同步调用 `_deploy_prepare_calibration()`。
+
+`_deploy_prepare_calibration()` 当前顺序是：
+
+1. `images = load_images(project_id)` 全量读取项目素材；
+2. 遍历全部 dataset/split 命中的素材；
+3. 对每一张先调用 `resolve_material_path()`；
+4. `resolve_material_path()` 实际进入 `StorageManager.materialize()`，可能校验本地文件、命中/填充缓存，或访问 OSS/S3/MinIO；
+5. 所有命中项都 materialize 完后才执行 `selected = selected[:limit]`；
+6. 只复制最终前 `calibration_count` 张到 task calibration 目录；
+7. 再对复制结果逐文件 SHA256；
+8. 最后才 `_write_deploy_job()` / `shared_task_repository().create(...)`。
+
+因此用户即使填写 `calibration_count=100`，若所选 dataset/split 有 20,000 张，创建请求仍可能先对 20,000 张执行 materialize，再只使用前 100 张。
+
+**真实调用链：**
+
+`算法版本 → 新建版本转换 → INT8 → 开始转换`
+→ `submitConvert428()`
+→ `POST /api/v39/.../deploy/jobs`
+→ `v39_create_deploy_job()`
+→ `_v39_create_deploy_job_under_version_fence()`
+→ `_deploy_prepare_calibration()`
+→ `load_images()` 全项目 hydration
+→ 对全部命中项 `resolve_material_path()` / `StorageManager.materialize()`
+→ 最后 slice `calibration_count`
+→ copy + SHA256
+→ 才创建 conversion job / Durable Task。
+
+前端此时只显示按钮文案“正在创建转换任务…”。在整个校准准备阶段 Task Center 没有 task identity，无法显示真实进度，也无法取消。
+
+**为什么是 Bug：**
+
+`calibration_count` 本来就是明确的数量边界，但实现把 limit 放在昂贵 I/O 之后，导致 bounded request 退化成 O(全部命中素材)。同时项目已经把转换执行收口到 Durable `MODEL_CONVERSION`，重型校准准备却仍留在同步 Web admission。
+
+**用户真实可达场景：**
+
+- 20k 素材项目，dataset/split 命中 15k；
+- 选择本机/非 Agent Rockchip 或 Sophon INT8；
+- 校准数量保持默认 100；
+- 点击开始转换；
+- 浏览器长时间等待 POST；对象存储素材还可能产生大量远程读取/缓存 I/O；
+- Durable conversion task 在这些操作结束前不可见。
+
+**影响：**
+
+- 1k/10k/20k 项目创建 INT8 转换明显变慢；
+- 对象存储场景可能放大为大量网络 I/O；
+- Web 请求超时后用户无法知道是否创建成功；
+- 重试点击可能重复校准准备；
+- 无 Task Center 进度/取消；
+- calibration_count 的产品边界不具备性能约束意义。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-109：Deployment Resource PATCH/DELETE 可破坏已创建 Remote Conversion；
+- AUDIT-137：测试发布仍存在第二套导出/转换 Runtime；
+- AUDIT-154：External auto-publish 周期性重 SHA256 历史交付文件；
+- AUDIT-166：canonical v39 转换创建本身在 Durable Task 入队前，为有限数量 INT8 校准图无界 materialize 全部匹配素材。
+
+**现有测试为什么没有发现：**
+
+现有转换测试主要验证 target/resource/芯片/精度参数、校准产物可用性和转换结果；没有 1k/10k/20k admission contract，也没有断言 `calibration_count=N` 时 `materialize()` 调用最多为 N（或有小幅 bounded overfetch），更没有要求 Durable Task 在重型校准准备前已经可见。
+
+**建议最小修复方向：**
+
+不要新增第二套 Conversion owner。
+
+1. 校准候选选择必须先在 MaterialRepository 层按 dataset/split 做 bounded cursor/limit；
+2. 只对最终选中的 N 张执行 `materialize()`；
+3. 更稳妥的是先快速创建 Durable conversion/preparation task，再由 Worker 完成校准 staging；
+4. preparation 阶段复用同一 task identity、progress/cancel/recovery；
+5. Agent 的 portable calibration snapshot owner 继续保留，不要再造第三套；
+6. 不要用更长 HTTP timeout 掩盖。
+
+**应新增回归测试：**
+
+- 20k 匹配素材 + calibration_count=100，materialize 次数必须有界于 100（或明确 bounded batch）；
+- 对象存储 provider 不得为未入选校准集的素材触发 reader/cache I/O；
+- 校准准备期间任务可查询进度/取消（若迁入 Worker）；
+- calibration_count=1000 同样受边界约束；
+- dataset/split 无匹配素材仍明确失败；
+- Agent Rockchip portable calibration 现有合同不回退。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
