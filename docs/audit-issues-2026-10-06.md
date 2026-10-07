@@ -16228,3 +16228,201 @@ AUDIT-124 是单个 scan 内部 v40→v41 两阶段过早发布 done；AUDIT-125
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-126 — Component Scan 失败任务不会成为 latest truth；缓存过期或换客户端后会回退展示更早成功快照，失败原因也未进入前端持久化快照
+
+**级别：中～高**  
+**模块：Component Scan / latest.json / Failure Truth / Frontend Cache / Multi-client Consistency**
+
+**现象：**
+
+当前 Component Scan 每个 scan 都会写：
+
+`component_scans/{scan_id}.json`
+
+但：
+
+`_v40_scan_write(scan_id, data)`
+
+只有在：
+
+`data.status == "done"`
+
+时才覆盖：
+
+`component_scans/latest.json`。
+
+扫描异常时：
+
+`_v40_run_component_scan()`
+
+会把当前 scan 更新为：
+
+- `status="failed"`
+- `stage="检测失败"`
+- `error=<异常>`
+- `message=<异常>`
+
+然后同样调用：
+
+`_v40_scan_write(scan_id, scan)`
+
+但因为状态不是 done，这次失败不会进入 `latest.json`。
+
+因此后端所谓：
+
+`GET /api/v40/system/components/latest`
+
+实际不是“最后一次检测”，而是“最后一次成功完成的检测”。
+
+**真实可达链：**
+
+假设：
+
+1. Scan A 成功：
+   - `A.status=done`
+   - `latest.json=A`
+2. 环境随后发生变化，用户重新检测；
+3. Scan B 在 Python / SDK / subprocess / 远程资源探测阶段抛异常：
+   - `B.status=failed`
+   - `B.json` 正确保存失败；
+   - `latest.json` 仍保持 A；
+4. 当前页面轮询 B 时暂时能拿到 B；
+5. 但其它浏览器 / 其它管理端首次打开组件检测页时，只会请求：
+   - `GET /api/v40/system/components/latest`
+   - 因而直接看到旧的 A；
+6. 当前浏览器本地 terminal cache 超过 5 分钟以后，再进入页面也会重新读取 latest，于是从 B 倒退回 A。
+
+前端当前入口：
+
+`renderComponentCheckV40()`
+
+明确：
+
+- terminal snapshot 5 分钟内直接复用；
+- cache 不新鲜时只请求 `/api/v40/system/components/latest`；
+- 没有“latest failed scan id / current scan id”恢复接口。
+
+所以这个 stale truth 不是理论问题，而是页面恢复的真实唯一服务器来源。
+
+**前端还会进一步丢失失败原因：**
+
+`componentCacheShapeV40()`
+
+只持久化：
+
+- id
+- status
+- stage
+- progress
+- summary
+- components
+- capabilities
+- atlas
+- created_at
+- updated_at
+
+没有保存：
+
+- `error`
+- `message`
+
+因此即使当前浏览器刚刚轮询到 failed：
+
+- reload 后恢复出来的本地 snapshot 也只有 `status=failed`；
+- 具体失败原因已被 cache shape 丢掉；
+- `componentBodyHtml()` 本身也没有稳定渲染 scan-level error。
+
+最终用户可能只看到一份不完整组件列表，随后在 cache 过期后又被旧成功 latest 覆盖。
+
+**为什么与 AUDIT-124 / 125 不重复：**
+
+- AUDIT-124：单个 scan 在 RKNN 后处理结束前过早发布 done；
+- AUDIT-125：两个并发 scan 没有 generation fence，旧 scan 后完成可覆盖新 scan；
+- AUDIT-126：**最新 scan 自己失败时，失败根本不会成为 latest truth，页面恢复会回退到更早成功记录。**
+
+即使修完 124/125：
+
+- 每个 scan 都只在最终时刻发布；
+- generation 也严格单调；
+
+只要 failed 不更新 current/latest，126 仍然存在。
+
+**影响：**
+
+- 用户刚执行的失败检测无法成为系统当前真相；
+- 第二浏览器 / 第二管理端会立即看到旧成功结果；
+- 同浏览器 cache 过期后也会回退到旧成功；
+- 环境已损坏、远端资源异常或扫描 runtime 自身失败时，页面可能继续展示“之前满足”的能力快照；
+- 运维人员可能据旧结果误判训练 / ONNX / RKNN / Ascend 等能力仍然可用；
+- 故障排查时 scan-level error/message 不能稳定跨刷新保留；
+- 与 AUDIT-125 并存时，“latest”的语义同时受到完成顺序和失败过滤两种漂移影响。
+
+**现有测试缺口：**
+
+当前：
+
+`tests/browser/component-scan-performance.spec.mjs`
+
+只覆盖：
+
+- running progress；
+- 页面离开后停止 polling；
+- terminal `done` snapshot 复用。
+
+`tests/frontend/component-scan-performance.test.mjs`
+
+只覆盖：
+
+- stable DOM；
+- PollRegistry；
+- 5 分钟 terminal cache；
+- cache shape 不保存 secret。
+
+没有覆盖：
+
+`success A -> failed B -> reopen / new client / cache TTL expiry`
+
+也没有断言：
+
+- failed 必须成为最新 attempt；
+- error/message 必须可恢复；
+- 旧 success 不能覆盖最新 failed。
+
+**建议最小修复：**
+
+不要新增第二 Component Scan owner。
+
+与 AUDIT-125 的 generation fence 一起收口 current/latest 语义：
+
+1. 区分：
+   - `latest_attempt` / canonical current truth；
+   - 如确有产品需要，可另保留 `latest_success` 作为历史参考；
+2. 当前 `/components/latest` 应返回“最新请求 generation 的最终状态”，包括：
+   - done
+   - failed；
+3. 只有当前 latest requested generation 可以更新 canonical latest attempt；
+4. failed 也必须持久化：
+   - error
+   - message
+   - finished_at；
+5. 前端安全 cache shape 应保留可展示的失败信息；
+6. 页面为 failed 提供明确错误态，不应静默复用旧 success；
+7. 不能通过“failed 时继续保留旧 latest”来维持绿色能力展示。
+
+**回归测试建议：**
+
+至少增加：
+
+- A success，B failed → `GET /latest` 必须返回 B；
+- 新浏览器首次打开必须看到 B failed，不得看到 A；
+- B failed 后 5 分钟 cache 过期仍返回 B；
+- failed cache round-trip 后 error/message 仍可展示；
+- A 比 B 晚结束时，在 generation fence 下也不得覆盖 B；
+- C 新成功后 latest 才允许从 B failed 前进到 C success。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
