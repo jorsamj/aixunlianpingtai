@@ -24733,3 +24733,165 @@ Training Task 详情
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-180 — 训练报告错误样本预览用 live bounded state.images 按 filename 查找，未绑定 frozen Snapshot；预览结果取决于当前分页/改名/删除
+
+**级别：中**  
+**模块：Training Report / Error Samples / Snapshot Traceability / Frontend bounded truth / Material Pagination**
+
+**现象：**
+
+当前真实训练详情仍通过：
+
+`TrainingRecoveryRuntime → window.trainingReport425 → trainingReportCore425`
+
+展示训练报告。
+
+报告里的错误样本来自训练完成时的 `report.error_samples`，这些错误本质上属于当次 frozen training Snapshot / Dataset Revision。
+
+但前端生成错误样本卡片时不是按 Snapshot identity 读取图片，而是：
+
+`const im=(state.images||[]).find(x=>x.filename===e.image)`
+
+找到时用：
+
+`<img src="${im.url}">`
+
+找不到就直接显示：
+
+`无预览`。
+
+现代素材页已经服务端分页，startup snapshot 也不再携带全量 images。当前 `state.images` 只是浏览器此刻持有的一小页 live Material rows，而不是训练快照素材真相。
+
+**真实调用链：**
+
+训练完成  
+→ frozen Snapshot / Dataset Revision 保留本次 train/val/test identity  
+→ training report 记录 error_samples  
+→ 用户从训练任务详情点击“训练报告”  
+→ `trainingReport425(id)`  
+→ GET v44 job report  
+→ `trainingReportCore425`  
+→ 对每个 error sample：
+`state.images.find(filename)`
+→ 找不到则“无预览”。
+
+**用户真实可达场景：**
+
+场景 1：
+
+1. 项目 20k 素材；
+2. 当前素材分页只持有约 48 条；
+3. 某训练错误样本来自第 5000 张；
+4. 用户直接从“训练任务”打开报告；
+5. `state.images` 当前页不含它；
+6. 错误样本稳定显示“无预览”。
+
+场景 2：
+
+1. 打开报告时某错误样本刚好在 current material page；
+2. 用户切换素材页/搜索/刷新，`state.images` 被另一页替换；
+3. 再打开相同训练报告；
+4. 同一份 frozen report 的预览从“有图”变成“无预览”。
+
+场景 3：
+
+1. 训练后用户重命名原素材；
+2. report.error_samples 仍保存训练时 filename；
+3. live Material filename 已变化；
+4. filename lookup 失败。
+
+场景 4：
+
+1. 原 live Material 后续被删除；
+2. frozen training Snapshot / portable bundle 仍可能保留当时训练证据；
+3. report UI 只查 live Material，因此无法展示历史错误样本。
+
+**为什么是 Bug / bounded truth 漂移：**
+
+训练报告属于**历史训练证据**，错误样本必须绑定：
+
+- snapshot_id；
+- image_id / snapshot item identity；
+- 或可复现的 frozen artifact path。
+
+当前却重新把：
+
+`live browser state.images + filename`
+
+当成错误样本图片 owner。
+
+这同时违反：
+
+1. bounded truth：一页 Material 不能代表全项目；
+2. historical truth：live Material 不能代表旧训练 Snapshot；
+3. identity：filename 不是稳定 image identity。
+
+**影响：**
+
+- 大项目报告大量显示“无预览”；
+- 同一报告的展示结果随浏览器分页变化；
+- 素材改名后历史报告失去图片；
+- 素材删除后即使 Snapshot 仍有证据也无法追溯；
+- 用户进行错误原因分析/数据补充时缺少关键视觉证据；
+- 容易误以为训练报告本身没有保存错误样本。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-048/159：质量页图片 I/O 性能；
+- AUDIT-145：Dataset list 全量 hydration；
+- AUDIT-163：训练详情调用 legacy report owner，并提供错误的 supplement 数据入口；
+- AUDIT-179：报告里的 VLM 错误归因是同步长任务；
+- AUDIT-180：报告**错误样本图片 identity / preview owner**错误使用 live bounded `state.images`，与 frozen training Snapshot 脱节。
+
+即使 163 把 Report owner 统一，新的 canonical Report 仍必须解决 180 的 snapshot-bound preview identity，不能只换 UI。
+
+**现有测试为什么没有发现：**
+
+现有报告测试通常：
+
+- 构造 report/error_samples；
+- 验证文本与指标；
+- 或测试少量 `state.images` 恰好包含目标图片。
+
+没有覆盖：
+
+- 20k 项目、当前页只有 48 条；
+- error sample 不在当前页；
+- 同一报告在分页切换前后；
+- training 后 Material rename；
+- training 后 live Material delete；
+- Snapshot 中图片仍存在但 live row 不存在。
+
+**建议最小修复方向：**
+
+不要让 Report 自己全量 hydrate MaterialRepository。
+
+正确方向：
+
+1. report error sample 生成时保存稳定 image identity，优先 image_id / snapshot item id，而不是只有 filename；
+2. report/version metadata 关联 snapshot_id；
+3. 提供按：
+   `snapshot_id + image_id`
+   读取历史预览的 canonical endpoint，或安全读取已冻结 portable snapshot artifact；
+4. 报告 UI 直接消费 frozen preview URL；
+5. live Material 仍存在时可作为辅助 metadata，但不能作为唯一图片 owner；
+6. 不要为修预览调用 `ensureFullPool()`，否则会把功能 Bug 变成 20k 全量性能 Bug；
+7. snapshot 已按 retention policy 不可用时，应明确显示“历史快照已归档/不可用”，而不是因分页未命中显示“无预览”。
+
+**应新增回归测试：**
+
+- 20k project + current material page 48 条，error sample 不在当前页 → 仍可预览；
+- 切换 Material page 不改变同一 report preview；
+- Material rename 后旧 report 仍按 frozen identity 预览；
+- live Material delete 后，如果 Snapshot retained，report 仍能预览；
+- 同 filename 不同 image_id 时不串图；
+- snapshot identity mismatch fail-closed；
+- 不得通过全量加载 live materials 修复；
+- version report / task report 使用同一历史 preview owner。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
