@@ -22696,3 +22696,120 @@ canonical 训练任务页由 `TrainingTaskVisibilityRuntime` 渲染。
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-165 — Training Submit 只要求选中 ≥2 张素材；默认随机三路划分至少需要 3 个可拆分 component，任务可 202 受理后在 PREPARE 必失败
+
+**级别：中高**  
+**模块：Training Create / Split Admission / Duplicate-Group Leakage Guard / Training Submit / TRAINING_PREPARE**
+
+**现象：**
+
+当前前端 `trainingSubmitReadiness()` 对训练素材的最小条件只有：
+
+`(draft.materialIds || []).length >= 2`。
+
+只要其它条件满足，2 张素材即可启用“开始训练”。
+
+但默认 `random_test_from_training_pool` 模式的 canonical backend 不是简单按图片数量切比例，而是先按不可拆分 component 分组，再依次产生 test 与 validation，最终要求 train / validation / test 三个集合都非空。
+
+`build_split_manifest()` 当前流程：
+
+1. `_deduplicate_selected()` 去重；
+2. `_component_keys()` 按内容重复、视频/组关系等形成不可拆分 component；
+3. 第一次 `_select_grouped(... min_remaining_groups=2)` 划 test；
+4. 第二次 `_select_grouped(... min_remaining_groups=1)` 划 validation；
+5. 最后显式要求 train / validation / test 全部非空。
+
+`_select_grouped()` 又明确：
+
+`if len(grouped) <= min_remaining_groups: raise ValueError('按不可拆分数据组件分组后组数不足，无法避免数据泄漏')`。
+
+因此默认随机模式至少需要 3 个可拆分 component，而不是“2 张图片”。
+
+**真实用户可达场景 A — 两张合法正式 GT：**
+
+1. 用户选择 2 张已清洗、正式标注且互不重复的图片；
+2. server selection-summary 可得到 `eligible_count=2`；
+3. 前端 readiness 因 `materialIds.length >= 2` 显示可提交；
+4. `/train/start` 先创建 TRAINING + TRAINING_PREPARE 并返回 202；
+5. Prepare 进入 `build_split_manifest()`；
+6. 默认随机 test split 看到仅 2 个 component，而 `min_remaining_groups=2`；
+7. 必然失败：`按不可拆分数据组件分组后组数不足，无法避免数据泄漏`。
+
+**真实用户可达场景 B — 图片数足够但 component 不足：**
+
+例如选择 10 张正式 GT，但它们全部来自同一视频/同一 duplicate group，canonical leakage guard 会把它们视为 1 个不可拆分 component。
+
+前端仍按 10 张计数并允许提交，Prepare 仍必失败。
+
+**独立试验集模式也存在同类结构性缺口：**
+
+`independent_test_set` 虽要求至少选择 1 张 testMaterial，但训练池仍需至少 2 个可拆分 component 才能再拆 train/validation。前端只检查 train material 数和 test 是否非空，不检查 component truth。
+
+**为什么这是 Bug：**
+
+后端 fail-closed 是正确的，不能为了让 2 张数据通过而放宽 leakage guard。
+
+问题是前端 admission 只使用图片数量，完全没有消费 canonical split feasibility。于是一个在提交时已经可以确定不可能成功的请求，仍被包装成“任务已进入后台队列”。
+
+**影响：**
+
+- 2 张素材的默认训练稳定“创建成功→Prepare 失败”；
+- 3+ 图片但 duplicate/video/group component 过少时同样失败；
+- 用户容易把错误归因于 Worker/GPU；
+- Task Center 累积本可预防的失败任务；
+- 修复 AUDIT-150 后，即使 `eligible_count>0`，仍会留下这一层假 admission。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-053：随机 split 的 UI 百分比显示与后端实际比例不一致；
+- AUDIT-150：全部是 pending-only，`eligible_count=0` 仍允许提交；
+- AUDIT-165：素材全部可以是正式 GT、`eligible_count>0`，但按 canonical component/leakage 规则结构上无法生成三路 split，前端仍允许提交。
+
+**现有测试为什么没有发现：**
+
+`training-submit` 前端测试只固定：
+
+- 2 张 material → ready=true；
+- 1 张 material → ready=false。
+
+它没有调用 server split feasibility，也没有 duplicate/video/group component 数据。
+
+后端 `training_splits` 测试则单独验证：
+
+- component 不足时必须 fail-closed；
+- train/validation/test 不得泄漏；
+- 大规模 grouped split 正确。
+
+两边都绿，但没有跨层合同测试：
+
+`UI ready=true` ⇒ `canonical split admission 至少结构上可行`。
+
+**建议最小修复方向：**
+
+不要在浏览器重新实现 `_component_keys/_select_grouped`，避免第二套 split owner。
+
+建议复用后端 canonical split planner，增加一个 bounded preflight / readiness projection：
+
+1. 基于当前 selection + split_mode + percentages + selected labels 计算 split feasibility；
+2. 返回至少：`split_feasible / reason / effective_component_count`；
+3. 前端 Submit readiness 只消费这份 server truth；
+4. 默认随机模式 component 不足时禁用提交并提示“当前素材无法安全拆分训练/验证/试验集”；
+5. independent_test_set 同样校验 train pool 的 validation split 与 test leakage；
+6. Prepare 中现有 fail-closed 保持不变作为最终防线；
+7. 不要简单把最小前端数量改成 3，因为 20 张同组素材仍可能只有 1 个 component。
+
+**应新增回归测试：**
+
+- random 模式，2 张独立正式 GT → submit disabled / preflight infeasible；
+- random 模式，3 张三个独立 component → 可提交；
+- random 模式，10 张但只有 2 个 component → 不得提交；
+- independent 模式，train pool 只有 1 个 component + test 非空 → 不得提交；
+- duplicate/video/group relation 与 Prepare 使用同一 component semantics；
+- pending-only 继续由 AUDIT-150 的 eligible gate 拦截；
+- backend split leakage fail-closed 不放宽。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
