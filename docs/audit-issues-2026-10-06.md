@@ -5179,6 +5179,229 @@ AUDIT-063 发生得更早：
 
 ---
 
+
+### AUDIT-064 — 分页任务列表内部仍无界 hydrate 全部 QUEUED Durable Task，并对每个可见 queued task 重复扫描；active polling 将其放大为 O(page × total_queued) 热路径
+
+**级别：中～高**  
+**模块：Task Runtime Public Projection / Queue Position / AI Annotation / Video Tasks / Unified Task List / Training List / 1k-20k Performance**
+
+**现象：**
+
+当前多个任务列表 API 在对外只返回 50 / 100 条分页记录时，为了计算：
+
+- `resource_queue_position`
+- `resource_queue_position_exact`
+
+会先调用：
+
+`TaskRepository.queued_candidates()`
+
+该函数不是 bounded page，也不是 aggregate/index query，而是：
+
+```sql
+SELECT * FROM tasks
+ WHERE status='QUEUED'
+ ORDER BY priority ASC, queue_rank DESC, created_at ASC, task_id ASC
+```
+
+随后直接：
+
+`fetchall()`
+
+并把**整个 Task Runtime 数据库中的全部 QUEUED task**转换成 Python `TaskRecord` tuple。
+
+然后，对列表页里的每个可见 queued 非训练任务：
+
+`task_to_public()`
+→ `resource_queue_position()`
+→ `_non_training_queue_position_exact()`
+
+后者又会对这份全量 `queued_candidates` 做：
+
+- compatible Worker capability 过滤；
+- claimable candidate 全量 list comprehension；
+- cross-resource 扫描；
+- task_id position 扫描。
+
+CPU Training 的 `training_queue_truth()` 在满足 exactness 条件时也会对相同全量候选做类似扫描。
+
+所以对一个返回 `P` 条 queued task 的列表，内部复杂度接近：
+
+`O(total_queued hydration + P × total_queued scan)`
+
+而不是 API 表面上的 `O(P)`。
+
+**真实调用链：**
+
+统一任务列表：
+
+`GET /api/v62/projects/{project_id}/tasks?limit<=100`
+
+→ `repository.list(... limit=P)`（本身是 bounded cursor page）
+
+→ `worker_runtime = WorkerInstanceService(...).list_runtime()`
+
+→ **`queued_candidates = repository.queued_candidates()`（全库全部 QUEUED）**
+
+→ 对 page.items 每条：
+
+`task_to_public(... queued_candidates=queued_candidates)`
+
+→ queued 非 Training：
+
+`_non_training_queue_position_exact()`
+
+→ `claimable = [candidate for candidate in candidates if _worker_can_claim(...)]`
+
+→ 再做 cross-resource / position scan。
+
+同样模式存在于：
+
+- `GET /api/v60/.../annotation-tasks?limit=50`
+- `GET /api/v33/.../video-tasks?limit=50`
+- `GET /api/projects/{project_id}/jobs`
+- 其它调用 `task_to_public(... repository)` 的详情/批量 projection。
+
+**active polling 会持续放大：**
+
+AI Annotation 当前真实 Poll Runtime：
+
+`static/modules/auto-label-poll-runtime.js`
+
+只要当前页面存在 active AI task：
+
+`requestTasks()`
+→ `GET /api/v60/.../annotation-tasks?limit=50`
+
+默认每：
+
+**1800 ms**
+
+重新执行一次。
+
+浏览器回归测试：
+
+`tests/browser/auto-label-polling.spec.mjs`
+
+也明确断言：
+
+`auto-label-v60` PollRegistry delay = `1800`。
+
+Video Tasks：
+
+`PollRegistry.replaceVideo424Timer()`
+
+active 时约每：
+
+**2000 ms**
+
+调用：
+
+`refreshVideo424Delta()`
+→ `GET /api/v33/.../video-tasks`
+
+Training Jobs 在 active 且未走 realtime 时也是约 2 秒轮询。
+
+因此：
+
+“列表 API 页大小只有 50 / 100”
+
+并不能限制服务器真实工作量。
+
+例如项目/平台累计 20,000 个 QUEUED Durable Task 时：
+
+AI 页面一次 50 条 refresh 至少会：
+
+- hydrate 20,000 个 TaskRecord；
+- 对可见 queued task 做多次 20,000 级 Python capability / resource scan；
+- 约每 1.8 秒重复一次。
+
+这会把一个 bounded UI page 变成持续高频的全队列扫描。
+
+**为什么是 Bug / bounded truth 性能问题：**
+
+这里不是“为了正确性必须返回完整 active truth”的合理全量读取。
+
+队列顺序已经有更高效的 SQL owner：
+
+`resource_queue_position(task_id)`
+
+通过 resource-scoped `COUNT(*)` 计算位置。
+
+问题只出在“证明 exactness”时，把整个 QUEUED task 集 hydrate 到 Python，再对每条页面记录重复扫描。
+
+更重要的是：
+
+`queued_candidates()` 没有 project_id / kind / worker capability / resource_key 范围，
+
+所以一个项目的 50 条列表会读取：
+
+**所有项目的全部 QUEUED Durable Task**。
+
+这违反当前 1k / 10k / 20k 性能审计原则：
+
+- bounded page 不能在内部退化为 full hydration；
+- 高频 poll 不能每次全量扫描；
+- 禁止 O(page × global queue) 热路径。
+
+**影响：**
+
+- 1k / 10k / 20k queued task 时任务中心、AI 标注页、视频切帧页响应显著变慢；
+- active task polling 会持续重复触发 CPU / SQLite / Python 对象分配；
+- 多项目情况下，一个项目的页面性能会被其他项目的 queued task 数量拖慢；
+- Worker queue 越繁忙，查看进度页面反而越重；
+- 可能导致 Web event loop / request worker 被 queue projection 占用，从而进一步拖慢心跳、轮询和操作响应；
+- 现有 API 分页表面上看是 bounded，容易掩盖真实热路径。
+
+**为什么现有 CI 没发现：**
+
+当前 `tests/unit/task_runtime/test_public_projection.py` 主要验证：
+
+- queue position 是否正确；
+- CPU dedicated Worker 时 exact=true；
+- 多 Worker / cross-resource 时 exact=false；
+- running task 不显示 queue position。
+
+`tests/api/test_unified_task_runtime.py` 也只验证少量任务的 position / promote truth。
+
+没有 1k / 10k / 20k queued task 的性能合同，也没有断言：
+
+“返回 50 条列表时，不得 hydrate 全部 queued rows”。
+
+因此小数据测试全部通过。
+
+**建议最小修复：**
+
+不要删除 `resource_queue_position_exact`，也不要简单把 queued_candidates 加一个更大的 LIMIT。
+
+正确方向是保持现有 TaskRepository / Scheduler owner，不新建第二套队列真相：
+
+1. `resource_queue_position` 继续使用 SQL/indexed aggregate；
+2. exactness proof 改成 SQL existence / count 查询，只查询当前 task 相关：
+   - compatible Worker 数量；
+   - 是否存在该 Worker 可 claim 的其它 resource_key；
+   - 当前 task 在真实 claim order 中的位置；
+3. 如果 exactness 无法低成本证明，继续 fail-closed 返回：
+   `resource_queue_position_exact=false`，
+   而不是为了展示一个 exact 标志扫描整个队列；
+4. 列表 projection 不应调用无界 `queued_candidates()`；
+5. 如果确实需要 candidate set，应提供受 project/kind/capability/resource 约束且可 cursor 的 query，而不是全库 `fetchall()`。
+
+**回归测试建议：**
+
+至少增加：
+
+- 20,000 个 QUEUED tasks + list limit=50；
+- 断言 projection 查询不会 SELECT / hydrate 全队列；
+- 多项目 queue 不应影响单项目列表复杂度；
+- AI 1.8s poll 路径在 20k queue 下仍只执行 bounded/indexed queries；
+- exactness 仍保持原 fail-closed correctness 合同。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
