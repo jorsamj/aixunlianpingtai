@@ -18912,3 +18912,151 @@ AUDIT-140 是：
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-141 — “同一待发布模型只能归属一次”仅做事务外 used_model_keys 检查；并发请求可把同一个 model_key 同时挂到多个算法版本
+
+**级别：高**  
+**模块：Test Publish / Pending Models / Algorithm Version Attach / Concurrency / Model Ownership**
+
+**现象：**
+
+当前产品已经明确表达一个 invariant：
+
+**一个待发布模型只能归属到一个算法版本。**
+
+证据有两处：
+
+1. `GET /api/v12/projects/{project_id}/publish/pending`
+
+会调用：
+
+`used_model_keys(project_id)`
+
+只返回：
+
+`model_key not in used`
+
+的模型。
+
+2. `POST /api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions`
+
+在 attach 前再次执行：
+
+`if model_key in used_model_keys(project_id):`
+
+并明确返回：
+
+“该模型已经归属到算法版本中”。
+
+但该约束只存在于应用层事务外 read-check-write。
+
+真实顺序是：
+
+1. 请求 A 读取 algorithms/version snapshot；
+2. 请求 A 计算 `used_model_keys`，模型 M 尚未使用；
+3. 请求 B 同时读取；
+4. 请求 B 也判断 M 尚未使用；
+5. A 复制 M 到自己的 version dir；
+6. B 复制 M 到另一个 version dir；
+7. A `attach_algorithm_version` 成功；
+8. B `attach_algorithm_version` 也成功。
+
+**数据库不会阻止第二次 attach：**
+
+当前 `algorithm_versions` 表只有：
+
+- `id TEXT PRIMARY KEY`；
+
+以及普通索引：
+
+- algorithm_id；
+- training_job_id；
+- external_algo_version_id。
+
+`model_key` 并不是独立 SQL column，只保存在：
+
+`payload_json`
+
+里。
+
+因此不存在：
+
+- `UNIQUE(model_key)`；
+- project-scoped model ownership claim；
+- compare-and-set；
+- reservation row。
+
+两个请求使用不同随机 version_id 时，数据库完全允许两次 INSERT。
+
+**这不是理论上的双击问题：**
+
+即使单浏览器以后加按钮 disabled，也无法保护：
+
+- 两个浏览器；
+- 两个用户；
+- API 重试；
+- 双节点 Web 实例；
+- 慢请求期间另一请求进入。
+
+正确约束必须在 canonical persistence owner 内原子实现，不能依赖前端 single-flight。
+
+**与 AUDIT-138 的区别：**
+
+AUDIT-138 是：
+
+手工“发布为算法版本”无真实训练/产物验证证据却写死 SUCCEEDED + artifact_verified，并可进入外部发布。
+
+AUDIT-141 是：
+
+即使暂不讨论版本资格是否合法，同一个 source `model_key` 的“只能归属一次”约束本身也没有原子性，并发时会产生多个版本引用同一来源模型。
+
+**影响：**
+
+- 同一个项目模型可同时成为两个算法的正式版本；
+- `publish/pending` 之后只会看到“已使用”，却无法说明哪个归属才是合法 owner；
+- 两个版本都可能继续：
+  - 自动转换；
+  - 质量评测；
+  - 外部发布；
+- 同一训练产物可能被发布为多个算法/分析能力；
+- 删除/回退其中一个版本不会自然修复另一个重复归属；
+- 审计 lineage 从源模型开始就出现一对多歧义；
+- 并发请求还会各自复制一份模型文件，造成额外重复存储。
+
+**建议最小修复：**
+
+不要新增第二套模型 registry。
+
+应在现有 `AlgorithmSqlStore` / version attach owner 内原子实现 model ownership：
+
+1. 把需要唯一约束的 canonical `model_key` 提升为可索引字段，或增加同库 ownership table；
+2. 在同一个 SQLite transaction 中：
+   - claim model_key；
+   - insert version；
+   - update current pointer；
+3. project scope 下 model_key 已被其他 version claim 时返回明确 409；
+4. 同一个幂等 operation/task retry 应返回已有 version，而不是冲突；
+5. 文件复制最好在最终 claim 前使用 staging，claim 失败后清理临时副本；
+6. `publish/pending` 继续作为 read projection，不承担并发正确性 owner。
+
+如果未来产品允许“同一二进制模型属于多个算法”，应显式改变产品合同，并用 artifact identity / provenance 表达复用；不能一边提示“只能归属一次”，一边在竞态下静默允许重复。
+
+**回归测试建议：**
+
+至少增加：
+
+- 两个线程同时把同一个 `project::model.pt` 归属到不同算法；
+- 必须只有一个成功；
+- 另一个明确 409；
+- 最终数据库只存在一个 model_key owner；
+- 同一请求重试幂等；
+- 两 Web 实例共享 SQLite 时仍成立；
+- claim 失败不留下 orphan version dir；
+- pending list 与最终 owner 一致；
+- concurrent attach 不产生重复 auto conversion / external publish。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
