@@ -4112,6 +4112,151 @@ AUDIT-057 是：
 
 ---
 
+
+### AUDIT-058 — Material Integrity 结果页忽略 groups / items 的 next_cursor，101+ 问题组或单组 101+ 素材会从 UI 永久不可见
+
+**级别：中～高**  
+**模块：Material Integrity / Result Pagination / Dataset Quality / 1k-20k Scale**
+
+**现象：**
+
+Material Integrity 后端已经为大规模审计结果实现 cursor pagination：
+
+问题组：
+
+`GET /api/v62/projects/{project_id}/material-integrity/audits/{task_id}/groups?cursor=&limit=`
+
+组内素材：
+
+`GET /api/v62/projects/{project_id}/material-integrity/audits/{task_id}/groups/{group_key}/items?cursor=&limit=`
+
+两者都：
+
+- 最多允许 `limit=100`；
+- 返回 `next_cursor`。
+
+但当前前端固定：
+
+- groups：`?limit=100`
+- items：`?limit=100`
+
+然后直接只用：
+
+`body.items || []`
+
+完全不读取、不保存、不消费 `next_cursor`。
+
+**真实调用链：**
+
+问题组页：
+
+`openMaterialIntegrityAudit47()`
+→ `GET .../groups?limit=100`
+→ `state.materialIntegrityAudit47.groups = groups.items`
+→ 只渲染这 100 个 group。
+
+组详情页：
+
+`openMaterialIntegrityGroup47(taskId, groupKey)`
+→ `GET .../groups/{groupKey}/items?limit=100`
+→ `state.materialIntegrityGroup47.items = body.items`
+→ 只渲染这 100 张素材。
+
+后端已经明确生成：
+
+- `next_cursor` for groups；
+- `next_cursor` for items；
+
+前端没有任何“下一页 / 加载更多 / 自动翻页”处理。
+
+**为什么是 Bug / bounded truth：**
+
+Material Integrity 不是普通摘要列表。
+
+它是用户处理以下真实数据问题的唯一工作台之一：
+
+- DUPLICATE_IDENTICAL；
+- DUPLICATE_ANNOTATION_CONFLICT；
+- MATERIAL_OBJECT_MISSING；
+- CONTENT_HASH_MISMATCH；
+- INVALID_IMAGE。
+
+如果审计结果超过一页，被截断的 group / material 不只是“历史没展示完”，而是用户根本无法：
+
+- 查看；
+- 进入标注；
+- 删除；
+- 保留；
+- 人工判断冲突 Ground Truth。
+
+也就是说，后端已经是 bounded/cursor contract，但 UI 又把第一页当 full truth。
+
+**典型 10k / 20k 场景：**
+
+1. 若存在 130 个不同重复/异常 group：
+   - UI 只显示前 100；
+   - 后 30 个 group 永久不可见。
+
+2. 若一个重复 hash group 有 300 张相同图片：
+   - UI 只展示前 100 张；
+   - 后 200 张无法被选中、删除或人工比较。
+
+3. 大批量导入后出现大量单条缺失/损坏素材时：
+   - group 数量很容易超过 100；
+   - 当前页面会错误给用户“已完整展示”的感觉。
+
+**与 AUDIT-050 的区别：**
+
+AUDIT-050 是 Cleaning Detail 仍走 v47 compatibility endpoint，一次 `fetchall()` 全量 hydrate 10k/20k 结果。
+
+AUDIT-058 恰好相反：
+
+后端已经正确分页，但 Material Integrity 前端完全不消费后续页，导致**结果丢失/不可操作**。
+
+一个是无界 hydration，一个是 bounded page 被误当 full truth。
+
+**与 AUDIT-057 的区别：**
+
+AUDIT-057 是“当前 audit 的发现/恢复/防重”错误使用 bounded generic task page，可能重复创建 Full Audit。
+
+AUDIT-058 是“某次已经完成的 audit 的结果展示/处理”只消费第一页。
+
+生命周期阶段不同，应该分开修复和回归。
+
+**为什么 CI 没发现：**
+
+当前测试主要验证：
+
+- groups endpoint 支持 cursor；
+- items endpoint 支持 cursor；
+- audit 能产生问题组；
+- 前端能渲染第一页。
+
+缺少浏览器级 101+ contract：
+
+- 101+ issue groups；
+- 单 group 101+ items；
+- 用户必须能继续翻页并处理后续结果。
+
+**建议最小修复：**
+
+不要把 limit 提高到 1000 或无限。
+
+保持现有后端 cursor contract，前端补单一分页 owner：
+
+- groups 支持“加载更多”或自动分页；
+- group items 支持“加载更多”；
+- 保存各自 `next_cursor`；
+- 切换 audit/group 时清理旧 cursor state；
+- 删除/保留后只定向刷新当前 group，不做全量 broad reload。
+
+对 10k/20k 场景，默认首屏仍保持 bounded 100，保证响应速度。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 101 groups 和 101 items 两种分页边界。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
