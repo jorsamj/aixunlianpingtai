@@ -21664,3 +21664,169 @@ Agent execution tests 又默认 token 在整个 execution 生命周期不变化�
 **是否需要新增回归测试：** 是。
 
 ---
+
+
+### AUDIT-159 — 总览 quality-overview 每 60 秒同步做全项目 Ground Truth N+1 + 500 图全字节/OpenCV 质检；20k 项目进入页面即触发重型 Web 热路径
+
+**级别：中高**  
+**模块：Dashboard / Quality Overview / Annotation Ground Truth / Image Hygiene / Performance**
+
+**现象：**
+
+当前总览页不是只消费已缓存的 summary。
+
+canonical dashboard render：
+
+`renderDashboardCanonical422()`
+→ `refreshDashboardExtras422()`
+→ `GET /api/v42/projects/{project_id}/quality-overview`
+
+且前端只设置：
+
+`DASHBOARD422_EXTRAS_TTL_MS = 60 * 1000`
+
+也就是同一客户端超过 60 秒再次触发总览 extras 时，会重新执行整个后端聚合。
+
+后端 `v42_quality_overview()` 在 Web 请求线程内同步做：
+
+1. 对每个 dataset 调用 `dataset_quality_report()`；
+2. 对每个 dataset 调用 `_v42_hygiene_report(..., 500)`；
+3. 再逐算法读取 latest job metrics 与 online audit。
+
+其中 `dataset_quality_report()`：
+
+- 先 `load_images(project_id)` 全量 hydrate 项目素材；
+- 再筛 dataset；
+- 对每张图片逐条：
+  `read_annotation(project_id, img["id"])`
+  → AnnotationRepository.get；
+- 再逐框 normalize / 聚合。
+
+单个 20k dataset 就是约 20,000 次单条 Ground Truth lookup。
+
+`_v42_hygiene_report()` 又：
+
+- 再次 `load_images(project_id)`；
+- 截取该 dataset 最多 500 张；
+- 对每张：
+  - `Path.read_bytes()` 全量读入内存并重新 SHA256；
+  - `cv2.imread()` 再次解码；
+  - 灰度转换；
+  - Laplacian；
+  - mean brightness。
+
+因此“打开总览”会同步触发磁盘、SQLite、图片解码的组合重活。
+
+**规模放大：**
+
+单 dataset 20k：
+
+- 全项目 Material hydration；
+- 20k 次 Annotation 单条读取；
+- 再次全项目 Material hydration；
+- 500 张图片全字节 read + OpenCV decode。
+
+多 dataset 更糟：
+
+`for d in datasets`
+
+会让：
+
+- `load_images(project_id)` 按 dataset 数重复；
+- 每个 dataset 各自最多再重读 500 张图片。
+
+最终 endpoint 只返回很小的 dashboard summary，却先做大量明细工作。
+
+**为什么是生产真实热路径：**
+
+前端当前正式总览 owner 直接调用该 endpoint。
+
+不是 legacy-only helper，也不是 zero-reference。
+
+调用发生在：
+
+`renderDashboardCanonical422()`
+
+并且 60 秒 cache 仅存在于浏览器内：
+
+- 新客户端；
+- 刷新页面；
+- cache 过期后重进总览；
+- 多用户同时打开；
+
+都会各自重新击中重型后端计算。
+
+后端没有持久化 quality snapshot / revision cache，也没有 Durable quality worker owner。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-048：Quality Center / Training Data Quality 的图片 hash/I/O 热路径；
+- AUDIT-143：`GET /api/projects/{project_id}` 项目详情逐素材 AnnotationRepository.get；
+- AUDIT-145：Dataset List 为小型聚合全量 hydrate Material + Annotation；
+- AUDIT-159：当前**总览专用 `quality-overview`** 独立再次执行 Ground Truth N+1 + 图片字节质检，而且被 dashboard 60 秒 TTL 触发。
+
+即使 143/145 修复，159 endpoint 仍然保留自己的全量/N+1/图片 I/O。
+
+即使 048 修复 Quality Center，也不会自动改变 `_v42_hygiene_report()` 这套独立实现。
+
+**影响：**
+
+- 1k/10k/20k 项目打开总览越来越慢；
+- Web 请求线程长时间占用；
+- SQLite Ground Truth read 压力；
+- 图片源在对象存储/缓存场景下可能额外放大 materialize/本地 I/O；
+- 多用户总览访问可叠加 CPU、磁盘和 Python GC 压力；
+- 用户会把“首页卡顿”误认为整个平台不稳定；
+- Dashboard 本来只需要几个 KPI，却承担接近完整质量扫描成本。
+
+**现有测试为什么没有发现：**
+
+现有 dashboard tests 主要验证：
+
+- extras 能加载；
+- cache TTL；
+- 页面 KPI 渲染。
+
+Quality tests 主要验证计算结果值。
+
+没有 1k / 10k / 20k workload contract，未断言：
+
+- quality-overview 不得调用 20k 次单条 Annotation read；
+- 不得在普通 GET 中重读 500 张图片字节；
+- 多 dataset 不得重复全项目 load_images；
+- dashboard 轻量读取必须有 bounded work。
+
+**建议最小修复方向：**
+
+不要通过把 TTL 从 60 秒改成 5 分钟来掩盖后端 O(N)。
+
+应复用现有 canonical owner：
+
+1. Ground Truth 统计由 AnnotationRepository aggregate/batched truth 提供；
+2. Material dataset counts 由 MaterialRepository aggregate 提供；
+3. 图片 hygiene 不应在 dashboard GET 里现场重新算：
+   - 复用 Cleaning / Material Integrity 已有结果；
+   - 或由单一 background quality snapshot owner 按 Material revision 更新；
+4. Dashboard GET 只组合轻量 snapshot/aggregate；
+5. 不新增第二套“质量真相”与 Cleaning/Integrity 竞争；
+6. 如果短期过渡，至少：
+   - Annotation get_many bounded；
+   - 不重复 load_images；
+   - 优先复用 `content_sha256`；
+   - 不对普通 dashboard GET 做全图片 decode。
+
+**应新增回归测试：**
+
+- 20k materials 总览质量 summary 正确；
+- 禁止 20k 次 AnnotationRepository.get；
+- 多 dataset 不重复全量 Material hydration；
+- dashboard GET 不重新 `read_bytes`/OpenCV decode 500 张源图；
+- Material/Annotation revision 未变化时重复 GET 为 bounded cached/aggregate work；
+- revision 变化后 summary 能更新；
+- confirmed_empty 语义继续按正式 Ground Truth 统计；
+- 不能通过简单延长前端 TTL 让性能测试通过。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
