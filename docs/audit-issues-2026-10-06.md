@@ -10232,3 +10232,197 @@ AUDIT-089 是 **v19 ZIP Import 自己的活动轮询列表路径**：
 
 ---
 
+### AUDIT-090 — VideoFrameHandler 在最终 MaterialRepository commit 前已逐帧写对象存储与 AnnotationRepository；取消/异常可留下无 Material owner 的孤儿对象与孤儿 Annotation
+
+**级别：高**  
+**模块：Video Frames / Durable Task / StorageManager / AnnotationRepository / MaterialRepository / Cancellation Rollback**
+
+**现象：**
+
+当前 canonical Durable 视频切帧已经具备 execution fencing，并且最终 MaterialRepository 使用一次性：
+
+\`materials_repository.upsert_many(records)\`
+
+提交全部帧素材。
+
+但在这次最终 commit 之前，handler 会对每一帧依次先执行持久化副作用：
+
+1. \`manager.upload_object(...)\` 把 JPEG 写入素材存储；
+2. 校验 SHA256；
+3. \`annotation_repository.upsert(image_id, [], "unannotated")\` 写正式 Annotation Ground Truth；
+4. 只把 Material record 暂存在进程内 \`records[]\`；
+5. 全部帧循环完成后，才：
+   \`materials_repository.upsert_many(records)\`。
+
+也就是说对象存储与 AnnotationRepository 的写入不是和 MaterialRepository commit 同一个事务，也没有 compensating rollback owner。
+
+**真实调用链：**
+
+\`VideoFrameHandler.run()\`
+
+→ \`extract_video(..., resume_existing=True)\`
+
+→ 对 \`extraction.frames\` 循环：
+
+\`manager.upload_object("default_local", object_key, extracted.path)\`
+
+→ \`ensure_active()\`
+
+→ \`annotation_repository.upsert(image_id, [], "unannotated")\`
+
+→ \`records.append(material_record)\`
+
+→ heartbeat
+
+全部循环结束后才：
+
+\`materials_repository.upsert_many(records)\`
+
+→ 写 \`result.json\`
+
+→ checkpoint committed。
+
+如果以下任一事件发生在循环中：
+
+- 用户取消；
+- execution lease 丢失；
+- 第 N 帧 upload 失败；
+- SHA 校验失败；
+- AnnotationRepository 写入失败；
+- heartbeat/fencing 抛错；
+- 进程异常但仍由 Worker 把任务归为失败/取消；
+
+handler 会直接抛出异常。
+
+当前 \`run()\` 没有：
+
+- try/finally rollback；
+- 已上传 object_key 集合清理；
+- 已创建 Annotation image_id 集合清理；
+- staged publish / commit marker；
+- Material transaction abort 时的 compensating cleanup。
+
+因此已经完成的前 N-1 帧副作用会保留。
+
+**为什么是数据一致性 Bug：**
+
+正常 Material truth 应当是：
+
+\`MaterialRepository row\`
+→ 对应 storage object
+→ 对应 AnnotationRepository truth。
+
+当前失败窗口会生成：
+
+- storage object 已存在；
+- AnnotationRepository 可能已有 \`unannotated\` row；
+- MaterialRepository 不存在该 image_id；
+- task 最终为 CANCELLED / FAILED；
+- \`result.json\` 也不存在。
+
+这种数据无法通过普通素材列表发现，但会永久占用存储和 Annotation GT 表。
+
+后续 retry 使用确定性：
+
+\`image_id = sha256(task_id:source_frame_index)[:16]\`
+
+以及确定 object_key：
+
+\`uploads/{image_id}.jpg\`
+
+所以重试可能覆盖/复用这些半成品，但**用户不重试时孤儿会永久存在**；并且失败发生在哪一帧决定了残留规模。
+
+**现有测试反而暴露了覆盖缺口：**
+
+\`tests/unit/test_video_commit_fencing.py\`
+
+已有：
+
+\`test_video_commit_stops_before_second_upload_after_cancel\`
+
+它验证：
+
+- 第一次 upload 后触发 cancel；
+- 第二次 upload 不会发生；
+- MaterialRepository 仍为空；
+- result.json 不存在。
+
+但该测试 monkeypatch 的 \`upload_object()\` 只返回 \`ObjectMetadata\`，没有真的写对象，因此没有断言：
+
+“第一次已经上传的对象必须被删除”。
+
+而 cancel 又发生在第一次 upload 返回后紧接着的 \`ensure_active()\`，所以尚未进入 AnnotationRepository.upsert，也没有覆盖：
+
+“已经写入 Annotation 后再取消必须 rollback”。
+
+另一个 stale-execution fencing 测试同样只验证“不继续业务写”，不是“撤销 fencing 前已经完成的持久化副作用”。
+
+所以当前 CI 保护了 **stop further writes**，但没有保护 **rollback earlier writes**。
+
+**与已有 AUDIT-065 的区别：**
+
+AUDIT-065 是终态 Durable Task 的长期 retention / artifact GC：
+
+- 原视频输入；
+- frames 目录；
+- AI CandidateStore；
+- MaterialBatch selection；
+- Deployment Test predictions。
+
+AUDIT-090 是**单次 VideoFrameHandler 事务在失败/取消时立即产生的跨 owner 半提交**：
+
+- StorageManager 已写；
+- AnnotationRepository 已写；
+- MaterialRepository 尚未 commit。
+
+前者是生命周期结束后的 retention policy；后者是业务事务原子性/rollback，不能靠“以后定期 GC”替代。
+
+**影响：**
+
+- 中途取消大型视频切帧后留下大量 orphan JPEG；
+- AnnotationRepository 累积没有 Material owner 的 image_id；
+- 项目磁盘/对象存储使用量与素材数量不一致；
+- integrity/audit 工具可能看到 dangling annotation；
+- 后续同 task retry 的结果依赖历史半成品，增加恢复复杂度；
+- 若对象存储是 OSS/S3，会产生真实远端孤儿对象和费用；
+- 任务 UI 显示“已取消/失败”，但实际业务副作用没有完全撤销。
+
+**建议最小修复：**
+
+不要新增第二套 Material 或 Annotation owner。
+
+保留当前确定性 frame id 和最终 \`MaterialRepository.upsert_many\`，但增加明确的 publish transaction / compensating rollback：
+
+1. 在 handler 内记录本 attempt 新创建的：
+   - object_key；
+   - image_id；
+2. 只有最终 MaterialRepository commit + result.json 成功后才标记 committed；
+3. 在 cancel / fencing / exception 且尚未 committed 时：
+   - 删除本 attempt 新上传且没有正式 Material owner 的对象；
+   - 删除本 attempt 新创建且没有正式 Material owner 的 Annotation；
+4. 如果 retry 发现旧 attempt 遗留：
+   - 先依据 deterministic id + Material truth 做 recovery；
+   - 已有正式 Material 的绝不能误删；
+5. rollback 必须 fail-closed：
+   - cleanup 失败要记录明确 cleanup error / orphan evidence；
+   - 不要把任务伪装成完全干净的 CANCELLED。
+
+更理想的方向是把对象先写 task-scoped staging，再在最终 commit 后 promote；但本轮最小修复不要求重新设计 Storage owner。
+
+**回归测试建议：**
+
+至少增加：
+
+- 第 1 帧真实 upload 后 cancel：object 被删除；
+- Annotation upsert 后 cancel：Annotation 被删除；
+- 第 N 帧 upload error：前 N-1 个 orphan 全清；
+- stale execution / lease lost：已完成副作用 rollback；
+- cleanup 只删除“本 attempt 且无 Material owner”的对象；
+- retry 后成功时最终 Materials / objects / annotations 1:1；
+- 1k 帧取消时 rollback 有 bounded/批量策略，不形成 O(N²)。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
