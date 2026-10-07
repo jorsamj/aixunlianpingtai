@@ -23269,3 +23269,93 @@ ModelArtifact tests 验证保存配置、健康检查、上传/归档；Remote T
 **是否需要新增回归测试：** 是。
 
 ---
+
+### AUDIT-170 — Storage Source PATCH 先改 Keyring、后更新 SQLite；后半段失败时 HTTP 报错但凭据已永久变更/删除
+
+**级别：高**  
+**模块：Storage Source / SecretCredentialStore / PATCH Transaction / Credential Consistency**
+
+**现象：**
+
+`PATCH /api/v61/storage-sources/{source_id}` 当前把一个用户操作拆成两个不同 owner 的非原子写入：
+
+1. 先根据 `credentials / clear_credentials` 直接调用 `storage_credentials().set()` 或 `delete()`；
+2. 再调用 `StorageSourceRepository.update()` 更新 `name / config / secret_ref / enabled`。
+
+如果第 2 步失败，第 1 步没有 rollback。
+
+StorageSource 表的 `name` 有 `UNIQUE` 约束，而 `update()` 直接执行 SQL UPDATE。因此一个完全正常的 UI 操作就可以制造失败：编辑存储源 A，把名称改成已存在的 B，同时输入新的 AccessKey/Token。后端会先覆盖 A 当前 `secret_ref` 对应的 Keyring，再因 name UNIQUE 冲突在 SQLite UPDATE 失败。
+
+更严重的是 route 只捕获 `ValueError`，SQLite `IntegrityError` 还可能直接变成 500；无论返回 409/500，Secret mutation 都已经提交。
+
+**真实调用链：**
+
+存储配置页 → `openStorageSource61()` → 用户同时编辑名称/Endpoint/凭据 → `saveStorageSource61()` → 单次 PATCH payload 同时包含 name/config/credentials → `update_storage_source()` → `storage_credentials().set(reference, credentials)` 或 `delete(reference)` → `StorageSourceRepository.update()` → SQLite UNIQUE/其它后半段错误 → 请求失败 → Keyring 不回滚。
+
+**用户真实可达场景：**
+
+- A 已配置旧 AccessKey；
+- B 已存在同名 source；
+- 编辑 A，将名称误填为 B 的名称，同时轮换 AccessKey；
+- 点击“保存”；
+- 页面提示保存失败；
+- A 的 SQLite row 仍保持旧名称和旧 `secret_ref`；
+- 但这个 `secret_ref` 对应的真实凭据已经被新 AccessKey 覆盖。
+
+`clear_credentials=true` 时更直接：Keyring secret 可先被删除，随后 source UPDATE 失败；row 仍指向原 secret_ref，但 secret 已不存在，合法 source 会在一次失败保存后立即失效。
+
+如果原 source 之前没有 secret_ref，失败更新还会留下无法从 source row 回收的 orphan secret。
+
+**为什么是 Bug：**
+
+同一个 PATCH 的对外语义应是“保存成功才生效”。当前却允许 HTTP 失败但 secret truth 已变化，形成 UI/SQLite/Keyring 三方不一致。这不是 live config 可修改本身的问题，而是单请求事务边界错误。
+
+**影响：**
+
+- 用户看到保存失败，但后续 Import/CLEAN/AI/Training materialization 可能突然改用新凭据；
+- `clear_credentials` 失败可让原本可用的存储源立即不可用；
+- 新 secret 可能成为 orphan；
+- 运维排查非常困难，因为 StorageSource row 的 `updated_at/config/name` 看起来没有变；
+- 活动任务还可能把这种“失败保存后的隐式凭据变化”误判成外部存储故障。
+
+**和已有 AUDIT 的区别：**
+
+- AUDIT-044：破坏性 Storage Source PATCH 缺少活动 MATERIAL_IMPORT/rescan 生命周期 fence；
+- AUDIT-169：算法产物专用 OSS 配置可在 Remote Training/Agent Conversion 中原地变化；
+- AUDIT-170：单次 Storage Source PATCH 自身不是原子的——即使没有任何活动任务，只要后半段 Source row 更新失败，Secret truth 也已经改变。
+
+因此 170 是 write-transaction consistency，不是 active-reference lifecycle 的重复。
+
+**现有测试为什么没有发现：**
+
+现有测试覆盖了 source create/test、wrong credential 脱敏、default_local 不可删除、rescan portable contract，但没有组合验证：
+
+`credential mutation succeeded → repository.update failed → secret must rollback`。
+
+也没有测试 duplicate name + credential rotation / clear_credentials 的失败原子性。
+
+**建议最小修复方向：**
+
+不要新增第二 Secret owner。继续使用现有 `SecretCredentialStore + StorageSourceRepository`，但为 PATCH 建立可恢复提交顺序：
+
+1. 先完整验证所有 Source row 变更，包括 name uniqueness、default constraints、config schema；
+2. 对旧 credential 做可恢复快照，或先写临时 secret/version；
+3. SQLite row 与 secret pointer 成功提交后再原子切换 secret；
+4. 任一步失败必须恢复原 credential / 删除临时 secret；
+5. `clear_credentials` 同样只能在 source row commit 成功后正式删除旧 secret；
+6. 对 `sqlite3.IntegrityError` 返回明确 409，不要冒泡 500；
+7. 不要通过前端禁止同时编辑名称和凭据来掩盖，后端必须保证原子语义。
+
+**应新增回归测试：**
+
+- duplicate name + new credentials → PATCH 失败，旧 credential 保持不变；
+- duplicate name + clear_credentials → PATCH 失败，旧 credential 仍可读取；
+- source row 更新成功 + secret set 失败 → source row 不得半提交；
+- 原 source 无 secret 时失败 PATCH 不留下 orphan secret；
+- 成功轮换后 row.secret_ref 与 Keyring 新值一致；
+- 并发两个 PATCH 至少有明确 CAS/序列化结果，不得相互回滚覆盖。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
