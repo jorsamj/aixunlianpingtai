@@ -4417,6 +4417,180 @@ AUDIT-059 是真正会修改 Ground Truth 和治理状态的 `REMAP_ANNOTATION_L
 
 ---
 
+
+### AUDIT-060 — 自动调度任务在 ASSIGNED / CLAIMED 后节点离线不会自动释放 assignment，QUEUED 任务可永久卡在失联节点
+
+**级别：高**  
+**模块：Central Scheduler / Service Node / Agent Assignment / Failure Recovery / GPU Reservation**
+
+**现象：**
+
+Central Scheduler 为一个自动调度的 QUEUED task 创建：
+
+`task_node_assignments.state = ASSIGNED`
+
+或者 Agent 已经 claim 成：
+
+`CLAIMED`
+
+但尚未调用 `start_execution()` 时，如果目标节点突然：
+
+- 宕机；
+- Agent 进程退出；
+- 网络中断；
+- 长时间不再 heartbeat；
+
+当前 assignment 没有任何 stale-node reconciliation。
+
+任务本身仍然是：
+
+`QUEUED`
+
+但因为存在 active assignment，后续 `assign_next()` 会永久把它排除在重新调度候选之外。
+
+**真实调用链：**
+
+初次自动分配：
+
+`CentralTaskAllocator.assign_next()`
+→ 只从 online nodes 里选择节点
+→ INSERT：
+`task_node_assignments(... state='ASSIGNED' ...)`
+
+如果 Agent 已 claim：
+
+`claim_for_node(node_id)`
+→ `ASSIGNED -> CLAIMED`
+→ 生成短期 assignment lease
+→ task 仍保持 QUEUED。
+
+节点随后失联。
+
+CLAIMED lease 到期后，当前唯一自动处理是：
+
+`claim_for_node(node_id)`
+
+内部：
+
+`CLAIMED -> ASSIGNED`
+
+条件只看：
+
+- 同 node_id；
+- lease 已过期。
+
+它不会：
+
+- 检查 node heartbeat 是否已 stale；
+- 把 assignment RELEASED；
+- 让任务重新进入全局 allocator。
+
+更关键的是：
+
+`assign_next()`
+
+候选 SQL 明确排除任何存在：
+
+`assignment.state IN ('ASSIGNED','CLAIMED')`
+
+的 QUEUED task。
+
+因此该任务不会被分给其它仍在线节点。
+
+**为什么是 Bug / 生命周期卡死：**
+
+Node assignment 是“start_execution 之前的临时 reservation truth”，不应该比节点在线生命周期更持久。
+
+当前它没有 TTL / stale-node retirement：
+
+- CLAIMED 有 lease，但过期只退回 ASSIGNED；
+- ASSIGNED 本身没有 expiration；
+- allocator 不做 stale node cleanup；
+- Service Node heartbeat stale 只影响“新任务是否能选这个节点”，不会清已有 assignment。
+
+所以一个已经失联的节点可以永久持有一个尚未 start 的任务。
+
+**与 AUDIT-015 的区别：**
+
+AUDIT-015：
+
+- 操作者把节点 `enabled=false`；
+- 已 ASSIGNED / CLAIMED 任务 start 会 fail-closed；
+- assignment 仍不释放。
+
+AUDIT-060：
+
+- 节点没有被显式 disabled；
+- 只是现实中的宕机 / Agent 退出 / 心跳过期；
+- 自动调度也不会回收 assignment 或迁移到其它健康节点。
+
+这是更常见的故障恢复路径，触发源和自动恢复合同不同。
+
+**与 AUDIT-055 的区别：**
+
+AUDIT-055：
+
+- task 自己被 operator cancel；
+- task 已变 CANCELLED，但 assignment 仍 active，形成幽灵 reservation。
+
+AUDIT-060：
+
+- task 仍是合法 QUEUED；
+- node 已失联；
+- assignment 继续阻止 task 在其它节点重新调度。
+
+一个是 task lifecycle retirement 缺失，一个是 node failure recovery 缺失。
+
+**影响：**
+
+- 自动训练任务可永久停留在“等待资源/已分配但不执行”；
+- 自动转换、部署测试、素材导入、清洗等 Agent task 同样可能受影响；
+- 单节点故障后，即使其它兼容节点在线也不会接管；
+- 对训练任务，原 selected GPU reservation 仍保留在 assignment truth；
+- 节点恢复前任务只能靠人工调用 assignment release 才能迁移；
+- 生产多节点环境下会把暂时故障放大成永久任务阻塞。
+
+**为什么 CI 没发现：**
+
+当前 assignment tests 已覆盖：
+
+- 只选择 online node；
+- claim lease 到期后可重新 claim；
+- manual release；
+- 多 GPU reservation；
+- node capability / strict affinity；
+- concurrent assignment 唯一性。
+
+但没有组合测试：
+
+1. auto task 被分配到 node A；
+2. A 的 heartbeat 变 stale；
+3. node B 仍在线且 capability 兼容；
+4. assignment 超过合理 TTL；
+5. scheduler 应释放 A 的 reservation；
+6. 同一 task 应可自动迁移到 B。
+
+**建议最小修复：**
+
+不要新建第二 Scheduler。
+
+应在现有 `CentralTaskAllocator` 内增加 assignment reconciliation，保持一个 owner：
+
+- 在 `assign_next()` / claim 调度事务前，扫描 active ASSIGNED/CLAIMED；
+- joined task 必须仍是 QUEUED；
+- joined node 必须仍 enabled 且 heartbeat fresh；
+- CLAIMED 还要考虑 claim lease；
+- 对 auto-affinity task：节点 stale 超过明确 grace period 后 RELEASED，并允许重新分配；
+- 对用户手工 strict node affinity：可 RELEASED reservation，但 task 继续 QUEUED 等指定节点恢复，不能 spill 到其它节点；
+- release 必须记录明确 reason，例如 `node_heartbeat_stale_before_start`。
+
+不要影响已经 RUNNING 的 execution；RUNNING 继续由 execution lease/generation fencing 恢复。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是，至少覆盖 ASSIGNED stale-node、CLAIMED stale-node、auto reassign、strict-affinity 不 spill 四个场景。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
