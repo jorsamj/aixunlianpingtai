@@ -14532,4 +14532,163 @@ reference images 虽被 UI 和 request 暴露，但根本没有被 Durable AI ru
 **是否需要新增回归测试：** 是。
 
 ---
+### AUDIT-117 — AI 参考图选择会自动把参考素材标签写入本次 ai429Labels；与“标签必须用户显式决定”及当前 UI 文案直接冲突
+
+**级别：高**  
+**模块：AI Annotation / Reference Selection / Label Governance / Frontend Contract**
+
+**现象：**
+
+当前 AI 自动标注弹窗明确告诉用户：
+
+- “必须显式填写至少一个当前有效标签 code”
+- “参考图片也不会替你选择标签”
+- “参考图只用于视觉示例，不会自动添加或改变本次标签”
+
+但真实生产点击参考图后，前端会自动修改本次标签输入框。
+
+真实调用链：
+
+window.toggleRef429(id)
+→ 更新 state.ai429RefSelected
+→ syncReferenceLabels417()
+
+syncReferenceLabels417() 会：
+
+1. 读取已选择参考素材；
+2. 通过 PlatformCore.materials.labelsFromReferences() 提取这些素材现有 labels；
+3. 把这些 labels 写入 state.ai429ReferenceLabels417；
+4. 直接执行：
+
+input.value = manual_labels + reference_labels
+
+即自动把参考素材标签加入：
+
+#ai429Labels
+
+批量参考图选择也同样会调用：
+
+aiRefSelect412()
+→ aiRefSelectCore412(mode)
+→ syncReferenceLabels417()
+
+所以单选和批量选择都存在同样行为。
+
+**这不是展示辅助，而是实际改变提交 payload：**
+
+submitAiLabel429() 最终读取：
+
+document.getElementById('ai429Labels').value
+
+经过 explicitCanonicalAiLabelText() 后写入：
+
+labels_text
+
+因此参考素材带出的标签会真正进入 AI task requested labels。
+
+用户没有逐个确认这些标签，也没有显式点击“加入本次标签”。
+
+**为什么是 Bug / 标签治理合同破坏：**
+
+当前平台标签治理已经明确要求：
+
+- AI 标注标签不得自动推断；
+- 不根据中文名、alias、历史数据自动替用户选 canonical code；
+- 用户必须显式决定本次 AI 标注允许哪些标签。
+
+参考素材的既有标签只是历史 Ground Truth，不能自动变成新任务的 requested label scope。
+
+尤其是参考图可能包含多个对象标签，而用户只想借它参考某一个视觉目标。
+
+例如参考图标签：
+
+person、smoke、phone
+
+用户本次只想标：
+
+smoke
+
+选择该参考图后当前代码会自动把 person / smoke / phone 都写入本次 labels 输入框。
+
+后端看到的将是用户没有主动决定过的完整标签集合。
+
+**与 AUDIT-116 的区别：**
+
+AUDIT-116 是：
+
+reference_image_ids 虽提交，但 Worker 推理根本不使用参考图，视觉参考功能实际无效。
+
+AUDIT-117 是：
+
+参考图虽然没有进入模型推理，却反而在前端自动改变 requested labels。
+
+因此当前最糟糕的实际效果是：
+
+- 用户期待参考图片影响视觉推理；
+- 实际图片没有进入模型；
+- 参考图片却悄悄改变了模型允许识别的标签范围。
+
+两者是独立问题，必须分别修复。
+
+**额外 UI 自相矛盾：**
+
+syncReferenceLabels417() 还会动态插入文案：
+
+“参考素材带出标签”
+“选择参考素材后，将自动带出对应标签”
+
+而创建弹窗原始文案同时写着：
+
+“参考图片也不会替你选择标签”
+“参考图只用于视觉示例，不会自动添加或改变本次标签”
+
+同一弹窗运行过程中会同时出现互相冲突的产品语义。
+
+**影响：**
+
+- AI task requested_labels 与用户真实意图不一致；
+- 候选生成范围被扩大；
+- Review scope 被扩大；
+- overwrite=true 时可能扩大后续正式 Annotation 影响范围；
+- 用户选择一个参考图可能无意中把多个历史标签加入本次任务；
+- 训练前标签治理和审计链难以解释“这些标签是谁选择的”；
+- UI 文案与真实提交 payload 不一致。
+
+**建议最小修复：**
+
+不要新增第二套 label owner。
+
+参考图和标签选择必须彻底解耦：
+
+1. toggleRef429 只维护 reference_image_ids；
+2. 不得修改 ai429Labels；
+3. 删除 syncReferenceLabels417 对输入框 value 的写入；
+4. 如果希望展示参考素材有哪些标签：
+   - 只能作为只读提示；
+   - 不能写入 requested label scope；
+5. 用户若想采用参考素材某个标签：
+   - 必须显式点击/输入 canonical code；
+6. submitAiLabel429 只提交用户显式决定的 labels_text；
+7. 审计记录中区分：
+   - reference images；
+   - requested labels；
+   二者不能互相隐式派生。
+
+同时处理 AUDIT-116 时，也不要通过“让参考图标签自动控制 prompt”来代替真正的视觉 reference 支持。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 用户先输入 smoke，再选择带 person/smoke/phone 的参考图，ai429Labels 仍严格等于 smoke；
+- 取消/切换参考图不修改标签输入；
+- 批量全选参考图不修改标签输入；
+- 参考图标签可只读展示但不进入 submit payload；
+- submit payload labels_text 只包含用户显式输入/选择的 canonical codes；
+- UI 不再同时出现“不会自动添加”与“自动带出标签”的冲突文案。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
 
