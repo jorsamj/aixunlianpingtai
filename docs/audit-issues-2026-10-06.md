@@ -9095,6 +9095,218 @@ Training freeze 只是只读，不会改变 annotation digest，因此不会触�
 
 ---
 
+
+### AUDIT-086 — Cleaning confirm 在删除失败后仍把失败素材标成 processed/cleaned；用户明确要淘汰的坏图会被重新视为“已清洗可用”
+
+**级别：高**  
+**模块：Cleaning / Confirm / Material Lifecycle / Training Candidate Semantics**
+
+**现象：**
+
+当前 canonical Cleaning task 完成扫描后，用户通过：
+
+`POST /api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm`
+
+确认清洗结果，并可提交：
+
+`delete_ids`
+
+删除被判定为重复、模糊或其它不希望保留的素材。
+
+接口首先调用兼容删除 owner：
+
+`v46_batch_delete_images(...)`
+
+它可能返回：
+
+- `deleted_images`
+- `failed_items`
+
+例如：
+
+- 本地/远端 source 删除失败；
+- 文件系统权限错误；
+- source provider 临时错误；
+- 标注文件删除失败。
+
+这一部分会正确让响应最终：
+
+`ok = not failed_items`
+
+但是接口**不会在 failed_items 非空时停止 clean confirmation**。
+
+后续它直接读取整个 Cleaning task 的 frozen selection：
+
+`wanted = set(_v47_frozen_clean_selection_ids(task_id))`
+
+然后重新查询所有当前仍存在于 MaterialRepository 的 `wanted`：
+
+```python
+existing_ids.extend(
+    str(row.get('id'))
+    for row in materials.get_many(...)
+)
+processed_ids = list(dict.fromkeys(existing_ids))
+```
+
+最后对所有仍存在的 `processed_ids` 统一写入：
+
+```python
+{
+    'processing_status': 'processed',
+    'cleaned_at': cleaned_at,
+    'clean_task_id': task_id,
+}
+```
+
+因此：
+
+**删除失败的 image 因为仍然存在，恰好会进入 processed_ids。**
+
+也就是说，用户明确选择“删除”的坏图：
+
+1. 删除失败；
+2. row 仍在 MaterialRepository；
+3. 随后被 clean confirm 标成 `processed`；
+4. `cleaned_at` 也被写入；
+5. API 虽返回 `ok=false`，但数据语义已经被推进成“已清洗完成”。
+
+**为什么会影响训练主流程：**
+
+Training candidate 判定：
+
+`_processed_training_candidate(row)`
+
+当前只要满足任一：
+
+- `processing_status == processed`
+- 存在 `cleaned_at`
+- `clean_skipped`
+
+就认为该素材已完成处理。
+
+因此一个本应被用户淘汰、但删除失败的 unannotated 素材会从：
+
+“清洗结果中判定要删除”
+
+变成：
+
+“已清洗，可作为训练候选/待标注候选”。
+
+后续用户可能：
+
+- 再对它做 AI 标注；
+- 人工标注；
+- 选进训练任务；
+
+从而把本应淘汰的低质量/重复/异常图片重新带回数据集主流程。
+
+**真实可达场景：**
+
+例如 Cleaning 扫描 10,000 张：
+
+- 用户选择 500 张重复/模糊图删除；
+- 其中 20 张因外部对象存储临时失败未删掉；
+- `v46_batch_delete_images` 返回 480 deleted + 20 failed；
+- confirm 继续执行；
+- 20 张失败图片仍在 MaterialRepository；
+- 因此进入 `processed_ids`；
+- 被写成：
+  `processing_status=processed, cleaned_at=<now>`；
+- API 返回 `ok=false`，但这 20 张已经被永久标成“已清洗”。
+
+用户下次打开训练选择器时，不容易再知道它们曾是“删除失败的清洗异常项”。
+
+**为什么与 AUDIT-038 / AUDIT-017 不同：**
+
+AUDIT-038：
+
+- Cleaning confirm 缺少 execution-state guard；
+- 运行中/非终态任务也可能被确认。
+
+AUDIT-017：
+
+- v46/image delete 绕过 canonical MaterialBatch deletion owner 与 active Training fence。
+
+AUDIT-086：
+
+- **即使 Cleaning 已正常完成，且删除动作确实尝试执行，删除失败的 item 仍被 confirm 错误推进成 processed/cleaned。**
+
+这是确认结果状态机本身的问题。
+
+**额外审计证据：**
+
+接口已经把：
+
+`delete_failures = len(failed_items)`
+
+写入：
+
+`clean_confirmation.json`
+
+说明系统知道删除存在失败。
+
+但 `processed_ids` 并没有排除：
+
+- `failed_items[].id`
+- 用户原始 `delete_ids` 中未成功删除的 IDs。
+
+因此 confirmation artifact 同时可能表达：
+
+- delete_failures > 0
+- processed_ids 包含这些失败 ID
+
+形成自相矛盾的 durable truth。
+
+**影响：**
+
+- 用户明确淘汰的坏图被重新标为已清洗；
+- 低质量/重复样本可能重新进入 AI 标注、人工标注、训练候选；
+- 数据清洗效果被悄悄削弱；
+- 训练准确率可能因重复/模糊样本污染下降；
+- API 返回失败，但一部分不可逆状态已写入，用户重试时语义更复杂；
+- `clean_confirmation.json` 中 failure truth 与 MaterialRepository processed truth 不一致；
+- 10k/20k 批量清洗下，只要外部存储偶发失败就容易出现。
+
+**建议最小修复：**
+
+不要新增第二 Cleaning owner。
+
+确认阶段应按 item outcome 分开推进：
+
+1. 成功删除的：
+   - 已不存在，无需再标 processed；
+2. 用户未选择删除、明确保留的：
+   - 才允许写 `processing_status=processed / cleaned_at`；
+3. 用户选择删除但删除失败的：
+   - 必须保留 non-processed / needs_attention 状态；
+   - 至少不能写 `cleaned_at`；
+   - confirmation artifact 明确记录 retryable deletion failure；
+4. `processed_ids` 应计算为：
+   - frozen selection
+   - 减去 requested delete_ids
+   - 再与当前 MaterialRepository existence 做交集；
+5. 删除失败项应允许后续只重试 deletion，而不是重新扫描整个 Cleaning task。
+
+同时应与 AUDIT-017 收口到 canonical deletion owner，避免继续让 Cleaning confirm直接调用旧 v46 mutation。
+
+**回归测试建议：**
+
+至少覆盖：
+
+- 10 个 delete_ids，8 成功、2 失败；
+- 2 个失败 item 仍存在，但不得出现在 processed_ids；
+- 失败 item 不得获得 `processing_status=processed` / `cleaned_at`；
+- 未选择删除的保留项正常标 processed；
+- clean_confirmation.json 的 delete_failures 与 MaterialRepository truth一致；
+- failed deletion retry 成功后才完成对应生命周期；
+- Training Picker 不把 deletion-failed item 当 clean-ready。
+
+**是否需要 VERSION：** 是。  
+**是否需要新增回归测试：** 是。
+
+---
+
 ## 4. 已复核安全 / 不应误报的部分
 
 ### Annotation 正式保存合同
