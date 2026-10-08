@@ -1658,7 +1658,7 @@ def test_training_prepare_child_creation_failure_recovers_with_same_task_id(
 
     monkeypatch.setattr(TaskRepository, "create", fail_child_once)
     with pytest.raises(RuntimeError, match="injected child SQLite failure"):
-        app_module._enqueue_explicit_training(project_id, app_module.TrainReq(**request))
+        app_module.v12_start_train(project_id, app_module.TrainReq(**request))
     assert failed_once["value"]
     parent = app_module.shared_task_repository().get(request["task_id"])
     assert parent.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
@@ -1706,7 +1706,7 @@ def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
 
     monkeypatch.setattr(TaskRepository, "create", crash_after_parent_insert)
     with pytest.raises(SystemExit, match="injected crash"):
-        app_module._enqueue_explicit_training(project_id, app_module.TrainReq(**request))
+        app_module.v12_start_train(project_id, app_module.TrainReq(**request))
     parent = app_module.shared_task_repository().get(request["task_id"])
     assert parent.status is TaskStatus.QUEUED
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}") is None

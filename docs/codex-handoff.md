@@ -1,3 +1,9 @@
+## 2026-10-08 Gate S13：父子半提交恢复测试走正式 admission（42.24.332）
+
+- `42.24.331` Remote Training Runtime API job 的 46 项测试结果：44 passed / 2 failed；原有正式训练创建回归已通过，唯二失败是新增故障恢复测试。日志证明后端 409 `训练任务 ID 已绑定其他请求`，原因是故障注入首次直接调用内部 `_enqueue_explicit_training`，绕开了 v12 的 `validate_train_request(payload)` 标准化，随后 HTTP 重放经过标准化而 request_identity 发生变化。
+- 仅调整两条故障注入测试的首次请求为同一正式 `v12_start_train` 入口；失败点仍注入 TaskRepository create（child failure、parent INSERT 后模拟 crash），回放仍通过真实 HTTP API；身份冲突 409 的安全合同保持原样，绝不修改 `request_identity` 比较或放开幂等拒绝。
+- 未变更任何生产代码，保留所有测试。此前 42.24.331 全部 workflow/check-runs 的结论只能按真实最新状态核验；本次新 HEAD CI 未完成前 **NOT DEPLOYABLE**。不 merge main/tag/release、不部署生产。
+
 ## 2026-10-08 Gate S13 CI 定点修正（42.24.331）
 
 - `42.24.330` remote HEAD `b8563def252da7030f7f878b770b9ae06430fa09` 已触发真实 CI；当时已读取完成失败 job logs，禁止当作绿灯。
