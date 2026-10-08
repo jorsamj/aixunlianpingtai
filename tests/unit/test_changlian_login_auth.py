@@ -233,3 +233,59 @@ def test_auth_guard_protects_direct_data_and_api_docs_download_surfaces():
     assert auth_guard_decision("/docs") == "session_page"
     assert auth_guard_decision("/redoc") == "session_page"
     assert auth_guard_decision("/openapi.json") == "session_page"
+
+
+def test_logout_revokes_all_renewals_across_manager_instances(tmp_path: Path):
+    root = tmp_path / "auth-revoked"
+    manager = SignedSessionManager(root, idle_ttl_seconds=600,
+                                   absolute_ttl_seconds=1800,
+                                   renew_window_seconds=120)
+    original = manager.issue("alice", now=1000)
+    first = manager.verify(original, now=1490)
+    assert first is not None
+    renewed = manager.renew(first, now=1490)
+    assert renewed is not None
+    assert manager.verify(renewed, now=1491) is not None
+    assert manager.revoke(renewed, now=1500) is True
+    assert manager.verify(original, now=1501) is None
+    assert manager.verify(renewed, now=1501) is None
+    assert manager.revoke(original, now=1501) is False
+
+    new_worker = SignedSessionManager(root, idle_ttl_seconds=600,
+                                      absolute_ttl_seconds=1800,
+                                      renew_window_seconds=120)
+    assert new_worker.verify(original, now=1501) is None
+    assert new_worker.verify(renewed, now=1501) is None
+    distinct_login = new_worker.issue("alice", now=1502)
+    assert manager.verify(distinct_login, now=1503) is not None
+
+
+def test_logout_revokes_preexisting_cookie_without_sid_after_renewal(tmp_path: Path):
+    import hashlib
+    import hmac
+
+    manager = SignedSessionManager(tmp_path / "legacy-revoke",
+                                   idle_ttl_seconds=600,
+                                   absolute_ttl_seconds=1800,
+                                   renew_window_seconds=120)
+    token = manager.issue("alice", now=1000)
+    payload, _ = token.rsplit(".", 1)
+    claims = json.loads(AUTH._b64decode(payload))
+    claims.pop("sid")
+    legacy_payload = AUTH._b64encode(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
+    legacy_signature = AUTH._b64encode(hmac.new(manager._key, legacy_payload.encode(), hashlib.sha256).digest())
+    legacy_token = legacy_payload + "." + legacy_signature
+    assert manager.verify(legacy_token, now=1490) is not None
+    renewed = manager.renew(manager.verify(legacy_token, now=1490), now=1490)
+    assert renewed and manager.verify(renewed, now=1491)
+    assert manager.revoke(renewed, now=1500) is True
+    assert manager.verify(legacy_token, now=1501) is None
+
+
+def test_logout_fails_closed_if_durable_revocation_store_is_missing(tmp_path: Path):
+    manager = SignedSessionManager(tmp_path / "fail-closed")
+    token = manager.issue("alice", now=1000)
+    assert manager.verify(token, now=1001) is not None
+    manager.revocations_path.unlink()
+    with pytest.raises(Exception, match="unable to open database"):
+        manager.verify(token, now=1001)

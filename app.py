@@ -603,7 +603,19 @@ def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
 
 
 @app.post("/api/auth/logout")
-def changlian_auth_logout():
+def changlian_auth_logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if token:
+        try:
+            _CHANGLIAN_AUTH_SESSIONS.revoke(token)
+        except (OSError, sqlite3.Error) as error:
+            raise PlatformError(
+                code="AUTH_LOGOUT_REVOKE_FAILED",
+                message="无法安全退出登录",
+                detail="服务端会话撤销未完成，不能仅清除本地 Cookie。",
+                solution="请检查认证存储后重试。",
+                status_code=503,
+            ) from error
     response = JSONResponse({"ok": True, "authenticated": False})
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,

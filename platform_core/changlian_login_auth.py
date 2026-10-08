@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -291,6 +292,18 @@ class SignedSessionManager:
         )
         self.ttl_seconds = self.idle_ttl_seconds
         self._key = self._load_or_create_key()
+        # One canonical session manager owns durable logout revocations.
+        # Read checks must fail closed if this database becomes unavailable.
+        self.revocations_path = self.root / "changlian-revocations.sqlite3"
+        with sqlite3.connect(self.revocations_path, timeout=10) as database:
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS revoked_sessions "
+                "(identity_hash TEXT PRIMARY KEY, hard_expires_at INTEGER NOT NULL)"
+            )
+        try:
+            os.chmod(self.revocations_path, 0o600)
+        except OSError:
+            pass
 
     def _load_or_create_key(self) -> bytes:
         if self.key_path.exists():
@@ -311,6 +324,55 @@ class SignedSessionManager:
             raise RuntimeError("invalid changlian auth session key")
         return key
 
+    @staticmethod
+    def _session_identity(claims: Mapping[str, Any]) -> str:
+        sid = str(claims.get("sid") or "").strip()
+        if sid:
+            return sid
+        # Pre-revocation v1/v2 cookies had no sid and rotated jti on renew.
+        # Use their original signed user+creation second as family identity
+        # so a previously renewed legacy cookie is also invalidated.
+        origin = int(claims.get("created_at") or claims.get("iat") or 0)
+        return f"legacy:{str(claims.get('username') or '')}:{origin}"
+
+    def _revocation_hash(self, claims: Mapping[str, Any]) -> str:
+        return hmac.new(
+            self._key, self._session_identity(claims).encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+
+    def _is_revoked(self, claims: Mapping[str, Any]) -> bool:
+        # mode=ro prevents a lost/unmounted database from silently creating
+        # an empty one and resurrecting sessions that were logged out.
+        with sqlite3.connect(
+            self.revocations_path.resolve().as_uri() + "?mode=ro",
+            uri=True, timeout=10,
+        ) as database:
+            return database.execute(
+                "SELECT 1 FROM revoked_sessions WHERE identity_hash=? LIMIT 1",
+                (self._revocation_hash(claims),),
+            ).fetchone() is not None
+
+    def revoke(self, token: str, *, now: Optional[int] = None) -> bool:
+        """Revoke a valid signed session family across workers and renewals."""
+        current = int(time.time() if now is None else now)
+        claims = self.verify(token, now=current)
+        if claims is None:
+            return False
+        identity_hash = self._revocation_hash(claims)
+        deadline = int(claims.get("hard_exp") or claims.get("exp") or current)
+        with sqlite3.connect(
+            self.revocations_path.resolve().as_uri() + "?mode=rw",
+            uri=True, timeout=10,
+        ) as database:
+            database.execute(
+                "INSERT OR REPLACE INTO revoked_sessions(identity_hash,hard_expires_at) VALUES (?,?)",
+                (identity_hash, deadline),
+            )
+            database.execute(
+                "DELETE FROM revoked_sessions WHERE hard_expires_at<=?", (current,)
+            )
+        return True
+
     def issue(
         self,
         username: str,
@@ -320,6 +382,7 @@ class SignedSessionManager:
         hard_expires_at: Optional[int] = None,
         upstream_expires_at: Optional[int] = None,
         upstream_expiry_source: str = "undocumented",
+        session_id: Optional[str] = None,
     ) -> str:
         issued_at = int(time.time() if now is None else now)
         origin = issued_at if created_at is None else int(created_at)
@@ -337,6 +400,7 @@ class SignedSessionManager:
             "exp": expires_at,
             "hard_exp": hard_exp,
             "jti": secrets.token_urlsafe(12),
+            "sid": str(session_id or secrets.token_urlsafe(24)),
             "upstream_exp": int(upstream_expires_at) if upstream_expires_at else None,
             "upstream_expiry_source": str(upstream_expiry_source or "undocumented"),
         }
@@ -382,6 +446,8 @@ class SignedSessionManager:
             return None
         if hard_exp and hard_exp <= current:
             return None
+        if self._is_revoked(body):
+            return None
         return body
 
     def needs_renewal(self, claims: Mapping[str, Any], *, now: Optional[int] = None) -> bool:
@@ -412,6 +478,7 @@ class SignedSessionManager:
             now=current,
             created_at=created_at,
             hard_expires_at=hard_exp,
+            session_id=self._session_identity(claims),
             upstream_expires_at=upstream_expires_at,
             upstream_expiry_source=str(
                 claims.get("upstream_expiry_source") or "undocumented"

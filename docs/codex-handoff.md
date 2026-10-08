@@ -1,3 +1,10 @@
+## 2026-10-08 最小安全上线 Gate S3：AUDIT-181 服务端退出撤销（42.24.320）
+
+- SignedSessionManager 保持唯一认证 owner，新增本机 DATA_DIR/auth 内 SQLite revocation index（session identity digest + hard expiry），验证签名和时效后查询撤销状态；未存任何 Cookie、密码、第三方 accessToken。DB 丢失时 read-only 检查 fail closed，不能凭空恢复已撤销会话。
+- 新 token 增加 session-family sid，滚动 renew 继承相同 sid；旧无 sid token 以原始签名 username+created_at 作为兼容 family，防止旧 cookie 轮换后退出无法撤销前一代。logout POST 请求携带的有效 token 在服务端持久撤销，再删除浏览器 Cookie；撤销 I/O 失败返回 503、不报告退出成功。
+- 回归覆盖原 Cookie/续期 Cookie、跨进程共享实例、旧 cookie 兼容、新登录独立、数据库缺失 fail closed。没有改变 Agent 机器 Bearer 流程。其他安全网关、用户现场 UAT 未验收。
+- 版本 42.24.320；精确 HEAD CI 待核验；不 merge main/tag/release/生产部署。
+
 ## 2026-10-08 最小安全上线 Gate S2：AUDIT-086 清洗确认失败项不写成功（42.24.319）
 
 - v47_confirm_clean 继续使用既有 _v47_validate_clean_confirmation 冻结结果 guard 和旧批量删除入口；删除失败条目会留在 MaterialRepository。旧实现把所有仍存在的选中素材（包括刚删除失败的坏图）写成 processed/cleaned。本批只对明确 delete_ids 做排除，避免把删除失败误标成处理成功；未要求删除的其余素材仍按原合同确认。
