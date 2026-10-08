@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS storage_sources (
     type TEXT NOT NULL,
     config_json TEXT NOT NULL DEFAULT '{}',
     secret_ref TEXT NOT NULL DEFAULT '',
+    runtime_revision INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
     health_status TEXT NOT NULL DEFAULT 'UNKNOWN',
@@ -107,6 +108,7 @@ class StorageSource:
     type: str
     config: dict[str, Any]
     secret_ref: str = ""
+    runtime_revision: int = 1
     enabled: bool = True
     is_default: bool = False
     health_status: str = "UNKNOWN"
@@ -143,6 +145,7 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
         type=str(row["type"]),
         config=dict(json.loads(row["config_json"] or "{}")),
         secret_ref=str(row["secret_ref"] or ""),
+        runtime_revision=int(row["runtime_revision"]),
         enabled=bool(row["enabled"]),
         is_default=bool(row["is_default"]),
         health_status=str(row["health_status"] or "UNKNOWN"),
@@ -169,15 +172,33 @@ class StorageSourceRepository:
         with _initialization_lock(self.path):
             with closing(self._connect()) as database:
                 database.executescript(_SCHEMA)
-                stamp = _now()
-                database.execute(
-                    """
-                    INSERT OR IGNORE INTO storage_sources
-                    (id, name, type, config_json, enabled, is_default, created_at, updated_at)
-                    VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
-                    """,
-                    (stamp, stamp),
-                )
+                # Upgrade existing Storage Source owner in place. SQLite's
+                # RESERVED write lock serializes schema admission across Web
+                # workers, without introducing another revision table.
+                database.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {
+                        str(column["name"])
+                        for column in database.execute("PRAGMA table_info(storage_sources)").fetchall()
+                    }
+                    if "runtime_revision" not in columns:
+                        database.execute(
+                            "ALTER TABLE storage_sources "
+                            "ADD COLUMN runtime_revision INTEGER NOT NULL DEFAULT 1"
+                        )
+                    stamp = _now()
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO storage_sources
+                        (id, name, type, config_json, enabled, is_default, created_at, updated_at)
+                        VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
+                        """,
+                        (stamp, stamp),
+                    )
+                    database.execute("COMMIT")
+                except Exception:
+                    database.execute("ROLLBACK")
+                    raise
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
@@ -273,11 +294,19 @@ class StorageSourceRepository:
             enabled=bool(changes.get("enabled", current.enabled)),
             updated_at=_now(),
         )
+        # A->B->A must change the durable epoch even if the final config
+        # bytes match the original. Renaming alone leaves this epoch stable.
+        bump_runtime_revision = int(
+            updated.config != current.config
+            or updated.secret_ref != current.secret_ref
+            or updated.enabled != current.enabled
+        )
         with closing(self._connect()) as database:
             database.execute(
                 """
                 UPDATE storage_sources
-                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?, updated_at = ?
+                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?,
+                    updated_at = ?, runtime_revision = runtime_revision + ?
                 WHERE id = ?
                 """,
                 (
@@ -286,6 +315,7 @@ class StorageSourceRepository:
                     updated.secret_ref,
                     int(updated.enabled),
                     updated.updated_at,
+                    bump_runtime_revision,
                     updated.id,
                 ),
             )
