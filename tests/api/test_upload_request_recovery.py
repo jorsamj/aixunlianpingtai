@@ -126,3 +126,28 @@ def test_same_id_cannot_be_owned_twice_during_an_async_request(tmp_path):
             pass
 
     asyncio.run(exercise())
+
+
+def test_annotation_commit_error_does_not_delete_committed_material_bytes(client, monkeypatch):
+    project_id = _project(client)
+    request_id = "gt-failure-" + uuid.uuid4().hex[:12]
+
+    def abort_annotation_commit(self, *args, **kwargs):
+        raise RuntimeError("synthetic annotation sqlite failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            platform_app.AnnotationRepository, "upsert_many", abort_annotation_commit,
+        )
+        with pytest.raises(RuntimeError, match="已保留源文件"):
+            _upload(client, project_id, request_id)
+
+    receipt = platform_app.upload_batch_store(project_id).read(request_id)
+    assert receipt["upload_request_status"] == "PROCESSING"
+    image_id = receipt["upload_prepared_image_ids"][0]
+    material = platform_app.material_store(project_id).get(image_id)
+    assert material is not None
+    assert platform_app.storage_manager(project_id).materialize(material).path.is_file()
+    retry = _upload(client, project_id, request_id)
+    assert retry.status_code == 409, retry.text
+    assert retry.json()["detail"]["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
