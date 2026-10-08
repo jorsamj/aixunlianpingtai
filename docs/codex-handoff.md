@@ -1,3 +1,10 @@
+## 2026-10-08 最小安全上线 Gate S1：AUDIT-132 异步图片批次隔离（42.24.318）
+
+- 决策：暂停普通分页/纯技术债；只处理真实数据完整性、安全、算法版本与可达生产链。生产部署继续禁止。
+- app.py 原 threading.local 批次上下文在 FastAPI async upload_images 的 await file.seek 之间会被同一事件循环的其他请求覆盖。改用 ContextVar，每个异步任务独立保存既有批次字段和缓存；begin/active/end 三处统一读取与清除同一请求上下文。没有新增 Material/Annotation/Upload Owner、后台任务或存储表。
+- 新增同一项目两个 coroutine 交错及跨项目交错测试；批次 identity、空批次提交和结束后的上下文清除均有覆盖。此批仅解决 AUDIT-132；AUDIT-133 receipt crash recovery、AUDIT-134 storage source revision、AUDIT-086 清洗确认失败写入、算法版本与服务端 logout 仍属于后续安全 Gate。
+- 精确 HEAD CI 与并发文件上传/OSS 现场验收待确认，不能提前宣布所有上传风险 CLOSED。
+
 ## 2026-10-08 清洗 Audit 页码越界用例修正（42.24.317）
 
 - `42.24.315` 的 Remote Cleaning Ubuntu Python focused 测试：146 passed、1 failed。唯一失败为新测试把 123 条记录在默认 page_size=20 下的 page=4 错误认定为越界；其实际上是合法页。精确改为 `page=4,page_size=50`（真实只有 3 页），保留非法页必须报错的原断言。

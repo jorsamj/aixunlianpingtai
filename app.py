@@ -18,6 +18,7 @@ import sqlite3
 import mimetypes
 from urllib.parse import quote
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -2949,7 +2950,7 @@ def box_to_yolo_line(b: Dict[str, Any], w: int, h: int) -> str:
     return f"{int(b['class_id'])} {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}"
 
 
-_IMAGE_BATCH_CTX = threading.local()
+_IMAGE_BATCH_CTX: ContextVar[Optional[Dict[str, Any]]] = ContextVar("image_batch_context", default=None)
 _V50_IMPORT_LOCK_GUARD = threading.Lock()
 _V50_IMPORT_LOCKS: Dict[str, threading.RLock] = {}
 _V50_DATASET_LOCK_GUARD = threading.Lock()
@@ -2998,13 +2999,13 @@ def _v50_dataset_locks(project_id: str, dataset_ids):
             lock.release()
 
 def _v50_active_image_batch(project_id: str):
-    batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
+    batch = _IMAGE_BATCH_CTX.get()
     if batch and batch.get("project_id") == project_id:
         return batch
     return None
 
 def _v50_begin_image_batch(project_id: str):
-    _IMAGE_BATCH_CTX.batch = {
+    _IMAGE_BATCH_CTX.set({
         "project_id": project_id,
         "records": {},
         "patches": {},
@@ -3016,7 +3017,7 @@ def _v50_begin_image_batch(project_id: str):
         # Storage source schema/provider/credential setup is request-scoped,
         # not image-scoped. Reuse one manager across the whole import batch.
         "storage_manager": None,
-    }
+    })
 
 
 def _v50_annotation_repository(project_id: str) -> AnnotationRepository:
@@ -3088,8 +3089,8 @@ def _v50_cleanup_buffered_image_batch_files(
 
 
 def _v50_end_image_batch(save: bool = True):
-    batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
-    _IMAGE_BATCH_CTX.batch = None
+    batch = _IMAGE_BATCH_CTX.get()
+    _IMAGE_BATCH_CTX.set(None)
     if not batch:
         return []
     project_id = str(batch.get("project_id") or "")
