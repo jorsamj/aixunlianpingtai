@@ -1,3 +1,11 @@
+## 2026-10-09 Gate S15：AUDIT-167/177 最小安全隔离与标签反馈引用（42.24.335）
+
+- 前置精准 HEAD `ee2b0e5fb5bb6cc347ef21dd8831697abc960a71` / `42.24.334`：已实时确认 **22/22 Actions、57/57 check-runs 全部 completed-success**；这是真实 GitHub CI VERIFIED，不代表 OSS/GPU/Agent UAT。
+- AUDIT-167：现代 algorithm-version INT8 转换仍从实时 Material.split 选择校准图、未读取版本冻结 Snapshot。为避免误校准，v39 正式 version-source INT8 在资源/校准/任务创建之前明确 409；FP16、ONNX 不受阻，非版本历史校准语义不宣称已完成 lineage 修复。恢复 INT8 前必须统一 Snapshot role 及本地/Agent calibration contract。
+- AUDIT-177：复用 OnlineFeedbackRepository 的 SQLite status 索引 + 受控 JSON 查询，检查 pending_review、correct 预测冻结标签引用；Label 直接改 code/display、软删除、Durable REMAP 来源退役使用现有 label_governance_fence 后 fail-closed 409，普通无关标签更改不受此标签引用阻断。正常/外部反馈 correct stage 在同一 label fence 下确认当前标签解析后再创建，消除 stage 与 label retirement 交错；confirmed/dismissed 释放阻断。无新标签或反馈 owner。
+- 新增 API/unit 守卫，包括 INT8 409、FP16 不误挡、待审核标签删除/重命名/退役保护、无关标签与审核终态放行、stage 已退役标签拒绝。不删除或 skip 原测试。
+- **本批在精准新 HEAD 全部 CI 完成前仅为 CODE IMPLEMENTED / CI PENDING；真实 OSS/GPU/RKNN/新畅联/标签反馈并发 UAT PENDING。** 不 merge main、不 tag/release、不部署生产。更新 HEAD 必须先安全确认远端 ref。
+
 ## 2026-10-09 Gate S14 CI：External Algorithm Publish 精简依赖补齐（42.24.334）
 
 - Gate S14 初次准确 HEAD `09c85e0fd6f1f883d23ef1dc829bfac24cf6265d` 已执行 External Algorithm Publish Push：Backend unit 为 169 passed / 2 failed，失败的两个均为新加的 TRAINING/MODEL_CONVERSION OSS 变更栅栏测试，在执行测试时 import `platform_core.task_runtime` 发现工作流精简环境没有安装 `psutil`（ModuleNotFoundError），并非生产配置栅栏断言失败。

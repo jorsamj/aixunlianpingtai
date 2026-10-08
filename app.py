@@ -9903,6 +9903,15 @@ def _v12_update_label_locked(project_id: str, class_id: int, payload: LabelUpdat
         else labels[class_id]
     )
     pending_display = payload.display_name if payload.display_name is not None else current_display
+    if pending_code != labels[class_id] or str(pending_display) != str(current_display):
+        pending_feedback_id = _online_feedback_repository(project_id).pending_label_reference(
+            [str(labels[class_id]), str(current_display or "")]
+        )
+        if pending_feedback_id:
+            raise HTTPException(
+                status_code=409,
+                detail="该标签仍有待审核的线上正确预测反馈，请先完成审核或忽略后再修改编码/名称",
+            )
     try:
         validated_aliases = (
             _validate_label_aliases(
@@ -9987,6 +9996,14 @@ def _v12_delete_label_locked(project_id: str, class_id: int):
     item = meta[class_id]
     if str(item.get("status") or "active").lower() != "active":
         return {"ok": True, "items": active_label_options(project_label_items(project))}
+    pending_feedback_id = _online_feedback_repository(project_id).pending_label_reference(
+        [code, str(item.get("display_name") or code)]
+    )
+    if pending_feedback_id:
+        raise HTTPException(
+            status_code=409,
+            detail="该标签仍有待审核的线上正确预测反馈，请先完成审核或忽略后再删除",
+        )
     # Soft delete preserves project class ids. Physical compaction would require
     # rewriting every higher class id and is deliberately not part of this HTTP path.
     item["status"] = "inactive"
@@ -12219,12 +12236,15 @@ def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
             DATA_DIR, project_id, source["algorithm_id"], source["version_id"],
         ):
             evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
-            row, idempotent = _online_feedback_repository(project_id).stage(
-                evidence,
-                feedback_type=payload.feedback_type,
-                note=payload.note,
-                created_at=now_iso(),
-            )
+            with label_governance_fence(project_dir(project_id)):
+                if payload.feedback_type == "correct":
+                    _online_feedback_prediction_boxes(get_project(project_id), evidence)
+                row, idempotent = _online_feedback_repository(project_id).stage(
+                    evidence,
+                    feedback_type=payload.feedback_type,
+                    note=payload.note,
+                    created_at=now_iso(),
+                )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
@@ -12370,12 +12390,15 @@ async def create_external_online_feedback(
                 raise HTTPException(
                     status_code=409, detail="正式算法版本在外部反馈写入期间发生变化",
                 )
-            row, repository_reused = _online_feedback_repository(project_id).stage(
-                incoming,
-                feedback_type=feedback_type,
-                note=note,
-                created_at=now_iso(),
-            )
+            with label_governance_fence(project_dir(project_id)):
+                if feedback_type == "correct":
+                    _online_feedback_prediction_boxes(get_project(project_id), incoming)
+                row, repository_reused = _online_feedback_repository(project_id).stage(
+                    incoming,
+                    feedback_type=feedback_type,
+                    note=note,
+                    created_at=now_iso(),
+                )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {
@@ -17189,7 +17212,19 @@ def _v39_create_deploy_job_under_version_fence(
     project_id: str,
     payload: DeployJobReq,
 ):
-    source=_resolve_deploy_source(project_id,payload.source_id);resource=_deploy_resource_by_id(payload.resource_id)
+    source=_resolve_deploy_source(project_id,payload.source_id)
+    # Safe-launch isolation: legacy Material.split is not the algorithm
+    # version's frozen train/validation/test Snapshot. Do not silently
+    # calibrate version INT8 from unrelated live material.
+    if (
+        str(source.get("kind") or "") == "algorithm_version"
+        and str((payload.params or {}).get("precision") or "").strip().lower() == "int8"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本 INT8 转换暂时停用：校准集尚未与版本冻结 Snapshot 绑定；可选择 FP16 或 ONNX。",
+        )
+    resource=_deploy_resource_by_id(payload.resource_id)
     resource_mode = str(resource.get("mode") or "local").strip().lower()
     if resource_mode == "agent":
         resource = _detect_agent_deploy_resource(resource)

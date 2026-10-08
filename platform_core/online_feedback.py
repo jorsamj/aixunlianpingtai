@@ -502,6 +502,31 @@ class OnlineFeedbackRepository:
             ).fetchone()
         return str(row["id"]) if row is not None else ""
 
+    def pending_label_reference(self, labels: Iterable[str]) -> str:
+        """Bounded result: find a pending correct prediction using a live label name.
+
+        The existing status index selects pending rows; JSON is inspected in
+        SQLite without hydrating the feedback queue or copying label truth.
+        Must be called under the canonical project label-governance fence.
+        """
+        names = sorted({str(value).strip() for value in labels if str(value).strip()})
+        if not names:
+            return ""
+        if len(names) > 500:
+            raise ValueError("pending label reference lookup is limited to 500 names")
+        placeholders = ",".join("?" for _ in names)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT feedback.id FROM online_feedback AS feedback "
+                "WHERE feedback.status='pending_review' AND feedback.feedback_type='correct' "
+                "AND EXISTS (SELECT 1 FROM json_each("
+                "feedback.payload_json, '$.source.detections') AS detection "
+                "WHERE json_extract(detection.value, '$.label') IN (" + placeholders + ")) "
+                "LIMIT 1",
+                names,
+            ).fetchone()
+        return str(row["id"]) if row is not None else ""
+
     def list_confirmed_for_version(
         self, algorithm_id: str, version_id: str, *, limit: int = 500,
     ) -> tuple[list[dict[str, Any]], int]:

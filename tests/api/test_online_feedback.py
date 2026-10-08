@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 import app as app_module
@@ -739,3 +740,82 @@ def test_pending_feedback_prevents_version_retirement_until_review_finishes(clie
 
     retired = client.delete(delete_url)
     assert retired.status_code == 200, retired.text
+
+
+def test_pending_correct_feedback_pins_label_rename_delete_and_remap_retirement(client):
+    from platform_core.material_batches import BatchRequestError, _retire_merged_source_labels
+
+    created = client.post("/api/projects", json={
+        "name": f"feedback-label-pin-{uuid.uuid4().hex[:8]}",
+        "labels": ["smoke", "helmet"],
+    })
+    assert created.status_code == 200, created.text
+    project_id = created.json()["id"]
+    algorithm_id, version = _algorithm_version(client, project_id)
+    prediction_id, _ = _prediction(
+        project_id, algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+    )
+    staged = _stage(client, project_id, prediction_id, "correct")
+    assert app_module._online_feedback_repository(project_id).pending_label_reference(
+        ["smoke"]
+    ) == staged["id"]
+
+    changed = client.put(
+        f"/api/v12/projects/{project_id}/labels/0", json={"code": "smoking"},
+    )
+    assert changed.status_code == 409, changed.text
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/0")
+    assert deleted.status_code == 409, deleted.text
+
+    with pytest.raises(BatchRequestError) as conflict:
+        _retire_merged_source_labels(
+            app_module.DATA_DIR, project_id, ["smoke"], "helmet",
+        )
+    assert conflict.value.code == "ONLINE_FEEDBACK_LABEL_ACTIVE"
+
+    # A different label is not pinned by smoke predictions.
+    unrelated = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert unrelated.status_code == 200, unrelated.text
+
+    dismissed = client.post(
+        f"/api/v63/projects/{project_id}/online-feedback/{staged['id']}/dismiss",
+        json={"expected_feedback_type": "correct", "reason": "review handled"},
+    )
+    assert dismissed.status_code == 200, dismissed.text
+    assert app_module._online_feedback_repository(project_id).pending_label_reference(
+        ["smoke"]
+    ) == ""
+    renamed = client.put(
+        f"/api/v12/projects/{project_id}/labels/0", json={"code": "smoking"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+
+def test_stage_correct_prediction_rejects_retired_frozen_label(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+    )
+    deleted = client.delete(f"/api/v12/projects/{project['id']}/labels/0")
+    assert deleted.status_code == 200, deleted.text
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback",
+        json={
+            "prediction_id": prediction_id,
+            "feedback_type": "correct",
+            "note": "retired source label",
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert app_module._online_feedback_repository(project["id"]).list(
+        status="pending_review"
+    ) == []

@@ -1,3 +1,6 @@
+<!-- LIVE_HANDOFF_2026_10_09_GATE_S15 -->
+> 2026-10-09：42.24.334 精确 HEAD ee2b0e5 的 22/22 Actions 和 57/57 Checks 全部 success。T1 确认 AUDIT-167 INT8 version Snapshot drift、AUDIT-177 pending feedback label drift，42.24.335 做最小隔离/引用保护并新增回归；新 HEAD CI/UAT 尚未验证。详见 docs/codex-handoff.md 顶部 Gate S15。禁止据此部署生产。
+
 <!-- CURRENT_STATE_ANNOTATION_CLEANING_2026_09_25 -->
 > ## 2026-09-25 标注与数据清洗当前状态
 >

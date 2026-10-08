@@ -27,6 +27,7 @@ from .material_repository import (
     material_annotation_lifecycle_fence,
 )
 from .material_repository_batch import _transform_many
+from .online_feedback import OnlineFeedbackRepository
 from .material_selection import MaterialSelectionSpec, SelectionScope
 from .materials import mark_ready
 from .storage.errors import StorageError, redact_storage_error
@@ -752,6 +753,14 @@ def create_annotation_remap_by_labels(
                 "来源或目标标签已不存在或已停用，请刷新后重新确认",
                 409,
             )
+        if retire_sources_on_success and OnlineFeedbackRepository(
+            materials.project_path
+        ).pending_label_reference(sources):
+            raise BatchRequestError(
+                "ONLINE_FEEDBACK_LABEL_ACTIVE",
+                "来源标签仍有待审核的线上正确预测反馈，请先处理反馈再统一退役",
+                409,
+            )
         frozen = annotations.live_reference_snapshot(sources)
 
     image_ids = list(frozen["image_ids"])
@@ -1042,6 +1051,20 @@ def _retire_merged_source_labels(
                         409,
                     )
                 target_index = labels.index(target)
+                frozen_label_names = list(sources)
+                for source_code in sources:
+                    if source_code in labels:
+                        source_meta = metadata[labels.index(source_code)]
+                        if isinstance(source_meta, dict):
+                            frozen_label_names.append(str(source_meta.get("display_name") or ""))
+                if OnlineFeedbackRepository(project_path).pending_label_reference(
+                    frozen_label_names
+                ):
+                    raise BatchRequestError(
+                        "ONLINE_FEEDBACK_LABEL_ACTIVE",
+                        "来源标签仍有待审核的线上正确预测反馈，已阻止来源标签退役",
+                        409,
+                    )
                 target_meta = (
                     metadata[target_index]
                     if isinstance(metadata[target_index], dict)

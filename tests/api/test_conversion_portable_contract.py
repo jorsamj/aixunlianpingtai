@@ -753,3 +753,32 @@ def test_agent_rknn_unsupported_chip_is_rejected_before_job_staging(
     assert "rk3588" in str(failure.value.detail)
     assert repository.created == []
     assert transport.calls == []
+
+
+def test_safe_launch_blocks_version_int8_before_resource_or_job_mutation(monkeypatch):
+    monkeypatch.setattr(app_module, "_resolve_deploy_source", lambda *_: {
+        "kind": "algorithm_version", "version_id": "v1",
+    })
+    accessed = []
+    def lookup_resource(resource_id):
+        accessed.append(resource_id)
+        raise RuntimeError("resource lookup reached")
+    monkeypatch.setattr(app_module, "_deploy_resource_by_id", lookup_resource)
+
+    request = app_module.DeployJobReq(
+        source_id="version::algo::v1", target="rockchip",
+        resource_id="rknn", params={"precision": "int8", "chip": "rk3568"},
+    )
+    with pytest.raises(app_module.HTTPException) as blocked:
+        app_module._v39_create_deploy_job_under_version_fence("project", request)
+    assert blocked.value.status_code == 409
+    assert "Snapshot" in str(blocked.value.detail)
+    assert accessed == []
+
+    safe_request = app_module.DeployJobReq(
+        source_id="version::algo::v1", target="rockchip",
+        resource_id="rknn", params={"precision": "fp16", "chip": "rk3568"},
+    )
+    with pytest.raises(RuntimeError, match="resource lookup reached"):
+        app_module._v39_create_deploy_job_under_version_fence("project", safe_request)
+    assert accessed == ["rknn"]
