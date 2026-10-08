@@ -183,3 +183,18 @@ def test_prepared_upload_ids_are_immutable_across_receipt_completion(tmp_path):
     )
     assert completed["upload_request_status"] == "SUCCEEDED"
     assert completed["items"][0]["image_id"] == "image-one"
+
+
+def test_upload_receipt_initializes_missing_directory_before_lock(tmp_path):
+    directory = tmp_path / "new-project" / "upload_batches"
+    assert not directory.exists()
+    store = UploadBatchStore(directory)
+    assert directory.is_dir()
+    receipt, created = store.begin_upload_request(
+        "first-upload", created_at="2026-10-08T12:00:00Z",
+        manifest=[{"name": "first.jpg", "size": 1, "content_type": "image/jpeg"}],
+        dataset_id="default", storage_source_id="default_local",
+    )
+    assert created is True
+    assert receipt["upload_request_status"] == "PROCESSING"
+    assert (directory / "first-upload.json").is_file()
