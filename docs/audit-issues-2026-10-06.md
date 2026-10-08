@@ -25834,3 +25834,8 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - `42.24.298` 的 Material Annotation Atomicity 仍要求批量导入在 Material 身份落库前先写正式 GT，并按图片逐次调用 `upsert_many`；该旧合同会重新打开 AUDIT-149 窗口。
 - 合同现验证批内 GT 在 Material commit 前不可见，Material identity batch 后执行一次 bounded Annotation batch，每张素材仍只生成一个 version 1 正式记录；Material projection 另占一个 bounded revision，不产生 N 次 revision。
+
+### CI 投影 Owner 合同同步（42.24.300）
+
+- `42.24.299` 的 Annotation/ZIP regression job 仍监控通用 `MaterialRepository.patch`，并要求 100 张图产生 100 次 Annotation upsert；这会把已退役旁路和 N 次写入误当成正确性。
+- 合同现监控唯一 `patch_annotation_projections`，验证普通正式保存只投影一次，100 图导入只做一次 100-row Annotation batch 与一次 Material projection batch；未删除测试、未放宽字段或结果断言。

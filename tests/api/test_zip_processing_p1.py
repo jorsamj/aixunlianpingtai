@@ -28,14 +28,14 @@ def test_direct_annotation_repository_keeps_default_material_projection(seeded_p
 def test_app_write_annotation_projects_material_once(monkeypatch, seeded_project):
     project_id, image = seeded_project
     calls = 0
-    original = MaterialRepository.patch
+    original = MaterialRepository.patch_annotation_projections
 
     def counted(self, *args, **kwargs):
         nonlocal calls
         calls += 1
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(MaterialRepository, 'patch', counted)
+    monkeypatch.setattr(MaterialRepository, 'patch_annotation_projections', counted)
     app_module.write_annotation(project_id, image['id'], [_box()])
     assert calls == 1
     material = app_module.material_store(project_id).get(image['id'])
@@ -48,21 +48,21 @@ def test_app_write_annotation_projects_material_once(monkeypatch, seeded_project
     assert material['annotation_preview'][0]['label'] == 'fire'
 
 
-def test_v50_batch_annotation_queues_projection_without_material_patch(monkeypatch, seeded_project):
+def test_v50_batch_annotation_for_existing_material_projects_immediately(monkeypatch, seeded_project):
     project_id, image = seeded_project
     calls = 0
-    original = MaterialRepository.patch
+    original = MaterialRepository.patch_annotation_projections
 
     def counted(self, *args, **kwargs):
         nonlocal calls
         calls += 1
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(MaterialRepository, 'patch', counted)
+    monkeypatch.setattr(MaterialRepository, 'patch_annotation_projections', counted)
     app_module._v50_begin_image_batch(project_id)
     try:
         app_module.write_annotation(project_id, image['id'], [_box()])
-        assert calls == 0
+        assert calls == 1
     finally:
         app_module._v50_end_image_batch(save=False)
 
@@ -89,10 +89,10 @@ def test_yolo_batch_processing_bounds_project_reads_and_material_patches(monkeyp
     (root / 'data.yaml').write_text('train: images/train\nnames: [object]\n', encoding='utf-8')
 
     get_project_calls = 0
-    material_patch_calls = 0
-    annotation_upserts = 0
+    material_projection_calls = 0
+    annotation_upserts = {"calls": 0, "rows": 0}
     original_get_project = app_module.get_project
-    original_patch = MaterialRepository.patch
+    original_patch = MaterialRepository.patch_annotation_projections
     original_upsert_many = AnnotationRepository.upsert_many
 
     def counted_get_project(*args, **kwargs):
@@ -101,24 +101,24 @@ def test_yolo_batch_processing_bounds_project_reads_and_material_patches(monkeyp
         return original_get_project(*args, **kwargs)
 
     def counted_patch(self, *args, **kwargs):
-        nonlocal material_patch_calls
-        material_patch_calls += 1
+        nonlocal material_projection_calls
+        material_projection_calls += 1
         return original_patch(self, *args, **kwargs)
 
     def counted_upsert_many(self, *args, **kwargs):
-        nonlocal annotation_upserts
-        annotation_upserts += 1
+        annotation_upserts["calls"] += 1
+        annotation_upserts["rows"] += len(args[0])
         return original_upsert_many(self, *args, **kwargs)
 
     monkeypatch.setattr(app_module, 'get_project', counted_get_project)
-    monkeypatch.setattr(MaterialRepository, 'patch', counted_patch)
+    monkeypatch.setattr(MaterialRepository, 'patch_annotation_projections', counted_patch)
     monkeypatch.setattr(AnnotationRepository, 'upsert_many', counted_upsert_many)
 
     report = app_module.v19_build_report_base({'id': 'p1', 'file_name': 'p1.zip'})
     app_module._v50_begin_image_batch(project_id)
     try:
         assert app_module._v18_import_yolo(project_id, root, 'default', report) is True
-        assert material_patch_calls == 0
+        assert material_projection_calls == 0
         app_module._v50_end_image_batch(save=True)
     except BaseException:
         app_module._v50_end_image_batch(save=False)
@@ -127,8 +127,8 @@ def test_yolo_batch_processing_bounds_project_reads_and_material_patches(monkeyp
     assert report['imported_images'] == 100
     assert report['boxes'] == 100
     assert get_project_calls <= 3
-    # P2b persists the final YOLO truth before add_image_record returns, in one write.
-    assert annotation_upserts == 100
+    assert annotation_upserts == {"calls": 1, "rows": 100}
+    assert material_projection_calls == 1
     summary = app_module.material_store(project_id).summary()
     assert summary['total'] == 100
     assert summary['annotated'] == 100

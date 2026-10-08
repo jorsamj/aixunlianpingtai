@@ -2,7 +2,7 @@
 
 ## 2026-10-08 R0 Material / Annotation 并发生命周期与单调投影（当前最新）
 
-- VERSION：`42.24.299`；长期分支：`feature/external-algorithm-publishing`。
+- VERSION：`42.24.300`；长期分支：`feature/external-algorithm-publishing`。
 - 新增 project-scoped、跨进程、线程内可重入的短生命周期 FileLock。它只做协调，不保存业务状态，不是第二 Repository/Runtime。
 - AnnotationRepository 正式 annotated/confirmed_empty 写在该边界内核验 Material 存在、无 dataset delete claim、来源可用、冻结 content SHA 一致、Annotation expected_version 和 active label，然后提交 GT 与派生投影。
 - Dataset DELETE 只在 claim+backup 与 Material/GT finalize 的短阶段拿同一 fence；文件 staging 在 fence/DB transaction 外。Storage Rescan 的 H1→H2 Material commit 同样受 fence 保护。
@@ -11,6 +11,7 @@
 - 本地最终相关回归已通过：核心 lifecycle/projection、AnnotationRepository、AI commit、Rescan、Dataset delete/recovery、训练请求与 Material API 211 项；批量/索引契约 6 项；前端工作台契约 10 项；Real Chrome 主要标注/筛选路径 8 项；Python 语法与 diff check 通过。最终提交/推送及精确 HEAD Actions/check-runs 仍以后续记录为准。
 - `42.24.297` 精确 HEAD CI 的 Label Normalization Contract 暴露 deferred structured import 将显式空标注误降级为 `unannotated`；`42.24.298` 恢复 AnnotationRepository 的 canonical 默认（最终空标注为 `confirmed_empty`，普通上传仍显式传 `unannotated`）。
 - `42.24.298` 精确 HEAD CI 的 Material Annotation Atomicity 仍锁定旧的“Material 尚不存在时先写正式 GT / 每图一次 upsert”顺序。`42.24.299` 将合同对齐为 Material 身份批量提交后再执行一次 bounded `upsert_many`，每张图仍只产生一个 v1 正式 Annotation；47 项完整 atomicity workflow 合同本地通过。
+- `42.24.299` 同 workflow 的第二个 job 仍监控已退役的通用 `MaterialRepository.patch` 并断言 100 次逐图 upsert；`42.24.300` 改为监控唯一 version-monotonic projection owner，断言一次 100-row Annotation batch + 一次 Material projection batch。该 job 原样 45 项本地通过。
 - 设计与计划：`docs/superpowers/specs/2026-10-08-material-annotation-lifecycle-design.md`、`docs/superpowers/plans/2026-10-08-material-annotation-lifecycle.md`。
 
 ## 2026-10-08 AUDIT-099 / AUDIT-098 commit fence（当前最新）
