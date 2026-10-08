@@ -19,6 +19,18 @@ test('training material picker query is cursor paged and server filtered', () =>
   assert.deepEqual(query.getAll('label'), ['smoke', 'person']);
 });
 
+test('training material picker supports authoritative page-number queries', () => {
+  const query = new URLSearchParams(buildTrainingMaterialQuery({
+    page: 7,
+    pageSize: 20,
+    query: 'smoke',
+    labels: ['smoke'],
+  }));
+  assert.equal(query.get('page'), '7');
+  assert.equal(query.get('page_size'), '20');
+  assert.equal(query.has('cursor'), false);
+});
+
 test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /DEFAULT_PAGE_SIZE = 60/);
   assert.match(source, /\/api\/v62\/projects\/\$\{encodeURIComponent\(pid\)\}\/training-materials/);
@@ -71,6 +83,15 @@ test('picker UI uses larger bounded preview cards rather than a dense thumbnail 
   assert.match(source, /Array\.from\(\{length: 15\}/);
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
+});
+
+test('picker delegates all numbered navigation and jump input to shared pagination', () => {
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /onPageChange:/);
+  assert.match(source, /onPageSizeChange:/);
+  assert.match(source, /page: picker\.page/);
+  assert.match(source, /totalPages: picker\.totalPages/);
+  assert.doesNotMatch(source, /pager\.innerHTML = `<button[^`]*上一页/);
 });
 
 test('picker caps first-paint thumbnails and only expands loading after scroll', () => {

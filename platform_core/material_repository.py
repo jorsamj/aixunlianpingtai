@@ -820,35 +820,78 @@ class MaterialRepository:
             return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
 
     def list_page(
-        self, *, cursor: str | None = None, limit: int = 100, query: str = "",
+        self, *, cursor: str | None = None, page: int | None = None,
+        limit: int = 100, query: str = "",
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
         split: str | None = None, annotation_state: str | None = None,
     ) -> MaterialPage:
         bounded = max(1, min(1000, int(limit)))
+        if page is not None and cursor:
+            raise ValueError("page and cursor cannot be used together")
         filter_values = MaterialFilters(
             query=query, storage_source_ids=tuple(storage_source_ids or ()),
             processing_status=processing_status, split=split, labels=tuple(labels or ()),
             annotated=annotated, annotation_state=annotation_state,
         )
-        clauses, params = self._filters(filter_values)
-        if cursor:
-            created_at, image_id = _decode_cursor(cursor)
-            clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
-            params.extend((created_at, created_at, image_id))
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as database:
-            rows = database.execute(
-                "SELECT m.id, m.created_at, m.payload_json FROM materials m" + where + " ORDER BY m.created_at, m.id LIMIT ?",
-                [*params, bounded + 1],
-            ).fetchall()
+            database.execute("BEGIN")
+            try:
+                base_clauses, base_params = self._filters(filter_values)
+                base_where = (
+                    " WHERE " + " AND ".join(base_clauses)
+                    if base_clauses else ""
+                )
+                total = int(database.execute(
+                    "SELECT COUNT(*) FROM materials m" + base_where,
+                    base_params,
+                ).fetchone()[0])
+                offset = None
+                if page is not None:
+                    try:
+                        page_number = int(page)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("page must be a positive integer") from error
+                    total_pages = max(1, (total + bounded - 1) // bounded)
+                    if page_number < 1:
+                        raise ValueError("page must be a positive integer")
+                    if page_number > total_pages:
+                        raise ValueError(
+                            f"page {page_number} exceeds total_pages {total_pages}"
+                        )
+                    offset = (page_number - 1) * bounded
+
+                clauses = list(base_clauses)
+                params = list(base_params)
+                if cursor:
+                    created_at, image_id = _decode_cursor(cursor)
+                    clauses.append(
+                        "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+                    )
+                    params.extend((created_at, created_at, image_id))
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                sql = (
+                    "SELECT m.id, m.created_at, m.payload_json FROM materials m"
+                    + where
+                    + " ORDER BY m.created_at, m.id LIMIT ?"
+                )
+                query_params = [*params, bounded + 1]
+                if offset is not None:
+                    sql += " OFFSET ?"
+                    query_params.append(offset)
+                rows = database.execute(sql, query_params).fetchall()
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
         visible = rows[:bounded]
         next_cursor = None
         if len(rows) > bounded and visible:
             next_cursor = _encode_cursor(str(visible[-1]["created_at"]), str(visible[-1]["id"]))
         return MaterialPage(
             items=[self._row_payload(row) for row in visible], next_cursor=next_cursor,
-            total=self.count_filtered(filter_values),
+            total=total,
         )
 
     def iter_filtered_ids(

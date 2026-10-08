@@ -41,10 +41,15 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
-export function buildTrainingMaterialQuery({cursor = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = []} = {}) {
+export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = []} = {}) {
   const params = new URLSearchParams();
-  params.set('limit', String(pageSize));
-  if (cursor) params.set('cursor', String(cursor));
+  if (page != null) {
+    params.set('page', String(page));
+    params.set('page_size', String(pageSize));
+  } else {
+    params.set('limit', String(pageSize));
+    if (cursor) params.set('cursor', String(cursor));
+  }
   if (String(query || '').trim()) params.set('query', String(query).trim());
   uniqueIds(labels).forEach(label => params.append('label', label));
   return params.toString();
@@ -172,8 +177,8 @@ export function installTrainingMaterialPickerRuntime({
     });
   }
 
-  function cacheKey(cursor) {
-    return `${signature()}::${cursor || ''}`;
+  function cacheKey(page) {
+    return `${signature()}::page:${Math.max(1, Number(page) || 1)}`;
   }
 
   function remember(key, value) {
@@ -282,6 +287,30 @@ export function installTrainingMaterialPickerRuntime({
     attachViewportImages();
   }
 
+  function renderPager() {
+    if (!picker) return;
+    const pager = document.getElementById('trV3Pager');
+    window.PlatformCore?.pagination?.mountPagination?.(pager, {
+      page: picker.page,
+      pageSize: picker.pageSize,
+      total: picker.total,
+      totalPages: picker.totalPages,
+      hasPrevious: picker.page > 1,
+      hasNext: picker.page < picker.totalPages,
+      loading: picker.loading,
+    }, {
+      label: '训练素材分页',
+      showPageSize: true,
+      pageSizes: [20, 50, 60, 100],
+      onPageChange: targetPage => loadPage({page: targetPage}),
+      onPageSizeChange: pageSize => {
+        picker.pageSize = pageSize;
+        pageCache.clear();
+        return loadPage({reset: true});
+      },
+    });
+  }
+
   function renderPage() {
     if (!picker) return;
     const grid = document.getElementById('trV3Grid');
@@ -307,26 +336,26 @@ export function installTrainingMaterialPickerRuntime({
       </label>`;
     }).join('') || '<div class="empty">没有符合筛选条件的已清洗素材</div>';
     updateCounts();
-    const pager = document.getElementById('trV3Pager');
-    if (pager) pager.innerHTML = `<button class="btn mini" ${picker.pageIndex <= 0 ? 'disabled' : ''} onclick="trainMaterialPageV3(-1)">上一页</button><span>第 ${picker.pageIndex + 1} 页</span><button class="btn mini" ${picker.nextCursor ? '' : 'disabled'} onclick="trainMaterialPageV3(1)">下一页</button>`;
+    renderPager();
     attachImageFallbacks();
   }
 
-  async function loadPage({reset = false} = {}) {
+  async function loadPage({reset = false, page = null} = {}) {
     if (!picker) return;
     if (reset) {
-      picker.pageIndex = 0;
-      picker.cursors = [null];
-      picker.nextCursor = null;
+      picker.page = 1;
+      picker.totalPages = 1;
     }
-    const cursor = picker.cursors[picker.pageIndex] || null;
-    const key = cacheKey(cursor);
+    const requestedPage = Math.max(1, Number(page ?? picker.page) || 1);
+    const key = cacheKey(requestedPage);
     const cached = pageCache.get(key);
     if (cached) {
       picker.items = cached.items;
       picker.total = cached.total;
-      picker.nextCursor = cached.next_cursor || null;
+      picker.page = Math.max(1, Number(cached.page || requestedPage));
+      picker.totalPages = Math.max(1, Number(cached.total_pages || 1));
       picker.repositoryRevision = cached.repository_revision ?? null;
+      picker.loading = false;
       renderPage();
       return;
     }
@@ -337,11 +366,12 @@ export function installTrainingMaterialPickerRuntime({
     picker.loading = true;
     renderSkeleton();
     updateCounts();
+    renderPager();
     try {
       const pid = projectId();
       if (!pid) throw new Error('当前项目不存在');
       const query = buildTrainingMaterialQuery({
-        cursor,
+        page: requestedPage,
         pageSize: picker.pageSize,
         query: picker.query,
         labels: [...picker.labels],
@@ -354,9 +384,12 @@ export function installTrainingMaterialPickerRuntime({
       if (!picker || sequence !== requestSequence) return;
       picker.items = Array.isArray(body.items) ? body.items : [];
       picker.total = Math.max(0, Number(body.total || 0));
-      picker.nextCursor = body.next_cursor || null;
+      picker.page = Math.max(1, Number(body.page || requestedPage));
+      picker.pageSize = Math.max(1, Number(body.page_size || picker.pageSize));
+      picker.totalPages = Math.max(1, Number(body.total_pages || 1));
       picker.repositoryRevision = body.repository_revision ?? null;
       remember(key, body);
+      picker.loading = false;
       renderPage();
     } catch (error) {
       if (error?.name === 'AbortError') return;
@@ -365,7 +398,10 @@ export function installTrainingMaterialPickerRuntime({
       if (grid) grid.innerHTML = `<div class="empty">${esc(error?.message || '训练素材读取失败')}</div>`;
       notify(error?.message || '训练素材读取失败');
     } finally {
-      if (picker && sequence === requestSequence) picker.loading = false;
+      if (picker && sequence === requestSequence) {
+        picker.loading = false;
+        renderPager();
+      }
     }
   }
 
@@ -425,7 +461,7 @@ export function installTrainingMaterialPickerRuntime({
     picker = {
       role: role === 'test' ? 'test' : 'train',
       query: '', labels: new Set(), selected: new Set(),
-      pageSize: DEFAULT_PAGE_SIZE, pageIndex: 0, cursors: [null], nextCursor: null,
+      pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
       items: [], total: 0, loading: false, repositoryRevision: null,
     };
     state().trainMaterialPickerV3 = picker;
@@ -478,16 +514,9 @@ export function installTrainingMaterialPickerRuntime({
   async function page(delta) {
     if (!picker || picker.loading) return;
     const direction = Number(delta || 0);
-    if (direction < 0) {
-      if (picker.pageIndex <= 0) return;
-      picker.pageIndex -= 1;
-      return loadPage();
-    }
-    if (direction > 0 && picker.nextCursor) {
-      picker.cursors[picker.pageIndex + 1] = picker.nextCursor;
-      picker.pageIndex += 1;
-      return loadPage();
-    }
+    const targetPage = picker.page + Math.sign(direction);
+    if (targetPage < 1 || targetPage > picker.totalPages) return;
+    return loadPage({page: targetPage});
   }
 
   window.openTrainMaterialPickerV3 = open;
@@ -523,11 +552,12 @@ export function installTrainingMaterialPickerRuntime({
         query: picker.query,
         labels: [...picker.labels],
         selected: picker.selected.size,
-        pageIndex: picker.pageIndex,
+        pageIndex: picker.page - 1,
+        page: picker.page,
         pageSize: picker.pageSize,
+        totalPages: picker.totalPages,
         total: picker.total,
         items: picker.items.length,
-        nextCursor: picker.nextCursor,
         repositoryRevision: picker.repositoryRevision,
         networkOwner: true,
         fullPoolHydration: false,

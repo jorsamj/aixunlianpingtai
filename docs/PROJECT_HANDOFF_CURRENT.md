@@ -2805,3 +2805,8 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - `42.24.301` 精确 HEAD 为 45/46 workflows success；唯一失败是 stale source grep，实际 job pytest 41 passed。本候选已把 guard 对齐到当前更强 lifecycle fence，精确 HEAD CI 尚待提交推送。
 - 现场 OSS、生产 Keyring、Agent/RKNN/GPU 仍为 `PENDING USER UAT`。下一步先完成本批提交、推送与 exact-HEAD CI。
 - AUDIT-152 定向清洗回归与 1k/10k/20k bounded annotation-read 合同已通过；compatibility 翻页仍会重新评估全部选中素材，已确认为不影响正确性的既有性能 follow-up，后续应以 keyset/既有 owner 方案处理，禁止为此新增全局缓存 truth。
+<!-- PROJECT_HANDOFF_UNIFIED_PAGINATION_PHASE1_2026_10_08 -->
+> ## 2026-10-08 分页与训练兼容性最新覆盖
+>
+> `42.24.303` 完成第一阶段：共享无业务状态分页组件；训练素材真实随机页；兼容性跨页 revision-keyed 只读投影；训练 picker、创建兼容性问题与任务 input issues 接入。AUDIT-148 和正式 Snapshot 路径未缓存、未放宽。Cursor API 保持兼容。后续阶段清单见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，精确 pushed HEAD CI 与用户部署验收仍 PENDING。
+>

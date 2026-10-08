@@ -49,22 +49,29 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.route('**/full/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
   await page.route(`**/api/v62/projects/${encoded}/training-materials?*`, async route => {
     const url = new URL(route.request().url());
-    const cursor = url.searchParams.get('cursor');
+    const requestedPage = Number(url.searchParams.get('page') || 1);
+    const pageSize = Number(url.searchParams.get('page_size') || 60);
     const query = url.searchParams.get('query') || '';
-    const isSecond = cursor === 'page-2';
-    if (!cursor && !query && firstPageHeld) {
+    if (requestedPage === 1 && !query && firstPageHeld) {
       firstPageHeld = false;
       await firstPageGate;
     }
-    const rows = Array.from({length: query ? 8 : 60}, (_, index) => material(index, isSecond ? 2 : 1));
+    const total = query ? 8 : 10_000;
+    const totalPages = Math.ceil(total / pageSize);
+    const rows = Array.from({length: query ? 8 : pageSize}, (_, index) => material(index, requestedPage));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         items: rows,
-        total: query ? 8 : 10_000,
-        limit: 60,
-        next_cursor: query || isSecond ? null : 'page-2',
+        total,
+        page: requestedPage,
+        page_size: pageSize,
+        total_pages: totalPages,
+        has_previous: requestedPage > 1,
+        has_next: requestedPage < totalPages,
+        limit: pageSize,
+        next_cursor: null,
         repository_revision: 88,
       }),
     });
@@ -126,9 +133,15 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.getByRole('button', {name: '下一页'}).click();
   await expect(page.locator('.train-v3-card')).toHaveCount(60);
   await expect(page.locator('#trV3Pager')).toContainText('第 2 页');
-  expect(requests.some(value => value.includes('cursor=page-2'))).toBe(true);
+  expect(requests.some(value => value.includes('page=2') && value.includes('page_size=60'))).toBe(true);
 
-  await page.getByRole('button', {name: '上一页'}).click();
+  await page.getByLabel('指定页码').fill('100');
+  await page.getByRole('button', {name: '跳转'}).click();
+  await expect(page.locator('#trV3Pager')).toContainText('当前第 100 页');
+  expect(requests.some(value => value.includes('page=100'))).toBe(true);
+
+  await page.getByLabel('指定页码').fill('1');
+  await page.getByLabel('指定页码').press('Enter');
   await expect(page.locator(`[data-material-id="${firstId}"] input`)).toBeChecked();
 
   await page.locator('#trV3Q').fill('smoke');

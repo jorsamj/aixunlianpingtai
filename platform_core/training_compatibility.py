@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 from collections import Counter
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -169,6 +172,89 @@ def evaluate_training_compatibility(
     return evaluate_selection_compatibility(project_path, selection, contract)
 
 
+_COMPATIBILITY_PAGE_FIELDS = frozenset({
+    "cursor",
+    "issue_type",
+    "limit",
+    "page",
+    "page_size",
+    "query",
+})
+
+
+def _canonical_json(value: Mapping[str, Any]) -> str:
+    return json.dumps(
+        dict(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        content = b""
+    return hashlib.sha256(content).hexdigest()
+
+
+@lru_cache(maxsize=8)
+def _evaluate_training_compatibility_projection_cached(
+    data_dir: str,
+    project: str,
+    request_json: str,
+    algorithm_json: str,
+    material_revision: int,
+    annotation_revision: int,
+    label_schema_digest: str,
+    dataset_digest: str,
+) -> TrainingCompatibilityResult:
+    """Memoize only a revision-complete, disposable read projection.
+
+    Revision and file digests are intentionally part of the key even though
+    the evaluator reads the repositories itself.  They make cached values
+    impossible to reuse after canonical Material, Annotation, label-schema or
+    dataset display metadata changes.  Final training admission never calls
+    this helper.
+    """
+    del material_revision, annotation_revision, label_schema_digest, dataset_digest
+    return evaluate_training_compatibility(
+        Path(data_dir),
+        Path(project),
+        json.loads(request_json),
+        json.loads(algorithm_json),
+    )
+
+
+def evaluate_training_compatibility_projection(
+    data_dir: str | Path,
+    project: str | Path,
+    payload: Mapping[str, Any],
+    algorithm: Mapping[str, Any],
+) -> TrainingCompatibilityResult:
+    """Return a bounded cached UI projection keyed by every canonical revision."""
+    project_path = Path(project).resolve()
+    request = {
+        str(key): value
+        for key, value in dict(payload).items()
+        if str(key) not in _COMPATIBILITY_PAGE_FIELDS
+    }
+    materials = MaterialRepository(project_path)
+    annotations = AnnotationRepository(project_path)
+    return _evaluate_training_compatibility_projection_cached(
+        str(Path(data_dir).resolve()),
+        str(project_path),
+        _canonical_json(request),
+        _canonical_json(algorithm),
+        int(materials.current_revision()),
+        int(annotations.current_revision()),
+        _file_digest(project_path / "meta.json"),
+        _file_digest(project_path / "datasets.json"),
+    )
+
+
 def evaluate_selection_compatibility(
     project: str | Path,
     selection,
@@ -225,6 +311,8 @@ def compatibility_page(
     issue_type: str = "",
     cursor: str = "",
     limit: int = 50,
+    page: int | None = None,
+    page_size: int | None = None,
 ) -> dict[str, Any]:
     normalized_query = str(query or "").strip().casefold()
     normalized_type = str(issue_type or "").strip()
@@ -237,18 +325,42 @@ def compatibility_page(
             or normalized_query in str(item.get("filename") or "").casefold()
         )
     ]
-    try:
-        offset = max(0, int(cursor or 0))
-    except (TypeError, ValueError) as error:
-        raise ValueError("cursor must be a non-negative integer offset") from error
-    bounded = int(limit)
+    bounded = int(page_size if page_size is not None else limit)
     if not 1 <= bounded <= 100:
-        raise ValueError("limit must be between 1 and 100")
+        raise ValueError("page_size must be between 1 and 100")
+    total = len(filtered)
+    total_pages = max(1, math.ceil(total / bounded))
+    if page is not None:
+        try:
+            page_number = int(page)
+        except (TypeError, ValueError) as error:
+            raise ValueError("page must be a positive integer") from error
+        if page_number < 1:
+            raise ValueError("page must be a positive integer")
+        if page_number > total_pages:
+            raise ValueError(
+                f"page {page_number} exceeds total_pages {total_pages}"
+            )
+        offset = (page_number - 1) * bounded
+    else:
+        try:
+            offset = int(cursor or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("cursor must be a non-negative integer offset") from error
+        if offset < 0:
+            raise ValueError("cursor must be a non-negative integer offset")
+        page_number = offset // bounded + 1
     items = filtered[offset:offset + bounded]
-    next_cursor = str(offset + len(items)) if offset + len(items) < len(filtered) else None
+    next_cursor = str(offset + len(items)) if offset + len(items) < total else None
     return {
         "items": [dict(item) for item in items],
-        "filtered_count": len(filtered),
+        "filtered_count": total,
+        "total": total,
+        "page": page_number,
+        "page_size": bounded,
+        "total_pages": total_pages,
+        "has_previous": offset > 0,
+        "has_next": next_cursor is not None,
         "next_cursor": next_cursor,
     }
 
@@ -296,5 +408,6 @@ __all__ = [
     "compatibility_page",
     "evaluate_selection_compatibility",
     "evaluate_training_compatibility",
+    "evaluate_training_compatibility_projection",
     "persist_compatibility_issues",
 ]

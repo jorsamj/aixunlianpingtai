@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -27,7 +28,10 @@ from .material_repository import (
 )
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
-from .training_compatibility import compatibility_page, evaluate_training_compatibility
+from .training_compatibility import (
+    compatibility_page,
+    evaluate_training_compatibility_projection,
+)
 
 # Keep the visual page intentionally smaller than the old 120-card page. The
 # picker now renders larger previews and only loads thumbnails close to the
@@ -107,6 +111,7 @@ def _gt_material_filter_page(
     annotations: AnnotationRepository,
     *,
     cursor: str | None = None,
+    page: int | None = None,
     limit: int,
     query: str = "",
     labels: tuple[str, ...] = (),
@@ -120,6 +125,8 @@ def _gt_material_filter_page(
     transaction without hydrating annotation JSON or trusting material labels.
     """
     bounded = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(limit)))
+    if page is not None and cursor:
+        raise ValueError("page and cursor cannot be used together")
     selected_labels = tuple(dict.fromkeys(
         str(value or "").strip() for value in labels if str(value or "").strip()
     ))
@@ -160,6 +167,17 @@ def _gt_material_filter_page(
                 "SELECT COUNT(*) FROM materials m" + base_where,
                 base_params,
             ).fetchone()[0])
+            offset = None
+            if page is not None:
+                page_number = int(page)
+                total_pages = max(1, math.ceil(total / bounded))
+                if page_number < 1:
+                    raise ValueError("page must be a positive integer")
+                if page_number > total_pages:
+                    raise ValueError(
+                        f"page {page_number} exceeds total_pages {total_pages}"
+                    )
+                offset = (page_number - 1) * bounded
             clauses = list(base_clauses)
             params = list(base_params)
             if cursor:
@@ -174,12 +192,16 @@ def _gt_material_filter_page(
                 if include_payload else
                 "m.id, m.created_at"
             )
-            rows = database.execute(
+            sql = (
                 f"SELECT {columns} FROM materials m"
                 + where
-                + " ORDER BY m.created_at, m.id LIMIT ?",
-                [*params, bounded + 1],
-            ).fetchall()
+                + " ORDER BY m.created_at, m.id LIMIT ?"
+            )
+            query_params = [*params, bounded + 1]
+            if offset is not None:
+                sql += " OFFSET ?"
+                query_params.append(offset)
+            rows = database.execute(sql, query_params).fetchall()
             material_revision = int(database.execute(
                 "SELECT value FROM material_meta WHERE key='revision'"
             ).fetchone()[0])
@@ -485,10 +507,15 @@ def training_material_picker_router(
         project_id: str,
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
+        page: int | None = None,
+        page_size: int | None = None,
         query: str = "",
         label: list[str] | None = Query(default=None),
     ):
-        if not 1 <= int(limit) <= MAX_PAGE_SIZE:
+        numbered = page is not None or page_size is not None
+        requested_page = int(page or 1) if numbered else None
+        requested_size = int(page_size if page_size is not None else limit)
+        if not 1 <= requested_size <= MAX_PAGE_SIZE:
             raise HTTPException(status_code=422, detail=f"limit must be between 1 and {MAX_PAGE_SIZE}")
         repository = materials(project_id)
         annotation_repository = annotation_repository_for_path(
@@ -501,7 +528,8 @@ def training_material_picker_router(
                     repository,
                     annotation_repository,
                     cursor=cursor,
-                    limit=int(limit),
+                    page=requested_page,
+                    limit=requested_size,
                     query=str(query or "").strip(),
                     labels=selected_labels,
                     include_payload=True,
@@ -514,7 +542,8 @@ def training_material_picker_router(
             else:
                 material_page = repository.list_page(
                     cursor=cursor,
-                    limit=int(limit),
+                    page=requested_page,
+                    limit=requested_size,
                     query=str(query or "").strip(),
                     processing_status="processed",
                 )
@@ -528,7 +557,7 @@ def training_material_picker_router(
         annotations = annotation_repository.get_many(
             [str(row.get("id") or "") for row in rows]
         )
-        return {
+        response = {
             "items": [
                 _public_picker_material(
                     project_id,
@@ -542,10 +571,20 @@ def training_material_picker_router(
             ],
             "next_cursor": next_cursor,
             "total": total,
-            "limit": int(limit),
+            "limit": requested_size,
             "repository_revision": repository_revision,
             "annotation_revision": annotation_revision,
         }
+        if numbered:
+            total_pages = max(1, math.ceil(total / requested_size))
+            response.update({
+                "page": requested_page,
+                "page_size": requested_size,
+                "total_pages": total_pages,
+                "has_previous": requested_page > 1,
+                "has_next": requested_page < total_pages,
+            })
+        return response
 
     @router.get("/ids")
     def list_training_material_ids(
@@ -673,7 +712,7 @@ def training_material_picker_router(
                     request,
                 )
             repository = materials(project_id)
-            result = evaluate_training_compatibility(
+            result = evaluate_training_compatibility_projection(
                 data_dir(), repository.project_path, request, algorithm,
             )
             page = compatibility_page(
@@ -682,6 +721,8 @@ def training_material_picker_router(
                 issue_type=str(body.get("issue_type") or ""),
                 cursor=str(body.get("cursor") or ""),
                 limit=int(body.get("limit") or 50),
+                page=body.get("page"),
+                page_size=body.get("page_size"),
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

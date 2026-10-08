@@ -68,6 +68,12 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(main, /materialSummaryRuntime: trainingMaterialSummaryRuntime/);
   assert.match(summaryRuntime, /training-materials\/selection-summary/);
   assert.match(summaryRuntime, /training-materials\/compatibility/);
+  assert.match(summaryRuntime, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(summaryRuntime, /page: compatibilityPage/);
+  assert.match(summaryRuntime, /page_size: pageSize/);
+  assert.match(summaryRuntime, /onPageChange:/);
+  assert.match(summaryRuntime, /onPageSizeChange:/);
+  assert.doesNotMatch(summaryRuntime, /onclick="TrainingMaterialSummaryRuntime\.loadIssuePage[^>]*>上一页/);
   assert.match(summaryRuntime, /去补审/);
   assert.match(summaryRuntime, /排除本次训练/);
   assert.match(summaryRuntime, /fullPoolHydration: false/);

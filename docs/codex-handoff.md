@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 统一分页第一阶段与训练兼容性投影（当前最新）
+
+- VERSION：`42.24.303`；长期分支：`feature/external-algorithm-publishing`。本节记录本地实现候选，提交、推送和精确 HEAD CI 仍为 PENDING。
+- 根因：Compatibility POST 每次翻页都会重新走 selection → label contract → Material/Annotation 批量读取 → 全量 issues 构建；前端又对每页强制请求。现在只有页面读取使用 revision-complete 的有界只读投影，key 包含完整 selection/algorithm、Material/Annotation revision、label schema 与 dataset metadata digest；正式受理、Prepare 和 AUDIT-148 Snapshot 继续走 uncached canonical evaluator。
+- `MaterialRepository.list_page` 与训练 picker 的 GT filter 新增真实 `page/page_size` 随机页能力，稳定排序仍为 `created_at,id`，count + rows 在同一 SQLite read transaction；既有 cursor/limit consumer 保持兼容，浏览器不遍历前置页、不水合全量素材。
+- 唯一共享 UI 为 `static/modules/pagination.js`：上一页/下一页、数字页码/省略、输入与 Enter 跳转、真实总数/总页数、loading 防连点、失败提示、可选 page size、键盘 focus/ARIA、窄屏换行。组件不持有业务数据、不访问 API、不新增 Page Manager。
+- 已接入训练素材选择、训练创建兼容性问题、训练任务详情持久化 input issues；筛选变更回第一页，请求取消/sequence fence 保留。
+- 本地：相关 Python `125 passed`；共享分页/训练前端 `39 passed`；Real Chrome picker 随机跳到第 100 页 `1 passed`；1k/10k/20k lightweight scale `3 passed`，每个规模两页只调用一次 evaluator 且响应只含 50 条；Python/JavaScript 语法与 diff check 通过。
+- 其余真实结果集分页仍按 `docs/PAGINATION_INVENTORY_V42_24_303.md` 分第二、第三阶段迁移；图片逐张工作台、轮播、实时日志等明确不是结果集分页。
+- 生产数据、真实长时并发变更与部署视觉为 `PENDING USER UAT`。
+
 ## 2026-10-08 AUDIT-178 Storage Source 活动任务生命周期（当前最新）
 
 - VERSION：`42.24.302`；长期分支：`feature/external-algorithm-publishing`；本节写入时本地实现与 focused tests 完成，提交/推送与精确 HEAD CI 仍为 PENDING。

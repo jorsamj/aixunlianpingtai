@@ -1,5 +1,15 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-08 训练兼容性分页性能 + 统一分页 phase 1 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.303`。
+- 重复计算根因：兼容性 API 把页码当展示参数，但每次 POST 都重新解析相同 selection/label contract、读取正式 Material/Annotation 并构造全部 issues。
+- 修复：新增最多 8 项的进程内 disposable read projection，使用 canonical revisions、schema/dataset digest 与完整 request/algorithm 做失效；只供兼容性页面读取，训练最终安全链继续强制重算。
+- 分页：唯一 presentation-only `pagination.js`；训练 picker Repository/API 提供真实 numbered page，保留 cursor；三个训练页面入口已迁移。
+- 证据：Python 125、frontend 39、browser 1、1k/10k/20k lightweight 3，语法与 diff check 均通过。其余分页入口不能在本批写成 CLOSED，详见 inventory。
+- Owner：没有新增 Ground Truth、Repository、业务 Runtime、poller 或全局 Page Manager。
+- 精确 HEAD CI 与真实生产数据/部署为 `PENDING USER UAT`。
+
 ## 2026-10-08 AUDIT-178 — IMPLEMENTED / CI PENDING
 
 - 版本：`42.24.302`。

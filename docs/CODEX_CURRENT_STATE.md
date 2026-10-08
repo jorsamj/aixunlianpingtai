@@ -2587,3 +2587,8 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - name-only 允许；disable/config/credential replace/clear 活动期间 409。Import/Rescan/RKNN staging 在锁外，publish 时核验 runtime generation。
 - credential replace 使用 versioned Secret ref，SQLite publication 失败不覆盖旧 Secret generation；没有向 task artifact 复制 credential。
 - 本地 focused tests 已通过；精确 HEAD CI 待推送后读取。真实 OSS/Keyring/Agent/RKNN/GPU 为 `PENDING USER UAT`。
+<!-- CURRENT_STATE_UNIFIED_PAGINATION_PHASE1_2026_10_08 -->
+> ## 2026-10-08 统一分页第一阶段
+>
+> `VERSION.txt=42.24.303`。训练 compatibility 重复正式 Material/Annotation IO 已通过 revision-complete disposable projection 消除；最终训练 admission/Prepare/Snapshot 不使用该缓存。唯一公共分页 UI 为 `static/modules/pagination.js`，首批接入训练 picker、兼容性问题和任务 input issues。训练 picker 后端支持真实 page/page_size，cursor consumer 保留。相关 Python 125、frontend 39、Real Chrome 1、1k/10k/20k lightweight 3 均通过；精确 HEAD CI 和生产部署仍 PENDING。全平台迁移状态见 `docs/PAGINATION_INVENTORY_V42_24_303.md`。
+>

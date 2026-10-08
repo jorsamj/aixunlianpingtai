@@ -86,8 +86,8 @@ export function installTrainingMaterialSummaryRuntime({
   let compatibilityController = null;
   let compatibilityQuery = '';
   let compatibilityIssueType = '';
-  let compatibilityCursor = '';
-  let compatibilityLimit = 50;
+  let compatibilityPage = 1;
+  let compatibilityPageSize = 50;
 
   function currentIds() {
     return uniqueIds(trainingDraftRuntime.materialIds?.() || state().trainingDraft?.materialIds || []);
@@ -260,7 +260,7 @@ export function installTrainingMaterialSummaryRuntime({
     }
   }
 
-  async function refreshCompatibility({force = false, payload = null, query = '', issueType = '', cursor = '', limit = 50} = {}) {
+  async function refreshCompatibility({force = false, payload = null, query = '', issueType = '', page = 1, pageSize = 50} = {}) {
     const draft = currentDraft();
     const signature = trainingCompatibilitySignature(draft || {});
     if (!draft?.algorithmId || !uniqueIds(draft?.materialIds).length) {
@@ -281,7 +281,12 @@ export function installTrainingMaterialSummaryRuntime({
     queueDecorate();
     try {
       const requestBody = payload ? {...payload} : compatibilityPayload(draft);
-      Object.assign(requestBody, {query, issue_type: issueType, cursor, limit});
+      Object.assign(requestBody, {
+        query,
+        issue_type: issueType,
+        page,
+        page_size: pageSize,
+      });
       const response = await fetchImpl(
         `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/compatibility`,
         {
@@ -303,8 +308,8 @@ export function installTrainingMaterialSummaryRuntime({
       };
       compatibilityQuery = String(query || '');
       compatibilityIssueType = String(issueType || '');
-      compatibilityCursor = String(cursor || '');
-      compatibilityLimit = Math.max(1, Math.min(100, Number(limit || 50)));
+      compatibilityPage = Math.max(1, Number(body.page || page || 1));
+      compatibilityPageSize = Math.max(1, Math.min(100, Number(body.page_size || pageSize || 50)));
       queueDecorate();
       window.TrainingSubmitRuntime?.updateReadiness?.();
       return compatibility;
@@ -334,18 +339,40 @@ export function installTrainingMaterialSummaryRuntime({
     if (!truth.ready) return void refreshCompatibility({force: true});
     const rows = truth.items || [];
     const issueTypes = Object.keys(truth.issue_counts || {});
-    const offset = Math.max(0, Number(compatibilityCursor || 0));
-    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${truth.issue_count} 张素材不适配本次训练</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div><div class="item-sub">筛选结果 ${Number(truth.filtered_count||0)} 条 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div class="row between"><button class="btn mini" ${offset<=0?'disabled':''} onclick="TrainingMaterialSummaryRuntime.loadIssuePage('${Math.max(0,offset-compatibilityLimit)}')">上一页</button><button class="btn mini" ${truth.next_cursor==null?'disabled':''} onclick="TrainingMaterialSummaryRuntime.loadIssuePage('${htmlEscape(truth.next_cursor||'')}')">下一页</button></div></div>`;
+    const offset = Math.max(0, (compatibilityPage - 1) * compatibilityPageSize);
+    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${truth.issue_count} 张素材不适配本次训练</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div><div class="item-sub">筛选结果 ${Number(truth.filtered_count||0)} 条 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
     window.modal?.('训练标签适配问题', html, true);
+    window.PlatformCore?.pagination?.mountPagination?.(
+      document.getElementById('trainingCompatibilityPager'),
+      {
+        page: compatibilityPage,
+        pageSize: compatibilityPageSize,
+        total: Number(truth.filtered_count || 0),
+        totalPages: Number(truth.total_pages || 1),
+        hasPrevious: truth.has_previous === true,
+        hasNext: truth.has_next === true,
+        loading: false,
+      },
+      {
+        label: '训练兼容性问题分页',
+        showPageSize: true,
+        pageSizes: [10, 20, 50, 100],
+        onPageChange: targetPage => loadIssuePage(targetPage),
+        onPageSizeChange: pageSize => {
+          compatibilityPageSize = pageSize;
+          return loadIssuePage(1);
+        },
+      },
+    );
   }
 
-  async function loadIssuePage(cursor = '') {
+  async function loadIssuePage(page = 1) {
     const result = await refreshCompatibility({
       force: true,
       query: compatibilityQuery,
       issueType: compatibilityIssueType,
-      cursor,
-      limit: compatibilityLimit,
+      page,
+      pageSize: compatibilityPageSize,
     });
     if (result) openCompatibilityIssues();
     return result;
@@ -354,7 +381,7 @@ export function installTrainingMaterialSummaryRuntime({
   function applyIssueFilters() {
     compatibilityQuery = String(document.getElementById('trainingCompatibilityQuery')?.value || '').trim();
     compatibilityIssueType = String(document.getElementById('trainingCompatibilityType')?.value || '').trim();
-    return loadIssuePage('');
+    return loadIssuePage(1);
   }
 
   async function openReview(imageId) {

@@ -122,6 +122,41 @@ def test_completed_legacy_material_migration_does_not_reread_json(tmp_path):
     assert reopened.get("legacy-a")["id"] == "legacy-a"
 
 
+def test_list_page_supports_stable_random_page_without_breaking_cursor(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([material(f"m-{index:x}") for index in range(5)])
+
+    numbered = repository.list_page(page=2, limit=2)
+    assert [row["id"] for row in numbered.items] == ["m-2", "m-3"]
+    assert numbered.total == 5
+    assert numbered.next_cursor is not None
+
+    first = repository.list_page(limit=2)
+    second = repository.list_page(cursor=first.next_cursor, limit=2)
+    assert [row["id"] for row in first.items] == ["m-0", "m-1"]
+    assert [row["id"] for row in second.items] == ["m-2", "m-3"]
+
+
+def test_list_page_rejects_invalid_or_overflow_page(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([material("m-0")])
+
+    for page in (0, -1, 2):
+        try:
+            repository.list_page(page=page, limit=20)
+        except ValueError as error:
+            assert "page" in str(error)
+        else:
+            raise AssertionError(f"page={page} must be rejected")
+
+    try:
+        repository.list_page(page=1, cursor="not-compatible", limit=20)
+    except ValueError as error:
+        assert "cursor" in str(error)
+    else:
+        raise AssertionError("page and cursor must be mutually exclusive")
+
+
 def test_crud_and_revision_use_sqlite_rows(tmp_path):
     repository = MaterialRepository(tmp_path)
     assert repository.journal_mode() == "wal"

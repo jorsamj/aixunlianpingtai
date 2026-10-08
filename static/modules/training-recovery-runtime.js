@@ -349,7 +349,7 @@ function inputIssuesHtml(inputIssues) {
   const limit = Math.max(1, Number(inputIssues.limit || 100));
   const start = items.length ? (page - 1) * limit + 1 : 0;
   const end = start ? start + items.length - 1 : 0;
-  return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div class="row between"><button class="btn mini" ${page <= 1 ? 'disabled' : ''} data-training-input-page="${page - 1}">上一页</button><span>${page} / ${totalPages}</span><button class="btn mini" ${page >= totalPages ? 'disabled' : ''} data-training-input-page="${page + 1}">下一页</button></div></section>`;
+  return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div data-training-input-pagination></div></section>`;
 }
 
 function detailHtml(job, recovery, log = '', inputIssues = null) {
@@ -559,6 +559,16 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return json(response, '读取训练输入异常证据失败');
   }
 
+  async function loadInputIssuePage(page) {
+    const taskId = openTaskId;
+    if (!taskId) return false;
+    const inputIssues = await readInputIssues(taskId, page);
+    if (!openSnapshot || String(openTaskId) !== String(taskId)) return false;
+    openSnapshot = {...openSnapshot, inputIssues};
+    renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
+    return true;
+  }
+
   function renderOpenDetail(job, recovery = {}, log = '', focus = openFocus) {
     if (!openTaskId || String(job?.id || job?.task_id || '') !== String(openTaskId)) return false;
     const old = doc?.querySelector?.('[data-training-recovery-overlay]');
@@ -584,6 +594,23 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
+    const inputIssues = openSnapshot?.inputIssues;
+    const paginationRoot = overlay.querySelector?.('[data-training-input-pagination]');
+    if (paginationRoot && inputIssues) {
+      window.PlatformCore?.pagination?.mountPagination?.(
+        paginationRoot,
+        {
+          page: Number(inputIssues.page || 1),
+          pageSize: Number(inputIssues.limit || 100),
+          total: Number(inputIssues.issue_count || 0),
+          totalPages: Number(inputIssues.total_pages || 1),
+        },
+        {
+          label: '训练输入标签适配问题分页',
+          onPageChange: loadInputIssuePage,
+        },
+      );
+    }
     if (focus === 'log' && logs) queueMicrotask(() => logs.scrollIntoView?.({block: 'nearest'}));
     return true;
   }
@@ -777,17 +804,6 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       }
       closeDetail();
       window.openAnnotation?.(imageId);
-      return;
-    }
-    const issuePage = event.target?.closest?.('[data-training-input-page]');
-    if (issuePage && openTaskId) {
-      event.preventDefault();
-      const page = Math.max(1, Number(issuePage.dataset.trainingInputPage || 1));
-      void readInputIssues(openTaskId, page).then(inputIssues => {
-        if (!openSnapshot || String(openTaskId) !== String(openSnapshot?.job?.id || openSnapshot?.job?.task_id || '')) return;
-        openSnapshot = {...openSnapshot, inputIssues};
-        renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
-      }).catch(error => notify?.(error?.message || error));
       return;
     }
     const exclude = event.target?.closest?.('[data-training-input-exclude]');

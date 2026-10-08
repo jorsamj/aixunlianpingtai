@@ -1,5 +1,14 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — unified pagination phase 1
+
+- VERSION `42.24.303` adds the only shared result-set pagination UI at `static/modules/pagination.js`; it renders controls and emits validated page changes but owns no business rows, API, cache, or poller.
+- Training material picker now has true numbered server paging while its cursor contract remains available. Stable order remains `created_at, id`; count and page rows come from one SQLite read transaction.
+- Training compatibility UI page/filter requests reuse a bounded, disposable projection keyed by the complete selection/algorithm request, Material and Annotation revisions, label-schema digest, and dataset metadata digest. Final admission and AUDIT-148 Snapshot validation still recompute canonical truth and never trust this UI projection.
+- Training picker, compatibility issues, and persisted task input issues use the shared controls. Lightweight 1k/10k/20k checks prove two page reads invoke canonical compatibility evaluation once and return only one bounded page.
+- This is phase 1 only. The complete classified inventory and later migration status live in `docs/PAGINATION_INVENTORY_V42_24_303.md`; do not claim full-platform completion until its pending result-set owners are migrated in later independently versioned batches.
+- Exact pushed-HEAD CI remains mandatory. Real production-scale data and deployment behavior are `PENDING USER UAT`.
+
 ## 2026-10-08 live override — Storage Source active-task lifecycle
 
 - VERSION `42.24.302` implements AUDIT-178 on the existing Storage Source, Secret, Task, Material, and task-artifact owners; it adds no dependency registry or second task/source owner.

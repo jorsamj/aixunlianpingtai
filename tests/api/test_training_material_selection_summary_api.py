@@ -130,6 +130,46 @@ def test_selection_summary_rejects_non_list_ids(tmp_path):
     assert response.status_code == 422
 
 
+def test_training_material_picker_supports_authoritative_random_page(tmp_path):
+    client = _client(tmp_path)
+    response = client.get(
+        "/api/v62/projects/p1/training-materials?page=3&page_size=20"
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [row["id"] for row in body["items"]] == [
+        f"s{index:05d}" for index in range(40, 60)
+    ]
+    assert body["page"] == 3
+    assert body["page_size"] == 20
+    assert body["total"] == 1200
+    assert body["total_pages"] == 60
+    assert body["has_previous"] is True
+    assert body["has_next"] is True
+
+
+def test_training_material_picker_keeps_cursor_contract_and_rejects_overflow_page(
+    tmp_path,
+):
+    client = _client(tmp_path)
+    first = client.get("/api/v62/projects/p1/training-materials?limit=20")
+    assert first.status_code == 200, first.text
+    assert first.json()["next_cursor"]
+    second = client.get(
+        "/api/v62/projects/p1/training-materials",
+        params={"limit": 20, "cursor": first.json()["next_cursor"]},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["items"][0]["id"] == "s00020"
+
+    overflow = client.get(
+        "/api/v62/projects/p1/training-materials?page=99999&page_size=20"
+    )
+    assert overflow.status_code == 422
+    assert "page" in overflow.json()["detail"]
+
+
 def _compatibility_client(tmp_path):
     data_dir = tmp_path / "data"
     project_path = data_dir / "projects" / "p1"
@@ -287,3 +327,122 @@ def test_training_compatibility_passes_after_explicit_partial_review(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json()["compatible"] is True
     assert response.json()["issue_count"] == 0
+
+
+def test_training_compatibility_pages_reuse_revision_keyed_evaluation(
+    tmp_path,
+    monkeypatch,
+):
+    client = _compatibility_client(tmp_path)
+    project_path = tmp_path / "data" / "projects" / "p1"
+    materials = MaterialRepository(project_path)
+    annotations = AnnotationRepository(project_path)
+    materials.upsert_many([{
+        **_record(3),
+        "id": "partial-two",
+        "filename": "partial-two.jpg",
+        "labels": ["helmet"],
+        "dataset_id": "default",
+    }])
+    annotations.upsert(
+        "partial-two",
+        [{
+            "label": "helmet",
+            "class_id": 0,
+            "x1": 1,
+            "y1": 1,
+            "x2": 10,
+            "y2": 10,
+        }],
+        annotation_state="annotated",
+        annotation_scope=["helmet"],
+        project_material=False,
+    )
+
+    material_reads = 0
+    annotation_reads = 0
+    original_material_get_many = MaterialRepository.get_many
+    original_annotation_get_many = AnnotationRepository.get_many
+
+    def counted_material_get_many(self, image_ids):
+        nonlocal material_reads
+        material_reads += 1
+        return original_material_get_many(self, image_ids)
+
+    def counted_annotation_get_many(self, image_ids):
+        nonlocal annotation_reads
+        annotation_reads += 1
+        return original_annotation_get_many(self, image_ids)
+
+    monkeypatch.setattr(MaterialRepository, "get_many", counted_material_get_many)
+    monkeypatch.setattr(AnnotationRepository, "get_many", counted_annotation_get_many)
+    payload = {
+        "algorithm_asset_id": "alg-1",
+        "image_ids": ["partial", "partial-two", "complete"],
+        "train_labels": ["helmet", "person"],
+        "model": "yolo11n.pt",
+        "framework": "ultralytics",
+        "split_mode": "random_test_from_training_pool",
+        "experiment_percent": 20,
+        "validation_percent": 20,
+        "page_size": 1,
+    }
+
+    first = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={**payload, "page": 1},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["page"] == 1
+    assert first.json()["page_size"] == 1
+    assert first.json()["total"] == 2
+    assert first.json()["total_pages"] == 2
+    assert first.json()["has_previous"] is False
+    assert first.json()["has_next"] is True
+    first_read_counts = material_reads, annotation_reads
+    assert first_read_counts[0] > 0
+    assert first_read_counts[1] > 0
+
+    second = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={**payload, "page": 2},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["page"] == 2
+    assert second.json()["items"][0]["image_id"] == "partial-two"
+    assert (material_reads, annotation_reads) == first_read_counts
+
+    current = annotations.get("partial-two")
+    annotations.upsert(
+        "partial-two",
+        current["boxes"],
+        annotation_state="annotated",
+        annotation_scope=["helmet", "person"],
+        expected_version=current["version"],
+        project_material=False,
+    )
+    refreshed = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={**payload, "page": 1},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["total"] == 1
+    assert (material_reads, annotation_reads) > first_read_counts
+
+
+def test_training_compatibility_rejects_page_outside_filtered_result(tmp_path):
+    client = _compatibility_client(tmp_path)
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={
+            "algorithm_asset_id": "alg-1",
+            "image_ids": ["partial", "complete"],
+            "train_labels": ["helmet", "person"],
+            "model": "yolo11n.pt",
+            "framework": "ultralytics",
+            "page": 99999,
+            "page_size": 10,
+        },
+    )
+    assert response.status_code == 422
+    assert "page" in response.json()["detail"]

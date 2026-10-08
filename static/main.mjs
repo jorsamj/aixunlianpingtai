@@ -13,9 +13,9 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422597';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422548';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422595';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422603';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422603';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422603';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422564';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422578';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
@@ -47,6 +47,7 @@ import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, 
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
+import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
@@ -116,6 +117,7 @@ window.PlatformCore = {
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
+  pagination: {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
   labelMappingReview: {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
