@@ -25702,3 +25702,10 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 新增 API 回归：清洗完成后模拟同 material_id 的 H1→H2 内容更新，确认全部接受或请求删除均 409；未经扫描不得确认。
 - **剩余界限：** 这是确认动作的前置 evidence fence；尚未在 MaterialStore 与外部 Storage Rescan 上建立跨数据库/对象存储的原子 compare-and-swap。确认校验与实际 DELETE/patch 之间如果发生 concurrent Rescan，仍需 R0 共享生命周期协调锁/不可逆写入 fence。不能宣称 AUDIT-152 完全 CLOSED。
 - 不引入第二 Cleaning/Annotation Owner，不更改 VERSION 主/次段、不合并 main、不删除或放宽既有回归。
+
+
+### 2026-10-08 AUDIT-152 retry regression extension（42.24.285）
+
+- 针对同一 Durable selection 的 succeeded 行加入独立 SQLite 回归：H1→H2 的旧成功行转 pending、result/LSH hash/bands 一并删除；未变化行继续 succeeded 并保留 result/index；历史无来源 SHA 的 success 也 fail closed 重扫。
+- 同时断言 clean_flagged 汇总回零、selection counters 正确、重复 retry 不重置稳定行，覆盖 AUDIT-152 的退化性能约束。
+- 原有 CI 结果只对 42.24.284 HEAD 有效；本次提交后以 42.24.285 为唯一验收目标，仍未完成并发 Rescan 的跨仓原子 fence。

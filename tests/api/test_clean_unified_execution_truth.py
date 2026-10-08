@@ -566,3 +566,105 @@ def test_clean_confirmation_requires_complete_success_evidence(client):
     )
     assert response.status_code == 409, response.text
     assert app_module.material_store(project_id).get(image_id).get("cleaned_at") is None
+
+
+def test_clean_retry_resets_only_stale_success_and_removes_duplicate_index(tmp_path):
+    from types import SimpleNamespace
+
+    from platform_core.cleaning import DurableHashIndex
+    from platform_core.cleaning_batches import (
+        _save_result, reset_stale_clean_successes,
+    )
+    from platform_core.material_batches import BatchSelection
+
+    class Artifacts:
+        def append_log(self, *_args):
+            pass
+
+    context = SimpleNamespace(
+        task=SimpleNamespace(task_id="clean-retry", log_ref="logs/task.log"),
+        artifacts=Artifacts(),
+    )
+
+    content = {
+        "changed": "a" * 64,
+        "stable": "b" * 64,
+        "unverified": "c" * 64,
+    }
+    live = {
+        "changed": "f" * 64,
+        "stable": "b" * 64,
+        "unverified": "c" * 64,
+    }
+
+    class Materials:
+        def get_many(self, ids):
+            return [
+                {"id": image_id, "content_sha256": live[image_id]}
+                for image_id in ids
+            ]
+
+    manifest = BatchSelection(tmp_path / "selection.sqlite3")
+    try:
+        index = DurableHashIndex(manifest.database, lambda: None)
+        for image_id in ("changed", "stable", "unverified"):
+            manifest.database.execute(
+                "INSERT INTO selection(image_id,state) VALUES (?,'succeeded')",
+                (image_id,),
+            )
+            result = {
+                "image_id": image_id, "status": "succeeded",
+                "metrics": (
+                    {"sha256": content[image_id], "dhash": 7}
+                    if image_id != "unverified" else {}
+                ),
+                "issues": [{"code": "too_dark"}] if image_id == "changed" else [],
+            }
+            _save_result(manifest, image_id, result, index, near_indexed=True)
+
+        assert manifest.summary()["succeeded"] == 3
+        assert int(manifest.database.execute(
+            "SELECT value FROM meta WHERE key='clean_flagged'"
+        ).fetchone()[0]) == 1
+
+        reset_stale_clean_successes(
+            context, manifest, Materials(), lambda *_args: None,
+        )
+
+        states = dict(manifest.database.execute(
+            "SELECT image_id,state FROM selection"
+        ).fetchall())
+        assert states == {
+            "changed": "pending", "stable": "succeeded",
+            "unverified": "pending",
+        }
+        remaining = [
+            row[0] for row in manifest.database.execute(
+                "SELECT image_id FROM clean_results ORDER BY image_id"
+            ).fetchall()
+        ]
+        assert remaining == ["stable"]
+        assert [
+            row[0] for row in manifest.database.execute(
+                "SELECT image_id FROM clean_hashes ORDER BY image_id"
+            ).fetchall()
+        ] == ["stable"]
+        assert [
+            row[0] for row in manifest.database.execute(
+                "SELECT DISTINCT image_id FROM clean_bands"
+            ).fetchall()
+        ] == ["stable"]
+        assert int(manifest.database.execute(
+            "SELECT value FROM meta WHERE key='clean_flagged'"
+        ).fetchone()[0]) == 0
+
+        # A second retry does not re-analyze or reset unchanged successful evidence.
+        reset_stale_clean_successes(
+            context, manifest, Materials(), lambda *_args: None,
+        )
+        assert dict(manifest.database.execute(
+            "SELECT image_id,state FROM selection"
+        ).fetchall()) == states
+        assert manifest.summary()["succeeded"] == 1
+    finally:
+        manifest.close()
