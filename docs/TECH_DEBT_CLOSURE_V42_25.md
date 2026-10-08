@@ -1,5 +1,11 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-08 pagination phase 1 CI cache guards — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.304`。
+- `42.24.303` 的三项已完成 failure 均来自两条 cache key 精确字面量仍锁定旧入口；全量 frontend job 其余 842 项通过，两个 Windows contract 复现同一 main key 失败。
+- 本提交只同步现有永久 guard 到 `main 42.25.303` 与 picker `422603`，不改变产品代码或测试强度。
+
 ## 2026-10-08 训练兼容性分页性能 + 统一分页 phase 1 — IMPLEMENTED / CI PENDING
 
 - 版本：`42.24.303`。

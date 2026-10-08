@@ -1,5 +1,11 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 分页第一阶段 CI 合同同步（当前最新）
+
+- VERSION：`42.24.304`。`42.24.303` 精确 HEAD 的产品相关测试已运行，但 Frontend Runtime 与两个 Windows contract 暴露两条过期的精确 cache-key 断言：`main.mjs?v=42.25.294` 与 picker `v=422548`。
+- 当前只把断言推进到本批实际 cache-busted owner：`main.mjs?v=42.25.303`、picker `v=422603`。没有恢复旧静态资源、删除测试或放宽 owner/safety 断言。
+- 修复后本地 focused frontend 仍需通过并推送；精确 `42.24.304` HEAD CI 仍为 PENDING。
+
 ## 2026-10-08 统一分页第一阶段与训练兼容性投影（当前最新）
 
 - VERSION：`42.24.303`；长期分支：`feature/external-algorithm-publishing`。本节记录本地实现候选，提交、推送和精确 HEAD CI 仍为 PENDING。

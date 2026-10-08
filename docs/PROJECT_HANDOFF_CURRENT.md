@@ -2810,3 +2810,8 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 >
 > `42.24.303` 完成第一阶段：共享无业务状态分页组件；训练素材真实随机页；兼容性跨页 revision-keyed 只读投影；训练 picker、创建兼容性问题与任务 input issues 接入。AUDIT-148 和正式 Snapshot 路径未缓存、未放宽。Cursor API 保持兼容。后续阶段清单见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，精确 pushed HEAD CI 与用户部署验收仍 PENDING。
 >
+<!-- PROJECT_HANDOFF_PAGINATION_PHASE1_CI_FOLLOWUP_2026_10_08 -->
+> ## 2026-10-08 分页 phase 1 CI 合同同步
+>
+> `42.24.304` 只更新两个过期 cache-key guard 到 phase 1 当前静态入口，不恢复旧资源、不放宽测试。`42.24.303` 的三项 check failure 均由这两个字面量造成；最新 HEAD CI 仍 PENDING。
+>

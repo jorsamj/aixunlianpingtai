@@ -2592,3 +2592,8 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 >
 > `VERSION.txt=42.24.303`。训练 compatibility 重复正式 Material/Annotation IO 已通过 revision-complete disposable projection 消除；最终训练 admission/Prepare/Snapshot 不使用该缓存。唯一公共分页 UI 为 `static/modules/pagination.js`，首批接入训练 picker、兼容性问题和任务 input issues。训练 picker 后端支持真实 page/page_size，cursor consumer 保留。相关 Python 125、frontend 39、Real Chrome 1、1k/10k/20k lightweight 3 均通过；精确 HEAD CI 和生产部署仍 PENDING。全平台迁移状态见 `docs/PAGINATION_INVENTORY_V42_24_303.md`。
 >
+<!-- CURRENT_STATE_PAGINATION_PHASE1_CI_FOLLOWUP_2026_10_08 -->
+> ## 2026-10-08 分页 phase 1 CI follow-up
+>
+> `VERSION.txt=42.24.304`。仅将两个精确静态 cache-key 测试从旧 `main 42.25.294 / picker 422548` 同步到 phase 1 的真实 `main 42.25.303 / picker 422603`；`42.24.303` frontend 其余 842 项通过。产品实现仍为下节所述，最新精确 HEAD CI 待推送核验。
+>

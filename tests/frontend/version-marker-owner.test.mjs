@@ -74,5 +74,5 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422548"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422603"), true);
 });

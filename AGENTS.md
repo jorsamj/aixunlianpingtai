@@ -1,5 +1,11 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — pagination phase 1 CI contract follow-up
+
+- VERSION `42.24.304` updates two exact cache-key guards after phase 1 intentionally moved `main.mjs` and the canonical training picker module to new cache-busted URLs. Product behavior and safety assertions are unchanged.
+- `42.24.303` exact HEAD reached 842/844 frontend assertions before failing only these stale literals; the dedicated Windows contract jobs failed on the same `main.mjs?v=42.25.294` expectation. This follow-up does not restore old cache keys or relax owner checks.
+- Exact `42.24.304` pushed-HEAD CI remains required before phase 2 begins.
+
 ## 2026-10-08 live override — unified pagination phase 1
 
 - VERSION `42.24.303` adds the only shared result-set pagination UI at `static/modules/pagination.js`; it renders controls and emits validated page changes but owns no business rows, API, cache, or poller.
