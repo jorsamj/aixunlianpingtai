@@ -3199,7 +3199,12 @@ def _v50_end_image_batch(save: bool = True):
         # An unreadable Material index is equally unsafe to treat as empty.
         record_ids = [str(row.get("id")) for row in records if str(row.get("id") or "")]
         try:
-            indexed_rows = material_store(project_id).get_many(record_ids) if record_ids else []
+            indexed_rows = []
+            materials = material_store(project_id)
+            for offset in range(0, len(record_ids), 500):
+                indexed_rows = materials.get_many(record_ids[offset:offset + 500])
+                if indexed_rows:
+                    break
         except Exception as inspection_error:
             raise RuntimeError(
                 f"{error}; 无法确认素材索引状态，已保留源文件以避免误删：{inspection_error}"
@@ -4785,10 +4790,16 @@ def _plain_upload_recover_receipt(project_id: str, store: UploadBatchStore, rece
         ids = [str(value) for value in prepared]
         if len(ids) == len(set(ids)) and all(ids):
             materials = material_store(project_id)
-            rows = {str(row.get("id")): row for row in materials.get_many(ids)}
-            annotations = (
-                _v50_annotation_repository(project_id).get_many(ids) if ids else {}
-            )
+            rows = {}
+            annotations = {}
+            repository = _v50_annotation_repository(project_id)
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset:offset + 500]
+                rows.update({
+                    str(row.get("id")): row for row in materials.get_many(chunk)
+                })
+                # AnnotationRepository intentionally limits get_many to 500.
+                annotations.update(repository.get_many(chunk))
             if (
                 len(rows) == len(ids)
                 and all(
@@ -4799,6 +4810,9 @@ def _plain_upload_recover_receipt(project_id: str, store: UploadBatchStore, rece
                     and image_id in annotations
                     and str((annotations[image_id] or {}).get("annotation_state") or "")
                         == "unannotated"
+                    # get_many returns synthetic legacy version=0 for missing
+                    # rows; a canonical committed GT must have version>=1.
+                    and int((annotations[image_id] or {}).get("version") or 0) >= 1
                     for image_id in ids
                 )
             ):
