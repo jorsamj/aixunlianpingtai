@@ -178,6 +178,10 @@ def apply_decisions(
 class UploadBatchStore:
     def __init__(self, directory: Path):
         self.directory = Path(directory)
+        # First upload in a fresh project must be able to acquire both the
+        # cross-process receipt lock and the request claim BEFORE the first
+        # receipt JSON is written.
+        self.directory.mkdir(parents=True, exist_ok=True)
 
     def _path(self, batch_id: str) -> Path:
         return self.directory / f"{_validate_batch_id(batch_id)}.json"
