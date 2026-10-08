@@ -25870,3 +25870,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 状态：CODE IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
 
 `cleanImageReviewItems429` 冻结任务结果页面已接入全局唯一分页组件，替代“加载更多”；支持数值跳页、翻页、总数、每页数量；切换筛选回第一页，保留跨页人工选中状态。不新增二次审核 Owner，不触及 Annotation Ground Truth，也不将仍为 cursor 的 Annotation Audit 声称已迁移。
+
+## 2026-10-08 ZIP durable 外部标签映射分页收口（42.24.312）
+
+状态：CODE IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
+
+仅以原 labelMappingReviewPage 状态作为映射审核唯一 owner，将旧上一页/下一页手写控件替换为全平台统一分页，支持数字页码、指定跳页、每页数量、总数与总页数；跨页已确认映射保持不变，明确不做外部标签自动映射。未动正式标注 Ground Truth、ZIP 上传与后台 Durable Task。ZIP 任务历史和失败明细仍待分页巡检。

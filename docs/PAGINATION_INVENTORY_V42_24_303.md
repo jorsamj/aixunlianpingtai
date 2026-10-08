@@ -24,7 +24,7 @@
 | 训练任务/历史任务 | `TrainingTaskRuntime` canonical durable queue snapshot | `42.24.305` 已接入共享组件；只对现有 authoritative task snapshot 做 view pagination，不复制任务 truth |
 | AI 标注候选/审核图片 | AI review final runtime + CandidateStore authoritative total/offset | `42.24.305` 已接入共享组件；随机页直接换算为后端 offset，不遍历前置页 |
 | 数据清洗问题/重复素材 | Cleaning runtimes，部分 load-more/手写页 | `42.24.310/311` 图片质量问题结果已接共享页码、跳页、每页数量（旧 Chrome load-more 合同已迁移）；Annotation Audit cursor 问题和其他清洗列表仍待独立迁移，逐图审核导航排除 |
-| ZIP/批量导入记录与失败明细 | ZIP import final runtime，手写 review pager | 结果集迁移；上传进度流排除 |
+| ZIP/批量导入记录与失败明细 | ZIP import final runtime，标签映射审核沿用 LabelMappingReview state | `42.24.312` 外部标签映射审核已迁移共享数字分页；ZIP 任务记录/失败明细仍待迁移，上传进度流排除 |
 | 模型/转换任务 | model/conversion runtimes，任务卡片列表 | 有真实分页的列表迁移；少量静态选择器不假分页 |
 | 人工标注素材队列 | Annotation workbench | 队列列表迁移；画布上一张/下一张保留 |
 

@@ -178,3 +178,13 @@ test('ZIP runtime renders server phase counter and ETA instead of inventing anot
   assert.match(source,/zipPhaseDetail\(job\)/);
   assert.match(source,/overall_progress/);
 });
+
+test('ZIP class mapping review uses the single shared numeric pagination presentation',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/data-zip-label-pagination/);
+  assert.match(source,/pagination\?\.mountPagination\?\./);
+  assert.match(source,/onPageChange:nextPage=>setReviewPage/);
+  assert.match(source,/onPageSizeChange:size=>/);
+  assert.doesNotMatch(source,/class="row between label-mapping-review-pager"><button/);
+  assert.match(source,/mountLabelReviewPagination\(current\.id\)/);
+});

@@ -95,3 +95,26 @@ test('sample overlay clamps normalized boxes to the visible image', () => {
     left:0, top:0, width:15, height:15,
   });
 });
+
+test('changing ZIP review page size preserves manual choices and selected classes across pages',()=>{
+  const review=createLabelMappingReview(classes(250));
+  setLabelMapping(review,'149','helmet');
+  setLabelMappingSelected(review,'149',true);
+  review.pageSize=20;
+  setLabelMappingReviewPage(review,8);
+  let page=labelMappingReviewPage(review);
+  assert.equal(page.page,8);
+  assert.equal(page.rows[9].classId,'149');
+  assert.equal(page.rows[9].code,'helmet');
+  assert.equal(page.rows[9].selected,true);
+  review.pageSize=100;
+  review.page=1;
+  page=labelMappingReviewPage(review);
+  assert.equal(page.pageCount,3);
+  setLabelMappingReviewPage(review,2);
+  page=labelMappingReviewPage(review);
+  assert.equal(page.rows[49].classId,'149');
+  assert.equal(page.rows[49].code,'helmet');
+  assert.equal(page.rows[49].selected,true);
+  assert.equal(labelMappingReviewSummary(review).mapped,1);
+});

@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 ZIP 标签映射审核统一数字分页（42.24.312）
+
+- ZIP durable final owner `static/modules/zip-import-runtime.js` 现复用唯一 `PlatformCore.pagination.mountPagination`：支持数字页码、上一页、下一页、输入指定页码跳转、总数/页数与 10/20/50/100 每页数量。
+- 保留 `labelMappingReviewPage`、`setLabelMappingReviewPage` 作为既有映射审核视图的唯一状态；分页仅影响现有 external_classes 的展示，不重新抓取完整 ZIP、不给标签自动匹配，不新增 owner 或 poller。
+- 搜索自动回到第一页，用户映射、勾选状态跨页和 pageSize 切换仍由原 review state 持久保存；最终确认必须每个外部标签都显式映射。
+- 轻量前端针对性断言与 250 类跨页/改变 pageSize 回归已添加，静态入口和 ZIP workflow guard 同步缓存版本；精确 HEAD CI 和现场 UAT 尚需核验。
+
+
 ## 2026-10-08 清洗分页 Chrome 真实回归合同同步（42.24.311）
 
 - 上一提交的 `Remote Cleaning Runtime / real-chrome` 在图片质量分页被有意从 60 张“加载更多”改为默认每页 50 张后，旧 Playwright 用例仍检查旧 60 张/加载更多。产品数据和其他清洗进度测试没有失败证据。

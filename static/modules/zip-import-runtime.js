@@ -239,7 +239,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       return `<div class="storage61-mapping-row label-mapping-review-row" data-zip-class="${esc(row.classId)}" data-source-name="${esc(source)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow('${esc(id)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(source||`类别 ${row.classId}`)}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping('${esc(id)}','${esc(row.classId)}',this.value)">${options(row.code)}</select><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`;
     }).join('');
     const bulkOptions=['<option value="">批量映射到…</option>',...filterCanonicalLabels(labels,review.targetQuery).map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
-    return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">系统只展示外部标签事实，不自动选择；搜索、分页和批量映射都只记录你的人工决定。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签名称 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span></div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="row between label-mapping-review-pager"><button class="btn mini" ${page.page<=1?'disabled':''} onclick="window.ZipImportRuntime?.setReviewPage('${esc(id)}',${page.page-1})">上一页</button><span>${page.page} / ${page.pageCount}</span><button class="btn mini" ${page.page>=page.pageCount?'disabled':''} onclick="window.ZipImportRuntime?.setReviewPage('${esc(id)}',${page.page+1})">下一页</button></div><div class="item-sub" data-zip-confirm-status>${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未映射。':'全部外部标签已人工映射，可提交。'}确认后才会启动后台导入。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button ${summary.unmapped?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">确认标签并开始导入</button></div></div>`;
+    return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">系统只展示外部标签事实，不自动选择；搜索、分页和批量映射都只记录你的人工决定。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签名称 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span></div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="label-mapping-review-pager" data-zip-label-pagination></div><div class="item-sub" data-zip-confirm-status>${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未映射。':'全部外部标签已人工映射，可提交。'}确认后才会启动后台导入。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button ${summary.unmapped?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">确认标签并开始导入</button></div></div>`;
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
@@ -272,11 +272,31 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(next){currentRoot.replaceWith(next);return true}
     return false;
   }
+  function mountLabelReviewPagination(jobId) {
+    const id=String(jobId||''),root=document.querySelector('.zip-label-confirm[data-review-key]');
+    if(!id||!root||String(root.getAttribute('data-review-key')||'')!==id)return false;
+    const pager=root.querySelector('[data-zip-label-pagination]');
+    if(!pager)return false;
+    const review=mappingReview(reviewJob(id)),page=labelMappingReviewPage(review);
+    window.PlatformCore?.pagination?.mountPagination?.(pager,{
+      page:page.page,pageSize:page.pageSize,total:page.filtered,totalPages:page.pageCount,
+    },{
+      label:'ZIP 外部标签映射分页',showPageSize:true,pageSizes:[10,20,50,100],
+      onPageChange:nextPage=>setReviewPage(id,nextPage),
+      onPageSizeChange:size=>{
+        review.pageSize=Math.max(10,Math.min(100,Number(size)||50));
+        review.page=1;
+        rerenderLabelMapping(id);
+      },
+    });
+    return true;
+  }
   function open(){
     const html=uploading?uploadBody():(current?body(current):'');
     if(!html)return false;
-    if(replaceOpenRuntime(html))return true;
-    window.modal?.('ZIP 数据导入',html,true);return true;
+    if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
+    if(current)mountLabelReviewPagination(current.id);
+    return true;
   }
   function updateOpenModal(job,active){
     if(!job)return;
@@ -320,6 +340,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const id=String(jobId||''),job=reviewJob(id),node=document.querySelector('.zip-label-confirm[data-review-key]');
     if(!job||!node||String(node.getAttribute('data-review-key')||'')!==id)return false;
     node.outerHTML=labelMappingMarkup(job);
+    mountLabelReviewPagination(id);
     return true;
   }
   function setReviewSearch(jobId,value){const review=mappingReview(reviewJob(jobId));setLabelMappingReviewSearch(review,value);rerenderLabelMapping(jobId)}
