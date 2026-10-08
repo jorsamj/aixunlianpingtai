@@ -61,7 +61,7 @@ def test_plain_upload_rejects_config_change_before_material_commit(client, tmp_p
         patch.setattr(app_module, "add_image_record", change_source_after_object_upload)
         response = _send(client, project_id, source_id, "src-change-" + uuid.uuid4().hex[:10])
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
     assert list((original_root / "uploads").glob("*")) == []
     assert not (next_root / "uploads").exists()
@@ -86,7 +86,7 @@ def test_plain_upload_rejects_source_deletion_before_material_commit(client, tmp
         patch.setattr(app_module, "add_image_record", retire_after_object_upload)
         response = _send(client, project_id, source_id, "src-delete-" + uuid.uuid4().hex[:10])
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
     assert list((original_root / "uploads").glob("*")) == []
 
@@ -168,7 +168,7 @@ def test_deleted_and_recreated_source_id_is_not_the_original_generation(
         patch.setattr(app_module, "add_image_record", replace_source_generation_after_upload)
         response = _send(client, project_id, source_id, "src-aba-" + uuid.uuid4().hex[:10])
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
     assert list((original_root / "uploads").glob("*")) == []
 
@@ -204,6 +204,6 @@ def test_source_config_change_then_restore_still_invalidates_upload(
         patch.setattr(app_module, "add_image_record", rotate_and_restore_after_upload)
         response = _send(client, project_id, source_id, "src-config-aba-" + uuid.uuid4().hex[:9])
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
     assert list((original_root / "uploads").glob("*")) == []
