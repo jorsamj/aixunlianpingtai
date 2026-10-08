@@ -137,3 +137,37 @@ def test_source_retirement_checks_active_task_dependencies(client, tmp_path, mon
     assert response.status_code == 409, response.text
     assert visited == [source_id]
     assert app_module.storage_source_repository().get(source_id) is not None
+
+
+def test_deleted_and_recreated_source_id_is_not_the_original_generation(
+    client, tmp_path, monkeypatch,
+):
+    project_id = _project(client)
+    source_id, original_root, _ = _source(client, tmp_path)
+    original = app_module.add_image_record
+    recreated = []
+
+    def replace_source_generation_after_upload(*args, **kwargs):
+        record = original(*args, **kwargs)
+        if record and not recreated:
+            with app_module._storage_source_fence():
+                repository = app_module.storage_source_repository()
+                before = repository.get(source_id)
+                assert before is not None
+                assert repository.delete(source_id) is True
+                after = repository.create({
+                    "id": source_id, "name": "same-id-new-owner",
+                    "type": "local", "config": {"root": str(original_root)},
+                    "enabled": True,
+                })
+                assert after.created_at != before.created_at
+            recreated.append(True)
+        return record
+
+    with monkeypatch.context() as patch:
+        patch.setattr(app_module, "add_image_record", replace_source_generation_after_upload)
+        response = _send(client, project_id, source_id, "src-aba-" + uuid.uuid4().hex[:10])
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert app_module.material_store(project_id).count() == 0
+    assert list((original_root / "uploads").glob("*")) == []
