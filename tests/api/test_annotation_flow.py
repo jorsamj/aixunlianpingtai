@@ -258,3 +258,53 @@ def test_manual_save_returns_conflict_if_label_changes_before_gt_commit(
 
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "ANNOTATION_LABEL_STATE_CHANGED"
+
+
+def test_rescan_content_change_requires_formal_re_review_before_training(client, seeded_project):
+    import app as app_module
+    from platform_core.snapshots import build_snapshot
+
+    pid, image = seeded_project
+    image_id = image["id"]
+    path = f"/api/projects/{pid}/annotations/{image_id}"
+    first = client.post(
+        path,
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+    )
+    assert first.status_code == 200, first.text
+    materials = app_module.material_store(pid)
+    old = materials.get(image_id)
+    assert old["annotation_source_content_sha256"] == old["content_sha256"]
+
+    new_hash = "e" * 64 if old["content_sha256"] != "e" * 64 else "f" * 64
+    materials.patch({image_id: {
+        "content_sha256": new_hash,
+        "annotation_needs_review": True,
+        "annotation_review_reason": "SOURCE_CONTENT_CHANGED",
+        "needs_review": True,
+    }})
+    formal = app_module.read_annotation(pid, image_id)
+    before = materials.get(image_id)
+    before["boxes"] = formal["boxes"]
+    before["annotation_scope"] = formal["annotation_scope"]
+    before["annotation_state"] = formal["annotation_state"]
+    with pytest.raises(ValueError, match="需要重新审核"):
+        build_snapshot([before], [image_id], [], [{"code": "fire"}], seed=11)
+
+    # Reconfirmation is a deliberate user action; historical GT was not deleted.
+    reviewed = client.post(
+        path,
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    after = materials.get(image_id)
+    assert after["annotation_source_content_sha256"] == new_hash
+    assert after["annotation_needs_review"] is False
+    assert after["annotation_review_reason"] == ""
+    assert after["needs_review"] is False
+    updated = app_module.read_annotation(pid, image_id)
+    after["boxes"] = updated["boxes"]
+    after["annotation_scope"] = updated["annotation_scope"]
+    after["annotation_state"] = updated["annotation_state"]
+    accepted = build_snapshot([after], [image_id], [], [{"code": "fire"}], seed=11)
+    assert accepted["images"][0]["annotation_state"] == "annotated"

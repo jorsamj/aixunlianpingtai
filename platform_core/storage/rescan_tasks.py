@@ -560,9 +560,17 @@ class StorageRescanHandler(StorageImportHandler):
                 annotation_rows,
                 return_rows=True,
             ) if annotation_rows else []
+            materials_by_id = {
+                str(material.get('id') or ''): material
+                for material in by_ref.values()
+            }
             for saved in persisted:
                 image_id = str(saved['image_id'])
                 evidence = apply_evidence[image_id]
+                current_material = materials_by_id.get(image_id) or {}
+                source_hash = str(
+                    current_material.get('content_sha256') or ''
+                ).strip().lower()
                 patches[image_id] = {
                     **patches.get(image_id, {}),
                     'external_annotation': {
@@ -580,6 +588,19 @@ class StorageRescanHandler(StorageImportHandler):
                     'external_annotation_review_reason': '',
                     'imported_split': str(evidence.get('split') or ''),
                 }
+                if (
+                    str(saved.get('annotation_state') or '')
+                    in {'annotated', 'confirmed_empty'}
+                    and len(source_hash) == 64
+                    and all(char in '0123456789abcdef' for char in source_hash)
+                ):
+                    patches[image_id]['annotation_source_content_sha256'] = source_hash
+                    if str(current_material.get('annotation_review_reason') or '') == 'SOURCE_CONTENT_CHANGED':
+                        patches[image_id].update(
+                            annotation_needs_review=False,
+                            annotation_review_reason='',
+                            needs_review=False,
+                        )
             if patches:
                 materials.patch(patches)
             store.mark_annotation_applied(batch)

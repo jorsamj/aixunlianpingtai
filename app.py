@@ -2934,6 +2934,7 @@ def _annotation_summary_for_material_index(
 
 def _v50_material_annotation_patch(
     saved: Dict[str, Any], annotation_origin: Optional[str] = None,
+    *, material: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     boxes = list(saved.get("boxes") or [])
     state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
@@ -2950,6 +2951,17 @@ def _v50_material_annotation_patch(
     if state in {"annotated", "confirmed_empty"}:
         patch["processing_status"] = "processed"
         patch["annotated_at"] = updated
+        source_hash = str((material or {}).get("content_sha256") or "").strip().lower()
+        if len(source_hash) == 64 and all(c in "0123456789abcdef" for c in source_hash):
+            # Bind formal GT to the material generation seen before writing
+            # AnnotationRepository. Snapshot rechecks after concurrent rescan.
+            patch["annotation_source_content_sha256"] = source_hash
+            if str((material or {}).get("annotation_review_reason") or "") == "SOURCE_CONTENT_CHANGED":
+                patch.update(
+                    annotation_needs_review=False,
+                    annotation_review_reason="",
+                    needs_review=False,
+                )
     return patch
 
 
@@ -2964,6 +2976,7 @@ def write_annotation(
     batch = _v50_active_image_batch(project_id)
     if batch is not None:
         batch.get("deferred_annotations", {}).pop(str(image_id), None)
+    current_material = material_store(project_id).get(str(image_id))
     saved = _v50_annotation_repository(project_id).upsert(
         image_id,
         boxes,
@@ -2972,7 +2985,9 @@ def write_annotation(
         project_material=False,
         expected_version=expected_version,
     )
-    patch = _v50_material_annotation_patch(saved, annotation_origin)
+    patch = _v50_material_annotation_patch(
+        saved, annotation_origin, material=current_material,
+    )
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
     return saved
@@ -3020,6 +3035,10 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
             "annotation_scope": row.get("annotation_scope"),
             "expected_version": row.get("expected_version"),
         })
+    material_rows = {
+        str(row.get("id") or ""): row
+        for row in material_store(project_id).get_many(seen)
+    }
     saved_rows = _v50_annotation_repository(project_id).upsert_many(
         prepared,
         project_material=False,
@@ -3028,7 +3047,9 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
     pending_patches = {}
     for saved in saved_rows:
         image_id = str(saved.get("image_id") or "")
-        patch = _v50_material_annotation_patch(saved, origins.get(image_id))
+        patch = _v50_material_annotation_patch(
+            saved, origins.get(image_id), material=material_rows.get(image_id),
+        )
         if not _v50_queue_image_patch(project_id, image_id, patch):
             pending_patches[image_id] = patch
     if pending_patches:

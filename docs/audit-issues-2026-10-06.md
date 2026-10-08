@@ -25737,3 +25737,15 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - TrainingInputFreeze 冻结以上复核标志和 source hash，防止在中途丢掉源证据。既有 AnnotationRepository 正式 GT 保留、不擅自删除。
 - 新增正样本/confirmed_empty/六张 durable split 回归；实际恢复训练所需的 canonical write_annotation/write_annotations_many 标记清理与内容身份更新，须在紧随其后的独立补丁完成。
 - 当前仅防旧 GT 进入训练；Rescan/Annotation 两库并发事务 CAS 和前端打开旧图后审核的问题仍未完成。不 merge main，不放宽测试。VERSION 42.24.287 → 42.24.288。
+
+
+### 2026-10-08 AUDIT-173 人工复核与外部复核恢复路径（42.24.289）
+
+**状态：FIX IMPLEMENTED / CI PENDING / FULL RESCAN CAS PENDING。**
+
+- 在 canonical app.write_annotation / write_annotations_many 向 AnnotationRepository 写正式 Ground Truth 前，读取当前 MaterialRegistry 的 SHA256；正式标注成功后，将审阅时的 annotation_source_content_sha256 写入 Material 派生投影。
+- 仅当原标志为 SOURCE_CONTENT_CHANGED 且能取得有效当前 SHA256 时，将 annotation_needs_review、annotation_review_reason、needs_review 归位；意外 H1→H2 并发替换的错位内容仍由 Snapshot 中 annotation_source_content_sha256 mismatch 拒绝。
+- 批量写入使用 <=500 的 MaterialRepository.get_many，不建立第二套 GT Owner，不把 UI 按钮直接当训练准入。
+- Storage Rescan canonical external annotation reconciliation 在明确完成新正式 GT 更新后同步内容 hash 与标志恢复；保持其他未复核情况下的 fail closed。
+- 新增 API 回归：旧 GT 审核后发生 Rescan 内容变化→Snapshot 阻断→重新人工确认→Material 与 Annotation 重新绑定，Snapshot 才接受。
+- 尚需 E2E 源内容真的替换的 StorageManager / 人工 UI 并发场景和跨库锁/事务 CAS；不宣称 AUDIT-173 CLOSED。以 42.24.289 的全部 CI 结束结果为准。
