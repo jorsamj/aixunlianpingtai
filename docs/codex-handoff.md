@@ -3,7 +3,8 @@
 - 问题：原始普通图片上传将 request receipt 写为 PROCESSING 后，在实际 Material/Annotation 批量提交完成之前无法持久识别本次写入 image_id；崩溃后同一 upload_request_id 只能 409，无法判断已提交或未提交。UploadBatchStore 原先也只使用进程内 RLock，跨 Web Worker 重复请求不受保护。
 - 最小改造：仍使用既有 UploadBatchStore。receipt JSON 变更为在 Material 写入前准备 upload_prepared_image_ids 与失败明细（仅文件身份，非第二份素材真相）；同一 request_id 在整个 async 端点内持有非阻塞获取的跨进程 FileLock，请求占用冲突返回 409，且收据读写也有独立跨进程文件锁。
 - 崩溃恢复：跨进程 request claim 成功后，对 PROCESSING 的 prepared IDs 必须在 MaterialRepository 中全量存在、source/dataset 与原请求一致且 AnnotationRepository 全部有初始 unannotated truth，才恢复 SUCCEEDED 并 replay 正式索引；未准备、索引缺失、部分提交、GT 缺失等状态 fail-closed 为 FAILED/409，不会复制已有素材或假报成功。提交边界之后的异常不得抢先把 PROCESSING 记为 FAILED。
-- 测试：新 tests/api/test_upload_request_recovery.py 覆盖“Material 完成但 receipt 写入失败”“准备完成但 Material 未提交”“Material 存在而 Annotation 缺失”“同请求异步双持锁”；现有 tests/unit/test_upload_batches.py 与 ContextVar 测试并入 Remote Material Import API job。跨进程锁必须进一步进行真实多进程和 OSS UAT。
+- 同批修复：批量提交时 Material 已持久化而 Annotation 写入失败，原 _v50_end_image_batch 的 except 可能反向删除源文件并留下悬空 Material。现在先重查 MaterialRepository 的真实已提交 ID；若有已提交记录或索引不可读取，保留全部源文件供一致性修复，不执行破坏性回滚。
+- 测试：新 tests/api/test_upload_request_recovery.py 覆盖“Material 完成但 receipt 写入失败”“准备完成但 Material 未提交”“Material 存在而 Annotation 缺失”“同请求异步双持锁”“Annotation 写入异常时不得删除已提交的源文件”五个场景；现有 tests/unit/test_upload_batches.py 与 ContextVar 测试并入 Remote Material Import API job。跨进程锁必须进一步进行真实多进程和 OSS UAT。
 - 前置版本 42.24.322 在 GitHub 连接可见的首 20 个 Actions success；另有在线反馈 CI fixture 独立修复提交 b623f2066f2eb644424969a0a84e30314a81add1。Gate S6 实现+测试已提交长期分支，但最终准确 HEAD 的 CI 尚待完成，不能标记 CLOSED 或允许部署。
 - 下一批：AUDIT-134 Storage Source generation / 上传时配置并发；本批没有修改 Storage Source 正式 Owner，也不更改 main。
 
