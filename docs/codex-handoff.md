@@ -1,3 +1,13 @@
+## 2026-10-08 最小安全上线 Gate S8：AUDIT-133 正式浏览器上传补上 idempotency receipt（42.24.325）
+
+- 在 Gate S6/S7 静态生产链复核中发现上线阻断：static/app.js 所有 POST /api/projects/{project_id}/images 调用原本都未提交 upload_request_id，包含正式可达 window.doUploadImages426 最终映射的 doUploadImagesStorage61 XHR 路径，以及遗留但仍可调用的图片 Fetch / XHR 路径。之前 42.24.323 的 receipt/claim/崩溃恢复功能仅对显式提供 upload_request_id 的客户端生效，因此不能认定前端普通上传已受保护。
+- 修复：static/app.js 用共享 preparePlainUpload411 / finishPlainUpload411 生成随机 128-bit、服务器允许长度内的 plain-... 请求 ID。仅对普通 /api/projects/{project_id}/images 的 POST FormData 生效；已有 Fetch api helper 限定精确路径进行接入，正式 Storage61 XHR 与 legacy XHR 单独显式接入。未更改 ZIP、训练、算法、远程素材导入或 Material owner。
+- 同一批素材在当前浏览器会话内根据 project/dataset/source 和每个 File 的 name/size/type/lastModified 形成重试标识；sessionStorage 最多保存 8 个待确认条目。网络错误与 HTTP 未确认状态保留 ID；仅 HTTP 2xx 完成后清除。刷新同一标签页后选择相同文件重试继续使用原 ID；服务端完整收据与 SQLite 正式真相仍是唯一持久 Owner。前端只保存请求身份和文件元信息，不保存上传文件数据。
+- 限制：对无法确认的 HTTP 409/FAILED 不自动更换请求 ID 重传，避免未知部分入库造成重复写入；需要用户核实原批次。文件元信息不是内容加密摘要，若不同文件元信息完全一致且复用未决请求，后端 manifest 仍不能防止等长度不同字节的误重放，正式上线前应把此残余风险纳入真实复核；本批不引入整文件浏览器哈希扫描或第二个上传 owner。
+- 新增 tests/frontend/plain-upload-request-id.test.mjs 进行请求 ID 重试/页面重载/源、项目、文件身份隔离及 Fetch/XHR 接入守卫。Remote Material Import workflow 接入 node --check、node --test。static/index.html 将正式 app.js 缓存参数更新至 42.25.325，确保浏览器获取新代码。
+- 版本 VERSION.txt=42.24.325；仅长期开发分支。不 merge main、不 tag/release、不部署。最新精确 HEAD CI 与真实浏览器 OSS 上传、服务端崩溃恢复和多 Worker UAT 未完成。**AUDIT-133 / AUDIT-134 仍为 CODE IMPLEMENTED, CI/UAT PENDING，不可标记 CLOSED。**
+- 上线门槛：完整 CI 终态（含 Remote Material Import API/前端/Chrome、Auth、在线反馈、清洗、Training），隔离环境执行图片上传→强杀 Worker→同 ID 恢复、上传时切换/删除/AB A 存储源、真实对象保留/回滚、账号 logout/续期，全部通过后才允许部署。
+
 ## 2026-10-08 最小安全上线 Gate S7 追加复核：存储源 A→B→A 配置回改防护（42.24.324）
 
 - 复核旧 HEAD 21a2a020f75bc24024bacaaf9bc684e274a181ec 的 GitHub Actions：首 20 个工作流 queued，Remote Material Import 的 API / Chrome / Windows / Ubuntu 四 Job 同样 queued，无可读失败日志；不能判定 AUDIT-133/134 通过。
