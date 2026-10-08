@@ -25766,3 +25766,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - 自查发现仅修改 main.mjs 中 cleaning.js 的 import query 不足以确保浏览器下载新的 main.mjs：HTML 仍指向原 entrypoint URL。同步更新 index.html 中 main.mjs 版本键，并新增缓存链前端回归。
 - 只修改静态 asset query、测试与审计台账，保留后端和 UI 逻辑；此提交成为 AUDIT-153 最新 CI 验收目标。VERSION 42.24.290 → 42.24.291。
+
+
+### 2026-10-08 AUDIT-153 CI 红灯即时修正（42.24.292）
+
+- 从 42.24.290 已完成失败日志确认：Frontend、Windows Remote RKNN Board Runtime 的 frontend step 在导入 static/modules/cleaning.js 时出现 SyntaxError: Unexpected token 'export'。定位为新增 canRetry 字段后遗漏 cleanTaskView 的末尾 }，不是 Python 146 项测试问题。
+- 修复唯一缺失花括号；不删除测试、不变更 UI 业务逻辑；42.24.290/291 不标 CI PASS，等待 42.24.292 HEAD 全部 completed success。
