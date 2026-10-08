@@ -6,6 +6,7 @@
 - 资源清理：_v50_end_image_batch 原先清空 ContextVar 后回滚，从最新 Source 配置重新实例化 Provider；修改为显式复用当前批次已缓存 StorageManager，防止配置 A→B 时去 B 删除本应从 A 清理的临时对象。仍保持 Material/Annotation 双库非原子异常的保留源文件安全逻辑。
 - ABA：同 ID 同配置源删除再创建，若只核对 type/config/secret_ref/enabled 可能误认原代际；已加入 source.created_at，保留源仅改显示名称不影响代际。
 - 回归：tests/api/test_upload_storage_source_lifecycle.py 五条，包括换存储目录、删除、同 ID 重建、名称修改不误阻断、活跃任务禁止删除。Remote Material Import API workflow 已引入这些测试与 py_compile。
+- 回溯修正上一批 AUDIT-133：新增跨进程 FileLock 首次创建时，如果 upload_batches 目录尚不存在，锁文件获取会在收据创建前失败；UploadBatchStore 构造时先 mkdir(parents=True,exist_ok=True)，并新增新项目首传锁与收据落盘测试。与本 Gate 一同验证，不单独扩大版本升级。
 - 范围：仅普通图片上传、源配置生命周期与现有批次回滚；未新增 owner、表、Poller、Router，未改变外部算法发布链。OSS 真机、跨 Worker 并发、权限轮换 UAT 与精确 HEAD 全部 CI 均待验收；**CODE IMPLEMENTED / NOT CLOSED**。不 merge main、不 tag/release、不部署生产。
 
 ## 2026-10-08 最小安全上线 Gate S6：AUDIT-133 普通图片上传收据崩溃恢复（42.24.323）
