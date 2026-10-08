@@ -25824,3 +25824,8 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - Material projection 持久化 canonical `annotation_version` 并在单一 Material transaction 更新 payload/labels/scopes：incoming newer 更新，older no-op，equal+same digest 幂等，equal+different digest fail closed。历史 annotation index 与 remap 共用该原语。
 - Event/barrier 回归覆盖 writer→delete、delete claim→late writer、H1 writer→H2 rescan、claim recovery、projection v2→v1 逆序与 equal-version digest conflict；现有 AUDIT-148/099/098 相关定向套件未放宽。
 - 本地最终相关证据：211 项核心/API、6 项批量/索引契约、10 项前端工作台契约、8 项 Real Chrome 标注/筛选路径通过；Python/JavaScript 语法与 diff check 通过。尚未把网络不可达或 queued/cancelled 状态伪报为 CI PASS。
+
+### CI 定向修正（42.24.298）
+
+- `42.24.297` 的 Label Normalization Contract 证明批量延迟提交路径把 structured import 的显式空标注从 canonical `confirmed_empty` 降成了 `unannotated`。
+- 修复仅让 deferred final annotation 与 AnnotationRepository 既有默认保持一致；普通图片上传仍显式提交 `unannotated`，不会伪造审核范围，也不会扩大 active 标签。

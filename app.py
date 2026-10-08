@@ -2985,7 +2985,10 @@ def write_annotation(
         batch.get("deferred_annotations", {}).pop(str(image_id), None)
         pending_material = batch.get("records", {}).get(str(image_id))
         if pending_material is not None:
-            state = annotation_state or ("annotated" if boxes else "unannotated")
+            # Match AnnotationRepository's canonical default: an importer that
+            # supplies a final empty annotation is explicit reviewed truth.
+            # Plain uploads pass ``unannotated`` explicitly and stay pending.
+            state = annotation_state or ("annotated" if boxes else "confirmed_empty")
             batch["deferred_annotations"][str(image_id)] = {
                 "image_id": str(image_id),
                 "boxes": list(boxes or []),

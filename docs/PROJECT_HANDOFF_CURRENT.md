@@ -2786,4 +2786,4 @@ VERSION.txt 仍为 42.24.0
 - 当前 `42.24.293` 仅为设计文档提交目标，尚无生产代码修改，不得标记 AUDIT-147/148/150 CLOSED。
 # 2026-10-08 override — R0 annotation lifecycle safety
 
-Current code candidate is VERSION `42.24.297`. Formal Ground Truth cannot commit for missing/deleting/unavailable Material or a mismatched frozen content SHA. Dataset deletion and Rescan share the same short cross-process lifecycle fence. Material searchable Annotation projection is monotonic by canonical Annotation version; it is not a second truth owner. Exact remote HEAD and CI terminal status must be re-read after push.
+Current code candidate is VERSION `42.24.298`. Formal Ground Truth cannot commit for missing/deleting/unavailable Material or a mismatched frozen content SHA. Dataset deletion and Rescan share the same short cross-process lifecycle fence. Material searchable Annotation projection is monotonic by canonical Annotation version; it is not a second truth owner. Deferred structured imports keep explicit empty Ground Truth; plain uploads remain unannotated. Exact remote HEAD and CI terminal status must be re-read after push.
