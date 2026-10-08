@@ -1,5 +1,7 @@
 # 2026-10-06 前后端一致性 / 非法套娃 / 重复 Owner 审计问题清单
 
+> **2026-10-08 最小安全上线状态补充（42.24.324 / AUDIT-134）**：普通图片上传采用 Storage Source created_at/type/config/secret_ref/enabled 代际快照、锁内最终核验与正式 Material/Annotation 提交；v61 source CREATE/DELETE 均使用现有 source lifecycle fence，DELETE 补活动 durable task 校验；批次失败回滚保持原 Provider。5 个真实 API 回归已纳入 Remote Material Import CI。**状态：CODE IMPLEMENTED，精确 HEAD CI / OSS / 多进程并发 UAT 尚未完成，暂不 CLOSED。**
+
 > **2026-10-08 最小安全上线状态补充（42.24.323 / AUDIT-133）**：上传 request receipt 崩溃窗口与跨 Worker 请求占用已通过既有 UploadBatchStore 增加持久 prepared image IDs、FileLock 和正式 Material/Annotation 核对恢复路径；API 与 unit 回归已接入 Remote Material Import CI。**状态：CODE IMPLEMENTED，精确 HEAD CI、真实多进程/OSS UAT 未验收，暂不 CLOSED。** 不代表历史 182 条审计问题仍全部未修。下一项优先 AUDIT-134。
 
 > 项目：畅联云算法训练平台  
