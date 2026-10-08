@@ -1,5 +1,12 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 统一分页第二阶段 CI guard 定向修正
+
+- VERSION：`42.24.306`；`42.24.305` 的 Training Task Visibility workflow 中 `visibility-contracts` 已完成的前端单元测试为 103/103 passed，但源码 guard 仍核验已退役的 `training-task-visibility-runtime.js?v=422578`。实际唯一入口在 `static/main.mjs` 已提升为 `v=422605`。
+- 仅把该 guard 与实际主入口同步；不改训练 Owner、页面功能、事件订阅、批量操作逻辑或测试约束。其余 `42.24.305` CI 结果仍按精确 SHA 单独记录，不提前宣称全绿。
+- 本修正提交后的精确 HEAD CI 结果仍需核查；GPU/OSS/RKNN 与生产页面为 `PENDING USER UAT`。
+
+
 ## 2026-10-08 统一分页第二阶段 A 批（当前最新）
 
 - VERSION：`42.24.305`；本批接入数据集素材/筛选、训练任务/历史任务、AI 候选审核三个高频 final owner。提交、推送与精确 HEAD CI 在本节写入时仍为 PENDING。
