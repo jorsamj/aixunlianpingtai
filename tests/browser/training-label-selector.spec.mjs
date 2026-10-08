@@ -49,7 +49,7 @@ async function seedProject(request) {
       class_id: label === 'fire' ? 0 : 1,
       label,
       x1: 10, y1: 10, x2: 70, y2: 60,
-    }]}});
+    }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
     expect(save.ok()).toBeTruthy();
   }
   const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {

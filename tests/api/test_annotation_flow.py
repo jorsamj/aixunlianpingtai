@@ -5,6 +5,14 @@ def _manual_box(label="fire", *, x1=10):
     return {"label": label, "x1": x1, "y1": 10, "x2": 80, "y2": 90}
 
 
+def _save_fields(client, pid, image_id):
+    current = client.get(f"/api/projects/{pid}/annotations/{image_id}").json()
+    return {
+        "expected_version": current["annotation"]["version"],
+        "source_content_sha256": current["image"]["content_sha256"],
+    }
+
+
 def test_ordinary_manual_save_preserves_existing_review_scope(client, seeded_project):
     import app as app_module
 
@@ -112,11 +120,51 @@ def test_explicit_review_rejects_stale_material_generation_without_writing(
     assert after["version"] == initial["version"]
     assert after["content_digest"] == initial["content_digest"]
 
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"boxes": [_manual_box()], "source_content_sha256": "a" * 64},
+         "ANNOTATION_EXPECTED_VERSION_REQUIRED"),
+        ({"boxes": [_manual_box()], "expected_version": 0},
+         "ANNOTATION_MATERIAL_GENERATION_REQUIRED"),
+    ],
+)
+def test_ordinary_save_requires_version_and_material_generation(
+    client, seeded_project, payload, code,
+):
+    pid, image = seeded_project
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}", json=payload,
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == code
+
+
+def test_old_annotation_page_cannot_commit_after_dataset_delete_claim(
+    client, seeded_project,
+):
+    import app as app_module
+
+    pid, image = seeded_project
+    fields = _save_fields(client, pid, image["id"])
+    app_module.material_store(pid).patch({
+        image["id"]: {"_dataset_delete_claim": "delete-in-progress"},
+    })
+
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={"boxes": [_manual_box()], **fields},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "ANNOTATION_MATERIAL_UNAVAILABLE"
+    assert app_module.read_annotation(pid, image["id"])["version"] == 1
+
 def test_save_reload_and_thumbnail_summary_match(client, seeded_project):
     pid, image = seeded_project
     saved = client.post(
         f"/api/projects/{pid}/annotations/{image['id']}",
-        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}], **_save_fields(client, pid, image["id"])},
     )
     assert saved.status_code == 200
     material = saved.json()["image"]
@@ -135,7 +183,7 @@ def test_unknown_annotation_label_is_rejected(client, seeded_project):
     pid, image = seeded_project
     response = client.post(
         f"/api/projects/{pid}/annotations/{image['id']}",
-        json={"boxes": [{"label": "not-in-library", "x1": 1, "y1": 1, "x2": 20, "y2": 20}]},
+        json={"boxes": [{"label": "not-in-library", "x1": 1, "y1": 1, "x2": 20, "y2": 20}], **_save_fields(client, pid, image["id"])},
     )
     assert response.status_code == 422
     assert response.json()["code"] == "ANNOTATION_LABEL_NOT_FOUND"
@@ -146,7 +194,7 @@ def test_empty_annotation_requires_explicit_no_target_confirmation(client, seede
     pid, image = seeded_project
     rejected = client.post(
         f"/api/projects/{pid}/annotations/{image['id']}",
-        json={"boxes": []},
+        json={"boxes": [], **_save_fields(client, pid, image["id"])},
     )
     assert rejected.status_code == 409
     assert rejected.json()["code"] == "ANNOTATION_EMPTY_CONFIRMATION_REQUIRED"
@@ -218,7 +266,8 @@ def test_manual_save_preserves_ai_provenance_and_derives_mixed_origin(client, se
                     "y2": 70,
                     "source": "ai_candidate_confirmed",
                 },
-            ]
+            ],
+            **_save_fields(client, pid, image["id"]),
         },
     )
 
@@ -310,7 +359,8 @@ def test_manual_save_recovers_legacy_ai_origin_without_box_source(client, seeded
                     "x2": 90,
                     "y2": 70,
                 },
-            ]
+            ],
+            **_save_fields(client, pid, image["id"]),
         },
     )
 
@@ -348,7 +398,7 @@ def test_manual_annotation_get_and_save_do_not_scan_full_material_library(client
 
     saved = client.post(
         f"/api/projects/{pid}/annotations/{image['id']}",
-        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}], **_save_fields(client, pid, image["id"])},
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["image"]["id"] == image["id"]
@@ -373,7 +423,8 @@ def test_manual_save_returns_conflict_if_label_changes_before_gt_commit(
         json={
             "boxes": [
                 {"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}
-            ]
+            ],
+            **_save_fields(client, pid, image["id"]),
         },
     )
 
@@ -390,7 +441,7 @@ def test_rescan_content_change_requires_formal_re_review_before_training(client,
     path = f"/api/projects/{pid}/annotations/{image_id}"
     first = client.post(
         path,
-        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}], **_save_fields(client, pid, image_id)},
     )
     assert first.status_code == 200, first.text
     materials = app_module.material_store(pid)
@@ -415,7 +466,7 @@ def test_rescan_content_change_requires_formal_re_review_before_training(client,
     # Reconfirmation is a deliberate user action; historical GT was not deleted.
     reviewed = client.post(
         path,
-        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}], **_save_fields(client, pid, image_id)},
     )
     assert reviewed.status_code == 200, reviewed.text
     after = materials.get(image_id)

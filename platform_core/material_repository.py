@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import threading
 from contextlib import closing
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -18,6 +20,10 @@ from .material_store import MaterialSnapshot
 _Result = TypeVar("_Result")
 _SCHEMA_VERSION = 4
 _INIT_LOCK_TIMEOUT = 30
+DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
+_MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
+_LIFECYCLE_LOCK_TIMEOUT = 60
+_LIFECYCLE_LOCAL = threading.local()
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -90,6 +96,48 @@ class MaterialIdPage:
 
     def __iter__(self):
         return iter(self.items)
+
+
+class AnnotationMaterialLifecycleError(RuntimeError):
+    """A formal annotation no longer matches its canonical Material identity."""
+
+
+class AnnotationProjectionConflictError(RuntimeError):
+    """The same canonical Annotation version was projected with two identities."""
+
+
+@contextmanager
+def material_annotation_lifecycle_fence(
+    project_path: str | Path, *, timeout: float = _LIFECYCLE_LOCK_TIMEOUT,
+):
+    """Serialize short Material lifecycle commits with formal Annotation writes.
+
+    The lock carries no business state. Reentrancy is process-thread local so
+    existing owners can compose helpers without acquiring the same FileLock
+    twice. Other threads and processes still contend on the project lock file.
+    """
+    lock_path = str(
+        (Path(project_path).resolve() / _MATERIAL_ANNOTATION_LIFECYCLE_LOCK)
+    )
+    held = getattr(_LIFECYCLE_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _LIFECYCLE_LOCAL.held = held
+    current = held.get(lock_path)
+    if current is not None:
+        current[1] += 1
+        try:
+            yield
+        finally:
+            current[1] -= 1
+        return
+    lock = FileLock(lock_path, timeout=timeout)
+    with lock:
+        held[lock_path] = [lock, 1]
+        try:
+            yield
+        finally:
+            held.pop(lock_path, None)
 
 
 def _now() -> str:
@@ -468,6 +516,48 @@ class MaterialRepository:
             ).fetchall()
         by_id = {str(row["id"]): self._row_payload(row) for row in rows}
         return [by_id[image_id] for image_id in ids if image_id in by_id]
+
+    def assert_formal_annotation_admission(
+        self, expected_content_sha256_by_id: Mapping[str, str | None],
+    ) -> dict[str, dict[str, Any]]:
+        """Return current Material rows only when a formal GT commit is safe.
+
+        Callers may omit an expected digest to bind an internal operation to
+        the generation current at commit time. User/candidate flows pass their
+        frozen digest so an H1 decision cannot be committed against H2.
+        """
+        expected = {
+            str(image_id): (
+                str(content_sha256 or "").strip().lower() or None
+            )
+            for image_id, content_sha256 in expected_content_sha256_by_id.items()
+            if str(image_id)
+        }
+        if len(expected) > 500:
+            raise ValueError("formal annotation admission is limited to 500 image ids")
+        with material_annotation_lifecycle_fence(self.project_path):
+            rows = self.get_many(expected)
+            by_id = {str(row.get("id") or ""): row for row in rows}
+            for image_id, expected_hash in expected.items():
+                row = by_id.get(image_id)
+                if row is None:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} does not exist"
+                    )
+                if row.get(DATASET_DELETE_CLAIM_FIELD):
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} is being deleted"
+                    )
+                if row.get("source_available") is False:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} source is unavailable"
+                    )
+                current_hash = str(row.get("content_sha256") or "").strip().lower()
+                if expected_hash is not None and expected_hash != current_hash:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} content changed"
+                    )
+            return by_id
 
     def find_existing_content_hashes(self, hashes: Iterable[str]) -> set[str]:
         """Return normalized content SHA256 values already indexed by the repository."""
@@ -857,6 +947,61 @@ class MaterialRepository:
                 raise
         return changed
 
+    def patch_annotation_projections(
+        self, projections: Mapping[str, Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply derived Annotation projections without allowing version regression."""
+        incoming = {
+            str(image_id): dict(projection)
+            for image_id, projection in projections.items()
+            if str(image_id)
+        }
+        if len(incoming) > 500:
+            raise ValueError("annotation projection batch is limited to 500 image ids")
+        if not incoming:
+            return []
+        changed = []
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                for image_id, projection in incoming.items():
+                    incoming_version = int(projection.get("annotation_version") or 0)
+                    incoming_digest = str(
+                        projection.get("annotation_hash") or ""
+                    ).strip()
+                    if incoming_version <= 0 or not incoming_digest:
+                        raise ValueError(
+                            "annotation projection requires a positive version and digest"
+                        )
+                    existing = database.execute(
+                        "SELECT payload_json FROM materials WHERE id = ?",
+                        (image_id,),
+                    ).fetchone()
+                    if existing is None:
+                        continue
+                    current = self._row_payload(existing)
+                    current_version = int(current.get("annotation_version") or 0)
+                    current_digest = str(current.get("annotation_hash") or "").strip()
+                    if incoming_version < current_version:
+                        continue
+                    if incoming_version == current_version:
+                        if incoming_digest != current_digest:
+                            raise AnnotationProjectionConflictError(
+                                f"material {image_id} annotation projection version "
+                                f"{incoming_version} has conflicting digests"
+                            )
+                        continue
+                    current.update(projection)
+                    changed.append(self._write_row(database, current))
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
+        return changed
+
     def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
         if not ids:
@@ -896,6 +1041,10 @@ class MaterialRepository:
                 raise
 
     def reconcile_storage_batch(self, task_id, source_id, changes):
+        with material_annotation_lifecycle_fence(self.project_path):
+            return self._reconcile_storage_batch_locked(task_id, source_id, changes)
+
+    def _reconcile_storage_batch_locked(self, task_id, source_id, changes):
         """Preserve annotation payload and atomically audit idempotent metadata patches."""
         changes = list(changes)
         if len(changes) > 500:

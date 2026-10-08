@@ -37,7 +37,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   const image = (await upload.json()).uploaded[0];
   await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
     class_id: 0, label: 'fire', x1: 10, y1: 8, x2: 90, y2: 70
-  }]}});
+  }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
   const configured = await request.post('/api/v35/model-configs', {data: {
     name: '浏览器默认视觉模型', provider_type: 'ollama', provider_adapter: 'ollama',
     model_kind: 'vlm', detect_url: 'http://127.0.0.1:11434', model_name: 'qwen2.5vl:3b',

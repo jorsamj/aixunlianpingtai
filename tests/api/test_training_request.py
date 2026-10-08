@@ -308,11 +308,9 @@ def test_v12_product_training_rejects_legacy_unsplit_request(client, seeded_proj
         (train_image, "fire", 0, "train"),
         (val_image, "smoke", 1, "val"),
     ]:
-        annotation = client.post(
-            f"/api/projects/{project_id}/annotations/{image['id']}",
-            json={"boxes": [{"class_id": class_id, "label": label, "x1": 20, "y1": 20, "x2": 90, "y2": 90}]},
+        _mark_training_ready(
+            client, project_id, image, label=label, class_id=class_id,
         )
-        assert annotation.status_code == 200
         assert client.patch(
             f"/api/v12/projects/{project_id}/images/{image['id']}", json={"split": split}
         ).status_code == 200
@@ -396,10 +394,9 @@ def test_v12_iteration_cannot_bypass_durable_split_with_latest_version(client, s
         (train_image, "fire", 0, "train"),
         (val_image, "smoke", 1, "val"),
     ]:
-        assert client.post(
-            f"/api/projects/{project_id}/annotations/{image['id']}",
-            json={"boxes": [{"class_id": class_id, "label": label, "x1": 10, "y1": 10, "x2": 90, "y2": 90}]},
-        ).status_code == 200
+        _mark_training_ready(
+            client, project_id, image, label=label, class_id=class_id,
+        )
         assert client.patch(
             f"/api/v12/projects/{project_id}/images/{image['id']}", json={"split": split}
         ).status_code == 200
@@ -525,10 +522,9 @@ def test_training_snapshot_randomly_assigns_selected_materials_to_experiment_spl
         (train_image, "fire", 0, "train"),
         (second, "smoke", 1, "val"),
     ]:
-        assert client.post(
-            f"/api/projects/{project_id}/annotations/{image['id']}",
-            json={"boxes": [{"class_id": class_id, "label": label, "x1": 20, "y1": 20, "x2": 90, "y2": 90}]},
-        ).status_code == 200
+        _mark_training_ready(
+            client, project_id, image, label=label, class_id=class_id,
+        )
         assert client.patch(
             f"/api/v12/projects/{project_id}/images/{image['id']}", json={"split": split}
         ).status_code == 200

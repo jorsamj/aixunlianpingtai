@@ -55,7 +55,7 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
   for (const [index, image] of images.entries()) {
     await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
       class_id: index, label: index ? 'smoke' : 'fire', x1: 10, y1: 10, x2: 70, y2: 60
-    }]}});
+    }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
     await request.patch(`/api/v12/projects/${project.id}/images/${image.id}`, {data: {split: index ? 'val' : 'train'}});
   }
   const algorithm = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {

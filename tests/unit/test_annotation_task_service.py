@@ -466,6 +466,7 @@ def test_commit_candidate_decisions_carries_formal_version_cas(tmp_path, monkeyp
     def write_many(_project, rows):
         rows = [dict(row) for row in rows]
         assert rows[0]["expected_version"] == 7
+        assert rows[0]["source_content_sha256"] == "a" * 64
         return rows
 
     monkeypatch.setattr(

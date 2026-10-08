@@ -20,7 +20,10 @@ from .cleaning import ImageDecodeError
 from .cleaning_analysis_runtime import CleaningAnalysisRuntime
 from .cleaning_batches import clean_batch, reset_stale_clean_successes
 from .labels import active_project_label_ids, label_governance_fence
-from .material_repository import MaterialRepository
+from .material_repository import (
+    MaterialRepository,
+    material_annotation_lifecycle_fence,
+)
 from .material_repository_batch import _transform_many
 from .material_selection import MaterialSelectionSpec, SelectionScope
 from .materials import mark_ready
@@ -1915,19 +1918,20 @@ class MaterialBatchHandler:
             legacy = Path(project_path) / "annotations" / f"{image_id}.json"
             legacy_bytes = legacy.read_bytes() if legacy.is_file() else None
             try:
-                annotations.prepare_delete(token, [image_id])
-                legacy.unlink(missing_ok=True)
-                annotations.finalize_delete(token)
-                try:
-                    materials.remove_many([image_id], batch_size=1)
-                except Exception:
-                    annotations.restore_delete(token)
-                    if legacy_bytes is not None and not legacy.exists():
-                        legacy.parent.mkdir(parents=True, exist_ok=True)
-                        legacy.write_bytes(legacy_bytes)
-                    raise
-                annotations.complete_delete(token)
-                manifest.transition([image_id], "succeeded")
+                with material_annotation_lifecycle_fence(project_path):
+                    annotations.prepare_delete(token, [image_id])
+                    legacy.unlink(missing_ok=True)
+                    annotations.finalize_delete(token)
+                    try:
+                        materials.remove_many([image_id], batch_size=1)
+                    except Exception:
+                        annotations.restore_delete(token)
+                        if legacy_bytes is not None and not legacy.exists():
+                            legacy.parent.mkdir(parents=True, exist_ok=True)
+                            legacy.write_bytes(legacy_bytes)
+                        raise
+                    annotations.complete_delete(token)
+                    manifest.transition([image_id], "succeeded")
             except (PermissionError, InterruptedError):
                 raise
             except Exception as error:

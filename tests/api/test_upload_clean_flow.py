@@ -933,9 +933,16 @@ def test_upload_batch_and_confirmed_cleaning_only_delete_selected_items(client):
     by_name = {item["filename"]: item for item in uploaded["uploaded"]}
 
     duplicate = by_name["duplicate.png"]
+    current = client.get(
+        f"/api/projects/{pid}/annotations/{duplicate['id']}"
+    ).json()
     saved = client.post(
         f"/api/projects/{pid}/annotations/{duplicate['id']}",
-        json={"boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}]},
+        json={
+            "boxes": [{"label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 90}],
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+        },
     )
     saved.raise_for_status()
 

@@ -72,7 +72,9 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
     materials = MaterialRepository(app_module.project_dir(project_id))
     rows = materials.read().rows
     assert len(rows) == 12
-    assert materials.current_revision() == 1
+    # One bounded Material identity batch plus one bounded, version-fenced
+    # Annotation projection batch; never one transaction per image.
+    assert materials.current_revision() == 2
     expected_hashes = {hashlib.sha256(payload).hexdigest() for payload in payloads}
     assert {row["content_sha256"] for row in rows} == expected_hashes
 

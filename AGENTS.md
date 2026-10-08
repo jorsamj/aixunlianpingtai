@@ -1,5 +1,14 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — Material / Annotation lifecycle + monotonic projection
+
+- VERSION `42.24.297` closes the code-level residuals of AUDIT-149/157/173 and AUDIT-102 on the canonical owners.
+- Formal Annotation writes now run under the project-scoped cross-process Material/Annotation lifecycle fence and prove Material existence, no delete claim, source availability, optional frozen content SHA, Annotation version CAS, and active labels before commit.
+- Dataset delete claim/finalize and Storage Rescan H1→H2 commit use the same short fence. File staging and remote/model I/O remain outside SQLite writer transactions.
+- Material Annotation projection now persists `annotation_version`; newer wins, older is ignored, equal digest is idempotent, equal version with a different digest fails closed. AnnotationRepository remains GT authority.
+- Manual save now requires `expected_version + source_content_sha256`; AI candidate commit carries its frozen source hash into the final commit-time guard. Do not restore unversioned generic Material projection writes.
+- Local focused verification and exact HEAD CI status are recorded in `docs/codex-handoff.md`; no main merge/tag/release/deploy is authorized.
+
 ## 2026-09-23 permanent architecture constraint — one owner, one truth, one call chain
 
 一个能力一个 final owner，一份状态一个 canonical truth，一条正式调用链。修改功能前必须先确认 final owner、canonical truth、现有 wrapper 的必要性以及是否已经存在同功能实现；已有 final owner 时直接修改它，或让调用方直接路由到它。

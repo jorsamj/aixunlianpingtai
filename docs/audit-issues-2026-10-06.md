@@ -25813,3 +25813,14 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 取消、lease loss 与 execution generation replacement 继续作为任务控制流向外传播，不伪造 failed candidate；Candidate 已提交但 selection 提交被 fence 时保留 durable candidate，供新 Worker 避免重复推理计费。
 - 回归覆盖 commit-time cancel、selection commit 前 lease loss、failed candidate fencing、真实 selection transaction rollback，以及 Rescan 预检后人工保存时 CAS 保留人工版本。核心 commit/rescan/MaterialBatch API `25 passed`，关联 annotation/material `52 passed`，durable remap/cleaning `32 passed`。
 - Windows 本机两条既有 remote ZIP review 集成测试在进入本批 Rescan/Candidate 代码前因 staging 临时父目录创建失败；不据此修改无关 ZIP 模块，等待目标 HEAD 的 Linux GitHub Actions。VERSION 42.24.295 → 42.24.296；不 merge main、不 tag/release、不部署。
+
+## 2026-10-08 修复日志 — AUDIT-149/157/173/102 共享生命周期与单调投影（42.24.297）
+
+**状态：CODE FIX IMPLEMENTED / LOCAL FOCUSED TESTS PASS / EXACT HEAD CI PENDING。**
+
+- 在现有 MaterialRepository / AnnotationRepository owner 之间增加 project-scoped 跨进程短 FileLock，仅作为 lifecycle coordination，不持有第二份状态。
+- Dataset DELETE 的 claim+backup 和 finalize、Storage Rescan 内容代际提交、正式 Annotation commit 共享该 fence；文件 staging、OSS 与模型 I/O 不在 SQLite writer transaction 内。
+- 正式 GT commit-time admission 统一验证 Material 存在、delete claim 不存在、source 可用、冻结 content SHA 一致、Annotation version CAS 与 active label。人工普通保存/补审都必须提交页面版本与 content SHA；AI H1 candidate 的 source SHA 带到最终 formal batch。
+- Material projection 持久化 canonical `annotation_version` 并在单一 Material transaction 更新 payload/labels/scopes：incoming newer 更新，older no-op，equal+same digest 幂等，equal+different digest fail closed。历史 annotation index 与 remap 共用该原语。
+- Event/barrier 回归覆盖 writer→delete、delete claim→late writer、H1 writer→H2 rescan、claim recovery、projection v2→v1 逆序与 equal-version digest conflict；现有 AUDIT-148/099/098 相关定向套件未放宽。
+- 本地最终相关证据：211 项核心/API、6 项批量/索引契约、10 项前端工作台契约、8 项 Real Chrome 标注/筛选路径通过；Python/JavaScript 语法与 diff check 通过。尚未把网络不可达或 queued/cancelled 状态伪报为 CI PASS。

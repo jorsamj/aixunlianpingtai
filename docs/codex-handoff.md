@@ -1,5 +1,16 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 R0 Material / Annotation 并发生命周期与单调投影（当前最新）
+
+- VERSION：`42.24.297`；长期分支：`feature/external-algorithm-publishing`。
+- 新增 project-scoped、跨进程、线程内可重入的短生命周期 FileLock。它只做协调，不保存业务状态，不是第二 Repository/Runtime。
+- AnnotationRepository 正式 annotated/confirmed_empty 写在该边界内核验 Material 存在、无 dataset delete claim、来源可用、冻结 content SHA 一致、Annotation expected_version 和 active label，然后提交 GT 与派生投影。
+- Dataset DELETE 只在 claim+backup 与 Material/GT finalize 的短阶段拿同一 fence；文件 staging 在 fence/DB transaction 外。Storage Rescan 的 H1→H2 Material commit 同样受 fence 保护。
+- AI Candidate 的 `source_content_sha256` 进入最终正式批量写，而不是只在批量预检阶段比较。人工普通保存和补审都要求页面读取的 `expected_version + source_content_sha256`。
+- MaterialRepository 新增唯一 `patch_annotation_projections`：持久化 `annotation_version`，新版本更新、旧版本 no-op、同版本同 digest 幂等、同版本异 digest 整批 fail closed；payload、label/scope 索引同事务更新。历史 index worker 和 label remap 已迁移。
+- 本地最终相关回归已通过：核心 lifecycle/projection、AnnotationRepository、AI commit、Rescan、Dataset delete/recovery、训练请求与 Material API 211 项；批量/索引契约 6 项；前端工作台契约 10 项；Real Chrome 主要标注/筛选路径 8 项；Python 语法与 diff check 通过。最终提交/推送及精确 HEAD Actions/check-runs 仍以后续记录为准。
+- 设计与计划：`docs/superpowers/specs/2026-10-08-material-annotation-lifecycle-design.md`、`docs/superpowers/plans/2026-10-08-material-annotation-lifecycle.md`。
+
 ## 2026-10-08 AUDIT-099 / AUDIT-098 commit fence（当前最新）
 
 - VERSION：`42.24.296`；长期分支：`feature/external-algorithm-publishing`。

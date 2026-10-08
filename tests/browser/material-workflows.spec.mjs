@@ -460,7 +460,8 @@ test('material filters come from the label library and unprocessed data exposes 
   await uploadImage(request, project.id, 'unprocessed.bmp', [80, 170, 90]);
   for (const [image, classId, label] of [[person, 0, 'person'], [vehicle, 1, 'vehicle']]) {
     const response = await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {
-      data: {boxes: [{class_id: classId, label, x1: 10, y1: 10, x2: 70, y2: 60}]}
+      data: {boxes: [{class_id: classId, label, x1: 10, y1: 10, x2: 70, y2: 60}],
+        expected_version: image.annotation_version, source_content_sha256: image.content_sha256}
     });
     expect(response.ok()).toBeTruthy();
   }

@@ -59,10 +59,14 @@ def test_remote_material_content_is_backend_proxied_without_browser_redirect(
 
 def test_material_source_and_multi_label_or_filters(client, seeded_project):
     project_id, uploaded = seeded_project
+    current = client.get(
+        f"/api/projects/{project_id}/annotations/{uploaded['id']}"
+    ).json()
     client.post(f"/api/projects/{project_id}/annotations/{uploaded['id']}", json={"boxes": [{
         "id": "box-1", "label": "fire", "class_id": 0,
         "x1": 1, "y1": 1, "x2": 30, "y2": 30,
-    }]}).raise_for_status()
+    }], "expected_version": current["annotation"]["version"],
+        "source_content_sha256": current["image"]["content_sha256"]}).raise_for_status()
     page = client.get(
         f"/api/v61/projects/{project_id}/materials",
         params=[("storage_source_id", "default_local"), ("label", "fire"), ("label", "not-present")],

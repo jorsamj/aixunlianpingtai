@@ -98,13 +98,15 @@ def test_annotation_summary_migration_batches_repository_reads_and_projection_wr
                     "image_id": image_id,
                     "annotation_state": "annotated",
                     "boxes": [{"label": "fire", "class_id": 0}],
+                    "version": 1,
+                    "content_digest": f"digest-{image_id}",
                     "updated_at": "2026-09-26T00:00:00Z",
                 }
                 for image_id in batch
             }
 
     class FakeMaterials:
-        def patch(self, patches):
+        def patch_annotation_projections(self, patches):
             patch_batches.append(dict(patches))
             assert len(patches) <= app_module._ANNOTATION_INDEX_BATCH_SIZE
             return list(patches.values())

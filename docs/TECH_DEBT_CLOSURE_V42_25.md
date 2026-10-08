@@ -1682,3 +1682,6 @@ Status: **PRODUCT CODE CLOSED / LATEST CI STILL VERIFYING** on `feature/external
 - At this documentation point, current-head Actions are not all terminal; **do not mark latest CI PASS until every required check is completed successfully**.
 - Genuine 20k production import/unification and real object-storage environment acceptance remain not verified.
 - The legacy direct non-multipart v19 upload endpoint still performs synchronous post-upload scan for compatibility. The formal browser owner does not use it. Treat it as a compatibility migration item, not as a second preferred import runtime.
+# 2026-10-08 product safety override — R0 lifecycle/projection
+
+AUDIT-149 and the concurrent residuals of AUDIT-157/173 are code-level fixed by the shared Material/Annotation lifecycle fence; AUDIT-102 is code-level fixed by MaterialRepository's version-monotonic derived projection primitive. AnnotationRepository remains the sole GT owner. This is a production data-integrity fix, not a resumed broad technical-debt cleanup. VERSION `42.24.297`; CI/E2E closure remains evidence-gated.

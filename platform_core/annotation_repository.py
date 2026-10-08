@@ -10,6 +10,7 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from .annotations import annotation_summary
 from .labels import active_project_label_ids, label_governance_fence
 
 
@@ -967,8 +968,28 @@ class AnnotationRepository:
                 )
             elif str(target_label or '').strip():
                 target_codes.add(str(target_label).strip())
-        with label_governance_fence(self.project_path):
+        from .material_repository import (
+            MaterialRepository,
+            material_annotation_lifecycle_fence,
+        )
+        has_material_registry = (
+            (self.project_path / 'materials.sqlite3').exists()
+            or (self.project_path / 'images.json').exists()
+        )
+        materials = (
+            MaterialRepository(self.project_path)
+            if has_material_registry else None
+        )
+        with label_governance_fence(
+            self.project_path
+        ), material_annotation_lifecycle_fence(self.project_path):
             self._assert_active_label_codes(target_codes)
+            admitted = (
+                materials.assert_formal_annotation_admission({
+                    image_id: None for image_id in ids
+                })
+                if has_material_registry else {}
+            )
             with closing(self._connect()) as db:
                 db.execute('BEGIN IMMEDIATE')
                 try:
@@ -1054,6 +1075,10 @@ class AnnotationRepository:
                             if code:
                                 label_counts[code] = label_counts.get(code, 0) + 1
                         projections[image_id] = {
+                            'annotation_version': (
+                                int(current.get('version') or 0)
+                                + (1 if changed_content else 0)
+                            ),
                             'annotation_state': planned['annotation_state'],
                             'annotation_scope': planned['annotation_scope'],
                             'annotation_hash': planned['content_digest'],
@@ -1064,6 +1089,13 @@ class AnnotationRepository:
                             'labels': sorted(label_counts),
                             'label_counts': label_counts,
                         }
+                        source_hash = str(
+                            (admitted.get(image_id) or {}).get('content_sha256') or ''
+                        ).strip().lower()
+                        if source_hash:
+                            projections[image_id][
+                                'annotation_source_content_sha256'
+                            ] = source_hash
                         results.append({
                             'image_id': image_id,
                             'status': 'applied' if changed_content else 'unchanged',
@@ -1079,8 +1111,8 @@ class AnnotationRepository:
             (self.project_path / 'materials.sqlite3').exists()
             or (self.project_path / 'images.json').exists()
         ):
-            from .material_repository import MaterialRepository
-            MaterialRepository(self.project_path).patch(projections)
+            if materials is not None:
+                materials.patch_annotation_projections(projections)
         return results
 
     def summary(self):
@@ -1104,63 +1136,89 @@ class AnnotationRepository:
         persisted_rows = []
         projections = {}
         with label_governance_fence(self.project_path):
-            with closing(self._connect()) as db:
-                db.execute('BEGIN IMMEDIATE')
-                try:
-                    for row in rows:
-                        image_id = self._id(row['image_id'])
-                        expected_version = row.get('expected_version')
-                        if expected_version is not None:
-                            expected_version = int(expected_version)
-                            if expected_version < 0:
-                                raise ValueError(
-                                    'expected annotation version must be >= 0'
+            prepared_rows = []
+            material_expectations = {}
+            for row in rows:
+                image_id = self._id(row['image_id'])
+                prepared = self._content_payload(
+                    row.get('boxes') or [],
+                    row.get('annotation_state'),
+                    row.get('annotation_scope'),
+                )
+                self._assert_active_annotation_payload(
+                    prepared['boxes'], prepared['annotation_scope'],
+                )
+                prepared_rows.append((row, image_id, prepared))
+                if prepared['annotation_state'] in {'annotated', 'confirmed_empty'}:
+                    material_expectations[image_id] = row.get(
+                        'source_content_sha256'
+                    )
+
+            from .material_repository import (
+                MaterialRepository,
+                material_annotation_lifecycle_fence,
+            )
+            has_material_registry = (
+                (self.project_path / 'materials.sqlite3').exists()
+                or (self.project_path / 'images.json').exists()
+            )
+            materials = (
+                MaterialRepository(self.project_path)
+                if has_material_registry else None
+            )
+            with material_annotation_lifecycle_fence(self.project_path):
+                admitted = (
+                    materials.assert_formal_annotation_admission(
+                        material_expectations
+                    )
+                    if material_expectations and has_material_registry else {}
+                )
+                with closing(self._connect()) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    try:
+                        for row, image_id, prepared in prepared_rows:
+                            expected_version = row.get('expected_version')
+                            if expected_version is not None:
+                                expected_version = int(expected_version)
+                                if expected_version < 0:
+                                    raise ValueError(
+                                        'expected annotation version must be >= 0'
+                                    )
+                                current = db.execute(
+                                    "SELECT version FROM annotations WHERE image_id=?",
+                                    (image_id,),
+                                ).fetchone()
+                                actual_version = (
+                                    int(current['version']) if current is not None else 0
                                 )
-                            current = db.execute(
-                                "SELECT version FROM annotations WHERE image_id=?",
-                                (image_id,),
-                            ).fetchone()
-                            actual_version = (
-                                int(current['version']) if current is not None else 0
+                                if actual_version != expected_version:
+                                    raise AnnotationConflictError(
+                                        image_id, expected_version, actual_version
+                                    )
+                            now = datetime.now(timezone.utc).isoformat()
+                            db.execute(
+                                """INSERT INTO annotations
+                                   (image_id, annotation_state, version, content_digest,
+                                    boxes_json, scope_json, created_at, updated_at)
+                                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                                   ON CONFLICT(image_id) DO UPDATE SET
+                                       annotation_state=excluded.annotation_state,
+                                       version=annotations.version+1,
+                                       content_digest=excluded.content_digest,
+                                       boxes_json=excluded.boxes_json,
+                                       scope_json=excluded.scope_json,
+                                       updated_at=excluded.updated_at
+                                   WHERE annotations.content_digest != excluded.content_digest""",
+                                (
+                                    image_id,
+                                    prepared['annotation_state'],
+                                    prepared['content_digest'],
+                                    prepared['boxes_payload'],
+                                    prepared['scope_payload'],
+                                    now,
+                                    now,
+                                ),
                             )
-                            if actual_version != expected_version:
-                                raise AnnotationConflictError(
-                                    image_id, expected_version, actual_version
-                                )
-                        prepared = self._content_payload(
-                            row.get('boxes') or [],
-                            row.get('annotation_state'),
-                            row.get('annotation_scope'),
-                        )
-                        self._assert_active_annotation_payload(
-                            prepared['boxes'],
-                            prepared['annotation_scope'],
-                        )
-                        now = datetime.now(timezone.utc).isoformat()
-                        db.execute(
-                            """INSERT INTO annotations
-                               (image_id, annotation_state, version, content_digest,
-                                boxes_json, scope_json, created_at, updated_at)
-                               VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-                               ON CONFLICT(image_id) DO UPDATE SET
-                                   annotation_state=excluded.annotation_state,
-                                   version=annotations.version+1,
-                                   content_digest=excluded.content_digest,
-                                   boxes_json=excluded.boxes_json,
-                                   scope_json=excluded.scope_json,
-                                   updated_at=excluded.updated_at
-                               WHERE annotations.content_digest != excluded.content_digest""",
-                            (
-                                image_id,
-                                prepared['annotation_state'],
-                                prepared['content_digest'],
-                                prepared['boxes_payload'],
-                                prepared['scope_payload'],
-                                now,
-                                now,
-                            ),
-                        )
-                        if return_rows:
                             persisted = db.execute(
                                 "SELECT * FROM annotations WHERE image_id=?",
                                 (image_id,),
@@ -1169,45 +1227,52 @@ class AnnotationRepository:
                                 raise RuntimeError(
                                     "annotation upsert did not persist a row"
                                 )
-                            persisted_rows.append(
-                                self._decode_persisted_row(persisted)
+                            decoded = self._decode_persisted_row(persisted)
+                            persisted_rows.append(decoded)
+                            material = admitted.get(image_id) or {}
+                            projection = annotation_summary(
+                                decoded['boxes'], decoded['annotation_state'],
                             )
-                        projections[image_id] = {
-                            'annotation_state': prepared['annotation_state'],
-                            'annotation_scope': prepared['annotation_scope'],
-                            'annotation_hash': prepared['content_digest'],
-                            'annotated': prepared['annotation_state'] in {
-                                'annotated', 'confirmed_empty',
-                            },
-                            'box_count': len(prepared['boxes']),
-                            'labels': sorted({
-                                str(
-                                    box.get('label') or box.get('code') or ''
-                                ).strip()
-                                for box in prepared['boxes']
-                                if str(
-                                    box.get('label') or box.get('code') or ''
-                                ).strip()
-                            }),
-                        }
-                        written.append(image_id)
-                    db.execute('COMMIT')
-                except Exception:
-                    db.execute('ROLLBACK')
-                    raise
-        if project_material and projections and (
-            (self.project_path / 'materials.sqlite3').exists()
-            or (self.project_path / 'images.json').exists()
-        ):
-            # Keep searchable material metadata as a projection only. Annotation
-            # Repository remains the ground-truth authority.
-            from .material_repository import MaterialRepository
-            MaterialRepository(self.project_path).patch(projections)
+                            origin = str(row.get('annotation_origin') or '').strip()
+                            if origin:
+                                projection['annotation_origin'] = origin
+                            projection.update({
+                                'annotation_version': int(decoded.get('version') or 0),
+                                'annotation_scope': list(decoded.get('annotation_scope') or []),
+                                'annotation_hash': str(decoded.get('content_digest') or ''),
+                                'annotation_summary_at': str(decoded.get('updated_at') or now),
+                            })
+                            if decoded['annotation_state'] in {'annotated', 'confirmed_empty'}:
+                                projection.update(
+                                    processing_status='processed',
+                                    annotated_at=str(decoded.get('updated_at') or now),
+                                )
+                                source_hash = str(
+                                    material.get('content_sha256') or ''
+                                ).strip().lower()
+                                if source_hash:
+                                    projection['annotation_source_content_sha256'] = source_hash
+                                    if str(material.get('annotation_review_reason') or '') == 'SOURCE_CONTENT_CHANGED':
+                                        projection.update(
+                                            annotation_needs_review=False,
+                                            annotation_review_reason='',
+                                            needs_review=False,
+                                        )
+                            projections[image_id] = projection
+                            written.append(image_id)
+                        db.execute('COMMIT')
+                    except Exception:
+                        db.execute('ROLLBACK')
+                        raise
+                if project_material and projections and materials is not None:
+                    # Material metadata is a derived searchable projection only.
+                    materials.patch_annotation_projections(projections)
         return persisted_rows if return_rows else written
 
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
         *, project_material: bool = True, expected_version=None,
+        source_content_sha256=None, annotation_origin=None,
     ):
         persisted = self.upsert_many([{
             'image_id': image_id,
@@ -1215,6 +1280,8 @@ class AnnotationRepository:
             'annotation_state': annotation_state,
             'annotation_scope': annotation_scope,
             'expected_version': expected_version,
+            'source_content_sha256': source_content_sha256,
+            'annotation_origin': annotation_origin,
         }], project_material=project_material, return_rows=True)
         if not persisted:
             raise RuntimeError("annotation upsert did not return a persisted row")

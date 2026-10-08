@@ -517,6 +517,9 @@ def commit_candidate_decisions(
                     "annotation_scope": annotation_scope,
                     "annotation_origin": annotation_origin,
                     "expected_version": expected_version,
+                    "source_content_sha256": str(
+                        item.get("source_content_sha256") or ""
+                    ).strip().lower(),
                 })
                 batch_boxes_added += len(incoming)
             summary = {

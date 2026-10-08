@@ -2784,3 +2784,6 @@ VERSION.txt 仍为 42.24.0
 - 用户已确认补审交互：普通保存保留已有 scope；“保存并确认审核”只增加用户明确勾选的待审标签，支持部分确认，禁止自动全选、AI 未检出推断、`person/people` 语义猜测和 `*`。
 - 后续实现必须复用 AnnotationRepository CAS、Training Label Contract、现有 Summary/Submit/Recovery Runtime 与 Snapshot；任务特定问题通过有界分页显示，排除只改当前训练草稿。
 - 当前 `42.24.293` 仅为设计文档提交目标，尚无生产代码修改，不得标记 AUDIT-147/148/150 CLOSED。
+# 2026-10-08 override — R0 annotation lifecycle safety
+
+Current code candidate is VERSION `42.24.297`. Formal Ground Truth cannot commit for missing/deleting/unavailable Material or a mismatched frozen content SHA. Dataset deletion and Rescan share the same short cross-process lifecycle fence. Material searchable Annotation projection is monotonic by canonical Annotation version; it is not a second truth owner. Exact remote HEAD and CI terminal status must be re-read after push.

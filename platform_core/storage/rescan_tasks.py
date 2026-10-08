@@ -15,7 +15,10 @@ from platform_core.annotation_repository import (
     AnnotationRepository,
 )
 from platform_core.annotation_schema import validate_canonical_annotation_evidence
-from platform_core.material_repository import MaterialRepository
+from platform_core.material_repository import (
+    AnnotationMaterialLifecycleError,
+    MaterialRepository,
+)
 from platform_core.task_runtime import TaskStatus
 
 from .detection_import import DetectionDatasetScanner
@@ -548,6 +551,9 @@ class StorageRescanHandler(StorageImportHandler):
                         'boxes': boxes,
                         'annotation_state': state,
                         'expected_version': int(current_annotation.get('version') or 0),
+                        'source_content_sha256': str(
+                            material.get('content_sha256') or ''
+                        ).strip().lower(),
                     })
                     apply_evidence[material_id] = evidence
                 elif category not in {'ANNOTATION_UNCHANGED'}:
@@ -565,21 +571,14 @@ class StorageRescanHandler(StorageImportHandler):
                     annotation_rows,
                     return_rows=True,
                 ) if annotation_rows else []
-            except AnnotationConflictError as error:
+            except (AnnotationConflictError, AnnotationMaterialLifecycleError) as error:
                 raise ValueError(
-                    'platform annotation changed while applying rescan; create a new rescan'
+                    'platform material or annotation changed while applying rescan; '
+                    'create a new rescan'
                 ) from error
-            materials_by_id = {
-                str(material.get('id') or ''): material
-                for material in by_ref.values()
-            }
             for saved in persisted:
                 image_id = str(saved['image_id'])
                 evidence = apply_evidence[image_id]
-                current_material = materials_by_id.get(image_id) or {}
-                source_hash = str(
-                    current_material.get('content_sha256') or ''
-                ).strip().lower()
                 patches[image_id] = {
                     **patches.get(image_id, {}),
                     'external_annotation': {
@@ -597,19 +596,6 @@ class StorageRescanHandler(StorageImportHandler):
                     'external_annotation_review_reason': '',
                     'imported_split': str(evidence.get('split') or ''),
                 }
-                if (
-                    str(saved.get('annotation_state') or '')
-                    in {'annotated', 'confirmed_empty'}
-                    and len(source_hash) == 64
-                    and all(char in '0123456789abcdef' for char in source_hash)
-                ):
-                    patches[image_id]['annotation_source_content_sha256'] = source_hash
-                    if str(current_material.get('annotation_review_reason') or '') == 'SOURCE_CONTENT_CHANGED':
-                        patches[image_id].update(
-                            annotation_needs_review=False,
-                            annotation_review_reason='',
-                            needs_review=False,
-                        )
             if patches:
                 materials.patch(patches)
             store.mark_annotation_applied(batch)

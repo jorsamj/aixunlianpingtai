@@ -2568,3 +2568,6 @@ version remove 实际副作用
 - `External Algorithm Publish` CI 已固定 root precedence 和两条回归测试名称，禁止后续又退回旧根优先。
 - 这次属于后端结果发现/同步修复，不改变前端字段或交互；`VERSION.txt` 仍为 `42.24.0`。
 - 当前 GitHub Actions 仍必须以最新 HEAD 的实际 completed 结果为准；queued 不等于通过，也不具备部署资格。
+# 2026-10-08 current override — R0 Material / Annotation lifecycle
+
+VERSION `42.24.297` adds one project-scoped coordination fence between canonical Material lifecycle mutations and formal AnnotationRepository commits. Dataset delete claim/finalize, Storage Rescan content replacement, manual/AI/import formal writes and label remap reuse existing owners. Material annotation projections are version-monotonic and remain rebuildable derived state. See `docs/codex-handoff.md` for verification and CI status.

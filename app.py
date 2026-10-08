@@ -97,7 +97,12 @@ from platform_core.model_artifacts import (
     SUCCESSFUL_CONVERSION_STATUSES,
     model_delivery_version_fence,
 )
-from platform_core.material_repository import MaterialRepository
+from platform_core.material_repository import (
+    AnnotationMaterialLifecycleError,
+    DATASET_DELETE_CLAIM_FIELD,
+    MaterialRepository,
+    material_annotation_lifecycle_fence,
+)
 from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
@@ -2805,25 +2810,6 @@ def _v50_end_image_batch(save: bool = True):
         records_by_id = {
             str(record.get("id")): record for record in records
         }
-        if deferred_annotations:
-            annotation_repository = (
-                batch.get("annotation_repository")
-                or AnnotationRepository(project_dir(project_id))
-            )
-            saved_annotations = annotation_repository.upsert_many(
-                deferred_annotations,
-                project_material=False,
-                return_rows=True,
-            )
-            for saved in saved_annotations:
-                image_id = str(saved.get("image_id") or "")
-                patch = _v50_material_annotation_patch(saved)
-                record = records_by_id.get(image_id)
-                if record is not None:
-                    record.update(patch)
-                else:
-                    patches.setdefault(image_id, {}).update(patch)
-
         for image_id in list(patches):
             record = records_by_id.get(image_id)
             if record is not None:
@@ -2842,37 +2828,52 @@ def _v50_end_image_batch(save: bool = True):
             for dataset_id in sorted(target_dataset_ids):
                 _v50_assert_dataset_writable_locked(project_id, dataset_id)
             repository = material_store(project_id)
-            if not patches:
-                return repository.upsert_many(records)
+            with material_annotation_lifecycle_fence(project_dir(project_id)):
+                if not patches:
+                    persisted_materials = repository.upsert_many(records)
+                else:
+                    # Rare compatibility fallback: a batch may contain patches
+                    # for pre-existing rows. Preserve its single Material DB
+                    # transaction while the shared lifecycle fence is held.
+                    def commit(rows):
+                        by_id = {}
+                        for row in rows:
+                            by_id.setdefault(str(row.get("id")), row)
+                        changed_ids = []
+                        for incoming in records:
+                            image_id = str(incoming.get("id"))
+                            row = by_id.get(image_id)
+                            if row is None:
+                                row = dict(incoming)
+                                rows.append(row)
+                                by_id[image_id] = row
+                            else:
+                                row.update(incoming)
+                            changed_ids.append(image_id)
+                        for image_id, patch in patches.items():
+                            row = by_id.get(image_id)
+                            if row is None:
+                                continue
+                            row.update(patch)
+                            if image_id not in changed_ids:
+                                changed_ids.append(image_id)
+                        return [dict(by_id[image_id]) for image_id in changed_ids]
 
-            # Rare compatibility fallback: a batch may contain patches for
-            # pre-existing rows. Preserve the old single-transaction mutate
-            # semantics for that case instead of splitting atomicity.
-            def commit(rows):
-                by_id = {}
-                for row in rows:
-                    by_id.setdefault(str(row.get("id")), row)
-                changed_ids = []
-                for incoming in records:
-                    image_id = str(incoming.get("id"))
-                    row = by_id.get(image_id)
-                    if row is None:
-                        row = dict(incoming)
-                        rows.append(row)
-                        by_id[image_id] = row
-                    else:
-                        row.update(incoming)
-                    changed_ids.append(image_id)
-                for image_id, patch in patches.items():
-                    row = by_id.get(image_id)
-                    if row is None:
-                        continue
-                    row.update(patch)
-                    if image_id not in changed_ids:
-                        changed_ids.append(image_id)
-                return [dict(by_id[image_id]) for image_id in changed_ids]
-
-            return repository.mutate(commit)
+                    persisted_materials = repository.mutate(commit)
+                if deferred_annotations:
+                    annotation_repository = (
+                        batch.get("annotation_repository")
+                        or AnnotationRepository(project_dir(project_id))
+                    )
+                    annotation_repository.upsert_many(
+                        deferred_annotations,
+                        project_material=True,
+                        return_rows=True,
+                    )
+                    return repository.get_many(
+                        str(record.get("id") or "") for record in records
+                    )
+                return persisted_materials
     except Exception as error:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(
             project_id, records
@@ -2948,6 +2949,7 @@ def _v50_material_annotation_patch(
         summary["annotation_origin"] = str(annotation_origin)
     patch = {
         **summary,
+        "annotation_version": int(saved.get("version") or 0),
         "annotation_scope": list(saved.get("annotation_scope") or []),
         "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
@@ -2973,6 +2975,7 @@ def write_annotation(
     project_id: str, image_id: str, boxes: List[Dict[str, Any]],
     annotation_state=None, annotation_origin: Optional[str] = None,
     *, annotation_scope=None, expected_version: Optional[int] = None,
+    source_content_sha256: Optional[str] = None,
 ):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
@@ -2980,20 +2983,40 @@ def write_annotation(
     batch = _v50_active_image_batch(project_id)
     if batch is not None:
         batch.get("deferred_annotations", {}).pop(str(image_id), None)
-    current_material = material_store(project_id).get(str(image_id))
+        pending_material = batch.get("records", {}).get(str(image_id))
+        if pending_material is not None:
+            state = annotation_state or ("annotated" if boxes else "unannotated")
+            batch["deferred_annotations"][str(image_id)] = {
+                "image_id": str(image_id),
+                "boxes": list(boxes or []),
+                "annotation_state": state,
+                "annotation_scope": annotation_scope,
+                "expected_version": expected_version,
+                "source_content_sha256": (
+                    source_content_sha256
+                    or pending_material.get("content_sha256")
+                ),
+                "annotation_origin": annotation_origin,
+            }
+            return {
+                "image_id": str(image_id),
+                "boxes": list(boxes or []),
+                "annotation_state": state,
+                "annotation_scope": list(annotation_scope or []),
+                "version": int(expected_version or 0),
+                "content_digest": "",
+                "updated_at": now_iso(),
+            }
     saved = _v50_annotation_repository(project_id).upsert(
         image_id,
         boxes,
         annotation_state,
         annotation_scope=annotation_scope,
-        project_material=False,
+        project_material=True,
         expected_version=expected_version,
+        source_content_sha256=source_content_sha256,
+        annotation_origin=annotation_origin,
     )
-    patch = _v50_material_annotation_patch(
-        saved, annotation_origin, material=current_material,
-    )
-    if not _v50_queue_image_patch(project_id, image_id, patch):
-        material_store(project_id).patch({str(image_id): patch})
     return saved
 
 
@@ -3038,26 +3061,14 @@ def write_annotations_many(project_id: str, rows) -> List[Dict[str, Any]]:
             "annotation_state": row.get("annotation_state"),
             "annotation_scope": row.get("annotation_scope"),
             "expected_version": row.get("expected_version"),
+            "source_content_sha256": row.get("source_content_sha256"),
+            "annotation_origin": origins[image_id],
         })
-    material_rows = {
-        str(row.get("id") or ""): row
-        for row in material_store(project_id).get_many(seen)
-    }
     saved_rows = _v50_annotation_repository(project_id).upsert_many(
         prepared,
-        project_material=False,
+        project_material=True,
         return_rows=True,
     )
-    pending_patches = {}
-    for saved in saved_rows:
-        image_id = str(saved.get("image_id") or "")
-        patch = _v50_material_annotation_patch(
-            saved, origins.get(image_id), material=material_rows.get(image_id),
-        )
-        if not _v50_queue_image_patch(project_id, image_id, patch):
-            pending_patches[image_id] = patch
-    if pending_patches:
-        material_store(project_id).patch(pending_patches)
     return saved_rows
 
 
@@ -3382,7 +3393,7 @@ def update_dataset(project_id: str, dataset_id: str, payload: DatasetReq):
     raise HTTPException(status_code=404, detail="数据集不存在")
 
 
-_V50_DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
+_V50_DATASET_DELETE_CLAIM_FIELD = DATASET_DELETE_CLAIM_FIELD
 _V50_ACTIVE_DATASET_DELETIONS_GUARD = threading.Lock()
 _V50_ACTIVE_DATASET_DELETION_TOKENS: set = set()
 _V50_ACTIVE_DATASET_DELETION_TARGETS: Dict[str, Tuple[str, str]] = {}
@@ -3869,12 +3880,14 @@ def _v50_recover_one_dataset_deletion(
         annotation_repository = AnnotationRepository(project_dir(project_id))
         if dataset_present:
             _v50_restore_dataset_delete_files(project_id, journal)
-            _v50_restore_dataset_delete_rows(project_id, journal)
-            annotation_repository.restore_delete(token)
+            with material_annotation_lifecycle_fence(project_dir(project_id)):
+                _v50_restore_dataset_delete_rows(project_id, journal)
+                annotation_repository.restore_delete(token)
             journal["status"] = "recovered"
         else:
-            _v50_finish_absent_dataset_deletion(project_id, journal)
-            annotation_repository.finalize_delete(token)
+            with material_annotation_lifecycle_fence(project_dir(project_id)):
+                _v50_finish_absent_dataset_deletion(project_id, journal)
+                annotation_repository.finalize_delete(token)
             journal["status"] = "deletion_finished"
         _v50_write_dataset_delete_journal(journal)
         _v50_cleanup_dataset_delete_artifacts(journal)
@@ -4044,7 +4057,9 @@ def delete_dataset(project_id: str, dataset_id: str):
     }
     registered = False
     try:
-        with coordination_lock:
+        with coordination_lock, material_annotation_lifecycle_fence(
+            project_dir(project_id)
+        ):
             _v50_assert_dataset_writable_locked(project_id, dataset_id)
             datasets = _v50_read_datasets_strict(project_id)
             if not any(str(item.get("id")) == dataset_id for item in datasets):
@@ -4120,7 +4135,9 @@ def delete_dataset(project_id: str, dataset_id: str):
         if failed_items:
             try:
                 _v50_restore_dataset_delete_files(project_id, journal)
-                with coordination_lock:
+                with coordination_lock, material_annotation_lifecycle_fence(
+                    project_dir(project_id)
+                ):
                     _v50_restore_dataset_delete_rows(project_id, journal)
                     AnnotationRepository(project_dir(project_id)).restore_delete(
                         claim_token
@@ -4156,7 +4173,9 @@ def delete_dataset(project_id: str, dataset_id: str):
 
         journal["status"] = "staged"
         _v50_write_dataset_delete_journal(journal)
-        with coordination_lock:
+        with coordination_lock, material_annotation_lifecycle_fence(
+            project_dir(project_id)
+        ):
             def finalize_dataset_rows(rows):
                 finalized = [
                     dict(img)
@@ -4551,12 +4570,16 @@ def _v52_annotation_index_worker(project_id: str):
                 )
                 patch = {
                     **summary,
+                    "annotation_version": int(anns.get("version") or 0),
+                    "annotation_hash": str(anns.get("content_digest") or ""),
+                    "annotation_scope": list(anns.get("annotation_scope") or []),
                     "annotation_summary_at": anns.get("updated_at") or now_iso(),
                 }
                 if boxes:
                     patch["processing_status"] = "processed"
-                patches[image_id] = patch
-            materials.patch(patches)
+                if patch["annotation_version"] > 0 and patch["annotation_hash"]:
+                    patches[image_id] = patch
+            materials.patch_annotation_projections(patches)
             processed = min(total, offset + len(batch))
             _ANNOTATION_INDEX_STATUS[project_id] = {
                 "running": True,
@@ -5081,19 +5104,19 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
         for code in payload.reviewed_label_codes
         if str(code or "").strip()
     })
-    if reviewed_label_codes and payload.expected_version is None:
+    if payload.expected_version is None:
         raise PlatformError(
             code="ANNOTATION_EXPECTED_VERSION_REQUIRED",
-            message="补审提交缺少版本信息",
-            detail="保存并确认审核必须携带打开工作台时读取的标注版本。",
+            message="标注提交缺少版本信息",
+            detail="保存标注必须携带打开工作台时读取的标注版本。",
             solution="请刷新当前图片，重新核对标注框和待审核标签后提交。",
             status_code=422,
         )
-    if reviewed_label_codes and not submitted_content_sha256:
+    if not submitted_content_sha256:
         raise PlatformError(
             code="ANNOTATION_MATERIAL_GENERATION_REQUIRED",
-            message="补审提交缺少素材代际信息",
-            detail="保存并确认审核必须携带打开工作台时读取的素材内容摘要。",
+            message="标注提交缺少素材代际信息",
+            detail="保存标注必须携带打开工作台时读取的素材内容摘要。",
             solution="请刷新当前图片，重新查看真实图片后提交。",
             status_code=422,
         )
@@ -5188,6 +5211,9 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             annotation_state,
             annotation_scope=next_scope,
             expected_version=payload.expected_version,
+            source_content_sha256=(
+                submitted_content_sha256 or current_content_sha256
+            ),
         )
     except AnnotationConflictError as error:
         raise PlatformError(
@@ -5206,6 +5232,14 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             message="标签状态已变化，标注未保存",
             detail=str(error),
             solution="请刷新当前图片和标签列表，确认当前有效标签后重新保存。",
+            status_code=409,
+        ) from error
+    except AnnotationMaterialLifecycleError as error:
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_LIFECYCLE_CHANGED",
+            message="素材状态在保存期间发生变化",
+            detail=str(error),
+            solution="请刷新素材和标注工作台，基于当前内容重新审核后提交。",
             status_code=409,
         ) from error
     fresh = materials.get(str(image_id))
@@ -21189,16 +21223,16 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
-        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state'),img
+        return iid,ann,boxes,img
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated,annotation_state,img=fut.result(); patch={**_annotation_summary_for_material_index(boxes,annotation_state,img),"annotation_summary_at":updated}
+            iid,ann,boxes,img=fut.result(); patch={**_annotation_summary_for_material_index(boxes,ann.get('annotation_state'),img),"annotation_summary_at":ann.get("updated_at") or now_iso(),"annotation_version":int(ann.get("version") or 0),"annotation_hash":str(ann.get("content_digest") or ""),"annotation_scope":list(ann.get("annotation_scope") or [])}
             if boxes:patch["processing_status"]="processed"
-            patches[iid]=patch
+            if patch["annotation_version"]>0 and patch["annotation_hash"]:patches[iid]=patch
             done+=1
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
-    material_store(project_id).patch(patches); return load_images(project_id)
+    material_store(project_id).patch_annotation_projections(patches); return load_images(project_id)
 
 def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
     """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
