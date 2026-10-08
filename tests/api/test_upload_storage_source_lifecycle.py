@@ -6,7 +6,6 @@ import uuid
 from PIL import Image
 
 import app as app_module
-from platform_core.errors import PlatformError
 
 
 def _project(client):
