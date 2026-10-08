@@ -4768,21 +4768,32 @@ def _add_label_locked(project_id: str, payload: AddLabelReq):
     }
 
 
-def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
+async def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
+    """Bind receipt identity to actual bytes, not only browser-supplied metadata.
+
+    Hash in bounded chunks and restore each input stream before the existing
+    image upload path. This runs only for uploads that supply a request ID.
+    """
     manifest = []
     for file in files:
         filename = safe_filename(file.filename or "image.jpg")
-        raw_size = getattr(file, "size", None)
-        if raw_size is None:
-            stream = file.file
-            position = stream.tell()
-            stream.seek(0, os.SEEK_END)
-            raw_size = stream.tell()
-            stream.seek(position)
+        digest = hashlib.sha256()
+        byte_count = 0
+        await file.seek(0)
+        try:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                byte_count += len(chunk)
+        finally:
+            await file.seek(0)
         manifest.append({
             "name": filename,
-            "size": max(0, int(raw_size or 0)),
+            "size": byte_count,
             "content_type": str(file.content_type or ""),
+            "sha256": digest.hexdigest(),
         })
     return manifest
 
@@ -4937,11 +4948,16 @@ async def _plain_upload_images_claimed(
     if request_id:
         try:
             receipt, receipt_created = store.begin_upload_request(
-                request_id, created_at=now_iso(), manifest=_plain_upload_manifest(files),
+                request_id, created_at=now_iso(), manifest=await _plain_upload_manifest(files),
                 dataset_id=dataset_id, storage_source_id=storage_source_id,
             )
         except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise PlatformError(
+                "UPLOAD_REQUEST_MANIFEST_MISMATCH", "上传请求文件身份不一致",
+                str(error),
+                "本次文件内容与待确认上传请求不一致；请重新选择文件发起新批次",
+                409,
+            ) from error
         if not receipt_created:
             request_status = str(receipt.get("upload_request_status") or "").upper()
             if request_status == "SUCCEEDED":

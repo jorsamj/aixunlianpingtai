@@ -1,3 +1,12 @@
+## 2026-10-08 最小安全上线 Gate S10：普通上传请求内容 SHA256 身份校验（42.24.327）
+
+- 起点远端 HEAD `503d09fd30e69f8d94eabb53ec49a14e543672cf`，版本 `42.24.326`；精确查询 21 个 Actions 和 55 个 check-runs 全部 queued，不能认定上一版验收通过。历史 `301c55d` 的 API 2 项错误已修但仍待新 HEAD 真实执行。
+- 新确认 AUDIT-133 残余数据正确性风险：浏览器使用 File 的 name/size/type/lastModified 重用待确认 request ID；服务端 receipt manifest 仅比较 name/size/content_type。相同元信息但真实像素字节不同的新文件可能拿到旧请求 SUCCEEDED/replayed 的上传结果。
+- 最小修复直接沿用现有 UploadBatchStore 和普通 `/api/projects/{project_id}/images`：显式 upload_request_id 的请求在服务端以不超过 1 MiB 的 chunk 对每个原始文件计算 SHA256，流指针复位后走原始 Material/Annotation 入库；持久 manifest 携带 server-computed sha256，重试同 ID 内容不一致即 409 `UPLOAD_REQUEST_MANIFEST_MISMATCH`，不得返回旧 uploaded 数组或擅自覆盖 receipt。未携带 request ID 的兼容入口行为保持原状。
+- `_normalize_upload_request_manifest` 允许读历史无 SHA receipt，但新 SHA manifest 无法与无 SHA 的旧 receipt 误匹配；非法 digest fail-closed。前端 Fetch 和两条 XHR 只在服务端确认上述冲突时释放 sessionStorage 里的待确认 ID，其余网络/409/500 均继续保留，避免误重传。未新增 Upload Owner、表、数据 Truth、第二套轮询。
+- 回归增加同名/同长度/同 MIME 不同字节 409、原字节同 ID 成功 replay、收据未被污染、持久 manifest SHA 校验和前端冲突清理守卫。现有 Remote Material Import API/contract 前端工作流已包含这些文件；没有删减 CI 断言。
+- **状态：CODE IMPLEMENTED；精确 HEAD CI、真实 OSS/多进程/浏览器 UAT 仍 PENDING，AUDIT-133/134 不得标记 CLOSED，不允许部署。** 长期分支限定，不 merge main，不 tag/release。
+
 ## 2026-10-08 最小安全上线 Gate S9：CI 队列实证及上传错误合同修复（42.24.326）
 
 - 复查 42.24.325 HEAD 56d352737adb05bee5b9a74bf166626691f8defa：GitHub 可见 workflow runs 第一页均 queued；这不能证明平台 Actions 不可用或代码通过。向后复核 42.24.323 HEAD 301c55d07b120073c7e830e055ff15aaa2668380，20 项中 19 completed-success、Remote Material Import completed-failure；实读 run 37779534379 / API job 113318835414。

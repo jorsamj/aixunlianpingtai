@@ -51,7 +51,15 @@ def _normalize_upload_request_manifest(value: Any) -> list[dict[str, Any]]:
             raise ValueError("上传请求 manifest 文件大小无效") from error
         if size < 0:
             raise ValueError("上传请求 manifest 文件大小无效")
-        rows.append({"name": name, "size": size, "content_type": str(raw.get("content_type") or "")})
+        row = {"name": name, "size": size, "content_type": str(raw.get("content_type") or "")}
+        # Legacy receipts without SHA remain readable, but cannot silently
+        # match new content-bound requests. All new API receipts carry SHA256.
+        if "sha256" in raw:
+            content_hash = str(raw["sha256"] or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+                raise ValueError("上传请求 manifest 内容 SHA256 无效")
+            row["sha256"] = content_hash
+        rows.append(row)
     return rows
 
 

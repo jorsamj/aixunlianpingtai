@@ -26,10 +26,10 @@ def _image_bytes():
     return buffer.getvalue()
 
 
-def _upload(client, project_id, request_id):
+def _upload(client, project_id, request_id, image_bytes=None):
     return client.post(
         f"/api/projects/{project_id}/images",
-        files=[("files", ("recovery.jpg", _image_bytes(), "image/jpeg"))],
+        files=[("files", ("recovery.jpg", _image_bytes() if image_bytes is None else image_bytes, "image/jpeg"))],
         data={"dataset_id": "default", "storage_source_id": "default_local",
               "upload_request_id": request_id},
     )
@@ -151,3 +151,29 @@ def test_annotation_commit_error_does_not_delete_committed_material_bytes(client
     retry = _upload(client, project_id, request_id)
     assert retry.status_code == 409, retry.text
     assert retry.json()["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
+
+
+def test_same_metadata_different_bytes_cannot_replay_upload_receipt(client):
+    project_id = _project(client)
+    request_id = "content-fence-" + uuid.uuid4().hex[:12]
+    original = _image_bytes()
+    first = _upload(client, project_id, request_id, original)
+    assert first.status_code == 200, first.text
+    first_ids = first.json()["uploaded_image_ids"]
+    assert len(first_ids) == 1
+
+    # Identical name, MIME and byte length, but distinct content.
+    changed = bytearray(original)
+    changed[20] ^= 1
+    assert len(changed) == len(original)
+    conflict = _upload(client, project_id, request_id, bytes(changed))
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["code"] == "UPLOAD_REQUEST_MANIFEST_MISMATCH"
+    assert platform_app.material_store(project_id).count() == 1
+    assert platform_app.upload_batch_store(project_id).read(request_id)["upload_request_status"] == "SUCCEEDED"
+
+    replay = _upload(client, project_id, request_id, original)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["replayed"] is True
+    assert replay.json()["uploaded_image_ids"] == first_ids
+    assert platform_app.material_store(project_id).count() == 1

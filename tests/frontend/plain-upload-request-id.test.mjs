@@ -30,7 +30,7 @@ function harness(storage = new Map()) {
   };
   vm.runInNewContext(
     source.slice(start, end) +
-      '\nthis.claim = preparePlainUpload411; this.finish = finishPlainUpload411;',
+      '\nthis.claim = preparePlainUpload411; this.finish = finishPlainUpload411; this.settle = settlePlainUploadResponse411;',
     context,
   );
   function form(sourceId = 'default_local', file = {name:'camera.jpg',size:2048,type:'image/jpeg',lastModified:100}) {
@@ -47,6 +47,7 @@ function harness(storage = new Map()) {
   return {
     claim: formData => context.claim(formData),
     finish: ticket => context.finish(ticket),
+    settle: (ticket, status, body) => context.settle(ticket, status, body),
     form, storage,
     project: value => { projectId = value; },
   };
@@ -80,10 +81,25 @@ test('source, project, and file identity are fenced independently', () => {
 });
 
 test('fetch and XHR ordinary image upload paths reuse one request envelope', () => {
-  assert.ok(indexHtml.includes('app.js?v=42.25.325'), 'the new runtime must not use the stale cached app.js');
+  assert.ok(indexHtml.includes('app.js?v=42.25.327'), 'the new runtime must not use the stale cached app.js');
   assert.ok(source.includes("preparePlainUpload411(opt.body)"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(form);const xhr=new XMLHttpRequest()"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
-  const xhrSuccess = "xhr.addEventListener('load',()=>{if(xhr.status>=200&&xhr.status<300)finishPlainUpload411(uploadTicket)});";
+  const xhrSuccess = "xhr.addEventListener('load',()=>settlePlainUploadResponse411(uploadTicket,xhr.status,xhr.responseText));";
   assert.equal(source.split(xhrSuccess).length - 1, 2);
+});
+
+
+test('only server-confirmed byte mismatch releases ambiguous upload request ID', () => {
+  const h = harness();
+  const original = h.claim(h.form());
+  h.settle(original, 409, JSON.stringify({code:'UPLOAD_REQUEST_IN_PROGRESS'}));
+  assert.equal(h.claim(h.form()).id, original.id);
+  h.settle(original, 0, '');
+  assert.equal(h.claim(h.form()).id, original.id);
+  h.settle(original, 409, JSON.stringify({code:'UPLOAD_REQUEST_MANIFEST_MISMATCH'}));
+  const renewed = h.claim(h.form());
+  assert.notEqual(renewed.id, original.id);
+  h.settle(renewed, 200, '{}');
+  assert.notEqual(h.claim(h.form()).id, renewed.id);
 });

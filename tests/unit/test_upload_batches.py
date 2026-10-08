@@ -198,3 +198,31 @@ def test_upload_receipt_initializes_missing_directory_before_lock(tmp_path):
     assert created is True
     assert receipt["upload_request_status"] == "PROCESSING"
     assert (directory / "first-upload.json").is_file()
+
+
+def test_receipt_manifest_rejects_same_metadata_with_different_content_hash(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    manifest = [{
+        "name": "camera.jpg", "size": 100, "content_type": "image/jpeg",
+        "sha256": "a" * 64,
+    }]
+    receipt, created = store.begin_upload_request(
+        "content-fence", created_at="2026-10-08T00:00:00Z",
+        manifest=manifest, dataset_id="default",
+        storage_source_id="default_local",
+    )
+    assert created
+    assert receipt["upload_request_manifest"][0]["sha256"] == "a" * 64
+    with pytest.raises(ValueError, match="不同文件"):
+        store.begin_upload_request(
+            "content-fence", created_at="2026-10-08T00:00:01Z",
+            manifest=[{**manifest[0], "sha256": "b" * 64}],
+            dataset_id="default", storage_source_id="default_local",
+        )
+    assert store.read("content-fence")["upload_request_status"] == "PROCESSING"
+    with pytest.raises(ValueError, match="SHA256"):
+        store.begin_upload_request(
+            "invalid-digest", created_at="2026-10-08T00:00:00Z",
+            manifest=[{**manifest[0], "sha256": "not-a-digest"}],
+            dataset_id="default", storage_source_id="default_local",
+        )
