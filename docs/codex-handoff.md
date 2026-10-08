@@ -1,5 +1,12 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 ZIP/清洗分页相关 CI 守卫修正（42.24.313）
+
+- 上一版 42.24.312 `Label Normalization Contract` 的实际标签治理用例通过，但源码 guard 仍要求旧 ZIP 静态资源版本 `422543`。同步为唯一正式入口 `422612`；不删除或放宽任何标签准入条件。
+- Remote Cleaning Real Chrome 的旧断言要求 `显示 1 / 1`，清洗图片质量分页统一组件改为精确显示范围 `显示 1–1 / 1`；仅更新期望文案，没有修改清洗业务逻辑。
+- 这两项为准确 CI 合同迁移，正式功能结果仍需精确 HEAD CI 全部结束，并由用户部署后 UAT。
+
+
 ## 2026-10-08 ZIP 标签映射审核统一数字分页（42.24.312）
 
 - ZIP durable final owner `static/modules/zip-import-runtime.js` 现复用唯一 `PlatformCore.pagination.mountPagination`：支持数字页码、上一页、下一页、输入指定页码跳转、总数/页数与 10/20/50/100 每页数量。

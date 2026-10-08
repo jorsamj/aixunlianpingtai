@@ -409,7 +409,7 @@ test('cleaning detail progress stays in-place and hands off to review without ra
   await expect(imageCards).toHaveCount(50);
   await imagePanel.getByRole('button',{name:/扫描失败/}).click();
   await expect(imageCards).toHaveCount(1);
-  await expect(imagePanel.locator('#cleanImageReviewCount429')).toHaveText('显示 1 / 1 · 全部 65');
+  await expect(imagePanel.locator('#cleanImageReviewCount429')).toHaveText('显示 1–1 / 1 · 全部 65');
   await imagePanel.getByRole('button',{name:/全部 65/}).click();
   await imagePanel.locator('#cleanImageReviewIssue429').selectOption('exact_duplicate');
   await expect(imageCards).toHaveCount(32);
