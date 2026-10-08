@@ -1,3 +1,9 @@
+## 2026-10-08 最小安全上线 Gate S2：AUDIT-086 清洗确认失败项不写成功（42.24.319）
+
+- v47_confirm_clean 继续使用既有 _v47_validate_clean_confirmation 冻结结果 guard 和旧批量删除入口；删除失败条目会留在 MaterialRepository。旧实现把所有仍存在的选中素材（包括刚删除失败的坏图）写成 processed/cleaned。本批只对明确 delete_ids 做排除，避免把删除失败误标成处理成功；未要求删除的其余素材仍按原合同确认。
+- 增加 mixed success/failure 与全失败路径回归，验证失败图片不会进入 patch_many、成功删除不会重生，其他图仍可正常确认；confirmation artifact 仍记录真实 delete_failures/processed_ids，不新增第二个 Cleaning Owner。
+- 仍需后续修复普通上传 receipt 恢复 / 存储源版本，以及完整清洗 DELETE/确认的 E2E。精确 HEAD CI 和现场 UAT 未验收。
+
 ## 2026-10-08 最小安全上线 Gate S1：AUDIT-132 异步图片批次隔离（42.24.318）
 
 - 决策：暂停普通分页/纯技术债；只处理真实数据完整性、安全、算法版本与可达生产链。生产部署继续禁止。

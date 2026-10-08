@@ -20245,7 +20245,13 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
             for row in materials.get_many(ordered_wanted[offset:offset + 500])
             if str(row.get('id') or '')
         )
-    processed_ids = list(dict.fromkeys(existing_ids))
+    # Any delete-requested image that remains after a failed provider/index
+    # delete must not be acknowledged as clean/processed. A successful delete
+    # no longer exists, while a failed delete retains its previous state for
+    # an explicit retry. The frozen selection remains authoritative.
+    processed_ids = list(dict.fromkeys(
+        image_id for image_id in existing_ids if image_id not in requested
+    ))
     if processed_ids:
         materials.patch_many(
             processed_ids,
