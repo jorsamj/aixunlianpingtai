@@ -1,12 +1,15 @@
-"""Atomic, process-local persistence for upload decision batches."""
+"""Durable upload receipts with cross-process request ownership."""
 
+import asyncio
 import copy
 import json
 import re
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
+from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence, TypeVar
+
+from filelock import FileLock, Timeout
 
 from .annotations import atomic_write_json
 
@@ -17,6 +20,11 @@ _UPLOAD_REQUEST_STATUSES = {"PROCESSING", "SUCCEEDED", "FAILED"}
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
 _Result = TypeVar("_Result")
+
+
+class UploadRequestBusy(RuntimeError):
+    """Another worker holds the same upload request ID."""
+
 
 
 def _validate_batch_id(batch_id: str) -> str:
@@ -177,8 +185,29 @@ class UploadBatchStore:
     @contextmanager
     def locked(self, batch_id: str) -> Iterator[None]:
         path = self._path(batch_id)
+        # Keep the local RLock for nested mutations; serialize across workers.
         with _lock_for(path):
+            with FileLock(str(path) + ".store.lock", timeout=30):
+                yield
+
+    @asynccontextmanager
+    async def claim_upload_request(self, batch_id: str) -> AsyncIterator[None]:
+        """Hold the same request ID across all awaits and the receipt commit.
+
+        Acquisition is off-loop. Keep the lease proxy alive until release:
+        discarding the proxy would otherwise release the OS lock.
+        """
+        path = self._path(batch_id)
+        lock = FileLock(str(path) + ".request.lock", thread_local=False)
+        try:
+            lease = await asyncio.to_thread(lock.acquire, timeout=0)
+        except Timeout as error:
+            raise UploadRequestBusy("该上传请求正在另一工作进程执行") from error
+        try:
             yield
+        finally:
+            await asyncio.to_thread(lock.release)
+            del lease
 
     def _read_unlocked(self, batch_id: str) -> dict[str, Any]:
         path = self._path(batch_id)
@@ -241,6 +270,26 @@ class UploadBatchStore:
             }
             return self._write_unlocked(batch_id, value), True
 
+    def prepare_upload_request(
+        self, batch_id: str, image_ids: Sequence[str], *,
+        failed: Sequence[Mapping[str, Any]], prepared_at: str,
+    ) -> dict[str, Any]:
+        """Persist intended image identities before any Material DB commit."""
+        ids = [str(image_id) for image_id in image_ids if str(image_id)]
+        if len(set(ids)) != len(ids):
+            raise ValueError("上传准备阶段存在重复素材 ID")
+        with self.locked(batch_id):
+            batch = self._read_unlocked(batch_id)
+            if batch.get("upload_request_status") != "PROCESSING":
+                raise ValueError("上传请求不处于准备状态")
+            if "upload_prepared_image_ids" in batch:
+                raise ValueError("上传请求已经准备，不能重复执行提交")
+            batch["upload_prepared_image_ids"] = ids
+            batch["upload_failed"] = _normalize_upload_failures(list(failed))
+            batch["upload_prepared_at"] = str(prepared_at)
+            batch["updated_at"] = str(prepared_at)
+            return self._write_unlocked(batch_id, batch)
+
     def complete_upload_request(
         self, batch_id: str, image_ids: Sequence[str], *,
         failed: Sequence[Mapping[str, Any]], finished_at: str,
@@ -254,7 +303,13 @@ class UploadBatchStore:
                 return batch
             if status != "PROCESSING":
                 raise ValueError("上传请求不处于可完成状态")
-            batch["items"] = [{"image_id": str(image_id), "decision": "pending"} for image_id in image_ids if str(image_id)]
+            completed_ids = [str(image_id) for image_id in image_ids if str(image_id)]
+            if (
+                "upload_prepared_image_ids" in batch
+                and batch["upload_prepared_image_ids"] != completed_ids
+            ):
+                raise ValueError("上传完成 ID 与准备阶段不一致")
+            batch["items"] = [{"image_id": image_id, "decision": "pending"} for image_id in completed_ids]
             batch["upload_request_status"] = "SUCCEEDED"
             batch["upload_failed"] = _normalize_upload_failures(list(failed))
             batch["upload_elapsed_seconds"] = round(max(0.0, float(elapsed_seconds)), 2)
