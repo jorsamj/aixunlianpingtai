@@ -11,6 +11,82 @@ from .task_runtime.models import utc_now
 from .task_runtime.task_logs import append_task_log
 
 
+def clean_result_source_sha256(result):
+    """Content identity the worker actually inspected, not its stable image ID."""
+    metrics = result.get("metrics") or {}
+    return str(
+        result.get("source_content_sha256") or metrics.get("sha256") or ""
+    ).strip().lower()
+
+
+def invalidate_clean_evidence(manifest, image_ids, *, reset_succeeded=False):
+    """Retire stale result and LSH evidence in the same selection transaction."""
+    if not image_ids:
+        return
+    with manifest.transaction():
+        placeholders = ",".join("?" for _ in image_ids)
+        flagged = manifest.database.execute(
+            f"SELECT COALESCE(SUM(flagged),0) FROM clean_results WHERE image_id IN ({placeholders})",
+            tuple(image_ids),
+        ).fetchone()[0]
+        manifest.database.executemany(
+            "DELETE FROM clean_bands WHERE image_id=?", ((image_id,) for image_id in image_ids),
+        )
+        manifest.database.executemany(
+            "DELETE FROM clean_hashes WHERE image_id=?", ((image_id,) for image_id in image_ids),
+        )
+        manifest.database.executemany(
+            "DELETE FROM clean_results WHERE image_id=?", ((image_id,) for image_id in image_ids),
+        )
+        manifest.database.execute(
+            "UPDATE meta SET value=CAST(value AS INTEGER)-? WHERE key='clean_flagged'",
+            (int(flagged or 0),),
+        )
+        if reset_succeeded:
+            manifest.database.executemany(
+                "UPDATE selection SET state='pending',error=NULL "
+                "WHERE image_id=? AND state='succeeded'",
+                ((image_id,) for image_id in image_ids),
+            )
+
+
+def reset_stale_clean_successes(context, manifest, materials, check_active):
+    """Retry resumes unchanged successes, but never reuses another content generation."""
+    cursor = ""
+    while True:
+        check_active(context, "clean_retry_identity")
+        rows = manifest.database.execute(
+            "SELECT s.image_id,r.result_json FROM selection s "
+            "LEFT JOIN clean_results r ON r.image_id=s.image_id "
+            "WHERE s.state='succeeded' AND s.image_id>? "
+            "ORDER BY s.image_id LIMIT 500", (cursor,),
+        ).fetchall()
+        if not rows:
+            return
+        cursor = str(rows[-1][0])
+        current = {
+            str(item["id"]): str(item.get("content_sha256") or "").strip().lower()
+            for item in materials.get_many([str(row[0]) for row in rows])
+        }
+        stale = []
+        for image_id, raw_result in rows:
+            try:
+                result = json.loads(raw_result) if raw_result else {}
+                source = clean_result_source_sha256(result)
+            except (TypeError, ValueError):
+                source = ""
+            # Missing content identity is not proof that an old result still
+            # belongs to the current image, including legacy corrupt findings.
+            if not source or source != current.get(str(image_id), ""):
+                stale.append(str(image_id))
+        if stale:
+            invalidate_clean_evidence(manifest, stale, reset_succeeded=True)
+            append_task_log(
+                context, "clean_retry_stale_evidence",
+                f"reset={len(stale)} cursor={cursor}",
+            )
+
+
 def _save_result(manifest, image_id, result, index, near_indexed=False):
     # Result and hash publication are atomic. On recovery a published result is
     # reused, preventing an image from matching itself or changing its group.
@@ -45,9 +121,21 @@ def clean_batch(context, manifest, materials, batch, options, manager, index, ch
             _publish_item_stage(context, manifest, check_active, "materializing", image_id)
             saved = manifest.database.execute("SELECT result_json FROM clean_results WHERE image_id=?", (image_id,)).fetchone()
             result = json.loads(saved[0]) if saved else None
+            # A result may be saved before a worker crash or lease loss, while
+            # the object referenced by this image ID changes during recovery.
+            material = indexed.get(image_id)
+            expected_source = str(
+                (material or {}).get("content_sha256") or ""
+            ).strip().lower()
+            if result is not None and result.get("status") == "succeeded":
+                source = clean_result_source_sha256(result)
+                if not source or source != expected_source:
+                    invalidate_clean_evidence(manifest, [image_id])
+                    result = None
             # Inspection failures are retried only when the manifest row is replayed.
             if result is not None and result["status"] == "failed":
                 result = None
+            local = None
             try:
                 material = indexed.get(image_id)
                 if material is None:
@@ -69,7 +157,8 @@ def clean_batch(context, manifest, materials, batch, options, manager, index, ch
                     issues, near_indexed = metric_issues(metrics, options, image_id, index)
                     check_active(context, "saving_clean_result", image_id)
                     result = {"image_id": image_id, "filename": material.get("filename"),
-                              "status": "succeeded", "metrics": metrics, "issues": issues,
+                              "status": "succeeded", "source_content_sha256": local.content_sha256,
+                              "metrics": metrics, "issues": issues,
                               "suggest_delete": bool(issues), "inspected_at": utc_now()}
                     _save_result(manifest, image_id, result, index, near_indexed)
                     if metrics.get("analysis_downsampled"):
@@ -100,7 +189,11 @@ def clean_batch(context, manifest, materials, batch, options, manager, index, ch
                 corrupt_finding = isinstance(error, ImageDecodeError) and options["corrupt_check"]
                 if corrupt_finding:
                     result = {"image_id": image_id, "filename": (indexed.get(image_id) or {}).get("filename"),
-                              "status": "succeeded", "metrics": {},
+                              "status": "succeeded",
+                              "source_content_sha256": str(
+                                  getattr(local, "content_sha256", "") or ""
+                              ).lower(),
+                              "metrics": {},
                               "issues": [{"code": "corrupt", "name": "图片损坏", "detail": public_error}],
                               "suggest_delete": True, "inspected_at": utc_now()}
                     _save_result(manifest, image_id, result, index)

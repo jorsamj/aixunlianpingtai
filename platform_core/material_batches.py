@@ -18,7 +18,7 @@ from .annotation_quality import audit_cleaning_annotations
 from .cleaning import DurableHashIndex, clean_options
 from .cleaning import ImageDecodeError
 from .cleaning_analysis_runtime import CleaningAnalysisRuntime
-from .cleaning_batches import clean_batch
+from .cleaning_batches import clean_batch, reset_stale_clean_successes
 from .labels import active_project_label_ids, label_governance_fence
 from .material_repository import MaterialRepository
 from .material_repository_batch import _transform_many
@@ -1041,6 +1041,8 @@ class MaterialBatchHandler:
             manager = StorageManager(data_dir=self.data_dir, project_id=project, materials=materials,
                 provider_resolver=lambda source, _secret: _provider(self.data_dir, project, source))
             index = DurableHashIndex(manifest.database, lambda: _check_active(context, "duplicate_lookup"))
+            if context.task.retry_of:
+                reset_stale_clean_successes(context, manifest, materials, _check_active)
         while batch := manifest.rows():
             _check_active(context)
             ids = [row["image_id"] for row in batch]

@@ -19008,6 +19008,61 @@ def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
             ).fetchall()
         ]
 
+def _v47_validate_clean_confirmation(project_id: str, task_id: str) -> set[str]:
+    """Fail closed before any destructive or processed-status confirmation."""
+    from platform_core.cleaning_batches import clean_result_source_sha256
+
+    path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail='清洗冻结范围不存在，请重新创建任务')
+    materials = material_store(project_id)
+    accepted = set()
+    cursor = ''
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        database.execute('BEGIN')
+        tables = {
+            str(row[0])
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('selection','clean_results')"
+            )
+        }
+        if tables != {'selection', 'clean_results'}:
+            raise HTTPException(status_code=409, detail='清洗结果证据不完整，请重新清洗')
+        while True:
+            rows = database.execute(
+                'SELECT s.image_id,s.state,r.result_json FROM selection s '
+                'LEFT JOIN clean_results r ON r.image_id=s.image_id '
+                'WHERE s.image_id>? ORDER BY s.image_id LIMIT 500', (cursor,),
+            ).fetchall()
+            if not rows:
+                break
+            cursor = str(rows[-1][0])
+            current = {
+                str(row.get('id')): str(row.get('content_sha256') or '').strip().lower()
+                for row in materials.get_many([str(row[0]) for row in rows])
+            }
+            for image_id, state, raw_result in rows:
+                if state != 'succeeded' or not raw_result:
+                    raise HTTPException(
+                        status_code=409,
+                        detail='清洗尚有未成功素材，不能确认；请先重试或创建新的清洗任务',
+                    )
+                try:
+                    result = json.loads(raw_result)
+                    source_hash = clean_result_source_sha256(result)
+                except (TypeError, ValueError, AttributeError):
+                    source_hash = ''
+                if not source_hash or source_hash != current.get(str(image_id), ''):
+                    raise HTTPException(
+                        status_code=409,
+                        detail='素材内容已变化或清洗结果无可信哈希，请重新清洗后确认',
+                    )
+                accepted.add(str(image_id))
+    if not accepted:
+        raise HTTPException(status_code=409, detail='清洗冻结范围不存在，请重新创建任务')
+    return accepted
+
+
 _V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
 
 
@@ -19524,8 +19579,13 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    allowed = {str(x.get('image_id')) for x in _v47_durable_clean_results(task_id).get('items', [])}
-    ids = {str(x) for x in payload.delete_ids if str(x) in allowed}
+    # Never delete or mark processed based on the previous contents of a
+    # storage-source object. Validate the entire frozen selection first.
+    allowed = _v47_validate_clean_confirmation(project_id, task_id)
+    requested = {str(x) for x in payload.delete_ids}
+    if requested - allowed:
+        raise HTTPException(status_code=409, detail='删除范围不属于本次有效清洗结果')
+    ids = requested
     deleted = 0
     deleted_images = []
     failed_items = []

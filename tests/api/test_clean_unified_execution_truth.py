@@ -507,3 +507,62 @@ def test_clean_prepare_contract_persists_node_scheduling():
     source = inspect.getsource(material_batches.prepare_batch)
     assert 'request_payload["scheduling"]' in source
     assert '"queue_policy": queue_policy' in source
+
+
+def test_clean_confirmation_rejects_changed_content_without_deleting_or_marking_processed(client):
+    project_id = _create_project(client, "clean-confirm-changed-content")
+    uploaded = _upload(client, project_id, "stale-review.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    task = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"image_ids": [image_id], "task_name": "stale result guard"},
+    )
+    task.raise_for_status()
+    task_id = task.json()["id"]
+    scheduler, _, _ = _materials_scheduler(project_id)
+    for _ in range(12):
+        current = app_module.shared_task_repository().get(task_id)
+        if current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED}:
+            break
+        assert scheduler.run_once()
+    current = app_module.shared_task_repository().get(task_id)
+    assert current.status is TaskStatus.SUCCEEDED
+    old_result = client.get(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/result"
+    ).json()["result"]["items"][0]
+    assert old_result["source_content_sha256"]
+    materials = app_module.material_store(project_id)
+    original = materials.get(image_id)
+    assert original["content_sha256"] == old_result["source_content_sha256"]
+
+    # Rescan may preserve the image ID and replace its source content.
+    materials.patch({image_id: {"content_sha256": "f" * 64}})
+    for delete_ids in ([], [image_id]):
+        response = client.post(
+            f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm",
+            json={"delete_ids": delete_ids},
+        )
+        assert response.status_code == 409, response.text
+        assert "素材内容已变化" in response.text
+        row = materials.get(image_id)
+        assert row is not None
+        assert row.get("processing_status") != "processed"
+        assert row.get("cleaned_at") is None
+
+
+def test_clean_confirmation_requires_complete_success_evidence(client):
+    project_id = _create_project(client, "clean-confirm-failed-row")
+    uploaded = _upload(client, project_id, "pending.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    task = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"image_ids": [image_id], "task_name": "not scanned"},
+    )
+    task.raise_for_status()
+    task_id = task.json()["id"]
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm",
+        json={"delete_ids": []},
+    )
+    assert response.status_code == 409, response.text
+    assert app_module.material_store(project_id).get(image_id).get("cleaned_at") is None

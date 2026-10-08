@@ -25689,3 +25689,16 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 根因：旧测试构造 annotated 图片时仅冻结盒子类别的 scope，却用多类别 schema 训练或把未选中类别变成空负样本；新安全栅栏正确拒绝了没有复核证据的输入。
 - 仅修正上述测试的正式审核前置条件，明确给每张图片添加其训练场景已审核的类别 scope。保留全部既有 split、原图不变、遮挡区域、负样本生成、导出文件和版本身份断言；不移除测试、不放宽生产 scope gate。
 - 42.24.282 阶段观察到 CI 红灯，因此未宣称修复验收；42.24.283 需重新核验目标 HEAD 的完整 Actions/check-runs。AUDIT-148 仍为 FIX IMPLEMENTED / CI PENDING / E2E PENDING。
+
+
+## 2026-10-08 修复日志 — AUDIT-152 清洗证据源内容 identity fence（42.24.284）
+
+**状态：FIX IMPLEMENTED / CI PENDING / CONCURRENT RESCAN E2E PENDING（不宣布 CLOSED）。**
+
+- 清洗结果冻结 source_content_sha256；合法 corrupt finding 也记录解码之前已校验的 content hash。旧历史结果从 metrics.sha256 兼容读取；无法提供可验证源 hash 的结果禁止确认。
+- MaterialBatch CLEAN retry 保留源内容不变的成功行；以 500 条为单位比较已成功清洗行的 source hash 和当前 MaterialRepository hash。变化/丢失/无证据的成功行在**同一 selection SQLite 事务**中重置 pending，并清理旧 clean_results、exact/near-duplicate index 和 flagged counter；随后重做分析。
+- Worker crash recovery 对已经持久化结果但未完成 selection 的行同样核对 hash，防止内容已换而恢复复用。
+- v47 清洗确认前按冻结 selection 批量核对**所有**选中行必须 succeeded 且 source SHA 匹配；有任一失败、缺失、hash 变化时返回 409，不删除任何图片、不标记 processed。delete_ids 不得超出冻结范围。
+- 新增 API 回归：清洗完成后模拟同 material_id 的 H1→H2 内容更新，确认全部接受或请求删除均 409；未经扫描不得确认。
+- **剩余界限：** 这是确认动作的前置 evidence fence；尚未在 MaterialStore 与外部 Storage Rescan 上建立跨数据库/对象存储的原子 compare-and-swap。确认校验与实际 DELETE/patch 之间如果发生 concurrent Rescan，仍需 R0 共享生命周期协调锁/不可逆写入 fence。不能宣称 AUDIT-152 完全 CLOSED。
+- 不引入第二 Cleaning/Annotation Owner，不更改 VERSION 主/次段、不合并 main、不删除或放宽既有回归。
