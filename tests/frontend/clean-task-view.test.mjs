@@ -223,10 +223,14 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /loadMoreCleanAudit429/);
   assert.match(source, /related_image_id/);
   assert.match(source, /cleanImageIssueText429/);
-  assert.match(source, /CLEAN_IMAGE_REVIEW_BATCH_429=60/);
+  assert.match(source, /CLEAN_IMAGE_REVIEW_PAGE_SIZE_429=50/);
   assert.match(source, /setCleanImageReviewFilter429/);
   assert.match(source, /setCleanImageIssueFilter429/);
-  assert.match(source, /loadMoreCleanImageReview429/);
+  assert.match(source, /cleanImageReviewPager429/);
+  assert.match(source, /pagination\?\.mountPagination\?\./);
+  assert.match(source, /onPageChange:target=>/);
+  assert.match(source, /onPageSizeChange:size=>/);
+  assert.doesNotMatch(source, /window\.loadMoreCleanImageReview429=/);
   assert.match(source, /cleanImageReviewItems429/);
   assert.match(source, /cleanSchedulingModeChanged427/);
   assert.match(source, /cleanTargetNodeChanged427/);
@@ -279,7 +283,7 @@ test('failed CLEAN can retry with one canonical MaterialBatch owner', () => {
 test('clean retry source changes invalidate both entrypoint and cleaning module cache keys', () => {
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
-  assert.ok(html.includes('/static/app.js?v=42.25.308'));
+  assert.ok(html.includes('/static/app.js?v=42.25.310'));
   assert.ok(html.includes('/static/main.mjs?v=42.25.308'));
   assert.ok(main.includes('./modules/cleaning.js?v=422569'));
 });

@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 全平台统一分页：清洗图片质量复核结果（42.24.310）
+
+- 延续 `42.24.309` 长期分支 CI 完成后的代码，清洗任务详情中 `cleanImageReviewItems429` 的“加载更多 60 张”改为唯一 `PlatformCore.pagination.mountPagination`。列表来自当前已读取的任务结果 `reviewItems`，是冻结的任务 Artifact 视图，不再次加载全部素材或新增 Owner。
+- 统一提供上一页/下一页、数字页码、输入页码跳转、总页数/总条数、10/20/50/100 条每页；质量筛选/问题类型变化回第 1 页；`v427CleanConfirm` 审核勾选 Set 不因翻页丢失。初始化弹窗后显式渲染页码挂载点；删除旧的图片质量“加载更多”视图路径。
+- 标注质量 Full Audit 仍使用服务端 `next_cursor` 结果流，尚未补随机页能力，不把其错误地宣布为完成；下一批需单独核实持久化 Artifact 的页码能力。图片质量任务结果已由清洗结果接口返回整份 reviewItems，因此在这一个既有冻结集合上允许有界 view slice。
+- 已同步源代码静态断言与 app.js 缓存版本；本条写入时精确 HEAD CI 尚待验收；GPU/OSS/真实业务场景为 `PENDING USER UAT`。
+
+
 ## 2026-10-08 训练恢复 CI Guard 过期精确版本对齐（42.24.309）
 
 - `42.24.307` 的 recovery-contracts 前端测试 47/47 passed，workflow 的旧 source grep 仍断言 `training-recovery-runtime.js?v=422597`；当前主模块实际为 `v=422603`。

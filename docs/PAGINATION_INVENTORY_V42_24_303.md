@@ -23,7 +23,7 @@
 | 数据集素材/筛选结果 | `MaterialPaginationRuntime`，MaterialRepository 稳定 `created_at,id` 排序 | `42.24.305` 已接入真实 `page/page_size` 随机页与共享组件；legacy cursor 保留 |
 | 训练任务/历史任务 | `TrainingTaskRuntime` canonical durable queue snapshot | `42.24.305` 已接入共享组件；只对现有 authoritative task snapshot 做 view pagination，不复制任务 truth |
 | AI 标注候选/审核图片 | AI review final runtime + CandidateStore authoritative total/offset | `42.24.305` 已接入共享组件；随机页直接换算为后端 offset，不遍历前置页 |
-| 数据清洗问题/重复素材 | Cleaning runtimes，部分 load-more/手写页 | 传统结果集迁移；逐图审核导航排除 |
+| 数据清洗问题/重复素材 | Cleaning runtimes，部分 load-more/手写页 | `42.24.310` 图片质量问题结果已接共享页码、跳页、每页数量；Annotation Audit cursor 问题和其他清洗列表仍待独立迁移，逐图审核导航排除 |
 | ZIP/批量导入记录与失败明细 | ZIP import final runtime，手写 review pager | 结果集迁移；上传进度流排除 |
 | 模型/转换任务 | model/conversion runtimes，任务卡片列表 | 有真实分页的列表迁移；少量静态选择器不假分页 |
 | 人工标注素材队列 | Annotation workbench | 队列列表迁移；画布上一张/下一张保留 |

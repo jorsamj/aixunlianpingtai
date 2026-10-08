@@ -25864,3 +25864,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 状态：CODE FIX IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
 
 无显式选中时的批量清洗/无需清洗改用 MaterialBatch FILTERED（服务器 Count+Freeze）；跨页手动选择的清洗/无需清洗按完整 selected IDs 使用 SELECTED，不与当前 Material page 截断。批量标注保留 ID 队列，对未在当前页的素材按单图进入时用 canonical Annotation GET 读取只读 Material 元数据；无新 Ground Truth Owner。待真实多页/清洗配置现场验收。
+
+## 2026-10-08 清洗图片质量复核分页（42.24.310）
+
+状态：CODE IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
+
+`cleanImageReviewItems429` 冻结任务结果页面已接入全局唯一分页组件，替代“加载更多”；支持数值跳页、翻页、总数、每页数量；切换筛选回第一页，保留跨页人工选中状态。不新增二次审核 Owner，不触及 Annotation Ground Truth，也不将仍为 cursor 的 Annotation Audit 声称已迁移。
