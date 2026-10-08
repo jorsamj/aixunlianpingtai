@@ -25681,3 +25681,11 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 新增 legacy 和 Durable Snapshot 回归，以及仅部分审核但投影后产生正样本/伪负样本的回归；更新历史测试中隐含的多类 partial scope 假设。
 - **范围：** 只处理 AUDIT-148 中的训练 projection / Snapshot 主链；Picker/admission 提前预检、多模块 1k-20k 及真实 GPU 训练 E2E 尚未证明，后续仍需验收。与 R0 Material content-generation / 删除 fence 是独立待修问题。
 - 约束：没有新增 Annotation Owner，没有修改生产 GT，没有合并 main / tag / release；VERSION 42.24.281 → 42.24.282。
+
+
+### 2026-10-08 AUDIT-148 CI 失败与回归修正（42.24.283）
+
+- 前一提交 42.24.282 在 Training Input Integrity / Label Normalization Contract 的已完成日志中发现相同 3 个失败：test_input_freeze_reserves_new_label_positive_in_train_split、test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source、test_task_filtered_negative_materializes_as_empty_yolo_label。
+- 根因：旧测试构造 annotated 图片时仅冻结盒子类别的 scope，却用多类别 schema 训练或把未选中类别变成空负样本；新安全栅栏正确拒绝了没有复核证据的输入。
+- 仅修正上述测试的正式审核前置条件，明确给每张图片添加其训练场景已审核的类别 scope。保留全部既有 split、原图不变、遮挡区域、负样本生成、导出文件和版本身份断言；不移除测试、不放宽生产 scope gate。
+- 42.24.282 阶段观察到 CI 红灯，因此未宣称修复验收；42.24.283 需重新核验目标 HEAD 的完整 Actions/check-runs。AUDIT-148 仍为 FIX IMPLEMENTED / CI PENDING / E2E PENDING。

@@ -328,7 +328,7 @@ def test_input_freeze_reserves_new_label_positive_in_train_split(tmp_path: Path)
             "height": 100,
             "processing_status": "processed",
             "annotation_state": "annotated",
-            "annotation_scope": ["smoke" if index == 0 else "fire"],
+            "annotation_scope": ["fire", "smoke"],
             "annotated": True,
             "group_id": f"group-{index}",
             "boxes": [_box("smoke" if index == 0 else "fire")],
@@ -638,7 +638,10 @@ def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_pa
 def test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source(tmp_path: Path):
     _, project = _project(tmp_path)
     annotations = AnnotationRepository(project)
-    annotations.upsert("a", [_box("person")], annotation_state="annotated")
+    annotations.upsert(
+        "a", [_box("person")], annotation_state="annotated",
+        annotation_scope=["fire", "person"],
+    )
 
     class Materials:
         def get_many(self, _ids):
@@ -739,7 +742,10 @@ def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
 
 def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path):
     _, project = _project(tmp_path)
-    AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
+    AnnotationRepository(project).upsert(
+        "a", [_box("person")], annotation_state="annotated",
+        annotation_scope=["fire", "person"],
+    )
     image_file = tmp_path / "task-negative.jpg"
     source_image = Image.new("RGB", (100, 100), (220, 220, 220))
     source_image.paste((0, 0, 0), (1, 1, 21, 21))
