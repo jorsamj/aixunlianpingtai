@@ -25829,3 +25829,8 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - `42.24.297` 的 Label Normalization Contract 证明批量延迟提交路径把 structured import 的显式空标注从 canonical `confirmed_empty` 降成了 `unannotated`。
 - 修复仅让 deferred final annotation 与 AnnotationRepository 既有默认保持一致；普通图片上传仍显式提交 `unannotated`，不会伪造审核范围，也不会扩大 active 标签。
+
+### CI 原子性合同同步（42.24.299）
+
+- `42.24.298` 的 Material Annotation Atomicity 仍要求批量导入在 Material 身份落库前先写正式 GT，并按图片逐次调用 `upsert_many`；该旧合同会重新打开 AUDIT-149 窗口。
+- 合同现验证批内 GT 在 Material commit 前不可见，Material identity batch 后执行一次 bounded Annotation batch，每张素材仍只生成一个 version 1 正式记录；Material projection 另占一个 bounded revision，不产生 N 次 revision。

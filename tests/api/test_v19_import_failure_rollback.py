@@ -145,7 +145,8 @@ def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_p
     stored_path = _local_stored_path(app_module, project_id, record)
     repository = AnnotationRepository(app_module.project_dir(project_id))
     assert stored_path.exists()
-    assert repository.exists(record["id"])
+    # The deferred formal annotation is not durable until Material commits.
+    assert not repository.exists(record["id"])
 
     app_module._v50_end_image_batch(save=False)
 

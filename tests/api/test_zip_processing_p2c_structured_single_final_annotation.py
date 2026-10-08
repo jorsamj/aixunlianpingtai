@@ -22,11 +22,12 @@ def _material_by_filename(app_module, project_id: str):
 
 
 def _count_annotation_upserts(monkeypatch):
-    calls = {"value": 0}
+    calls = {"value": 0, "rows": 0}
     original = AnnotationRepository.upsert_many
 
     def counted(self, *args, **kwargs):
         calls["value"] += 1
+        calls["rows"] += len(args[0])
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(AnnotationRepository, "upsert_many", counted)
@@ -117,7 +118,7 @@ def test_coco_structured_import_writes_final_truth_once_per_image(
     assert report["imported_images"] == image_count
     assert report["boxes"] == len(annotated_indexes)
     assert report["annotated_images"] == len(annotated_indexes)
-    assert upserts["value"] == image_count
+    assert upserts == {"value": 1, "rows": image_count}
 
     rows = _material_by_filename(app_module, project_id)
     repository = AnnotationRepository(app_module.project_dir(project_id))
@@ -221,7 +222,7 @@ def test_voc_structured_import_writes_final_truth_once_per_image(
     assert report["imported_images"] == image_count
     assert report["boxes"] == len(annotated_indexes)
     assert report["annotated_images"] == len(annotated_indexes)
-    assert upserts["value"] == image_count
+    assert upserts == {"value": 1, "rows": image_count}
 
     rows = _material_by_filename(app_module, project_id)
     repository = AnnotationRepository(app_module.project_dir(project_id))

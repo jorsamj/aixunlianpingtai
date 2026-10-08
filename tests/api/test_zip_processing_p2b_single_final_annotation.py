@@ -24,7 +24,7 @@ def _box():
     }
 
 
-def test_add_image_record_can_persist_final_annotation_before_return(client, tmp_path, monkeypatch):
+def test_add_image_record_defers_final_annotation_until_material_commit(client, tmp_path, monkeypatch):
     import app as app_module
 
     project = client.post(
@@ -56,18 +56,19 @@ def test_add_image_record_can_persist_final_annotation_before_return(client, tmp
             annotation_builder=lambda _record: [_box()],
         )
         repository = AnnotationRepository(app_module.project_dir(project_id))
-        assert repository.exists(record["id"])
-        annotation = repository.get(record["id"])
-        assert annotation["annotation_state"] == "annotated"
-        assert annotation["boxes"] == [{**_box(), "source": "imported"}]
-        assert annotation["version"] == 1
-        assert calls == 1
+        assert not repository.exists(record["id"])
+        assert calls == 0
         app_module._v50_end_image_batch(save=True)
         committed = True
     finally:
         if not committed and app_module._v50_active_image_batch(project_id):
             app_module._v50_end_image_batch(save=False)
 
+    annotation = repository.get(record["id"])
+    assert annotation["annotation_state"] == "annotated"
+    assert annotation["boxes"] == [{**_box(), "source": "imported"}]
+    assert annotation["version"] == 1
+    assert calls == 1
     material = app_module.material_store(project_id).get(record["id"])
     assert material["box_count"] == 1
     assert material["annotated"] is True
@@ -141,12 +142,12 @@ def test_yolo_batch_uses_one_durable_annotation_write_per_image(client, tmp_path
         "train: images/train\nnames: [target]\n", encoding="utf-8"
     )
 
-    writes = 0
+    writes = {"calls": 0, "rows": 0}
     original = AnnotationRepository.upsert_many
 
     def counted(self, *args, **kwargs):
-        nonlocal writes
-        writes += 1
+        writes["calls"] += 1
+        writes["rows"] += len(args[0])
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(AnnotationRepository, "upsert_many", counted)
@@ -161,7 +162,7 @@ def test_yolo_batch_uses_one_durable_annotation_write_per_image(client, tmp_path
 
     assert report["imported_images"] == count
     assert report["boxes"] == count
-    assert writes == count
+    assert writes == {"calls": 1, "rows": count}
     summary = app_module.material_store(project_id).summary()
     assert summary["total"] == count
     assert summary["annotated"] == count
