@@ -220,9 +220,9 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /annotation_audit/);
   assert.match(source, /标注质量 · 逐图复核/);
   assert.match(source, /setCleanQualityTab429/);
-  assert.match(source, /window\\.loadCleanAuditPage429=/);
+  assert.match(source, /window\.loadCleanAuditPage429=/);
   assert.match(source, /cleanAuditPager429/);
-  assert.match(source, /annotation-audit\\?page=/);
+  assert.match(source, /annotation-audit\?page=/);
   assert.doesNotMatch(source, /loadMoreCleanAudit429|cleanAuditMore429/);
   assert.match(source, /related_image_id/);
   assert.match(source, /cleanImageIssueText429/);
@@ -286,7 +286,7 @@ test('failed CLEAN can retry with one canonical MaterialBatch owner', () => {
 test('clean retry source changes invalidate both entrypoint and cleaning module cache keys', () => {
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
-  assert.ok(html.includes('/static/app.js?v=42.25.310'));
+  assert.ok(html.includes('/static/app.js?v=42.25.315'));
   assert.ok(html.includes('/static/main.mjs?v=42.25.308'));
   assert.ok(main.includes('./modules/cleaning.js?v=422569'));
 });
