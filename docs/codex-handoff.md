@@ -1,3 +1,11 @@
+## 2026-10-08 最小安全上线 Gate S13：AUDIT-171/172 训练创建请求身份与父子恢复（42.24.330）
+
+- 起点：`3c319ccd1cac36908f9372f2bd73cc9f18439ddf` / 42.24.329；该 HEAD 24/24 workflows、65/65 check-runs completed-success，但真实 GPU/OSS/新畅联 UAT 尚未完成。
+- AUDIT-171：原实现先查询已有 task_id，再进入版本 fence，最后以相同 task_id 的正式路径 `atomic_write_json(payload.json)` 后 INSERT；并发 loser 可能覆盖已成功创建任务的不可变 payload。现在唯一训练创建入口先验证 task_id 格式，使用 DATA_DIR/task_runtime/training_create_locks 下 task-id 级跨进程 FileLock 序列化整个 admission、TaskRepository INSERT、正式 payload 与 prepare-child 创建；锁等待超时明确 409。同一 ID 相同内容重放返回原任务，不同内容拒绝，均不再覆写 payload。没有新增 Task Owner/Material Owner。
+- AUDIT-172：父 TRAINING durable row 成功而 TRAINING_PREPARE child 失败、或进程在父 INSERT 后崩溃时，同 ID 重试原先立刻返回 202、永远无法修复。现在仅在父仍 unclaimable `training.input.ready` 且状态 QUEUED（preparing）或精确匹配 `TRAINING_PREP_TASK_CREATE_FAILED` 的 BLOCKED_BY_ENVIRONMENT 时，校验冻结 child ID/project/kind/payload，一次性补建缺失 child；BLOCKED 父只在明确 create failure 时走既有 TaskRepository.retry。已进入其他业务终态的父/child 均不被通用恢复路径重启。job.json 先于可被 Worker 领取的 child 创建且只在缺失时初始化，重放不可覆写 worker 已写进度。
+- 追加 tests/api/test_training_request.py 回归：同 task_id 并发不同入参保证 winner payload/job/priority 不被覆盖、正常相同入参幂等；child INSERT 注入异常后的 parent 同 ID 恢复；父 INSERT 后模拟硬进程中断并恢复缺失 job+child。复用既有 Remote Training Runtime 的 API test job，不减现有 CI/测试。
+- 本批不变更版本退役、OSS、UI 分页及生产部署；真实多 Web Worker/SQLite fsync crash、GPU/OSS E2E 仍需现场 UAT。精准 HEAD 的全部 Actions/check-runs 未核验完成前为 **CODE IMPLEMENTED / CI PENDING / NOT DEPLOYABLE**。不 merge main、不 tag/release、不部署。
+
 ## 2026-10-08 最小安全上线 Gate S12：最终 CI 双根因定点修复（42.24.329）
 
 - 复核基线 `eacb18382e4430fc6a03542c8585d127ec4ea6a0` (`42.24.328`) 的 39 个 Actions：35 success、4 failure；不存在 queued/in_progress。失败日志原因为两类，非四类独立业务问题。

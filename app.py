@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes, restore_box_provenance
 from platform_core.annotation_repository import (
@@ -8000,7 +8000,163 @@ def _new_training_task_id() -> str:
     return f"train_{uuid.uuid4().hex[:24]}"
 
 
+def _ensure_training_create_job(
+    project_id: str, task_id: str, record: TaskRecord,
+    request_payload: Mapping[str, Any],
+) -> None:
+    """Write the original queue projection once, never overwrite worker progress."""
+    job_path = project_dir(project_id) / "jobs" / task_id / "job.json"
+    if job_path.is_file():
+        return
+    payload = TrainReq.model_validate(request_payload["admission_request"])
+    asset_algorithm = dict(request_payload["algorithm_identity"])
+    confirmed_iteration_action = request_payload.get("confirmed_iteration_action")
+    requested_split = _explicit_training_split(payload)
+    framework = str(payload.framework or "ultralytics").strip().lower()
+    target = str(payload.target or "local").strip().lower()
+    resource_key = str(request_payload["target_resource_key"])
+    job_dir = project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        job_dir / "job.json",
+        {
+            "id": task_id,
+            "task_id": task_id,
+            "status": "queued",
+            "task_stage": "training_input_pending",
+            "phase": "training_input_pending",
+            "message": "训练任务已创建，正在后台准备输入",
+            "framework": framework,
+            "target": target,
+            "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
+            "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+            "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
+            "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
+            "external_provider": (asset_algorithm or {}).get("provider_type", ""),
+            "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
+            "external_analysis_id": str(payload.external_analysis_id or ""),
+            "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
+            "confirmed_iteration_action": confirmed_iteration_action,
+            "supplement_candidate_set_id": str(payload.supplement_candidate_set_id or ""),
+            "algorithm": payload.algorithm,
+            "model": payload.model,
+            "queue_priority": int(payload.queue_priority),
+            "resource_key": resource_key,
+            "device": payload.device,
+            "requested_device": payload.device,
+            "assigned_device": None,
+            "actual_device": None,
+            "split_mode": requested_split.mode.value,
+            "requested_train_images": len(requested_split.train_image_ids),
+            "requested_test_images": len(requested_split.test_image_ids),
+            "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
+            "requested_resources": request_payload["requested_resources"],
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "artifact_verified": False,
+        },
+    )
+    sync_jobs_index(project_id)
+
+
+def _ensure_training_prepare_child(
+    project_id: str, task_id: str, prepare_task_id: str, priority: int,
+) -> TaskRecord:
+    """Recreate only a missing deterministic child; never overwrite a live payload."""
+    if prepare_task_id != f"trainprep_{task_id}":
+        raise HTTPException(status_code=409, detail="训练准备任务身份不匹配")
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    expected = {
+        "schema_version": 2,
+        "training_task_id": task_id,
+        "project_id": project_id,
+    }
+    existing = repository.get(prepare_task_id)
+    if existing is not None:
+        if (
+            existing.project_id != project_id
+            or existing.kind is not TaskKind.TRAINING_PREPARE
+            or artifacts.read_json(prepare_task_id, existing.payload_ref, default={}) != expected
+        ):
+            raise HTTPException(status_code=409, detail="训练准备任务已由其他请求占用")
+        return existing
+    orphan = artifacts.read_json(prepare_task_id, "payload.json", default=None)
+    if orphan is not None and orphan != expected:
+        raise HTTPException(status_code=409, detail="训练准备任务残留载荷与当前父任务冲突")
+    if orphan is None:
+        artifacts.atomic_write_json(prepare_task_id, "payload.json", expected)
+    return repository.create(
+        TaskRecord.new(
+            prepare_task_id, project_id, TaskKind.TRAINING_PREPARE,
+            "payload.json", f"training-prepare:{project_id}",
+            priority=int(priority), required_capabilities=("training.prepare",),
+        )
+    )
+
+
+def _reconcile_training_create_replay(
+    project_id: str, parent: TaskRecord, stored_payload: Mapping[str, Any],
+) -> TaskRecord:
+    """Recover a parent/prepare half-commit, never retry unrelated terminal tasks."""
+    task_id = parent.task_id
+    prepare_id = str(stored_payload.get("training_prepare_task_id") or "")
+    if prepare_id != f"trainprep_{task_id}":
+        raise HTTPException(status_code=409, detail="训练父子任务身份不一致")
+    unclaimable = parent.required_capabilities == ("training.input.ready",)
+    queued = (
+        unclaimable and parent.status is TaskStatus.QUEUED
+        and parent.stage in {"training_input_pending", "queued"}
+    )
+    create_failed = (
+        unclaimable and parent.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+        and parent.stage == "training_input_preparation_failed"
+        and str(parent.error or "").startswith("TRAINING_PREP_TASK_CREATE_FAILED:")
+    )
+    if not queued and not create_failed:
+        return parent
+    repository = shared_task_repository()
+    child = repository.get(prepare_id)
+    if child is not None and child.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+        raise HTTPException(
+            status_code=409, detail="训练准备子任务已结束，创建请求不可重新触发执行",
+        )
+    if create_failed:
+        parent = repository.retry(task_id)
+    try:
+        _ensure_training_create_job(project_id, task_id, parent, stored_payload)
+        _ensure_training_prepare_child(
+            project_id, task_id, prepare_id,
+            int(stored_payload.get("queue_priority", 50)),
+        )
+    except Exception as error:
+        repository.fail_queued_precondition(
+            task_id, f"TRAINING_PREP_TASK_CREATE_FAILED: {error}",
+            status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+            stage="training_input_preparation_failed",
+        )
+        raise
+    return repository.get(task_id) or parent
+
+
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+    """Task-ID create/repair is serialized across Web workers before any write."""
+    requested = str(payload.task_id or "").strip()
+    if requested and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested):
+        raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
+    task_id = requested or _new_training_task_id()
+    locks_dir = DATA_DIR / "task_runtime" / "training_create_locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(locks_dir / f"{task_id}.lock"), timeout=30):
+            return _enqueue_explicit_training_locked(project_id, payload, task_id)
+    except Timeout as error:
+        raise HTTPException(
+            status_code=409, detail="相同训练任务正在创建，请使用同一 task_id 稍后重试",
+        ) from error
+
+
+def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_id: str) -> JSONResponse:
     asset_algorithm = next(
         (
             row for row in list_algorithms_internal(project_id)
@@ -8035,7 +8191,8 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     requested_task_id = str(payload.task_id or "").strip()
     if requested_task_id and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested_task_id):
         raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
-    task_id = requested_task_id or _new_training_task_id()
+    if requested_task_id and requested_task_id != task_id:
+        raise HTTPException(status_code=409, detail="训练任务 ID 与并发创建锁身份不一致")
     raw_request = payload.model_dump(mode="json", exclude_none=True)
     request_identity = hashlib.sha256(
         json.dumps(raw_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -8052,7 +8209,12 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                         status_code=409,
                         detail="训练任务 ID 已绑定其他请求，不能静默复用",
                     )
-                return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
+                existing_task = _reconcile_training_create_replay(
+                    project_id, existing_task, existing_payload,
+                )
+                return JSONResponse(status_code=202, content={
+                    "ok": True, "task": _public_task(existing_task), "idempotent": True,
+                })
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
     prepare_task_id = f"trainprep_{task_id}"
     request_payload = {
@@ -8076,6 +8238,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "id": str(asset_algorithm.get("id") or ""),
             "name": str(asset_algorithm.get("name") or "已删除算法"),
             "source_type": str(asset_algorithm.get("source_type") or "LOCAL"),
+            "provider_type": str(asset_algorithm.get("provider_type") or ""),
+            "external_product_id": str(asset_algorithm.get("external_product_id") or ""),
+            "external_category_id": str(asset_algorithm.get("external_category_id") or ""),
         },
         "confirmed_iteration_action": confirmed_iteration_action,
         "requested_device": payload.device,
@@ -8162,25 +8327,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             )
         )
     try:
-        shared_task_artifacts().atomic_write_json(
-            prepare_task_id,
-            "payload.json",
-            {
-                "schema_version": 2,
-                "training_task_id": task_id,
-                "project_id": project_id,
-            },
-        )
-        preparation_record = shared_task_repository().create(
-            TaskRecord.new(
-                prepare_task_id,
-                project_id,
-                TaskKind.TRAINING_PREPARE,
-                "payload.json",
-                f"training-prepare:{project_id}",
-                priority=int(payload.queue_priority),
-                required_capabilities=("training.prepare",),
-            )
+        # A queued training parent remains unclaimable until its prepare child
+        # completes; publish the original job projection before that child.
+        _ensure_training_create_job(project_id, task_id, record, request_payload)
+        preparation_record = _ensure_training_prepare_child(
+            project_id, task_id, prepare_task_id, int(payload.queue_priority),
         )
     except Exception as error:
         shared_task_repository().fail_queued_precondition(
@@ -8190,48 +8341,6 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             stage="training_input_preparation_failed",
         )
         raise
-    job_dir = project_dir(project_id) / "jobs" / task_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
-        job_dir / "job.json",
-        {
-            "id": task_id,
-            "task_id": task_id,
-            "status": "queued",
-            "task_stage": "training_input_pending",
-            "phase": "training_input_pending",
-            "message": "训练任务已创建，正在后台准备输入",
-            "framework": framework,
-            "target": target,
-            "asset_algorithm_id": str(asset_algorithm.get("id") or ""),
-            "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
-            "asset_algorithm_name": str(asset_algorithm.get("name") or "已删除算法"),
-            "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
-            "external_provider": (asset_algorithm or {}).get("provider_type", ""),
-            "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
-            "external_analysis_id": str(payload.external_analysis_id or ""),
-            "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
-            "confirmed_iteration_action": confirmed_iteration_action,
-            "supplement_candidate_set_id": str(payload.supplement_candidate_set_id or ""),
-            "algorithm": payload.algorithm,
-            "model": payload.model,
-            "queue_priority": int(payload.queue_priority),
-            "resource_key": resource_key,
-            "device": payload.device,
-            "requested_device": payload.device,
-            "assigned_device": None,
-            "actual_device": None,
-            "split_mode": requested_split.mode.value,
-            "requested_train_images": len(requested_split.train_image_ids),
-            "requested_test_images": len(requested_split.test_image_ids),
-            "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
-            "requested_resources": request_payload["requested_resources"],
-            "created_at": record.created_at,
-            "updated_at": record.updated_at,
-            "artifact_verified": False,
-        },
-    )
-    sync_jobs_index(project_id)
     return JSONResponse(
         status_code=202,
         content={

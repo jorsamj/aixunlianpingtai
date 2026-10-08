@@ -1551,3 +1551,172 @@ def test_explicit_training_rejects_cleaned_unannotated_selection_before_snapshot
     )
     assert pending_issue["issue_type"] == "missing_annotation"
     assert pending_issue["missing_label_codes"] == ["fire"]
+
+
+def _training_create_replay_fixture(client, seeded_project):
+    """One real project and an admitted material selection; no training worker is started."""
+    project_id, first = seeded_project
+    train_a = _mark_training_ready(client, project_id, first)
+    train_b = _upload_training_ready(client, project_id, "idempotent-b.jpg", (33, 74, 110))
+    test_a = _upload_training_ready(client, project_id, "idempotent-test.jpg", (90, 41, 77))
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "训练创建并发保护", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    return project_id, {
+        "task_id": "train_" + hashlib.sha256(project_id.encode()).hexdigest()[:24],
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "train_labels": ["fire"],
+        "split_mode": "independent_test_set",
+        "train_image_ids": [train_a["id"], train_b["id"]],
+        "test_image_ids": [test_a["id"]],
+        "validation_percent": 20,
+        "queue_priority": 7,
+    }
+
+
+def test_concurrent_same_training_id_does_not_overwrite_winner_immutable_payload(
+    client, seeded_project, monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from platform_core.task_runtime import TaskKind, TaskRepository
+    import app as app_module
+
+    project_id, request = _training_create_replay_fixture(client, seeded_project)
+    entered_after_parent_insert = Event()
+    allow_first_to_finish = Event()
+    second_started = Event()
+    original_create = TaskRepository.create
+
+    def pause_after_first_parent_insert(repository, record, *args, **kwargs):
+        result = original_create(repository, record, *args, **kwargs)
+        if record.task_id == request["task_id"] and record.kind is TaskKind.TRAINING:
+            entered_after_parent_insert.set()
+            assert allow_first_to_finish.wait(12), "first create never released"
+        return result
+
+    monkeypatch.setattr(TaskRepository, "create", pause_after_first_parent_insert)
+    url = f"/api/v12/projects/{project_id}/train/start"
+    different = {**request, "queue_priority": 8}
+
+    def second_call():
+        second_started.set()
+        return client.post(url, json=different)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(client.post, url, json=request)
+        try:
+            assert entered_after_parent_insert.wait(12)
+            second = executor.submit(second_call)
+            assert second_started.wait(12)
+            # An old check-before-lock implementation would already return
+            # after observing the inserted parent, before its child is ready.
+            assert not second.done()
+        finally:
+            allow_first_to_finish.set()
+        accepted = first.result(timeout=20)
+        conflicting = second.result(timeout=20)
+
+    assert accepted.status_code == 202, accepted.text
+    assert conflicting.status_code == 409, conflicting.text
+    stored = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    assert stored["queue_priority"] == 7
+    assert stored["admission_request"]["queue_priority"] == 7
+    assert stored["training_prepare_task_id"] == f"trainprep_{request['task_id']}"
+    parent = app_module.shared_task_repository().get(request["task_id"])
+    assert parent.priority == 7
+    assert app_module.shared_task_repository().get(stored["training_prepare_task_id"]) is not None
+    repeated = client.post(url, json=request)
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["idempotent"] is True
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == stored
+
+
+def test_training_prepare_child_creation_failure_recovers_with_same_task_id(
+    client, seeded_project, monkeypatch,
+):
+    from platform_core.task_runtime import TaskKind, TaskRepository, TaskStatus
+    import app as app_module
+
+    project_id, request = _training_create_replay_fixture(client, seeded_project)
+    original_create = TaskRepository.create
+    failed_once = {"value": False}
+
+    def fail_child_once(repository, record, *args, **kwargs):
+        if (
+            record.kind is TaskKind.TRAINING_PREPARE
+            and record.task_id == f"trainprep_{request['task_id']}"
+            and not failed_once["value"]
+        ):
+            failed_once["value"] = True
+            raise RuntimeError("injected child SQLite failure")
+        return original_create(repository, record, *args, **kwargs)
+
+    monkeypatch.setattr(TaskRepository, "create", fail_child_once)
+    with pytest.raises(RuntimeError, match="injected child SQLite failure"):
+        app_module._enqueue_explicit_training(project_id, app_module.TrainReq(**request))
+    assert failed_once["value"]
+    parent = app_module.shared_task_repository().get(request["task_id"])
+    assert parent.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert parent.stage == "training_input_preparation_failed"
+    assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}") is None
+    before = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+    assert (app_module.project_dir(project_id) / "jobs" / request["task_id"] / "job.json").is_file()
+
+    monkeypatch.setattr(TaskRepository, "create", original_create)
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    assert response.json()["idempotent"] is True
+    parent = app_module.shared_task_repository().get(request["task_id"])
+    child = app_module.shared_task_repository().get(f"trainprep_{request['task_id']}")
+    assert parent.status is TaskStatus.QUEUED
+    assert child.kind is TaskKind.TRAINING_PREPARE
+    assert child.status is TaskStatus.QUEUED
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == before
+    assert app_module.shared_task_artifacts().read_json(child.task_id, "payload.json") == {
+        "schema_version": 2,
+        "training_task_id": request["task_id"],
+        "project_id": project_id,
+    }
+    mismatched = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={**request, "queue_priority": 5},
+    )
+    assert mismatched.status_code == 409
+
+
+def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
+    client, seeded_project, monkeypatch,
+):
+    from platform_core.task_runtime import TaskKind, TaskRepository, TaskStatus
+    import app as app_module
+
+    project_id, request = _training_create_replay_fixture(client, seeded_project)
+    original_create = TaskRepository.create
+
+    def crash_after_parent_insert(repository, record, *args, **kwargs):
+        result = original_create(repository, record, *args, **kwargs)
+        if record.kind is TaskKind.TRAINING and record.task_id == request["task_id"]:
+            raise SystemExit("injected crash after parent INSERT")
+        return result
+
+    monkeypatch.setattr(TaskRepository, "create", crash_after_parent_insert)
+    with pytest.raises(SystemExit, match="injected crash"):
+        app_module._enqueue_explicit_training(project_id, app_module.TrainReq(**request))
+    parent = app_module.shared_task_repository().get(request["task_id"])
+    assert parent.status is TaskStatus.QUEUED
+    assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}") is None
+    job_path = app_module.project_dir(project_id) / "jobs" / request["task_id"] / "job.json"
+    assert not job_path.is_file()
+    frozen = app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json")
+
+    monkeypatch.setattr(TaskRepository, "create", original_create)
+    replay = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["idempotent"] is True
+    assert job_path.is_file()
+    assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}").status is TaskStatus.QUEUED
+    assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == frozen
