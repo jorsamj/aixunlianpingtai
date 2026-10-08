@@ -1,5 +1,12 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 训练恢复 CI Guard 过期精确版本对齐（42.24.309）
+
+- `42.24.307` 的 recovery-contracts 前端测试 47/47 passed，workflow 的旧 source grep 仍断言 `training-recovery-runtime.js?v=422597`；当前主模块实际为 `v=422603`。
+- 仅将该精确缓存版本 guard 同步到真实入口，未删除安全断言或修改恢复逻辑。42.24.308 AUDIT-182/183 产品提交保持不变。
+- 本次精确 SHA CI 尚需终态核验，现场仍 `PENDING USER UAT`。
+
+
 ## 2026-10-08 AUDIT-182/183 跨页素材批量范围（42.24.308）
 
 - `openBatch414(mode, ids=null)` 的无显式选择入口不再假定 `state.images` 是全部待清洗素材；改走既有 `MaterialBatchRuntime62` 的 `FILTERED` 冻结选择，Server estimate 显示真实数量。未处理页加入 `annotated=false` 筛选，阻止已标注素材被误纳入原始未处理操作。
