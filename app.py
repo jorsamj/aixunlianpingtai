@@ -1563,6 +1563,9 @@ def _storage_source_fence():
 
 def _storage_source_runtime_generation(source: StorageSource) -> tuple[Any, ...]:
     return (
+        # A deleted-and-recreated source with the same ID/config must not be
+        # mistaken for the original generation during in-flight admission.
+        source.created_at,
         source.type,
         json.dumps(source.config, ensure_ascii=False, sort_keys=True),
         source.secret_ref,
@@ -1926,17 +1929,21 @@ def create_storage_source(payload: StorageSourceCreateReq):
     reference = secret_ref("storage-source", source_id) if payload.credentials else ""
     repository = storage_source_repository()
     try:
-        source = repository.create({
-            "id": source_id, "name": payload.name, "type": source_type,
-            "config": payload.config, "secret_ref": reference, "enabled": payload.enabled,
-        })
-        if payload.credentials:
-            try:
-                storage_credentials().set(reference, payload.credentials)
-            except Exception:
-                repository.delete(source_id)
-                raise
-        return _public_storage_source(source)
+        # Source creation and retirement share a canonical lifecycle fence.
+        # This also protects a retired credential reference from being reused
+        # by a concurrent create with the same source ID.
+        with _storage_source_fence():
+            source = repository.create({
+                "id": source_id, "name": payload.name, "type": source_type,
+                "config": payload.config, "secret_ref": reference, "enabled": payload.enabled,
+            })
+            if payload.credentials:
+                try:
+                    storage_credentials().set(reference, payload.credentials)
+                except Exception:
+                    repository.delete(source_id)
+                    raise
+            return _public_storage_source(source)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except sqlite3.IntegrityError as error:
