@@ -44,6 +44,9 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
+      - 'platform_core/upload_batches.py'
+      - 'tests/unit/test_upload_batches.py'
+      - 'tests/api/test_upload_request_recovery.py'
       - '.github/workflows/remote-material-import.yml'
   pull_request:
     branches:
@@ -87,6 +90,9 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
+      - 'platform_core/upload_batches.py'
+      - 'tests/unit/test_upload_batches.py'
+      - 'tests/api/test_upload_request_recovery.py'
       - '.github/workflows/remote-material-import.yml'
 
 jobs:
@@ -121,6 +127,8 @@ jobs:
           platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
           platform_core/annotation_repository.py
+          platform_core/upload_batches.py
+          tests/api/test_upload_request_recovery.py
           platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
@@ -198,11 +206,14 @@ jobs:
           platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
-      - name: Remote material import API contract
+      - name: Remote material import API and durable upload recovery contracts
         run: >-
           python -m pytest -q
           tests/api/test_server_material_import.py
           tests/api/test_storage_sources.py
+          tests/api/test_upload_request_recovery.py
+          tests/unit/test_upload_batches.py
+          tests/unit/test_image_batch_context_isolation.py
       - name: Permanent remote material guards
         shell: bash
         run: |
