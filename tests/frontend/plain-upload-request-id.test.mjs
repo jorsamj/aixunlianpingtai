@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const indexHtml = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
 const start = source.indexOf('const PLAIN_UPLOAD_PENDING_KEY411=');
 const end = source.indexOf('const esc=s=>', start);
 assert.ok(start > 0 && end > start, 'plain upload request identity helper must exist');
@@ -79,8 +80,10 @@ test('source, project, and file identity are fenced independently', () => {
 });
 
 test('fetch and XHR ordinary image upload paths reuse one request envelope', () => {
+  assert.ok(indexHtml.includes('app.js?v=42.25.325'), 'the new runtime must not use the stale cached app.js');
   assert.ok(source.includes("preparePlainUpload411(opt.body)"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(form);const xhr=new XMLHttpRequest()"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
-  assert.equal((source.match(/xhr\.addEventListener\('load',\(\)=>\{if\(xhr\.status>=200&&xhr\.status<300\)finishPlainUpload411\(uploadTicket\)\}\)/g) || []).length, 2);
+  const xhrSuccess = "xhr.addEventListener('load',()=>{if(xhr.status>=200&&xhr.status<300)finishPlainUpload411(uploadTicket)});";
+  assert.equal(source.split(xhrSuccess).length - 1, 2);
 });
