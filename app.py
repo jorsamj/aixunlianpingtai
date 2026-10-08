@@ -3074,16 +3074,15 @@ def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]
 
 
 def _v50_cleanup_buffered_image_batch_files(
-    project_id: str, records: List[Dict[str, Any]]
+    project_id: str, records: List[Dict[str, Any]],
+    *, upload_manager: Optional[StorageManager] = None,
 ) -> List[str]:
     errors = []
     p = project_dir(project_id)
-    batch = _v50_active_image_batch(project_id)
-    manager = (
-        batch.get("storage_manager")
-        if batch and batch.get("storage_manager") is not None
-        else storage_manager(project_id)
-    )
+    # _v50_end_image_batch clears the ContextVar before rollback: pass the
+    # original provider cache explicitly rather than resolving a changed
+    # Storage Source config (which could delete the wrong object location).
+    manager = upload_manager or storage_manager(project_id)
     for record in records:
         image_id = str(record.get("id") or "")
         try:
@@ -3126,9 +3125,11 @@ def _v50_end_image_batch(save: bool = True):
         dict(row) for row in batch.get("deferred_annotations", {}).values()
     ]
     if not save:
-        # Roll back against the exact provider used for this upload, even
-        # when the Storage Source config changed before final admission.
-        cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
+        # Roll back against the same provider used for this upload, even
+        # if Storage Source config changed before final admission.
+        cleanup_errors = _v50_cleanup_buffered_image_batch_files(
+            project_id, records, upload_manager=batch.get("storage_manager"),
+        )
         if cleanup_errors:
             raise RuntimeError(
                 "批量导入回滚失败：" + "; ".join(cleanup_errors)
@@ -3227,7 +3228,7 @@ def _v50_end_image_batch(save: bool = True):
                 f"{error}; 素材已写入正式索引但后续步骤失败，已保留源文件和索引供完整性修复"
             ) from error
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(
-            project_id, records
+            project_id, records, upload_manager=batch.get("storage_manager"),
         )
         if cleanup_errors:
             raise RuntimeError(
