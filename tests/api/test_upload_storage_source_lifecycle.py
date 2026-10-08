@@ -171,3 +171,39 @@ def test_deleted_and_recreated_source_id_is_not_the_original_generation(
     assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
     assert list((original_root / "uploads").glob("*")) == []
+
+
+def test_source_config_change_then_restore_still_invalidates_upload(
+    client, tmp_path, monkeypatch,
+):
+    project_id = _project(client)
+    source_id, original_root, changed_root = _source(client, tmp_path)
+    original = app_module.add_image_record
+    rotated = []
+
+    def rotate_and_restore_after_upload(*args, **kwargs):
+        record = original(*args, **kwargs)
+        if record and not rotated:
+            with app_module._storage_source_fence():
+                repository = app_module.storage_source_repository()
+                initial = repository.get(source_id)
+                assert initial is not None
+                first = repository.update(
+                    source_id, {"config": {"root": str(changed_root)}},
+                )
+                restored = repository.update(
+                    source_id, {"config": {"root": str(original_root)}},
+                )
+                assert first.runtime_revision == initial.runtime_revision + 1
+                assert restored.runtime_revision == initial.runtime_revision + 2
+                assert restored.config == initial.config
+            rotated.append(True)
+        return record
+
+    with monkeypatch.context() as patch:
+        patch.setattr(app_module, "add_image_record", rotate_and_restore_after_upload)
+        response = _send(client, project_id, source_id, "src-config-aba-" + uuid.uuid4().hex[:9])
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
+    assert app_module.material_store(project_id).count() == 0
+    assert list((original_root / "uploads").glob("*")) == []
