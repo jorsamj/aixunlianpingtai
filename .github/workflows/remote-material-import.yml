@@ -16,6 +16,7 @@ on:
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/frontend/plain-upload-request-id.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -66,6 +67,7 @@ on:
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/frontend/plain-upload-request-id.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -178,13 +180,15 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/upload-task-center.js &&
-          node --check tests/frontend/upload-task-center.test.mjs
+          node --check tests/frontend/upload-task-center.test.mjs &&
+          node --check tests/frontend/plain-upload-request-id.test.mjs
       - name: Storage import frontend contracts
         run: >-
           node --test
           tests/frontend/server-material-import.test.mjs
           tests/frontend/storage-import-progress.test.mjs
           tests/frontend/upload-task-center.test.mjs
+          tests/frontend/plain-upload-request-id.test.mjs
 
   api:
     runs-on: ubuntu-24.04
