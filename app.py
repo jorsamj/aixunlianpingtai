@@ -50,7 +50,7 @@ from platform_core.storage.import_confirmation import (
 )
 from platform_core.algorithms import (
     algorithm_store_revision,
-    attach_version as attach_algorithm_version,
+    attach_version_if_current as attach_algorithm_version_if_current,
     choose_algorithm_iteration_base,
     choose_iteration_base,
     delete_algorithm_version,
@@ -10978,63 +10978,13 @@ def v12_pending_models(project_id: str):
 
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions")
 def v12_assign_version(project_id: str, algorithm_id: str, payload: AlgorithmVersionReq):
-    algos = list_algorithms_internal(project_id)
-    algo = next((a for a in algos if a.get("id") == algorithm_id), None)
-    if not algo:
-        raise HTTPException(status_code=404, detail="算法不存在")
-    model_path, model_name, model_key = resolve_any_model_path(project_id, payload.model_name, payload.model_source, payload.local_path or "")
-    if model_key in used_model_keys(project_id):
-        raise HTTPException(status_code=400, detail="该模型已经归属到算法版本中")
-    version_id = uuid.uuid4().hex[:12]
-    version_no = len(algo.get("versions", [])) + 1
-    # v42.8 起版本号统一按训练完成/归档时间生成：YYYYMMDDHHMMSS。
-    # 即便从历史兼容入口手工归属，也不再生成 V1/V2 之类的版本号。
-    version_ts_source = now_iso()
-    if payload.job_id:
-        try:
-            _jf = project_dir(project_id) / "jobs" / str(payload.job_id) / "job.json"
-            _j = read_json(_jf, {}) if _jf.exists() else {}
-            version_ts_source = _j.get("finished_at") or _j.get("updated_at") or version_ts_source
-        except Exception:
-            pass
-    version_name_auto = ''.join(ch for ch in str(version_ts_source) if ch.isdigit())[:14]
-    if len(version_name_auto) < 14:
-        version_name_auto = datetime.now().strftime("%Y%m%d%H%M%S")
-    # 拷贝一份到算法版本目录，确保后续可下载、可追溯
-    version_dir = project_dir(project_id) / "algorithm_versions" / algorithm_id / version_id
-    version_dir.mkdir(parents=True, exist_ok=True)
-    version_file = version_dir / model_path.name
-    shutil.copy2(model_path, version_file)
-    bound_job_id = payload.job_id or ""
-    if not bound_job_id:
-        for m in list_models_internal(project_id):
-            if m.get("name") == model_name or str(Path(m.get("path", ""))).lower() == str(model_path).lower():
-                bound_job_id = m.get("job_id", "")
-                break
-    report = job_report(project_id, bound_job_id, version_file)
-    version = {
-        "id": version_id,
-        "version_no": version_no,
-        "version_name": version_name_auto,
-        "model_name": model_name,
-        "model_key": model_key,
-        "stored_path": str(version_file),
-        "type": model_path.suffix.lower().lstrip('.'),
-        "size_mb": round(version_file.stat().st_size / 1024 / 1024, 2),
-        "job_id": bound_job_id,
-        "remark": payload.remark or "",
-        "report": report,
-        "report_updated_at": now_iso(),
-        "status": "已归属",
-        "training_status": "SUCCEEDED",
-        "artifact_verified": True,
-        "trainable": version_file.suffix.lower() in {".pt", ".pdparams", ".pdmodel", ".pdiparams"},
-        "framework": "paddle" if version_file.suffix.lower() in {".pdparams", ".pdmodel", ".pdiparams"} else "ultralytics",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-    stored = attach_algorithm_version(algorithms_file(project_id), algorithm_id, version)
-    return {"ok": True, "version": stored}
+    # Minimal-safe-launch: do not mint a verified/training-succeeded version
+    # from an arbitrary file. Only the canonical Durable training finalizer
+    # may publish verified models and frozen lineage.
+    raise HTTPException(
+        status_code=409,
+        detail="手工模型归属暂未开放：请使用训练任务产物自动归档，确保模型验证和版本血缘完整。",
+    )
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
@@ -11456,7 +11406,22 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,
         "status":"可用" if stored_path else "无可用模型产物","created_at":job.get("finished_at") or now_iso(),"updated_at":now_iso(),
     }
-    version=attach_algorithm_version(algorithms_file(project_id),algorithm_id,version)
+    # Legacy archive must obey the same frozen base/version CAS as the
+    # canonical Durable finalizer. Concurrent winners must not overwrite
+    # current_version_id or leave an orphaned copied candidate.
+    try:
+        committed = attach_algorithm_version_if_current(
+            algorithms_file(project_id), algorithm_id, version,
+            expected_current_version_id=str(job.get("base_version_id") or "").strip() or None,
+        )
+    except Exception:
+        shutil.rmtree(vd, ignore_errors=True)
+        raise
+    if str(committed.get("id") or "") != version_id:
+        shutil.rmtree(vd, ignore_errors=True)
+    version = committed
+    version_id = str(version.get("id") or version_id)
+    version_name = str(version.get("version_name") or version_name)
     job["auto_version_id"]=version_id;job["auto_version_name"]=version_name
     try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass

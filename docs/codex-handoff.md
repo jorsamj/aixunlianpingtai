@@ -1,3 +1,11 @@
+## 2026-10-08 最小安全上线 Gate S4：AUDIT-138/139 旧版本归属 fail-closed（42.24.321）
+
+- 完整的 Durable Training finalizer 已有 attach_version_if_current（冻结 base + task idempotency），保持不动。
+- 旧手工 POST /api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions 曾在无可信 training/artifact 验证链时强行写 training_status=SUCCEEDED/artifact_verified=True；最小上线暂时在后端返回 409，避免通过旧入口伪造可自动发布版本。既有 _v42 legacy iteration 使用此入口也暂时被隔离。
+- 旧 _v48_archive_training_version 仍可达，改用原 AlgorithmSqlStore 原子 attach_version_if_current，expected_current_version_id 来自 job 冻结 baseVersionId；并发首训/续训冲突保持 fail-closed，复制的临时候选版本目录在 CAS 冲突或重复幂等归档时删除；task_id 幂等沿用现有 SQL Owner，不新增版本 owner。
+- 本批不打开手工版本归属，也不宣称 AUDIT-141/142 全场景已经完成；外部版本删除/回退 175 仍需独立验收和必要隔离。测试含真实 409 与源级确保 CAS，不替代数据库并发 E2E。
+- 仅提交长期开发分支，精确 HEAD CI 和真实训练/外部发布 UAT 待核验，不部署。
+
 ## 2026-10-08 最小安全上线 Gate S3：AUDIT-181 服务端退出撤销（42.24.320）
 
 - SignedSessionManager 保持唯一认证 owner，新增本机 DATA_DIR/auth 内 SQLite revocation index（session identity digest + hard expiry），验证签名和时效后查询撤销状态；未存任何 Cookie、密码、第三方 accessToken。DB 丢失时 read-only 检查 fail closed，不能凭空恢复已撤销会话。
