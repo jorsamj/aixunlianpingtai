@@ -1,3 +1,11 @@
+## 2026-10-08 Gate S13 CI 定点修正（42.24.331）
+
+- `42.24.330` remote HEAD `b8563def252da7030f7f878b770b9ae06430fa09` 已触发真实 CI；当时已读取完成失败 job logs，禁止当作绿灯。
+- Remote Training Runtime API：5 failed / 41 passed，根因本批新增的 job metadata 初始化 helper 重建 `TrainReq` 后又调用 `_explicit_training_split()`，导致独立试验集的已确认 `experiment_percent=None` 恢复成模型默认值并抛 400。修正为仅使用最初准入时写入同一 task payload 的冻结 `requested_split`，不进行第二次数据切分推导。新增并发/child 异常/父 INSERT crash 三个 API fixture 显式传 `experiment_percent=None`，与正式独立试验集请求一致。
+- External Algorithm Platform unit：140 passed / 1 failed，旧 source guard 只从 `def _enqueue_explicit_training(...)` 截取源码，遗漏重构后位于入口前的唯一准备子任务 helper。更新守卫从 `_ensure_training_prepare_child` 开始，继续核查 `TaskKind.TRAINING_PREPARE`、唯一 external truth owner，并新增跨进程锁和 wrapped entrypoint 守卫；不删除原断言。
+- Material Annotation Atomicity API：44 passed / 1 failed，旧测试错误要求选中**已停用**存储源仍 HTTP 200 + failed_count=1。正式上传早期 storage source generation guard 返回 409 / UPLOAD_STORAGE_SOURCE_UNAVAILABLE 属于必要 fail-closed。测试改为强制 409、明确错误码、Material index 不增；不放开 disabled provider。
+- 只修真实日志中已确定的 3 根因；不变更其他训练、安全 owner。当前修正 commit 的精确 HEAD Actions/check-runs 与真实断电/多进程/OSS UAT 仍必须核验，**NOT DEPLOYABLE**。
+
 ## 2026-10-08 最小安全上线 Gate S13：AUDIT-171/172 训练创建请求身份与父子恢复（42.24.330）
 
 - 起点：`3c319ccd1cac36908f9372f2bd73cc9f18439ddf` / 42.24.329；该 HEAD 24/24 workflows、65/65 check-runs completed-success，但真实 GPU/OSS/新畅联 UAT 尚未完成。

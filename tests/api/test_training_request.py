@@ -1573,6 +1573,7 @@ def _training_create_replay_fixture(client, seeded_project):
         "train_image_ids": [train_a["id"], train_b["id"]],
         "test_image_ids": [test_a["id"]],
         "validation_percent": 20,
+        "experiment_percent": None,
         "queue_priority": 7,
     }
 

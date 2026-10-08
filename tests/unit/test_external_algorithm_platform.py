@@ -1347,11 +1347,13 @@ def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
 def test_training_create_has_one_external_truth_owner_plus_compatibility_delegate():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
 
-    enqueue_start = source.index("def _enqueue_explicit_training(project_id: str, payload: TrainReq)")
+    enqueue_start = source.index("def _ensure_training_prepare_child(")
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
     enqueue_block = source[enqueue_start:enqueue_end]
     assert '"training_input_state": "PREPARING"' in enqueue_block
     assert "TaskKind.TRAINING_PREPARE" in enqueue_block
+    assert "with FileLock(str(locks_dir / f\"{task_id}.lock\"), timeout=30)" in enqueue_block
+    assert "_enqueue_explicit_training_locked(project_id, payload, task_id)" in enqueue_block
     assert "_refresh_external_training_algorithm(" not in enqueue_block
     assert "assert_external_algorithm_master_data_current(" not in enqueue_block
     assert "resolve_external_training_analysis(" not in enqueue_block

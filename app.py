@@ -8011,7 +8011,6 @@ def _ensure_training_create_job(
     payload = TrainReq.model_validate(request_payload["admission_request"])
     asset_algorithm = dict(request_payload["algorithm_identity"])
     confirmed_iteration_action = request_payload.get("confirmed_iteration_action")
-    requested_split = _explicit_training_split(payload)
     framework = str(payload.framework or "ultralytics").strip().lower()
     target = str(payload.target or "local").strip().lower()
     resource_key = str(request_payload["target_resource_key"])
@@ -8046,9 +8045,9 @@ def _ensure_training_create_job(
             "requested_device": payload.device,
             "assigned_device": None,
             "actual_device": None,
-            "split_mode": requested_split.mode.value,
-            "requested_train_images": len(requested_split.train_image_ids),
-            "requested_test_images": len(requested_split.test_image_ids),
+            "split_mode": str(request_payload["requested_split"]["mode"]),
+            "requested_train_images": len(request_payload["requested_split"]["train_image_ids"]),
+            "requested_test_images": len(request_payload["requested_split"]["test_image_ids"]),
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
             "requested_resources": request_payload["requested_resources"],
             "created_at": record.created_at,
