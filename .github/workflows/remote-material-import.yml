@@ -1,5 +1,11 @@
 name: Remote Material Import
 
+# Superseded pushes on the same branch must not build an unbounded CI queue.
+# Tests and guards remain unchanged; only the latest HEAD may be accepted.
+concurrency:
+  group: material-import-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
