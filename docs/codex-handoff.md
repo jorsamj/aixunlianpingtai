@@ -1,3 +1,12 @@
+## 2026-10-08 最小安全上线 Gate S7 追加复核：存储源 A→B→A 配置回改防护（42.24.324）
+
+- 复核旧 HEAD 21a2a020f75bc24024bacaaf9bc684e274a181ec 的 GitHub Actions：首 20 个工作流 queued，Remote Material Import 的 API / Chrome / Windows / Ubuntu 四 Job 同样 queued，无可读失败日志；不能判定 AUDIT-133/134 通过。
+- 发现审计遗漏：之前 upload final admission 的 source created_at/type/config/secret_ref/enabled 比较，只能拒绝最终配置不同或同 ID 重建。原存储源在一次上传中被 PATCH A→B→A，结束时配置完全相同，会绕过该快照对比。
+- 修复仍复用唯一 StorageSourceRepository：既有 storage_sources.sqlite3 添加 runtime_revision INTEGER NOT NULL DEFAULT 1，原库在 constructor 的 BEGIN IMMEDIATE 中原位迁移；只在 config/secret_ref/enabled 发生改变时由原 SQL UPDATE 原子递增，创建新源从 1 开始。不另建表或 Owner。StorageSource dataclass 在尾部增加兼容默认字段，不在公共 API 暴露修订号。
+- 原 _storage_source_runtime_generation 同时比对该持久修订号，源配置 A→B→A 也能 fail-closed；仅修改显示名称、健康状态不递增，不误伤展示类操作。修订号复核发生在既有 source lifecycle fence 内，网络上传仍不持有全局锁。
+- 回归：新增 source repository 旧 SQLite 无数据丢失迁移与单调修订号验证；upload API 新增 A→B→A 并发用例；原 source_repository 伪 DB 初始化测试适配迁移 PRAGMA 返回结果，保留 WAL 与初始化并发检查。现有 Remote Material Import API CI 已纳入这组单元测试。
+- 最终 CI：必须读取精确新 HEAD 的 Remote Material Import API（含五个既有上传源测试和新增 A→B→A）、其他 Actions 全部终态，进行 Windows/Linux 及 OSS 真机 UAT。**代码已提交，但未经运行验收；AUDIT-133/134 仍不可 CLOSED 或部署。**
+
 ## 2026-10-08 最小安全上线 Gate S7：AUDIT-134 普通上传与存储源生命周期并发（42.24.324）
 
 - 基线：长期分支 42.24.323 / HEAD 301c55d07b120073c7e830e055ff15aaa2668380；上一批 20 个可见 Actions 为 queued，没有把 AUDIT-133 提前 CLOSED。
