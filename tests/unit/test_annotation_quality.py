@@ -231,7 +231,7 @@ def test_annotation_audit_numbered_page_reads_index_and_keeps_cursor_contract(tm
         assert "page" not in cursor_first and "total_pages" not in cursor_first
         cursor_next = read_annotation_audit(manifest.database, cursor=cursor_first["next_cursor"], limit=50)
         assert cursor_next["items"][0]["image_id"] == "0050"
-        for kwargs in ({"page": 4}, {"page": 0}, {"page": 1, "page_size": 0},
+        for kwargs in ({"page": 4, "page_size": 50}, {"page": 0}, {"page": 1, "page_size": 0},
                        {"page": 1, "cursor": "0001"}):
             try:
                 read_annotation_audit(manifest.database, **kwargs)

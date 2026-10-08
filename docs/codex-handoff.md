@@ -1,3 +1,8 @@
+## 2026-10-08 清洗 Audit 页码越界用例修正（42.24.317）
+
+- `42.24.315` 的 Remote Cleaning Ubuntu Python focused 测试：146 passed、1 failed。唯一失败为新测试把 123 条记录在默认 page_size=20 下的 page=4 错误认定为越界；其实际上是合法页。精确改为 `page=4,page_size=50`（真实只有 3 页），保留非法页必须报错的原断言。
+- 无生产代码变更；仍以新精确 HEAD CI 终态为最终证据。
+
 ## 2026-10-08 清洗分页 CI 精确断言修复（42.24.316）
 
 - `42.24.315` 的 Frontend Runtime frontend job 发现两条纯测试维护缺口：新增 regexp 错将 `\\.` 写成 `\\\\.`，以及旧 `app.js?v=42.25.310` cache guard 未跟随已发布的 `42.25.315` 入口。
