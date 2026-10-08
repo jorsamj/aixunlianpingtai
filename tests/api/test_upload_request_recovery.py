@@ -88,7 +88,7 @@ def test_prepared_but_uncommitted_crash_never_reports_success(client, monkeypatc
     assert platform_app.material_store(project_id).count() == 0
     response = _upload(client, project_id, request_id)
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
+    assert response.json()["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
     assert platform_app.upload_batch_store(project_id).read(request_id)["upload_request_status"] == "FAILED"
     assert platform_app.material_store(project_id).count() == 0
 
@@ -150,4 +150,4 @@ def test_annotation_commit_error_does_not_delete_committed_material_bytes(client
     assert platform_app.storage_manager(project_id).materialize(material).path.is_file()
     retry = _upload(client, project_id, request_id)
     assert retry.status_code == 409, retry.text
-    assert retry.json()["detail"]["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
+    assert retry.json()["code"] == "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED"
