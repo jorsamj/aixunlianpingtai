@@ -4764,7 +4764,13 @@ def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
 
 def _plain_upload_replay_response(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
     image_ids = [str(item.get("image_id") or "") for item in (batch.get("items") or []) if str(item.get("image_id") or "")]
-    indexed = {str(row.get("id")): row for row in material_store(project_id).get_many(image_ids)}
+    indexed = {}
+    materials = material_store(project_id)
+    for offset in range(0, len(image_ids), 500):
+        indexed.update({
+            str(row.get("id")): row
+            for row in materials.get_many(image_ids[offset:offset + 500])
+        })
     uploaded = [dict(indexed[image_id]) for image_id in image_ids if image_id in indexed]
     failed = [dict(item) for item in (batch.get("upload_failed") or [])]
     return {
