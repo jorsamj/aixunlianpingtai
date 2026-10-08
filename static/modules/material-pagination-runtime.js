@@ -555,7 +555,8 @@ export function installMaterialPaginationRuntime() {
       storage_source_ids: value.sourceId && value.sourceId !== 'all' ? [value.sourceId] : [],
       processing_status: value.processingStatus,
       labels: [...value.labels],
-      annotated: value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
+      // Raw-batch bulk actions must not include already annotated or index-pending rows.
+      annotated: value.processingStatus === 'unprocessed' ? false : value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
     };
   };
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));

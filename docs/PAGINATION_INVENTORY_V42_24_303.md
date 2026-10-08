@@ -10,6 +10,12 @@
 | 训练创建兼容性问题 | `TrainingMaterialSummaryRuntime` | v62 authoritative totals + revision-keyed projection | 已接入共享分页 |
 | 训练任务 input issues | `TrainingRecoveryRuntime` | Artifact manifest `page/limit` | 已接入共享分页 |
 
+## 42.24.308 批量范围安全收口
+
+- AUDIT-182：未处理素材顶部两项“批量”不再被当前页 48 条误限制，改为服务端 FILTERED 冻结与确认数量。
+- AUDIT-183：跨页选中的“清洗已选/已选无需清洗/批量标注”不再以当前页面 rows 做 inner join；后端 SELECTED/正式 Annotation GET 是权威。
+- 这不意味着所有待办分页入口已完成，后续仍须逐项迁移并验证。
+
 ## Phase 2 高频结果集
 
 | 入口 | 当前 owner / 现状 | 迁移判断 |

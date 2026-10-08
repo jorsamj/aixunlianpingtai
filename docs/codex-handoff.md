@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 AUDIT-182/183 跨页素材批量范围（42.24.308）
+
+- `openBatch414(mode, ids=null)` 的无显式选择入口不再假定 `state.images` 是全部待清洗素材；改走既有 `MaterialBatchRuntime62` 的 `FILTERED` 冻结选择，Server estimate 显示真实数量。未处理页加入 `annotated=false` 筛选，阻止已标注素材被误纳入原始未处理操作。
+- “清洗已选 / 已选无需清洗”不再与当前页/最近上传的 bounded 图片池重新交叉过滤；直接以跨页 `state.data412Selected` 交给 canonical `SELECTED`，由服务端检验数量和身份。
+- “批量标注”保存完整跨页队列；当前页不可见的 image ID 单图进入时借助既有正式 Annotation GET 取得 Material 信息；有限的 100 条只读视图元数据缓存不保存 Ground Truth，正式审核和 CAS 均未绕过。
+- 只增加针对性源码/前端测试，保留原有组件、Owner 和用户需要的显式审核。CI 尚需按精确 HEAD 核对；生产部署和大型数据视觉验收为 `PENDING USER UAT`。
+
+
 ## 2026-10-08 AUDIT-185 训练批量操作跨页选择与部分成功对账（42.24.307）
 
 - TrainingTaskRuntime.batchAction 返回逐条 `succeeded_ids/failed_ids/skipped_ids`；暂停/继续/停止根据成功 HTTP 返回记录 ID，删除只根据 v48 `deleted_ids` 解除选择，不根据成功计数猜测。

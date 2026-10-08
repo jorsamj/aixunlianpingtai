@@ -25858,3 +25858,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 状态：CODE FIX IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
 
 训练任务批量操作统一由 TrainingTaskRuntime 返回逐条成功/失败/跳过 ID，TrainingTaskVisibilityRuntime 保留跨页选择，不在 render 时按可见页修剪；只取消明确成功项，失败和跳过项保留供操作员重试。退役旧 Owner 不恢复。新增少量前端回归； CI 和现场验收仍分开确认。
+
+## 2026-10-08 AUDIT-182/183 修复追踪（42.24.308）
+
+状态：CODE FIX IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
+
+无显式选中时的批量清洗/无需清洗改用 MaterialBatch FILTERED（服务器 Count+Freeze）；跨页手动选择的清洗/无需清洗按完整 selected IDs 使用 SELECTED，不与当前 Material page 截断。批量标注保留 ID 队列，对未在当前页的素材按单图进入时用 canonical Annotation GET 读取只读 Material 元数据；无新 Ground Truth Owner。待真实多页/清洗配置现场验收。

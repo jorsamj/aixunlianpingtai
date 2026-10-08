@@ -849,9 +849,9 @@ window.installUsability417=function(){
       if(toolbar&&!toolbar.querySelector('.batch417-action'))toolbar.insertAdjacentHTML('beforeend',state.data412Tab==='processed'?`<button class="btn primary batch417-action" onclick="openBatchAnnotation417()">批量标注</button>`:`<button class="btn batch417-action" onclick="openSelectedClean417()">清洗已选</button><button class="btn primary batch417-action" onclick="openSelectedReady417()">已选无需清洗</button>`);
     }
   };
-  window.openBatchAnnotation417=function(){const ids=[...(state.data412Selected||new Set())].filter(id=>(state.images||[]).some(x=>String(x.id)===String(id)&&ready417(x)));if(!ids.length)return toast('请先选择要连续标注的已处理素材');state.annotationQueue414=ids.map(String);openAnnotation(state.annotationQueue414[0])};
-  window.openSelectedClean417=function(){const ids=[...(state.data412Selected||new Set())];if(!ids.length)return toast('请先选择素材');openBatch414('clean',ids)};
-  window.openSelectedReady417=function(){const ids=[...(state.data412Selected||new Set())];if(!ids.length)return toast('请先选择素材');openBatch414('ready',ids)};
+  window.openBatchAnnotation417=function(){const ids=[...(state.data412Selected||new Set())].map(String);if(!ids.length)return toast('请先选择要连续标注的已处理素材');state.annotationQueue414=ids;return window.openAnnotation(ids[0])};
+  window.openSelectedClean417=function(){const ids=[...(state.data412Selected||new Set())].map(String);if(!ids.length)return toast('请先选择素材');return window.runMaterialBatch62?.('CLEAN',{scope:'SELECTED',imageIds:ids})};
+  window.openSelectedReady417=function(){const ids=[...(state.data412Selected||new Set())].map(String);if(!ids.length)return toast('请先选择素材');return window.runMaterialBatch62?.('MARK_CLEAN_SKIPPED',{scope:'SELECTED',imageIds:ids})};
 
   window.goAnnotationLegacy417_1=function(id){closeModal();setTimeout(()=>openAnnotation(id),20)};
   window.selectActiveLabel417=function(value){state.activeLabel=Number(value);renderAnnSide()};
@@ -4775,6 +4775,11 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   window.keepMaterialIntegrity47=function(imageId){const items=state.materialIntegrityGroup47?.items||[],ids=items.map(item=>String(item.image_id)).filter(id=>id!==String(imageId));if(!ids.length)return toast('没有其他重复项');if(!confirm(`确认保留 ${imageId}，删除其余 ${ids.length} 条重复素材及对应标注？`))return;closeModal();window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:ids,skipConfirm:true})};
   const BATCH414_PAGE_SIZE=96;
   window.openBatch414=function(mode,ids=null){
+    // No explicit IDs means ALL unprocessed rows matching the server filter, not only state.images.
+    if(ids===null){
+      if(state.data412Tab!=='unprocessed')return toast('请进入未处理素材列表后选择批量范围');
+      return window.runMaterialBatch62?.(mode==='clean'?'CLEAN':'MARK_CLEAN_SKIPPED',{scope:'FILTERED'});
+    }
     const candidates=ids?[...(state.recentUploadedMaterials61||[]),...(state.images||[])]:state.images||[],all=[...new Map(candidates.map(x=>[String(x.id),x])).values()].filter(x=>!x.annotation_index_pending&&!isProcessed414(x)&&!x.annotated),allowed=new Set((ids||all.map(x=>x.id)).map(String)),rows=all.filter(x=>allowed.has(String(x.id)));if(!rows.length)return toast('没有可操作的未处理素材');
     state.batch414Rows=rows;state.batch414Page=1;state.batch414PageSize=BATCH414_PAGE_SIZE;state.batch414Selected=new Set(rows.map(x=>String(x.id)));
     modal(mode==='clean'?'批量清洗':'批量无需清洗',`<div class="batch414"><div class="batch414-tools"><span>共 ${rows.length} 张未处理素材 · <b id="batch414SelectedCount">已选 ${rows.length}</b></span><div class="row"><button class="btn mini" onclick="selectBatch414('all')">全选</button><button class="btn mini" onclick="selectBatch414('invert')">反选</button></div></div><div id="batch414Grid" class="batch414-grid"></div><div id="batch414Pager" class="data426-pager"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmBatch414('${mode}')">${mode==='clean'?'开始清洗':'确认无需清洗'}</button></div></div>`,true);renderBatch414()
@@ -5384,7 +5389,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 (()=>{
   const workbenchApi=()=>window.PlatformCore?.annotationWorkbench;
   const queueIds=()=>Array.isArray(state.annotationQueue414)&&state.annotationQueue414.length?state.annotationQueue414.map(String):state.activeImage?[String(state.activeImage.id)]:[];
-  const imageById=id=>(state.images||[]).find(x=>String(x.id)===String(id));
+  // Small view-only cache for cross-page annotation queue navigation; GT remains server-owned.
+  const offPageImages420=new Map();
+  const imageById=id=>(state.images||[]).find(x=>String(x.id)===String(id))||offPageImages420.get(`${pid()}:${String(id)}`);
+
   const preload=url=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(true);image.onerror=()=>reject(new Error('图片加载失败'));image.src=url});
   const provisionalAnnotation420=image=>({
     boxes:(image?.annotation_preview||[]).map(box=>({...box})),
@@ -5586,7 +5594,16 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   async function apiRequestAnnotation420(id){return api(`/api/projects/${pid()}/annotations/${id}`)}
   window.openAnnotation=async function(id){
-    const key=String(id);if(!imageById(key))return toast('图片不存在或尚未加载');
+    const key=String(id);
+    if(!imageById(key)){
+      try{
+        const detail=await apiRequestAnnotation420(key);
+        if(String(detail?.image?.id||'')!==key)throw new Error('图片不存在');
+        const row={...detail.image,url:detail.image.url||`/api/v61/projects/${encodeURIComponent(pid())}/materials/${encodeURIComponent(key)}/content`};
+        if(offPageImages420.size>=100)offPageImages420.delete(offPageImages420.keys().next().value);
+        offPageImages420.set(`${pid()}:${key}`,row);
+      }catch(error){toast(`读取跨页标注素材失败：${error.message||error}`);return false}
+    }
     if(!Array.isArray(state.annotationQueue414)||!state.annotationQueue414.some(value=>String(value)===key))state.annotationQueue414=[key];
     try{return await ensureWorkbench()?.open(key)}catch(error){
       state.annotationHydrating420=false;state.annotationLoadError420=String(error?.message||error||'标注读取失败');updateShell();

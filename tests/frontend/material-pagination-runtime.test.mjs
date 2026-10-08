@@ -134,3 +134,25 @@ test('upload cleaning decisions retain the complete current upload batch', () =>
   assert.match(source, /recentUploadedMaterials61=\[\.\.\.uploaded\]/);
   assert.doesNotMatch(source, /recentUploadedMaterials61=.*\.slice\(0,500\)/);
 });
+
+test('unprocessed bulk operation uses the server-frozen FILTERED scope instead of the current 48 rows', () => {
+  const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(app, /if\(ids===null\)\{/);
+  assert.match(app, /scope:'FILTERED'/);
+  assert.match(runtime, /annotated: value\.processingStatus === 'unprocessed' \? false/);
+  assert.doesNotMatch(app, /const candidates=state\.images\|\|\[\];all=/);
+});
+
+test('cross-page cleaning, no-clean decision and batch annotation consume selected IDs without current-page intersection', () => {
+  const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const annotationAction = app.match(/window\.openBatchAnnotation417=function\(\)\{[^\n]+/)?.[0] || '';
+  const cleanAction = app.match(/window\.openSelectedClean417=function\(\)\{[^\n]+/)?.[0] || '';
+  const readyAction = app.match(/window\.openSelectedReady417=function\(\)\{[^\n]+/)?.[0] || '';
+  assert.match(annotationAction, /state\.annotationQueue414=ids/);
+  assert.doesNotMatch(annotationAction, /state\.images/);
+  assert.match(cleanAction, /scope:'SELECTED',imageIds:ids/);
+  assert.match(readyAction, /scope:'SELECTED',imageIds:ids/);
+  assert.match(app, /const detail=await apiRequestAnnotation420\(key\)/);
+  assert.match(app, /offPageImages420\.set/);
+});
