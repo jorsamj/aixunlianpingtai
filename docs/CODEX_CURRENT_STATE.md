@@ -2571,3 +2571,11 @@ version remove 实际副作用
 # 2026-10-08 current override — R0 Material / Annotation lifecycle
 
 VERSION `42.24.300` adds one project-scoped coordination fence between canonical Material lifecycle mutations and formal AnnotationRepository commits. Dataset delete claim/finalize, Storage Rescan content replacement, manual/AI/import formal writes and label remap reuse existing owners. Material annotation projections are version-monotonic and remain rebuildable derived state. Deferred structured imports preserve explicit `confirmed_empty`; plain uploads remain explicitly `unannotated`; batch contracts require Material identity before formal GT and target the versioned projection owner. See `docs/codex-handoff.md` for verification and CI status.
+## 2026-10-08 AUDIT-084 / AUDIT-168 当前状态（最高优先级）
+
+- 候选版本 `42.24.301`。Canonical MaterialBatch destructive publication、Training admission、Agent RKNN INT8 calibration admission 已接入同一个既有 Material lifecycle fence。
+- 活动依赖来自 TaskRepository 的 `QUEUED / RUNNING / CANCEL_REQUESTED` 与已有 task artifacts；终态自动释放。删除任务的 selection 使用其现有 SQLite manifest 做 bounded membership lookup，不建立第二份依赖 truth。
+- `DELETE_SOURCE` 用 MaterialRepository payload 中的内部 destructive claim 跨越锁外 provider I/O；一旦 provider delete 可能成功，索引/GT finalize 不再被 cancellation 打断。模糊失败保持 fail-closed，使用原 task retry 恢复。
+- RKNN 最终入队重验 frozen calibration identity。删除端同时匹配 image ID 和 storage source/object reference。
+- 本地相关测试已通过；精确提交 HEAD CI 尚待推送后读取。真实 OSS/RKNN/GPU/生产恢复为 `PENDING USER UAT`。
+- 下一批只进入 AUDIT-178 Storage Source config/secret lifecycle；不要在本批新增 storage generation owner。

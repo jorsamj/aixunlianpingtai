@@ -1,5 +1,17 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 AUDIT-084 / AUDIT-168 活动任务素材依赖（当前最新）
+
+- VERSION：`42.24.301`；长期分支：`feature/external-algorithm-publishing`；本节写入时实现与本地验证完成，提交/推送及精确 HEAD CI 仍为 PENDING。
+- 删除发布、训练最终受理、Agent RKNN INT8 转换最终受理现在共用既有 project-scoped Material/Annotation lifecycle fence。先落库的活动任务或删除任务获胜，另一方以 409 fail closed；没有新增 Dependency Manager、Task Owner、Repository 或状态表。
+- MaterialBatch 删除 owner 从现有 TaskRepository + ArtifactStore 派生活动输入引用：TRAINING 读取 request/input-freeze image IDs；MODEL_CONVERSION 读取 portable calibration 的 image/object identity。终态、排队取消和正常完成通过 TaskStatus 自动释放，不写易泄漏的独立 pin。
+- `DELETE_SOURCE` 在不可逆 provider delete 前重验活动引用并写入 Material 内部短 claim；远端/本地存储 I/O 在 fence 和数据库事务外。删除返回后不再插入取消点，立即完成 AnnotationRepository + MaterialRepository 正式删除。响应丢失/Worker 异常时保留 claim、tombstone 和 delete-attempt evidence，原任务 retry 可确认对象缺失并完成索引删除。
+- RKNN snapshot/stat/staging 保持在锁外；任务最终创建前重新核验 calibration 的 `image_id / storage_source_id / object_key / size_bytes / sha256`、来源可用性和删除 claim，禁止自动换校准图。
+- 本地直接回归：活动依赖确定性单测 `4 passed`；conversion portable contract + 新依赖测试 `16 passed`；Material delete/lifecycle、training ground truth/input freeze/request `71 passed`；取消落在 provider delete 后与 provider 响应丢失 retry 两条交错均通过。Python 语法/import、diff check 会在提交前再次执行。
+- 真实 OSS、Agent 排队、RKNN 板卡、GPU 训练与生产 Worker 崩溃恢复为 `PENDING USER UAT`。这些环境未现场验证，不得把本批写成生产完全 CLOSED。
+- 设计/计划：`docs/superpowers/specs/2026-10-08-active-material-task-dependencies-design.md`、`docs/superpowers/plans/2026-10-08-active-material-task-dependencies.md`。
+- 下一独立批次：AUDIT-178 Storage Source 破坏性 PATCH 生命周期；不得与本提交混合。
+
 ## 2026-10-08 R0 Material / Annotation 并发生命周期与单调投影（当前最新）
 
 - VERSION：`42.24.300`；长期分支：`feature/external-algorithm-publishing`。

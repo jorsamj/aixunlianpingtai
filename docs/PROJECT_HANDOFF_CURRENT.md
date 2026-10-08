@@ -2787,3 +2787,11 @@ VERSION.txt 仍为 42.24.0
 # 2026-10-08 override — R0 annotation lifecycle safety
 
 Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit for missing/deleting/unavailable Material or a mismatched frozen content SHA. Dataset deletion and Rescan share the same short cross-process lifecycle fence. Material searchable Annotation projection is monotonic by canonical Annotation version; it is not a second truth owner. Deferred structured imports keep explicit empty Ground Truth; plain uploads remain unannotated; batch contracts require Material identity before formal GT and target the versioned projection owner. Exact remote HEAD and CI terminal status must be re-read after push.
+## 2026-10-08 当前接手入口：活动训练 / RKNN 校准与素材删除双向 fence
+
+- 当前候选 VERSION：`42.24.301`；长期分支：`feature/external-algorithm-publishing`。
+- AUDIT-084/168 已实现：训练或转换先受理时，MaterialBatch 删除拒绝；删除先受理时，训练/转换拒绝。双方共享既有 Material lifecycle fence，依赖真相仍在 TaskRepository/ArtifactStore，素材/删除占用仍在 MaterialRepository/MaterialBatch。
+- `DELETE_SOURCE` 不持锁执行 OSS/文件 I/O；删除前有 durable Material claim，删除后立即提交 Annotation/index 删除。取消、lease recovery 和 retry 不会把缺失源文件当成可训练素材。
+- RKNN INT8 校准在最终任务 publish 前重验 frozen material identity，活动任务期间 DELETE_SOURCE/DELETE_INDEX 均被阻止；终态自动释放。
+- 本地 focused tests 通过；提交、推送和 exact-HEAD Actions/check-runs 仍待完成。现场 OSS、Agent、Rockchip、GPU 为 `PENDING USER UAT`。
+- 下一独立批次是 AUDIT-178；开始前仍需重新读真实远端 HEAD/VERSION/checks。

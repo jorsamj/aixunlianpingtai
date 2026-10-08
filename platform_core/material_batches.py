@@ -21,6 +21,8 @@ from .cleaning_analysis_runtime import CleaningAnalysisRuntime
 from .cleaning_batches import clean_batch, reset_stale_clean_successes
 from .labels import active_project_label_ids, label_governance_fence
 from .material_repository import (
+    MATERIAL_BATCH_DELETE_CLAIM_FIELD,
+    MaterialTaskInputConflictError,
     MaterialRepository,
     material_annotation_lifecycle_fence,
 )
@@ -374,9 +376,11 @@ def create_batch(project_id, materials, repository, artifacts, payload):
                 "SELECT image_id FROM selection ORDER BY image_id"
             ).fetchall()
             image_ids = [str(row[0]) for row in rows]
-        _assert_not_referenced_by_active_training(
-            project_id, image_ids, repository, artifacts
-        )
+        with material_annotation_lifecycle_fence(materials.project_path):
+            _assert_not_referenced_by_active_tasks(
+                project_id, image_ids, materials, repository, artifacts
+            )
+            return publish_prepared_batch(task, repository, artifacts)
     return publish_prepared_batch(task, repository, artifacts)
 
 
@@ -424,34 +428,168 @@ def _training_payload_image_ids(payload):
     return ids
 
 
-def _assert_not_referenced_by_active_training(project_id, image_ids, repository, artifacts):
+_ACTIVE_INPUT_STATUSES = (
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+)
+
+
+def _conversion_calibration_references(payload):
+    if not isinstance(payload, dict):
+        return {}, set()
+    remote = payload.get("remote_execution")
+    conversion = remote.get("conversion") if isinstance(remote, dict) else None
+    calibration = conversion.get("calibration") if isinstance(conversion, dict) else None
+    items = calibration.get("items") if isinstance(calibration, dict) else None
+    by_id = {}
+    object_refs = set()
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        image_id = str(item.get("image_id") or "").strip()
+        source_id = str(item.get("storage_source_id") or "").strip()
+        object_key = str(item.get("object_key") or "")
+        if image_id:
+            by_id[image_id] = dict(item)
+        if source_id and object_key:
+            object_refs.add((source_id, object_key))
+    return by_id, object_refs
+
+
+def _assert_not_referenced_by_active_tasks(
+    project_id, image_ids, materials, repository, artifacts,
+):
     candidates = {str(value) for value in image_ids if str(value or "").strip()}
     if not candidates:
         return
+    candidate_ids_by_ref = {}
+    candidate_list = sorted(candidates)
+    for offset in range(0, len(candidate_list), BATCH_SIZE):
+        for row in materials.get_many(candidate_list[offset:offset + BATCH_SIZE]):
+            reference = (
+                str(row.get("storage_source_id") or ""),
+                str(row.get("object_key") or ""),
+            )
+            if reference[0] and reference[1]:
+                candidate_ids_by_ref.setdefault(reference, set()).add(
+                    str(row.get("id") or "")
+                )
+    candidate_refs = set(candidate_ids_by_ref)
     cursor = None
     while True:
         page = repository.list(
             project_id=str(project_id),
-            kinds=(TaskKind.TRAINING,),
-            statuses=(TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED),
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION),
+            statuses=_ACTIVE_INPUT_STATUSES,
             limit=100,
             cursor=cursor,
         )
         for task in page.items:
             payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
-            referenced = _training_payload_image_ids(payload)
-            frozen = artifacts.read_json(task.task_id, "input-freeze.json", default={})
-            referenced.update(_training_payload_image_ids(frozen))
-            conflict = sorted(candidates.intersection(referenced))
+            if task.kind is TaskKind.TRAINING:
+                referenced = _training_payload_image_ids(payload)
+                frozen = artifacts.read_json(task.task_id, "input-freeze.json", default={})
+                referenced.update(_training_payload_image_ids(frozen))
+                conflict = sorted(candidates.intersection(referenced))
+                code = "MATERIAL_ACTIVE_TRAINING_REFERENCE"
+                message = "该素材正在被活动训练任务引用，不能删除："
+            else:
+                referenced, object_refs = _conversion_calibration_references(payload)
+                conflict_ids = set(candidates.intersection(referenced))
+                for reference in candidate_refs.intersection(object_refs):
+                    conflict_ids.update(candidate_ids_by_ref.get(reference, ()))
+                conflict = sorted(conflict_ids)
+                code = "MATERIAL_ACTIVE_CONVERSION_REFERENCE"
+                message = "该素材正在被活动 RKNN 校准任务引用，不能删除："
             if conflict:
                 raise BatchRequestError(
-                    "MATERIAL_ACTIVE_TRAINING_REFERENCE",
-                    "该素材正在被活动训练任务引用，不能删除：" + ", ".join(conflict[:10]),
+                    code,
+                    message + ", ".join(conflict[:10]),
                     409,
                 )
         cursor = page.next_cursor
         if not cursor:
             break
+
+
+def _active_delete_selection_conflicts(project_id, image_ids, repository, artifacts):
+    candidates = list(dict.fromkeys(
+        str(value).strip() for value in image_ids if str(value).strip()
+    ))
+    if not candidates:
+        return []
+    conflicts = set()
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=str(project_id),
+            kinds=(TaskKind.MATERIAL_BATCH,),
+            statuses=_ACTIVE_INPUT_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        for task in page.items:
+            request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            if str((request or {}).get("operation") or "") not in {
+                BatchOperation.DELETE_INDEX.value,
+                BatchOperation.DELETE_SOURCE.value,
+            }:
+                continue
+            path = artifacts.artifact_path(task.task_id, SELECTION_REF)
+            if not path.is_file():
+                raise BatchRequestError(
+                    "MATERIAL_DELETE_STATE_UNAVAILABLE",
+                    "活动素材删除任务缺少选择清单，已拒绝新的任务受理",
+                    409,
+                )
+            with closing(BatchSelection(path)) as manifest:
+                for offset in range(0, len(candidates), BATCH_SIZE):
+                    chunk = candidates[offset:offset + BATCH_SIZE]
+                    placeholders = ",".join("?" for _ in chunk)
+                    conflicts.update(
+                        str(row[0])
+                        for row in manifest.database.execute(
+                            f"SELECT image_id FROM selection WHERE image_id IN ({placeholders})",
+                            chunk,
+                        ).fetchall()
+                    )
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    return sorted(conflicts)
+
+
+def assert_material_input_admission(
+    project_id,
+    image_ids,
+    materials,
+    repository,
+    artifacts,
+    *,
+    expected_inputs=None,
+):
+    """Final admission check for tasks that still need canonical source bytes."""
+    candidates = list(dict.fromkeys(
+        str(value).strip() for value in image_ids if str(value).strip()
+    ))
+    with material_annotation_lifecycle_fence(materials.project_path):
+        conflicts = _active_delete_selection_conflicts(
+            project_id, candidates, repository, artifacts,
+        )
+        if conflicts:
+            raise BatchRequestError(
+                "MATERIAL_ACTIVE_DELETE_REFERENCE",
+                "该素材已进入活动删除任务，不能受理新的训练或转换："
+                + ", ".join(conflicts[:10]),
+                409,
+            )
+        try:
+            materials.assert_task_input_admission(
+                candidates, expected_inputs=expected_inputs,
+            )
+        except MaterialTaskInputConflictError as error:
+            raise BatchRequestError(error.code, str(error), 409) from error
 
 
 _SCHEMA = """
@@ -1052,9 +1190,10 @@ class MaterialBatchHandler:
             _check_active(context)
             ids = [row["image_id"] for row in batch]
             if operation in {BatchOperation.DELETE_INDEX, BatchOperation.DELETE_SOURCE}:
-                _assert_not_referenced_by_active_training(
-                    project, ids, context.repository, context.artifacts
-                )
+                with material_annotation_lifecycle_fence(project_path):
+                    _assert_not_referenced_by_active_tasks(
+                        project, ids, materials, context.repository, context.artifacts
+                    )
             manifest.transition(ids, "running")
             current = ids[0]
             context.save_checkpoint(manifest.summary(current))
@@ -1812,9 +1951,13 @@ class MaterialBatchHandler:
     def _delete_sources(self, context, manifest, materials, batch, sources, source_cache, providers):
         ids = [row["image_id"] for row in batch]
         indexed = {row["id"]: row for row in materials.get_many(ids)}
-        deletable = []
         for item in batch:
             image_id = item["image_id"]
+            claim_token = (
+                f"material_batch_delete_{context.task.task_id[:32]}_"
+                + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
+            )
+            tombstone = None
             _check_active(context, "deleting_source", image_id)
             context.save_checkpoint(manifest.summary(image_id))
             try:
@@ -1868,6 +2011,33 @@ class MaterialBatchHandler:
                             "该物理素材仍被其他素材记录引用，不能删除共享对象",
                             409,
                         )
+                    with material_annotation_lifecycle_fence(materials.project_path):
+                        _assert_not_referenced_by_active_tasks(
+                            context.task.project_id,
+                            [image_id],
+                            materials,
+                            context.repository,
+                            context.artifacts,
+                        )
+                        current = materials.get(image_id)
+                        if current is None:
+                            raise BatchRequestError(
+                                "MATERIAL_NOT_FOUND",
+                                "素材索引已不存在，不能继续删除源对象",
+                                409,
+                            )
+                        existing_claim = str(
+                            current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or ""
+                        )
+                        if existing_claim and existing_claim != claim_token:
+                            raise BatchRequestError(
+                                "MATERIAL_DELETE_IN_PROGRESS",
+                                "素材已被其他删除任务占用",
+                                409,
+                            )
+                        materials.patch({
+                            image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: claim_token}
+                        })
                     previously_attempted = bool(tombstone.get("delete_attempted_at"))
                     if not previously_attempted:
                         tombstone["delete_attempted_at"] = utc_now()
@@ -1882,35 +2052,52 @@ class MaterialBatchHandler:
                             raise
                         append_task_log(context, "source_already_deleted", f"image_id={image_id}")
                     manifest.database.execute("UPDATE selection SET source_deleted=1 WHERE image_id=?", (image_id,))
-                deletable.append(image_id)
-            except Exception as error:
-                public_error = redact_storage_error(error)
-                manifest.transition([image_id], "failed", public_error)
-                append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
-        if deletable:
-            _check_active(context, "deleting_index")
-            try:
+                # Source deletion is irreversible.  Do not introduce a
+                # cancellation point between it and canonical index/GT commit.
                 self._delete_index_rows(
                     context,
                     manifest,
                     materials,
-                    deletable,
+                    [image_id],
                     materials.project_path,
+                    required_claim=claim_token,
                 )
             except Exception as error:
-                manifest.transition(deletable, "failed", redact_storage_error(error))
-                append_task_log(context, "index_delete_error", str(error))
+                delete_attempted = bool(
+                    isinstance(tombstone, dict)
+                    and tombstone.get("delete_attempted_at")
+                )
+                if not delete_attempted and not bool(item["source_deleted"]):
+                    try:
+                        with material_annotation_lifecycle_fence(materials.project_path):
+                            current = materials.get(image_id)
+                            if (
+                                current is not None
+                                and str(current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or "")
+                                == claim_token
+                            ):
+                                materials.patch({
+                                    image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: None}
+                                })
+                    except Exception:
+                        pass
+                public_error = redact_storage_error(error)
+                manifest.transition([image_id], "failed", public_error)
+                append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
 
-    def _delete_index_rows(self, context, manifest, materials, image_ids, project_path):
+    def _delete_index_rows(
+        self,
+        context,
+        manifest,
+        materials,
+        image_ids,
+        project_path,
+        *,
+        required_claim=None,
+    ):
         """Delete material identity and Ground Truth through their existing owners."""
         annotations = AnnotationRepository(project_path)
         for image_id in image_ids:
-            _assert_not_referenced_by_active_training(
-                context.task.project_id,
-                [image_id],
-                context.repository,
-                context.artifacts,
-            )
             token = (
                 f"material_delete_{context.task.task_id[:32]}_"
                 + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
@@ -1919,6 +2106,24 @@ class MaterialBatchHandler:
             legacy_bytes = legacy.read_bytes() if legacy.is_file() else None
             try:
                 with material_annotation_lifecycle_fence(project_path):
+                    _assert_not_referenced_by_active_tasks(
+                        context.task.project_id,
+                        [image_id],
+                        materials,
+                        context.repository,
+                        context.artifacts,
+                    )
+                    current = materials.get(image_id)
+                    if required_claim is not None and (
+                        current is None
+                        or str(current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or "")
+                        != str(required_claim)
+                    ):
+                        raise BatchRequestError(
+                            "MATERIAL_DELETE_CLAIM_LOST",
+                            "素材源删除占用已丢失，已阻止索引提交",
+                            409,
+                        )
                     annotations.prepare_delete(token, [image_id])
                     legacy.unlink(missing_ok=True)
                     annotations.finalize_delete(token)

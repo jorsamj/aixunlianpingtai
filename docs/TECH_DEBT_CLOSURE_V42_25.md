@@ -1,5 +1,15 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-08 AUDIT-084 / AUDIT-168 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.301`。
+- Root cause：MaterialBatch 只有单向 active TRAINING check，任务 admission 与删除 publish/physical delete 无共享协调；MODEL_CONVERSION calibration 完全未进入删除依赖判定。
+- 修复：复用现有 lifecycle fence，把 active Task artifacts 作为派生依赖证据；训练/RKNN admission 与 deletion publication 双向检查。`DELETE_SOURCE` 增加 Material 内部 claim 跨越锁外 storage I/O，并消除 source delete 与 index finalize 之间的 cancellation gap。
+- 生命周期：QUEUED/RUNNING/CANCEL_REQUESTED 保护输入；终态自然释放。模糊物理删除保留 claim + tombstone，由同一任务 retry/recovery 完成，不自动恢复可用状态，不自动替换校准素材。
+- Owner：AnnotationRepository、MaterialRepository、TaskRepository、MaterialBatch、Training Snapshot、MODEL_CONVERSION 均保持唯一；没有新增依赖 registry/runtime/manager。
+- 验证：确定性 admission/delete barrier、queued calibration、terminal release、cancel-after-delete、response-loss retry 均通过；更大现场环境按用户新标准标记 `PENDING USER UAT`。
+- CI：本节写入时尚未提交推送；精确 HEAD 必须全部 terminal success 后才能把 CI 状态改为 CLOSED。
+
 ## 2026-09-26 清洗 projection batch-guard 合同缺口 — IMPLEMENTED / CI PENDING
 
 最新产品代码 HEAD：`83d660e073f98f00ae79606391c6e97b7e96d1ad`。正式版本仍为 `42.24.0`。

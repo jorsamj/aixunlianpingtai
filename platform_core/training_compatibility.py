@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import MaterialRepository
+from .material_repository import (
+    DATASET_DELETE_CLAIM_FIELD,
+    MATERIAL_BATCH_DELETE_CLAIM_FIELD,
+    MaterialRepository,
+)
 from .training_label_tasks import (
     resolve_training_label_contract,
     training_material_scope_issue,
@@ -82,7 +86,10 @@ def _issue_for_row(
 ) -> dict[str, Any] | None:
     image_id = str(row.get("id") or row.get("image_id") or "")
     required = list(contract.get("effective_label_codes") or [])
-    if row.get("_dataset_delete_claim"):
+    if (
+        row.get(DATASET_DELETE_CLAIM_FIELD)
+        or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+    ):
         issue = {
             "image_id": image_id,
             "issue_type": "material_unavailable",

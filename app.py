@@ -190,6 +190,7 @@ from platform_core.material_batches import (
     create_annotation_remap_batch,
     create_annotation_remap_by_label,
     create_annotation_remap_by_labels,
+    assert_material_input_admission,
     estimate_batch as estimate_material_batch,
     prepare_batch as prepare_material_batch,
     publish_prepared_batch as publish_prepared_material_batch,
@@ -7587,8 +7588,18 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         str(asset_algorithm.get("id") or ""),
         reference_version_id,
         require_current=True,
-    ):
+    ), material_annotation_lifecycle_fence(project_dir(project_id)):
         try:
+            assert_material_input_admission(
+                project_id,
+                [
+                    *requested_split.train_image_ids,
+                    *requested_split.test_image_ids,
+                ],
+                material_store(project_id),
+                shared_task_repository(),
+                shared_task_artifacts(),
+            )
             compatibility_request = _training_compatibility_request(
                 project_id,
                 asset_algorithm,
@@ -7600,6 +7611,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                 compatibility_request,
                 asset_algorithm,
             )
+        except MaterialBatchRequestError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         if compatibility.issues:
@@ -16680,8 +16696,8 @@ def _v39_create_deploy_job_under_version_fence(
                 "code": error.code,
                 "message": str(error),
             }
-    _write_deploy_job(project_id,job)
     if resource_mode=="remote":
+        _write_deploy_job(project_id,job)
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
         request_payload = {
@@ -16693,16 +16709,39 @@ def _v39_create_deploy_job_under_version_fence(
         }
         if portable_conversion is not None:
             request_payload["remote_execution"] = portable_conversion
-        shared_task_artifacts().atomic_write_json(job_id, "request.json", request_payload)
-        shared_task_repository().create(TaskRecord.new(
-            job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
-            f"conversion:{resource.get('id') or payload.target}",
-            required_capabilities=(
-                ("agent.remote",)
-                if resource_mode == "agent"
-                else ("conversion.runtime",)
-            ),
-        ))
+        calibration_items = list(
+            ((portable_calibration or {}).get("items") or [])
+        )
+        try:
+            with material_annotation_lifecycle_fence(project_dir(project_id)):
+                if calibration_items:
+                    assert_material_input_admission(
+                        project_id,
+                        [str(item.get("image_id") or "") for item in calibration_items],
+                        material_store(project_id),
+                        shared_task_repository(),
+                        shared_task_artifacts(),
+                        expected_inputs=calibration_items,
+                    )
+                _write_deploy_job(project_id,job)
+                shared_task_artifacts().atomic_write_json(job_id, "request.json", request_payload)
+                shared_task_repository().create(TaskRecord.new(
+                    job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
+                    f"conversion:{resource.get('id') or payload.target}",
+                    required_capabilities=(
+                        ("agent.remote",)
+                        if resource_mode == "agent"
+                        else ("conversion.runtime",)
+                    ),
+                ))
+        except MaterialBatchRequestError as error:
+            raise PlatformError(
+                code=error.code,
+                message="模型转换素材已不可安全受理",
+                detail=str(error),
+                solution="请等待素材删除结束后刷新校准集，或取消删除任务后重试。",
+                status_code=error.status_code,
+            ) from error
         job["task_id"] = job_id
         _write_deploy_job(project_id, job)
     return {"ok":True,"job":job}

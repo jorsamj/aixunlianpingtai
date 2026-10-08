@@ -21,6 +21,7 @@ class FakeArtifacts:
 class FakeRepository:
     def __init__(self):
         self.created = []
+        self.material_admissions = []
 
     def create(self, task):
         self.created.append(task)
@@ -255,6 +256,16 @@ def _patch_creation(monkeypatch, tmp_path, transport):
     monkeypatch.setattr(app_module, "shared_task_artifacts", lambda: artifacts)
     monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
     monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: transport)
+    monkeypatch.setattr(
+        app_module,
+        "assert_material_input_admission",
+        lambda project_id, image_ids, _materials, _repository, _artifacts,
+        **kwargs: repository.material_admissions.append({
+            "project_id": str(project_id),
+            "image_ids": list(image_ids),
+            "expected_inputs": list(kwargs.get("expected_inputs") or []),
+        }),
+    )
     return model, jobs, artifacts, repository
 
 
@@ -649,6 +660,11 @@ def test_agent_rknn_int8_freezes_calibration_snapshot_before_task_staging(
     }]
     assert len(transport.calls) == 1
     assert transport.calls[0]["calibration_snapshot"] == snapshot
+    assert repository.material_admissions == [{
+        "project_id": "p1",
+        "image_ids": ["cal-1", "cal-2"],
+        "expected_inputs": snapshot["items"],
+    }]
     assert transport.calls[0]["params"]["precision"] == "int8"
     assert transport.calls[0]["params"]["calibration_count"] == 2
     assert transport.calls[0]["params"]["calibration_snapshot"] == snapshot["snapshot_id"]

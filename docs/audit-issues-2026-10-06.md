@@ -8685,6 +8685,8 @@ CandidateStore 已经有：
 
 ### AUDIT-084 — MaterialBatch DELETE_SOURCE 的 Training fence 是单向 TOCTOU；新训练可在检查后创建，源文件先被删、后续索引删除才被阻止
 
+**2026-10-08 修复状态：IMPLEMENTED / CI PENDING（VERSION 42.24.301）。** 删除 publish 与训练 admission 已共享既有 Material lifecycle fence；`DELETE_SOURCE` 在 provider I/O 前建立 Material-owned destructive claim，I/O 在锁外，成功后不再允许 cancellation 打断 index/GT finalize。活动依赖从 TaskRepository/artifacts 派生，终态自动释放；模糊删除由同一任务 retry/recovery 完成。
+
 **级别：高**  
 **模块：MaterialBatch / DELETE_SOURCE / Training Prepare / Lifecycle Fence / Physical Storage**
 
@@ -23030,6 +23032,8 @@ INT8 calibration 会直接影响量化 scale/zero-point 和最终模型精度。
 ---
 
 ### AUDIT-168 — Agent RKNN INT8 已受理后校准对象仍可被 MaterialBatch DELETE_SOURCE 删除；active dependency fence 只保护 Training
+
+**2026-10-08 修复状态：IMPLEMENTED / CI PENDING（VERSION 42.24.301）。** MaterialBatch 删除 owner 已识别活动 MODEL_CONVERSION calibration 的 image/object references；Agent INT8 conversion 最终 publish 在共享 lifecycle fence 内重验 frozen Material identity 与 delete state。终态/排队取消自然释放依赖，不建立第二套 pin owner，也不自动替换校准图。
 
 **级别：高**  
 **模块：Agent MODEL_CONVERSION / RKNN INT8 Calibration / MaterialBatch DELETE_SOURCE / Lifecycle Dependency Fence**

@@ -21,6 +21,7 @@ _Result = TypeVar("_Result")
 _SCHEMA_VERSION = 4
 _INIT_LOCK_TIMEOUT = 30
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
+MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
 _MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
 _LIFECYCLE_LOCK_TIMEOUT = 60
 _LIFECYCLE_LOCAL = threading.local()
@@ -104,6 +105,14 @@ class AnnotationMaterialLifecycleError(RuntimeError):
 
 class AnnotationProjectionConflictError(RuntimeError):
     """The same canonical Annotation version was projected with two identities."""
+
+
+class MaterialTaskInputConflictError(RuntimeError):
+    """A task input can no longer be admitted against canonical Material truth."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = str(code)
 
 
 @contextmanager
@@ -517,6 +526,81 @@ class MaterialRepository:
         by_id = {str(row["id"]): self._row_payload(row) for row in rows}
         return [by_id[image_id] for image_id in ids if image_id in by_id]
 
+    def assert_task_input_admission(
+        self,
+        image_ids: Iterable[str],
+        *,
+        expected_inputs: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Revalidate task inputs inside the shared Material lifecycle fence.
+
+        Storage I/O and expensive snapshot construction belong outside this
+        method.  This is the final short commit-time check before an input task
+        becomes durable, and therefore validates only canonical Material truth
+        plus any already-frozen identity evidence.
+        """
+        ids = list(dict.fromkeys(
+            str(value).strip() for value in image_ids if str(value).strip()
+        ))
+        expected_by_id = {
+            str(item.get("image_id") or item.get("id") or "").strip(): dict(item)
+            for item in (expected_inputs or ())
+            if isinstance(item, Mapping)
+            and str(item.get("image_id") or item.get("id") or "").strip()
+        }
+        if expected_by_id and set(expected_by_id) != set(ids):
+            raise MaterialTaskInputConflictError(
+                "MATERIAL_INPUT_IDENTITY_CHANGED",
+                "frozen task input identity does not match the admitted material selection",
+            )
+        with material_annotation_lifecycle_fence(self.project_path):
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset:offset + 500]
+                rows = self.get_many(chunk)
+                by_id = {str(row.get("id") or ""): row for row in rows}
+                for image_id in chunk:
+                    row = by_id.get(image_id)
+                    if row is None:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_UNAVAILABLE",
+                            f"material {image_id} does not exist",
+                        )
+                    if (
+                        row.get(DATASET_DELETE_CLAIM_FIELD)
+                        or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+                    ):
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_DELETE_IN_PROGRESS",
+                            f"material {image_id} is being deleted",
+                        )
+                    if row.get("source_available") is False:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_UNAVAILABLE",
+                            f"material {image_id} source is unavailable",
+                        )
+                    expected = expected_by_id.get(image_id)
+                    if expected is None:
+                        continue
+                    current_identity = (
+                        str(row.get("storage_source_id") or ""),
+                        str(row.get("object_key") or ""),
+                        int(row.get("size_bytes") or 0),
+                        str(row.get("content_sha256") or "").strip().lower(),
+                    )
+                    expected_identity = (
+                        str(expected.get("storage_source_id") or ""),
+                        str(expected.get("object_key") or ""),
+                        int(expected.get("size_bytes") or 0),
+                        str(expected.get("sha256") or expected.get("content_sha256") or "")
+                        .strip()
+                        .lower(),
+                    )
+                    if current_identity != expected_identity:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_IDENTITY_CHANGED",
+                            f"material {image_id} changed after its task input was frozen",
+                        )
+
     def assert_formal_annotation_admission(
         self, expected_content_sha256_by_id: Mapping[str, str | None],
     ) -> dict[str, dict[str, Any]]:
@@ -544,7 +628,10 @@ class MaterialRepository:
                     raise AnnotationMaterialLifecycleError(
                         f"material {image_id} does not exist"
                     )
-                if row.get(DATASET_DELETE_CLAIM_FIELD):
+                if (
+                    row.get(DATASET_DELETE_CLAIM_FIELD)
+                    or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+                ):
                     raise AnnotationMaterialLifecycleError(
                         f"material {image_id} is being deleted"
                     )

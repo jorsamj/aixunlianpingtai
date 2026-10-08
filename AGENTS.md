@@ -1,5 +1,13 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — Active task material dependency fence
+
+- VERSION `42.24.301` implements the code-level closure for AUDIT-084 and AUDIT-168 on the existing MaterialRepository, TaskRepository, MaterialBatch, Training, and MODEL_CONVERSION owners.
+- Training/RKNN calibration admission and destructive MaterialBatch publication now share the existing project Material lifecycle fence. Active dependency truth is derived from canonical task status/artifacts; no dependency table, manager, scheduler, or second owner was added.
+- `DELETE_SOURCE` records a Material-owned short destructive claim immediately before provider deletion, performs storage I/O outside the fence/DB transaction, then completes canonical GT/index removal without a cancellation gap. Ambiguous provider outcomes retain the claim and original task tombstone for retry/recovery.
+- Active RKNN INT8 calibration references are protected by both `image_id` and storage source/object identity. Final conversion admission revalidates source, object key, size, SHA, availability, and delete state after remote snapshot/staging work.
+- Focused local tests are recorded in `docs/codex-handoff.md`. Exact pushed-HEAD CI remains mandatory; real OSS/RKNN/GPU behavior is `PENDING USER UAT`.
+
 ## 2026-10-08 live override — Material / Annotation lifecycle + monotonic projection
 
 - VERSION `42.24.300` closes the code-level residuals of AUDIT-149/157/173 and AUDIT-102 on the canonical owners; it also preserves explicit empty Ground Truth during deferred structured imports and locks the new Material-before-GT/versioned-projection batch contract.
