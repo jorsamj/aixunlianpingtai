@@ -29,7 +29,7 @@ function preparePlainUpload411(form){
 }
 function finishPlainUpload411(ticket){
   if(ticket)savePlainUploadEntries411(
-    pendingPlainUploadEntries411().filter(row=>row?.signature!==ticket.signature)
+    pendingPlainUploadEntries411().filter(row=>row?.signature!==ticket.signature||row?.id!==ticket.id)
   );
 }
 function settlePlainUploadResponse411(ticket,status,responseText){

@@ -81,7 +81,7 @@ test('source, project, and file identity are fenced independently', () => {
 });
 
 test('fetch and XHR ordinary image upload paths reuse one request envelope', () => {
-  assert.ok(indexHtml.includes('app.js?v=42.25.327'), 'the new runtime must not use the stale cached app.js');
+  assert.ok(indexHtml.includes('app.js?v=42.25.328'), 'the new runtime must not use the stale cached app.js');
   assert.ok(source.includes("preparePlainUpload411(opt.body)"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(form);const xhr=new XMLHttpRequest()"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
@@ -100,6 +100,9 @@ test('only server-confirmed byte mismatch releases ambiguous upload request ID',
   h.settle(original, 409, JSON.stringify({code:'UPLOAD_REQUEST_MANIFEST_MISMATCH'}));
   const renewed = h.claim(h.form());
   assert.notEqual(renewed.id, original.id);
+  // A late response for the previous request must not clear the newer ID.
+  h.settle(original, 200, '{}');
+  assert.equal(h.claim(h.form()).id, renewed.id);
   h.settle(renewed, 200, '{}');
   assert.notEqual(h.claim(h.form()).id, renewed.id);
 });

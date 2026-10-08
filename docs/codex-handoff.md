@@ -1,3 +1,10 @@
+## 2026-10-08 最小安全上线 Gate S11：浏览器旧请求晚响应不得释放新收据（42.24.328）
+
+- 上一安全修复 `ab76fc47` 已提交 `42.24.327`；同 HEAD 47 个 Actions queued，CI/UAT 未完成。
+- 在服务端 SHA256 mismatch 409 自动释放旧 pending ID 后，若用户很快选择相同文件元信息启动新批次，旧 Fetch/XHR 的晚到成功或冲突回调可能按 signature 清除新请求 ID。当前 finish helper 只按 signature 删除，不验证 request ID。
+- 最小补丁：复用现有 `finishPlainUpload411`，sessionStorage 清理要求 signature 和 id 双重匹配；无新 Owner。前端回归覆盖旧响应晚于新 ID 创建时不清除新的 ID，已有 XHR/Fetch/刷新重试合同仍保留。同步正式 app.js 缓存标识及 `VERSION.txt`。
+- **状态：CODE IMPLEMENTED / LATEST CI+UAT PENDING；并非 CLOSED / READY FOR PRODUCTION。** 不合并、不 tag、不部署。
+
 ## 2026-10-08 最小安全上线 Gate S10：普通上传请求内容 SHA256 身份校验（42.24.327）
 
 - 起点远端 HEAD `503d09fd30e69f8d94eabb53ec49a14e543672cf`，版本 `42.24.326`；精确查询 21 个 Actions 和 55 个 check-runs 全部 queued，不能认定上一版验收通过。历史 `301c55d` 的 API 2 项错误已修但仍待新 HEAD 真实执行。
