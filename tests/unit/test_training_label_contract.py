@@ -17,6 +17,7 @@ from platform_core.training_label_tasks import (
     project_training_rows,
     resolve_training_label_contract,
     selected_material_label_codes,
+    training_material_scope_issue,
 )
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
 from platform_core.training_tasks import (
@@ -1103,3 +1104,65 @@ def test_scoped_projection_reuses_frozen_rows_without_second_annotation_io(tmp_p
     assert projected[0]["source_labels"] == ["fire", "person"]
     assert projected[-1]["boxes"][0]["label"] == "fire"
     assert all("annotation_hash" not in row for row in projected)
+
+
+def test_scope_issue_returns_every_missing_effective_label():
+    issue = training_material_scope_issue(
+        {
+            "id": "partial",
+            "annotation_state": "annotated",
+            "annotation_scope": ["helmet"],
+            "boxes": [{"label": "helmet", "class_id": 0}],
+        },
+        {"effective_label_codes": ["helmet", "cigarette", "person"]},
+    )
+
+    assert issue == {
+        "image_id": "partial",
+        "issue_type": "partial_review_scope",
+        "annotation_state": "annotated",
+        "annotation_scope": ["helmet"],
+        "required_label_codes": ["helmet", "cigarette", "person"],
+        "missing_label_codes": ["cigarette", "person"],
+    }
+
+
+def test_scope_issue_accepts_explicitly_complete_scope():
+    assert training_material_scope_issue(
+        {
+            "id": "complete",
+            "annotation_state": "confirmed_empty",
+            "annotation_scope": ["helmet", "person"],
+            "boxes": [],
+        },
+        {"effective_label_codes": ["helmet", "person"]},
+    ) is None
+
+
+def test_scope_issue_treats_legacy_positive_labels_as_minimum_review_evidence():
+    issue = training_material_scope_issue(
+        {
+            "id": "legacy",
+            "annotation_state": "annotated",
+            "annotation_scope": [],
+            "boxes": [{"label": "helmet", "class_id": 0}],
+        },
+        {"effective_label_codes": ["helmet", "person"]},
+    )
+
+    assert issue["missing_label_codes"] == ["person"]
+
+
+def test_scope_issue_reports_missing_formal_annotation():
+    issue = training_material_scope_issue(
+        {
+            "id": "pending",
+            "annotation_state": "unannotated",
+            "annotation_scope": [],
+            "boxes": [],
+        },
+        {"effective_label_codes": ["helmet"]},
+    )
+
+    assert issue["issue_type"] == "missing_annotation"
+    assert issue["missing_label_codes"] == ["helmet"]

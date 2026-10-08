@@ -1,7 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createAnnotationWorkbench, queueWindow} from '../../static/modules/annotation-workbench.js';
+import {
+  annotationReviewView,
+  annotationSavePayload,
+  createAnnotationWorkbench,
+  queueWindow,
+} from '../../static/modules/annotation-workbench.js';
+
+
+test('review labels remain unchecked until the user explicitly selects them', () => {
+  assert.deepEqual(
+    annotationReviewView(
+      {annotation_scope: ['helmet']},
+      ['helmet', 'vest', 'person'],
+    ),
+    {
+      reviewed: ['helmet'],
+      required: ['helmet', 'vest', 'person'],
+      pending: ['vest', 'person'],
+    },
+  );
+  assert.deepEqual(
+    annotationSavePayload({
+      annotation: {version: 7},
+      image: {content_sha256: 'a'.repeat(64)},
+      boxes: [{label: 'helmet'}],
+    }).reviewed_label_codes,
+    [],
+  );
+});
+
+
+test('legacy wildcard scope remains read-compatible without creating new checks', () => {
+  assert.deepEqual(
+    annotationReviewView({annotation_scope: ['*']}, ['helmet', 'person']),
+    {reviewed: ['*'], required: ['helmet', 'person'], pending: []},
+  );
+});
+
+
+test('save and confirm sends only explicitly checked review labels with CAS identities', () => {
+  const payload = annotationSavePayload({
+    annotation: {version: 7},
+    image: {content_sha256: 'a'.repeat(64)},
+    boxes: [{label: 'helmet'}],
+    reviewedLabelCodes: ['vest', 'vest'],
+  });
+  assert.equal(payload.expected_version, 7);
+  assert.equal(payload.source_content_sha256, 'a'.repeat(64));
+  assert.deepEqual(payload.reviewed_label_codes, ['vest']);
+});
 
 
 test('stale annotation response cannot replace the newest image', async () => {

@@ -11,6 +11,7 @@ import hashlib
 import re
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import quote
 
 from .task_runtime import TaskKind, TaskStatus
 
@@ -243,7 +244,7 @@ def training_recovery_router(
     agent_clean_selection_page_provider=None,
     agent_clean_selection_read_provider=None,
 ):
-    from fastapi import APIRouter, Body, HTTPException
+    from fastapi import APIRouter, Body, HTTPException, Query
 
     recovery_router = APIRouter(prefix="/api/v62/projects/{project_id}/training-tasks")
 
@@ -253,6 +254,80 @@ def training_recovery_router(
         if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
             raise HTTPException(status_code=404, detail="训练任务不存在")
         return task
+
+    @recovery_router.get("/{task_id}/input-issues")
+    def input_issues(
+        project_id: str,
+        task_id: str,
+        page: int = Query(default=1, ge=1),
+        limit: int = Query(default=50, ge=1, le=100),
+    ):
+        require_task(project_id, task_id)
+        artifacts = task_artifacts()
+        manifest = artifacts.read_json(
+            task_id,
+            "input-compatibility/manifest.json",
+            default=None,
+        )
+        if not isinstance(manifest, Mapping):
+            raise HTTPException(status_code=404, detail="训练输入异常证据不存在")
+        issue_count = max(0, int(manifest.get("issue_count") or 0))
+        stored_page_size = max(1, min(100, int(manifest.get("page_size") or 100)))
+        refs = {
+            int(item.get("page") or 0): str(item.get("ref") or "")
+            for item in (manifest.get("pages") or [])
+            if isinstance(item, Mapping)
+            and str(item.get("ref") or "").startswith("input-compatibility/pages/")
+        }
+        start = (page - 1) * limit
+        stop = min(issue_count, start + limit)
+        items: list[dict[str, Any]] = []
+        if start < stop:
+            first_stored_page = start // stored_page_size + 1
+            last_stored_page = (stop - 1) // stored_page_size + 1
+            for stored_page in range(first_stored_page, last_stored_page + 1):
+                ref = refs.get(stored_page)
+                if not ref:
+                    raise HTTPException(status_code=409, detail="训练输入异常证据不完整")
+                rows = artifacts.read_json(task_id, ref, default=None)
+                if not isinstance(rows, list):
+                    raise HTTPException(status_code=409, detail="训练输入异常证据不完整")
+                source_start = (stored_page - 1) * stored_page_size
+                local_start = max(0, start - source_start)
+                local_stop = min(len(rows), stop - source_start)
+                items.extend(
+                    {
+                        **dict(item),
+                        "thumbnail_url": (
+                            f"/api/v62/projects/{quote(str(project_id), safe='')}"
+                            "/training-materials/"
+                            f"{quote(str(item.get('image_id') or ''), safe='')}/thumbnail"
+                        ),
+                        "content_url": (
+                            f"/api/v61/projects/{quote(str(project_id), safe='')}/materials/"
+                            f"{quote(str(item.get('image_id') or ''), safe='')}/content"
+                        ),
+                    }
+                    for item in rows[local_start:local_stop]
+                    if isinstance(item, Mapping)
+                )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "issue_count": issue_count,
+            "issue_counts": dict(manifest.get("issue_counts") or {}),
+            "required_label_codes": list(
+                manifest.get("required_label_codes") or []
+            ),
+            "material_revision": int(manifest.get("material_revision") or 0),
+            "annotation_revision": int(manifest.get("annotation_revision") or 0),
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total_pages": (
+                (issue_count + limit - 1) // limit if issue_count else 0
+            ),
+        }
 
     @recovery_router.get("/{task_id}/recovery")
     def recovery(project_id: str, task_id: str):

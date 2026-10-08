@@ -152,6 +152,10 @@ from platform_core.training_label_tasks import (
     resolve_training_label_contract,
 )
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
+from platform_core.training_compatibility import (
+    compatibility_page,
+    evaluate_training_compatibility,
+)
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import (
     apply_training_display_progress,
@@ -5050,6 +5054,8 @@ class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
     annotation_state: Optional[Literal["annotated", "confirmed_empty"]] = None
     expected_version: Optional[int] = None
+    source_content_sha256: Optional[str] = None
+    reviewed_label_codes: List[str] = Field(default_factory=list)
 
 
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
@@ -5060,11 +5066,68 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     img = rows[0] if rows else None
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
+    if img.get(_V50_DATASET_DELETE_CLAIM_FIELD) or img.get("source_available") is False:
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_UNAVAILABLE",
+            message="素材当前不可审核",
+            detail="素材正在删除或来源已不可用，本次标注未保存。",
+            solution="请刷新素材列表；如来源恢复可用，再重新进入标注工作台。",
+            status_code=409,
+        )
+    current_content_sha256 = str(img.get("content_sha256") or "").strip().lower()
+    submitted_content_sha256 = str(payload.source_content_sha256 or "").strip().lower()
+    reviewed_label_codes = sorted({
+        str(code or "").strip()
+        for code in payload.reviewed_label_codes
+        if str(code or "").strip()
+    })
+    if reviewed_label_codes and payload.expected_version is None:
+        raise PlatformError(
+            code="ANNOTATION_EXPECTED_VERSION_REQUIRED",
+            message="补审提交缺少版本信息",
+            detail="保存并确认审核必须携带打开工作台时读取的标注版本。",
+            solution="请刷新当前图片，重新核对标注框和待审核标签后提交。",
+            status_code=422,
+        )
+    if reviewed_label_codes and not submitted_content_sha256:
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_GENERATION_REQUIRED",
+            message="补审提交缺少素材代际信息",
+            detail="保存并确认审核必须携带打开工作台时读取的素材内容摘要。",
+            solution="请刷新当前图片，重新查看真实图片后提交。",
+            status_code=422,
+        )
+    if submitted_content_sha256 and submitted_content_sha256 != current_content_sha256:
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_GENERATION_CHANGED",
+            message="素材内容已经变化",
+            detail="当前素材与打开标注工作台时看到的内容不是同一代，本次提交未写入。",
+            solution="请刷新当前图片，基于最新内容重新标注和审核。",
+            status_code=409,
+        )
     label_ids = {
         str(item["code"]): int(item["class_id"])
         for item in active_label_options(project_label_items(project))
     }
-    existing_boxes = list(read_annotation(project_id, image_id).get("boxes") or [])
+    existing_annotation = read_annotation(project_id, image_id)
+    existing_boxes = list(existing_annotation.get("boxes") or [])
+    if "*" in reviewed_label_codes:
+        raise PlatformError(
+            code="ANNOTATION_REVIEW_SCOPE_WILDCARD_FORBIDDEN",
+            message="审核范围不允许使用通配符",
+            detail="必须逐项确认本次真实完成审核的标签，不能写入 *。",
+            solution="请只勾选已经查看图片并完成审核的具体标签。",
+            status_code=422,
+        )
+    unavailable_reviewed = sorted(set(reviewed_label_codes) - set(label_ids))
+    if unavailable_reviewed:
+        raise PlatformError(
+            code="ANNOTATION_LABEL_STATE_CHANGED",
+            message="标签状态已变化，标注未保存",
+            detail="以下标签已停用、合并或不存在：" + "、".join(unavailable_reviewed),
+            solution="请刷新当前图片和标签列表，确认当前有效标签后重新保存。",
+            status_code=409,
+        )
     try:
         clean_boxes = normalize_boxes(
             payload.boxes,
@@ -5103,13 +5166,27 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             status_code=409,
         )
     annotation_state = "annotated" if clean_boxes else "confirmed_empty"
+    existing_scope = {
+        str(code).strip()
+        for code in (existing_annotation.get("annotation_scope") or [])
+        if str(code).strip()
+    }
+    next_scope = sorted(existing_scope | set(reviewed_label_codes))
+    if not clean_boxes and not next_scope:
+        raise PlatformError(
+            code="ANNOTATION_REVIEW_LABEL_REQUIRED",
+            message="请选择已经完成审核的标签",
+            detail="无目标素材必须明确选择本次确实检查过的类别，不能创建无范围的负样本。",
+            solution="勾选已逐类检查的标签后，使用“保存并确认审核”。",
+            status_code=409,
+        )
     try:
         saved_annotation = write_annotation(
             project_id,
             image_id,
             clean_boxes,
             annotation_state,
-            annotation_scope=sorted(label_ids),
+            annotation_scope=next_scope,
             expected_version=payload.expected_version,
         )
     except AnnotationConflictError as error:
@@ -5131,9 +5208,45 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请刷新当前图片和标签列表，确认当前有效标签后重新保存。",
             status_code=409,
         ) from error
-    refreshed = materials.get_many([str(image_id)])
-    fresh = refreshed[0] if refreshed else img
-    return {"ok": True, "image": fresh, "annotation": saved_annotation, "saved_boxes": len(clean_boxes)}
+    fresh = materials.get(str(image_id))
+    fresh_content_sha256 = str((fresh or {}).get("content_sha256") or "").strip().lower()
+    if not fresh or fresh.get(_V50_DATASET_DELETE_CLAIM_FIELD) or fresh.get("source_available") is False:
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_UNAVAILABLE",
+            message="素材状态在保存期间发生变化",
+            detail="标注已按版本写入，但素材已删除、正在删除或来源不可用，不能作为训练真值。",
+            solution="请刷新素材列表并确认当前状态。",
+            status_code=409,
+        )
+    if fresh_content_sha256 != current_content_sha256:
+        materials.patch({str(image_id): {
+            "annotation_needs_review": True,
+            "annotation_review_reason": "SOURCE_CONTENT_CHANGED",
+            "needs_review": True,
+        }})
+        raise PlatformError(
+            code="ANNOTATION_MATERIAL_GENERATION_CHANGED",
+            message="素材内容在保存期间发生变化",
+            detail="本次标注不能证明最新素材代际已经完成审核，系统已保持重新审核标记。",
+            solution="请刷新当前图片，基于最新内容重新标注和审核。",
+            status_code=409,
+        )
+    reviewed_added = sorted(set(next_scope) - existing_scope)
+    return {
+        "ok": True,
+        "image": fresh,
+        "annotation": saved_annotation,
+        "saved_boxes": len(clean_boxes),
+        "reviewed_label_codes_added": reviewed_added,
+        "review_evidence": {
+            "annotation_version": int(saved_annotation.get("version") or 0),
+            "annotation_digest": str(saved_annotation.get("content_digest") or ""),
+            "source_content_sha256": current_content_sha256,
+            "annotation_scope": list(saved_annotation.get("annotation_scope") or []),
+            "reviewed_label_codes_added": reviewed_added,
+            "saved_at": str(saved_annotation.get("updated_at") or ""),
+        },
+    }
 
 
 class BuildDatasetReq(BaseModel):
@@ -7121,6 +7234,49 @@ def _training_reusable_benchmark(
     }
 
 
+def _training_compatibility_request(
+    project_id: str,
+    asset_algorithm: Dict[str, Any],
+    request: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Resolve server-private Benchmark IDs before the shared scope check."""
+    resolved = dict(request)
+    benchmark = _training_reusable_benchmark(
+        project_id,
+        asset_algorithm,
+        str(request.get("benchmark_source_version_id") or ""),
+        str(request.get("benchmark_scope_id") or ""),
+    )
+    if benchmark is None:
+        return resolved
+    submitted_test_ids = tuple(request.get("test_image_ids") or ())
+    if submitted_test_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="复用固定评测基准时不能同时提交前端试验素材清单",
+        )
+    train_ids = tuple(request.get("train_image_ids") or request.get("image_ids") or ())
+    test_ids = tuple(benchmark["test_image_ids"])
+    rows = MaterialRepository(project_dir(project_id)).get_many((*train_ids, *test_ids))
+    effective_train_ids, _reserved_ids = exclude_reserved_test_components(
+        rows,
+        train_ids,
+        test_ids,
+    )
+    if not effective_train_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="所选训练候选全部属于固定评测保留范围",
+        )
+    resolved.update({
+        "split_mode": SplitMode.INDEPENDENT_TEST_SET.value,
+        "train_image_ids": list(effective_train_ids),
+        "test_image_ids": list(test_ids),
+        "experiment_percent": None,
+    })
+    return resolved
+
+
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/benchmark-reuse")
 def training_benchmark_reuse(project_id: str, algorithm_id: str):
     get_project(project_id)
@@ -7395,6 +7551,31 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         reference_version_id,
         require_current=True,
     ):
+        try:
+            compatibility_request = _training_compatibility_request(
+                project_id,
+                asset_algorithm,
+                raw_request,
+            )
+            compatibility = evaluate_training_compatibility(
+                DATA_DIR,
+                project_dir(project_id),
+                compatibility_request,
+                asset_algorithm,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if compatibility.issues:
+            page = compatibility_page(compatibility, limit=100)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE",
+                    "message": "所选素材的审核范围未覆盖本次训练标签，请先补审或排除素材",
+                    **compatibility.summary(),
+                    **page,
+                },
+            )
         shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
         record = shared_task_repository().create(
             replace(
@@ -21429,6 +21610,14 @@ app.include_router(training_material_picker_router(
     get_project,
     lambda: DATA_DIR,
     project_path_provider=project_dir,
+    algorithm_provider=lambda project_id, algorithm_id: next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id or "")
+        ),
+        None,
+    ),
+    compatibility_payload_provider=_training_compatibility_request,
 ))
 app.include_router(training_recovery_router(
     get_project,

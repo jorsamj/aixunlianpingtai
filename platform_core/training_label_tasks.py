@@ -629,6 +629,47 @@ def _projection_digest(
     ).hexdigest()
 
 
+def training_material_scope_issue(
+    row: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the task-specific review gap without changing formal GT.
+
+    This is the shared admission/projection rule.  A legacy positive row with
+    no explicit scope proves only the labels that have boxes; every other task
+    label still needs explicit human review.  New code must never manufacture
+    ``*`` or widen the persisted scope here.
+    """
+    required = _unique_codes(contract.get("effective_label_codes") or [])
+    state = str(row.get("annotation_state") or "unannotated")
+    scope = _unique_codes(row.get("annotation_scope") or [])
+    boxes = [dict(box) for box in (row.get("boxes") or [])]
+    present = _unique_codes(
+        box.get("label") or box.get("code") for box in boxes
+    )
+    reviewed = set(scope)
+    if state == "annotated" and not reviewed:
+        reviewed = set(present)
+
+    if state not in {"annotated", "confirmed_empty"}:
+        issue_type = "missing_annotation"
+        missing = sorted(set(required))
+    else:
+        missing = [] if "*" in reviewed else sorted(set(required) - reviewed)
+        if not missing:
+            return None
+        issue_type = "partial_review_scope"
+
+    return {
+        "image_id": str(row.get("id") or row.get("image_id") or ""),
+        "issue_type": issue_type,
+        "annotation_state": state,
+        "annotation_scope": scope,
+        "required_label_codes": required,
+        "missing_label_codes": missing,
+    }
+
+
 def project_training_rows(
     rows: Sequence[Mapping[str, Any]],
     contract: Mapping[str, Any],
@@ -676,6 +717,19 @@ def project_training_rows(
         else:
             row["source_labels"] = present
 
+        scope_issue = training_material_scope_issue(row, contract)
+        if scope_issue is not None:
+            missing = list(scope_issue["missing_label_codes"])
+            if scope_issue["issue_type"] == "missing_annotation":
+                raise ValueError(
+                    f"训练素材 {scope_issue['image_id']} 尚未形成正式标注"
+                )
+            raise ValueError(
+                f"训练素材 {scope_issue['image_id']} "
+                "标注审核范围未覆盖本次算法的全部标签: "
+                + ", ".join(missing[:5])
+            )
+
         if excluded_boxes:
             row["training_excluded_boxes"] = excluded_boxes
             row["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY
@@ -687,21 +741,8 @@ def project_training_rows(
             )
 
         if state == "annotated":
-            # The original formal GT must cover every class in the task schema.
-            # Filtering away unselected boxes cannot prove that an unreviewed
-            # class is absent, even if the projection becomes a negative image.
             reviewed = {str(value).strip() for value in raw_scope if str(value).strip()}
-            if "*" not in reviewed:
-                # Legacy positive rows without an explicit scope only prove
-                # the labels whose boxes were actually confirmed.
-                reviewed = reviewed or set(present)
-                missing = sorted(allowed - reviewed)
-                if missing:
-                    raise ValueError(
-                        f"训练素材 {row.get('id') or row.get('image_id') or ''} "
-                        "标注审核范围未覆盖本次算法的全部标签: "
-                        + ", ".join(missing[:5])
-                    )
+            reviewed = reviewed or set(present)
             if selected_boxes:
                 row["annotation_state"] = "annotated"
                 row["annotated"] = True

@@ -923,6 +923,14 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 
 /* v66 annotation truth badges + low-cost motion */
 .data426-meta .annotation-status-v66,.ann420-origin-badge,.ann420-queue-status{display:inline-flex;align-items:center;width:max-content;max-width:100%;border:1px solid transparent;border-radius:999px;font-style:normal;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ann420-review-panel small{display:block;margin:6px 0;color:var(--muted,#667085)}
+.ann420-review-tags,.ann420-review-checks{display:flex;flex-wrap:wrap;gap:6px}
+.ann420-review-tags span,.ann420-review-checks label{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid #dbe3ee;border-radius:999px;background:#f8fafc;font-size:12px}
+.ann420-review-checks label{cursor:pointer;background:#fff8e8;border-color:#f3dfad}
+.training-compatibility-list{display:grid;gap:12px;max-height:70vh;overflow:auto}
+.training-compatibility-item{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;padding:12px;border:1px solid #e4e7ec;border-radius:12px}
+.training-compatibility-item img{width:120px;height:90px;object-fit:cover;border-radius:8px;background:#f2f4f7}
+.training-compatibility-item p{margin:4px 0;font-size:12px}.training-compatibility-item .warn{color:#b54708}
 .data426-meta .annotation-status-v66{min-height:20px;padding:2px 7px;gap:5px;font-size:10px;line-height:1.2;transition:background-color var(--motion-base,.16s) var(--motion-ease,ease),border-color var(--motion-base,.16s) var(--motion-ease,ease),color var(--motion-base,.16s) var(--motion-ease,ease),box-shadow var(--motion-base,.16s) var(--motion-ease,ease)}
 .ann420-origin-badge{margin-left:6px;padding:2px 6px;gap:4px;font-size:9px;vertical-align:1px}.ann420-queue-status{margin-top:3px!important;padding:2px 6px;gap:4px;font-size:9px!important;line-height:1.2}
 .data426-meta .annotation-status-v66::before,.ann420-origin-badge::before,.ann420-queue-status::before{content:"";width:5px;height:5px;flex:0 0 5px;border-radius:999px;background:currentColor;opacity:.68}

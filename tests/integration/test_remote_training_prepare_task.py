@@ -378,6 +378,58 @@ def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_que
     assert "remote_execution" not in payload
 
 
+def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    meta["labels"].append("smoke")
+    meta["label_meta"].append({"code": "smoke", "class_id": 1})
+    (project / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    AnnotationRepository(project).upsert(
+        "image-3",
+        [{
+            "id": "image-3-smoke",
+            "label": "smoke",
+            "class_id": 1,
+            "x1": 5,
+            "y1": 5,
+            "x2": 40,
+            "y2": 40,
+        }],
+        "annotated",
+        annotation_scope=["fire", "smoke"],
+    )
+    repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload["schema_version"] = 4
+    payload["training_input_state"] = "PREPARING"
+    payload["train_labels"] = ["fire", "smoke"]
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "training-prep-scope-drift",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    )
+
+    assert scheduler.run_once() is True
+
+    prep = repository.get(prep_id)
+    target = repository.get(target_id)
+    assert prep is not None and prep.status is TaskStatus.FAILED
+    assert target is not None and target.status is TaskStatus.FAILED
+    assert "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE" in str(target.error)
+    manifest = artifacts.read_json(target_id, "input-compatibility/manifest.json")
+    assert manifest["issue_count"] == 4
+    assert manifest["required_label_codes"] == ["fire", "smoke"]
+    page = artifacts.read_json(target_id, manifest["pages"][0]["ref"])
+    assert len(page) == 4
+    assert all(item["missing_label_codes"] == ["smoke"] for item in page)
+
+
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)

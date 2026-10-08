@@ -2,11 +2,14 @@ import hashlib
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from platform_core.task_runtime import TaskKind, TaskStatus
 from platform_core.training_recovery_api import (
     RECOVERY_ACTION_REVALIDATE,
     request_training_recovery,
+    training_recovery_router,
     training_recovery_truth,
 )
 
@@ -215,3 +218,80 @@ def test_data_integrity_failure_outranks_process_completion_diagnostics():
     assert truth["primary_message"] == "发现重复图片存在不同标注，训练已在启动 Worker 前阻止。"
     assert truth["completion_handshake"] == "job status is not done"
     assert "job status is not done" in truth["secondary_diagnostics"]
+
+
+def test_training_input_issues_endpoint_reads_bounded_persisted_pages():
+    task = failed_training_task()
+    task_repository = FakeRepository(task)
+
+    class InputIssueArtifacts:
+        values = {
+            "input-compatibility/manifest.json": {
+                "schema_version": 1,
+                "issue_count": 2,
+                "issue_counts": {"partial_review_scope": 2},
+                "required_label_codes": ["fire", "smoke"],
+                "material_revision": 8,
+                "annotation_revision": 5,
+                "page_size": 100,
+                "pages": [{
+                    "page": 1,
+                    "ref": "input-compatibility/pages/000001.json",
+                }],
+            },
+            "input-compatibility/pages/000001.json": [
+                {"image_id": "one", "missing_label_codes": ["smoke"]},
+                {"image_id": "two", "missing_label_codes": ["smoke"]},
+            ],
+        }
+
+        def read_json(self, _task_id, ref, default=None):
+            return self.values.get(ref, default)
+
+    app = FastAPI()
+    app.include_router(training_recovery_router(
+        lambda _project_id: {"id": task.project_id},
+        lambda: task_repository,
+        lambda: InputIssueArtifacts(),
+    ))
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v62/projects/{task.project_id}/training-tasks/"
+        f"{task.task_id}/input-issues?page=2&limit=1"
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["issue_count"] == 2
+    assert body["required_label_codes"] == ["fire", "smoke"]
+    assert body["items"] == [
+        {
+            "image_id": "two",
+            "missing_label_codes": ["smoke"],
+            "thumbnail_url": (
+                f"/api/v62/projects/{task.project_id}/training-materials/two/thumbnail"
+            ),
+            "content_url": (
+                f"/api/v61/projects/{task.project_id}/materials/two/content"
+            ),
+        }
+    ]
+    assert body["page"] == 2
+    assert body["total_pages"] == 2
+
+
+def test_training_input_issues_endpoint_returns_404_without_artifact():
+    task = failed_training_task()
+    app = FastAPI()
+    app.include_router(training_recovery_router(
+        lambda _project_id: {"id": task.project_id},
+        lambda: FakeRepository(task),
+        lambda: FakeArtifacts({}),
+    ))
+    response = TestClient(app).get(
+        f"/api/v62/projects/{task.project_id}/training-tasks/"
+        f"{task.task_id}/input-issues"
+    )
+
+    assert response.status_code == 404

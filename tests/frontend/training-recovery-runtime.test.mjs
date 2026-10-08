@@ -453,6 +453,11 @@ test('failure detail shows one backend primary reason and collapses secondary di
   assert.match(source, /<summary>查看技术详情<\/summary>/);
   assert.doesNotMatch(source, /1\. Root cause/);
   assert.doesNotMatch(source, /其他错误与失败证据/);
+  assert.match(source, /readInputIssues\(taskId, page = 1\)/);
+  assert.match(source, /data-training-input-page/);
+  assert.match(source, /data-training-input-exclude/);
+  assert.match(source, /data-training-input-review/);
+  assert.match(source, /训练输入标签适配问题/);
 });
 
 test('failed detail prefers backend primary failure contract over frontend heuristics', () => {

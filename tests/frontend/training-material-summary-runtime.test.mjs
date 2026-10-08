@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-import {trainingMaterialSelectionSignature} from '../../static/modules/training-material-summary-runtime.js';
+import {
+  excludeTrainingMaterialFromDraft,
+  trainingCompatibilitySignature,
+  trainingMaterialSelectionSignature,
+} from '../../static/modules/training-material-summary-runtime.js';
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
 
 test('selection signature is stable and duplicate independent', () => {
@@ -10,6 +14,34 @@ test('selection signature is stable and duplicate independent', () => {
     trainingMaterialSelectionSignature(['b', 'a', 'b']),
     trainingMaterialSelectionSignature(['a', 'b']),
   );
+});
+
+test('task compatibility signature changes with labels and selected material truth', () => {
+  const base = {
+    algorithmId: 'alg-1', materialIds: ['b', 'a'], testMaterialIds: [],
+    splitMode: 'random_test_from_training_pool', newLabelCodes: ['fire'],
+    config: {model: 'yolo11n.pt'}, experimentPercent: 20, validationPercent: 20,
+  };
+  assert.equal(
+    trainingCompatibilitySignature(base),
+    trainingCompatibilitySignature({...base, materialIds: ['a', 'b']}),
+  );
+  assert.notEqual(
+    trainingCompatibilitySignature(base),
+    trainingCompatibilitySignature({...base, newLabelCodes: ['fire', 'smoke']}),
+  );
+});
+
+test('excluding an issue only updates the current training draft', () => {
+  const updates = [];
+  const draft = {materialIds: ['bad', 'good'], testMaterialIds: ['test']};
+  const result = excludeTrainingMaterialFromDraft(
+    {update: patch => { updates.push(patch); return patch; }},
+    draft,
+    'bad',
+  );
+  assert.deepEqual(result, {materialIds: ['good'], testMaterialIds: ['test']});
+  assert.deepEqual(updates, [result]);
 });
 
 test('server available codes override a partial local material page', () => {
@@ -35,6 +67,9 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(main, /installTrainingMaterialSummaryRuntime/);
   assert.match(main, /materialSummaryRuntime: trainingMaterialSummaryRuntime/);
   assert.match(summaryRuntime, /training-materials\/selection-summary/);
+  assert.match(summaryRuntime, /training-materials\/compatibility/);
+  assert.match(summaryRuntime, /去补审/);
+  assert.match(summaryRuntime, /排除本次训练/);
   assert.match(summaryRuntime, /fullPoolHydration: false/);
   assert.match(summaryRuntime, /selectable_total/);
   assert.match(summaryRuntime, /pending_annotation_count/);

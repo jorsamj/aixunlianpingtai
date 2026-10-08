@@ -14,7 +14,7 @@ from .labels import active_project_label_ids, label_governance_fence
 
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _INIT_LOCK_TIMEOUT = 30
 
 _BACKUP_REFERENCE_CTE = """
@@ -326,6 +326,51 @@ class AnnotationRepository:
                         "ALTER TABLE annotations "
                         "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
                     )
+                if version < 3:
+                    # Pre-scope databases never persisted negative review evidence.
+                    # The only review coverage we can prove is the label of each
+                    # positive box, so migrate exactly that evidence and nothing
+                    # broader. Schema-v2 repositories may already have the
+                    # column while still relying on the old read-time fallback,
+                    # so persist their positive evidence during the v3 upgrade.
+                    # In particular, confirmed-empty rows remain empty.
+                    legacy_rows = db.execute(
+                        "SELECT image_id, boxes_json, scope_json FROM annotations "
+                        "WHERE annotation_state='annotated'"
+                    ).fetchall()
+                    for row in legacy_rows:
+                        try:
+                            existing_scope = _normalize_scope(
+                                json.loads(row["scope_json"] or "[]")
+                            )
+                        except (TypeError, ValueError):
+                            existing_scope = []
+                        if existing_scope:
+                            continue
+                        try:
+                            boxes = json.loads(row["boxes_json"] or "[]")
+                        except (TypeError, ValueError):
+                            boxes = []
+                        scope = _normalize_scope(
+                            box.get("label") or box.get("code")
+                            for box in boxes
+                            if isinstance(box, dict)
+                        )
+                        prepared = self._content_payload(
+                            boxes,
+                            "annotated",
+                            scope,
+                        )
+                        db.execute(
+                            "UPDATE annotations SET scope_json=?, content_digest=?, "
+                            "version=version+1, updated_at=? WHERE image_id=?",
+                            (
+                                prepared["scope_payload"],
+                                prepared["content_digest"],
+                                datetime.now(timezone.utc).isoformat(),
+                                row["image_id"],
+                            ),
+                        )
                 rebuild_references = version < 2
                 db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
                 db.commit()
@@ -374,12 +419,6 @@ class AnnotationRepository:
         result['annotation_scope'] = _normalize_scope(
             json.loads(result.pop('scope_json', '[]') or '[]')
         )
-        if result['annotation_state'] == 'annotated' and not result['annotation_scope']:
-            result['annotation_scope'] = _normalize_scope(
-                box.get('label') or box.get('code') for box in result['boxes']
-            )
-        if result['annotation_state'] == 'confirmed_empty' and not result['annotation_scope']:
-            result['annotation_scope'] = self._default_negative_scope()
         return result
 
     def _legacy_record(self, image_id: str) -> dict:
@@ -394,8 +433,6 @@ class AnnotationRepository:
             scope = _normalize_scope(
                 box.get("label") or box.get("code") for box in boxes
             )
-        if state == "confirmed_empty" and not scope:
-            scope = self._default_negative_scope()
         return {
             **legacy,
             "image_id": image_id,
@@ -445,12 +482,13 @@ class AnnotationRepository:
         state = annotation_state or ('annotated' if boxes else 'confirmed_empty')
         if state not in STATES or bool(boxes) != (state == 'annotated'):
             raise ValueError('annotation state does not agree with boxes')
+        scope_was_provided = annotation_scope is not None
         scope = _normalize_scope(annotation_scope)
-        if state == 'annotated' and not scope:
+        if state == 'annotated' and not scope and not scope_was_provided:
             scope = _normalize_scope(
                 box.get('label') or box.get('code') for box in boxes
             )
-        if state == 'confirmed_empty' and not scope:
+        if state == 'confirmed_empty' and not scope and not scope_was_provided:
             scope = self._default_negative_scope()
         if state == 'unannotated':
             scope = []

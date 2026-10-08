@@ -27,6 +27,7 @@ from .material_repository import (
 )
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
+from .training_compatibility import compatibility_page, evaluate_training_compatibility
 
 # Keep the visual page intentionally smaller than the old 120-card page. The
 # picker now renders larger previews and only loads thumbnails close to the
@@ -443,6 +444,8 @@ def training_material_picker_router(
     get_project,
     data_dir_provider,
     project_path_provider=None,
+    algorithm_provider=None,
+    compatibility_payload_provider=None,
 ):
     from fastapi import APIRouter, HTTPException, Query
     from fastapi.responses import FileResponse, RedirectResponse
@@ -641,6 +644,68 @@ def training_material_picker_router(
         annotations = annotation_repository_for_path(str(repository.project_path))
         summary = _selection_summary(repository, annotations, image_ids)
         return {**summary, "repository_revision": repository.current_revision()}
+
+    @router.post("/compatibility")
+    def training_material_compatibility(project_id: str, payload: dict):
+        body = payload if isinstance(payload, dict) else {}
+        algorithm_id = str(body.get("algorithm_asset_id") or "").strip()
+        if algorithm_provider is None:
+            raise HTTPException(status_code=503, detail="训练标签适配服务不可用")
+        algorithm = algorithm_provider(project_id, algorithm_id)
+        if algorithm is None:
+            raise HTTPException(status_code=404, detail="训练算法不存在")
+        try:
+            selected_ids = (
+                body.get("image_ids")
+                if "image_ids" in body
+                else body.get("train_image_ids")
+            )
+            image_ids = _normalize_selection_ids(selected_ids)
+            request = {
+                **body,
+                "train_image_ids": image_ids,
+                "test_image_ids": list(body.get("test_image_ids") or []),
+            }
+            if compatibility_payload_provider is not None:
+                request = compatibility_payload_provider(
+                    project_id,
+                    algorithm,
+                    request,
+                )
+            repository = materials(project_id)
+            result = evaluate_training_compatibility(
+                data_dir(), repository.project_path, request, algorithm,
+            )
+            page = compatibility_page(
+                result,
+                query=str(body.get("query") or ""),
+                issue_type=str(body.get("issue_type") or ""),
+                cursor=str(body.get("cursor") or ""),
+                limit=int(body.get("limit") or 50),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        items = []
+        for item in page["items"]:
+            image_id = str(item.get("image_id") or "")
+            encoded = quote(image_id, safe="")
+            items.append({
+                **item,
+                "thumbnail_url": (
+                    f"/api/v62/projects/{quote(str(project_id), safe='')}"
+                    f"/training-materials/{encoded}/thumbnail?size={DEFAULT_THUMBNAIL_SIZE}"
+                ),
+                "content_url": (
+                    f"/api/v61/projects/{quote(str(project_id), safe='')}"
+                    f"/materials/{encoded}/content"
+                ),
+            })
+        return {
+            **result.summary(),
+            **page,
+            "items": items,
+            "repository_revision": repository.current_revision(),
+        }
 
     @router.get("/{image_id}/thumbnail")
     def training_material_thumbnail(project_id: str, image_id: str, size: int = DEFAULT_THUMBNAIL_SIZE):

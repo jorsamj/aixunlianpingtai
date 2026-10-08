@@ -1,5 +1,117 @@
 import pytest
 
+
+def _manual_box(label="fire", *, x1=10):
+    return {"label": label, "x1": x1, "y1": 10, "x2": 80, "y2": 90}
+
+
+def test_ordinary_manual_save_preserves_existing_review_scope(client, seeded_project):
+    import app as app_module
+
+    pid, image = seeded_project
+    repository = app_module._v50_annotation_repository(pid)
+    initial = repository.upsert(
+        image["id"], [_manual_box()], "annotated", annotation_scope=["fire"],
+    )
+    current = app_module.material_store(pid).get(image["id"])
+
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [_manual_box(x1=12)],
+            "expected_version": initial["version"],
+            "source_content_sha256": current["content_sha256"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["annotation"]["annotation_scope"] == ["fire"]
+    assert body["reviewed_label_codes_added"] == []
+
+
+def test_explicit_review_adds_only_selected_labels(client, seeded_project):
+    import app as app_module
+
+    pid, image = seeded_project
+    repository = app_module._v50_annotation_repository(pid)
+    initial = repository.upsert(
+        image["id"], [_manual_box()], "annotated", annotation_scope=["fire"],
+    )
+    current = app_module.material_store(pid).get(image["id"])
+
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [_manual_box()],
+            "expected_version": initial["version"],
+            "source_content_sha256": current["content_sha256"],
+            "reviewed_label_codes": ["smoke"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["annotation"]["annotation_scope"] == ["fire", "smoke"]
+    assert body["reviewed_label_codes_added"] == ["smoke"]
+
+
+@pytest.mark.parametrize("reviewed", [["*"], ["retired-label"]])
+def test_explicit_review_rejects_invalid_scope_without_writing(
+    client, seeded_project, reviewed,
+):
+    import app as app_module
+
+    pid, image = seeded_project
+    repository = app_module._v50_annotation_repository(pid)
+    initial = repository.upsert(
+        image["id"], [_manual_box()], "annotated", annotation_scope=["fire"],
+    )
+    current = app_module.material_store(pid).get(image["id"])
+
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [_manual_box()],
+            "expected_version": initial["version"],
+            "source_content_sha256": current["content_sha256"],
+            "reviewed_label_codes": reviewed,
+        },
+    )
+
+    assert response.status_code in {409, 422}, response.text
+    after = repository.get(image["id"])
+    assert after["version"] == initial["version"]
+    assert after["content_digest"] == initial["content_digest"]
+
+
+def test_explicit_review_rejects_stale_material_generation_without_writing(
+    client, seeded_project,
+):
+    import app as app_module
+
+    pid, image = seeded_project
+    repository = app_module._v50_annotation_repository(pid)
+    initial = repository.upsert(
+        image["id"], [_manual_box()], "annotated", annotation_scope=["fire"],
+    )
+
+    response = client.post(
+        f"/api/projects/{pid}/annotations/{image['id']}",
+        json={
+            "boxes": [_manual_box()],
+            "expected_version": initial["version"],
+            "source_content_sha256": "f" * 64,
+            "reviewed_label_codes": ["smoke"],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "ANNOTATION_MATERIAL_GENERATION_CHANGED"
+    after = repository.get(image["id"])
+    assert after["version"] == initial["version"]
+    assert after["content_digest"] == initial["content_digest"]
+
 def test_save_reload_and_thumbnail_summary_match(client, seeded_project):
     pid, image = seeded_project
     saved = client.post(
@@ -11,7 +123,7 @@ def test_save_reload_and_thumbnail_summary_match(client, seeded_project):
     assert material["labels"] == ["fire"]
     assert material["box_count"] == 1
     assert material["annotation_status"] == "annotated"
-    assert saved.json()["annotation"]["annotation_scope"] == ["fire", "smoke"]
+    assert saved.json()["annotation"]["annotation_scope"] == []
     reloaded = client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()
     assert reloaded["boxes"] == saved.json()["annotation"]["boxes"]
     listed = client.get(f"/api/projects/{pid}/images?dataset_id=default").json()
@@ -39,9 +151,18 @@ def test_empty_annotation_requires_explicit_no_target_confirmation(client, seede
     assert rejected.status_code == 409
     assert rejected.json()["code"] == "ANNOTATION_EMPTY_CONFIRMATION_REQUIRED"
 
+    current = client.get(
+        f"/api/projects/{pid}/annotations/{image['id']}"
+    ).json()
     confirmed = client.post(
         f"/api/projects/{pid}/annotations/{image['id']}",
-        json={"boxes": [], "annotation_state": "confirmed_empty"},
+        json={
+            "boxes": [],
+            "annotation_state": "confirmed_empty",
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+            "reviewed_label_codes": ["fire", "smoke"],
+        },
     )
     assert confirmed.status_code == 200
     body = confirmed.json()

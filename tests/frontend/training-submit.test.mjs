@@ -157,6 +157,23 @@ test('submit readiness depends only on canonical draft, base and submitting stat
   assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
 });
 
+test('compatibility issues disable submit until the current draft passes', () => {
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: true, issue_count: 2},
+    }),
+    {ready: false, reason: 'material-compatibility'},
+  );
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: false, issue_count: null},
+    }),
+    {ready: false, reason: 'material-compatibility-loading'},
+  );
+});
+
 test('device validation fails closed for missing or unavailable device', () => {
   assert.equal(validateTrainingDevice(draft(), [{id: '0', available: true}]).id, '0');
   assert.throws(() => validateTrainingDevice(draft(), [{id: 'cpu', available: true}]), /设备不可用/);

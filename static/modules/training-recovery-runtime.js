@@ -341,7 +341,18 @@ function timelineHtml(steps) {
     </div>`).join('')}</div>`;
 }
 
-function detailHtml(job, recovery, log = '') {
+function inputIssuesHtml(inputIssues) {
+  if (!inputIssues || !Number(inputIssues.issue_count || 0)) return '';
+  const items = Array.isArray(inputIssues.items) ? inputIssues.items : [];
+  const page = Math.max(1, Number(inputIssues.page || 1));
+  const totalPages = Math.max(1, Number(inputIssues.total_pages || 1));
+  const limit = Math.max(1, Number(inputIssues.limit || 100));
+  const start = items.length ? (page - 1) * limit + 1 : 0;
+  const end = start ? start + items.length - 1 : 0;
+  return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div class="row between"><button class="btn mini" ${page <= 1 ? 'disabled' : ''} data-training-input-page="${page - 1}">上一页</button><span>${page} / ${totalPages}</span><button class="btn mini" ${page >= totalPages ? 'disabled' : ''} data-training-input-page="${page + 1}">下一页</button></div></section>`;
+}
+
+function detailHtml(job, recovery, log = '', inputIssues = null) {
   const model = trainingRecoveryDetailModel(job, recovery);
   const failed = model.statusKind === 'failed' || model.statusKind === 'recoverable';
   const statusTitle = model.statusKind === 'recoverable'
@@ -392,7 +403,7 @@ function detailHtml(job, recovery, log = '') {
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
           </section>
-          ${statusHtml}${failureSummaryHtml}${technicalFailureHtml}${warningHtml}
+          ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
           <div class="training-recovery-columns">
             <section class="training-recovery-panel">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>
@@ -537,6 +548,17 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return raw;
   }
 
+  async function readInputIssues(taskId, page = 1) {
+    const pid = projectId?.();
+    if (!pid) throw new Error('当前项目不可用');
+    const boundedPage = Math.max(1, Number(page || 1));
+    const response = await nativeFetch(`/api/v62/projects/${encodeURIComponent(pid)}/training-tasks/${encodeURIComponent(taskId)}/input-issues?page=${encodeURIComponent(boundedPage)}&limit=100`, {
+      headers: {'Accept': 'application/json'},
+    });
+    if (response.status === 404) return null;
+    return json(response, '读取训练输入异常证据失败');
+  }
+
   function renderOpenDetail(job, recovery = {}, log = '', focus = openFocus) {
     if (!openTaskId || String(job?.id || job?.task_id || '') !== String(openTaskId)) return false;
     const old = doc?.querySelector?.('[data-training-recovery-overlay]');
@@ -545,7 +567,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const logOpen = old?.querySelector?.('[data-training-tech-log]')?.open === true || focus === 'log';
     const host = doc?.createElement?.('div');
     if (!host) return false;
-    host.innerHTML = detailHtml(job, recovery, log);
+    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null);
     const nextOverlay = host.firstElementChild;
     if (!nextOverlay) return false;
     const nextDialog = nextOverlay.querySelector?.('.training-recovery-dialog');
@@ -596,15 +618,19 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       const recoveryPromise = includeRecovery
         ? readRecovery(taskId)
         : Promise.resolve(openSnapshot?.recovery || cached?.recovery || {});
-      const [job, recovery, log] = await Promise.all([
+      const inputIssuesPromise = FAILED_TASK_STATUSES.has(canonicalTaskStatus(cached))
+        ? readInputIssues(taskId, openSnapshot?.inputIssues?.page || 1).catch(() => openSnapshot?.inputIssues || null)
+        : Promise.resolve(null);
+      const [job, recovery, log, inputIssues] = await Promise.all([
         readJob(taskId).catch(() => cached),
         recoveryPromise.catch(() => openSnapshot?.recovery || cached?.recovery || {}),
         readLog(taskId).catch(() => openSnapshot?.log || ''),
+        inputIssuesPromise,
       ]);
       if (String(openTaskId) !== String(taskId)) return false;
       const flags = taskStatusFlags(job);
       const effectiveRecovery = flags.success ? {} : recovery;
-      openSnapshot = {job, recovery: effectiveRecovery, log};
+      openSnapshot = {job, recovery: effectiveRecovery, log, inputIssues};
       updateStateJob(flags.success ? {...job, recovery: undefined} : job);
       renderOpenDetail(job, effectiveRecovery, log);
       scheduleDetailRefresh(job);
@@ -621,7 +647,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     }
     openTaskId = String(taskId);
     openFocus = options?.focus === 'log' ? 'log' : 'overview';
-    openSnapshot = {job, recovery: job?.recovery || {}, log: ''};
+    openSnapshot = {job, recovery: job?.recovery || {}, log: '', inputIssues: null};
     renderOpenDetail(job, openSnapshot.recovery, '', openFocus);
     try {
       await refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))});
@@ -726,6 +752,49 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (report) {
       closeDetail();
       window.trainingReport425?.(report.dataset.trainingReportTask);
+      return;
+    }
+    const review = event.target?.closest?.('[data-training-input-review]');
+    if (review) {
+      const imageId = String(review.dataset.trainingInputReview || '');
+      const item = (openSnapshot?.inputIssues?.items || []).find(row => String(row?.image_id || '') === imageId);
+      const s = state();
+      if (item) {
+        s.trainingAnnotationReviewContext = {
+          imageId,
+          requiredLabelCodes: [...(item.required_label_codes || [])],
+          missingLabelCodes: [...(item.missing_label_codes || [])],
+        };
+        if (!(s.images || []).some(row => String(row?.id || '') === imageId)) {
+          s.images = [...(s.images || []), {
+            id: imageId,
+            filename: item.filename || imageId,
+            dataset_id: item.dataset_id || '',
+            url: item.content_url || item.thumbnail_url || '',
+            content_sha256: item.content_sha256 || '',
+          }];
+        }
+      }
+      closeDetail();
+      window.openAnnotation?.(imageId);
+      return;
+    }
+    const issuePage = event.target?.closest?.('[data-training-input-page]');
+    if (issuePage && openTaskId) {
+      event.preventDefault();
+      const page = Math.max(1, Number(issuePage.dataset.trainingInputPage || 1));
+      void readInputIssues(openTaskId, page).then(inputIssues => {
+        if (!openSnapshot || String(openTaskId) !== String(openSnapshot?.job?.id || openSnapshot?.job?.task_id || '')) return;
+        openSnapshot = {...openSnapshot, inputIssues};
+        renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
+      }).catch(error => notify?.(error?.message || error));
+      return;
+    }
+    const exclude = event.target?.closest?.('[data-training-input-exclude]');
+    if (exclude) {
+      const imageId = String(exclude.dataset.trainingInputExclude || '');
+      window.TrainingMaterialSummaryRuntime?.excludeFromDraft?.(imageId);
+      notify?.('已从当前训练草稿排除该素材');
     }
   };
   doc?.addEventListener?.('click', onClick);
@@ -741,7 +810,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-422509',
+    build: 'training-recovery-runtime-422597',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

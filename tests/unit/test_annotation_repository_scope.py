@@ -222,12 +222,72 @@ def test_existing_annotation_database_is_migrated_without_rebuild(tmp_path):
     repository = AnnotationRepository(tmp_path)
     loaded = repository.get("legacy")
 
-    assert loaded["version"] == 4
+    assert loaded["version"] == 5
     assert loaded["boxes"][0]["label"] == "fire"
     assert loaded["annotation_scope"] == ["fire"]
+    assert loaded["content_digest"] == repository.record_digest(loaded)
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
     assert "scope_json" in columns
+
+
+def test_schema_v2_positive_rows_persist_only_box_label_evidence(tmp_path):
+    path = tmp_path / "annotations.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            """
+            CREATE TABLE annotations (
+                image_id TEXT PRIMARY KEY,
+                annotation_state TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                content_digest TEXT NOT NULL,
+                boxes_json TEXT NOT NULL,
+                scope_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            "INSERT INTO annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "v2-positive",
+                "annotated",
+                2,
+                "legacy-v2-digest",
+                json.dumps([{"label": "fire", "class_id": 0}]),
+                "[]",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        db.execute("PRAGMA user_version=2")
+
+    repository = AnnotationRepository(tmp_path)
+
+    loaded = repository.get("v2-positive")
+    assert loaded["annotation_scope"] == ["fire"]
+    assert loaded["version"] == 3
+    assert loaded["content_digest"] == repository.record_digest(loaded)
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_legacy_confirmed_empty_without_scope_stays_unproven(tmp_path):
+    legacy_dir = tmp_path / "annotations"
+    legacy_dir.mkdir()
+    (legacy_dir / "legacy-negative.json").write_text(
+        json.dumps({
+            "image_id": "legacy-negative",
+            "annotation_state": "confirmed_empty",
+            "boxes": [],
+        }),
+        encoding="utf-8",
+    )
+
+    loaded = AnnotationRepository(tmp_path).get("legacy-negative")
+
+    assert loaded["annotation_scope"] == []
 
 
 

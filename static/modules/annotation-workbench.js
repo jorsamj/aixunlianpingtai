@@ -1,3 +1,33 @@
+function uniqueCodes(values = []) {
+  return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+export function annotationReviewView(annotation = {}, requiredCodes = []) {
+  const reviewed = uniqueCodes(annotation?.annotation_scope).sort();
+  const reviewedSet = new Set(reviewed);
+  const required = uniqueCodes(requiredCodes);
+  return {
+    reviewed,
+    required,
+    pending: reviewedSet.has('*')
+      ? []
+      : required.filter(code => !reviewedSet.has(code)),
+  };
+}
+
+export function annotationSavePayload({
+  annotation = {}, image = {}, boxes = [], reviewedLabelCodes = [],
+} = {}) {
+  return {
+    boxes: Array.isArray(boxes) ? boxes : [],
+    annotation_state: boxes.length ? 'annotated' : 'confirmed_empty',
+    expected_version: Number.isFinite(Number(annotation?.version))
+      ? Number(annotation.version) : 0,
+    source_content_sha256: String(image?.content_sha256 || ''),
+    reviewed_label_codes: uniqueCodes(reviewedLabelCodes),
+  };
+}
+
 export function queueWindow(ids, activeId, windowSize = 9) {
   const rows = [...ids];
   const bounded = Math.max(1, Math.floor(Number(windowSize) || 9));

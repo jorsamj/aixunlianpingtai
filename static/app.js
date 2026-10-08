@@ -4701,7 +4701,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
 
   window.saveAnnotationCore420=async function(silent=false,options={}){
     if(!state.activeImage||!state.ann)return false;
-    const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true,btn=document.getElementById('ann414Save'),ss=document.getElementById('annSaveState');
+    const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true,reviewedLabelCodes=options?.confirmReview===true?[...(options?.reviewedLabelCodes||[])]:[],btn=document.getElementById('ann414Save'),ss=document.getElementById('annSaveState');
     if(!boxes.length&&!confirmEmpty){
       if(ss)ss.textContent='待确认无目标';
       const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=false;
@@ -4710,20 +4710,23 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     }
     if(!silent&&btn){btn.disabled=true;btn.textContent='保存中…'}if(ss)ss.textContent='保存中';
     try{
-      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(state.ann?.version))?Number(state.ann.version):0})});
+      const payload=window.PlatformCore?.annotationWorkbench?.annotationSavePayload?.({annotation:state.ann,image:state.activeImage,boxes,reviewedLabelCodes})||{boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(state.ann?.version))?Number(state.ann.version):0,source_content_sha256:String(state.activeImage?.content_sha256||''),reviewed_label_codes:reviewedLabelCodes};
+      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
       const applyResult=window.PlatformCore?.annotation?.applyAnnotationResult;
       if(applyResult&&r?.image?.id)state.images=applyResult(state.images||[],r,state.ann.boxes||[]);
       const idx=(state.images||[]).findIndex(x=>String(x.id)===String(state.activeImage.id));
       if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=window.PlatformCore?.annotation?.annotationPreviewFromBoxes?.(state.ann.boxes)||state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2,source:b.source,source_task_id:b.source_task_id,confidence:b.confidence}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
       state.annDirty=false;if(ss)ss.textContent=state.ann.boxes.length?`已保存 · ${state.ann.boxes.length}框`:'已确认无目标';const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();
+      state.annotationReviewSelected420=new Set();window.renderAnnotationReviewScope420?.();
+      if(reviewedLabelCodes.length){window.TrainingMaterialSummaryRuntime?.invalidateCompatibility?.();void window.TrainingMaterialSummaryRuntime?.refreshCompatibility?.({force:true})}
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
       // Patch only the affected material card. Re-rendering the full gallery here
       // blocks the main thread for seconds on large libraries and remounts the modal.
       try{if(state.page==='数据集'&&typeof patchMaterialCard412==='function')patchMaterialCard412(state.activeImage)}catch(_){}
       // If annotation was opened from an image-preview modal, refresh that preview in place as well.
       try{const layers=[...document.querySelectorAll('.v424-modal-layer')],under=layers.length>1?layers[layers.length-2]:null,stage=under?.querySelector('.data412-previewstage');if(stage&&state.activeImage){stage.innerHTML=`<img src="${state.activeImage.url}">${(state.activeImage.annotation_preview||[]).map(b=>{const l=labelByCode414(b.label),w=Math.max(0,(b.x2-b.x1)/(state.activeImage.width||1)*100),h=Math.max(0,(b.y2-b.y1)/(state.activeImage.height||1)*100),x=(b.x1/(state.activeImage.width||1)*100),y=(b.y1/(state.activeImage.height||1)*100);return `<i class="ov412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;border-color:${esc(l?.color||'#ef4444')}"><b style="background:${esc(l?.color||'#ef4444')}">${esc(b.label||'')}</b></i>`}).join('')}`}}catch(_){}
-      if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length} 个框`:'已确认当前图片无目标');return true;
+      if(!silent)toast(reviewedLabelCodes.length?`已保存并确认 ${reviewedLabelCodes.length} 个审核标签`:state.ann.boxes.length?`标注已保存：${state.ann.boxes.length} 个框`:'已确认当前图片无目标');return true;
     }catch(e){state.annDirty=true;if(ss)ss.textContent='保存失败';toast(`保存失败：${e.message||e}`);return false}
     finally{if(!silent&&btn){btn.disabled=false;btn.textContent=document.querySelector('.ann420-stable')?'保存并继续':'保存标注'}}
   };
@@ -5467,6 +5470,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       <aside class="side-panel ann-side ann420-inspector">
         <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div></section>
         <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象 <em id="ann420OriginBadge" class="ann420-origin-badge pending">待标注</em></span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
+        <section class="side-section ann420-review-panel" id="ann420ReviewPanel"><div class="side-title"><span>类别审核范围</span><b id="ann420PendingReviewCount">0</b></div><div id="ann420ReviewedLabels"></div><div id="ann420PendingLabels"></div><div class="hint-card"><b>必须查看真实图片</b><span>若对应类别存在目标，请先补齐标注框。AI 未检出不能自动确认不存在。</span></div><div class="row"><button class="btn mini" type="button" onclick="selectAllAnnotationReview420()">显式全选待审核</button><button id="ann420SaveReview" class="btn mini primary" type="button" onclick="saveAndConfirmAnnotationReview420()">保存并确认审核</button></div></section>
         <div class="hint-card ann420-shortcuts"><b>快捷操作</b><span>拖拽空白处新建框 · 拖动框移动 · 四角缩放 · 滚轮缩放 · Delete 删除 · Ctrl/⌘ + S 保存</span></div>
       </aside>
     </div>`,true);
@@ -5478,6 +5482,37 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       canvas.addEventListener('wheel',event=>{if(!event.target.closest('#annStage'))return;event.preventDefault();window.zoomAnn?.(event.deltaY<0?0.1:-0.1)},{passive:false});
     }
   }
+
+  function annotationReviewRequired420(){
+    const context=state.trainingAnnotationReviewContext||{},matches=String(context.imageId||'')===String(state.activeImage?.id||'');
+    const codes=matches?(context.requiredLabelCodes||[]):(state.labels||[]).map(label=>label.code);
+    return [...new Set(codes.map(code=>String(code||'').trim()).filter(Boolean))];
+  }
+  window.toggleAnnotationReview420=function(code,checked){
+    const selected=state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set();
+    checked?selected.add(String(code)):selected.delete(String(code));state.annotationReviewSelected420=selected;window.renderAnnotationReviewScope420?.();
+  };
+  window.selectAllAnnotationReview420=function(){
+    const view=workbenchApi()?.annotationReviewView?.(state.ann||{},annotationReviewRequired420())||{pending:[]};
+    state.annotationReviewSelected420=new Set(view.pending||[]);window.renderAnnotationReviewScope420?.();
+  };
+  window.renderAnnotationReviewScope420=function(){
+    const reviewedRoot=document.getElementById('ann420ReviewedLabels'),pendingRoot=document.getElementById('ann420PendingLabels'),count=document.getElementById('ann420PendingReviewCount'),button=document.getElementById('ann420SaveReview');
+    if(!reviewedRoot||!pendingRoot)return;
+    const view=workbenchApi()?.annotationReviewView?.(state.ann||{},annotationReviewRequired420())||{reviewed:[],pending:[]},selected=state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set();
+    for(const code of [...selected])if(!view.pending.includes(code))selected.delete(code);state.annotationReviewSelected420=selected;
+    reviewedRoot.innerHTML=`<small>已审核标签</small><div class="ann420-review-tags">${view.reviewed.map(code=>`<span>${esc(code)}</span>`).join('')||'<em>尚无明确审核范围</em>'}</div>`;
+    pendingRoot.innerHTML=`<small>待审核标签（默认不勾选）</small><div class="ann420-review-checks">${view.pending.map(code=>`<label><input type="checkbox" ${selected.has(code)?'checked':''} onchange="toggleAnnotationReview420('${esc(code)}',this.checked)"><span>${esc(code)}</span></label>`).join('')||'<em>本次要求已全部覆盖</em>'}</div>`;
+    if(count)count.textContent=String(view.pending.length);if(button)button.disabled=!selected.size||!!state.annotationHydrating420||!!state.annotationLoadError420;
+  };
+  window.saveAndConfirmAnnotationReview420=async function(){
+    if(state.annotationHydrating420||state.annotationLoadError420)return false;
+    const selected=[...(state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set())];
+    if(!selected.length){toast('请先勾选已经查看图片并完成审核的标签');return false}
+    const button=document.getElementById('ann420SaveReview');if(button){button.disabled=true;button.textContent='提交中…'}
+    const ok=await window.saveAnn(true,{confirmEmpty:(state.ann?.boxes?.length||0)===0,confirmReview:true,reviewedLabelCodes:selected});
+    if(button){button.textContent='保存并确认审核';button.disabled=false}if(ok){toast(`已补充审核：${selected.join('、')}`);window.renderAnnotationReviewScope420?.()}return ok;
+  };
 
   function updateShell(){
     const image=state.activeImage;if(!image)return;ensureShell();
@@ -5497,6 +5532,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       originBadge.textContent=status.split(' · ')[0];originBadge.className=`ann420-origin-badge ${statusClass}`;
     }
     const labelCount=document.getElementById('ann420LabelCount');if(labelCount)labelCount.textContent=String((state.labels||[]).length);
+    window.renderAnnotationReviewScope420?.();
     const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=locked||(state.ann?.boxes?.length||0)>0;
     const saveButton=document.getElementById('ann414Save');if(saveButton){saveButton.disabled=locked;saveButton.textContent=loading?'读取中…':'保存并继续'}
     document.querySelectorAll('.ann420-stable [data-ann420-edit="1"]').forEach(button=>{button.disabled=locked});
@@ -5513,7 +5549,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!(state.labels||[]).length)window.restoreLabelSchema414?.();
     state.activeImage=image;state.ann=provisionalAnnotation420(image);
     const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
-    state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];
+    state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];state.annotationReviewSelected420=new Set();
     state.annotationHydrating420=true;state.annotationLoadError420='';updateShell();
   }
 
@@ -5541,7 +5577,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         state.annotationHydrating420=false;state.annotationLoadError420='';
         state.activeImage=value.image;state.ann=value.annotation||{boxes:[]};if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
         const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
-        state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];updateShell();
+        state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];state.annotationReviewSelected420=new Set();updateShell();
         prefetchAnnotationNeighbors420(state.activeImage?.id);
       }
     });
@@ -5595,10 +5631,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const button=document.getElementById('ann420ConfirmEmpty');
     if(button?.disabled||state.annotationHydrating420||state.annotationLoadError420)return false;
     if((state.ann?.boxes?.length||0)>0)return false;
-    if(button){button.disabled=true;button.textContent='确认中…'}
-    const ok=await window.saveAnn(false,{confirmEmpty:true});
-    if(!ok&&button){button.disabled=false;button.textContent='确认无目标'}
-    return ok;
+    const selected=state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set();
+    if(!selected.size){toast('请在“类别审核范围”中勾选已经确认无目标的标签');document.getElementById('ann420ReviewPanel')?.scrollIntoView?.({block:'nearest'});return false}
+    return window.saveAndConfirmAnnotationReview420();
   };
 
   window.patchMaterialCard412=function(image){

@@ -1,3 +1,17 @@
+<!-- LIVE_HANDOFF_2026_10_08_TRAINING_SCOPE_REMEDIATION -->
+> ## 2026-10-08 当前接手入口：训练标签审核范围补审闭环已实现（最高优先级）
+>
+> 实现候选版本：`42.24.294`，长期分支仍为 `feature/external-algorithm-publishing`。本批提交前已完成直接相关的本地回归：训练标签/快照/标注/准入/Prepare/恢复 143 项通过，标签治理与显式合并 18 项通过；目标 HEAD 的 GitHub Actions/check-runs 必须在推送后重新读取，queued/in_progress/cancelled 不得当作成功。
+>
+> 人工标注工作台现已区分“普通保存”和“保存并确认审核”。普通保存只修改框并保留既有 scope；补审仅加入用户显式勾选的当前有效标签，使用 AnnotationRepository 原有 version CAS，并同时核验 Material content SHA、删除/来源状态和标签治理状态。禁止新写 `*`，AI 未检出不会自动产生负类审核证据。
+>
+> 训练 Picker、提交 admission、TRAINING_PREPARE 与最终 Snapshot 共享相同的 task-specific scope 规则。创建弹窗保持轻量；问题素材支持分页、筛选、真实图片补审和仅从当前训练草稿排除。Prepare 漂移失败会把完整问题列表分页写入既有 Durable ArtifactStore，并由现有训练详情 Runtime 展示。AUDIT-148 Snapshot fail-closed 未放宽。
+>
+> 历史兼容只迁移可由旧正样本框证明的标签范围；旧 confirmed_empty 没有可靠逐类证据时保持空范围。对已经被旧 UI 扩成全部 active labels 的现存记录无法可靠区分真实逐类确认，因此本批不猜测、不批量改写 Ground Truth。
+>
+> 下一顺序：确认 `42.24.294` 精确 HEAD 的全部 CI 终态；若全绿，再按既定路线处理 AUDIT-099、AUDIT-098。真实浏览器、Linux/NVIDIA、OSS、外部畅联云和硬件环境未在本批现场验证，不得写成 VERIFIED。
+>
+
 <!-- LIVE_HANDOFF_2026_10_05_DELIVERY_CLOSURE -->
 > ## 2026-10-05 当前项目接手入口：发布 / 回退 / GC / 外部对账已收口（最高优先级）
 >

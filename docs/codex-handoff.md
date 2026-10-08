@@ -1,5 +1,31 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 训练标签审核范围适配闭环（当前最新）
+
+### 当前实现候选
+
+- 长期分支：`feature/external-algorithm-publishing`
+- VERSION：`42.24.294`
+- 设计提交：`2944c7fe`
+- 本批生产提交 SHA 与 GitHub CI 终态以推送后远端为准；不得沿用设计提交或旧 HEAD 的 CI。
+
+### 已实现合同
+
+1. AnnotationRepository 仍是唯一 Ground Truth Owner；普通保存把既有 `annotation_scope` 原样带入正式 CAS 写入，不再自动扩为全部 active labels。
+2. “保存并确认审核”默认不勾选任何待审核类别，仅把用户显式勾选且仍 active 的具体标签加入 scope；禁止提交 `*`。框与 scope 在同一个 AnnotationRepository `upsert(expected_version=...)` 中保存。
+3. 补审提交携带打开工作台时的 Material content SHA。后端在写入前检查内容代际、删除/来源状态和标签治理状态；写入后再次核对 Material，竞态变化时保持/恢复复核标记并 fail closed。
+4. Picker compatibility、训练提交 admission、TRAINING_PREPARE 与 `project_training_rows` 共用 `training_material_scope_issue`。最终 Snapshot 的 AUDIT-148 scope gate 原样保留，不能被预检结果绕过。
+5. 问题素材显示已审核/本次要求/缺失标签，支持搜索、类型筛选、游标分页、打开真实标注工作台以及仅从当前草稿排除。Prepare 阶段发现漂移会把全部问题分页持久化到当前训练任务 ArtifactStore，现有 TrainingRecoveryRuntime 读取展示，不新增 Poller 或任务 Owner。
+6. 旧无 scope 数据只对 annotated 正样本从真实框标签恢复最小可证明范围；旧 confirmed_empty 不推断全标签。已被旧 UI 扩为全 active 的历史范围无法可靠判别，本批明确不批量回写。
+
+### 本地验证与边界
+
+- 直接相关 Python 回归：143 passed。
+- 标签治理/显式合并回归：18 passed。
+- 直接相关前端/缓存链回归：76 passed；修改涉及的 Python/JavaScript 基础语法检查通过。
+- 未进行大规模压测、真实 GPU、OSS、畅联生产接口、Rockchip 实板或全平台浏览器 E2E；这符合本批简化测试指令，但这些环境不得标记为 VERIFIED。
+- 下一优先级在本 HEAD 全部 CI completed-success 后回到 AUDIT-099、AUDIT-098。
+
 ## 2026-10-05 会话迁移 / 文档权威关系 / 下一轮启动点（当前最新）
 
 ### 0. 本节写入前真实基线

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -126,3 +128,162 @@ def test_selection_summary_rejects_non_list_ids(tmp_path):
         json={"image_ids": "s00001"},
     )
     assert response.status_code == 422
+
+
+def _compatibility_client(tmp_path):
+    data_dir = tmp_path / "data"
+    project_path = data_dir / "projects" / "p1"
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        json.dumps({
+            "label_meta": [
+                {"code": "helmet", "class_id": 0, "active": True},
+                {"code": "person", "class_id": 1, "active": True},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert_many([
+        {
+            **_record(1),
+            "id": "partial",
+            "filename": "partial.jpg",
+            "labels": ["helmet"],
+            "dataset_id": "default",
+        },
+        {
+            **_record(2),
+            "id": "complete",
+            "filename": "complete.jpg",
+            "labels": ["person"],
+            "dataset_id": "default",
+        },
+    ])
+    annotations = AnnotationRepository(project_path)
+    annotations.upsert(
+        "partial",
+        [{"label": "helmet", "class_id": 0, "x1": 1, "y1": 1, "x2": 10, "y2": 10}],
+        annotation_state="annotated",
+        annotation_scope=["helmet"],
+        project_material=False,
+    )
+    annotations.upsert(
+        "complete",
+        [{"label": "person", "class_id": 1, "x1": 1, "y1": 1, "x2": 10, "y2": 10}],
+        annotation_state="annotated",
+        annotation_scope=["helmet", "person"],
+        project_material=False,
+    )
+    algorithm = {"id": "alg-1", "versions": []}
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id: {"id": project_id} if project_id == "p1" else None,
+        lambda: data_dir,
+        algorithm_provider=lambda project_id, algorithm_id: (
+            algorithm if project_id == "p1" and algorithm_id == "alg-1" else None
+        ),
+    ))
+    return TestClient(app)
+
+
+def test_training_compatibility_lists_all_missing_labels(tmp_path):
+    client = _compatibility_client(tmp_path)
+
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={
+            "algorithm_asset_id": "alg-1",
+            "image_ids": ["partial", "complete"],
+            "train_labels": ["helmet", "person"],
+            "model": "yolo11n.pt",
+            "framework": "ultralytics",
+            "split_mode": "random_test_from_training_pool",
+            "experiment_percent": 20,
+            "validation_percent": 20,
+            "limit": 50,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["issue_count"] == 1
+    assert body["effective_label_codes"] == ["helmet", "person"]
+    assert body["items"][0]["image_id"] == "partial"
+    assert body["items"][0]["missing_label_codes"] == ["person"]
+    assert body["items"][0]["filename"] == "partial.jpg"
+    assert body["items"][0]["thumbnail_url"].endswith(
+        "/training-materials/partial/thumbnail?size=192"
+    )
+
+
+def test_training_compatibility_accepts_final_training_submit_payload(tmp_path):
+    client = _compatibility_client(tmp_path)
+
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={
+            "algorithm_asset_id": "alg-1",
+            "train_image_ids": ["partial", "complete"],
+            "test_image_ids": [],
+            "train_labels": ["helmet", "person"],
+            "model": "yolo11n.pt",
+            "framework": "ultralytics",
+            "split_mode": "random_test_from_training_pool",
+            "experiment_percent": 20,
+            "validation_percent": 20,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["issue_count"] == 1
+    assert response.json()["items"][0]["image_id"] == "partial"
+
+
+def test_training_compatibility_rejects_unknown_algorithm(tmp_path):
+    client = _compatibility_client(tmp_path)
+
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={
+            "algorithm_asset_id": "missing",
+            "image_ids": ["partial"],
+            "train_labels": ["helmet"],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_training_compatibility_passes_after_explicit_partial_review(tmp_path):
+    client = _compatibility_client(tmp_path)
+    project_path = tmp_path / "data" / "projects" / "p1"
+    annotations = AnnotationRepository(project_path)
+    current = annotations.get("partial")
+    saved = annotations.upsert(
+        "partial",
+        current["boxes"],
+        annotation_state="annotated",
+        annotation_scope=["helmet", "person"],
+        expected_version=current["version"],
+        project_material=False,
+    )
+    assert saved["annotation_scope"] == ["helmet", "person"]
+
+    response = client.post(
+        "/api/v62/projects/p1/training-materials/compatibility",
+        json={
+            "algorithm_asset_id": "alg-1",
+            "image_ids": ["partial", "complete"],
+            "train_labels": ["helmet", "person"],
+            "model": "yolo11n.pt",
+            "framework": "ultralytics",
+            "split_mode": "random_test_from_training_pool",
+            "experiment_percent": 20,
+            "validation_percent": 20,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["compatible"] is True
+    assert response.json()["issue_count"] == 0

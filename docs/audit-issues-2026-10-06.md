@@ -25784,3 +25784,16 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 人工工作台拆分“普通保存”和“保存并确认审核”：普通保存不再扩到全部 active labels；补审只把用户明确选择的缺失标签与 boxes 在同一次 AnnotationRepository CAS 中提交，禁止写 `*`。
 - 训练创建继续复用现有 Summary/Submit Runtime；任务漂移失败证据写入现有 Durable ArtifactStore；不新增 GT Owner、任务状态机、Poller 或全局缓存 Owner。
 - 详细设计见 `docs/superpowers/specs/2026-10-08-training-label-scope-compatibility-design.md`。本提交仅固化设计与版本，生产代码、回归测试和 CI 尚未执行。
+
+
+## 2026-10-08 修复日志 — 训练标签审核范围适配闭环（42.24.294）
+
+**状态：IMPLEMENTED / LOCAL FOCUSED TESTS PASS / CI PENDING；AUDIT-148 安全栅栏继续保留。**
+
+- 人工标注普通保存不再写入全部 active labels，只保留已有 scope；“保存并确认审核”只并入用户显式选择的具体 active 标签，默认不勾选，禁止 `*`，框与 scope 通过 AnnotationRepository 原有 version CAS 同一次写入。
+- 补审提交核验打开工作台时的 Material content SHA、删除/来源状态和当前标签治理状态；写入后再次读取 Material，内容代际竞态时设置复核标记并返回冲突。没有新增 Annotation Repository、Runtime 或状态 Owner。
+- 新增 task-specific compatibility 服务，Picker、最终提交 admission 与 TRAINING_PREPARE 复用同一 label contract/scope 规则；Prepare 漂移把完整问题分页写入既有任务 ArtifactStore，最终 Snapshot 仍执行 AUDIT-148 fail-closed。
+- 训练创建弹窗只显示轻量摘要；完整异常列表支持分页/筛选、缺失标签、真实图片补审入口和从当前训练草稿排除。失败任务详情复用 TrainingRecoveryRuntime 展示持久化问题证据。
+- 历史无 scope 数据仅按正样本真实框标签迁移最小可证明范围；confirmed_empty 不推断。旧 UI 曾写入全 active 范围的记录无法可靠区分是否逐类人工确认，因此不猜测、不批量改写历史 Ground Truth。
+- 本地直接相关 Python 回归 143 项通过；标签治理/显式合并 18 项通过；直接相关前端/缓存链回归 76 项通过，修改涉及的 Python/JavaScript 基础语法检查通过。未执行 1k/10k/20k 压测、真实 GPU、OSS、外部畅联云、硬件实板及全平台浏览器 E2E。
+- VERSION 42.24.293 → 42.24.294；不 merge main、不 tag/release、不部署。目标提交推送后必须读取精确 HEAD 的 Actions/check-runs，只有全部 completed-success 才能记录 CI PASS。

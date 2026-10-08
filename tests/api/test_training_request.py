@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import re
 from types import SimpleNamespace
 
@@ -25,12 +26,20 @@ def _image_bytes(color: str | tuple[int, int, int]) -> bytes:
 def _mark_training_ready(client, project_id: str, image: dict, *, label: str = "fire", class_id: int = 0) -> dict:
     import app as app_module
 
+    current = client.get(
+        f"/api/projects/{project_id}/annotations/{image['id']}"
+    ).json()
     response = client.post(
         f"/api/projects/{project_id}/annotations/{image['id']}",
-        json={"boxes": [{
-            "class_id": class_id, "label": label,
-            "x1": 10, "y1": 10, "x2": 80, "y2": 80,
-        }]},
+        json={
+            "boxes": [{
+                "class_id": class_id, "label": label,
+                "x1": 10, "y1": 10, "x2": 80, "y2": 80,
+            }],
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+            "reviewed_label_codes": [label],
+        },
     )
     assert response.status_code == 200, response.text
     app_module.material_store(project_id).patch({
@@ -105,6 +114,162 @@ def test_training_request_normalizes_legacy_boolean_cache_before_string_validati
     assert app_module.TrainReq(cache=True).cache == "True"
     assert app_module.TrainReq(cache="ram").cache == "ram"
     assert app_module.TrainReq(cache="disk").cache == "disk"
+
+
+def test_training_start_rejects_partial_review_scope_before_task_creation(
+    client, seeded_project, monkeypatch,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.task_runtime import TaskKind
+
+    project_id, first = seeded_project
+    monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("scope-smoke.jpg", _image_bytes("gray"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    third = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("scope-fire.jpg", _image_bytes("black"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(
+        first["id"],
+        [{"class_id": 0, "label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+    )
+    annotations.upsert(
+        second["id"],
+        [{"class_id": 1, "label": "smoke", "x1": 10, "y1": 10, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_scope=["fire", "smoke"],
+    )
+    annotations.upsert(
+        third["id"],
+        [{"class_id": 0, "label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_scope=["fire", "smoke"],
+    )
+    app_module.material_store(project_id).patch({
+        image["id"]: {"processing_status": "processed"}
+        for image in (first, second, third)
+    })
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "审核范围准入", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    repository = app_module.shared_task_repository()
+    before = len(repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "algorithm": "yolo11n_det",
+            "model": "yolo11n.pt",
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": [first["id"], second["id"], third["id"]],
+            "test_image_ids": [],
+            "train_labels": ["fire", "smoke"],
+            "experiment_percent": 20,
+            "validation_percent": 20,
+            "device": "cpu",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = json.loads(response.json()["detail"])
+    assert detail["code"] == "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+    assert detail["issue_count"] == 1
+    assert detail["items"][0]["image_id"] == first["id"]
+    assert detail["items"][0]["missing_label_codes"] == ["smoke"]
+    after = len(repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+    assert after == before
+
+
+def test_training_start_checks_server_resolved_benchmark_scope_before_task_creation(
+    client, seeded_project, monkeypatch,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.task_runtime import TaskKind
+
+    project_id, seed_image = seeded_project
+    first = _mark_training_ready(client, project_id, seed_image)
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-train.jpg", _image_bytes((31, 53, 79)), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    _mark_training_ready(client, project_id, second, label="smoke", class_id=1)
+    benchmark = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-partial.jpg", _image_bytes("gray"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    for image in (first, second):
+        current = annotations.get(image["id"])
+        annotations.upsert(
+            image["id"],
+            current["boxes"],
+            annotation_state="annotated",
+            annotation_scope=["fire", "smoke"],
+            expected_version=current["version"],
+        )
+    annotations.upsert(
+        benchmark["id"],
+        [{"class_id": 0, "label": "fire", "x1": 10, "y1": 10, "x2": 80, "y2": 80}],
+        annotation_state="annotated",
+        annotation_scope=[],
+    )
+    app_module.material_store(project_id).patch({
+        benchmark["id"]: {"processing_status": "processed"},
+    })
+    monkeypatch.setattr(
+        app_module,
+        "_training_reusable_benchmark",
+        lambda *_args: {
+            "test_image_ids": (benchmark["id"],),
+            "source_version_id": "benchmark-v1",
+            "scope_id": "b" * 64,
+        },
+    )
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "Benchmark 补审准入", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    repository = app_module.shared_task_repository()
+    before = len(repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "train_labels": ["fire", "smoke"],
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": [first["id"], second["id"]],
+            "test_image_ids": [],
+            "experiment_percent": 20,
+            "validation_percent": 20,
+            "benchmark_source_version_id": "benchmark-v1",
+            "benchmark_scope_id": "b" * 64,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = json.loads(response.json()["detail"])
+    assert detail["code"] == "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+    assert detail["items"][0]["image_id"] == benchmark["id"]
+    after = len(repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+    assert after == before
 
 
 def test_v12_rejects_paddle_before_algorithm_or_material_io(client, seeded_project):
@@ -410,10 +575,8 @@ def test_training_rejects_random_pool_with_missing_material_truth(client, seeded
         },
     )
 
-    assert response.status_code == 202
-    task_id = response.json()["task"]["task_id"]
-    with pytest.raises(ValueError, match="所选素材不存在"):
-        _freeze_admitted_training(app_module, task_id)
+    assert response.status_code == 409, response.text
+    assert "not-a-real-image" in response.json()["detail"]
 
 
 def test_product_training_submit_freezes_server_authoritative_label_contract(
@@ -444,17 +607,15 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
         f"/api/v12/projects/{project_id}/train/start",
         json=base_request,
     )
-    assert missing.status_code == 202
-    with pytest.raises(ValueError, match="首次训练必须"):
-        _freeze_admitted_training(app_module, missing.json()["task"]["task_id"])
+    assert missing.status_code == 409
+    assert "首次训练必须" in missing.text
 
     bypass = client.post(
         f"/api/v12/projects/{project_id}/train/start",
         json={**base_request, "train_labels": ["smoke"]},
     )
-    assert bypass.status_code == 202
-    with pytest.raises(ValueError, match="不在已选素材"):
-        _freeze_admitted_training(app_module, bypass.json()["task"]["task_id"])
+    assert bypass.status_code == 409
+    assert "不在已选素材" in bypass.text
 
     accepted = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -1112,13 +1273,7 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
         data={"dataset_id": "default"},
     ).json()["uploaded"][0]
     for image in (benchmark_image, train_image, train_image_2):
-        assert client.post(
-            f"/api/projects/{project_id}/annotations/{image['id']}",
-            json={"boxes": [{
-                "class_id": 0, "label": "fire",
-                "x1": 20, "y1": 20, "x2": 90, "y2": 90,
-            }]},
-        ).status_code == 200
+        _mark_training_ready(client, project_id, image)
 
     material = app_module.MaterialRepository(
         app_module.project_dir(project_id)
@@ -1219,50 +1374,35 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     assert payload["benchmark_reuse"]["effective_training_candidate_count"] == 2
 
 
-def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project, monkeypatch):
+def test_reusable_benchmark_rejects_stale_observed_scope_at_admission(
+    client, seeded_project,
+):
     import app as app_module
 
-    project_id, _ = seeded_project
+    project_id, seed_image = seeded_project
+    first = _mark_training_ready(client, project_id, seed_image)
+    second = _upload_training_ready(client, project_id, "stale-scope-two.jpg", (41, 61, 83))
+    third = _upload_training_ready(client, project_id, "stale-scope-three.jpg", (101, 121, 143))
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "过期评测基准", "algorithm_type": "yolo_ultralytics"},
     ).json()["algorithm"]
-    seen = {}
-
-    from platform_core.remote_training_tasks import (
-        RemoteTrainingPreparationError,
-        TrainingPrepareHandler,
-    )
-
-    def fake_resolve(_self, _project, _algorithm, payload, split):
-        seen["source_version_id"] = payload.get("benchmark_source_version_id")
-        seen["observed_scope_id"] = payload.get("benchmark_scope_id")
-        raise RemoteTrainingPreparationError(
-            "TRAINING_BENCHMARK_SCOPE_CHANGED",
-            "Benchmark Scope 已变化",
-        )
-
-    monkeypatch.setattr(TrainingPrepareHandler, "_resolve_benchmark_reuse", fake_resolve)
     response = client.post(
         f"/api/v12/projects/{project_id}/train/start",
         json={
             "framework": "ultralytics",
             "algorithm_asset_id": algorithm["id"],
+            "train_labels": ["fire"],
             "split_mode": "random_test_from_training_pool",
-            "train_image_ids": ["train-a"],
+            "train_image_ids": [first["id"], second["id"], third["id"]],
             "validation_percent": 20,
             "experiment_percent": 20,
             "benchmark_source_version_id": "version-old",
             "benchmark_scope_id": "d" * 64,
         },
     )
-    assert response.status_code == 202
-    with pytest.raises(RemoteTrainingPreparationError, match="Scope"):
-        _freeze_admitted_training(app_module, response.json()["task"]["task_id"])
-    assert seen == {
-        "source_version_id": "version-old",
-        "observed_scope_id": "d" * 64,
-    }
+    assert response.status_code == 409, response.text
+    assert "当前版本已变化" in response.text
 
 
 
@@ -1356,7 +1496,7 @@ def test_training_truth_validation_keeps_material_reads_batched():
         assert "AnnotationRepository(project_dir(project_id)).get_many(" in source
 
 
-def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
+def test_explicit_training_rejects_cleaned_unannotated_selection_before_snapshot(
     client, seeded_project
 ):
     import app as app_module
@@ -1371,19 +1511,7 @@ def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
             files=[("files", (f"formal-{index}.jpg", _image_bytes(color), "image/jpeg"))],
             data={"dataset_id": "default"},
         ).json()["uploaded"][0]
-        saved = client.post(
-            f"/api/projects/{project_id}/annotations/{uploaded['id']}",
-            json={"boxes": [{
-                "class_id": 0,
-                "label": "fire",
-                "x1": 10,
-                "y1": 10,
-                "x2": 90,
-                "y2": 90,
-            }]},
-        )
-        assert saved.status_code == 200, saved.text
-        formal.append(uploaded)
+        formal.append(_mark_training_ready(client, project_id, uploaded))
 
     pending = client.post(
         f"/api/projects/{project_id}/images",
@@ -1419,32 +1547,11 @@ def test_explicit_training_keeps_cleaned_unannotated_selection_outside_snapshot(
         },
     )
 
-    assert response.status_code == 202, response.text
-    task_id = response.json()["task"]["task_id"]
-    payload = _freeze_admitted_training(app_module, task_id)
-    selection = payload["selection_counts"]
-    assert selection == {
-        "selected_train_count": 7,
-        "effective_train_count": 6,
-        "pending_annotation_count": 1,
-        "test_count": 0,
-    }
-
-    assert payload["selected_train_image_ids"] == selected_ids
-    assert payload["pending_annotation_image_ids"] == [pending["id"]]
-    assert pending["id"] not in payload["train_image_ids"]
-    assert len(payload["train_image_ids"]) == 6
-
-    frozen = app_module.shared_task_artifacts().read_json(task_id, "input-freeze.json")
-    assert frozen["selection"]["selected_train_count"] == 7
-    assert frozen["selection"]["pending_annotation_image_ids"] == [pending["id"]]
-    assert pending["id"] not in {row["id"] for row in frozen["images"]}
-    assert pending["id"] not in frozen["split"]["train_image_ids"]
-
-    job = app_module.read_json(
-        app_module.project_dir(project_id) / "jobs" / task_id / "job.json",
-        {},
+    assert response.status_code == 409, response.text
+    detail = json.loads(response.json()["detail"])
+    assert detail["code"] == "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+    pending_issue = next(
+        item for item in detail["items"] if item["image_id"] == pending["id"]
     )
-    assert job["selected_train_images"] == 7
-    assert job["effective_train_images"] == 6
-    assert job["pending_annotation_images"] == 1
+    assert pending_issue["issue_type"] == "missing_annotation"
+    assert pending_issue["missing_label_codes"] == ["fire"]

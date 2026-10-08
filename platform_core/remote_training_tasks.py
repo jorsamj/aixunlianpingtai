@@ -31,6 +31,10 @@ from .storage.source_repository import StorageSourceRepository
 from .task_runtime import TaskKind, TaskStatus
 from .training_bundle_cache import TrainingBundleCache
 from .training_label_tasks import project_training_rows, resolve_training_label_contract
+from .training_compatibility import (
+    evaluate_selection_compatibility,
+    persist_compatibility_issues,
+)
 from .training_resource_policy import auto_admission_evidence
 from .training_splits import (
     SplitMode,
@@ -465,6 +469,23 @@ class TrainingPrepareHandler:
         label_contract = resolve_training_label_contract(
             self.data_dir, project, label_request, algorithm,
         )
+        compatibility = evaluate_selection_compatibility(
+            project,
+            selection,
+            label_contract,
+        )
+        if compatibility.issues:
+            manifest = persist_compatibility_issues(
+                context.artifacts,
+                target.task_id,
+                compatibility,
+            )
+            raise RemoteTrainingPreparationError(
+                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE",
+                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE: "
+                f"{manifest['issue_count']} 张训练素材需要补审或排除",
+                target_status=TaskStatus.FAILED,
+            )
         projected = project_training_rows(selection.effective_images, label_contract)
         frozen = freeze_training_inputs(
             project,

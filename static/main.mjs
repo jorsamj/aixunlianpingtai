@@ -13,19 +13,19 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422579';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422597';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422548';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422502';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422595';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422564';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422578';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422519';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422568';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422596';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422555';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
-import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422549';
+import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422569';
@@ -99,7 +99,7 @@ window.PlatformCore = {
   modalStack,
   messageFromApiError,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
-  annotationWorkbench: {createAnnotationWorkbench, queueWindow},
+  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask},
@@ -218,6 +218,7 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   trainingDraftRuntime,
   trainingDraftToRequest,
   trainingTaskRuntime,
+  materialSummaryRuntime: trainingMaterialSummaryRuntime,
   reloadRelated: async () => {
     if (state.page === '算法列表' && algorithmListRuntime) {
       return algorithmListRuntime.refresh({render: false});

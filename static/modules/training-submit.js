@@ -130,13 +130,19 @@ export function validateTrainingDevice(draft, devices = [], target = null) {
   return match;
 }
 
-export function trainingSubmitReadiness({draft, base, benchmarkStatus, submitting = false} = {}) {
+export function trainingSubmitReadiness({draft, base, benchmarkStatus, compatibility, submitting = false} = {}) {
   if (submitting) return {ready: false, reason: 'submitting'};
   if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
   if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
   if (base?.blocked) return {ready: false, reason: 'iteration'};
+  if (compatibility !== undefined && compatibility?.ready !== true) {
+    return {ready: false, reason: 'material-compatibility-loading'};
+  }
+  if (compatibility !== undefined && Number(compatibility?.issue_count || 0) > 0) {
+    return {ready: false, reason: 'material-compatibility'};
+  }
   return {ready: true, reason: ''};
 }
 
@@ -262,6 +268,7 @@ export function installTrainingSubmitRuntime({
   reloadRelated,
   renderAlgorithms,
   trainingTaskRuntime,
+  materialSummaryRuntime,
   closeModal,
   notify,
 } = {}) {
@@ -319,7 +326,10 @@ export function installTrainingSubmitRuntime({
     const benchmarkStatus = String(state.trainingBenchmarkReuse?.algorithm_id || '') === String(draft?.algorithmId || '')
       ? state.trainingBenchmarkReuse
       : null;
-    const baseReadiness = trainingSubmitReadiness({draft, base, benchmarkStatus, submitting});
+    const compatibility = materialSummaryRuntime?.compatibilityFor?.(draft);
+    const baseReadiness = trainingSubmitReadiness({
+      draft, base, benchmarkStatus, compatibility, submitting,
+    });
     const asset = (state.algorithms || []).find(
       row => String(row?.id || '') === String(draft?.algorithmId || '')
     );
@@ -436,6 +446,18 @@ export function installTrainingSubmitRuntime({
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
+      if (materialSummaryRuntime?.refreshCompatibility) {
+        const checked = await materialSummaryRuntime.refreshCompatibility({
+          force: true,
+          payload,
+        });
+        if (!checked) throw new Error('训练标签适配检查失败，请重试');
+        if (Number(checked.issue_count || 0) > 0) {
+          materialSummaryRuntime.openCompatibilityIssues?.();
+          throw new Error(`仍有 ${Number(checked.issue_count)} 张素材需要补审或排除`);
+        }
+      }
+
       setSubmitStage('posting');
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
@@ -498,7 +520,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422511',
+    build: 'training-submit-422596',
     submit,
     createTaskId: createCanonicalTrainingTaskId,
     isCanonicalTaskId: isCanonicalTrainingTaskId,
