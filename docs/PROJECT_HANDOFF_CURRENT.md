@@ -1,3 +1,13 @@
+<!-- LIVE_HANDOFF_2026_10_08_AUDIT_099_098 -->
+> ## 2026-10-08 当前接手入口：AUDIT-099 / AUDIT-098 commit fence 已实现（最高优先级）
+>
+> 实现候选版本：`42.24.296`，长期分支仍为 `feature/external-algorithm-publishing`。Storage Rescan 写正式 Annotation Ground Truth 时，现把预检读取的 Annotation version 作为 `expected_version` 交给唯一 AnnotationRepository 的批量事务；任一图片并发变化会整批回滚并要求重新 Rescan review，不能覆盖刚保存的人工标注。
+>
+> MaterialBatch AI 继续复用唯一 CandidateStore。success/empty/failed 候选写入都传入 WorkerContext-backed commit guard；BatchSelection 的结果 transition 也新增可选 guard，并在其 `BEGIN IMMEDIATE` 事务提交前检查 execution/lease/cancel。候选已持久化但 selection 提交失去 lease 时，候选保留作为避免重复计费的恢复证据，旧 Worker 不能推进 selection。
+>
+> 直接回归：commit fencing / rescan / MaterialBatch API `25 passed`；关联 annotation/material `52 passed`；durable remap / cleaning `32 passed`。Windows 上两条远程 ZIP review 集成用例在进入本批代码前因既有临时目录创建失败，等待 Linux CI 结论；不得把该本机失败写成通过。目标 HEAD 的全部 Actions/check-runs 仍须 terminal success。
+>
+
 <!-- LIVE_HANDOFF_2026_10_08_TRAINING_SCOPE_REMEDIATION -->
 > ## 2026-10-08 当前接手入口：训练标签审核范围补审闭环已实现（最高优先级）
 >
@@ -9,7 +19,7 @@
 >
 > 历史兼容只迁移可由旧正样本框证明的标签范围；旧 confirmed_empty 没有可靠逐类证据时保持空范围。对已经被旧 UI 扩成全部 active labels 的现存记录无法可靠区分真实逐类确认，因此本批不猜测、不批量改写 Ground Truth。
 >
-> 下一顺序：确认 `42.24.295` 精确 HEAD 的全部 CI 终态；若全绿，再按既定路线处理 AUDIT-099、AUDIT-098。已完成本次相关 Real Chrome 回归；Linux/NVIDIA、OSS、外部畅联云和硬件环境未在本批现场验证，不得写成 VERIFIED。
+> `42.24.295` 精确 HEAD 已确认 31/31 workflow runs 与 86/86 check-runs 全部 completed-success。AUDIT-099/098 已进入后续 `42.24.296` 批次；Linux/NVIDIA、OSS、外部畅联云和硬件环境未在标签范围批次现场验证，不得写成 VERIFIED。
 >
 
 <!-- LIVE_HANDOFF_2026_10_05_DELIVERY_CLOSURE -->

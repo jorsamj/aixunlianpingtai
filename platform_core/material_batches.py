@@ -497,7 +497,7 @@ class BatchSelection:
             (*states, BATCH_SIZE),
         ).fetchall()
 
-    def transition(self, ids, state, error=None):
+    def transition(self, ids, state, error=None, *, commit_guard=None):
         if len(ids) > BATCH_SIZE:
             raise ValueError("selection updates are limited to 500")
         with self.transaction():
@@ -505,6 +505,8 @@ class BatchSelection:
                 "UPDATE selection SET state=?, error=?, attempts=attempts+? WHERE image_id=?",
                 ((state, error, int(state == "running"), image_id) for image_id in ids),
             )
+            if commit_guard is not None:
+                commit_guard()
 
     def transaction(self):
         from contextlib import contextmanager

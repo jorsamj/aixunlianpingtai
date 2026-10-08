@@ -1,5 +1,14 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 AUDIT-099 / AUDIT-098 commit fence（当前最新）
+
+- VERSION：`42.24.296`；长期分支：`feature/external-algorithm-publishing`。
+- AUDIT-099：Storage Rescan 的每条正式 Annotation 写入携带预检时读取的 `expected_version`。AnnotationRepository 在同一个 `BEGIN IMMEDIATE` 中执行整批 CAS；冲突整批回滚并返回“重新 Rescan”错误，不更新 Material projection。
+- AUDIT-098：MaterialBatch AI 的 success/empty/failed CandidateStore append 均带 execution commit guard；BatchSelection transition 支持同样的提交前 guard。cancel、lease loss 或 generation replacement 是控制流，不能落成 failed candidate 或推进旧 selection。
+- 未新增 Annotation/Candidate/Task Owner；候选持久化后的避免重复计费恢复语义保留。
+- 本地：核心 commit/rescan/MaterialBatch API `25 passed`；关联 annotation/material `52 passed`；durable remap/cleaning `32 passed`；语法与 diff 检查通过。两条既有 Windows remote ZIP review 用例因 staging 临时父目录创建失败而未进入本批代码，需以 Linux CI 为准。
+- `42.24.295` 标签范围批次已确认 31/31 workflows、86/86 checks 全部 completed-success。`42.24.296` 仍需推送并读取精确 HEAD 的终态。
+
 ## 2026-10-08 训练标签审核范围适配闭环（当前最新）
 
 ### 当前实现候选

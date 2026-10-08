@@ -25803,3 +25803,13 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - `42.24.294` 的失败均来自直接相关的旧测试/永久守卫未同步新正式合同：Picker 路由新增依赖注入、空样本必须先显式选择审核标签、训练浏览器 fixture 未返回新的 compatibility 真值，以及 recovery runtime 缓存版本断言滞后。
 - 测试现显式模拟 authoritative compatibility success，空样本浏览器回归则实际勾选待审核标签并核验持久化 scope；没有跳过兼容性门禁，也没有恢复旧的 `saveAnn(false,{confirmEmpty:true})` 自动负样本路径。
 - 定向结果：路由挂载 `4 passed`，前端 owner/提交合同 `18 passed`；相关 Real Chrome 首轮 `23 passed / 2 failed`，修正多元素断言和素材选择等待后两项复跑 `2 passed`。目标 `42.24.295` HEAD 仍须等待全部 GitHub Actions/check-runs 终态后才能标记 CI PASS。
+
+## 2026-10-08 修复日志 — AUDIT-099 / AUDIT-098 commit fence（42.24.296）
+
+**状态：IMPLEMENTED / LOCAL FOCUSED TESTS PASS / CI PENDING。**
+
+- AUDIT-099：Storage Rescan 把 `get_many()` 读取的 Annotation `version` 带入每条 `upsert_many(expected_version=...)`；任一行在预检后被人工修改，唯一 AnnotationRepository 会在同一批量事务内抛 conflict 并整批回滚。Rescan 将其转换为明确的“平台标注在应用期间变化，请重新扫描”错误，Material projection 不会在失败后更新。
+- AUDIT-098：MaterialBatch AI 的 success/empty/failed CandidateStore 写入全部传入 Worker execution commit guard；已存在可恢复候选的 selection 推进同样受 guard 保护。BatchSelection transition 的可选 guard 在其 SQLite `BEGIN IMMEDIATE` 更新后、COMMIT 前执行，失败会回滚 state/counter。
+- 取消、lease loss 与 execution generation replacement 继续作为任务控制流向外传播，不伪造 failed candidate；Candidate 已提交但 selection 提交被 fence 时保留 durable candidate，供新 Worker 避免重复推理计费。
+- 回归覆盖 commit-time cancel、selection commit 前 lease loss、failed candidate fencing、真实 selection transaction rollback，以及 Rescan 预检后人工保存时 CAS 保留人工版本。核心 commit/rescan/MaterialBatch API `25 passed`，关联 annotation/material `52 passed`，durable remap/cleaning `32 passed`。
+- Windows 本机两条既有 remote ZIP review 集成测试在进入本批 Rescan/Candidate 代码前因 staging 临时父目录创建失败；不据此修改无关 ZIP 模块，等待目标 HEAD 的 Linux GitHub Actions。VERSION 42.24.295 → 42.24.296；不 merge main、不 tag/release、不部署。

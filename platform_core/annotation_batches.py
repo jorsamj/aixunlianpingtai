@@ -37,6 +37,13 @@ class AnnotationBatch:
         indexed = {row["id"]: row for row in materials.get_many([item["image_id"] for item in batch])}
         for selected in batch:
             image_id = selected["image_id"]
+
+            def candidate_commit_guard():
+                check_active(context, "AI_ANNOTATION_CANDIDATE_COMMIT", image_id)
+
+            def selection_commit_guard():
+                check_active(context, "AI_ANNOTATION_SELECTION_COMMIT", image_id)
+
             check_active(context, "AI_ANNOTATION", image_id)
             old = self.store.get(image_id)
             # A crash after candidate durability must not repeat a billable inference.
@@ -50,7 +57,9 @@ class AnnotationBatch:
                 old and old.get("status") in {"success", "empty"}
                 and old_sha and old_sha == current_sha
             ):
-                manifest.transition([image_id], "succeeded")
+                manifest.transition(
+                    [image_id], "succeeded", commit_guard=selection_commit_guard
+                )
             else:
                 image = indexed.get(image_id) or {"id": image_id}
                 item = {"image_id": image_id, "filename": image.get("filename"),
@@ -84,8 +93,12 @@ class AnnotationBatch:
                     item.update({"status": "success" if generated.get("boxes") else "empty",
                                  "source_content_sha256": source_sha,
                                  "width": image["width"], "height": image["height"]})
-                    self.store.append_items([item])
-                    manifest.transition([image_id], "succeeded")
+                    self.store.append_items(
+                        [item], commit_guard=candidate_commit_guard
+                    )
+                    manifest.transition(
+                        [image_id], "succeeded", commit_guard=selection_commit_guard
+                    )
                 except (PermissionError, InterruptedError):
                     # Cancellation / lease loss is task control flow, not an inference
                     # failure. Do not persist a failed candidate for work we no longer
@@ -94,8 +107,13 @@ class AnnotationBatch:
                 except Exception as error:
                     reason = self.public_error(error)
                     item.update({"status": "failed", "boxes": [], "error": reason})
-                    self.store.append_items([item])
-                    manifest.transition([image_id], "failed", reason)
+                    self.store.append_items(
+                        [item], commit_guard=candidate_commit_guard
+                    )
+                    manifest.transition(
+                        [image_id], "failed", reason,
+                        commit_guard=selection_commit_guard,
+                    )
                     append_task_log(context, "annotation_error", f"image_id={image_id} {reason}")
             checkpoint = manifest.summary(image_id)
             context.save_checkpoint(checkpoint)

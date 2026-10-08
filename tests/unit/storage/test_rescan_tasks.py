@@ -413,6 +413,85 @@ def test_yolo_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
         )
 
 
+def test_yolo_rescan_commit_cas_preserves_manual_edit_after_precheck(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    project_id = "project-rescan-commit-race"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert(material("old-1", "images/train/a.jpg", "a" * 64))
+    annotations = AnnotationRepository(project_path)
+    reviewed = annotations.upsert(
+        "old-1",
+        [{
+            "id": "reviewed", "label": "smoke", "class_id": 0,
+            "x1": 8, "y1": 8, "x2": 24, "y2": 24,
+        }],
+    )
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "rescan-commit-race"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "old-1",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": _yolo_evidence(),
+        "platform_annotation_hash": reviewed["content_digest"],
+        "platform_annotation_state": "annotated",
+    }])
+
+    original_upsert_many = AnnotationRepository.upsert_many
+    raced = False
+
+    def race_before_rescan_commit(self, rows, **kwargs):
+        nonlocal raced
+        rows = [dict(row) for row in rows]
+        if not raced and rows and "expected_version" in rows[0]:
+            raced = True
+            original_upsert_many(self, [{
+                "image_id": "old-1",
+                "boxes": [{
+                    "id": "manual", "label": "smoke", "class_id": 0,
+                    "x1": 12, "y1": 12, "x2": 32, "y2": 32,
+                }],
+                "annotation_state": "annotated",
+            }])
+        return original_upsert_many(self, rows, **kwargs)
+
+    monkeypatch.setattr(AnnotationRepository, "upsert_many", race_before_rescan_commit)
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    with pytest.raises(ValueError, match="changed while applying rescan"):
+        handler._apply_annotation_rescan(
+            context,
+            SimpleNamespace(id="s3-a"),
+            store,
+            materials,
+            {
+                "new": "ignore", "missing": "ignore", "changed": "ignore",
+                "annotation_changed": "update",
+                "annotation_removed": "keep",
+                "annotation_conflicts": "keep",
+            },
+            {"import_format": "yolo"},
+        )
+
+    saved = annotations.get("old-1")
+    assert saved["version"] == reviewed["version"] + 1
+    assert saved["boxes"][0]["id"] == "manual"
+    assert store.annotation_summary()["applied"] == 0
+
+
 def test_yolo_rescan_new_material_records_imported_annotation_provenance(tmp_path):
     data_dir = tmp_path / "data"
     project_id = "project-new-provenance"
