@@ -2070,15 +2070,21 @@ def test_storage_source(source_id: str):
 @app.delete("/api/v61/storage-sources/{source_id}")
 def delete_storage_source(source_id: str):
     repository = storage_source_repository()
-    source = repository.get(source_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="存储源不存在")
-    try:
-        repository.delete(source_id)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if source.secret_ref:
-        storage_credentials().delete(source.secret_ref)
+    # Match update_source's existing canonical lifecycle fence. In-flight
+    # final Material commits and destructive source retirement must serialize.
+    with _storage_source_fence():
+        source = repository.get(source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="存储源不存在")
+        _assert_storage_source_mutation_allowed(source_id)
+        try:
+            repository.delete(source_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        # Retired credentials are no longer available to any committed
+        # material. Keep deletion within the fence to prevent reuse races.
+        if source.secret_ref:
+            storage_credentials().delete(source.secret_ref)
     return {"ok": True, "deleted_id": source_id}
 
 
@@ -3072,7 +3078,12 @@ def _v50_cleanup_buffered_image_batch_files(
 ) -> List[str]:
     errors = []
     p = project_dir(project_id)
-    manager = storage_manager(project_id)
+    batch = _v50_active_image_batch(project_id)
+    manager = (
+        batch.get("storage_manager")
+        if batch and batch.get("storage_manager") is not None
+        else storage_manager(project_id)
+    )
     for record in records:
         image_id = str(record.get("id") or "")
         try:
@@ -3115,6 +3126,8 @@ def _v50_end_image_batch(save: bool = True):
         dict(row) for row in batch.get("deferred_annotations", {}).values()
     ]
     if not save:
+        # Roll back against the exact provider used for this upload, even
+        # when the Storage Source config changed before final admission.
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
         if cleanup_errors:
             raise RuntimeError(
@@ -4839,6 +4852,37 @@ def _plain_upload_recover_receipt(project_id: str, store: UploadBatchStore, rece
     })
 
 
+def _plain_upload_source_generation(storage_source_id: str) -> tuple[Any, ...]:
+    """Capture the canonical source identity under the source lifecycle fence.
+
+    Network uploads are intentionally outside the fence. Only source identity
+    reads and the final Material commit are serialized with PATCH/DELETE.
+    """
+    with _storage_source_fence():
+        source = storage_source_repository().get(storage_source_id)
+        if source is None or not source.enabled:
+            raise HTTPException(status_code=409, detail={
+                "code": "UPLOAD_STORAGE_SOURCE_UNAVAILABLE",
+                "message": "素材存储源不存在或已停用，请刷新后重试",
+            })
+        return _storage_source_runtime_generation(source)
+
+
+def _plain_upload_assert_source_generation(
+    storage_source_id: str, expected_generation: tuple[Any, ...],
+) -> None:
+    """Called WITH the lifecycle fence held immediately before DB commit."""
+    source = storage_source_repository().get(storage_source_id)
+    if (
+        source is None or not source.enabled
+        or _storage_source_runtime_generation(source) != expected_generation
+    ):
+        raise HTTPException(status_code=409, detail={
+            "code": "UPLOAD_STORAGE_SOURCE_CHANGED",
+            "message": "上传期间存储源配置或凭据发生变化，未将本批素材写入正式索引",
+        })
+
+
 @app.post("/api/projects/{project_id}/images")
 async def upload_images(
     project_id: str, files: List[UploadFile] = File(...),
@@ -4894,6 +4938,14 @@ async def _plain_upload_images_claimed(
                 "message": str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
             })
 
+    # Admission is taken only for new requests; replay never needs to touch
+    # possibly retired source credentials.
+    try:
+        source_generation = _plain_upload_source_generation(storage_source_id)
+    except HTTPException as error:
+        if receipt_created:
+            store.fail_upload_request(batch_id, error=str(error.detail), failed_at=now_iso())
+        raise
     started = time.time()
     material_commit_started = False
     _v50_begin_image_batch(project_id)
@@ -4931,8 +4983,13 @@ async def _plain_upload_images_claimed(
                 batch_id, [str(item.get("id")) for item in uploaded],
                 failed=failed, prepared_at=now_iso(),
             )
-        material_commit_started = True
-        committed = _v50_end_image_batch(save=True)
+        # The identity check and canonical Material+GT commit MUST be one
+        # fenced unit; otherwise PATCH/DELETE may race between the two.
+        # No await and no remote upload occur while this fence is held.
+        with _storage_source_fence():
+            _plain_upload_assert_source_generation(storage_source_id, source_generation)
+            material_commit_started = True
+            committed = _v50_end_image_batch(save=True)
         if committed:
             committed_by_id = {str(item.get("id")): item for item in committed}
             uploaded = [dict(committed_by_id.get(str(item.get("id"))) or item) for item in uploaded]
