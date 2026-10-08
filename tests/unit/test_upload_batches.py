@@ -150,3 +150,36 @@ def test_upload_request_receipt_persists_terminal_replay_truth(tmp_path):
         finished_at="2026-09-28T10:00:04Z", elapsed_seconds=4, material_total=9,
     )
     assert repeated["items"] == [{"image_id": "image-a", "decision": "pending"}]
+
+
+def test_prepared_upload_ids_are_immutable_across_receipt_completion(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    store.begin_upload_request(
+        "prepared-1", created_at="2026-10-08T00:00:00Z",
+        manifest=[{"name": "a.jpg", "size": 12, "content_type": "image/jpeg"}],
+        dataset_id="default", storage_source_id="default_local",
+    )
+    prepared = store.prepare_upload_request(
+        "prepared-1", ["image-one"], failed=[],
+        prepared_at="2026-10-08T00:00:01Z",
+    )
+    assert prepared["upload_prepared_image_ids"] == ["image-one"]
+    with pytest.raises(ValueError, match="已经准备"):
+        store.prepare_upload_request(
+            "prepared-1", ["image-two"], failed=[],
+            prepared_at="2026-10-08T00:00:02Z",
+        )
+    with pytest.raises(ValueError, match="不一致"):
+        store.complete_upload_request(
+            "prepared-1", ["image-two"], failed=[],
+            finished_at="2026-10-08T00:00:03Z",
+            elapsed_seconds=1.0, material_total=1,
+        )
+    assert store.read("prepared-1")["upload_request_status"] == "PROCESSING"
+    completed = store.complete_upload_request(
+        "prepared-1", ["image-one"], failed=[],
+        finished_at="2026-10-08T00:00:04Z",
+        elapsed_seconds=1.0, material_total=1,
+    )
+    assert completed["upload_request_status"] == "SUCCEEDED"
+    assert completed["items"][0]["image_id"] == "image-one"
