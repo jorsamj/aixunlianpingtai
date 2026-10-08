@@ -252,6 +252,20 @@ def _training_ground_truth_state(
     boxes: Sequence[Mapping[str, Any]],
 ) -> str:
     """Accept only formal Ground Truth; cleaning never implies a negative label."""
+    # Rescan keeps historical formal GT for review, not as H2 training truth.
+    if image.get("annotation_needs_review"):
+        raise ValueError(
+            f"训练素材 {image_id} 的正式标注需要重新审核: "
+            + str(image.get("annotation_review_reason") or "ANNOTATION_REVIEW_REQUIRED")
+        )
+    verified_source = str(
+        image.get("annotation_source_content_sha256") or ""
+    ).strip().lower()
+    source = str(image.get("content_sha256") or "").strip().lower()
+    if verified_source and verified_source != source:
+        raise ValueError(
+            f"训练素材 {image_id} 内容已变化，正式标注不属于当前素材；请重新审核标注"
+        )
     state = _annotation_state(image, boxes)
     if state not in {"annotated", "confirmed_empty"}:
         raise ValueError(

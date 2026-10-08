@@ -25727,3 +25727,13 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - 在 42.24.286 提交后的自查中，发现 tests/unit/test_annotation_task_service.py 的 _seed_verified_candidates() 意外递归调用自身，无法执行回归。此次仅把该调用改回 CandidateStore.append_items；不更改 production fail-closed guard。
 - 42.24.286 因自检发现测试辅助问题，不作为 CI 验收基线；所有验证改以 42.24.287 当前 HEAD 为准。继续要求 completed-success 后才能记录 CI PASS。
+
+
+## 2026-10-08 修复日志 — AUDIT-173 训练 Snapshot 阻断源内容变化（42.24.288）
+
+**状态：PARTIAL FIX / CI PENDING / RE-REVIEW RESTORE PENDING，不宣布 CLOSED。**
+
+- Snapshot 共享真实 GT 检查入口在 legacy 与 Durable split 内同时拒绝 Material.annotation_needs_review 的正式标注，尤其 SOURCE_CONTENT_CHANGED；记录过提交时的 annotation_source_content_sha256 与当前 content_sha256 不匹配时也拒绝。
+- TrainingInputFreeze 冻结以上复核标志和 source hash，防止在中途丢掉源证据。既有 AnnotationRepository 正式 GT 保留、不擅自删除。
+- 新增正样本/confirmed_empty/六张 durable split 回归；实际恢复训练所需的 canonical write_annotation/write_annotations_many 标记清理与内容身份更新，须在紧随其后的独立补丁完成。
+- 当前仅防旧 GT 进入训练；Rescan/Annotation 两库并发事务 CAS 和前端打开旧图后审核的问题仍未完成。不 merge main，不放宽测试。VERSION 42.24.287 → 42.24.288。

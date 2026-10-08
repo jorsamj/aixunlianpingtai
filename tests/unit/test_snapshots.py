@@ -495,3 +495,49 @@ def test_feedback_provenance_changes_only_feedback_backed_revision_identity():
     assert set(feedback["supplement_provenance"]["adopted_material_ids"]) == {"img-0", "img-3"}
     revision = dataset_revision_document(feedback)
     assert revision["supplement_provenance"]["adoption_id"] == feedback["supplement_provenance"]["adoption_id"]
+
+
+@pytest.mark.parametrize("state,boxes", [
+    ("annotated", [{"label": "fire", "x1": 1, "y1": 1, "x2": 20, "y2": 20}]),
+    ("confirmed_empty", []),
+])
+def test_rescan_stale_ground_truth_is_rejected_then_reconfirmed(state, boxes):
+    image = {
+        "id": "image-1", "content_sha256": "b" * 64,
+        "annotation_state": state, "annotation_scope": ["fire"],
+        "annotation_needs_review": True,
+        "annotation_review_reason": "SOURCE_CONTENT_CHANGED",
+        "boxes": boxes,
+    }
+    with pytest.raises(ValueError, match="需要重新审核"):
+        build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+
+    # Clearing the flag cannot turn stale H1 formal annotations into H2 truth.
+    image["annotation_needs_review"] = False
+    image["annotation_review_reason"] = ""
+    image["annotation_source_content_sha256"] = "a" * 64
+    with pytest.raises(ValueError, match="内容已变化"):
+        build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+
+    image["annotation_source_content_sha256"] = "b" * 64
+    accepted = build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+    assert accepted["images"][0]["annotation_state"] == state
+
+
+def test_durable_split_snapshot_rejects_any_rescan_stale_gt():
+    images = [{
+        "id": f"item-{i}", "dataset_id": "training",
+        "group_id": f"group-{i}", "content_sha256": f"content-{i}",
+        "annotation_state": "annotated", "annotation_scope": ["fire"],
+        "annotation_needs_review": i == 0,
+        "annotation_review_reason": "SOURCE_CONTENT_CHANGED" if i == 0 else "",
+        "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 2, "y2": 2}],
+    } for i in range(6)]
+    split = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in images),
+        experiment_percent=20, validation_percent=20,
+    )
+    manifest = build_split_manifest(images, split, seed=17)
+    with pytest.raises(ValueError, match="需要重新审核"):
+        build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
