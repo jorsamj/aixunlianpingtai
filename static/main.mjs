@@ -17,7 +17,7 @@ import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtim
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422603';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422603';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422564';
-import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422578';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422605';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422519';
@@ -39,7 +39,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422214';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422605';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66008';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';

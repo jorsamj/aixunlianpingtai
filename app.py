@@ -2788,23 +2788,50 @@ def label_review_sample_content_v61(
 @app.get("/api/v61/projects/{project_id}/materials")
 def list_materials_v61(
     project_id: str, cursor: Optional[str] = None, limit: int = 100,
+    page: Optional[int] = None, page_size: Optional[int] = None,
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
 ):
     get_project(project_id)
+    numbered = page is not None or page_size is not None
+    requested_page = int(1 if page is None else page) if numbered else None
+    requested_size = int(page_size if page_size is not None else limit)
+    if numbered and (requested_page is None or requested_page < 1):
+        raise HTTPException(status_code=422, detail="page must be at least 1")
+    if requested_size < 1 or requested_size > 1000:
+        raise HTTPException(
+            status_code=422,
+            detail="page_size must be between 1 and 1000",
+        )
     try:
-        page = material_store(project_id).list_page(
-            cursor=cursor, limit=limit, query=query,
+        material_page = material_store(project_id).list_page(
+            cursor=cursor, page=requested_page, limit=requested_size, query=query,
             storage_source_ids=storage_source_id, processing_status=processing_status,
             labels=label, annotated=annotated,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {
-        "items": [public_material(project_id, item) for item in page.items],
-        "next_cursor": page.next_cursor, "total": page.total,
+    response = {
+        "items": [
+            public_material(project_id, item) for item in material_page.items
+        ],
+        "next_cursor": material_page.next_cursor,
+        "total": material_page.total,
     }
+    if numbered:
+        total_pages = max(
+            1,
+            (int(material_page.total) + requested_size - 1) // requested_size,
+        )
+        response.update({
+            "page": requested_page,
+            "page_size": requested_size,
+            "total_pages": total_pages,
+            "has_previous": requested_page > 1,
+            "has_next": requested_page < total_pages,
+        })
+    return response
 
 
 @app.get("/api/v61/projects/{project_id}/materials/ids")

@@ -2597,3 +2597,8 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 >
 > `VERSION.txt=42.24.304`。仅将两个精确静态 cache-key 测试从旧 `main 42.25.294 / picker 422548` 同步到 phase 1 的真实 `main 42.25.303 / picker 422603`；`42.24.303` frontend 其余 842 项通过。产品实现仍为下节所述，最新精确 HEAD CI 待推送核验。
 >
+<!-- CURRENT_STATE_PAGINATION_PHASE_2A_2026_10_08 -->
+> ## 2026-10-08 统一分页第二阶段 A 批
+>
+> VERSION `42.24.305`：数据集 MaterialRepository 真页码、训练任务 canonical snapshot 视图和 AI CandidateStore offset 审核均接入唯一 `pagination.js`。cursor consumer 保持兼容，未新增业务 owner。清洗/导入/模型及 phase 3 仍待后续独立批次；精确 HEAD CI 与生产部署为 PENDING。
+>

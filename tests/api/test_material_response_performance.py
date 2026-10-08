@@ -1,8 +1,66 @@
 import json
+from types import SimpleNamespace
 
+import pytest
 from starlette.responses import Response
 
 import app as app_module
+
+
+def test_material_list_exposes_authoritative_random_page_without_breaking_cursor(
+    monkeypatch,
+):
+    calls = []
+
+    class FakeMaterials:
+        def list_page(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                items=[{"id": "page-three", "filename": "page-three.jpg"}],
+                next_cursor="legacy-next",
+                total=101,
+            )
+
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: {"id": "p1"})
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(
+        app_module,
+        "public_material",
+        lambda _project_id, row: dict(row),
+    )
+
+    numbered = app_module.list_materials_v61(
+        "p1",
+        page=3,
+        page_size=20,
+        query="smoke",
+    )
+    assert calls[-1]["page"] == 3
+    assert calls[-1]["limit"] == 20
+    assert numbered["page"] == 3
+    assert numbered["page_size"] == 20
+    assert numbered["total"] == 101
+    assert numbered["total_pages"] == 6
+    assert numbered["has_previous"] is True
+    assert numbered["has_next"] is True
+
+    legacy = app_module.list_materials_v61(
+        "p1",
+        cursor="legacy-cursor",
+        limit=10,
+    )
+    assert calls[-1]["page"] is None
+    assert calls[-1]["cursor"] == "legacy-cursor"
+    assert legacy == {
+        "items": [{"id": "page-three", "filename": "page-three.jpg"}],
+        "next_cursor": "legacy-next",
+        "total": 101,
+    }
+
+    with pytest.raises(app_module.HTTPException) as invalid_page_size:
+        app_module.list_materials_v61("p1", page=1, page_size=0)
+    assert invalid_page_size.value.status_code == 422
+    assert not calls or calls[-1]["page"] is None
 
 
 def test_material_list_is_pre_serialized_without_changing_json(monkeypatch):

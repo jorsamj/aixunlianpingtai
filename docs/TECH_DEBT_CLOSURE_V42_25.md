@@ -1,5 +1,12 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-08 统一分页 phase 2A — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.305`。数据集、训练任务和 AI 审核迁移到唯一共享分页 presentation。
+- 数据集补真实随机页 API 并保留 cursor；训练任务不复制 Task truth；AI 直接使用既有 CandidateStore offset，保留 stale response fence。
+- focused 前端 44、API 1、Real Chrome 2 均通过；语法/diff 与精确 HEAD CI 尚待提交前/推送后确认。
+- 清洗、导入、模型及 phase 3 未在本批关闭，生产为 `PENDING USER UAT`。
+
 ## 2026-10-08 pagination phase 1 CI cache guards — IMPLEMENTED / CI PENDING
 
 - 版本：`42.24.304`。

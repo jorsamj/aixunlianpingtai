@@ -161,3 +161,10 @@ test('AI review keeps historical candidate hydration page-scoped', () => {
   assert.doesNotMatch(loader, /MaterialPaginationRuntime61/);
 });
 
+test('AI review delegates numbered navigation to the shared pagination component', () => {
+  const source = reviewBlock();
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /onPageChange: page=>loadReviewPage\(\(page-1\)\*review\.limit\)/);
+  assert.doesNotMatch(source, /pager\.innerHTML=`<button class="btn mini"/);
+});
+

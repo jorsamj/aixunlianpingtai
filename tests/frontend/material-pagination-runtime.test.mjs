@@ -27,6 +27,21 @@ test('material paging query keeps filters on the server', () => {
   assert.equal(params.get('annotated'), 'true');
 });
 
+test('material paging query supports a true numbered page contract', () => {
+  const params = buildMaterialQuery({page: 50, pageSize: 20, query: 'helmet'});
+  assert.equal(params.get('page'), '50');
+  assert.equal(params.get('page_size'), '20');
+  assert.equal(params.has('cursor'), false);
+  assert.equal(params.get('query'), 'helmet');
+});
+
+test('dataset final owner delegates numbered navigation to shared pagination', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(runtime, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(runtime, /onPageChange: targetPage => loadMaterialPage61/);
+  assert.doesNotMatch(runtime, /pager\.innerHTML = `<button class="btn mini"/);
+});
+
 
 test('canonical pages do not hydrate the complete material pool during navigation', () => {
   assert.equal(requiresFullMaterialPool('数据集'), false);
@@ -91,7 +106,7 @@ test('identical material page loads are single-flight instead of issuing duplica
   assert.match(runtime, /let pageLoadFlight = null/);
   assert.match(runtime, /let pageLoadFlightKey = ''/);
   assert.match(runtime, /if \(pageLoadFlight && pageLoadFlightKey === flightKey\) return pageLoadFlight/);
-  assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedCursor, requestedPage\]\)/);
+  assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedPage, transport\.pageSize \|\| 48\]\)/);
 });
 
 test('explicit full material hydration is lazy, cached and single-flight', () => {
@@ -103,7 +118,7 @@ test('explicit full material hydration is lazy, cached and single-flight', () =>
   assert.match(runtime, /if \(!force && snapshot\?\.fresh\) return snapshot\.items\.slice\(\)/);
   assert.match(runtime, /const rows = await loadFullPool61\(\)/);
   assert.match(runtime, /ensureFullPool: ensureFullPool61/);
-  assert.match(runtime, /invalidateFullPool61\(\);\n    const result = await loadMaterialPage61/);
+  assert.match(runtime, /invalidateFullPool61\(\);\r?\n    const result = await loadMaterialPage61/);
 });
 
 

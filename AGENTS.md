@@ -1,5 +1,12 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — unified pagination phase 2A
+
+- VERSION `42.24.305` migrates the dataset MaterialRepository page, the canonical training-task view, and AI candidate review to the only shared pagination presentation.
+- Dataset `/api/v61/.../materials` now accepts true `page/page_size`, validates both server-side, returns authoritative page metadata, and preserves the legacy cursor response shape for existing consumers. Page 50 is one bounded query; the browser never walks pages 1–49.
+- Training-task pagination remains a pure view over `TrainingTaskRuntime`'s existing authoritative durable queue snapshot. AI review converts a requested page directly to CandidateStore's existing numeric offset and retains its request-epoch stale-response fence.
+- No Ground Truth, Task, Material, Candidate, cache, poller, or global Page Manager owner was added. Cleaning/import/model and phase-3 entries remain explicitly pending in the inventory; production deployment remains `PENDING USER UAT`.
+
 ## 2026-10-08 live override — pagination phase 1 CI contract follow-up
 
 - VERSION `42.24.304` updates two exact cache-key guards after phase 1 intentionally moved `main.mjs` and the canonical training picker module to new cache-busted URLs. Product behavior and safety assertions are unchanged.

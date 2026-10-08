@@ -1028,7 +1028,7 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-label-tools>summary{padding:11px 12px;color:#526780;font-size:11px;font-weight:800;cursor:pointer}
 .ai66-label-tools[open]>summary{border-bottom:1px solid #edf1f5}
 .ai66-label-tools>#ai60LabelMapping,.ai66-label-tools>.ai60-bulk-review{margin:10px 12px}
-.ai66-review-grid{flex:1;min-height:0;max-height:none!important;overflow:auto!important;display:grid!important;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important;align-content:start;gap:10px!important;padding:12px 20px}
+.ai66-review-grid{flex:1;min-height:0;max-height:none!important;overflow:auto!important;display:grid!important;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important;grid-auto-rows:max-content;align-content:start;gap:10px!important;padding:12px 20px}
 .ai66-candidate-card{display:flex;min-width:0;flex-direction:column;padding:0!important;border:1px solid #dfe6ef!important;border-radius:12px!important;background:#fff;box-shadow:0 3px 10px rgba(24,42,70,.035);overflow:hidden}
 .ai66-candidate-card.accepted{border-color:#aac7f5!important}
 .ai66-candidate-card.rejected{opacity:.72;border-color:#e5b8bc!important;background:#fffafa}
@@ -1043,6 +1043,10 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .ai66-review-empty{grid-column:1/-1}
 .ai66-review-footer{position:relative!important;left:auto;right:auto;bottom:auto;flex:0 0 auto;margin:0 20px 14px!important;padding:10px 12px!important;border:1px solid #dfe6ef;border-radius:12px;background:rgba(255,255,255,.98)!important;box-shadow:0 10px 28px rgba(25,42,70,.09);backdrop-filter:blur(10px)}
 .ai66-review-footer #ai60ReviewPager{display:flex;align-items:center;gap:8px;color:#667892;font-size:11px}
+.ai66-review-footer #ai60ReviewPager .platform-pagination{display:flex;align-items:center;flex-wrap:wrap;width:auto;margin:0;padding:0;border:0;background:transparent;box-shadow:none;gap:8px}
+.ai66-review-footer #ai60ReviewPager .platform-pagination__controls{flex-wrap:nowrap}
+.ai66-review-footer #ai60ReviewPager .platform-pagination__footer{white-space:nowrap}
+.ai66-review-footer #ai60ReviewPager .platform-pagination__error{width:100%}
 @media(max-width:1180px){.ai66-review-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:900px){
   .ai-review-workbench-layer{padding:4px!important}

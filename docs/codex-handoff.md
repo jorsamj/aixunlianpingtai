@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 统一分页第二阶段 A 批（当前最新）
+
+- VERSION：`42.24.305`；本批接入数据集素材/筛选、训练任务/历史任务、AI 候选审核三个高频 final owner。提交、推送与精确 HEAD CI 在本节写入时仍为 PENDING。
+- 数据集 API 新增服务端 `page/page_size`，与 count/rows 同一 SQLite 只读事务、稳定 `created_at,id` 排序；旧 `cursor/limit` 响应字段保持不变。服务端拒绝页码小于 1 和每页数量超出 1–1000。
+- 训练任务不新增第二份列表 truth，只把现有 `TrainingTaskRuntime` durable queue snapshot 的 view pagination 交给共享组件。AI 审核直接把目标页换算为 CandidateStore 数字 offset，保留关闭弹窗、切页及晚响应 sequence fence。
+- 本地定向结果：前端合同 `44 passed`；Material API 正常/典型错误 `1 passed`；数据集浏览器直接第 50 页 `1 passed`；AI 审核浏览器主流程 `1 passed`。共享分页增高后暴露 AI grid implicit row 被压缩，已以 `grid-auto-rows:max-content` 修复并由同一浏览器用例验证。
+- 清洗结果、导入明细、模型/转换及第三阶段入口仍按 inventory 后续独立提交；真实部署视觉、大数据和生产环境为 `PENDING USER UAT`。
+
 ## 2026-10-08 分页第一阶段 CI 合同同步（当前最新）
 
 - VERSION：`42.24.304`。`42.24.303` 精确 HEAD 的产品相关测试已运行，但 Frontend Runtime 与两个 Windows contract 暴露两条过期的精确 cache-key 断言：`main.mjs?v=42.25.294` 与 picker `v=422548`。

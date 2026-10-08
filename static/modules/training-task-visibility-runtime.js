@@ -281,10 +281,7 @@ export function installTrainingTaskVisibilityRuntime({
       <section class="entity-table-surface training-table-surface"><div class="table-wrap"><table class="table train428-table entity-table">
         <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead>
         <tbody></tbody>
-      </table></div><footer class="entity-pagination"><span data-training-total>共 0 条</span><div>
-        <select data-training-page-size><option value="10">10 条/页</option><option value="20">20 条/页</option><option value="50">50 条/页</option></select>
-        <button type="button" data-training-page-prev aria-label="上一页">‹</button><span data-training-page-label>1 / 1</span><button type="button" data-training-page-next aria-label="下一页">›</button>
-      </div></footer></section>
+      </table></div><footer class="entity-pagination"><div data-training-pagination></div></footer></section>
     </section>`;
   }
 
@@ -387,16 +384,6 @@ export function installTrainingTaskVisibilityRuntime({
         renderOwned();
         return;
       }
-      if (event.target.closest?.('[data-training-page-prev]')) {
-        taskView.page = Math.max(1, taskView.page - 1);
-        renderOwned();
-        return;
-      }
-      if (event.target.closest?.('[data-training-page-next]')) {
-        taskView.page += 1;
-        renderOwned();
-        return;
-      }
       const toggle = event.target.closest?.('[data-training-batch-toggle]');
       if (toggle) {
         batchMode = !batchMode;
@@ -430,13 +417,6 @@ export function installTrainingTaskVisibilityRuntime({
       }
     });
     root.addEventListener('change', event => {
-      const pageSize = event.target.closest?.('[data-training-page-size]');
-      if (pageSize) {
-        taskView.pageSize = Math.max(1, Number(pageSize.value) || 10);
-        taskView.page = 1;
-        renderOwned();
-        return;
-      }
       const checkbox = event.target.closest?.('[data-training-batch-select]');
       if (!checkbox) return;
       const id = String(checkbox.dataset.trainingBatchSelect || '');
@@ -603,16 +583,29 @@ export function installTrainingTaskVisibilityRuntime({
       if (!visibleIds.has(id)) selectedIds.delete(id);
     }
     patchRows(body, visible);
-    const total = root.querySelector?.('[data-training-total]');
-    const pageLabel = root.querySelector?.('[data-training-page-label]');
-    const prev = root.querySelector?.('[data-training-page-prev]');
-    const next = root.querySelector?.('[data-training-page-next]');
-    const pageSize = root.querySelector?.('[data-training-page-size]');
-    if (total) total.textContent = `共 ${filtered.length} 条`;
-    if (pageLabel) pageLabel.textContent = `${taskView.page} / ${pages}`;
-    if (prev) prev.disabled = taskView.page <= 1;
-    if (next) next.disabled = taskView.page >= pages;
-    if (pageSize) pageSize.value = String(taskView.pageSize);
+    window.PlatformCore?.pagination?.mountPagination?.(
+      root.querySelector?.('[data-training-pagination]'),
+      {
+        page: taskView.page,
+        pageSize: taskView.pageSize,
+        total: filtered.length,
+        totalPages: pages,
+      },
+      {
+        label: '训练任务分页',
+        showPageSize: true,
+        pageSizes: [10, 20, 50, 100],
+        onPageChange: targetPage => {
+          taskView.page = targetPage;
+          renderOwned();
+        },
+        onPageSizeChange: pageSize => {
+          taskView.pageSize = pageSize;
+          taskView.page = 1;
+          renderOwned();
+        },
+      },
+    );
     syncBatchToolbar(root);
     pollRegistry?.syncTrainingClockTimer?.();
     return true;

@@ -10,13 +10,13 @@
 | 训练创建兼容性问题 | `TrainingMaterialSummaryRuntime` | v62 authoritative totals + revision-keyed projection | 已接入共享分页 |
 | 训练任务 input issues | `TrainingRecoveryRuntime` | Artifact manifest `page/limit` | 已接入共享分页 |
 
-## Phase 2 高频结果集（待独立批次）
+## Phase 2 高频结果集
 
 | 入口 | 当前 owner / 现状 | 迁移判断 |
 |---|---|---|
-| 数据集素材/筛选结果 | `MaterialPaginationRuntime`，cursor 上下页 | 需要后端 numbered page + 共享组件 |
-| 训练任务/历史任务 | `TrainingTaskRuntime`，当前页面级分页需复核 | 若存在真实分段结果则迁移；不能对已全量小列表假分页 |
-| AI 标注候选/审核图片 | AI review final runtime，手写分页 | 需要共享组件并确认 CandidateStore authoritative total |
+| 数据集素材/筛选结果 | `MaterialPaginationRuntime`，MaterialRepository 稳定 `created_at,id` 排序 | `42.24.305` 已接入真实 `page/page_size` 随机页与共享组件；legacy cursor 保留 |
+| 训练任务/历史任务 | `TrainingTaskRuntime` canonical durable queue snapshot | `42.24.305` 已接入共享组件；只对现有 authoritative task snapshot 做 view pagination，不复制任务 truth |
+| AI 标注候选/审核图片 | AI review final runtime + CandidateStore authoritative total/offset | `42.24.305` 已接入共享组件；随机页直接换算为后端 offset，不遍历前置页 |
 | 数据清洗问题/重复素材 | Cleaning runtimes，部分 load-more/手写页 | 传统结果集迁移；逐图审核导航排除 |
 | ZIP/批量导入记录与失败明细 | ZIP import final runtime，手写 review pager | 结果集迁移；上传进度流排除 |
 | 模型/转换任务 | model/conversion runtimes，任务卡片列表 | 有真实分页的列表迁移；少量静态选择器不假分页 |

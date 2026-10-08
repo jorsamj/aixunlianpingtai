@@ -2815,3 +2815,8 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 >
 > `42.24.304` 只更新两个过期 cache-key guard 到 phase 1 当前静态入口，不恢复旧资源、不放宽测试。`42.24.303` 的三项 check failure 均由这两个字面量造成；最新 HEAD CI 仍 PENDING。
 >
+<!-- LIVE_HANDOFF_2026_10_08_PAGINATION_PHASE_2A -->
+> ## 2026-10-08 当前接手入口：统一分页第二阶段 A 批
+>
+> VERSION `42.24.305` 接入数据集、训练任务和 AI 审核 final owner。数据集第 50 页使用一次服务端 numbered query，训练任务仍消费唯一 durable queue snapshot，AI 审核仍消费 CandidateStore authoritative total/offset；共享组件没有 API、业务 rows 或 poller。余下 phase 2/3 入口见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，不得提前声称全平台 CLOSED。
+>
