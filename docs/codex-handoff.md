@@ -1,3 +1,9 @@
+## 2026-10-08 最小安全上线 Gate S5：AUDIT-175 外部版本删除/回退入口隔离（42.24.322）
+
+- 当前新畅联外部 source_type=EXTERNAL/provider_type=CHANG_LIAN 的版本删除/回退，是远端先删除、然后本地 SQL CAS 的非原子序列；失败后 auto-publish 可能重新发布远端版本。补偿与 tombstone 尚未真实验收，采用最小安全上线隔离：两个 v12 版本退役入口在触发外部 I/O 之前以 HTTP 409 拒绝；本地算法版本 delete/rollback 保持原合同。
+- 不修改 canonical AlgorithmSqlStore、ExternalAlgorithmPublishService、模型正式发布或 Durable Training，不引入第二版版本 owner。后续仅在完成持久 tombstone/远端失败后 reconcile、同版本并发竞态/OSS/外部联调验收后恢复开放该入口。
+- 新增外部拒绝与本地允许的回归，并检查两个可达 API 均接入 guard。最新精确 HEAD 的 CI/E2E 尚需核验，不部署生产。
+
 ## 2026-10-08 最小安全上线 Gate S4：AUDIT-138/139 旧版本归属 fail-closed（42.24.321）
 
 - 完整的 Durable Training finalizer 已有 attach_version_if_current（冻结 base + task idempotency），保持不动。

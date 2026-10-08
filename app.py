@@ -10998,9 +10998,30 @@ def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payl
     )
 
 
+def _safe_launch_reject_external_version_retirement(project_id: str, algorithm_id: str) -> None:
+    # Remote delete precedes the local algorithm SQL CAS. Until a durable
+    # tombstone/compensation contract is verified, reject only ChangLian
+    # external algorithm version retirement. Local algorithms are unaffected.
+    algorithm = next(
+        (row for row in list_algorithms_internal(project_id)
+         if str(row.get("id") or "") == str(algorithm_id)),
+        None,
+    )
+    if (
+        algorithm is not None
+        and str(algorithm.get("source_type") or "").upper() == "EXTERNAL"
+        and str(algorithm.get("provider_type") or "").upper() == "CHANG_LIAN"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="新畅联远端算法版本删除与回退暂时停用：需先完成远端删除和本地事务失败的持久化恢复验收。",
+        )
+
+
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
     get_project(project_id)
+    _safe_launch_reject_external_version_retirement(project_id, algorithm_id)
     publish_service = ExternalAlgorithmPublishService(
         data_dir=DATA_DIR,
         project_dir=project_dir,
@@ -11050,6 +11071,7 @@ def v12_rollback_version(
             "回退请求必须携带页面确认时看到的 current_version_id。",
             "请刷新算法版本列表后重新确认回退。", 409,
         )
+    _safe_launch_reject_external_version_retirement(project_id, algorithm_id)
     publish_service = ExternalAlgorithmPublishService(
         data_dir=DATA_DIR,
         project_dir=project_dir,
