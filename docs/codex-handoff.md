@@ -1,3 +1,9 @@
+## 2026-10-09 Gate S14 CI：External Algorithm Publish 精简依赖补齐（42.24.334）
+
+- Gate S14 初次准确 HEAD `09c85e0fd6f1f883d23ef1dc829bfac24cf6265d` 已执行 External Algorithm Publish Push：Backend unit 为 169 passed / 2 failed，失败的两个均为新加的 TRAINING/MODEL_CONVERSION OSS 变更栅栏测试，在执行测试时 import `platform_core.task_runtime` 发现工作流精简环境没有安装 `psutil`（ModuleNotFoundError），并非生产配置栅栏断言失败。
+- 只在既有 `.github/workflows/external-algorithm-publish.yml` 的专注 Python 安装步骤补上项目实际运行时已有依赖 `psutil`；测试不删除、不 skip、不放宽，生产逻辑保持 Gate S14 原样。后续以本补丁精确 HEAD 上该 workflow 及全部其他 GitHub Actions terminal 结果为准。
+- 真实 OSS、双 Worker/GPU/ModelArtifact/Feedback 端到端现场证据仍是 `PENDING UAT`，不得据此部署 main 或生产。
+
 ## 2026-10-09 最小安全上线 Gate S14：AUDIT-169/176 活动存储依赖与人工反馈版本引用（42.24.333）
 
 - 基线 HEAD `e4c00175ef5b096d9af090e6f528331aa293d380`、`VERSION.txt=42.24.332`；23/23 Actions completed-success。此前 AUDIT-171/172 已收口，本批不重复。

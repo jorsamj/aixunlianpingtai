@@ -77,7 +77,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring psutil
       - name: Backend external-publish and model-asset contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
