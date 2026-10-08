@@ -108,7 +108,6 @@ class StorageSource:
     type: str
     config: dict[str, Any]
     secret_ref: str = ""
-    runtime_revision: int = 1
     enabled: bool = True
     is_default: bool = False
     health_status: str = "UNKNOWN"
@@ -116,6 +115,7 @@ class StorageSource:
     last_checked_at: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    runtime_revision: int = 1
 
     def to_public_dict(
         self, *, secret_configured: bool = False, secret_masked: str = ""
