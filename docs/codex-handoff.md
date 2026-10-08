@@ -1,3 +1,13 @@
+## 2026-10-08 最小安全上线 Gate S7：AUDIT-134 普通上传与存储源生命周期并发（42.24.324）
+
+- 基线：长期分支 42.24.323 / HEAD 301c55d07b120073c7e830e055ff15aaa2668380；上一批 20 个可见 Actions 为 queued，没有把 AUDIT-133 提前 CLOSED。
+- 确认问题：普通 POST /api/projects/{project_id}/images 在外部对象上传与 Material/Annotation 入库之间未复核 Storage Source 代际；v61 DELETE 存储源缺少既有 _storage_source_fence 与活动 durable task guard。异步文件 I/O 中间源被重配/删除，会造成不正确索引，且旧 _v50 cleanup 从新 Provider 删除临时对象。
+- 修复：仍使用已有 storage_source_lifecycle_fence。普通上传仅在开始时读取源身份，不持全局锁跨 await/网络 I/O；最终 _v50_end_image_batch(save=True) 前对 source created_at/type/config/secret_ref/enabled 进行锁内复核，核验 + Material/Annotation commit 在同一短临界区，源已变则 HTTP 409、撤销未入库素材。删除入口在同一 fence 下复核活跃任务与正式素材引用后退役；创建入口也使用同一 fence 保护同 ID 重建与密钥引用。
+- 资源清理：_v50_end_image_batch 原先清空 ContextVar 后回滚，从最新 Source 配置重新实例化 Provider；修改为显式复用当前批次已缓存 StorageManager，防止配置 A→B 时去 B 删除本应从 A 清理的临时对象。仍保持 Material/Annotation 双库非原子异常的保留源文件安全逻辑。
+- ABA：同 ID 同配置源删除再创建，若只核对 type/config/secret_ref/enabled 可能误认原代际；已加入 source.created_at，保留源仅改显示名称不影响代际。
+- 回归：tests/api/test_upload_storage_source_lifecycle.py 五条，包括换存储目录、删除、同 ID 重建、名称修改不误阻断、活跃任务禁止删除。Remote Material Import API workflow 已引入这些测试与 py_compile。
+- 范围：仅普通图片上传、源配置生命周期与现有批次回滚；未新增 owner、表、Poller、Router，未改变外部算法发布链。OSS 真机、跨 Worker 并发、权限轮换 UAT 与精确 HEAD 全部 CI 均待验收；**CODE IMPLEMENTED / NOT CLOSED**。不 merge main、不 tag/release、不部署生产。
+
 ## 2026-10-08 最小安全上线 Gate S6：AUDIT-133 普通图片上传收据崩溃恢复（42.24.323）
 
 - 问题：原始普通图片上传将 request receipt 写为 PROCESSING 后，在实际 Material/Annotation 批量提交完成之前无法持久识别本次写入 image_id；崩溃后同一 upload_request_id 只能 409，无法判断已提交或未提交。UploadBatchStore 原先也只使用进程内 RLock，跨 Web Worker 重复请求不受保护。
