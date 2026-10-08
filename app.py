@@ -2027,7 +2027,10 @@ def update_storage_source(source_id: str, payload: StorageSourceUpdateReq):
 @app.post("/api/v61/storage-sources/{source_id}/default")
 def set_default_storage_source(source_id: str):
     try:
-        return _public_storage_source(storage_source_repository().set_default(source_id))
+        # Default selection must not race source retirement, which could
+        # otherwise leave the repository without a valid default source.
+        with _storage_source_fence():
+            return _public_storage_source(storage_source_repository().set_default(source_id))
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
