@@ -2752,3 +2752,11 @@ VERSION.txt 仍为 42.24.0
 - `External Algorithm Publish` CI 已固定 root precedence 和两条回归测试名称，禁止后续又退回旧根优先。
 - 这次属于后端结果发现/同步修复，不改变前端字段或交互；`VERSION.txt` 仍为 `42.24.0`。
 - 当前 GitHub Actions 仍必须以最新 HEAD 的实际 completed 结果为准；queued 不等于通过，也不具备部署资格。
+
+## 2026-10-08 — 训练标签审核范围适配闭环（设计已确认）
+
+- 基线为远端 `e9af882afc8136ffea4390a378204578d40ad28a` / `42.24.292`；隔离开发分支为 `codex/training-label-scope-fix`。
+- 根因是本次训练继承/新增后的 `effective_label_codes` 超出部分历史素材真实 `annotation_scope`；Full Audit 的项目级标签完整性职责不包含任务特定覆盖率。
+- 用户已确认补审交互：普通保存保留已有 scope；“保存并确认审核”只增加用户明确勾选的待审标签，支持部分确认，禁止自动全选、AI 未检出推断、`person/people` 语义猜测和 `*`。
+- 后续实现必须复用 AnnotationRepository CAS、Training Label Contract、现有 Summary/Submit/Recovery Runtime 与 Snapshot；任务特定问题通过有界分页显示，排除只改当前训练草稿。
+- 当前 `42.24.293` 仅为设计文档提交目标，尚无生产代码修改，不得标记 AUDIT-147/148/150 CLOSED。

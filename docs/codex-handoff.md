@@ -5085,3 +5085,11 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - Frontend cache + submit contracts：`22 passed`；recovery/task detail：`43 passed`。
 - 单个 training dialog Real Chrome 合同：`1 passed`。
 - 最新 HEAD 的 GitHub Actions 必须全部 terminal 且 failure/queued/in_progress/cancelled 均为 0 后，才能标记可部署。
+
+## 2026-10-08 — 训练标签审核范围优先修复交接（42.24.293 设计）
+
+- 当前修复目标优先于 AUDIT-099/098：补齐训练 Picker/提交/Prepare/任务详情与人工补审的闭环，同时保留 AUDIT-148 Snapshot fail-closed。
+- 已确认标签 REMAP 只迁移真实 boxes/scope，问题主要来自历史 partial scope 与迭代训练 `effective_label_codes` 扩大；Full Audit 没有任务标签合同，因此不会报告该类适配问题。
+- 用户确认人工工作台双保存语义：普通保存不扩大 scope；明确补审仅合并用户选中的缺失标签，并与 boxes 在 AnnotationRepository 同一 CAS 写入。
+- 设计文件：`docs/superpowers/specs/2026-10-08-training-label-scope-compatibility-design.md`。实现须复用现有 Runtime、Durable Task ArtifactStore 与训练标签合同，不新增第二 Owner。
+- 本节仅记录设计，代码、定向测试、推送及 CI 尚待后续提交完成。

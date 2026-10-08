@@ -25772,3 +25772,15 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - 从 42.24.290 已完成失败日志确认：Frontend、Windows Remote RKNN Board Runtime 的 frontend step 在导入 static/modules/cleaning.js 时出现 SyntaxError: Unexpected token 'export'。定位为新增 canRetry 字段后遗漏 cleanTaskView 的末尾 }，不是 Python 146 项测试问题。
 - 修复唯一缺失花括号；不删除测试、不变更 UI 业务逻辑；42.24.290/291 不标 CI PASS，等待 42.24.292 HEAD 全部 completed success。
+
+
+## 2026-10-08 训练标签审核范围适配闭环设计（42.24.293）
+
+**状态：DESIGN APPROVED / IMPLEMENTATION PENDING，不宣布 CLOSED。**
+
+- 只读核查确认标签统一会按明确 mapping 同步迁移 boxes 与已有 annotation_scope，并使用 digest/CAS；不会按 `person/people` 名称猜测合并，也不会产生其他未审核类别证据。
+- 真实缺口是训练任务的 `effective_label_codes` 与历史 partial scope 不兼容，而现有 Full Audit 只负责标签治理、引用、canonical identity 与 Material projection，因此 Full Audit 通过不代表任意训练合同均适配。
+- 采用共享服务端训练适配判定：预检、提交 admission、TRAINING_PREPARE 与最终 Snapshot 使用同一 scope 语义；Snapshot/AUDIT-148 fail-closed 不放宽。
+- 人工工作台拆分“普通保存”和“保存并确认审核”：普通保存不再扩到全部 active labels；补审只把用户明确选择的缺失标签与 boxes 在同一次 AnnotationRepository CAS 中提交，禁止写 `*`。
+- 训练创建继续复用现有 Summary/Submit Runtime；任务漂移失败证据写入现有 Durable ArtifactStore；不新增 GT Owner、任务状态机、Poller 或全局缓存 Owner。
+- 详细设计见 `docs/superpowers/specs/2026-10-08-training-label-scope-compatibility-design.md`。本提交仅固化设计与版本，生产代码、回归测试和 CI 尚未执行。
