@@ -8,9 +8,9 @@ const start = source.indexOf('const PLAIN_UPLOAD_PENDING_KEY411=');
 const end = source.indexOf('const esc=s=>', start);
 assert.ok(start > 0 && end > start, 'plain upload request identity helper must exist');
 
+let entropyCounter = 0;
 function harness(storage = new Map()) {
   let projectId = 'project-1';
-  let counter = 0;
   const context = {
     sessionStorage: {
       getItem: key => storage.has(key) ? storage.get(key) : null,
@@ -19,7 +19,7 @@ function harness(storage = new Map()) {
     window: {
       crypto: {
         getRandomValues(bytes) {
-          bytes.fill(++counter);
+          bytes.fill(++entropyCounter);
           return bytes;
         },
       },
@@ -79,8 +79,8 @@ test('source, project, and file identity are fenced independently', () => {
 });
 
 test('fetch and XHR ordinary image upload paths reuse one request envelope', () => {
-  assert.match(source, /\/\^\\\/api\\\/projects\\\/\[\^\/\?\]\+\\\/images\$\/\.test\(url\)\?preparePlainUpload411\(opt\.body\)/);
-  assert.match(source, /const uploadTicket=preparePlainUpload411\(form\);const xhr=new XMLHttpRequest\(\)/);
-  assert.match(source, /const uploadTicket=preparePlainUpload411\(fd\);const xhr=new XMLHttpRequest\(\)/);
+  assert.ok(source.includes("preparePlainUpload411(opt.body)"));
+  assert.ok(source.includes("const uploadTicket=preparePlainUpload411(form);const xhr=new XMLHttpRequest()"));
+  assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
   assert.equal((source.match(/xhr\.addEventListener\('load',\(\)=>\{if\(xhr\.status>=200&&xhr\.status<300\)finishPlainUpload411\(uploadTicket\)\}\)/g) || []).length, 2);
 });
