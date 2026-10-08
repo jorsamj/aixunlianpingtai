@@ -25760,3 +25760,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 同一个 task_id in-flight Set 防止重复提交；成功后按当前页面局部刷新列表与真实进度，失败显示原有 toast；新增状态/handler 契约测试。
 - 更新 app.js 与 cleaning.js 缓存键。后续真实浏览器及远程 Agent PARTIAL_SUCCESS E2E 尚未完成；不能直接标记 CLOSED。
 - VERSION 42.24.289 → 42.24.290；不合并 main、不 tag/release、不部署。
+
+
+### 2026-10-08 AUDIT-153 补充：入口模块缓存键（42.24.291）
+
+- 自查发现仅修改 main.mjs 中 cleaning.js 的 import query 不足以确保浏览器下载新的 main.mjs：HTML 仍指向原 entrypoint URL。同步更新 index.html 中 main.mjs 版本键，并新增缓存链前端回归。
+- 只修改静态 asset query、测试与审计台账，保留后端和 UI 逻辑；此提交成为 AUDIT-153 最新 CI 验收目标。VERSION 42.24.290 → 42.24.291。
