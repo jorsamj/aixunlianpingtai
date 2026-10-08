@@ -3193,6 +3193,21 @@ def _v50_end_image_batch(save: bool = True):
                     )
                 return persisted_materials
     except Exception as error:
+        # Material and Annotation are separate SQLite commits. If the Material
+        # commit already landed but Annotation failed, deleting the uploaded
+        # source bytes would leave permanent dangling Material references.
+        # An unreadable Material index is equally unsafe to treat as empty.
+        record_ids = [str(row.get("id")) for row in records if str(row.get("id") or "")]
+        try:
+            indexed_rows = material_store(project_id).get_many(record_ids) if record_ids else []
+        except Exception as inspection_error:
+            raise RuntimeError(
+                f"{error}; 无法确认素材索引状态，已保留源文件以避免误删：{inspection_error}"
+            ) from error
+        if indexed_rows:
+            raise RuntimeError(
+                f"{error}; 素材已写入正式索引但后续步骤失败，已保留源文件和索引供完整性修复"
+            ) from error
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(
             project_id, records
         )
