@@ -24,24 +24,37 @@ def _project(client):
 def _algorithm_version(client, project_id: str):
     models = app_module.project_dir(project_id) / "models"
     models.mkdir(parents=True, exist_ok=True)
-    (models / "feedback.pt").write_bytes(b"feedback-model-v1")
+    model_path = models / "feedback.pt"
+    model_path.write_bytes(b"feedback-model-v1")
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "烟雾抽检算法", "remark": "", "industry": "", "algorithm_type": "detection"},
     )
     algorithm.raise_for_status()
     algorithm_id = algorithm.json()["algorithm"]["id"]
-    version = client.post(
-        f"/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions",
-        json={
-            "model_name": "feedback.pt",
-            "model_source": "project",
-            "version_name": "",
-            "remark": "",
+    # Feedback tests need a stable version identity and model SHA, not a
+    # fabricated training-success claim. The manual-attachment HTTP endpoint
+    # is deliberately fail-closed for safe launch; preserve that production gate.
+    version = app_module.attach_algorithm_version_if_current(
+        app_module.algorithms_file(project_id),
+        algorithm_id,
+        {
+            "id": uuid.uuid4().hex[:12],
+            "version_no": 1,
+            "version_name": "feedback-test-fixture",
+            "model_name": model_path.name,
+            "stored_path": str(model_path),
+            "framework": "ultralytics",
+            "training_status": "TEST_FIXTURE",
+            "artifact_verified": False,
+            "trainable": False,
+            "created_at": app_module.now_iso(),
         },
+        expected_current_version_id=None,
     )
-    version.raise_for_status()
-    return algorithm_id, version.json()["version"]
+    assert version["artifact_verified"] is False
+    assert version["trainable"] is False
+    return algorithm_id, version
 
 
 def _prediction(project_id: str, algorithm_id: str, version: dict, *, detections, suffix=""):
