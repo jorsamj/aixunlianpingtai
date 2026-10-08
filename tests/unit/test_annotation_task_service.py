@@ -17,6 +17,25 @@ from platform_core.annotation_task_service import (
 from platform_core.task_runtime import ArtifactStore, ExecutionFencedError, TaskKind, TaskRecord, TaskStatus
 
 
+def _seed_verified_candidates(store, items):
+    """Direct unit commits use synthetic but explicit source-byte evidence."""
+    _seed_verified_candidates(store, [
+        {**dict(item), "source_content_sha256": dict(item).get(
+            "source_content_sha256", "a" * 64,
+        )}
+        for item in items
+    ])
+
+
+@pytest.fixture(autouse=True)
+def _unit_candidate_materials(monkeypatch):
+    # Unit tests isolate the formal writer from the app's MaterialRepository.
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_candidate_material_hashes",
+        lambda _project, ids: {str(image_id): "a" * 64 for image_id in ids},
+    )
+
+
 class FakeRepository:
     def __init__(self, task):
         self.task = task
@@ -199,7 +218,7 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-1", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1", "status": "success",
         "boxes": [{"id": "candidate-1", "class_id": 0, "label": "fire",
                    "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
@@ -238,7 +257,7 @@ def test_ai_review_commit_preserves_bounded_annotation_scope(tmp_path, monkeypat
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-scope", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1",
         "status": "empty",
         "boxes": [],
@@ -288,7 +307,7 @@ def test_ai_review_overwrite_replaces_review_scope_even_when_final_class_is_empt
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-overwrite-empty", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1",
         "status": "empty",
         "boxes": [],
@@ -374,7 +393,7 @@ def test_cancel_arriving_after_formal_write_cannot_split_commit_journal(tmp_path
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-cancel-boundary", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1",
         "status": "success",
         "boxes": [{
@@ -427,7 +446,7 @@ def test_commit_candidate_decisions_carries_formal_version_cas(tmp_path, monkeyp
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-cas", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1",
         "status": "success",
         "boxes": [{
@@ -463,7 +482,7 @@ def test_candidate_label_revalidation_is_fail_closed_even_without_explicit_mappi
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="catalog-revalidate", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1",
         "status": "success",
         "boxes": [{"id": "box-1", "class_id": 0, "label": "fire",
@@ -539,7 +558,7 @@ def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monk
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id=f"commit-scale-{total}", page_size=50)
     store.initialize(labels=["fire"], total_images=total)
-    store.append_items([
+    _seed_verified_candidates(store, [
         {
             "image_id": f"image-{index:05d}",
             "status": "success",
@@ -675,3 +694,59 @@ def test_worker_runtime_request_uses_worker_safe_annotation_runtime_owner():
     assert "from .annotation_runtime import prepare_request" in source
     assert "prepare_request(data_dir, project_id, request, runtime=True)" in source
     assert "_annotation_runtime_provider" not in source
+
+
+@pytest.mark.parametrize("source_hash,current_hash", [
+    ("b" * 64, "a" * 64),  # H1 candidate / H2 current image.
+    ("", "a" * 64),        # Legacy candidate with no source evidence.
+    ("a" * 64, ""),        # Material deleted before human confirmation.
+])
+def test_candidate_commit_fails_closed_on_stale_content(
+    tmp_path, monkeypatch, source_hash, current_hash,
+):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="stale-candidate", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1", "status": "success",
+        "source_content_sha256": source_hash,
+        "boxes": [{"id": "box-1", "label": "fire", "class_id": 0}],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_candidate_material_hashes",
+        lambda _project, _ids: (
+            {"image-1": current_hash} if current_hash else {}
+        ),
+    )
+    def forbidden_writer(*_args, **_kwargs):
+        pytest.fail("stale AI candidates must never write formal Ground Truth")
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        forbidden_writer,
+    )
+    with pytest.raises(ValueError, match="AI_CANDIDATE_SOURCE_CHANGED"):
+        commit_candidate_decisions("project-1", "stale-candidate", store, overwrite=False)
+    assert store.get_commit_summaries(["image-1"]) == {}
+
+
+def test_generated_candidate_freezes_verified_source_hash(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire"],
+        "model_config_id": "model-1",
+    })
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.load_task_images",
+        lambda *_: [{
+            "id": "one", "filename": "one.jpg", "width": 100, "height": 100,
+            "path": "one.jpg", "source_content_sha256": "f" * 64,
+        }],
+    )
+    outcome = run_ai_annotation(
+        context, annotate=lambda _request, _image: {"boxes": []},
+    )
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    assert CandidateStore(context.artifacts, task_id="ai-1").get("one")[
+        "source_content_sha256"
+    ] == "f" * 64

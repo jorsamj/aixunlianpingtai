@@ -40,7 +40,16 @@ class AnnotationBatch:
             check_active(context, "AI_ANNOTATION", image_id)
             old = self.store.get(image_id)
             # A crash after candidate durability must not repeat a billable inference.
-            if old and old.get("status") in {"success", "empty"}:
+            current_sha = str(
+                (indexed.get(image_id) or {}).get("content_sha256") or ""
+            ).strip().lower()
+            old_sha = str(
+                (old or {}).get("source_content_sha256") or ""
+            ).strip().lower()
+            if (
+                old and old.get("status") in {"success", "empty"}
+                and old_sha and old_sha == current_sha
+            ):
                 manifest.transition([image_id], "succeeded")
             else:
                 image = indexed.get(image_id) or {"id": image_id}
@@ -55,7 +64,11 @@ class AnnotationBatch:
                     image = dict(image)
                     # Current vision providers consume image bytes; storage-backed sources
                     # therefore materialize one verified file at a time, never a project list.
-                    image["path"] = str(self.manager.materialize(image).path)
+                    local = self.manager.materialize(image)
+                    image["path"] = str(local.path)
+                    source_sha = str(getattr(local, "content_sha256", "") or "").strip().lower()
+                    if not source_sha:
+                        raise ValueError("AI_CANDIDATE_SOURCE_IDENTITY_MISSING")
                     with Image.open(image["path"]) as decoded:
                         image["width"], image["height"] = decoded.size
                     # Materialization/decoding can be slow. Re-prove ownership and
@@ -69,6 +82,7 @@ class AnnotationBatch:
                     check_active(context, "AI_ANNOTATION", image_id)
                     item.update(generated)
                     item.update({"status": "success" if generated.get("boxes") else "empty",
+                                 "source_content_sha256": source_sha,
                                  "width": image["width"], "height": image["height"]})
                     self.store.append_items([item])
                     manifest.transition([image_id], "succeeded")

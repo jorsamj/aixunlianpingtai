@@ -46,7 +46,13 @@ def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str
     rows = []
     for image_id in ordered_ids:
         row = dict(by_id[image_id])
-        row["path"] = str(manager.materialize(row).path)
+        local = manager.materialize(row)
+        row["path"] = str(local.path)
+        # Bind evidence to the verified bytes used by the inference worker,
+        # not merely to the stable Material image ID.
+        row["source_content_sha256"] = str(
+            getattr(local, "content_sha256", "") or row.get("content_sha256") or ""
+        ).strip().lower()
         rows.append(row)
     return rows
 
@@ -190,6 +196,9 @@ def run_ai_annotation(
                     "url": image.get("url"),
                     "width": image.get("width"),
                     "height": image.get("height"),
+                    "source_content_sha256": str(
+                        image.get("source_content_sha256") or image.get("content_sha256") or ""
+                    ).strip().lower(),
                     "status": "success" if boxes else "empty",
                     "boxes": boxes,
                     **{key: generated.get(key) for key in (
@@ -303,6 +312,22 @@ def write_formal_annotations(project_id: str, rows: Iterable[dict[str, Any]]) ->
     return write_annotations_many(project_id, rows)
 
 
+def read_candidate_material_hashes(
+    project_id: str, image_ids: Iterable[str],
+) -> dict[str, str]:
+    """Canonical Material identity lookup; only the bounded pending write batch."""
+    from app import material_store
+
+    ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
+    if len(ids) > 200:
+        raise ValueError("AI candidate hash validation batch must be at most 200")
+    rows = material_store(project_id).get_many(ids)
+    return {
+        str(row.get("id") or ""): str(row.get("content_sha256") or "").strip().lower()
+        for row in rows
+    }
+
+
 def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
     supplied = str(box.get("id") or box.get("candidate_id") or "")
     if supplied:
@@ -390,6 +415,27 @@ def commit_candidate_decisions(
 
         committed = store.get_commit_summaries(image_ids)
         pending_ids = [image_id for image_id in image_ids if image_id not in committed]
+        if pending_ids:
+            # Annotation version CAS does not fence Material content changes.
+            # Fail closed for pre-fix candidate rows with no trustworthy source
+            # hash, deleted materials, and storage rescan H1 -> H2.
+            current_hashes = read_candidate_material_hashes(project_id, pending_ids)
+            for item in items:
+                image_id = str(item["image_id"])
+                if image_id in committed:
+                    continue
+                source_hash = str(item.get("source_content_sha256") or "").strip().lower()
+                current_hash = current_hashes.get(image_id, "")
+                if (
+                    len(source_hash) != 64
+                    or any(char not in "0123456789abcdef" for char in source_hash)
+                    or source_hash != current_hash
+                ):
+                    raise ValueError(
+                        "AI_CANDIDATE_SOURCE_CHANGED: "
+                        f"素材 {image_id} 内容已变化、已删除或缺少可信来源哈希；"
+                        "请重新执行 AI 标注并审核"
+                    )
         previous_by_id = read_formal_annotations(project_id, pending_ids) if pending_ids else {}
         to_write = []
         to_journal = []

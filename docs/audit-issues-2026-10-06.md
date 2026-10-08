@@ -25709,3 +25709,15 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 针对同一 Durable selection 的 succeeded 行加入独立 SQLite 回归：H1→H2 的旧成功行转 pending、result/LSH hash/bands 一并删除；未变化行继续 succeeded 并保留 result/index；历史无来源 SHA 的 success 也 fail closed 重扫。
 - 同时断言 clean_flagged 汇总回零、selection counters 正确、重复 retry 不重置稳定行，覆盖 AUDIT-152 的退化性能约束。
 - 原有 CI 结果只对 42.24.284 HEAD 有效；本次提交后以 42.24.285 为唯一验收目标，仍未完成并发 Rescan 的跨仓原子 fence。
+
+
+## 2026-10-08 修复日志 — AUDIT-157 AI Candidate 内容身份证据栅栏（42.24.286）
+
+**状态：FIX IMPLEMENTED / CI PENDING / CONCURRENT MATERIAL CAS PENDING（尚未 CLOSED）。**
+
+- 普通 AI_ANNOTATION Worker 的 load_task_images 在 StorageManager.materialize 真实校验后，将 source_content_sha256 绑定到 worker 读取的素材代际；CandidateStore 继续作为唯一候选 owner，在 success/empty item_json 内冻结证据。
+- MaterialBatch AI_ANNOTATE 生成路径同样将本次 materialize verified SHA 冻结进 Candidate item。crash/retry 只复用与当前 MaterialRepository SHA 一致的已有成功候选；不引入额外 Candidate owner。
+- 正式人工确认写入前按 **不超过 200 条**读取当前 MaterialRepository source SHA；H1 候选遇 H2 素材、已删素材或没有可信 hash 的历史候选，均 fail closed，禁止将旧框写成新 Ground Truth；Annotation expected_version CAS 保留。
+- 新增 unit 验证：旧 SHA、新 SHA、缺失 SHA、素材缺失的拒绝，以及生成时冻结 hash；现有 1k/10k/20k 候选提交测试使用合成但明确的 source-hash 身份校验，不通过跳过正式入库 guard 换绿。
+- 边界：当前属于在正式 GT 写入之前的 evidence fence，Material 内容在批量 SHA 校验后到 AnnotationRepository transaction 中发生并发 Rescan 的 TOCTOU 窗口，需 AUDIT-099/149/173 共用跨 Owner 事务协调；尚不宣称所有竞态 CLOSED。
+- VERSION 42.24.285 → 42.24.286；不合并 main、不发布生产、不新增第二 Annotation/Candidate Owner。
