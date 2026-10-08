@@ -1563,9 +1563,10 @@ def _storage_source_fence():
 
 def _storage_source_runtime_generation(source: StorageSource) -> tuple[Any, ...]:
     return (
-        # A deleted-and-recreated source with the same ID/config must not be
-        # mistaken for the original generation during in-flight admission.
+        # Identity plus a durable configuration epoch defeats both deletion
+        # and in-place A->B->A changes, without penalizing display renames.
         source.created_at,
+        int(source.runtime_revision),
         source.type,
         json.dumps(source.config, ensure_ascii=False, sort_keys=True),
         source.secret_ref,
