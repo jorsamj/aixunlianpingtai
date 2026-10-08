@@ -4859,9 +4859,10 @@ def _plain_upload_recover_receipt(project_id: str, store: UploadBatchStore, rece
     # Any partial/missing truth stays visible as failed, never auto reuploads.
     error = "上传进程已中断，未能确认全部素材正式入库；请核查批次后以新的请求 ID 重传未入库图片"
     store.fail_upload_request(batch_id, error=error, failed_at=now_iso())
-    raise HTTPException(status_code=409, detail={
-        "code": "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED", "message": error,
-    })
+    raise PlatformError(
+        "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED", "上传恢复状态无法确认",
+        error, "请先核对该批正式素材，再使用新的请求 ID 重传未入库文件", 409,
+    )
 
 
 def _plain_upload_source_generation(storage_source_id: str) -> tuple[Any, ...]:
@@ -4873,10 +4874,10 @@ def _plain_upload_source_generation(storage_source_id: str) -> tuple[Any, ...]:
     with _storage_source_fence():
         source = storage_source_repository().get(storage_source_id)
         if source is None or not source.enabled:
-            raise HTTPException(status_code=409, detail={
-                "code": "UPLOAD_STORAGE_SOURCE_UNAVAILABLE",
-                "message": "素材存储源不存在或已停用，请刷新后重试",
-            })
+            raise PlatformError(
+                "UPLOAD_STORAGE_SOURCE_UNAVAILABLE", "素材存储源不可用",
+                "素材存储源不存在或已停用", "请刷新保存位置后重试", 409,
+            )
         return _storage_source_runtime_generation(source)
 
 
@@ -4889,10 +4890,11 @@ def _plain_upload_assert_source_generation(
         source is None or not source.enabled
         or _storage_source_runtime_generation(source) != expected_generation
     ):
-        raise HTTPException(status_code=409, detail={
-            "code": "UPLOAD_STORAGE_SOURCE_CHANGED",
-            "message": "上传期间存储源配置或凭据发生变化，未将本批素材写入正式索引",
-        })
+        raise PlatformError(
+            "UPLOAD_STORAGE_SOURCE_CHANGED", "存储源配置已变化",
+            "上传期间存储源配置或凭据发生变化，未将本批素材写入正式索引",
+            "请刷新存储源配置，核对本批素材后重试", 409,
+        )
 
 
 @app.post("/api/projects/{project_id}/images")
@@ -4910,9 +4912,10 @@ async def upload_images(
                     project_id, files, dataset_id, storage_source_id, request_id,
                 )
         except UploadRequestBusy as error:
-            raise HTTPException(status_code=409, detail={
-                "code": "UPLOAD_REQUEST_IN_PROGRESS", "message": str(error),
-            }) from error
+            raise PlatformError(
+                "UPLOAD_REQUEST_IN_PROGRESS", "该上传请求正在执行",
+                str(error), "请等待已有请求完成，不要重复提交", 409,
+            ) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
     return await _plain_upload_images_claimed(
@@ -4945,18 +4948,19 @@ async def _plain_upload_images_claimed(
                 return _plain_upload_replay_response(project_id, receipt)
             if request_status == "PROCESSING":
                 return _plain_upload_recover_receipt(project_id, store, receipt)
-            raise HTTPException(status_code=409, detail={
-                "code": "UPLOAD_REQUEST_FAILED",
-                "message": str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
-            })
+            raise PlatformError(
+                "UPLOAD_REQUEST_FAILED", "该上传批次此前失败",
+                str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
+                "请核对上传批次状态后处理失败文件", 409,
+            )
 
     # Admission is taken only for new requests; replay never needs to touch
     # possibly retired source credentials.
     try:
         source_generation = _plain_upload_source_generation(storage_source_id)
-    except HTTPException as error:
+    except PlatformError as error:
         if receipt_created:
-            store.fail_upload_request(batch_id, error=str(error.detail), failed_at=now_iso())
+            store.fail_upload_request(batch_id, error=str(error.message), failed_at=now_iso())
         raise
     started = time.time()
     material_commit_started = False
