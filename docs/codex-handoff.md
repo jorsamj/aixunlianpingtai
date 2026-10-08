@@ -1,3 +1,12 @@
+## 2026-10-08 最小安全上线 Gate S9：CI 队列实证及上传错误合同修复（42.24.326）
+
+- 复查 42.24.325 HEAD 56d352737adb05bee5b9a74bf166626691f8defa：GitHub 可见 workflow runs 第一页均 queued；这不能证明平台 Actions 不可用或代码通过。向后复核 42.24.323 HEAD 301c55d07b120073c7e830e055ff15aaa2668380，20 项中 19 completed-success、Remote Material Import completed-failure；实读 run 37779534379 / API job 113318835414。
+- 确切失败：Remote Material Import API job 执行 39 tests：37 passed、2 failed。失败是 tests/api/test_upload_request_recovery.py::test_prepared_but_uncommitted_crash_never_reports_success 和 ::test_annotation_commit_error_does_not_delete_committed_material_bytes；实际 409 返回的 detail 是字符串，测试却按 detail.code 对象读取。根因 app.py 全局 HTTPException handler 会序列化 dict detail 且使用泛化 HTTP_* 错误码。此时未发现 Material/Annotation 真相判断失败的日志证据。
+- 本批对新增上传冲突（UPLOAD_REQUEST_RECOVERY_UNCONFIRMED、UPLOAD_STORAGE_SOURCE_UNAVAILABLE、UPLOAD_STORAGE_SOURCE_CHANGED、UPLOAD_REQUEST_IN_PROGRESS、UPLOAD_REQUEST_FAILED）统一使用已有 PlatformError 标准响应，其 code/message/detail/solution 均为顶层字符串字段；已有 receipt FAIL 状态存档继续保留，不新增第二套 error handler。API tests 按平台实际规范断言顶层 code，包括跨 Storage Source 生命周期用例。未删除或削弱断言。
+- 排队治理：.github/workflows/remote-material-import.yml 引入 workflow-level concurrency，group=material-import-${{ github.event_name }}-${{ github.ref }}，cancel-in-progress=true；同事件同分支后续推送只保留最新安全回归。**不会省略矩阵、API、Chrome 或 frontend 测试**。此设置仅影响新配置触发的新运行，不保证已经进入旧组的历史 queued 自动取消；GitHub 当前未提供本连接的任意 run cancel/dispatch 工具，本批未宣称已清理全仓的排队任务。
+- GitHub 官方状态 Oct 8 显示 Actions Operational，Oct 7 的事故标记 resolved；不能在没有 account billing/concurrency/queue 数据的情况下断言是账户额度问题。连续的提交会触发多个工作流，已停止普通分页/技术债与额外重构。
+- 正式生产修复版本：VERSION.txt 42.24.326。最新 HEAD 及全部 CI/check-runs/UAT 均需精确复核；完整绿灯、隔离环境真实上传/清洗/登录/版本链验收之前 **NOT CLOSED / NOT DEPLOYABLE**。不 merge main、不 tag、不 release、不部署。
+
 ## 2026-10-08 最小安全上线 Gate S8：AUDIT-133 正式浏览器上传补上 idempotency receipt（42.24.325）
 
 - 在 Gate S6/S7 静态生产链复核中发现上线阻断：static/app.js 所有 POST /api/projects/{project_id}/images 调用原本都未提交 upload_request_id，包含正式可达 window.doUploadImages426 最终映射的 doUploadImagesStorage61 XHR 路径，以及遗留但仍可调用的图片 Fetch / XHR 路径。之前 42.24.323 的 receipt/claim/崩溃恢复功能仅对显式提供 upload_request_id 的客户端生效，因此不能认定前端普通上传已受保护。
