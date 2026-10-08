@@ -25749,3 +25749,14 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - Storage Rescan canonical external annotation reconciliation 在明确完成新正式 GT 更新后同步内容 hash 与标志恢复；保持其他未复核情况下的 fail closed。
 - 新增 API 回归：旧 GT 审核后发生 Rescan 内容变化→Snapshot 阻断→重新人工确认→Material 与 Annotation 重新绑定，Snapshot 才接受。
 - 尚需 E2E 源内容真的替换的 StorageManager / 人工 UI 并发场景和跨库锁/事务 CAS；不宣称 AUDIT-173 CLOSED。以 42.24.289 的全部 CI 结束结果为准。
+
+
+## 2026-10-08 修复日志 — AUDIT-153 CLEAN 部分失败增量重试入口（42.24.290）
+
+**状态：FIX IMPLEMENTED / CI PENDING / BROWSER E2E PENDING（不宣布 CLOSED）。**
+
+- canonical cleaning.js 仅对 failed/cancelled/stopped/partial_success 暴露 canRetry； queued/running/awaiting_confirmation/done 不展示重试，实际是否允许重试仍以后端为准。
+- 清洗任务列表与进度详情都用同一个 retryCleanTask429 行为，统一委托已存在的 window.retryMaterialBatch62 和 /api/v62/projects/{project_id}/material-batches/{task_id}/retry，后者继续持有 Durable retry/poll Owner；没有新增独立 API、poller、task owner。
+- 同一个 task_id in-flight Set 防止重复提交；成功后按当前页面局部刷新列表与真实进度，失败显示原有 toast；新增状态/handler 契约测试。
+- 更新 app.js 与 cleaning.js 缓存键。后续真实浏览器及远程 Agent PARTIAL_SUCCESS E2E 尚未完成；不能直接标记 CLOSED。
+- VERSION 42.24.289 → 42.24.290；不合并 main、不 tag/release、不部署。

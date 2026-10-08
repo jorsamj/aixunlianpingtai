@@ -78,8 +78,11 @@ export function cleanTaskView(task = {}) {
     progressText: `${processed}/${total}`,
     runtimeText,
     active: isActiveCleanTask(status),
+    // v47 maps Durable PARTIAL_SUCCESS to failed; retry ownership stays with
+    // the existing MaterialBatch runtime.
+    canRetry: ['failed', 'cancelled', 'stopped', 'partial_success'].includes(status),
   };
-}
+
 
 export function applyCleanConfirmation(materials, result) {
   const deleted = new Set((result?.deleted_images || result?.deleted_ids || []).map(String));

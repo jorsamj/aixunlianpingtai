@@ -3135,7 +3135,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         ? `${scheduling.node_id||'指定节点'} · ${cleanQueuePolicyText427(policy)}`
         : '远程节点 · 自动调度';
     }
-    return `<tr data-task-id="${esc(t.id)}"><td><b>${esc(t.name||t.id)}</b><div class="muted-line">${esc(executionLabel)} · OpenCV / 感知哈希</div></td><td>${cleanStatus427(view)}</td><td>${cleanProgress427(view)}</td><td>${view.flagged}</td><td>${fileTime427(t.created_at)}<div class="muted-line">${fileTime427(t.finished_at||t.finished_scan_at)}</div></td><td><div class="row"><button class="btn mini" onclick="showTaskProgress427('clean','${t.id}')">详情</button>${t.status==='awaiting_confirmation'?`<button class="btn mini primary" onclick="reviewClean427('${t.id}')">审计结果</button>`:''}</div></td></tr>`;
+    return `<tr data-task-id="${esc(t.id)}"><td><b>${esc(t.name||t.id)}</b><div class="muted-line">${esc(executionLabel)} · OpenCV / 感知哈希</div></td><td>${cleanStatus427(view)}</td><td>${cleanProgress427(view)}</td><td>${view.flagged}</td><td>${fileTime427(t.created_at)}<div class="muted-line">${fileTime427(t.finished_at||t.finished_scan_at)}</div></td><td><div class="row"><button class="btn mini" onclick="showTaskProgress427('clean','${t.id}')">详情</button>${t.status==='awaiting_confirmation'?`<button class="btn mini primary" onclick="reviewClean427('${t.id}')">审计结果</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryCleanTask429('${esc(t.id)}')">重试失败项</button>`:''}</div></td></tr>`;
   }
   function cleanTaskRows427(tasks){return(tasks||[]).map(cleanTaskRow427).join('')||'<tr><td colspan="6">暂无任务</td></tr>'}
   function createCleanTaskRow427(body,html){const holder=document.createElement('tbody');holder.innerHTML=String(html||'').trim();return holder.firstElementChild||null}
@@ -3595,7 +3595,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     set('[data-clean-progress-runtime]',view.runtimeText||'');
     const bar=current.querySelector('[data-clean-progress-bar]');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const error=current.querySelector('[data-clean-progress-error]');if(error)error.innerHTML=task?.error?`<div class="error-box422">${esc(task.error)}</div>`:'';
-    const actions=current.querySelector('[data-clean-progress-actions]');if(actions)actions.innerHTML=`${view.active?`<button class="btn" onclick="minimizeTask427('clean','${esc(id)}')">最小化</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
+    const actions=current.querySelector('[data-clean-progress-actions]');if(actions)actions.innerHTML=`${view.active?`<button class="btn" onclick="minimizeTask427('clean','${esc(id)}')">最小化</button>`:''}${view.canRetry?`<button class="btn primary" onclick="retryCleanTask429('${esc(id)}')">重试失败项</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
     return true;
   }
   function armCleanProgressPoll429(id,ownerPage){
@@ -3624,6 +3624,27 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     renderCleanProgress429(task,id);
     if(window.PlatformCore.cleaning.cleanTaskView(task).active)armCleanProgressPoll429(id,ownerPage);
     return task;
+  };
+  // Delegate to the canonical MaterialBatch retry/poll owner.
+  const CLEAN_RETRY_IN_FLIGHT_429=new Set();
+  window.retryCleanTask429=async function(id){
+    const taskId=String(id||'').trim();
+    if(!taskId||CLEAN_RETRY_IN_FLIGHT_429.has(taskId))return;
+    CLEAN_RETRY_IN_FLIGHT_429.add(taskId);
+    try{
+      if(typeof window.retryMaterialBatch62!=='function'){
+        throw new Error('清洗重试能力尚未就绪，请刷新页面后重试');
+      }
+      const task=await window.retryMaterialBatch62(taskId);
+      const resumedId=String(task?.task_id||task?.id||taskId);
+      window.PollRegistryRuntime?.clear?.(cleanProgressPollKey429(taskId));
+      closeModal();
+      if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='clean'){
+        await window.refreshCleanOps427Delta?.();
+      }
+      await window.showCleanTaskProgress429(resumedId);
+    }catch(error){toast(error.message||error)}
+    finally{CLEAN_RETRY_IN_FLIGHT_429.delete(taskId)}
   };
   async function fetchTask429(type,id){if(type==='clean'){const r=await api(`/api/v47/projects/${pid()}/clean-tasks`);return(r.items||[]).find(x=>x.id===id)}const r=await api(`/api/v33/projects/${pid()}/prelabel-tasks`);return(r.items||[]).find(x=>x.id===id)}
   function ruleNames429(r){const a=[];if(r.exact_duplicate)a.push('精确重复');if(r.near_duplicate)a.push(`近似重复（距离≤${r.near_duplicate_hamming??5}）`);if((r.min_width||0)>0||(r.min_height||0)>0)a.push(`最低分辨率 ${r.min_width||0}×${r.min_height||0}`);if((r.max_width||999999)<999999||(r.max_height||999999)<999999)a.push(`最高分辨率 ${r.max_width||'-'}×${r.max_height||'-'}`);if(r.blur_check)a.push(`模糊度阈值 ${r.blur_min_laplacian??45}`);if(r.brightness_check)a.push(`亮度 ${r.brightness_min??15}~${r.brightness_max??245}`);if(r.corrupt_check)a.push('损坏图片');return a}

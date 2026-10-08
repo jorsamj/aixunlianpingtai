@@ -253,3 +253,25 @@ test('canonical main runtime exposes cleaning scope helpers with fresh module ca
   assert.match(index, /app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /main\.mjs\?v=\d+(?:\.\d+)*/);
 });
+
+test('failed CLEAN can retry with one canonical MaterialBatch owner', () => {
+  for (const status of ['failed', 'cancelled', 'stopped', 'partial_success']) {
+    assert.equal(cleaning.cleanTaskView({status}).canRetry, true);
+  }
+  for (const status of ['queued', 'running', 'awaiting_confirmation', 'done']) {
+    assert.equal(cleaning.cleanTaskView({status}).canRetry, false);
+  }
+  const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.equal(app.split('window.retryCleanTask429=async function').length, 2);
+  assert.equal(app.split('onclick="retryCleanTask429(').length, 3);
+  assert.ok(app.includes('view.canRetry?'));
+  assert.ok(app.includes('CLEAN_RETRY_IN_FLIGHT_429.has(taskId)'));
+  assert.ok(app.includes('await window.retryMaterialBatch62(taskId)'));
+  const start = app.indexOf('window.retryCleanTask429=async function');
+  const end = app.indexOf('async function fetchTask429', start);
+  const handler = app.slice(start, end);
+  assert.equal(handler.includes('fetch('), false);
+  assert.equal(handler.includes('setInterval('), false);
+  const owner = fs.readFileSync(new URL('../../static/modules/material-batches.js', import.meta.url), 'utf8');
+  assert.ok(owner.includes('window.retryMaterialBatch62 = async taskId'));
+});
