@@ -1,3 +1,11 @@
+## 2026-10-08 清洗标注质量 Audit 真实随机分页（42.24.315）
+
+- 精确前置 HEAD `328d385e3aa307f5281941087aa435e97591eda7` 已核验：22/22 Actions 和 59/59 check-runs completed-success；VERSION 为 `42.24.314`。
+- 原 `annotation_audit_results` SQLite Artifact 与 `flagged,image_id` 索引不变。`read_annotation_audit` 直接按索引 COUNT + `ORDER BY image_id LIMIT/OFFSET` 查询任意页，返回 total/page/page_size/total_pages；legacy cursor 语义不变。越界、非法组合明确拒绝，按任务结果读取时才附带当前素材 URL。
+- 清洗详情标注质量复核移除手写 load-more，复用 `PlatformCore.pagination.mountPagination`（10/20/50/100、数字页、指定跳页、Loading/Error）；旧结果首屏保留有界首屏 20 条显示。请求 epoch + 任务/项目/弹窗身份判断防止晚响应污染新页。
+- 不改图片质量分页、人工确认与删除范围，不新增 GT/Task/Material Owner 或 Poller；清洗 Audit 原始冻结摘要维持权威。旧 cursor 消费者不受影响。
+- 新增 123 条 flagged + 1 条 unflagged 的后端分支测试（含第 3 页与旧 cursor）及前端来源守卫。具体测试结果以新 HEAD Actions 为准；生产 UAT 仍为 `PENDING USER UAT`。
+
 # Codex / 人工接管交接记录
 
 ## 2026-10-08 清洗分页第二条 Real Chrome 旧断言修复（42.24.314）

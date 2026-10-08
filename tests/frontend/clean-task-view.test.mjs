@@ -220,7 +220,10 @@ test('cleaning UI keeps scope preflight and result review on canonical owners', 
   assert.match(source, /annotation_audit/);
   assert.match(source, /标注质量 · 逐图复核/);
   assert.match(source, /setCleanQualityTab429/);
-  assert.match(source, /loadMoreCleanAudit429/);
+  assert.match(source, /window\\.loadCleanAuditPage429=/);
+  assert.match(source, /cleanAuditPager429/);
+  assert.match(source, /annotation-audit\\?page=/);
+  assert.doesNotMatch(source, /loadMoreCleanAudit429|cleanAuditMore429/);
   assert.match(source, /related_image_id/);
   assert.match(source, /cleanImageIssueText429/);
   assert.match(source, /CLEAN_IMAGE_REVIEW_PAGE_SIZE_429=50/);

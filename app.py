@@ -19588,17 +19588,30 @@ def _v47_durable_annotation_audit(
     *,
     cursor: str = '',
     limit: int = 100,
+    page: Optional[int] = None,
+    page_size: int = 20,
 ) -> Dict[str, Any]:
     path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
     if not path.is_file():
-        return {
+        empty = {
             'enabled': False, 'audited_images': 0, 'review_images': 0,
             'warning_count': 0, 'items': [], 'next_cursor': None,
         }
+        if page is None:
+            return empty
+        if page != 1:
+            raise HTTPException(status_code=422, detail='page exceeds total_pages (1)')
+        return {**empty, 'page': 1, 'page_size': page_size, 'total': 0,
+                'total_pages': 1, 'has_previous': False, 'has_next': False}
     from platform_core.annotation_quality import read_annotation_audit
-    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
-        page = read_annotation_audit(database, cursor=cursor, limit=limit)
-    items = list(page.get('items') or [])
+    try:
+        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+            audit_page = read_annotation_audit(
+                database, cursor=cursor, limit=limit, page=page, page_size=page_size,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    items = list(audit_page.get('items') or [])
     if project_id and items:
         indexed = {
             str(row.get('id')): public_material(project_id, row)
@@ -19609,8 +19622,7 @@ def _v47_durable_annotation_audit(
         for item in items:
             material = indexed.get(str(item.get('image_id'))) or {}
             item['url'] = material.get('url') or ''
-    return {**page, 'items': items}
-
+    return {**audit_page, 'items': items}
 
 def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
     path = shared_task_artifacts().artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
@@ -20184,6 +20196,8 @@ def v47_clean_annotation_audit(
     task_id: str,
     cursor: str = '',
     limit: int = 100,
+    page: Optional[int] = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ):
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
@@ -20191,6 +20205,7 @@ def v47_clean_annotation_audit(
     return _v47_durable_annotation_audit(
         task_id, project_id, cursor=cursor,
         limit=max(1, min(200, int(limit or 100))),
+        page=page, page_size=page_size,
     )
 
 

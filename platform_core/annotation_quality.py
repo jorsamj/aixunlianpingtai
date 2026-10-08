@@ -387,20 +387,58 @@ def audit_cleaning_annotations(
     return summary
 
 
-def read_annotation_audit(database, *, cursor: str = "", limit: int = AUDIT_PAGE_LIMIT) -> dict[str, Any]:
+def read_annotation_audit(
+    database, *, cursor: str = "", limit: int = AUDIT_PAGE_LIMIT,
+    page: int | None = None, page_size: int = 20,
+) -> dict[str, Any]:
+    """Read a frozen task artifact with indexed numeric pages or legacy cursors."""
+    numbered = page is not None
+    if numbered:
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("page must be a positive integer")
+        if (isinstance(page_size, bool) or not isinstance(page_size, int)
+                or page_size < 1 or page_size > AUDIT_PAGE_LIMIT):
+            raise ValueError("page_size is outside the supported range")
+        if cursor:
+            raise ValueError("cursor and page cannot be combined")
     table = database.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_audit_results'"
     ).fetchone()
     meta = database.execute("SELECT value FROM meta WHERE key=?", (AUDIT_META_KEY,)).fetchone()
     if table is None or meta is None:
-        return {
+        empty = {
             "enabled": False, "audited_images": 0, "review_images": 0,
             "warning_count": 0, "items": [], "next_cursor": None,
         }
+        if not numbered:
+            return empty
+        if page != 1:
+            raise ValueError("page exceeds total_pages (1)")
+        return {**empty, "page": 1, "page_size": page_size, "total": 0,
+                "total_pages": 1, "has_previous": False, "has_next": False}
     try:
         summary = json.loads(meta[0])
     except (TypeError, ValueError):
         summary = {"enabled": False}
+    if numbered:
+        # The immutable artifact's flagged,image_id index provides COUNT and bounded page reads.
+        total = int(database.execute(
+            "SELECT COUNT(*) FROM annotation_audit_results WHERE flagged=1"
+        ).fetchone()[0])
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page > total_pages:
+            raise ValueError(f"page exceeds total_pages ({total_pages})")
+        rows = database.execute(
+            "SELECT image_id,result_json FROM annotation_audit_results "
+            "WHERE flagged=1 ORDER BY image_id LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
+        ).fetchall()
+        return {
+            **summary, "items": [json.loads(row[1]) for row in rows],
+            "next_cursor": None, "page": page, "page_size": page_size,
+            "total": total, "total_pages": total_pages,
+            "has_previous": page > 1, "has_next": page < total_pages,
+        }
     bounded = max(1, min(AUDIT_PAGE_LIMIT, int(limit or AUDIT_PAGE_LIMIT)))
     after = str(cursor or "")
     rows = database.execute(
@@ -409,11 +447,10 @@ def read_annotation_audit(database, *, cursor: str = "", limit: int = AUDIT_PAGE
         (after, bounded + 1),
     ).fetchall()
     has_more = len(rows) > bounded
-    page = rows[:bounded]
-    items = [json.loads(row[1]) for row in page]
+    cursor_page = rows[:bounded]
+    items = [json.loads(row[1]) for row in cursor_page]
     return {**summary, "items": items,
-            "next_cursor": str(page[-1][0]) if has_more and page else None}
-
+            "next_cursor": str(cursor_page[-1][0]) if has_more and cursor_page else None}
 
 __all__ = ["AUDIT_META_KEY", "AUDIT_PAGE_LIMIT",
            "audit_cleaning_annotations", "read_annotation_audit"]

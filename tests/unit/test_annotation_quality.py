@@ -199,3 +199,45 @@ def test_annotation_quality_audit_can_be_disabled_without_touching_ground_truth(
     finally:
         manifest.close()
     assert annotations.get("image")["content_digest"] == digest
+
+
+def test_annotation_audit_numbered_page_reads_index_and_keeps_cursor_contract(tmp_path):
+    from platform_core.annotation_quality import AUDIT_META_KEY, _ensure_schema
+
+    manifest = BatchSelection(tmp_path / "selection.sqlite3")
+    try:
+        with manifest.transaction():
+            _ensure_schema(manifest.database)
+            manifest.database.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)",
+                (AUDIT_META_KEY, json.dumps({"enabled": True, "review_images": 123})),
+            )
+            manifest.database.executemany(
+                "INSERT INTO annotation_audit_results"
+                "(image_id,result_json,target_count,density,flagged) VALUES (?,?,?,?,?)",
+                [(f"{number:04d}", json.dumps({"image_id": f"{number:04d}"}), 1, 0.1, 1)
+                 for number in range(123)]
+                + [("unflagged", json.dumps({"image_id": "unflagged"}), 0, 0.0, 0)],
+            )
+        first = read_annotation_audit(manifest.database, page=1, page_size=50)
+        last = read_annotation_audit(manifest.database, page=3, page_size=50)
+        assert (first["total"], first["total_pages"], len(first["items"])) == (123, 3, 50)
+        assert first["has_previous"] is False and first["has_next"] is True
+        assert (last["page"], len(last["items"]), last["items"][0]["image_id"]) == (3, 23, "0100")
+        assert last["has_previous"] is True and last["has_next"] is False
+        assert last["next_cursor"] is None
+        cursor_first = read_annotation_audit(manifest.database, limit=50)
+        assert cursor_first["next_cursor"] == "0049"
+        assert "page" not in cursor_first and "total_pages" not in cursor_first
+        cursor_next = read_annotation_audit(manifest.database, cursor=cursor_first["next_cursor"], limit=50)
+        assert cursor_next["items"][0]["image_id"] == "0050"
+        for kwargs in ({"page": 4}, {"page": 0}, {"page": 1, "page_size": 0},
+                       {"page": 1, "cursor": "0001"}):
+            try:
+                read_annotation_audit(manifest.database, **kwargs)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"expected invalid page request: {kwargs}")
+    finally:
+        manifest.close()
