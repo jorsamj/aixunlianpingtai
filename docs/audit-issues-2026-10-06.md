@@ -25797,3 +25797,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 历史无 scope 数据仅按正样本真实框标签迁移最小可证明范围；confirmed_empty 不推断。旧 UI 曾写入全 active 范围的记录无法可靠区分是否逐类人工确认，因此不猜测、不批量改写历史 Ground Truth。
 - 本地直接相关 Python 回归 143 项通过；标签治理/显式合并 18 项通过；直接相关前端/缓存链回归 76 项通过，修改涉及的 Python/JavaScript 基础语法检查通过。未执行 1k/10k/20k 压测、真实 GPU、OSS、外部畅联云、硬件实板及全平台浏览器 E2E。
 - VERSION 42.24.293 → 42.24.294；不 merge main、不 tag/release、不部署。目标提交推送后必须读取精确 HEAD 的 Actions/check-runs，只有全部 completed-success 才能记录 CI PASS。
+
+### 2026-10-08 CI 合同同步（42.24.295）
+
+- `42.24.294` 的失败均来自直接相关的旧测试/永久守卫未同步新正式合同：Picker 路由新增依赖注入、空样本必须先显式选择审核标签、训练浏览器 fixture 未返回新的 compatibility 真值，以及 recovery runtime 缓存版本断言滞后。
+- 测试现显式模拟 authoritative compatibility success，空样本浏览器回归则实际勾选待审核标签并核验持久化 scope；没有跳过兼容性门禁，也没有恢复旧的 `saveAnn(false,{confirmEmpty:true})` 自动负样本路径。
+- 定向结果：路由挂载 `4 passed`，前端 owner/提交合同 `18 passed`；相关 Real Chrome 首轮 `23 passed / 2 failed`，修正多元素断言和素材选择等待后两项复跑 `2 passed`。目标 `42.24.295` HEAD 仍须等待全部 GitHub Actions/check-runs 终态后才能标记 CI PASS。

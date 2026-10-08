@@ -83,6 +83,14 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
       device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32,
     }}),
   }));
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
     await route.fulfill({

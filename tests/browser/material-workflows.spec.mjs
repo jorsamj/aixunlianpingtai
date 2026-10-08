@@ -346,7 +346,7 @@ test('closing the base annotation workbench persists dirty boxes before teardown
   expect(body.annotation?.annotation_state).toBe('annotated');
 });
 
-test('batch annotation requires explicit empty confirmation and advances across consecutive images', async ({page, request}) => {
+test('batch annotation requires explicit label review before confirming consecutive empty images', async ({page, request}) => {
   const project = await createMaterialProject(request, `连续空标注-${Date.now()}`);
   const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
   const second = await uploadImage(request, project.id, 'queue-two.bmp', [180, 120, 90]);
@@ -371,13 +371,25 @@ test('batch annotation requires explicit empty confirmation and advances across 
   const firstConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
   await expect(firstConfirm).toBeVisible();
   await expect(firstConfirm).toBeEnabled();
+  const firstPending = dialog.locator('#ann420PendingLabels input[type="checkbox"]');
+  await expect(firstPending).toHaveCount(2);
+  await expect(firstPending.nth(0)).not.toBeChecked();
+  await expect(firstPending.nth(1)).not.toBeChecked();
+  await dialog.getByRole('button', {name: '显式全选待审核', exact: true}).click();
   await firstConfirm.click();
+  await expect(dialog.getByRole('button', {name: '✓ 已确认负样本'})).toBeVisible();
+  await dialog.locator('#ann420Next').click();
 
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-two.bmp');
   const secondConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
   await expect(secondConfirm).toBeVisible();
   await expect(secondConfirm).toBeEnabled();
+  const secondPending = dialog.locator('#ann420PendingLabels input[type="checkbox"]');
+  await expect(secondPending).toHaveCount(2);
+  await expect(secondPending.nth(0)).not.toBeChecked();
+  await expect(secondPending.nth(1)).not.toBeChecked();
+  await dialog.getByRole('button', {name: '显式全选待审核', exact: true}).click();
   await secondConfirm.click();
   await expect(dialog.getByRole('button', {name: '✓ 已确认负样本'})).toBeVisible();
 
@@ -387,6 +399,7 @@ test('batch annotation requires explicit empty confirmation and advances across 
     const annotation = await response.json();
     expect(annotation.boxes).toEqual([]);
     expect(annotation.annotation_state).toBe('confirmed_empty');
+    expect(annotation.annotation_scope).toEqual(['person', 'vehicle']);
   }
 });
 

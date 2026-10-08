@@ -5,9 +5,9 @@
 ### 当前实现候选
 
 - 长期分支：`feature/external-algorithm-publishing`
-- VERSION：`42.24.294`
+- VERSION：`42.24.295`
 - 设计提交：`2944c7fe`
-- 本批生产提交 SHA 与 GitHub CI 终态以推送后远端为准；不得沿用设计提交或旧 HEAD 的 CI。
+- 生产实现提交：`27f74080`。其 CI 暴露的是旧测试/守卫契约漂移；`42.24.295` 已定向同步路由注入、显式空样本补审、兼容性预检 fixture 与 recovery cache key，最终 CI 仍以新 HEAD 为准。
 
 ### 已实现合同
 
@@ -19,6 +19,8 @@
 6. 旧无 scope 数据只对 annotated 正样本从真实框标签恢复最小可证明范围；旧 confirmed_empty 不推断全标签。已被旧 UI 扩为全 active 的历史范围无法可靠判别，本批明确不批量回写。
 
 ### 本地验证与边界
+
+- CI 契约修正回归：Python 路由挂载 `4 passed`；前端 owner/提交合同 `18 passed`；相关 Real Chrome 首轮 `23 passed / 2 failed`，两处测试问题修正后失败项复跑 `2 passed`。生产侧 Snapshot、提交 admission 与 Prepare fail-closed 均未放宽。
 
 - 直接相关 Python 回归：143 passed。
 - 标签治理/显式合并回归：18 passed。

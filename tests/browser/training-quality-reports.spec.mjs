@@ -107,6 +107,14 @@ async function routeReadyTrainingRuntime(page) {
       options: [{id: 'cpu', label: 'CPU', available: true}],
     }),
   }));
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
 }
 
 
@@ -126,8 +134,12 @@ async function openTrainingSettings(page, trainingDialog) {
 async function selectAllTrainingMaterials(page, trainingDialog) {
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  const selectAll = picker.getByRole('button', {name: '全选全部可用素材'});
+  await expect(selectAll).toBeEnabled();
+  await selectAll.click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText(/已选 [1-9]\d* 张/);
   await picker.getByRole('button', {name: '确认选择'}).click();
+  await expect(trainingDialog.locator('.train-v3-summary')).not.toContainText('本次训练素材0 张');
 }
 
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {

@@ -25,6 +25,17 @@ async function seedProject(request) {
   return {project, algorithmId: created.algorithm.id};
 }
 
+async function routeCompatibleTrainingMaterials(page) {
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
+}
+
 test('hard refresh algorithm list prewarms training configuration before the first click', async ({page, request}) => {
   const {project} = await seedProject(request);
   let trainingOptionsCalls = 0;
@@ -421,6 +432,7 @@ test('training target is the only automatic early-stop control', async ({page, r
 
 test('frozen feedback candidates stay aligned with training submit provenance', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
+  await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   let durableTask = null;
   let jobListReads = 0;
@@ -593,6 +605,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
 test('verified fixed benchmark stays aligned from backend availability to training submit', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
+  await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   const scopeId = 'b'.repeat(64);
   await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n'}]}]})}));

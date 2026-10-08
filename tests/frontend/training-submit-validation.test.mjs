@@ -123,7 +123,8 @@ test('annotation workbench has one save owner, explicit empty confirmation, and 
   const confirmEnd = source.indexOf('window.patchMaterialCard412=', confirmStart);
   assert.ok(confirmStart >= 0 && confirmEnd > confirmStart);
   const confirmOwner = source.slice(confirmStart, confirmEnd);
-  assert.match(confirmOwner, /window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
+  assert.match(confirmOwner, /if\(!selected\.size\)/);
+  assert.match(confirmOwner, /return window\.saveAndConfirmAnnotationReview420\(\)/);
   assert.match(confirmOwner, /state\.annotationHydrating420\|\|state\.annotationLoadError420/);
   assert.equal((source.match(/window\.saveAnn=/g) || []).length, 1);
   assert.equal(source.includes('const baseSaveAnnotation417=window.saveAnn;'), false);

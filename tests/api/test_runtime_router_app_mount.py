@@ -162,9 +162,16 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
     assert isinstance(call.args[1].body, ast.Name)
     assert call.args[1].body.id == "DATA_DIR"
     keywords = {item.arg: item.value for item in call.keywords if item.arg}
-    assert set(keywords) == {"project_path_provider"}
+    assert set(keywords) == {
+        "project_path_provider",
+        "algorithm_provider",
+        "compatibility_payload_provider",
+    }
     assert isinstance(keywords["project_path_provider"], ast.Name)
     assert keywords["project_path_provider"].id == "project_dir"
+    assert isinstance(keywords["algorithm_provider"], ast.Lambda)
+    assert isinstance(keywords["compatibility_payload_provider"], ast.Name)
+    assert keywords["compatibility_payload_provider"].id == "_training_compatibility_request"
 
     runtime_source = RUNTIME_ROUTER_PATH.read_text(encoding="utf-8")
     assert "training_material_picker_router" not in runtime_source
