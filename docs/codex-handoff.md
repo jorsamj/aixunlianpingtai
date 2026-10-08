@@ -1,3 +1,11 @@
+## 2026-10-08 最小安全上线 Gate S12：最终 CI 双根因定点修复（42.24.329）
+
+- 复核基线 `eacb18382e4430fc6a03542c8585d127ec4ea6a0` (`42.24.328`) 的 39 个 Actions：35 success、4 failure；不存在 queued/in_progress。失败日志原因为两类，非四类独立业务问题。
+- 失败一：Remote Cleaning Runtime Push/PR 的 Windows/Ubuntu frontend contract，和 Frontend Runtime Stabilization frontend（859 tests: 858 passed, 1 failed），均在 `tests/frontend/clean-task-view.test.mjs` 第 289 行仍强制检查 `app.js?v=42.25.315`，而当前正式入口已升级至 `42.25.328`。本次将断言改为真实语义版本不早于修复缓存版本 42.25.315，并继续强制检查 main.mjs/cleaning.js 的独立缓存键，避免随发布版本升级而重复出现误报。
+- 失败二：Training Create First Open 的 Real Chrome（12 tests: 11 passed, 1 failed）。`tests/browser/training-quality-reports.spec.mjs` 用已安全禁用的 `POST /api/v12/.../versions` 手工归属任意本地 .pt 文件来伪造训练成功版本，因此真实后端返回 409。生产端这条限制是正确的，禁止恢复旁路。本次浏览器测试先额外断言此写接口仍 409，再通过 Playwright 项目隔离的 `GET /api/v12/.../algorithms` 只读响应置入一条成功、artifact_verified=true 的版本 fixture，继续使用正式训练弹窗及原始随机切分/当前模型锁定断言。没有修改生产安全限制、训练 Ground Truth 或认证控制。
+- 仅修改 2 个测试文件、版本文件和既有 handoff 文档；不放宽/跳过/删除任何测试；CI 未完成前保留 NOT DEPLOYABLE。仍需隔离环境 UAT 验证 OSS/并发恢复、清洗确认、训练冻结、发布和登录链路。
+- **状态：源码已定点修复待 CI 验收。** 不合并 main、不 tag、不 release、不部署。
+
 ## 2026-10-08 最小安全上线 Gate S11：浏览器旧请求晚响应不得释放新收据（42.24.328）
 
 - 上一安全修复 `ab76fc47` 已提交 `42.24.327`；同 HEAD 47 个 Actions queued，CI/UAT 未完成。

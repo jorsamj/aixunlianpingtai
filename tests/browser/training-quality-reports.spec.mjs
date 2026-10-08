@@ -6,11 +6,6 @@ async function waitForCanonicalApp(page) {
     {timeout: 15_000},
   ).toBe(true);
 }
-import {promises as fs} from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-
 async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const url = new URL(route.request().url());
@@ -40,7 +35,7 @@ function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   return buffer;
 }
 
-async function seedTrainingProject(request, {withVersion = false} = {}) {
+async function seedTrainingProject(request) {
   const project = await (await request.post('/api/projects', {data: {
     name: `训练浏览器-${Date.now()}`,
     labels: [{code: 'fire', display_name: '明火'}, {code: 'smoke', display_name: '烟雾'}]
@@ -61,14 +56,6 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
   const algorithm = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
     name: '烟火迭代算法', industry: '工业安全', algorithm_type: 'yolo_ultralytics', remark: ''
   }})).json();
-  if (withVersion) {
-    const modelPath = path.join(os.tmpdir(), `browser-version-${Date.now()}.pt`);
-    await fs.writeFile(modelPath, Buffer.from('browser model fixture'));
-    const assigned = await request.post(`/api/v12/projects/${project.id}/algorithms/${algorithm.algorithm.id}/versions`, {data: {
-      model_name: path.basename(modelPath), model_source: 'local', local_path: modelPath
-    }});
-    expect(assigned.ok()).toBeTruthy();
-  }
   const listed = await (await request.get(`/api/v12/projects/${project.id}/algorithms`)).json();
   return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
 }
@@ -304,7 +291,37 @@ test('training material selection does not depend on dataset groups and supports
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
-  const {project, algorithm} = await seedTrainingProject(request, {withVersion: true});
+  const {project, algorithm} = await seedTrainingProject(request);
+  // The former POST /versions "fixture" was deliberately retired in the
+  // minimal-safe-launch contract: arbitrary local .pt bytes cannot become a
+  // verified training version. Prove the real write endpoint stays closed.
+  const manualVersion = await request.post(
+    `/api/v12/projects/${project.id}/algorithms/${algorithm.id}/versions`,
+    {data: {model_name: 'unverified.pt', model_source: 'local', local_path: '/tmp/unverified.pt'}},
+  );
+  expect(manualVersion.status()).toBe(409);
+
+  // This browser test owns only the read-side version projection. Supply one
+  // verified, successful version through the actual GET /algorithms response,
+  // without manufacturing verified lineage in the server's persistent store.
+  const latestVersion = {
+    id: 'latest-version', version_name: 'v3',
+    model_name: 'latest-best.pt', stored_path: 'browser-fixture/latest-best.pt',
+    training_status: 'SUCCEEDED', artifact_verified: true, trainable: true,
+    finished_at: '2026-10-08T08:00:00Z',
+  };
+  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    await route.fulfill({response, json: {
+      ...body,
+      items: (body.items || []).map(item => item.id === algorithm.id
+        ? {...item, current_version_id: latestVersion.id, versions: [latestVersion]}
+        : item),
+    }});
+  });
   await routeReadyTrainingRuntime(page);
   await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
     await new Promise(resolve => setTimeout(resolve, 1200));
