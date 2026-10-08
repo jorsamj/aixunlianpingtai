@@ -303,19 +303,21 @@ def _lock_scope_to_schema(
             f"训练素材 {image_id} 的标注标签不在本次锁定标签结构中: "
             + ", ".join(unknown_labels[:5])
         )
-    if state != "confirmed_empty":
-        return sorted({str(value).strip() for value in raw_scope if str(value).strip()})
-
-    # A YOLO empty label file means that *none* of the locked classes is present.
-    # Partial negative scopes cannot be represented by an empty detection target;
-    # using them would silently teach unverified classes as background.
+    # A standard detector target cannot encode "this class was not reviewed".
+    # Missing positives become implicit background for both annotated and empty
+    # images. Never widen the review scope just because a box was selected.
     normalized = {str(value).strip() for value in raw_scope if str(value).strip()}
     if "*" in normalized:
         return sorted(schema_codes)
     missing = sorted(schema_codes - normalized)
     if missing:
+        if state == "confirmed_empty":
+            raise ValueError(
+                f"负样本 {image_id} 未确认本次算法的全部标签: "
+                + ", ".join(missing[:5])
+            )
         raise ValueError(
-            f"负样本 {image_id} 未确认本次算法的全部标签: "
+            f"训练素材 {image_id} 标注审核范围未覆盖本次算法的全部标签: "
             + ", ".join(missing[:5])
         )
     return sorted(schema_codes)

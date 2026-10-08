@@ -12,8 +12,8 @@ from platform_core.training_splits import SplitMode, SplitRequest, build_split_m
 
 def test_snapshot_contains_only_processed_images_and_is_deterministic():
     images = [
-        {"id": "b", "processing_status": "processed", "labels": ["smoke"], "boxes": [{"label": "smoke"}]},
-        {"id": "a", "processing_status": "processed", "labels": ["fire"], "boxes": [{"label": "fire"}]},
+        {"id": "b", "processing_status": "processed", "labels": ["smoke"], "annotation_scope": ["fire", "smoke"], "boxes": [{"label": "smoke"}]},
+        {"id": "a", "processing_status": "processed", "labels": ["fire"], "annotation_scope": ["fire", "smoke"], "boxes": [{"label": "fire"}]},
         {"id": "c", "processing_status": "unprocessed", "labels": [], "boxes": []},
     ]
 
@@ -25,7 +25,52 @@ def test_snapshot_contains_only_processed_images_and_is_deterministic():
     assert first["val_image_ids"] == ["b"]
     assert first["label_counts"] == {"fire": 1, "smoke": 1}
     assert first["images"][0]["annotation_state"] == "annotated"
-    assert first["images"][0]["annotation_scope"] == ["fire"]
+    assert first["images"][0]["annotation_scope"] == ["fire", "smoke"]
+
+
+def test_annotated_partial_review_scope_cannot_enter_multiclass_training():
+    images = [{
+        "id": "positive", "annotation_state": "annotated",
+        "annotation_scope": ["smoke"],
+        "boxes": [{"label": "smoke"}],
+    }]
+    schema = [{"code": "smoke"}, {"code": "fire"}]
+    with pytest.raises(ValueError, match="标注审核范围未覆盖"):
+        build_snapshot(images, ["positive"], [], schema, seed=1)
+
+    # The source is usable only after both target classes have actually been
+    # reviewed; it must not be widened by the training snapshot itself.
+    images[0]["annotation_scope"] = ["smoke", "fire"]
+    valid = build_snapshot(images, ["positive"], [], schema, seed=1)
+    assert valid["images"][0]["annotation_scope"] == ["fire", "smoke"]
+
+
+def test_annotated_partial_review_scope_cannot_enter_durable_snapshot():
+    images = [
+        {
+            "id": f"image-{index}", "dataset_id": "pool",
+            "annotation_state": "annotated",
+            "annotation_scope": ["smoke"],
+            "boxes": [{"label": "smoke", "x1": 1, "y1": 1, "x2": 3, "y2": 3}],
+            "content_sha256": f"hash-{index}", "group_id": f"group-{index}",
+        }
+        for index in range(6)
+    ]
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=20,
+            validation_percent=20,
+        ),
+        seed=19,
+    )
+    with pytest.raises(ValueError, match="标注审核范围未覆盖"):
+        build_snapshot(
+            images, manifest,
+            [{"code": "smoke", "class_id": 0}, {"code": "fire", "class_id": 1}],
+        )
 
 
 def test_legacy_snapshot_freezes_formal_ground_truth_without_owning_processing_admission():

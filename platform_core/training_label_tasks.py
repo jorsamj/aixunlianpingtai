@@ -687,15 +687,33 @@ def project_training_rows(
             )
 
         if state == "annotated":
+            # The original formal GT must cover every class in the task schema.
+            # Filtering away unselected boxes cannot prove that an unreviewed
+            # class is absent, even if the projection becomes a negative image.
+            reviewed = {str(value).strip() for value in raw_scope if str(value).strip()}
+            if "*" not in reviewed:
+                # Legacy positive rows without an explicit scope only prove
+                # the labels whose boxes were actually confirmed.
+                reviewed = reviewed or set(present)
+                missing = sorted(allowed - reviewed)
+                if missing:
+                    raise ValueError(
+                        f"训练素材 {row.get('id') or row.get('image_id') or ''} "
+                        "标注审核范围未覆盖本次算法的全部标签: "
+                        + ", ".join(missing[:5])
+                    )
             if selected_boxes:
                 row["annotation_state"] = "annotated"
                 row["annotated"] = True
                 row["boxes"] = selected_boxes
                 explicit = {value for value in raw_scope if value and value != "*"}
-                row["annotation_scope"] = sorted((explicit & allowed) | {
-                    str(box.get("label") or box.get("code") or "").strip()
-                    for box in selected_boxes
-                })
+                row["annotation_scope"] = (
+                    sorted(allowed) if "*" in reviewed
+                    else sorted((explicit & allowed) | {
+                        str(box.get("label") or box.get("code") or "").strip()
+                        for box in selected_boxes
+                    })
+                )
             elif excluded_boxes:
                 # The materializer must redact every excluded region before this
                 # task-local negative is allowed to reach train/validation loss.

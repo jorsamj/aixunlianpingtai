@@ -25670,3 +25670,14 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 **状态：AUDIT PHASE — REGISTERED / REPAIR NOT STARTED；Stage-1 Repair Roadmap READY；不是“全仓无 Bug”结论。**
 
 **本次文档收口提交版本：42.24.281；未新增 AUDIT 编号，未修改任何生产源文件或测试。**
+
+
+## 2026-10-08 修复日志 — AUDIT-148 首批准确性栅栏（42.24.282）
+
+**状态：FIX IMPLEMENTED / CI PENDING / E2E PENDING（不宣布 CLOSED）。**
+
+- 修复 platform_core/snapshots.py 的共享 Snapshot scope gate：annotated 正样本和 confirmed_empty 负样本均要求本次 schema 全部标签已审核；不自动把 scope 扩成全部标签，缺口 fail-closed；旧负样本错误语义保留。
+- 修复 platform_core/training_label_tasks.py 当前 canonical 训练标签投影：从原始已确认 scope 检查 task schema，不能把只有 smoke 审核证据的图片删掉 smoke 框、再伪造成 fire 已确认负样本。完整 scope 下现有 redaction 行为保留；原有全量 GT 不变。
+- 新增 legacy 和 Durable Snapshot 回归，以及仅部分审核但投影后产生正样本/伪负样本的回归；更新历史测试中隐含的多类 partial scope 假设。
+- **范围：** 只处理 AUDIT-148 中的训练 projection / Snapshot 主链；Picker/admission 提前预检、多模块 1k-20k 及真实 GPU 训练 E2E 尚未证明，后续仍需验收。与 R0 Material content-generation / 删除 fence 是独立待修问题。
+- 约束：没有新增 Annotation Owner，没有修改生产 GT，没有合并 main / tag / release；VERSION 42.24.281 → 42.24.282。

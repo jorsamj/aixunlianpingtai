@@ -579,6 +579,32 @@ def test_selected_material_codes_include_explicit_and_default_negative_scopes(tm
     ) == ["fire", "smoke", "person", "helmet", "cigarette"]
 
 
+@pytest.mark.parametrize("selected_codes", [
+    ["smoke", "fire"],  # Unreviewed class beside a retained positive.
+    ["fire"],           # Removing the only box must not invent a negative.
+])
+def test_projection_rejects_unreviewed_class_in_task_schema(selected_codes):
+    rows = [{
+        "id": "image-a", "annotation_state": "annotated",
+        "annotation_scope": ["smoke"], "boxes": [_box("smoke")],
+    }]
+    contract = {"effective_label_codes": selected_codes}
+    with pytest.raises(ValueError, match="标注审核范围未覆盖"):
+        project_training_rows(rows, contract)
+
+    # A single-class task may legitimately use the reviewed smoke positive.
+    positive = project_training_rows(rows, {"effective_label_codes": ["smoke"]})
+    assert positive[0]["annotation_state"] == "annotated"
+    assert positive[0]["annotation_scope"] == ["smoke"]
+
+    # Explicit review of both classes permits the existing redaction contract.
+    rows[0]["annotation_scope"] = ["smoke", "fire"]
+    projected = project_training_rows(rows, {"effective_label_codes": ["fire"]})
+    assert projected[0]["annotation_state"] == "confirmed_empty"
+    assert projected[0]["annotation_scope"] == ["fire"]
+    assert projected[0]["negative_origin"] == "redacted_unselected_labels"
+
+
 def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_path: Path):
     _, project = _project(tmp_path)
     annotations = AnnotationRepository(project)
