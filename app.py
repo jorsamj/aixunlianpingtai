@@ -9370,6 +9370,16 @@ def _algorithm_version_active_references(
                 except (OSError, RuntimeError):
                     continue
 
+    if algorithm_id and version_id:
+        pending_feedback_id = _online_feedback_repository(project_id).pending_version_reference(
+            algorithm_id, version_id,
+        )
+        if pending_feedback_id:
+            add(
+                "ONLINE_FEEDBACK", pending_feedback_id,
+                f"算法版本仍有待人工复核的线上反馈 {pending_feedback_id}",
+            )
+
     jobs_root = project_dir(project_id) / "jobs"
     for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
         job = read_json(job_file, {})
@@ -11358,7 +11368,7 @@ def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
         "ok": result.get("cleanup_status") != "cleanup_failed",
         **result,
         "reference_check": {
-            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks", "online_feedback_pending_review"],
             "not_verifiable": ["online_deployment_instances"],
         },
     }
@@ -11413,7 +11423,7 @@ def v12_rollback_version(
         "ok": result.get("cleanup_status") != "cleanup_failed",
         **result,
         "reference_check": {
-            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks", "online_feedback_pending_review"],
             "not_verifiable": ["online_deployment_instances"],
         },
     }
@@ -11434,7 +11444,7 @@ def v12_retry_version_cleanup(project_id: str, algorithm_id: str, operation_id: 
         "ok": result.get("cleanup_status") != "cleanup_failed",
         **result,
         "reference_check": {
-            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks", "online_feedback_pending_review"],
             "not_verifiable": ["online_deployment_instances"],
         },
     }
@@ -12204,13 +12214,17 @@ def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
     from platform_core.online_feedback import public_feedback
     get_project(project_id)
     try:
-        evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
-        row, idempotent = _online_feedback_repository(project_id).stage(
-            evidence,
-            feedback_type=payload.feedback_type,
-            note=payload.note,
-            created_at=now_iso(),
-        )
+        source, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
+        with model_delivery_version_fence(
+            DATA_DIR, project_id, source["algorithm_id"], source["version_id"],
+        ):
+            evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
+            row, idempotent = _online_feedback_repository(project_id).stage(
+                evidence,
+                feedback_type=payload.feedback_type,
+                note=payload.note,
+                created_at=now_iso(),
+            )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
@@ -12350,12 +12364,18 @@ async def create_external_online_feedback(
             temporary.unlink(missing_ok=True)
 
     try:
-        row, repository_reused = _online_feedback_repository(project_id).stage(
-            incoming,
-            feedback_type=feedback_type,
-            note=note,
-            created_at=now_iso(),
-        )
+        with model_delivery_version_fence(DATA_DIR, project_id, algorithm_id, version_id):
+            _, current_version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+            if _online_feedback_version_model_sha256(current_version) != incoming["model_sha256"]:
+                raise HTTPException(
+                    status_code=409, detail="正式算法版本在外部反馈写入期间发生变化",
+                )
+            row, repository_reused = _online_feedback_repository(project_id).stage(
+                incoming,
+                feedback_type=feedback_type,
+                note=note,
+                created_at=now_iso(),
+            )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {

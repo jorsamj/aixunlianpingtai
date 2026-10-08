@@ -1,3 +1,11 @@
+## 2026-10-09 最小安全上线 Gate S14：AUDIT-169/176 活动存储依赖与人工反馈版本引用（42.24.333）
+
+- 基线 HEAD `e4c00175ef5b096d9af090e6f528331aa293d380`、`VERSION.txt=42.24.332`；23/23 Actions completed-success。此前 AUDIT-171/172 已收口，本批不重复。
+- **AUDIT-169（最小隔离）**：现有 ModelArtifactService 的 `save_artifact_oss_config` 和 `save_config` 复用唯一 StorageSource lifecycle fence（对应共享 storage_sources.sqlite3）；任何 QUEUED/RUNNING/CANCEL_REQUESTED TRAINING 或 MODEL_CONVERSION 存在时，Endpoint/Bucket/public_base_url/root_prefix、凭据或存储绑定的破坏性修改返回 `MODEL_ARTIFACT_STORAGE_ACTIVE_TASK`（409）。不创建第二个 StorageSource owner、不将明文 secret 冻结到任务载荷；无变更/无凭据重传保持可保存，任务终态后恢复可配置。该防护处理专用 OSS 配置路径；Legacy daemon 转换、运行中源直接 PUT PATCH/Agent 任务未来全部代际治理另做独立验收，不能宣称完整长期 generation pin 已完成。
+- **AUDIT-176**：OnlineFeedbackRepository 新增现有 SQLite 上索引 (algorithm_id,version_id,status) 的 `pending_version_reference`（有界 1 条）；`_algorithm_version_active_references` 将已 stage 的 pending_review 纳入版本删除/rollback dependency_check。正常 Online Feedback 创建与 external-intake 完成 stage 前，复用现有 model_delivery_version_fence 重新验证版本/模型证据，从而和版本 delete/rollback 序列化；已 dismiss/confirmed 不再 pin。版本引用 source 仍由算法版本唯一 owner，Online Feedback 不复制模型/标签业务真相。
+- 回归：tests/api/test_online_feedback.py 增加 pending feedback 删除 409 → dismiss → 非当前版本可删除；tests/unit/test_model_artifacts.py 覆盖 TRAINING/MODEL_CONVERSION 活跃时 Bucket/Endpoint/root/credential/public URL 修改 409、原凭据保留、legacy binding 不可旁路、同值保存与终态放行。
+- 不涉及 main、tag/release、生产部署；已有受限 external ChangLian 删除/回退仍保持 409。该批 CI 未重新执行时状态为 **CODE IMPLEMENTED / CI PENDING / NOT DEPLOYABLE**。Linux 多进程/真实 OSS、GPU、模型归档与外部接口 UAT 仍 OPEN。
+
 ## 2026-10-08 Gate S13：父子半提交恢复测试走正式 admission（42.24.332）
 
 - `42.24.331` Remote Training Runtime API job 的 46 项测试结果：44 passed / 2 failed；原有正式训练创建回归已通过，唯二失败是新增故障恢复测试。日志证明后端 409 `训练任务 ID 已绑定其他请求`，原因是故障注入首次直接调用内部 `_enqueue_explicit_training`，绕开了 v12 的 `validate_train_request(payload)` 标准化，随后 HTTP 重放经过标准化而 request_identity 发生变化。

@@ -674,3 +674,68 @@ def test_feedback_label_retirement_before_truth_commit_rolls_back_new_material(
     ).summary()["total"] == before_annotations
     pending = app_module._online_feedback_repository(project["id"]).get(staged["id"])
     assert pending["status"] == "pending_review"
+
+
+def test_pending_feedback_prevents_version_retirement_until_review_finishes(client):
+    project = _project(client)
+    project_id = project["id"]
+    algorithm_id, source_version = _algorithm_version(client, project_id)
+    prediction_id, _ = _prediction(
+        project_id, algorithm_id, source_version,
+        detections=[], suffix="retirement-fence",
+    )
+    pending = _stage(client, project_id, prediction_id, "needs_correction")
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == pending["id"]
+
+    other_path = app_module.project_dir(project_id) / "models" / "feedback-next.pt"
+    other_path.write_bytes(b"another-model-for-version-retirement")
+    next_version = app_module.attach_algorithm_version_if_current(
+        app_module.algorithms_file(project_id),
+        algorithm_id,
+        {
+            "id": uuid.uuid4().hex[:12],
+            "version_no": 2,
+            "version_name": "feedback-next-fixture",
+            "model_name": other_path.name,
+            "stored_path": str(other_path),
+            "framework": "ultralytics",
+            "training_status": "TEST_FIXTURE",
+            "artifact_verified": False,
+            "trainable": False,
+            "created_at": app_module.now_iso(),
+        },
+        expected_current_version_id=source_version["id"],
+    )
+    assert next_version["id"] != source_version["id"]
+
+    delete_url = (
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm_id}"
+        f"/versions/{source_version['id']}"
+    )
+    blocked = client.delete(delete_url)
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["code"] == "ALGORITHM_VERSION_IN_USE"
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == pending["id"]
+    assert source_version["id"] in {
+        v["id"] for algo in app_module.list_algorithms_internal(project_id)
+        if algo["id"] == algorithm_id for v in algo["versions"]
+    }
+
+    dismissed = client.post(
+        f"/api/v63/projects/{project_id}/online-feedback/{pending['id']}/dismiss",
+        json={
+            "expected_feedback_type": "needs_correction",
+            "reason": "review completed",
+        },
+    )
+    assert dismissed.status_code == 200, dismissed.text
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == ""
+
+    retired = client.delete(delete_url)
+    assert retired.status_code == 200, retired.text

@@ -37,6 +37,8 @@ CREATE INDEX IF NOT EXISTS ix_online_feedback_status
     ON online_feedback(status, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS ix_online_feedback_version
     ON online_feedback(algorithm_id, version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_online_feedback_pending_version
+    ON online_feedback(algorithm_id, version_id, status);
 """
 
 
@@ -488,6 +490,17 @@ class OnlineFeedbackRepository:
             ).fetchall()
         by_id = {str(row["id"]): self._decode(row) for row in rows}
         return [by_id[value] for value in ids if value in by_id]
+
+    def pending_version_reference(self, algorithm_id: str, version_id: str) -> str:
+        """One indexed pending-review reference pins a model version's lifecycle."""
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT id FROM online_feedback "
+                "WHERE algorithm_id=? AND version_id=? AND status='pending_review' "
+                "LIMIT 1",
+                (str(algorithm_id), str(version_id)),
+            ).fetchone()
+        return str(row["id"]) if row is not None else ""
 
     def list_confirmed_for_version(
         self, algorithm_id: str, version_id: str, *, limit: int = 500,

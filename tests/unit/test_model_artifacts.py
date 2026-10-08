@@ -1488,3 +1488,75 @@ def test_generic_storage_health_contract_still_blocks_bucket_metadata_access_den
 
     assert blocked.value.code == "MODEL_STORAGE_HEALTH_AUTH_FAILED"
     assert provider.operations == ["health"]
+
+
+@pytest.mark.parametrize("kind", ["TRAINING", "MODEL_CONVERSION"])
+def test_active_durable_task_blocks_destructive_artifact_oss_changes(tmp_path: Path, kind: str):
+    from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
+
+    service = _service(tmp_path)
+    original = ArtifactOSSConfigPayload(
+        endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+        bucket="safe-model-bucket",
+        access_key_id="artifact-key",
+        access_key_secret="original-secret",
+        public_base_url="https://models.example.com",
+        root_prefix="changlian-ai/artifacts",
+    )
+    service.save_artifact_oss_config(original)
+    repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    task_id = "active-artifact-" + kind.lower()
+    repository.create(TaskRecord.new(
+        task_id, "p1", TaskKind(kind),
+        "payload.json", "training:cpu" if kind == "TRAINING" else "conversion:cpu",
+    ))
+
+    before = service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+    original_secret = service.storage_credentials_factory().get(before.secret_ref)
+
+    for updates in (
+        {"bucket": "other-bucket"},
+        {"endpoint": "https://oss-cn-shanghai.aliyuncs.com"},
+        {"root_prefix": "changed/artifacts"},
+        {"access_key_id": "new-key", "access_key_secret": "new-secret"},
+    ):
+        proposed = original.model_copy(update={
+            "access_key_id": "", "access_key_secret": "", **updates,
+        })
+        with pytest.raises(PlatformError) as blocked:
+            service.save_artifact_oss_config(proposed)
+        assert blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+        assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID).config == before.config
+        assert service.storage_credentials_factory().get(before.secret_ref) == original_secret
+
+    # Public URL also contributes to the StorageSource generation identity;
+    # no config field may silently bump the generation of an active task.
+    with pytest.raises(PlatformError) as url_blocked:
+        service.save_artifact_oss_config(original.model_copy(update={
+            "access_key_id": "", "access_key_secret": "",
+            "public_base_url": "https://cdn.example.com",
+        }))
+    assert url_blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+    same = service.save_artifact_oss_config(original.model_copy(update={
+        "access_key_id": "", "access_key_secret": "",
+    }))
+    assert same["artifact_storage"]["bucket"] == "safe-model-bucket"
+
+    # Legacy configuration route cannot bypass the same active-task fence.
+    with pytest.raises(PlatformError) as legacy_blocked:
+        service.save_config(ModelArtifactConfigPayload(
+            storage_source_id="default_local",
+            root_prefix="unsafe/new-root",
+            auto_upload_enabled=True,
+        ))
+    assert legacy_blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+
+    repository.fail_queued_precondition(
+        task_id, "injected terminal state",
+        status=TaskStatus.FAILED,
+    )
+    service.save_artifact_oss_config(original.model_copy(update={
+        "access_key_id": "", "access_key_secret": "",
+        "bucket": "other-bucket",
+    }))
+    assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID).config["bucket"] == "other-bucket"

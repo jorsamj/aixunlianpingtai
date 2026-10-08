@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 from .algorithms import list_algorithms
 from .errors import PlatformError
 from .secrets import SecretCredentialStore, secret_ref
-from .storage import StorageProviderFactory, StorageSourceRepository
+from .storage import (
+    StorageProviderFactory, StorageSourceRepository, storage_source_lifecycle_fence,
+)
 
 
 SUCCESSFUL_CONVERSION_STATUSES = {
@@ -723,7 +725,45 @@ class ModelArtifactService:
             "summary": self.repository.summary(),
         }
 
+    def _assert_artifact_storage_mutation_idle(self) -> None:
+        """Existing durable tasks pin provider identity; prevent destructive config edits."""
+        db_path = self.data_dir / "task_runtime" / "tasks.sqlite3"
+        if not db_path.is_file():
+            return
+        from .task_runtime import TaskKind, TaskRepository, TaskStatus
+        active = TaskRepository(db_path).list(
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION),
+            statuses=(TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED),
+            limit=1,
+        ).items
+        if active:
+            task = active[0]
+            raise PlatformError(
+                "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK",
+                "存在活动训练或转换任务，暂不能更改算法产物存储配置",
+                f"kind={task.kind.value}; task_id={task.task_id}",
+                "请等待相关训练与转换任务结束后再修改 Bucket、Endpoint、归档前缀或凭据。",
+                409,
+            )
+
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
+        """Apply legacy binding changes under the existing source lifecycle fence."""
+        with storage_source_lifecycle_fence(
+            self.data_dir / "storage" / "storage_sources.sqlite3",
+        ):
+            previous = self.repository.config()
+            requested_root = _canonical_prefix(
+                payload.root_prefix or payload.object_prefix or "changlian-ai/artifacts"
+            )
+            if (
+                str(previous.get("storage_source_id") or "") != str(payload.storage_source_id or "")
+                or _canonical_prefix(previous.get("root_prefix") or "") != requested_root
+                or bool(previous.get("auto_upload_enabled")) != bool(payload.auto_upload_enabled)
+            ):
+                self._assert_artifact_storage_mutation_idle()
+            return self._save_config_under_source_fence(payload)
+
+    def _save_config_under_source_fence(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
         if source_id:
             source = self.storage_sources_factory().get(source_id)
@@ -735,6 +775,32 @@ class ModelArtifactService:
 
 
     def save_artifact_oss_config(self, payload: ArtifactOSSConfigPayload) -> dict[str, Any]:
+        """Prevent active remote training/conversion from losing its OSS provider."""
+        with storage_source_lifecycle_fence(
+            self.data_dir / "storage" / "storage_sources.sqlite3",
+        ):
+            current = self.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+            stored = self.repository.config()
+            endpoint = _normalize_artifact_oss_endpoint(
+                str(payload.endpoint or "").strip(), str(payload.bucket or "").strip(),
+            )
+            destructive = (
+                current is None
+                or str(current.config.get("endpoint") or "") != endpoint
+                or str(current.config.get("bucket") or "") != str(payload.bucket or "").strip()
+                or str(current.config.get("public_base_url") or "").rstrip("/") != str(payload.public_base_url or "").strip().rstrip("/")
+                or _canonical_prefix(stored.get("root_prefix") or "") != _canonical_prefix(
+                    payload.root_prefix or "changlian-ai/artifacts"
+                )
+                or bool(payload.access_key_id or payload.access_key_secret)
+            )
+            if destructive:
+                self._assert_artifact_storage_mutation_idle()
+            return self._save_artifact_oss_config_under_source_fence(payload)
+
+    def _save_artifact_oss_config_under_source_fence(
+        self, payload: ArtifactOSSConfigPayload,
+    ) -> dict[str, Any]:
         endpoint = str(payload.endpoint or "").strip()
         bucket = str(payload.bucket or "").strip()
         public_base_url = str(payload.public_base_url or "").strip().rstrip("/")
