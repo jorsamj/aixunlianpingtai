@@ -45,6 +45,8 @@ on:
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
       - 'platform_core/upload_batches.py'
+      - 'platform_core/storage/source_repository.py'
+      - 'tests/unit/storage/test_source_repository.py'
       - 'tests/unit/test_upload_batches.py'
       - 'tests/api/test_upload_request_recovery.py'
       - 'tests/api/test_upload_storage_source_lifecycle.py'
@@ -92,6 +94,8 @@ on:
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
       - 'platform_core/upload_batches.py'
+      - 'platform_core/storage/source_repository.py'
+      - 'tests/unit/storage/test_source_repository.py'
       - 'tests/unit/test_upload_batches.py'
       - 'tests/api/test_upload_request_recovery.py'
       - 'tests/api/test_upload_storage_source_lifecycle.py'
@@ -216,6 +220,7 @@ jobs:
           tests/api/test_storage_sources.py
           tests/api/test_upload_request_recovery.py
           tests/api/test_upload_storage_source_lifecycle.py
+          tests/unit/storage/test_source_repository.py
           tests/unit/test_upload_batches.py
           tests/unit/test_image_batch_context_isolation.py
       - name: Permanent remote material guards
