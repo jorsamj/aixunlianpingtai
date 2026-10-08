@@ -163,7 +163,7 @@ from platform_core.training_compatibility import (
     compatibility_page,
     evaluate_training_compatibility,
 )
-from platform_core.upload_batches import UploadBatchStore, apply_decisions
+from platform_core.upload_batches import UploadBatchStore, UploadRequestBusy, apply_decisions
 from platform_core.training_job_projection import (
     apply_training_display_progress,
     apply_training_task_truth,
@@ -4758,8 +4758,78 @@ def _plain_upload_replay_response(project_id: str, batch: Dict[str, Any]) -> Dic
     }
 
 
+def _plain_upload_recover_receipt(project_id: str, store: UploadBatchStore, receipt: Dict[str, Any]):
+    """Reconcile an interrupted request against canonical Material/Annotation truth.
+
+    Caller must hold the cross-process upload-request claim. We never retry
+    uploading unknown bytes or assert success from an uncommitted receipt.
+    """
+    batch_id = str(receipt["id"])
+    prepared = receipt.get("upload_prepared_image_ids")
+    if isinstance(prepared, list):
+        ids = [str(value) for value in prepared]
+        if len(ids) == len(set(ids)) and all(ids):
+            materials = material_store(project_id)
+            rows = {str(row.get("id")): row for row in materials.get_many(ids)}
+            annotations = (
+                _v50_annotation_repository(project_id).get_many(ids) if ids else {}
+            )
+            if (
+                len(rows) == len(ids)
+                and all(
+                    str(rows[image_id].get("dataset_id") or "default")
+                        == str(receipt.get("upload_dataset_id") or "default")
+                    and str(rows[image_id].get("storage_source_id") or "default_local")
+                        == str(receipt.get("upload_storage_source_id") or "default_local")
+                    and image_id in annotations
+                    and str((annotations[image_id] or {}).get("annotation_state") or "")
+                        == "unannotated"
+                    for image_id in ids
+                )
+            ):
+                completed = store.complete_upload_request(
+                    batch_id, ids, failed=receipt.get("upload_failed") or [],
+                    finished_at=now_iso(), elapsed_seconds=0.0,
+                    material_total=materials.count(),
+                )
+                return _plain_upload_replay_response(project_id, completed)
+
+    # A PROCESSING receipt without a prepared intent cannot have reached the
+    # Material commit; otherwise only a full ID+GT match proves success.
+    # Any partial/missing truth stays visible as failed, never auto reuploads.
+    error = "上传进程已中断，未能确认全部素材正式入库；请核查批次后以新的请求 ID 重传未入库图片"
+    store.fail_upload_request(batch_id, error=error, failed_at=now_iso())
+    raise HTTPException(status_code=409, detail={
+        "code": "UPLOAD_REQUEST_RECOVERY_UNCONFIRMED", "message": error,
+    })
+
+
 @app.post("/api/projects/{project_id}/images")
 async def upload_images(
+    project_id: str, files: List[UploadFile] = File(...),
+    dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
+    upload_request_id: Optional[str] = Form(None),
+):
+    request_id = str(upload_request_id or "").strip()
+    if request_id:
+        store = upload_batch_store(project_id)
+        try:
+            async with store.claim_upload_request(request_id):
+                return await _plain_upload_images_claimed(
+                    project_id, files, dataset_id, storage_source_id, request_id,
+                )
+        except UploadRequestBusy as error:
+            raise HTTPException(status_code=409, detail={
+                "code": "UPLOAD_REQUEST_IN_PROGRESS", "message": str(error),
+            }) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+    return await _plain_upload_images_claimed(
+        project_id, files, dataset_id, storage_source_id, None,
+    )
+
+
+async def _plain_upload_images_claimed(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
     upload_request_id: Optional[str] = Form(None),
@@ -4783,16 +4853,14 @@ async def upload_images(
             if request_status == "SUCCEEDED":
                 return _plain_upload_replay_response(project_id, receipt)
             if request_status == "PROCESSING":
-                raise HTTPException(status_code=409, detail={
-                    "code": "UPLOAD_REQUEST_IN_PROGRESS",
-                    "message": "该上传批次仍在服务器处理中，请查询批次状态后恢复",
-                })
+                return _plain_upload_recover_receipt(project_id, store, receipt)
             raise HTTPException(status_code=409, detail={
                 "code": "UPLOAD_REQUEST_FAILED",
                 "message": str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
             })
 
     started = time.time()
+    material_commit_started = False
     _v50_begin_image_batch(project_id)
     try:
         for file in files:
@@ -4822,6 +4890,13 @@ async def upload_images(
                 failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
             except Exception as error:
                 failed.append({"name": filename, "reason": str(error)})
+        if receipt_created:
+            # This must be durable BEFORE Material/Annotation commit starts.
+            store.prepare_upload_request(
+                batch_id, [str(item.get("id")) for item in uploaded],
+                failed=failed, prepared_at=now_iso(),
+            )
+        material_commit_started = True
         committed = _v50_end_image_batch(save=True)
         if committed:
             committed_by_id = {str(item.get("id")): item for item in committed}
@@ -4843,7 +4918,7 @@ async def upload_images(
                 _v50_end_image_batch(save=False)
             except Exception as cleanup_error:
                 rollback_error = cleanup_error
-        if receipt_created:
+        if receipt_created and not material_commit_started:
             try:
                 store.fail_upload_request(batch_id, error=str(rollback_error or error), failed_at=now_iso())
             except Exception:
