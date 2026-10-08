@@ -1,3 +1,12 @@
+## 2026-10-08 最小安全上线 Gate S6：AUDIT-133 普通图片上传收据崩溃恢复（42.24.323）
+
+- 问题：原始普通图片上传将 request receipt 写为 PROCESSING 后，在实际 Material/Annotation 批量提交完成之前无法持久识别本次写入 image_id；崩溃后同一 upload_request_id 只能 409，无法判断已提交或未提交。UploadBatchStore 原先也只使用进程内 RLock，跨 Web Worker 重复请求不受保护。
+- 最小改造：仍使用既有 UploadBatchStore。receipt JSON 变更为在 Material 写入前准备 upload_prepared_image_ids 与失败明细（仅文件身份，非第二份素材真相）；同一 request_id 在整个 async 端点内持有非阻塞获取的跨进程 FileLock，请求占用冲突返回 409，且收据读写也有独立跨进程文件锁。
+- 崩溃恢复：跨进程 request claim 成功后，对 PROCESSING 的 prepared IDs 必须在 MaterialRepository 中全量存在、source/dataset 与原请求一致且 AnnotationRepository 全部有初始 unannotated truth，才恢复 SUCCEEDED 并 replay 正式索引；未准备、索引缺失、部分提交、GT 缺失等状态 fail-closed 为 FAILED/409，不会复制已有素材或假报成功。提交边界之后的异常不得抢先把 PROCESSING 记为 FAILED。
+- 测试：新 tests/api/test_upload_request_recovery.py 覆盖“Material 完成但 receipt 写入失败”“准备完成但 Material 未提交”“Material 存在而 Annotation 缺失”“同请求异步双持锁”；现有 tests/unit/test_upload_batches.py 与 ContextVar 测试并入 Remote Material Import API job。跨进程锁必须进一步进行真实多进程和 OSS UAT。
+- 前置版本 42.24.322 在 GitHub 连接可见的首 20 个 Actions success；另有在线反馈 CI fixture 独立修复提交 b623f2066f2eb644424969a0a84e30314a81add1。Gate S6 实现+测试已提交长期分支，但最终准确 HEAD 的 CI 尚待完成，不能标记 CLOSED 或允许部署。
+- 下一批：AUDIT-134 Storage Source generation / 上传时配置并发；本批没有修改 Storage Source 正式 Owner，也不更改 main。
+
 ## 2026-10-08 最小安全上线 Gate S5：AUDIT-175 外部版本删除/回退入口隔离（42.24.322）
 
 - 当前新畅联外部 source_type=EXTERNAL/provider_type=CHANG_LIAN 的版本删除/回退，是远端先删除、然后本地 SQL CAS 的非原子序列；失败后 auto-publish 可能重新发布远端版本。补偿与 tombstone 尚未真实验收，采用最小安全上线隔离：两个 v12 版本退役入口在触发外部 I/O 之前以 HTTP 409 拒绝；本地算法版本 delete/rollback 保持原合同。
