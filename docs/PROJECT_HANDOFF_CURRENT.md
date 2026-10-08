@@ -2795,3 +2795,13 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - RKNN INT8 校准在最终任务 publish 前重验 frozen material identity，活动任务期间 DELETE_SOURCE/DELETE_INDEX 均被阻止；终态自动释放。
 - 本地 focused tests 通过；提交、推送和 exact-HEAD Actions/check-runs 仍待完成。现场 OSS、Agent、Rockchip、GPU 为 `PENDING USER UAT`。
 - 下一独立批次是 AUDIT-178；开始前仍需重新读真实远端 HEAD/VERSION/checks。
+
+## 2026-10-08 当前接手入口：Storage Source 活动任务 lifecycle fence
+
+- 当前候选 VERSION：`42.24.302`；长期分支：`feature/external-algorithm-publishing`。
+- AUDIT-178 已实现：Source runtime config/enable/credentials 与现有 durable task admission 双向协调。活动 Import/Rescan、CLEAN/AI、TRAINING/PREPARE、RKNN calibration 阻止 destructive PATCH；name-only 不阻止；终态释放。
+- Source/Secret/Task/Material 仍是原有 canonical owners。无依赖表、无第二 scheduler/runtime、无明文 credential task snapshot。
+- 外部 staging/OSS I/O 不持 fence；最终 publish 重验 Source generation。credential replace 的 Secret ref 使用新 generation，SQLite 失败保持旧配置可用。
+- `42.24.301` 精确 HEAD 为 45/46 workflows success；唯一失败是 stale source grep，实际 job pytest 41 passed。本候选已把 guard 对齐到当前更强 lifecycle fence，精确 HEAD CI 尚待提交推送。
+- 现场 OSS、生产 Keyring、Agent/RKNN/GPU 仍为 `PENDING USER UAT`。下一步先完成本批提交、推送与 exact-HEAD CI。
+- AUDIT-152 定向清洗回归与 1k/10k/20k bounded annotation-read 合同已通过；compatibility 翻页仍会重新评估全部选中素材，已确认为不影响正确性的既有性能 follow-up，后续应以 keyset/既有 owner 方案处理，禁止为此新增全局缓存 truth。

@@ -104,7 +104,8 @@ jobs:
           grep -Fq 'resource_queue_position_exact === true' static/modules/cleaning.js
           grep -Fq '_v50_begin_image_batch(project_id)' app.py
           grep -Fq 'annotation_repository.upsert_many(' app.py
-          grep -Fq 'return repository.upsert_many(records)' app.py
+          grep -Fq 'with material_annotation_lifecycle_fence(project_dir(project_id)):' app.py
+          grep -Fq 'persisted_materials = repository.upsert_many(records)' app.py
           grep -Fq 'def _v50_storage_manager(project_id: str) -> StorageManager:' app.py
           grep -Fq 'source_config = manager.sources.get(storage_source_id)' app.py
           grep -Fq 'metadata = manager.upload_object(' app.py

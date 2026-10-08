@@ -4,11 +4,13 @@ import json
 import re
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from filelock import FileLock
 
 from .errors import redact_storage_error
 from .models import StorageType
@@ -39,6 +41,40 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _SENSITIVE = re.compile(r"(?i)(secret|password|token|api[_-]?key|access[_-]?key)")
 _INITIALIZATION_LOCKS: dict[str, threading.Lock] = {}
 _INITIALIZATION_LOCKS_GUARD = threading.Lock()
+_SOURCE_LIFECYCLE_LOCK = ".storage-source-lifecycle.lock"
+_SOURCE_LIFECYCLE_LOCAL = threading.local()
+
+
+@contextmanager
+def storage_source_lifecycle_fence(
+    repository_path: str | Path, *, timeout: float = 60,
+):
+    """Serialize short source-config commits with durable task admission.
+
+    The fence owns no business state.  Network/storage I/O must stay outside;
+    callers use it only for a final source-generation check plus Task/Source
+    repository commits.
+    """
+    database_path = Path(repository_path).resolve()
+    lock_path = str(database_path.parent / _SOURCE_LIFECYCLE_LOCK)
+    held = getattr(_SOURCE_LIFECYCLE_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _SOURCE_LIFECYCLE_LOCAL.held = held
+    depth = held.get(lock_path)
+    if depth is not None:
+        held[lock_path] = depth + 1
+        try:
+            yield
+        finally:
+            held[lock_path] -= 1
+        return
+    with FileLock(lock_path, timeout=timeout):
+        held[lock_path] = 1
+        try:
+            yield
+        finally:
+            held.pop(lock_path, None)
 
 
 def _initialization_lock(path: Path) -> threading.Lock:

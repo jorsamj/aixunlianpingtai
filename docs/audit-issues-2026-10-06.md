@@ -24570,6 +24570,15 @@ Storage Source 已经是素材的 canonical storage owner，但 PATCH owner 当�
 **是否需要 VERSION：** 是。  
 **是否需要新增回归测试：** 是。
 
+**2026-10-08 实施状态：CODE IMPLEMENTED / EXACT-HEAD CI PENDING / USER UAT PENDING。**
+
+- VERSION `42.24.302` 在现有 StorageSourceRepository 邻接位置增加无状态、跨进程、线程内可重入的短 lifecycle fence；没有新增依赖表、Dependency Manager 或 Task Owner。
+- `PATCH` 仅对 disable、runtime config、credential replace/empty/clear 执行 active dependency guard；name-only 继续允许。活动引用从 TaskRepository 的 canonical 状态和现有 request/input-freeze/selection artifacts 派生，并以 MaterialRepository bounded query 解析素材来源。
+- Import/Rescan、MaterialBatch CLEAN/AI、AI Annotation、TRAINING/PREPARE、RKNN calibration 的最终 publish/retry 进入同一 fence。网络、对象传输和模型 staging 保持锁外；Import/Rescan 与 RKNN 在 publish 前重验 runtime generation。
+- credential replace 先写新的 versioned Secret reference，再原子发布 SQLite pointer；SQL 失败删除未发布 Secret 并保留旧 generation。task artifacts 不保存 credential。旧 Secret 清理失败时回滚完整 Source row，避免配置/Secret 半提交。
+- deterministic barrier 覆盖“import 正在最终受理、PATCH 尚未感知”；另覆盖 active/terminal release、name-only、Training Prepare parent input-freeze、active RKNN calibration 与 SQL publication failure。
+- 真实 OSS、生产 Keyring、Agent/RKNN 实板和长时间 mixed-source 任务仍为 `PENDING USER UAT`，不得把本状态写成生产完全 CLOSED。
+
 ---
 
 

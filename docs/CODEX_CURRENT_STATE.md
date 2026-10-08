@@ -2579,3 +2579,11 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - RKNN 最终入队重验 frozen calibration identity。删除端同时匹配 image ID 和 storage source/object reference。
 - 本地相关测试已通过；精确提交 HEAD CI 尚待推送后读取。真实 OSS/RKNN/GPU/生产恢复为 `PENDING USER UAT`。
 - 下一批只进入 AUDIT-178 Storage Source config/secret lifecycle；不要在本批新增 storage generation owner。
+
+## 2026-10-08 AUDIT-178 当前状态（最高优先级）
+
+- 候选版本 `42.24.302`。Storage Source 破坏性 PATCH 与 Import/Rescan、MaterialBatch CLEAN/AI、AI Annotation、TRAINING/PREPARE、RKNN calibration 的最终 durable admission 使用同一短 Source lifecycle fence。
+- 活动引用从 TaskRepository + 既有 artifacts + MaterialRepository bounded query 派生；不保存第二份 pin/dependency truth。仍可能读取源字节的 QUEUED/RUNNING/CANCEL_REQUESTED 以及 Import/Rescan AWAITING_CONFIRMATION 保护 Source；已只剩证据确认、不再 materialize 的 review stage 释放，terminal 释放。
+- name-only 允许；disable/config/credential replace/clear 活动期间 409。Import/Rescan/RKNN staging 在锁外，publish 时核验 runtime generation。
+- credential replace 使用 versioned Secret ref，SQLite publication 失败不覆盖旧 Secret generation；没有向 task artifact 复制 credential。
+- 本地 focused tests 已通过；精确 HEAD CI 待推送后读取。真实 OSS/Keyring/Agent/RKNN/GPU 为 `PENDING USER UAT`。

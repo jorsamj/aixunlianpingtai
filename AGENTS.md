@@ -1,5 +1,13 @@
 # Repository Agent Handoff
 
+## 2026-10-08 live override — Storage Source active-task lifecycle
+
+- VERSION `42.24.302` implements AUDIT-178 on the existing Storage Source, Secret, Task, Material, and task-artifact owners; it adds no dependency registry or second task/source owner.
+- Destructive Source changes (disable, runtime config, credential replacement/clear) and final task admission share a short cross-process Source lifecycle fence. Import/Rescan, MaterialBatch CLEAN/AI, AI Annotation, TRAINING/PREPARE, and RKNN calibration references are derived from canonical active task truth in bounded pages. Name-only PATCH remains allowed.
+- Credential replacement uses a new versioned Secret reference and publishes its SQLite pointer only after Secret write; failed publication leaves the prior generation intact. Credentials are never copied into task artifacts.
+- External storage/model staging stays outside the fence. Import/Rescan and RKNN final publication revalidate the Source runtime generation after staging. Terminal tasks release dependencies; queued/recovered/cancel-requested tasks retain them until terminal.
+- Exact pushed-HEAD CI is still mandatory. Real OSS, production Keyring, Agent/RKNN, GPU, and long-running mixed-source behavior remain `PENDING USER UAT`.
+
 ## 2026-10-08 live override — Active task material dependency fence
 
 - VERSION `42.24.301` implements the code-level closure for AUDIT-084 and AUDIT-168 on the existing MaterialRepository, TaskRepository, MaterialBatch, Training, and MODEL_CONVERSION owners.

@@ -1,8 +1,21 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 AUDIT-178 Storage Source 活动任务生命周期（当前最新）
+
+- VERSION：`42.24.302`；长期分支：`feature/external-algorithm-publishing`；本节写入时本地实现与 focused tests 完成，提交/推送与精确 HEAD CI 仍为 PENDING。
+- Storage Source destructive PATCH 与最终任务 publish/retry 共用 StorageSourceRepository 邻接的短 FileLock；锁不保存业务状态。活动依赖继续由 TaskRepository 状态、已有 payload/input-freeze/selection 与 MaterialRepository 派生，不新增 Dependency Manager、表或 Runtime。
+- disable、config、credential replace/empty/clear 在 Import/Rescan、CLEAN/AI MaterialBatch、AI Annotation、input-pending TRAINING/PREPARE、RKNN calibration 仍可能读取源字节时返回 409；name-only 允许。终态和已仅剩证据确认的非 Import review stage 释放，lease recovery/排队/取消中仍保护。
+- Import/Rescan 和 RKNN 外部 staging 在锁外，最终 publish 在锁内重验 runtime generation；任务活动后 destructive PATCH 被阻止，因此同一任务不会因 lazy provider 初始化混用配置 A/B。
+- credential replace 使用新 versioned Secret ref 后切 SQLite 指针；SQLite 失败只删除未发布 Secret，旧 ref 不受影响。旧 Secret 清理失败会回滚完整 Source generation；task artifact 不含 credential。
+- 本地 focused：Storage Source lifecycle/API `11 passed`；conversion、remote prepare、MaterialBatch router 关联回归合计 `23 passed`。最终提交前仍会运行第一批活动素材依赖回归、语法/import 与 diff check。
+- AUDIT-152 H1→H2 清洗证据回归随相关套件通过。现有 1k/10k/20k selected-annotation batching 合同通过，20k synthetic 约 `0.16s` 且严格 `<=500`/批、无逐图 Annotation get。只读审计同时确认 compatibility endpoint 的每次翻页当前仍重新执行全选区 compatibility evaluation；这是既有性能问题、未改变正确性，按指令独立排入后续批次，本批不引入第二缓存 Owner。
+- `42.24.301` 精确 HEAD：45/46 workflows success；唯一 failure 是 workflow 仍 grep 已被 AUDIT-149 安全 fence 替代的旧 `return repository.upsert_many(records)` 字面量，测试本体 41 passed。本批把 guard 更新为检查 lifecycle fence + bounded `persisted_materials = repository.upsert_many(records)`，没有放宽产品断言。
+- 真实 OSS、生产 Keyring、Agent/RKNN、GPU 与长时间 mixed-source 任务为 `PENDING USER UAT`。
+- 设计/计划：`docs/superpowers/specs/2026-10-08-storage-source-task-lifecycle-design.md`、`docs/superpowers/plans/2026-10-08-storage-source-task-lifecycle.md`。
+
 ## 2026-10-08 AUDIT-084 / AUDIT-168 活动任务素材依赖（当前最新）
 
-- VERSION：`42.24.301`；长期分支：`feature/external-algorithm-publishing`；本节写入时实现与本地验证完成，提交/推送及精确 HEAD CI 仍为 PENDING。
+- VERSION：`42.24.301`；提交/远端 HEAD：`6109bd0b0633514b4bcea6cb5b9c895509a39c6e`。精确 HEAD 为 45/46 workflows success；唯一 failure 是过期 source grep，job 内 41 项 pytest 全部通过，已在 `42.24.302` 对齐当前更强 lifecycle guard。
 - 删除发布、训练最终受理、Agent RKNN INT8 转换最终受理现在共用既有 project-scoped Material/Annotation lifecycle fence。先落库的活动任务或删除任务获胜，另一方以 409 fail closed；没有新增 Dependency Manager、Task Owner、Repository 或状态表。
 - MaterialBatch 删除 owner 从现有 TaskRepository + ArtifactStore 派生活动输入引用：TRAINING 读取 request/input-freeze image IDs；MODEL_CONVERSION 读取 portable calibration 的 image/object identity。终态、排队取消和正常完成通过 TaskStatus 自动释放，不写易泄漏的独立 pin。
 - `DELETE_SOURCE` 在不可逆 provider delete 前重验活动引用并写入 Material 内部短 claim；远端/本地存储 I/O 在 fence 和数据库事务外。删除返回后不再插入取消点，立即完成 AnnotationRepository + MaterialRepository 正式删除。响应丢失/Worker 异常时保留 claim、tombstone 和 delete-attempt evidence，原任务 retry 可确认对象缺失并完成索引删除。

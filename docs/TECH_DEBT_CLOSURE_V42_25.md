@@ -1,5 +1,14 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-08 AUDIT-178 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.302`。
+- Root cause：Storage Source PATCH 无活动 consumer fence，Worker 的 lazy `provider_for()` 在执行期读取 live config/secret；credential 又先写 Keyring、后写 SQLite，失败可形成半提交。
+- 修复：复用现有 Source/Task/Material owners，以无状态短 fence 协调破坏性 PATCH 和最终任务受理；Import/Rescan、CLEAN/AI、TRAINING/PREPARE、RKNN calibration 都从 canonical task artifacts 派生引用。终态释放，恢复/取消中不早释。
+- Secret：replace 写 versioned Secret ref 后发布 SQLite pointer；SQL 失败保留旧 generation。凭据不进入 task payload。外部 I/O 保持锁外，final admission 重验 Source generation。
+- 验证：活动/终态、name-only、SQL rollback、Training Prepare parent freeze、RKNN calibration 与 admission/PATCH barrier 通过。生产 OSS/Keyring/Agent/RKNN 为 `PENDING USER UAT`。
+- `42.24.301` 唯一 CI failure 是过期 source grep，pytest 41 passed；`42.24.302` 同步为当前更强 lifecycle/projection guard，仍待 exact-HEAD CI。
+
 ## 2026-10-08 AUDIT-084 / AUDIT-168 — IMPLEMENTED / CI PENDING
 
 - 版本：`42.24.301`。

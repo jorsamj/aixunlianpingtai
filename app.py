@@ -135,6 +135,7 @@ from platform_core.storage import (
     StorageSourceRepository,
     StorageType,
     redact_storage_error,
+    storage_source_lifecycle_fence,
 )
 from platform_core.storage.import_candidates import ImportCandidateStore, RescanCandidateStore
 from platform_core.storage.import_tasks import (
@@ -1525,6 +1526,213 @@ def storage_credentials() -> SecretCredentialStore:
     return SecretCredentialStore(_v35_secret_store())
 
 
+_STORAGE_SOURCE_DEPENDENCY_STATUSES = (
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+    TaskStatus.AWAITING_CONFIRMATION,
+)
+_STORAGE_SOURCE_DEPENDENCY_KINDS = (
+    TaskKind.MATERIAL_IMPORT,
+    TaskKind.MATERIAL_BATCH,
+    TaskKind.AI_ANNOTATION,
+    TaskKind.TRAINING,
+    TaskKind.TRAINING_PREPARE,
+    TaskKind.MODEL_CONVERSION,
+)
+
+
+def _storage_source_fence():
+    return storage_source_lifecycle_fence(
+        DATA_DIR / "storage" / "storage_sources.sqlite3"
+    )
+
+
+def _storage_source_runtime_generation(source: StorageSource) -> tuple[Any, ...]:
+    return (
+        source.type,
+        json.dumps(source.config, ensure_ascii=False, sort_keys=True),
+        source.secret_ref,
+        bool(source.enabled),
+    )
+
+
+def _payload_references_storage_source(value: Any, source_id: str) -> bool:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key) == "storage_source_id" and str(item) == str(source_id):
+                return True
+            if _payload_references_storage_source(item, source_id):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_payload_references_storage_source(item, source_id) for item in value)
+    return False
+
+
+def _storage_dependency_image_ids(value: Any) -> set[str]:
+    image_ids: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if normalized == "image_id" and str(item or "").strip():
+                image_ids.add(str(item).strip())
+            elif normalized.endswith("image_ids") and isinstance(item, (list, tuple)):
+                image_ids.update(
+                    str(candidate).strip()
+                    for candidate in item
+                    if str(candidate or "").strip()
+                )
+            else:
+                image_ids.update(_storage_dependency_image_ids(item))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            image_ids.update(_storage_dependency_image_ids(item))
+    return image_ids
+
+
+def _material_ids_reference_source(
+    project_id: str, image_ids: Sequence[str], source_id: str,
+) -> bool:
+    candidates = list(dict.fromkeys(
+        str(value).strip() for value in image_ids if str(value).strip()
+    ))
+    material_path = project_dir(project_id) / "materials.sqlite3"
+    if not material_path.is_file():
+        return False
+    materials = MaterialRepository(material_path.parent)
+    for offset in range(0, len(candidates), 500):
+        if any(
+            str(row.get("storage_source_id") or "default_local") == str(source_id)
+            for row in materials.get_many(candidates[offset:offset + 500])
+        ):
+            return True
+    return False
+
+
+def _material_batch_references_source(task: TaskRecord, source_id: str) -> bool:
+    selection = shared_task_artifacts().artifact_path(
+        task.task_id, MATERIAL_BATCH_SELECTION_REF,
+    )
+    material_path = project_dir(task.project_id) / "materials.sqlite3"
+    if not material_path.is_file():
+        return False
+    materials = MaterialRepository(material_path.parent)
+    if materials.reference_count(source_id) <= 0:
+        return False
+    if not selection.is_file():
+        # An active task with missing dependency evidence is unsafe to mutate
+        # underneath.  Fail closed until the task becomes terminal/repaired.
+        return True
+    try:
+        with closing(sqlite3.connect(selection.as_uri() + "?mode=ro", uri=True)) as database:
+            database.execute(
+                "ATTACH DATABASE ? AS material_index",
+                (materials.path.as_uri() + "?mode=ro",),
+            )
+            row = database.execute(
+                "SELECT 1 FROM selection s "
+                "JOIN material_index.materials m ON m.id=s.image_id "
+                "WHERE m.storage_source_id=? LIMIT 1",
+                (str(source_id),),
+            ).fetchone()
+    except sqlite3.DatabaseError:
+        return True
+    return row is not None
+
+
+def _active_storage_source_dependencies(source_id: str) -> list[str]:
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    conflicts: list[str] = []
+    cursor = None
+    while True:
+        page = repository.list(
+            kinds=_STORAGE_SOURCE_DEPENDENCY_KINDS,
+            statuses=_STORAGE_SOURCE_DEPENDENCY_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        for task in page.items:
+            if (
+                task.status is TaskStatus.AWAITING_CONFIRMATION
+                and task.kind is not TaskKind.MATERIAL_IMPORT
+            ):
+                # Review-only AI/MaterialBatch stages commit already-produced
+                # evidence and no longer materialize source bytes.
+                continue
+            if task.kind is TaskKind.TRAINING and task.stage not in {
+                "training_input_pending",
+                "remote_input_pending",
+                "preparing_input",
+            }:
+                # TRAINING_PREPARE owns source reads.  Once it activates the
+                # parent, the immutable dataset bundle has replaced the live
+                # Storage Source dependency.
+                continue
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            referenced = _payload_references_storage_source(payload, source_id)
+            dependency_payloads = [payload]
+            if task.kind is TaskKind.TRAINING:
+                frozen = artifacts.read_json(
+                    task.task_id, "input-freeze.json", default={}
+                )
+                dependency_payloads.append(frozen)
+                referenced = referenced or _payload_references_storage_source(
+                    frozen, source_id,
+                )
+            if not referenced and task.kind is TaskKind.MATERIAL_BATCH:
+                referenced = _material_batch_references_source(task, source_id)
+            if not referenced and task.kind is TaskKind.TRAINING_PREPARE:
+                parent_id = str((payload or {}).get("training_task_id") or "")
+                parent = repository.get(parent_id) if parent_id else None
+                if parent is not None:
+                    parent_payload = artifacts.read_json(
+                        parent.task_id, parent.payload_ref, default={}
+                    )
+                    parent_frozen = artifacts.read_json(
+                        parent.task_id, "input-freeze.json", default={}
+                    )
+                    referenced = _payload_references_storage_source(
+                        parent_payload, source_id,
+                    ) or _payload_references_storage_source(
+                        parent_frozen, source_id,
+                    ) or _material_ids_reference_source(
+                        parent.project_id,
+                        _storage_dependency_image_ids(parent_payload)
+                        | _storage_dependency_image_ids(parent_frozen),
+                        source_id,
+                    )
+            if not referenced:
+                image_ids: set[str] = set()
+                for dependency_payload in dependency_payloads:
+                    image_ids.update(
+                        _storage_dependency_image_ids(dependency_payload)
+                    )
+                if image_ids:
+                    referenced = _material_ids_reference_source(
+                        task.project_id, sorted(image_ids), source_id,
+                    )
+            if referenced:
+                conflicts.append(f"{task.kind.value}:{task.task_id}:{task.status.value}")
+                if len(conflicts) >= 20:
+                    return conflicts
+        cursor = page.next_cursor
+        if not cursor:
+            return conflicts
+
+
+def _assert_storage_source_mutation_allowed(source_id: str) -> None:
+    conflicts = _active_storage_source_dependencies(source_id)
+    if conflicts:
+        raise PlatformError(
+            "STORAGE_SOURCE_ACTIVE_TASK_DEPENDENCY",
+            "存储源正被活动任务使用，不能修改访问配置或凭据",
+            "；".join(conflicts),
+            "请等待任务结束或取消完成后重试；仅修改显示名称不受影响。",
+            409,
+        )
+
+
 def storage_manager(project_id: str) -> StorageManager:
     return StorageManager(
         data_dir=DATA_DIR,
@@ -1725,30 +1933,75 @@ def create_storage_source(payload: StorageSourceCreateReq):
 @app.patch("/api/v61/storage-sources/{source_id}")
 def update_storage_source(source_id: str, payload: StorageSourceUpdateReq):
     repository = storage_source_repository()
-    current = repository.get(source_id)
-    if current is None:
-        raise HTTPException(status_code=404, detail="存储源不存在")
     changes = payload.model_dump(exclude_unset=True)
     credentials = changes.pop("credentials", None)
     clear_credentials = bool(changes.pop("clear_credentials", False))
     changes = {key: value for key, value in changes.items() if value is not None}
-    if "config" in changes:
-        _validate_storage_source_config(current.type, changes["config"])
-    reference = current.secret_ref or secret_ref("storage-source", source_id)
-    if credentials is not None:
-        if credentials:
-            storage_credentials().set(reference, credentials)
-            changes["secret_ref"] = reference
-        else:
-            storage_credentials().delete(reference)
+    with _storage_source_fence():
+        current = repository.get(source_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="存储源不存在")
+        if "config" in changes:
+            _validate_storage_source_config(current.type, changes["config"])
+        destructive = (
+            ("config" in changes and changes["config"] != current.config)
+            or (changes.get("enabled") is False and current.enabled)
+            or credentials is not None
+            or clear_credentials
+        )
+        if destructive:
+            _assert_storage_source_mutation_allowed(source_id)
+
+        secret_store = storage_credentials()
+        old_reference = str(current.secret_ref or "")
+        new_reference = ""
+        replace_credentials = credentials is not None and bool(credentials)
+        clear_secret = (credentials is not None and not credentials) or clear_credentials
+        if replace_credentials:
+            # Version the Keyring reference.  A failed SQLite commit can then
+            # delete only the unpublished value without damaging generation A.
+            new_reference = secret_ref(
+                "storage-source",
+                f"{source_id}-generation-{uuid.uuid4().hex}",
+            )
+            secret_store.set(new_reference, credentials)
+            changes["secret_ref"] = new_reference
+        elif clear_secret:
             changes["secret_ref"] = ""
-    elif clear_credentials:
-        storage_credentials().delete(reference)
-        changes["secret_ref"] = ""
-    try:
-        return _public_storage_source(repository.update(source_id, changes))
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+
+        original = {
+            "name": current.name,
+            "config": current.config,
+            "secret_ref": current.secret_ref,
+            "enabled": current.enabled,
+        }
+        try:
+            updated = repository.update(source_id, changes)
+            if old_reference and (replace_credentials or clear_secret):
+                try:
+                    secret_store.delete(old_reference)
+                except Exception:
+                    # Restore the complete previous source generation.  The
+                    # newly written Secret is not published after rollback.
+                    repository.update(source_id, original)
+                    if new_reference:
+                        try:
+                            secret_store.delete(new_reference)
+                        except Exception:
+                            pass
+                    raise
+            return _public_storage_source(updated)
+        except Exception as error:
+            if new_reference:
+                try:
+                    secret_store.delete(new_reference)
+                except Exception:
+                    pass
+            if isinstance(error, ValueError):
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            if isinstance(error, sqlite3.IntegrityError):
+                raise HTTPException(status_code=409, detail="存储源名称已存在") from error
+            raise
 
 
 @app.post("/api/v61/storage-sources/{source_id}/default")
@@ -2147,25 +2400,37 @@ def create_storage_rescan(
         capabilities = ('agent.remote',)
         resource_key = f'material-rescan:agent:{source_id}'
 
-    manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
-    store = RescanCandidateStore(manifest)
-    store.set_meta(
-        'source_fingerprint',
-        hashlib.sha256(json.dumps(
-            [source.id, source.type, source.config],
-            sort_keys=True,
-        ).encode()).hexdigest(),
-    )
-    material_store(project_id).snapshot_storage_references(manifest, source_id)
-    shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
-    task = shared_task_repository().create(TaskRecord.new(
-        task_id,
-        project_id,
-        TaskKind.MATERIAL_IMPORT,
-        'request.json',
-        resource_key,
-        required_capabilities=capabilities,
-    ))
+    with _storage_source_fence():
+        admitted_source = storage_source_repository().get(source_id)
+        if (
+            admitted_source is None
+            or not admitted_source.enabled
+            or _storage_source_runtime_generation(admitted_source)
+            != _storage_source_runtime_generation(source)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail='存储源配置在任务准备期间已变化，请刷新后重试',
+            )
+        manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+        store = RescanCandidateStore(manifest)
+        store.set_meta(
+            'source_fingerprint',
+            hashlib.sha256(json.dumps(
+                [admitted_source.id, admitted_source.type, admitted_source.config],
+                sort_keys=True,
+            ).encode()).hexdigest(),
+        )
+        material_store(project_id).snapshot_storage_references(manifest, source_id)
+        shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
+        task = shared_task_repository().create(TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.MATERIAL_IMPORT,
+            'request.json',
+            resource_key,
+            required_capabilities=capabilities,
+        ))
     return _public_storage_rescan(task)
 
 
@@ -2323,20 +2588,32 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
                 solution="请检查目标对象存储、服务器 ZIP 文件和访问凭据后重试。",
                 status_code=error.status_code,
             ) from error
-    shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
-    task = shared_task_repository().create(TaskRecord.new(
-        task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
-        (
-            f"material-import:agent:{source.id}"
-            if payload.execution_mode == "agent"
-            else f"storage:{source.id}"
-        ),
-        required_capabilities=(
-            ("agent.remote",)
-            if payload.execution_mode == "agent"
-            else ("storage.import",)
-        ),
-    ))
+    with _storage_source_fence():
+        admitted_source = storage_source_repository().get(source.id)
+        if (
+            admitted_source is None
+            or not admitted_source.enabled
+            or _storage_source_runtime_generation(admitted_source)
+            != _storage_source_runtime_generation(source)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="存储源配置在任务准备期间已变化，请刷新后重试",
+            )
+        shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
+        task = shared_task_repository().create(TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
+            (
+                f"material-import:agent:{source.id}"
+                if payload.execution_mode == "agent"
+                else f"storage:{source.id}"
+            ),
+            required_capabilities=(
+                ("agent.remote",)
+                if payload.execution_mode == "agent"
+                else ("storage.import",)
+            ),
+        ))
     return _public_storage_import_task(task)
 
 
@@ -7583,7 +7860,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             if target == "remote" else {}
         ),
     }
-    with _algorithm_version_reference_fence(
+    with _storage_source_fence(), _algorithm_version_reference_fence(
         project_id,
         str(asset_algorithm.get("id") or ""),
         reference_version_id,
@@ -16595,11 +16872,17 @@ def _v39_create_deploy_job_under_version_fence(
                 detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
             )
     portable_calibration = None
+    calibration_source_generations: Dict[str, tuple[Any, ...]] = {}
     if (
         resource_mode == "agent"
         and str(payload.target or "").strip().lower() == "rockchip"
         and str(params.get("precision") or "fp16").strip().lower() == "int8"
     ):
+        with _storage_source_fence():
+            calibration_source_generations = {
+                candidate.id: _storage_source_runtime_generation(candidate)
+                for candidate in storage_source_repository().list()
+            }
         try:
             portable_calibration = _remote_execution_transport_service().build_rknn_calibration_snapshot(
                 project_id=project_id,
@@ -16713,8 +16996,37 @@ def _v39_create_deploy_job_under_version_fence(
             ((portable_calibration or {}).get("items") or [])
         )
         try:
-            with material_annotation_lifecycle_fence(project_dir(project_id)):
+            with _storage_source_fence(), material_annotation_lifecycle_fence(
+                project_dir(project_id)
+            ):
                 if calibration_items:
+                    current_sources = storage_source_repository()
+                    changed_sources = set()
+                    for item in calibration_items:
+                        calibration_source_id = str(
+                            item.get("storage_source_id") or ""
+                        )
+                        if not calibration_source_id:
+                            continue
+                        current_source = current_sources.get(calibration_source_id)
+                        current_generation = (
+                            _storage_source_runtime_generation(current_source)
+                            if current_source is not None
+                            else None
+                        )
+                        if current_generation != calibration_source_generations.get(
+                            calibration_source_id
+                        ):
+                            changed_sources.add(calibration_source_id)
+                    changed_sources = sorted(changed_sources)
+                    if changed_sources:
+                        raise PlatformError(
+                            "STORAGE_SOURCE_GENERATION_CHANGED",
+                            "RKNN 校准存储源在任务准备期间已变化",
+                            "、".join(changed_sources),
+                            "请刷新校准素材并重新创建转换任务。",
+                            409,
+                        )
                     assert_material_input_admission(
                         project_id,
                         [str(item.get("image_id") or "") for item in calibration_items],
@@ -19168,23 +19480,26 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
     return _v47_clean_compat_task(prepared), True
 
 def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
-    repository = shared_task_repository()
-    existing = repository.get(task_id)
-    if existing is not None:
-        compat = _v47_clean_compat_task(existing)
-        if compat.get('status') == 'failed':
-            existing = repository.retry(task_id)
-        return _v47_clean_compat_task(existing)
-    request = _v47_material_batch_request(task_id)
-    if request.get('operation') != MaterialBatchOperation.CLEAN.value:
-        raise ValueError('清洗任务尚未准备完成')
-    prepared = TaskRecord.new(
-        task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-        f'materials:{project_id}',
-        required_capabilities=_v47_clean_required_capabilities(request),
-    )
-    published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
-    return _v47_clean_compat_task(published)
+    with _storage_source_fence():
+        repository = shared_task_repository()
+        existing = repository.get(task_id)
+        if existing is not None:
+            compat = _v47_clean_compat_task(existing)
+            if compat.get('status') == 'failed':
+                existing = repository.retry(task_id)
+            return _v47_clean_compat_task(existing)
+        request = _v47_material_batch_request(task_id)
+        if request.get('operation') != MaterialBatchOperation.CLEAN.value:
+            raise ValueError('清洗任务尚未准备完成')
+        prepared = TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
+            f'materials:{project_id}',
+            required_capabilities=_v47_clean_required_capabilities(request),
+        )
+        published = publish_prepared_material_batch(
+            prepared, repository, shared_task_artifacts(),
+        )
+        return _v47_clean_compat_task(published)
 
 
 def _v47_durable_clean_results(
@@ -20185,16 +20500,17 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
 def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
     request, provider_key = _annotation_create_payload(project_id, payload)
     task_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
-    record = shared_task_repository().create(TaskRecord.new(
-        task_id,
-        project_id,
-        TaskKind.AI_ANNOTATION,
-        "request.json",
-        f"vision:{provider_key}",
-        priority=50,
-        required_capabilities=("vision_provider",),
-    ))
+    with _storage_source_fence():
+        shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+        record = shared_task_repository().create(TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.AI_ANNOTATION,
+            "request.json",
+            f"vision:{provider_key}",
+            priority=50,
+            required_capabilities=("vision_provider",),
+        ))
     return JSONResponse(status_code=202, content=public_annotation_task(record))
 
 
@@ -20496,7 +20812,8 @@ def retry_annotation_task(project_id: str, task_id: str):
         if task.status not in {TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(status_code=409, detail="只有未完成的批处理任务可以重试")
-        return public_annotation_task(shared_task_repository().retry(task_id))
+        with _storage_source_fence():
+            return public_annotation_task(shared_task_repository().retry(task_id))
     if task.status not in {
         TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT,
         TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.PARTIAL_SUCCESS, TaskStatus.SUCCEEDED,
@@ -20506,13 +20823,14 @@ def retry_annotation_task(project_id: str, task_id: str):
     if not isinstance(request, dict):
         raise HTTPException(status_code=409, detail="任务创建参数已损坏，无法重试")
     new_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(new_id, "request.json", request)
-    cloned = replace(TaskRecord.new(
-        new_id, project_id, TaskKind.AI_ANNOTATION, "request.json",
-        task.resource_key, priority=task.priority,
-        required_capabilities=task.required_capabilities,
-    ), retry_of=task.task_id)
-    return public_annotation_task(shared_task_repository().create(cloned))
+    with _storage_source_fence():
+        shared_task_artifacts().atomic_write_json(new_id, "request.json", request)
+        cloned = replace(TaskRecord.new(
+            new_id, project_id, TaskKind.AI_ANNOTATION, "request.json",
+            task.resource_key, priority=task.priority,
+            required_capabilities=task.required_capabilities,
+        ), retry_of=task.task_id)
+        return public_annotation_task(shared_task_repository().create(cloned))
 
 
 def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: str, local_path: str, algorithm_id: str, version_id: str) -> ModelResolution:
@@ -21680,7 +21998,11 @@ app.include_router(external_algorithm_publish_router(
     storage_credentials_factory=storage_credentials,
 ))
 app.include_router(material_batch_router(
-    get_project, material_store, shared_task_repository, shared_task_artifacts,
+    get_project,
+    material_store,
+    shared_task_repository,
+    shared_task_artifacts,
+    _storage_source_fence,
 ))
 app.include_router(training_material_picker_router(
     get_project,

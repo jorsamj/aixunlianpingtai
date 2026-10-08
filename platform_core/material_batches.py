@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
@@ -2235,7 +2235,13 @@ def public_batch(task, artifacts, repository=None):
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 
 
-def material_batch_router(get_project, material_store, task_repository, task_artifacts):
+def material_batch_router(
+    get_project,
+    material_store,
+    task_repository,
+    task_artifacts,
+    storage_source_fence=None,
+):
     from fastapi import APIRouter, Body, HTTPException
     from fastapi.responses import FileResponse
 
@@ -2272,7 +2278,16 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     @router.post("", status_code=202)
     def create(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
-        task = invoke(create_batch, project_id, material_store(project_id), task_repository(), task_artifacts(), payload)
+        fence = storage_source_fence() if storage_source_fence else nullcontext()
+        with fence:
+            task = invoke(
+                create_batch,
+                project_id,
+                material_store(project_id),
+                task_repository(),
+                task_artifacts(),
+                payload,
+            )
         return public_batch(task, task_artifacts(), task_repository())
 
     @router.get("")
@@ -2343,7 +2358,10 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(409, detail="only incomplete terminal batches can be retried")
-        return public_batch(task_repository().retry(task_id), task_artifacts(), task_repository())
+        fence = storage_source_fence() if storage_source_fence else nullcontext()
+        with fence:
+            retried = task_repository().retry(task_id)
+        return public_batch(retried, task_artifacts(), task_repository())
 
     @router.get("/{task_id}/log")
     def log(project_id: str, task_id: str):
