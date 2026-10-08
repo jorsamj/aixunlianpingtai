@@ -1,5 +1,7 @@
 # 2026-10-06 前后端一致性 / 非法套娃 / 重复 Owner 审计问题清单
 
+> **2026-10-08 最小安全上线状态补充（42.24.323 / AUDIT-133）**：上传 request receipt 崩溃窗口与跨 Worker 请求占用已通过既有 UploadBatchStore 增加持久 prepared image IDs、FileLock 和正式 Material/Annotation 核对恢复路径；API 与 unit 回归已接入 Remote Material Import CI。**状态：CODE IMPLEMENTED，精确 HEAD CI、真实多进程/OSS UAT 未验收，暂不 CLOSED。** 不代表历史 182 条审计问题仍全部未修。下一项优先 AUDIT-134。
+
 > 项目：畅联云算法训练平台  
 > 仓库：`jorsamj/aixunlianpingtai`  
 > 长期分支：`feature/external-algorithm-publishing`  
