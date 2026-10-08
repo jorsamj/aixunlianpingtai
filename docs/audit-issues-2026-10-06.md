@@ -25721,3 +25721,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 - 新增 unit 验证：旧 SHA、新 SHA、缺失 SHA、素材缺失的拒绝，以及生成时冻结 hash；现有 1k/10k/20k 候选提交测试使用合成但明确的 source-hash 身份校验，不通过跳过正式入库 guard 换绿。
 - 边界：当前属于在正式 GT 写入之前的 evidence fence，Material 内容在批量 SHA 校验后到 AnnotationRepository transaction 中发生并发 Rescan 的 TOCTOU 窗口，需 AUDIT-099/149/173 共用跨 Owner 事务协调；尚不宣称所有竞态 CLOSED。
 - VERSION 42.24.285 → 42.24.286；不合并 main、不发布生产、不新增第二 Annotation/Candidate Owner。
+
+
+### 2026-10-08 AUDIT-157 回归测试辅助函数修正（42.24.287）
+
+- 在 42.24.286 提交后的自查中，发现 tests/unit/test_annotation_task_service.py 的 _seed_verified_candidates() 意外递归调用自身，无法执行回归。此次仅把该调用改回 CandidateStore.append_items；不更改 production fail-closed guard。
+- 42.24.286 因自检发现测试辅助问题，不作为 CI 验收基线；所有验证改以 42.24.287 当前 HEAD 为准。继续要求 completed-success 后才能记录 CI PASS。

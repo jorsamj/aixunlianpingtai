@@ -19,7 +19,7 @@ from platform_core.task_runtime import ArtifactStore, ExecutionFencedError, Task
 
 def _seed_verified_candidates(store, items):
     """Direct unit commits use synthetic but explicit source-byte evidence."""
-    _seed_verified_candidates(store, [
+    store.append_items([
         {**dict(item), "source_content_sha256": dict(item).get(
             "source_content_sha256", "a" * 64,
         )}
