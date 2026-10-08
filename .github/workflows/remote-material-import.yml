@@ -47,6 +47,7 @@ on:
       - 'platform_core/upload_batches.py'
       - 'tests/unit/test_upload_batches.py'
       - 'tests/api/test_upload_request_recovery.py'
+      - 'tests/api/test_upload_storage_source_lifecycle.py'
       - '.github/workflows/remote-material-import.yml'
   pull_request:
     branches:
@@ -93,6 +94,7 @@ on:
       - 'platform_core/upload_batches.py'
       - 'tests/unit/test_upload_batches.py'
       - 'tests/api/test_upload_request_recovery.py'
+      - 'tests/api/test_upload_storage_source_lifecycle.py'
       - '.github/workflows/remote-material-import.yml'
 
 jobs:
@@ -129,6 +131,7 @@ jobs:
           platform_core/annotation_repository.py
           platform_core/upload_batches.py
           tests/api/test_upload_request_recovery.py
+          tests/api/test_upload_storage_source_lifecycle.py
           platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
@@ -212,6 +215,7 @@ jobs:
           tests/api/test_server_material_import.py
           tests/api/test_storage_sources.py
           tests/api/test_upload_request_recovery.py
+          tests/api/test_upload_storage_source_lifecycle.py
           tests/unit/test_upload_batches.py
           tests/unit/test_image_batch_context_isolation.py
       - name: Permanent remote material guards
