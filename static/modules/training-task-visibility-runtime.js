@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422564';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422607';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -41,6 +41,15 @@ function statusBucket(job) {
   if (['failed', 'blocked_by_environment', 'blocked_by_hardware'].includes(status)) return 'failed';
   if (['stopped', 'cancelled', 'canceled'].includes(status)) return 'stopped';
   return TERMINAL_STATUSES.has(status) ? 'stopped' : 'queued';
+}
+
+export function reconcileTrainingBatchSelection(selectedIds, result) {
+  if (!(selectedIds instanceof Set) || !result || result.cancelled || result.busy) return false;
+  if (!Array.isArray(result.succeeded_ids)) return false;
+  for (const id of result.succeeded_ids) selectedIds.delete(String(id));
+  return selectedIds.size === 0 && Number(result.succeeded || 0) > 0
+    && Number(result.failed || 0) === 0 && Number(result.skipped || 0) === 0
+    && !result.refreshError && result.ok === true;
 }
 
 export function trainingTaskStatusCounts(jobs = []) {
@@ -333,8 +342,7 @@ export function installTrainingTaskVisibilityRuntime({
     syncBatchToolbar(root);
     try {
       const result = await runtime.batchAction(action, [...selectedIds]);
-      if (!result?.cancelled && (result?.succeeded || 0) > 0) {
-        selectedIds.clear();
+      if (reconcileTrainingBatchSelection(selectedIds, result)) {
         batchMode = false;
       }
     } finally {
@@ -399,7 +407,7 @@ export function installTrainingTaskVisibilityRuntime({
         const visible = filtered.slice(start, start + taskView.pageSize);
         if (action === 'clear') selectedIds.clear();
         else {
-          if (action === 'deletable-visible') selectedIds.clear();
+          // Keep earlier-page selection when choosing deletable rows on this page.
           for (const job of visible) {
             const id = String(job?.id || job?.task_id || '');
             if (!id) continue;
@@ -578,10 +586,7 @@ export function installTrainingTaskVisibilityRuntime({
     taskView.page = Math.min(Math.max(1, taskView.page), pages);
     const start = (taskView.page - 1) * taskView.pageSize;
     const visible = filtered.slice(start, start + taskView.pageSize);
-    const visibleIds = new Set(visible.map(job => String(job?.id || job?.task_id || '')));
-    for (const id of [...selectedIds]) {
-      if (!visibleIds.has(id)) selectedIds.delete(id);
-    }
+    // Selected task IDs must survive paging and partial failures.
     patchRows(body, visible);
     window.PlatformCore?.pagination?.mountPagination?.(
       root.querySelector?.('[data-training-pagination]'),

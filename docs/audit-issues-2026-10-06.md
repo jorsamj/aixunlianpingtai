@@ -25852,3 +25852,9 @@ Unit test 主要验证签名、expiry、rolling renew，也没有 revocation tes
 
 - `42.24.299` 的 Annotation/ZIP regression job 仍监控通用 `MaterialRepository.patch`，并要求 100 张图产生 100 次 Annotation upsert；这会把已退役旁路和 N 次写入误当成正确性。
 - 合同现监控唯一 `patch_annotation_projections`，验证普通正式保存只投影一次，100 图导入只做一次 100-row Annotation batch 与一次 Material projection batch；未删除测试、未放宽字段或结果断言。
+
+## 2026-10-08 AUDIT-185 修复追踪（42.24.307）
+
+状态：CODE FIX IMPLEMENTED / EXACT HEAD CI PENDING / PENDING USER UAT。
+
+训练任务批量操作统一由 TrainingTaskRuntime 返回逐条成功/失败/跳过 ID，TrainingTaskVisibilityRuntime 保留跨页选择，不在 render 时按可见页修剪；只取消明确成功项，失败和跳过项保留供操作员重试。退役旧 Owner 不恢复。新增少量前端回归； CI 和现场验收仍分开确认。

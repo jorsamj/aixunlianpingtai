@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
   filterTrainingTaskJobs,
   installTrainingTaskVisibilityRuntime,
+  reconcileTrainingBatchSelection,
   tickTrainingClockRows,
   trainingTaskStatusCounts,
 } from '../../static/modules/training-task-visibility-runtime.js';
@@ -102,7 +103,7 @@ test('main owns visibility installation before canonical training page registrat
   const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
 
-  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422605';");
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';");
   const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
   const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
 
@@ -454,4 +455,26 @@ test('visibility does not capture or replace broad loadRelated', () => {
   assert.doesNotMatch(source, /legacyLoadRelated/);
   assert.doesNotMatch(source, /window\.loadRelated\s*=/);
   assert.doesNotMatch(source, /__trainingJobsPreserved/);
+});
+
+test('cross-page batch selection retains failed and skipped IDs after partial success', () => {
+  const selected = new Set(['page-one', 'failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {
+    ok: false, succeeded: 1, failed: 1, skipped: 1,
+    succeeded_ids: ['page-one'], failed_ids: ['failed'], skipped_ids: ['skipped'],
+  }), false);
+  assert.deepEqual([...selected], ['failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {cancelled: true}), false);
+  assert.deepEqual([...selected], ['failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {
+    ok: true, succeeded: 2, failed: 0, skipped: 0,
+    succeeded_ids: ['failed', 'skipped'],
+  }), true);
+  assert.deepEqual([...selected], []);
+});
+
+test('training selection is not pruned against the current visible page', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /if \(!visibleIds\.has\(id\)\) selectedIds\.delete\(id\)/);
+  assert.match(source, /reconcileTrainingBatchSelection\(selectedIds, result\)/);
 });

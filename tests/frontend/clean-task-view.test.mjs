@@ -280,6 +280,6 @@ test('clean retry source changes invalidate both entrypoint and cleaning module 
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   assert.ok(html.includes('/static/app.js?v=42.25.305'));
-  assert.ok(html.includes('/static/main.mjs?v=42.25.305'));
+  assert.ok(html.includes('/static/main.mjs?v=42.25.307'));
   assert.ok(main.includes('./modules/cleaning.js?v=422569'));
 });

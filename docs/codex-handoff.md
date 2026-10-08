@@ -1,5 +1,13 @@
 # Codex / 人工接管交接记录
 
+## 2026-10-08 AUDIT-185 训练批量操作跨页选择与部分成功对账（42.24.307）
+
+- TrainingTaskRuntime.batchAction 返回逐条 `succeeded_ids/failed_ids/skipped_ids`；暂停/继续/停止根据成功 HTTP 返回记录 ID，删除只根据 v48 `deleted_ids` 解除选择，不根据成功计数猜测。
+- TrainingTaskVisibilityRuntime 保留跨页选择 Set，翻页不再按当前页面修剪 ID；部分成功只移除已证明成功 ID，失败/跳过项继续选中，全成功才退出批量模式；无第二任务/批量 Owner。
+- 回归覆盖 A 成功 / B 失败 / C 跳过的选择结果及分页边界；同步 ESM cache key 与原有 workflow guard，无旧 Runtime 复活。
+- 本条写入时 CI 尚待在精确提交 SHA 上验收；生产/真实浏览器环境为 `PENDING USER UAT`。
+
+
 ## 2026-10-08 统一分页第二阶段 CI guard 定向修正
 
 - VERSION：`42.24.306`；`42.24.305` 的 Training Task Visibility workflow 中 `visibility-contracts` 已完成的前端单元测试为 103/103 passed，但源码 guard 仍核验已退役的 `training-task-visibility-runtime.js?v=422578`。实际唯一入口在 `static/main.mjs` 已提升为 `v=422605`。

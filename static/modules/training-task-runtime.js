@@ -456,9 +456,11 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     const eligible = uniqueIds
       .map(id => jobs.find(job => String(job?.id || job?.task_id || '') === id))
       .filter(job => job && trainingBatchActionEligible(job, action));
+    const eligibleIds = new Set(eligible.map(job => String(job?.id || job?.task_id || '')));
+    const skippedIds = uniqueIds.filter(id => !eligibleIds.has(id));
     if (!eligible.length) {
       notify?.(`所选任务当前没有可${actionName}的项目`);
-      return {ok: false, action, attempted: 0, succeeded: 0, failed: 0, skipped: uniqueIds.length};
+      return {ok: false, action, attempted: 0, succeeded: 0, failed: 0, skipped: uniqueIds.length, succeeded_ids: [], failed_ids: [], skipped_ids: skippedIds};
     }
 
     if (action === 'stop' && typeof window.confirm === 'function') {
@@ -475,6 +477,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     if (mutationLocks.has(lockKey)) return {ok: false, busy: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
     mutationLocks.add(lockKey);
     const failures = [];
+    const succeededIds = [];
     let succeeded = 0;
     let backendSkipped = 0;
     try {
@@ -493,6 +496,14 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         if (error) throw error;
         const body = await response.json();
         succeeded = Math.max(0, Number(body?.deleted || 0));
+        const submittedIds = new Set(eligible.map(job => String(job?.id || job?.task_id || '')));
+        // Counts alone cannot prove which rows succeeded.
+        for (const id of body?.deleted_ids || []) {
+          if (submittedIds.has(String(id))) succeededIds.push(String(id));
+        }
+        for (const id of [...(body?.skipped_active_ids || []), ...(body?.missing_ids || [])]) {
+          if (submittedIds.has(String(id))) skippedIds.push(String(id));
+        }
         backendSkipped = Math.max(0, Number(body?.skipped_active || 0)) + Math.max(0, Number(body?.missing || 0));
         for (const item of body?.failures || []) {
           failures.push({
@@ -511,6 +522,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
             const error = await responseError(response, `${actionName}训练失败`);
             if (error) throw error;
             succeeded += 1;
+            succeededIds.push(id);
           } catch (error) {
             failures.push({id, message: String(error?.message || error)});
           }
@@ -534,6 +546,9 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         failed: failures.length,
         skipped,
         failures,
+        succeeded_ids: [...new Set(succeededIds)],
+        failed_ids: [...new Set(failures.map(item => item.id).filter(Boolean))],
+        skipped_ids: [...new Set(skippedIds)],
         refreshError: refreshError ? String(refreshError?.message || refreshError) : '',
       };
     } catch (error) {
@@ -546,6 +561,9 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         failed: failures.length || 1,
         skipped: uniqueIds.length - eligible.length + backendSkipped,
         failures: failures.length ? failures : [{id: '', message: String(error?.message || error)}],
+        succeeded_ids: [...new Set(succeededIds)],
+        failed_ids: [...new Set(failures.map(item => item.id).filter(Boolean))],
+        skipped_ids: [...new Set(skippedIds)],
       };
     } finally {
       mutationLocks.delete(lockKey);

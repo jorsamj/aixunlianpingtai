@@ -645,6 +645,8 @@ test('batch pause uses only eligible real endpoints and performs one final jobs 
   const result=await runtime.batchAction('pause',['run-1','pause-1']);
   assert.equal(result.succeeded,1);
   assert.equal(result.skipped,1);
+  assert.deepEqual(result.succeeded_ids, ['run-1']);
+  assert.deepEqual(result.skipped_ids, ['pause-1']);
   assert.deepEqual(calls,[
     'POST /api/v48/projects/p1/jobs/run-1/pause',
     'GET /api/projects/p1/jobs',
@@ -688,6 +690,8 @@ test('batch delete posts terminal records once and never stops active selected t
   const result=await runtime.batchAction('delete',['stopped-1','failed-1','running-1']);
   assert.equal(result.succeeded,2);
   assert.equal(result.skipped,1);
+  assert.deepEqual(result.succeeded_ids, ['stopped-1', 'failed-1']);
+  assert.deepEqual(result.skipped_ids, ['running-1']);
   assert.deepEqual(deleteBody,{job_ids:['stopped-1','failed-1']});
   assert.deepEqual(calls,[
     'POST /api/v48/projects/p1/jobs/batch-delete',
@@ -852,4 +856,24 @@ test('HTTP refresh merge accepts a newer canonical display revision', () => {
     training_display_progress: {revision: 500, overall_progress: 60},
   }];
   assert.deepEqual(mergeTrainingJobRows(current, incoming), incoming);
+});
+
+test('batch pause returns item-level success, failure and skipped identities', async () => {
+  const state = {page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[{id:'task-a',status:'running'},{id:'task-b',status:'running'},{id:'task-c',status:'paused'}]};
+  globalThis.window = {
+    async fetch(url) {
+      if (url.endsWith('/task-a/pause')) return response({ok:true});
+      if (url.endsWith('/task-b/pause')) return {ok:false,status:409,async json(){return {detail:'conflict'}},async text(){return 'conflict'}};
+      if (url.endsWith('/jobs')) return response(state.jobs);
+      throw new Error('unexpected '+url);
+    },
+  };
+  const runtime = installTrainingTaskRuntime({getState:()=>state,projectId:()=>state.project.id});
+  const result = await runtime.batchAction('pause',['task-a','task-b','task-c']);
+  assert.deepEqual(result.succeeded_ids, ['task-a']);
+  assert.deepEqual(result.failed_ids, ['task-b']);
+  assert.deepEqual(result.skipped_ids, ['task-c']);
+  runtime.destroy();
+  cleanup();
 });
