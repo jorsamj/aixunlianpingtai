@@ -506,7 +506,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
           progress:Math.max(0,lastUploadProgress),
           stage:e?.zipCompletionUncertain?'等待服务器确认':'上传中断，等待续传',
           detail:String(e?.message||e),serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(multipartTaskId)}`,
-          browserTransfer:false,resumeRequired:!e?.zipCompletionUncertain,pollOwner:'',
+          browserTransfer:false,resumeRequired:true,pollOwner:'',
         });
       }
       const html=`<div class="zip411" data-zip-runtime="1"><div class="alert err">${esc(e.message||e)}</div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`;
