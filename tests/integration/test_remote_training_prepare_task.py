@@ -121,6 +121,9 @@ def _build_project(data_dir: Path):
     (project / "uploads").mkdir(parents=True)
     (project / "annotations").mkdir()
     (project / "models").mkdir()
+    # A prepared weight is shared by the control-plane staging path. The test
+    # proves remote preparation transfers it as an object, never an official URL.
+    (project / "models" / "yolo11n.pt").write_bytes(b"preinstalled-yolo11n-weight" * 128)
     (project / "jobs").mkdir()
     (project / "meta.json").write_text(
         json.dumps({
@@ -192,7 +195,7 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "remote_input_state": "PREPARING",
         "remote_prepare_task_id": prep_id,
         "algorithm_asset_id": "algorithm-fire",
-        "model": "yolo11n.pt",
+        "model": str(data_dir / "projects" / project_id / "models" / "yolo11n.pt"),
         "split_mode": "independent_test_set",
         "train_image_ids": ["image-0", "image-1", "image-2", "image-3"],
         "test_image_ids": ["image-4"],
@@ -312,8 +315,11 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["label_schema"][0]["code"] == "fire"
     assert training["label_contract"]["algorithm_id"] == "algorithm-fire"
     assert training["label_contract"]["effective_label_codes"] == ["fire"]
-    assert training["model"]["type"] == "official"
-    assert training["model"]["reference"] == "yolo11n.pt"
+    assert training["model"]["type"] == "object"
+    assert training["model"]["file_name"] == "yolo11n.pt"
+    assert training["model"]["size_bytes"] > 1024
+    assert len(training["model"]["sha256"]) == 64
+    assert any(key.startswith("training-input-models/") for key, _ in provider.upload_calls)
     assert training["params"]["runtime_stop_policy"] == "target_only"
     assert training["params"]["resource_strategy"] == "auto"
     assert training["params"]["resource_profile"] == "performance"
