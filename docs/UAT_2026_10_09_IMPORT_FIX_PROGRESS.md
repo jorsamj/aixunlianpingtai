@@ -4,7 +4,7 @@
 
 - Repo: `jorsamj/aixunlianpingtai`
 - Branch: `feature/external-algorithm-publishing`; base before repair: `474d7f694228632b9fc55a2f20ac7c7cbdb791ac`
-- Version history for this issue: `42.24.335 -> 42.24.336` (initial repair), then `42.24.337` (read-only audit hardening and regression coverage).
+- Version history for this issue: `42.24.335 -> 42.24.336` (initial repair), then `42.24.337` (read-only audit hardening and regression coverage), and `42.24.338` (ZIP UAT progress flicker / network ambiguity UX fix).
 - **Current implementation is committed but CI is not yet green: HEAD check-runs were queued when this note was written.** Always re-fetch real HEAD and check-runs before declaring safe to deploy. No production deployment or server mutation in this round.
 - Existing unrelated frozen external-weight inheritance requirement remains GitHub Issue #20; out of scope.
 
@@ -71,3 +71,14 @@ python tools/audit_v19_partial_import.py --project-root /PATH/TO/CONSISTENT_PROJ
 - Commit `c69304e4804f939ab21d44b5923e841a5b30b976` parameterizes the existing real Material/Annotation bounded-admission regression at **501 and 3042 images**. The test checks every canonical 500-ID chunk, without raising the 500-ID protection limit.
 - ZIP Import Durable Runtime workflow was updated to execute the 3042 regression, multipart API controls, rollback/stop contracts and the read-only integrity auditor tests. This is code and CI configuration committed, **not proof these tests have passed**.
 - Live production backup, source/GT cross-checks and authorized recovery remain the gating P0 task.
+
+## 2026-10-09 ZIP upload UAT follow-up — dock flicker and `Failed to fetch`
+
+- User reported right-bottom import progress repeatedly flashing during ZIP transfer; after transfer (possibly before label mapping), the interface sometimes reports the raw browser error `Failed to fetch`. Exact production failed request, browser network trace and Web/Worker logs have **not** been obtained.
+- Confirmed frontend code defects: `body(job)` referenced undefined `s` while rendering worker/upload actions; the legacy ZIP dock replaced `innerHTML` on every progress tick; during multipart transfer the unified upload task center could independently poll and overwrite browser-owned upload status.
+- Fix in canonical `static/modules/zip-import-runtime.js`: declare the modal status, update dock text in place, mark active ZIP rows `pollOwner:'zip-import-runtime'` to avoid competing active pollers (persisted rows intentionally drop the owner on reload).
+- The multipart `complete` POST now observes the **same durable job ID** after a network-level response failure. Observed `merging/validating/selecting/running/done/failed` states are returned from the server; no blind duplicate `complete` POST is sent. When both POST and read-back fail, show a specific *status not confirmed* warning and keep a recoverable task-center row, never claim the ZIP was fully imported.
+- A successful complete response followed by a failed list/reconcile fetch no longer turns a server-accepted ZIP into a failed browser transfer: preserve the provisional accepted job, allow future reconciliation, warn operators not to re-upload, and keep the existing single modal.
+- Cache tokens updated to `422614` in `static/index.html` and `static/zip-import-bootstrap.mjs` so browser clients do not silently reuse the old module. The ZIP workflow's previously stale asset assertions were aligned to `422614` and `66009`; no test was deleted or weakened.
+- Added regression tests in `tests/frontend/zip-multipart-upload.test.mjs` for lost completion acknowledgements, unknown outcome without duplicate POST, 409 rejection, single polling owner, modal rendering state and dock update stability.
+- **Verification required:** latest exact HEAD ZIP frontend/API/browser CI (not queued), Chrome manual import using 46-part test ZIP and network interruption around the `complete` endpoint. Also inspect production reverse proxy / API logs for any `Failed to fetch` that persists; this is not proof of a server-side fix. Existing 3042-image partial import and backup/recovery blocker remain open. No deploy, no destructive production operation, no main/tag/release.
