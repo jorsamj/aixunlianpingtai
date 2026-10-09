@@ -5526,7 +5526,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
       if(activeAlgorithmId!==algorithmId)return;
       state.trainingBenchmarkReuse={...value,algorithm_id:algorithmId,loading:false,load_error:false};
-      if(value?.available)window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:true,splitMode:'random_test_from_training_pool',testMaterialIds:[]});
+      // Fixed Benchmark is opt-in. An available historic test bundle must not
+      // silently turn the default 60/20/20 percentage test split into a 0% bar.
     }catch(error){
       const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
       if(activeAlgorithmId!==algorithmId)return;

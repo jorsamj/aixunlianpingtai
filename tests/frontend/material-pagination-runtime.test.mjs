@@ -162,5 +162,6 @@ test('label remap invalidation drops the stored paginated material card snapshot
   const runtime=fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js',import.meta.url),'utf8');
   const invalidator=runtime.slice(runtime.indexOf('    invalidate() {'),runtime.indexOf('    patch: patchPagedDataset61'));
   assert.match(invalidator,/state\.materialPageCache61 = null/);
+  assert.match(invalidator,/state\.images = \[\]/);
   assert.match(invalidator,/invalidateFullPool61\(\)/);
 });

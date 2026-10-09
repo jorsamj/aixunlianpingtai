@@ -698,6 +698,7 @@ export function installMaterialPaginationRuntime() {
       // Label remap updates MaterialRepository projection; a navigation cache
       // must never restore a pre-remap label card after this invalidation.
       state.materialPageCache61 = null;
+      state.images = [];
       state.materialFilterSignature61 = '';
       state.materialShellSignature61 = '';
       cachedEntryPending = false;

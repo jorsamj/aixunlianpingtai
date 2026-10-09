@@ -50,3 +50,13 @@ test('installed controls update canonical runtime synchronously on input/change'
   delete globalThis.window;
   delete globalThis.document;
 });
+
+
+test('available fixed benchmark stays optional so random 60/20/20 remains the default',()=>{
+  const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const start=source.indexOf('async function loadTrainingBenchmarkReuseV1(');
+  const end=source.indexOf('const TRAINING_DEVICE_CACHE_TTL_MS',start);
+  assert.ok(start>=0&&end>start);
+  assert.doesNotMatch(source.slice(start,end),/benchmarkReuseEnabled:true/);
+  assert.match(source,/window\.toggleTrainBenchmarkReuseV1=enabled=>/);
+});
