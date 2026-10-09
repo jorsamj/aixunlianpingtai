@@ -17124,8 +17124,10 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:500]}")
         data = r.json()
         item.update(status="ready", targets=data.get("targets", []), version=data.get("version", ""), message="远程部署转换服务可用", remote_health=data, last_checked_at=now_iso())
+        if str(item.get("kind") or "").lower() == "rockchip":
+            item["supported_chips"] = list(data.get("supported_chips") or [])
     except Exception as e:
-        item.update(status="missing", targets=[], message=f"远程资源不可用：{e}", last_checked_at=now_iso())
+        item.update(status="missing", targets=[], supported_chips=[], message=f"远程资源不可用：{e}", last_checked_at=now_iso())
     return item
 
 
@@ -17267,7 +17269,7 @@ def v39_update_deploy_resource(resource_id: str, payload: DeployResourceReq):
     for i, x in enumerate(items):
         if x.get("id") == resource_id:
             data = payload.model_dump(); api_key = str(data.pop("api_key", "") or "")
-            new = {**x, **data, "updated_at": now_iso()}
+            new = {**x, **data, "updated_at": now_iso(), "status": "unchecked", "targets": [], "supported_chips": []}
             reference = str(x.get("secret_ref") or secret_ref("deploy-resource", resource_id))
             if api_key:
                 _v35_secret_store().set(reference, api_key); new["secret_ref"] = reference
@@ -17321,20 +17323,25 @@ def v39_detect_local_deploy_resources():
         {"name":"本机算能 TPU-MLIR", "kind":"sophon", "mode":"local", "tool_root":os.environ.get("TPUC_ROOT", "")},
         {"name":"本机华为 CANN ATC", "kind":"ascend", "mode":"local", "tool_root":os.environ.get("ASCEND_TOOLKIT_HOME", ""), "env_script":"/usr/local/Ascend/ascend-toolkit/set_env.sh" if os.name != 'nt' else ""},
     ]
-    for c in candidates:
-        chk = _detect_local_deploy_resource({**c, "id": uuid.uuid4().hex[:12], "created_at":now_iso(), "updated_at":now_iso()})
+    for candidate in candidates:
+        existing = next((x for x in items if x.get("kind")==candidate["kind"] and x.get("mode")=="local"), None)
+        if existing:
+            # Never replace an explicitly configured RKNN Python with sys.executable.
+            # Re-detect the user's saved environment, including failure transitions.
+            checked = _detect_local_deploy_resource(_deploy_resource_runtime(existing))
+            checked.pop("api_key", None)
+            if existing.get("secret_ref"):
+                checked["secret_ref"] = existing["secret_ref"]
+            checked["updated_at"] = now_iso()
+            index = items.index(existing)
+            items[index] = checked
+            if checked.get("status") == "ready":
+                found.append(_deploy_resource_public(checked))
+            continue
+        chk = _detect_local_deploy_resource({**candidate, "id": uuid.uuid4().hex[:12], "created_at":now_iso(), "updated_at":now_iso()})
         if chk.get("status") == "ready":
-            existing = next((x for x in items if x.get("kind")==chk.get("kind") and x.get("mode")=="local"), None)
-            if existing:
-                keep_id = existing.get("id")
-                keep_created = existing.get("created_at")
-                existing.update(chk)
-                existing["id"] = keep_id
-                if keep_created: existing["created_at"] = keep_created
-                existing["updated_at"] = now_iso()
-                found.append(existing)
-            else:
-                items.insert(0, chk); found.append(chk)
+            items.insert(0, chk)
+            found.append(_deploy_resource_public(chk))
     _save_deploy_resources(items)
     return {"ok": True, "found": found, "items": _builtin_deploy_resources() + items}
 
@@ -17559,7 +17566,16 @@ def _v39_create_deploy_job_under_version_fence(
         )
     resource=_deploy_resource_by_id(payload.resource_id)
     resource_mode = str(resource.get("mode") or "local").strip().lower()
-    if resource_mode == "agent":
+    if str(payload.target or "").strip().lower() == "rockchip":
+        if str(resource.get("kind") or "").strip().lower() != "rockchip":
+            raise HTTPException(status_code=400, detail="RKNN 转换必须选择瑞芯微部署资源")
+        if resource_mode == "agent":
+            resource = _detect_agent_deploy_resource(resource)
+        elif resource_mode == "remote":
+            resource = _detect_remote_deploy_resource(resource)
+        else:
+            resource = _detect_local_deploy_resource(resource)
+    elif resource_mode == "agent":
         resource = _detect_agent_deploy_resource(resource)
     if resource.get("status") != "ready":
         raise HTTPException(status_code=400, detail="当前部署资源不可用，请先到“部署资源”执行检测")
@@ -17567,14 +17583,14 @@ def _v39_create_deploy_job_under_version_fence(
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
     params=dict(payload.params or {})
-    if resource_mode == "agent" and str(payload.target or "").strip().lower() == "rockchip":
-        requested = dict(params)
-        precision = str(requested.get("precision") or "fp16").strip().lower()
-        chip = str(requested.get("chip") or "").strip().lower()
+    if str(payload.target or "").strip().lower() == "rockchip":
+        from platform_core.rknn_runtime import REMOTE_RKNN_CHIPS
+        precision = str(params.get("precision") or "fp16").strip().lower()
+        chip = str(params.get("chip") or "").strip().lower()
         supported_chips = {
             str(value or "").strip().lower()
             for value in (resource.get("supported_chips") or [])
-            if str(value or "").strip()
+            if str(value or "").strip().lower() in REMOTE_RKNN_CHIPS
         }
         supported_precisions = {
             str(value or "").strip().lower()
@@ -17582,17 +17598,16 @@ def _v39_create_deploy_job_under_version_fence(
             if str(value or "").strip()
         }
         if precision not in supported_precisions:
-            allowed_precision = "、".join(sorted(supported_precisions)) or "fp16、int8"
             raise HTTPException(
                 status_code=400,
-                detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
+                detail=f"该 RKNN 资源当前不支持精度 {precision or '未选择'}；可用：{'、'.join(sorted(supported_precisions)) or '无'}",
             )
-        if not chip or (supported_chips and chip not in supported_chips):
-            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
+        if not chip or chip not in supported_chips:
             raise HTTPException(
                 status_code=400,
-                detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
+                detail=f"该 RKNN 资源当前不支持芯片 {chip or '未选择'}；实际已检测可用：{'、'.join(sorted(supported_chips)) or '无'}",
             )
+        params["chip"] = chip
     portable_calibration = None
     calibration_source_generations: Dict[str, tuple[Any, ...]] = {}
     if (
@@ -18430,7 +18445,7 @@ def _v40_run_component_scan(scan_id: str):
         ready=sum(1 for x in components if x.get("status")=="ready")
         missing=sum(1 for x in components if x.get("status")=="missing")
         warning=sum(1 for x in components if x.get("status")=="warning")
-        scan.update(status="done",progress=100,stage="检测完成",updated_at=now_iso(),finished_at=now_iso(),components=components,capabilities=capabilities,summary={"ready":ready,"warning":warning,"missing":missing,"total":len(components)},atlas={"atc_ready":bool(atc),"npu_smi_ready":bool(nsmi),"detected_soc_versions":socs,"note":"OM 转换不要求转换机安装 Atlas NPU，但 --soc_version 必须与最终部署芯片一致"})
+        scan.update(status="running",progress=98,stage="正在汇总 RKNN 能力",updated_at=now_iso(),components=components,capabilities=capabilities,summary={"ready":ready,"warning":warning,"missing":missing,"total":len(components)},atlas={"atc_ready":bool(atc),"npu_smi_ready":bool(nsmi),"detected_soc_versions":socs,"note":"OM 转换不要求转换机安装 Atlas NPU，但 --soc_version 必须与最终部署芯片一致"})
         _v40_scan_write(scan_id,scan)
     except Exception as e:
         scan.update(status="failed",stage="检测失败",error=str(e),message=str(e),updated_at=now_iso(),components=components)
@@ -18504,8 +18519,11 @@ def v41_deploy_plugins():
         ready=[]
         for r in matches:
             try:
-                chk=_detect_remote_deploy_resource(r) if str(r.get('mode'))=='remote' else _detect_local_deploy_resource(r)
-            except Exception:chk=r
+                mode=str(r.get('mode') or 'local')
+                chk=(_detect_remote_deploy_resource(r) if mode=='remote'
+                     else _detect_agent_deploy_resource(r) if mode=='agent'
+                     else _detect_local_deploy_resource(r))
+            except Exception:chk={**r,'status':'missing','targets':[]}
             if p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or [])):ready.append(chk)
         p['status']='ready' if ready else 'missing'; p['resources']=ready; p['configured_count']=len(matches)
         rows.append(p)
@@ -18558,23 +18576,36 @@ _v41_old_component_scan = _v40_run_component_scan
 def _v40_run_component_scan(scan_id: str):
     _v41_old_component_scan(scan_id)
     jf=COMPONENT_SCAN_DIR/f'{scan_id}.json'; scan=read_json(jf,{})
-    if scan.get('status')!='done':return
-    comps=list(scan.get('components') or []); caps=list(scan.get('capabilities') or [])
-    saved=_load_saved_deploy_resources(); local=[r for r in saved if r.get('kind')=='rockchip' and r.get('mode')!='remote']; remote=[r for r in saved if r.get('kind')=='rockchip' and r.get('mode')=='remote']
-    ready=False; version=''; detail='未配置 RKNN-Toolkit2 转换资源'
-    for r in local:
-        chk=_detect_local_deploy_resource(r)
-        if chk.get('status')=='ready':ready=True;version=chk.get('version','');detail='本机 RKNN-Toolkit2 可生成 .rknn';break
-    if not ready:
-        for r in remote:
-            chk=_detect_remote_deploy_resource(r)
-            if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []):ready=True;version=chk.get('version','');detail='远程 RKNN 转换节点可用';break
-    comps.append(_v40_component_item('rknn_toolkit2','RKNN-Toolkit2','ready' if ready else 'missing',False,version=version,detail=detail,fix='配置 Linux 转换节点或为瑞芯微部署资源指定安装了 RKNN-Toolkit2 的 Python 环境' if not ready else ''))
-    caps.append({'name':'瑞芯微 RKNN','status':'ready' if ready else 'missing','required':['rknn_toolkit2'],'optional':[],'ready':1 if ready else 0,'total':1,'remote':bool(ready and remote and not local)})
-    ready_n=sum(1 for x in comps if x.get('status')=='ready');missing=sum(1 for x in comps if x.get('status')=='missing');warning=sum(1 for x in comps if x.get('status')=='warning')
-    scan.update(components=comps,capabilities=caps,summary={'ready':ready_n,'warning':warning,'missing':missing,'total':len(comps)},updated_at=now_iso())
-    _v40_scan_write(scan_id,scan)
+    if scan.get('status')!='running' or scan.get('progress')!=98:return
+    try:
+        comps=list(scan.get('components') or []); caps=list(scan.get('capabilities') or [])
+        saved=_load_saved_deploy_resources(); local=[r for r in saved if r.get('kind')=='rockchip' and r.get('mode')!='remote']; remote=[r for r in saved if r.get('kind')=='rockchip' and r.get('mode')=='remote']
+        ready=False; version=''; detail='未配置 RKNN-Toolkit2 转换资源'
+        for r in local:
+            mode=str(r.get('mode') or 'local')
+            chk=_detect_agent_deploy_resource(r) if mode=='agent' else _detect_local_deploy_resource(r)
+            if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []):
+                ready=True;version=chk.get('version','')
+                chips=[str(x).upper() for x in (chk.get('supported_chips') or [])]
+                detail=('Agent' if mode=='agent' else '本机')+' RKNN-Toolkit2 可转换：'+(' / '.join(chips) or '未上报芯片')
+                break
+        if not ready:
+            for r in remote:
+                chk=_detect_remote_deploy_resource(r)
+                if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []) and chk.get('supported_chips'):
+                    ready=True;version=chk.get('version','')
+                    detail='远程 RKNN 转换节点可用：'+' / '.join(str(x).upper() for x in chk.get('supported_chips') or [])
+                    break
+        comps.append(_v40_component_item('rknn_toolkit2','RKNN-Toolkit2','ready' if ready else 'missing',False,version=version,detail=detail,fix='配置 Linux 转换节点或为瑞芯微部署资源指定安装了 RKNN-Toolkit2 的 Python 环境' if not ready else ''))
+        caps.append({'name':'瑞芯微 RKNN','status':'ready' if ready else 'missing','required':['rknn_toolkit2'],'optional':[],'ready':1 if ready else 0,'total':1,'remote':bool(ready and remote and not local)})
+        ready_n=sum(1 for x in comps if x.get('status')=='ready');missing=sum(1 for x in comps if x.get('status')=='missing');warning=sum(1 for x in comps if x.get('status')=='warning')
+        scan.update(status='done',progress=100,stage='检测完成',finished_at=now_iso(),components=comps,capabilities=caps,summary={'ready':ready_n,'warning':warning,'missing':missing,'total':len(comps)},updated_at=now_iso())
+        _v40_scan_write(scan_id,scan)
 
+    except Exception as error:
+        scan.update(status='failed',stage='RKNN 检测失败',error=str(error),
+                    message=str(error),updated_at=now_iso())
+        _v40_scan_write(scan_id,scan)
 
 @app.get('/api/v41/system/deploy-matrix')
 def v41_deploy_matrix():

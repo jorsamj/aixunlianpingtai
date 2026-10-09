@@ -1859,16 +1859,16 @@ window.installUsability417=function(){
     if(!primeDeployRenderV39('部署资源',window.renderDeployResources,'首次读取部署资源...'))return;
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署资源</div><div class="subline">只把真实检测通过的编译器标记为可用</div></div><div class="panel-actions"><button class="btn" onclick="autoDetectDeployResources()">检测本机工具</button><button class="btn primary" onclick="openDeployResourceModal()">新增部署资源</button></div></div><div class="panel-body"><div class="deploy-resource-grid">${(state.deployResources||[]).map(deployResourceCard).join('')||'<div class="empty">暂无部署资源</div>'}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">远程转换服务器</div></div><div class="panel-body"><div class="compact-note">瑞芯微 RKNN-Toolkit2、算能 TPU-MLIR、华为 CANN/ATC 都按厂商真实工具链执行。Windows 主机可直接完成 ONNX；RKNN 可使用 Linux/WSL2、远程转换服务器或已安装 RKNN-Toolkit2 的服务节点 Agent。Agent 模式由中央调度，不向节点下发中央 SQLite/NFS 路径。</div></div></section>`;
   };
-  window.autoDetectDeployResources=async()=>{const b=document.querySelector('[onclick="autoDetectDeployResources()"]');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v39/deploy/local/auto-detect',{method:'POST'});state.deployResources=r.items||[];window.invalidateDeployPluginCacheV41?.();renderDeployResources();toast(r.found?.length?`检测到 ${r.found.length} 个本机部署工具`:'未检测到额外的芯片编译器')}catch(e){toast(e.message||e)}finally{if(b){b.disabled=false;b.textContent='检测本机工具'}}};
-  window.detectDeployResource=async id=>{const card=[...document.querySelectorAll('.deploy-resource-card')].find(x=>x.innerText.includes((state.deployResources.find(r=>r.id===id)||{}).name||''));try{const r=await api(`/api/v39/deploy/resources/${id}/detect`,{method:'POST'});const i=state.deployResources.findIndex(x=>x.id===id);if(i>=0)state.deployResources[i]=r;window.invalidateDeployPluginCacheV41?.();renderDeployResources();toast(r.status==='ready'?'部署资源可用':r.message||'检测未通过')}catch(e){toast(e.message||e)}};
+  window.autoDetectDeployResources=async()=>{const b=document.querySelector('[onclick="autoDetectDeployResources()"]');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v39/deploy/local/auto-detect',{method:'POST'});state.deployResources=r.items||[];window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();renderDeployResources();toast(r.found?.length?`检测到 ${r.found.length} 个本机部署工具`:'未检测到额外的芯片编译器')}catch(e){toast(e.message||e)}finally{if(b){b.disabled=false;b.textContent='检测本机工具'}}};
+  window.detectDeployResource=async id=>{const card=[...document.querySelectorAll('.deploy-resource-card')].find(x=>x.innerText.includes((state.deployResources.find(r=>r.id===id)||{}).name||''));try{const r=await api(`/api/v39/deploy/resources/${id}/detect`,{method:'POST'});const i=state.deployResources.findIndex(x=>x.id===id);if(i>=0)state.deployResources[i]=r;window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();renderDeployResources();toast(r.status==='ready'?'部署资源可用':r.message||'检测未通过')}catch(e){toast(e.message||e)}};
   function deployResourceForm(r={}){
     return `<div class="form"><div class="grid2-mini"><div class="field"><label>资源名称</label><input id="drName" class="input" value="${esc(r.name||'')}"></div><div class="field"><label>运行位置</label><select id="drMode" class="select" onchange="toggleDeployResourceFields()"><option value="local" ${(r.mode||'local')==='local'?'selected':''}>本机</option><option value="remote" ${r.mode==='remote'?'selected':''}>远程转换服务器</option><option value="agent" ${r.mode==='agent'?'selected':''}>服务节点 Agent</option></select></div></div><div class="field"><label>资源类型</label><select id="drKind" class="select" onchange="toggleDeployResourceFields()"><option value="sophon" ${r.kind==='sophon'?'selected':''}>算能 TPU-MLIR</option><option value="ascend" ${r.kind==='ascend'?'selected':''}>华为 CANN / ATC</option><option value="rockchip" ${r.kind==='rockchip'?'selected':''}>瑞芯微 RKNN-Toolkit2</option><option value="tensorrt" ${r.kind==='tensorrt'?'selected':''}>NVIDIA TensorRT</option><option value="ultralytics" ${r.kind==='ultralytics'?'selected':''}>Ultralytics 导出</option><option value="paddle" ${r.kind==='paddle'?'selected':''}>PaddleDetection 导出</option></select></div><div id="drRemote"><div class="field"><label>服务地址</label><input id="drUrl" class="input" value="${esc(r.base_url||'')}" placeholder="http://192.168.10.20:8030"></div><div class="field"><label>API Key</label><input id="drKey" class="input" value="${esc(r.api_key||'')}"></div></div><div id="drLocal"><div class="field"><label>工具目录</label><input id="drRoot" class="input" value="${esc(r.tool_root||'')}" placeholder="例如 /workspace/tpu-mlir 或 /usr/local/Ascend/ascend-toolkit/latest"></div><div class="field"><label>Python 路径</label><input id="drPython" class="input" value="${esc(r.python_path||'')}" placeholder="留空使用平台 Python"></div><div id="drPaddle"><div class="field"><label>PaddleDetection 目录</label><input id="drPaddleDir" class="input" value="${esc(r.paddledet_dir||'')}"></div><div class="field"><label>paddle2onnx</label><input id="drP2O" class="input" value="${esc(r.paddle2onnx_path||'')}"></div></div><div id="drTrt"><div class="field"><label>trtexec 路径</label><input id="drTrtPath" class="input" value="${esc(r.trtexec_path||'')}"></div></div><div id="drAscend"><div class="field"><label>ATC 路径</label><input id="drAtcPath" class="input" value="${esc(r.atc_path||'')}"></div><div class="field"><label>CANN 环境脚本</label><input id="drEnv" class="input" value="${esc(r.env_script||'')}" placeholder="/usr/local/Ascend/ascend-toolkit/set_env.sh"></div></div></div><div class="field"><label>备注</label><input id="drRemark" class="input" value="${esc(r.remark||'')}"></div><button class="btn primary" onclick="saveDeployResource('${esc(r.id||'')}')">保存并返回</button></div>`;
   }
   window.openDeployResourceModal=()=>{modal('新增部署资源',deployResourceForm(),true);toggleDeployResourceFields()};
   window.editDeployResource=id=>{const r=state.deployResources.find(x=>x.id===id);modal('编辑部署资源',deployResourceForm(r||{}),true);toggleDeployResourceFields()};
   window.toggleDeployResourceFields=()=>{const mode=document.getElementById('drMode')?.value||'local',kind=document.getElementById('drKind')?.value||'';document.getElementById('drRemote')?.classList.toggle('hidden',mode!=='remote');document.getElementById('drLocal')?.classList.toggle('hidden',mode!=='local');document.getElementById('drPaddle')?.classList.toggle('hidden',kind!=='paddle');document.getElementById('drTrt')?.classList.toggle('hidden',kind!=='tensorrt');document.getElementById('drAscend')?.classList.toggle('hidden',kind!=='ascend')};
-  window.saveDeployResource=async id=>{const body={name:document.getElementById('drName')?.value||'',kind:document.getElementById('drKind')?.value||'sophon',mode:document.getElementById('drMode')?.value||'local',base_url:document.getElementById('drUrl')?.value||'',api_key:document.getElementById('drKey')?.value||'',python_path:document.getElementById('drPython')?.value||'',tool_root:document.getElementById('drRoot')?.value||'',paddledet_dir:document.getElementById('drPaddleDir')?.value||'',paddle2onnx_path:document.getElementById('drP2O')?.value||'',trtexec_path:document.getElementById('drTrtPath')?.value||'',atc_path:document.getElementById('drAtcPath')?.value||'',env_script:document.getElementById('drEnv')?.value||'',remark:document.getElementById('drRemark')?.value||''};if(!body.name.trim())return toast('请输入资源名称');try{await api(id?`/api/v39/deploy/resources/${id}`:'/api/v39/deploy/resources',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});window.invalidateDeployPluginCacheV41?.();closeModal();await refreshDeployResourcesV39();renderDeployResources();toast('已保存，请执行检测')}catch(e){toast(e.message||e)}};
-  window.deleteDeployResource=async id=>{if(!confirm('确认删除这个部署资源？'))return;await safe(api(`/api/v39/deploy/resources/${id}`,{method:'DELETE'}));window.invalidateDeployPluginCacheV41?.();await refreshDeployResourcesV39();renderDeployResources()};
+  window.saveDeployResource=async id=>{const body={name:document.getElementById('drName')?.value||'',kind:document.getElementById('drKind')?.value||'sophon',mode:document.getElementById('drMode')?.value||'local',base_url:document.getElementById('drUrl')?.value||'',api_key:document.getElementById('drKey')?.value||'',python_path:document.getElementById('drPython')?.value||'',tool_root:document.getElementById('drRoot')?.value||'',paddledet_dir:document.getElementById('drPaddleDir')?.value||'',paddle2onnx_path:document.getElementById('drP2O')?.value||'',trtexec_path:document.getElementById('drTrtPath')?.value||'',atc_path:document.getElementById('drAtcPath')?.value||'',env_script:document.getElementById('drEnv')?.value||'',remark:document.getElementById('drRemark')?.value||''};if(!body.name.trim())return toast('请输入资源名称');try{await api(id?`/api/v39/deploy/resources/${id}`:'/api/v39/deploy/resources',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();closeModal();await refreshDeployResourcesV39();renderDeployResources();toast('已保存，请执行检测')}catch(e){toast(e.message||e)}};
+  window.deleteDeployResource=async id=>{if(!confirm('确认删除这个部署资源？'))return;await safe(api(`/api/v39/deploy/resources/${id}`,{method:'DELETE'}));window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();await refreshDeployResourcesV39();renderDeployResources()};
 
   function sourceOptions(){return (state.deploySources||[]).map(s=>`<option value="${esc(s.id)}" ${state.deployPresetSourceId===s.id?'selected':''}>${esc(s.label||s.name)} · .${esc(s.type||'')}</option>`).join('')}
   function compatibleResources(target){return (state.deployResources||[]).filter(r=>r.status==='ready'&&(r.targets||[]).includes(target))}
@@ -2070,7 +2070,7 @@ window.installUsability417=function(){
     const rows=(state.deployResources||[]).filter(r=>r.kind==='rockchip'&&r.mode!=='remote'&&!r.builtin);
     modal('安装 RKNN-Toolkit2',`<div class="form"><div class="field"><label>瑞芯微部署资源</label><select id="rknnInstallResource" class="select">${rows.map(r=>`<option value="${r.id}">${esc(r.name)} · ${esc(r.python_path||'平台 Python')}</option>`).join('')||'<option value="">请先创建瑞芯微本机部署资源</option>'}</select></div><div class="field"><label>官方 Wheel 文件</label><input id="rknnWheelPath" class="input" placeholder="例如 /opt/sdk/rknn_toolkit2-2.3.2-cp310-...whl"></div><button class="btn primary" onclick="installRknnSdkV41()" ${rows.length?'':'disabled'}>安装并检测</button><div id="rknnInstallResult"></div></div>`,true);
   };
-  window.installRknnSdkV41=async()=>{const rid=document.getElementById('rknnInstallResource')?.value||'',wheel=document.getElementById('rknnWheelPath')?.value||'';if(!rid||!wheel)return toast('请选择资源并填写官方 wheel 路径');const box=document.getElementById('rknnInstallResult');if(box)box.innerHTML='<div class="loading">正在安装 RKNN-Toolkit2...</div>';try{const r=await api('/api/v41/deploy/plugins/rockchip/install-sdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id:rid,wheel_path:wheel})});if(box)box.innerHTML=`<div class="alert ok">安装完成 · ${esc(r.resource?.version||'')}</div>`;window.invalidateDeployPluginCacheV41?.();toast('RKNN-Toolkit2 已安装')}catch(e){if(box)box.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`}};
+  window.installRknnSdkV41=async()=>{const rid=document.getElementById('rknnInstallResource')?.value||'',wheel=document.getElementById('rknnWheelPath')?.value||'';if(!rid||!wheel)return toast('请选择资源并填写官方 wheel 路径');const box=document.getElementById('rknnInstallResult');if(box)box.innerHTML='<div class="loading">正在安装 RKNN-Toolkit2...</div>';try{const r=await api('/api/v41/deploy/plugins/rockchip/install-sdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource_id:rid,wheel_path:wheel})});if(box)box.innerHTML=`<div class="alert ok">安装完成 · ${esc(r.resource?.version||'')}</div>`;window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();await refreshDeployResourcesV39();toast('RKNN-Toolkit2 已安装')}catch(e){if(box)box.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`}};
 
 })();
 
@@ -3336,6 +3336,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function writeCache428(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
   const conversionHistoryInflight428=new Map();
   let deployResourcesInflight428=null;
+  let deployResourcesEpoch428=0;
+  window.invalidateVersionConversionResources428=()=>{
+    deployResourcesEpoch428++;
+    deployResourcesInflight428=null;
+    state.conv428ResourcesCurrent=false;
+    try{localStorage.removeItem(cacheKey428('deployresources'))}catch(_){}
+    if(document.querySelector('.convert428-create'))window.refreshVersionConversionResources428?.();
+  };
   async function deploymentHistory428(aid,vid,force=false){
     const k=cacheKey428('verdeploy',aid,vid),inflightKey=`${pid()}:${aid}:${vid}`;
     if(!force){const c=readCache428(k);if(c)return c}
@@ -3344,11 +3352,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     conversionHistoryInflight428.set(inflightKey,task);return task
   }
   async function deployResources428(force=false){
-    const k=cacheKey428('deployresources');
-    if(!force){const c=readCache428(k);if(c)return c}
-    if(deployResourcesInflight428)return deployResourcesInflight428;
-    const task=api('/api/v39/deploy/resources').then(r=>{writeCache428(k,r);return r}).finally(()=>{if(deployResourcesInflight428===task)deployResourcesInflight428=null});
-    deployResourcesInflight428=task;return task
+    // The saved snapshot is only a display hint, never trusted for conversion.
+    // Always ask the authoritative API, including each modal open and submit.
+    if(!force&&deployResourcesInflight428)return deployResourcesInflight428;
+    const epoch=++deployResourcesEpoch428;
+    const task=api('/api/v39/deploy/resources',{cache:'no-store'}).then(r=>{
+      if(epoch!==deployResourcesEpoch428)throw new Error('部署资源检测状态已更新，请重新读取最新能力');
+      writeCache428(cacheKey428('deployresources'),r);
+      return r;
+    }).finally(()=>{if(deployResourcesInflight428===task)deployResourcesInflight428=null});
+    deployResourcesInflight428=task;
+    return task;
   }
   window.loadVersionConversionHistory428=deploymentHistory428;
   window.loadVersionConversionResources428=deployResources428;
@@ -3401,13 +3415,15 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.refreshConvertResourceLegacy428_1=function(){const t=document.querySelector('input[name="conv428Target"]:checked')?.value||'ascend',rows=targetResources428(state.conv428Resources,t),sel=document.getElementById('conv428Resource'),chip=document.getElementById('conv428Chip'),warn=document.getElementById('conv428Warn');if(sel){sel.innerHTML=rows.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')||'<option value="">暂无可用转换资源</option>';sel.onchange=()=>{const r=(state.conv428Resources||[]).find(x=>x.id===sel.value);if(t==='rockchip'&&chip){chip.value=(r?.supported_chips||[])[0]||''}else if(t==='ascend'&&chip){const socs=r?.detected_soc_versions||r?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}}const first=rows[0];if(chip){if(t==='rockchip')chip.value=(first?.supported_chips||[])[0]||'';else if(t==='sophon')chip.value='bm1684x';else{const socs=first?.detected_soc_versions||first?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}if(warn)warn.textContent=rows.length?(t==='ascend'&&!chip?.value?'转换资源可用，但未自动识别 Atlas soc_version；请填写最终部署芯片型号，例如 Ascend310P3。':'将使用已检测可用的真实转换资源执行。'):'当前没有已检测为可用的转换资源，请展开“高级功能 → 部署资源”配置并检测后再试。'};
   window.submitConvert428=async function(aid,vid){
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx',rid=document.getElementById('conv428Resource')?.value,button=window.event?.currentTarget;
-    if(!rid)return toast('当前目标没有可用转换资源');
+    if(!rid||state.conv428ResourcesCurrent!==true)return toast('转换资源尚未完成实时核验，请点击刷新资源');
     const precision=document.getElementById('conv428Precision')?.value||'fp16',size=Number(document.getElementById('conv428Input')?.value||640),chip=document.getElementById('conv428Chip')?.value.trim()||'',selectedResource=(state.conv428Resources||[]).find(x=>x.id===rid),rockchipChip=target==='rockchip'?chip.toLowerCase():chip,targetEnvironment=document.getElementById('conv428TargetEnvironment')?.value.trim()||'';
     if(target==='rockchip'&&!['rk3568','rk3576'].includes(rockchipChip))return toast('请选择当前转换资源实际支持的瑞芯微芯片');
-    if(target==='rockchip'&&selectedResource?.mode==='agent'){
-      const supported=(selectedResource.supported_chips||[]).map(x=>String(x||'').toLowerCase()),precisions=(selectedResource.supported_precisions||[]).map(x=>String(x||'').toLowerCase());
-      if(precisions.length&&!precisions.includes(precision))return toast('该 Agent 当前不支持所选精度：'+precision.toUpperCase());
-      if(supported.length&&!supported.includes(rockchipChip))return toast('该 Agent 当前不支持所选瑞芯微芯片：'+rockchipChip.toUpperCase())
+    if(target==='rockchip'){
+      const supported=(selectedResource?.supported_chips||[]).map(x=>String(x||'').toLowerCase());
+      if(selectedResource?.status!=='ready'||!(selectedResource?.targets||[]).includes(target)||!supported.includes(rockchipChip))
+        return toast('当前资源未实际上报所选芯片，请刷新部署资源后重试');
+      const precisions=(selectedResource?.supported_precisions||[]).map(x=>String(x||'').toLowerCase());
+      if(precisions.length&&!precisions.includes(precision))return toast('该 RKNN 资源不支持所选精度：'+precision.toUpperCase());
     }
     if(target==='ascend'&&!chip)return toast('请选择目标 Atlas SoC');
     if(target==='tensorrt'&&!targetEnvironment)return toast('请填写目标 GPU、CUDA 和 TensorRT 环境');
@@ -3418,6 +3434,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const datasetId=document.getElementById('conv428CalibrationDataset')?.value||'default',calibrationSplit=document.getElementById('conv428CalibrationSplit')?.value||'train',calibrationCount=Math.max(1,Math.min(1000,Number(document.getElementById('conv428CalibrationCount')?.value||100)));
     if(button){button.disabled=true;button.textContent='正在创建转换任务…'}
     try{
+      const verified=await deployResources428(true);
+      const live=(verified.items||[]).find(x=>String(x.id)===String(rid));
+      if(!live||live.status!=='ready'||!(live.targets||[]).includes(target))
+        throw new Error('部署资源已下线或能力已改变，请刷新资源后重新选择');
+      if(target==='rockchip'&&!(live.supported_chips||[]).some(x=>String(x).trim().toLowerCase()===rockchipChip))
+        throw new Error('该 RKNN 资源已不支持当前芯片，请重新选择并检测');
+      state.conv428Resources=verified.items||[];
+      state.conv428ResourcesCurrent=true;
       await api(`/api/v39/projects/${pid()}/deploy/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})});
       localStorage.removeItem(cacheKey428('verdeploy',aid,vid));
       closeModal();
@@ -5116,7 +5140,6 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
 
 /* v42.16 conversion resource readiness and non-blocking version conversion. */
 (()=>{
-  const resourceCacheKey416=()=>`cl_train_v428_deployresources_${pid()}_`;
   const historyCacheKey416=(aid,vid)=>`cl_train_v428_verdeploy_${pid()}_${aid}_${vid}`;
   const read416=k=>{try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}};
   const write416=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
@@ -5125,7 +5148,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   const targetOutput416=t=>({onnx:'输出 .onnx',paddle_inference:'输出 .pdmodel / .pdiparams',tensorrt:'输出 .engine',ascend:'输出 .om',rockchip:'输出 .rknn',sophon:'输出 .bmodel'})[t]||'生成部署产物';
   const statusLabel416=s=>({ready:'可用',missing:'不可用',unchecked:'未检测',configured:'待检测'}[s]||s||'未知');
   const matching416=(rows,t)=>(rows||[]).filter(x=>(x.targets||[]).includes(t)||String(x.kind||'').toLowerCase()===targetKind416(t));
-  async function resources416(){if(typeof window.loadVersionConversionResources428==='function')return window.loadVersionConversionResources428(false);try{const r=await api('/api/v39/deploy/resources');write416(resourceCacheKey416(),r);return r}catch(error){const cached=read416(resourceCacheKey416());if(cached?.items)return cached;throw error}}
+  async function resources416(){return window.loadVersionConversionResources428(true)}
   async function history416(aid,vid){if(typeof window.loadVersionConversionHistory428==='function')return window.loadVersionConversionHistory428(aid,vid,false);const k=historyCacheKey416(aid,vid),cached=read416(k);if(cached)return cached;const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);write416(k,r);return r}
   function resourceStatusHtml416(rows,target){
     if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 部署资源”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
@@ -5156,6 +5179,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(dataset&&!dataset.options.length){const rows=state.datasets||[];dataset.innerHTML=rows.length?rows.map(x=>`<option value="${esc(x.id||'default')}">${esc(x.name||x.id||'默认数据集')}</option>`).join(''):'<option value="default">默认数据集</option>';const wanted=state.datasetId||'default';dataset.value=[...dataset.options].some(option=>option.value===wanted)?wanted:(dataset.options[0]?.value||'default')}
   };
   const rockchipOrder428=['rk3568','rk3576'];
+  let conversionResourcesLoading416=false;
+  let conversionResourcesTicket416=0;
   function conversionChipOptions428(target,resource){
     if(target==='rockchip'){
       const reported=(resource?.supported_chips||[]).map(x=>String(x||'').trim().toLowerCase()).filter(Boolean);
@@ -5169,28 +5194,36 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     }
     return [];
   }
-  function applyConversionChipOptions428(target,resource){
+  function applyConversionChipOptions428(target,resource,preferred=''){
     const chip=document.getElementById('conv428Chip'),field=document.getElementById('conv428ChipField'),label=field?.querySelector('label');
     if(!chip)return [];
     const options=conversionChipOptions428(target,resource);
-    chip.innerHTML=options.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('')||'<option value="">当前资源未上报可用型号</option>';
-    chip.value=options[0]?.value||'';
+    chip.innerHTML=options.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('')||`<option value="">${conversionResourcesLoading416?'正在读取资源能力…':'当前资源未上报可用型号'}</option>`;
+    chip.value=options.some(item=>item.value===preferred)?preferred:(options[0]?.value||'');
     if(label)label.textContent=target==='rockchip'?'目标芯片':target==='ascend'?'Atlas SoC':target==='sophon'?'目标芯片':'芯片 / SoC';
     return options;
   }
   window.refreshConvertResource428=function(){
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx';
     refreshConvertTargetFields428(target);
-    const all=state.conv428Resources||[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target)),sel=document.getElementById('conv428Resource'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
-    const syncSelectedResource=()=>{const resource=all.find(x=>x.id===sel?.value)||ready[0];const options=applyConversionChipOptions428(target,resource);refreshConvertCalibration428();return {resource,options}};
+    const all=state.conv428ResourcesCurrent===true?(state.conv428Resources||[]):[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target)),sel=document.getElementById('conv428Resource'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
+    const oldResource=sel?.value||'',oldChip=document.getElementById('conv428Chip')?.value||'';
     if(sel){
       sel.innerHTML=ready.map(x=>`<option value="${esc(x.id)}">${esc(x.name||x.id)} · ${esc(x.mode==='agent'?'Agent':x.mode==='remote'?'远程':'本机')}</option>`).join('')||'<option value="">暂无已检测可用资源</option>';
-      sel.onchange=()=>syncSelectedResource();
+      const chosen=ready.find(x=>String(x.id)===String(oldResource))||ready[0];
+      sel.value=chosen?.id||'';
+      sel.onchange=()=>window.refreshConvertResource428();
     }
-    const {options}=syncSelectedResource();
-    if(status)status.innerHTML=resourceStatusHtml416(configured,target);
+    const selected=ready.find(x=>String(x.id)===String(sel?.value));
+    const options=applyConversionChipOptions428(target,selected,selected?.id===oldResource?oldChip:'');
+    const submit=document.querySelector('.convert428-create [data-convert-submit]');
+    if(submit)submit.disabled=conversionResourcesLoading416||state.conv428ResourcesCurrent!==true||!selected||(target==='rockchip'&&!options.length);
+    refreshConvertCalibration428();
+    if(status)status.innerHTML=conversionResourcesLoading416?'<div class="loading">正在读取最新部署资源与芯片能力…</div>':state.conv428ResourcesCurrent!==true?'<div class="alert err">无法获取最新资源信息，请点击“刷新资源”。</div>':resourceStatusHtml416(configured,target);
     if(warn){
-      if(ready.length){
+      if(conversionResourcesLoading416)warn.textContent='正在从服务器核验部署资源及可用芯片…';
+      else if(state.conv428ResourcesCurrent!==true)warn.textContent='最新资源状态获取失败，禁止使用浏览器旧缓存创建转换任务。';
+      else if(ready.length){
         const readyMessages={
           sophon:'已检测到可用 TPU-MLIR；请选择目标芯片与精度，INT8 需校准数据。',
           ascend:'已检测到可用 Atlas/CANN 资源；SoC 从资源能力和平台支持列表中选择。',
@@ -5210,14 +5243,43 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     refreshConvertCalibration428();
   };
 
+  window.refreshVersionConversionResources428=async function(){
+    const ticket=++conversionResourcesTicket416;
+    conversionResourcesLoading416=true;
+    state.conv428ResourcesCurrent=false;
+    window.refreshConvertResource428();
+    try{
+      const rr=await resources416();
+      if(ticket!==conversionResourcesTicket416||!document.querySelector('.convert428-create'))return null;
+      state.conv428Resources=rr.items||[];
+      state.conv428ResourcesCurrent=true;
+      conversionResourcesLoading416=false;
+      window.refreshConvertResource428();
+      return rr;
+    }catch(error){
+      if(ticket!==conversionResourcesTicket416)return null;
+      conversionResourcesLoading416=false;
+      state.conv428ResourcesCurrent=false;
+      state.conv428Resources=[];
+      window.refreshConvertResource428();
+      toast('无法获取最新转换资源：'+(error.message||error));
+      return null;
+    }
+  };
   window.openNewConvertCore416=async function(aid,vid){
     try{
-      const [rr,hist]=await Promise.all([resources416(),history416(aid,vid)]),v=hist.version||{};
+      const ticket=++conversionResourcesTicket416;
+      conversionResourcesLoading416=true;
+      state.conv428ResourcesCurrent=false;
+      const [rr,hist]=await Promise.all([resources416(),history416(aid,vid)]);
+      if(ticket!==conversionResourcesTicket416)return;
+      conversionResourcesLoading416=false;
+      const v=hist.version||{};
       if(!String(v.stored_path||'').trim())return toast('当前版本没有可用模型产物');
       const targets=['onnx','paddle_inference','tensorrt','ascend','rockchip','sophon'];
-      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${targets.map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(targetLabel416(t))}</b><span>${esc(targetOutput416(t))}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="refreshConvertCalibration428()"><option value="fp16">FP16</option><option value="bf16">BF16（Sophon）</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
-      state.conv428Resources=rr.items||[];setTimeout(refreshConvertResource428,20)
-    }catch(e){toast(e.message||e)}
+      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${targets.map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(targetLabel416(t))}</b><span>${esc(targetOutput416(t))}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="refreshConvertCalibration428()"><option value="fp16">FP16</option><option value="bf16">BF16（Sophon）</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
+      state.conv428Resources=rr.items||[];state.conv428ResourcesCurrent=true;setTimeout(refreshConvertResource428,20)
+    }catch(e){conversionResourcesLoading416=false;state.conv428ResourcesCurrent=false;toast('转换资源加载失败：'+(e.message||e))}
   };
 })();
 

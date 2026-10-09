@@ -2859,3 +2859,16 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 复核发现：当标签样本 API 已返回引用，但随后图片内容请求（ZIP 缺文件、图片损坏、权限/网络错误）失败时，浏览器会显示破图而非明确错误。前端现通过一次性图片 `error` 监听，将图框区域切换成“原图读取失败，无法核对标注框”，停止错误链接点击、移除该图上的伪视觉框，并提示核查 ZIP；标签人工确认合同没有变化。
 - ZIP Import Runtime 中纯函数模块 `label-mapping-review.js` 的 ESM URL 版本改为与 `main.mjs` 一致的 `422571`，避免不同入口加载不同缓存版本。ZIP runtime/入口缓存键同步刷新为 `422617`；版本 `42.24.342`。
 - 已补充前端来源守卫；浏览器加载错误行为、真实 ZIP 与 GPU 现场仍待实跑。所有 GitHub Actions `queued` 不代表通过；部署继续阻断。
+
+
+---
+
+## 2026-10-09｜瑞芯微 RKNN 部署资源与版本转换弹窗一致性修复（保持 VERSION.txt 42.24.342）
+
+- **任务背景**：生产 `changlian` 用户通过 `/opt/changlian-rknn-venv/bin/python` 真实探测 RKNN-Toolkit2 2.3.2，报告 `available=True`，`supported_chips=['rk3568','rk3576']`；已配置本机 Rockchip 资源 `6b70d11b5d54` status=ready、targets=['rockchip']。转换弹窗却提示“当前资源未上报可用型号”。
+- **已确认根因**：`static/app.js::deployResources428(false)` 读取无可靠失效时间的 `localStorage` 旧快照，`resources416`、`openNewConvertCore416` 继承旧数据；切换资源时曾重建 select 并清空/覆盖芯片选择；任务提交仅检查 Agent 上报的 RKNN 支持芯片，本机资源没有相同检查；`v39_detect_local_deploy_resources` 默认拿 `sys.executable` 检测，同种既有资源可能被自动检测覆盖自定义独立 Python 路径；基础组件扫描先写 `done` 后再追加 RKNN，前端可能提前停止轮询。
+- **代码处理**：保留唯一部署资源 API、转换弹窗、Worker、组件扫描 Owner；版本转换每次打开、手动刷新和任务提交前均向 `/api/v39/deploy/resources` 请求最新资源数据（禁用浏览器 HTTP 缓存、不允许从 `localStorage` 回退为 ready）。并发请求采用 generation fencing，资源保存/检测/删除/自动检测/SDK 更新主动失效。根据真正选中的 ready+targets 资源生成 RKNN 芯片选项；仅把该资源真实上报并属于产品许可范围的 rk3568/rk3576 显示；切换时保留合法芯片，重选非法芯片，无有效芯片/请求失败即禁用按钮。启动前再次刷新并核验真实资源。
+- **后端强制校验**：`_v39_create_deploy_job_under_version_fence` 对本机/远程/Agent RKNN 均按真实资源探测（本机沿用资源 `python_path`）重新核验 status、targets、supported_chips、precision；禁止空芯片或未探测芯片创建任务，`params.chip` 归一化为小写。原有 SDK 执行器及部署转换 Worker 无需替换，合法任务仍使用 `resource.python_path`。
+- **自动检测、组件扫描**：自动检测优先在已配置资源的现有 Python 环境执行，不覆盖 `id` 或 `python_path`，真实失败也更新资源状态；组件扫描在基础扫描阶段保持 running/98%，RKNN 汇总完成后才将 scan/latest 统一发布为 done/100%；异常明确 failed，不出现假完成。
+- **新增可执行测试**：`tests/frontend/rknn-conversion-resource-live.test.mjs` 对真实转换 UI runtime 运行测试（读取 `static/app.js` 后执行 VM 环境），覆盖旧缓存、已就绪资源、切换本机/Agent、失效芯片、离线/失败、并发旧请求及重复打开；现有 `tests/api/test_conversion_portable_contract.py` 新增本机 RK3568 FP16 任务受理、缺 SDK/非法芯片拒绝、自定义 Python 保留、组件检测最终发布合同。已将新测试纳入 `remote-conversion-runtime.yml`。
+- **边界与上线门槛**：本次明确不修改 VERSION.txt、不合并 main、不部署生产、不清理 `deploy_resources.json` 或生产数据。GitHub Actions queued/in_progress 不计通过；要以最终 HEAD 相关 CI、真实 Chrome UAT、Ubuntu RKNN 自定义解释器重新检测、实际 .rknn 生成/产物核验及目标 RK3568/RK3576 板端校验为准。未有真实产物时只能称“代码修复待验收”。

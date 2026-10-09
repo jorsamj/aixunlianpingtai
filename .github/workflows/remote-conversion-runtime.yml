@@ -37,6 +37,7 @@ on:
       - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
       - 'tests/frontend/deployment-artifact-refresh.test.mjs'
       - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/frontend/rknn-conversion-resource-live.test.mjs'
       - 'tests/frontend/resource-deployment-public-owner.test.mjs'
       - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
@@ -138,6 +139,7 @@ jobs:
           tests/frontend/deployment-artifact-refresh.test.mjs
           tests/frontend/conversion-unified-task-truth.test.mjs
           tests/frontend/deployment-runtime-source.test.mjs
+          tests/frontend/rknn-conversion-resource-live.test.mjs
           tests/frontend/resource-deployment-public-owner.test.mjs
 
   control-plane:
