@@ -1,3 +1,7 @@
+<!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10 -->
+> **2026-10-10 新增用户确认的分布式 Worker 集群/轻量控制端目标要求（仅文档，不代表已开发）**：详细规范统一归档到 [docs/DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md](DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md)。涵盖 A/B/C/D 节点能力硬白名单、真实空闲容量准入、中央自动调度、同机训练/清洗/ZIP 并行资源隔离、正式标签统一的唯一数据 Owner、NAS/OSS 直达 Worker 的目标数据链、控制端可选本机 Worker，以及新增服务节点 Token/刷新异常的现场待查边界。当前本分支已有部分 Agent/调度能力，但**不能标记完整实现或生产验收通过**。后续实施必须先读该规范和实际 HEAD，沿用唯一 Task/GT/Storage/ModelArtifact Owner，禁止第二套调度器及绕过正式提交。
+<!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10_END -->
+
 <!-- LIVE_UAT_2026_10_09_MOTHER_MODEL_339 -->
 > ## 2026-10-09 母模型预置 / 训练选择 / GPU Agent 安全对接（Issue #22）
 >
