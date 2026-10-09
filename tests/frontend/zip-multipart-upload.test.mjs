@@ -78,3 +78,10 @@ test('interrupted ZIP view exposes pause resume and safe cancellation without st
   assert.match(source,/xhr\.timeout=180000/);
   assert.match(source,/xhr\.ontimeout=/);
 });
+
+test('failed ZIP network transfer releases stale active controller so same-file retry stays possible',()=>{
+  const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  // Paused/cancelled sessions deliberately retain control for later resumption;
+  // only failed active transfers should drop the stale browser-owned controller.
+  assert.match(source,/catch\(e\)\{uploading=null;[\s\S]*?if\(uploadControl===control&&control\.state==='active'\)uploadControl=null;[\s\S]*?if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null;/);
+});
