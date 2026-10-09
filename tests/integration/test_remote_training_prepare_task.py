@@ -182,6 +182,24 @@ def _build_project(data_dir: Path):
     return project_id
 
 
+def test_remote_official_filename_never_becomes_agent_download_contract(tmp_path):
+    project_id = _build_project(tmp_path)
+    handler = RemoteTrainingPrepareHandler(tmp_path)
+    with pytest.raises(RemoteTrainingPreparationError) as captured:
+        handler._prepare_base_model(
+            provider=FakeObjectProvider(),
+            source_id="test-oss",
+            project_id=project_id,
+            task_id="train_remote_unprepared",
+            payload={
+                "framework": "ultralytics",
+                "algorithm_asset_id": "algorithm-fire",
+                "model": "yolo11n.pt",
+            },
+        )
+    assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
+
+
 def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
     runtime = data_dir / "task_runtime"
     repository = TaskRepository(runtime / "tasks.sqlite3")
