@@ -14045,6 +14045,18 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
     except _V19ImportStopped as stopped:
+        # A stop can land between the parser's successful return and DB_COMMIT.
+        # In that window the image batch is still live and MUST be discarded.
+        if _v50_active_image_batch(project_id):
+            try:
+                _v50_end_image_batch(save=False)
+            except Exception as cleanup_error:
+                v19_update_job(
+                    project_id, job_id, status="failed", stage="停止清理失败：需完整性修复",
+                    phase="FAILED", report=report, finished_at=now_iso(),
+                    error=f"停止回滚失败，保留源文件与索引：{cleanup_error}",
+                )
+                return
         # No commit was permitted past the stop fence. Fail closed if any
         # unexpected Material rows are already indexed; never delete sources.
         indexed = False
