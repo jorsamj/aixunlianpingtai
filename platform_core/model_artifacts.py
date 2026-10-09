@@ -153,8 +153,19 @@ def _normalize_artifact_oss_endpoint(value: Any, bucket: Any) -> str:
         return ""
     if "://" not in text:
         text = "https://" + text
-    parsed = urlsplit(text)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(text)
+        hostname = parsed.hostname
+        parsed_port = parsed.port  # Access validates invalid/non-numeric ports.
+    except ValueError as error:
+        raise PlatformError(
+            "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
+            "算法产物 OSS Endpoint 格式不正确",
+            "Endpoint 主机名或端口无效。",
+            "Endpoint 请填写区域服务地址，例如 https://oss-cn-hangzhou.aliyuncs.com；Bucket 单独填写。",
+            422,
+        ) from error
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
         raise PlatformError(
             "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
             "算法产物 OSS Endpoint 格式不正确",
@@ -179,7 +190,7 @@ def _normalize_artifact_oss_endpoint(value: Any, bucket: Any) -> str:
     # new24hlink.new24hlink.oss-cn-hangzhou.aliyuncs.com.
     if bucket_name and host.startswith(bucket_name + "."):
         host = host[len(bucket_name) + 1:]
-    port = f":{parsed.port}" if parsed.port is not None else ""
+    port = f":{parsed_port}" if parsed_port is not None else ""
     return f"{parsed.scheme.lower()}://{host}{port}"
 
 
