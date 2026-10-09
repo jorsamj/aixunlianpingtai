@@ -13832,6 +13832,19 @@ def _v19_assert_frozen_mapping_targets_active(
         )
 
 
+class _V19ImportStopped(RuntimeError):
+    pass
+
+
+def _v19_stop_fence(project_id: str, job_id: str) -> FileLock:
+    return FileLock(str(v19_job_dir(project_id, job_id) / ".stop.lock"), timeout=120)
+
+
+def _v19_check_stop(project_id: str, job_id: str) -> None:
+    if v19_read_job(project_id, job_id).get("cancel_requested"):
+        raise _V19ImportStopped("用户中断了尚未提交的 ZIP 素材导入")
+
+
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
     processing_started = time.time()
@@ -13846,6 +13859,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
     try:
         # 同一项目的压缩包导入串行执行，避免大型导入争用磁盘与任务状态。
         with lock:
+            _v19_check_stop(project_id, job_id)
             _v19_assert_frozen_mapping_targets_active(project_id, frozen_mapping)
             _v50_begin_image_batch(project_id)
             try:
@@ -13865,6 +13879,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 last_extract_emit = 0.0
                 def extract_progress(done,total,msg):
                     nonlocal last_extract_emit
+                    _v19_check_stop(project_id, job_id)
                     tick = time.monotonic()
                     if done != total and tick - last_extract_emit < 0.6:
                         return
@@ -13913,6 +13928,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 last_import_emit = 0.0
                 def import_progress(done,total,msg):
                     nonlocal last_import_emit
+                    _v19_check_stop(project_id, job_id)
                     tick = time.monotonic()
                     if done != total and tick - last_import_emit < 0.6:
                         return
@@ -13988,35 +14004,37 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 raise
             else:
                 # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
-                commit_started = time.time()
-                commit_total = int(report.get("imported_images") or total_selected or 0)
-                v19_update_job(
-                    project_id, job_id,
-                    stage="正在提交素材与标注",
-                    progress=96,
-                    phase="DB_COMMIT", phase_completed=0,
-                    phase_total=commit_total, phase_unit="images",
-                    phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
-                    message="解析完成，正在一次性提交素材索引与标注投影",
-                )
-                try:
-                    with label_governance_fence(project_dir(project_id)):
-                        _v19_assert_frozen_mapping_targets_active(
-                            project_id, frozen_mapping,
-                        )
-                        _v50_end_image_batch(save=True)
-                except BaseException:
-                    if _v50_active_image_batch(project_id):
-                        _v50_end_image_batch(save=False)
-                    raise
-                metrics = _v19_phase_metrics("DB_COMMIT", commit_total, commit_total, started_at=commit_started)
-                v19_update_job(
-                    project_id, job_id,
-                    progress=99,
-                    phase_unit="images",
-                    message="素材索引与标注投影已提交",
-                    **metrics,
-                )
+                with _v19_stop_fence(project_id, job_id):
+                    _v19_check_stop(project_id, job_id)
+                    commit_started = time.time()
+                    commit_total = int(report.get("imported_images") or total_selected or 0)
+                    v19_update_job(
+                        project_id, job_id,
+                        stage="正在提交素材与标注",
+                        progress=96,
+                        phase="DB_COMMIT", phase_completed=0,
+                        phase_total=commit_total, phase_unit="images",
+                        phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                        message="解析完成，正在一次性提交素材索引与标注投影",
+                    )
+                    try:
+                        with label_governance_fence(project_dir(project_id)):
+                            _v19_assert_frozen_mapping_targets_active(
+                                project_id, frozen_mapping,
+                            )
+                            _v50_end_image_batch(save=True)
+                    except BaseException:
+                        if _v50_active_image_batch(project_id):
+                            _v50_end_image_batch(save=False)
+                        raise
+                    metrics = _v19_phase_metrics("DB_COMMIT", commit_total, commit_total, started_at=commit_started)
+                    v19_update_job(
+                        project_id, job_id,
+                        progress=99,
+                        phase_unit="images",
+                        message="素材索引与标注投影已提交",
+                        **metrics,
+                    )
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(
             project_id, job_id, status="done", stage="导入完成", progress=100,
@@ -14026,6 +14044,29 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
             processing_seconds=processing_seconds, finished_at=now_iso(),
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
+    except _V19ImportStopped as stopped:
+        # No commit was permitted past the stop fence. Fail closed if any
+        # unexpected Material rows are already indexed; never delete sources.
+        indexed = False
+        imported_ids = list(report.get("imported_image_ids") or [])
+        store = material_store(project_id)
+        for offset in range(0, len(imported_ids), 500):
+            if store.get_many(imported_ids[offset:offset + 500]):
+                indexed = True
+                break
+        if indexed:
+            v19_update_job(
+                project_id, job_id, status="failed", stage="停止失败：需完整性修复",
+                phase="FAILED", error="停止请求时已有素材进入正式索引，已保留源文件与索引",
+                report=report, finished_at=now_iso(),
+            )
+        else:
+            zip_path.unlink(missing_ok=True)
+            v19_update_job(
+                project_id, job_id, status="cancelled", stage="用户已停止导入",
+                phase="CANCELLED", progress=0, report=report,
+                error="", message=str(stopped), finished_at=now_iso(),
+            )
     except HTTPException as e:
         current = v19_read_job(project_id, job_id)
         failed_progress = v19_zip_display_progress(current)["overall_progress"]
@@ -14469,6 +14510,26 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
     }
     v19_write_job(project_id, job)
     return v19_public_job(project_id, job, image_limit=500)
+
+
+@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/stop")
+def v19_stop_import_job(project_id: str, job_id: str):
+    get_project(project_id)
+    with _v19_stop_fence(project_id, job_id):
+        job = v19_read_job(project_id, job_id)
+        if str(job.get("status") or "") == "running" and job.get("cancel_requested"):
+            return v19_public_job(project_id, job)
+        if (
+            str(job.get("status") or "") != "running"
+            or str(job.get("phase") or "") not in {"QUEUE", "EXTRACT", "ANNOTATION_PARSE"}
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="仅可停止尚未提交的后台导入；已进入正式提交或终态的任务必须先完成完整性审计。",
+            )
+        job.update(cancel_requested=True, stage="正在安全停止后台导入", message="收到停止请求，等待 Worker 回滚未提交的素材")
+        v19_write_job(project_id, job)
+        return v19_public_job(project_id, job)
 
 
 @app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
