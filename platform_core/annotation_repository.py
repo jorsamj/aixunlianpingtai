@@ -1088,6 +1088,11 @@ class AnnotationRepository:
                             'box_count': len(planned['boxes']),
                             'labels': sorted(label_counts),
                             'label_counts': label_counts,
+                            # Thumbnail overlays consume this derived preview,
+                            # not the formal annotation boxes directly.
+                            'annotation_preview': annotation_summary(
+                                planned['boxes'], planned['annotation_state'],
+                            )['annotation_preview'],
                         }
                         source_hash = str(
                             (admitted.get(image_id) or {}).get('content_sha256') or ''

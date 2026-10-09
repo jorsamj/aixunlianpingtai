@@ -2909,3 +2909,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 生产环境、真实历史标签的读写证据及 GPU 真实训练仍需用户在生产环境只读核验；未修改版本号，未部署。新 HEAD 的 Actions/Checks 需单独复核 completed/success。
 
 - 再次复核精简弹窗 DOM：全局“高级设置”切换后，内部技术选项与数据划分各自仍为原生折叠 `details`。浏览器 helper 需额外按用户实际操作展开各自 summary，才能有效测试真实可见性、优先级与随机试验比例；未改变生产 UI 或断言。
+
+
+### 2026-10-09 严格复核：标签统一的缩略图投影遗漏（新增真实 Bug）
+
+- 已追踪到 `static/app.js::ov412` 的缩略图叠框读取 MaterialRepository 的 `annotation_preview`。原 `AnnotationRepository.remap_labels_if_digests` 只更新正式 boxes、annotation_scope、labels、label_counts 与 digest/version，未更新 `annotation_preview`；故 UI 缓存失效仍可能显示旧 label。
+- 复用已存在的 `annotation_summary` 生成 `annotation_preview`，由单一 AnnotationRepository remap 写入既有 MaterialRepository 投影。对相同版本与相同 digest 但派生字段仍陈旧的 MaterialRepository 记录，允许基于权威投影数据幂等修复；同版本不同 digest 仍严格报冲突，不放宽 CAS。
+- API 回归测试要求 Remap 后正式 label、class_id、labels、label_counts、annotation_preview 全部正确，并通过人工模拟“旧预览/新 GT”重试验证相同 digest 的派生投影可修复。历史数据在生产是否残留必须仍单独只读审计；不在未核实前宣称已批量恢复，也不直接修改生产数据。

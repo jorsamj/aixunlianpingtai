@@ -1120,7 +1120,19 @@ class MaterialRepository:
                                 f"material {image_id} annotation projection version "
                                 f"{incoming_version} has conflicting digests"
                             )
-                        continue
+                        # Equal GT version/hash may still have legacy/stale
+                        # derived preview and label fields from older workers.
+                        # Repair only evidence-backed projections, never
+                        # permit a different digest at the same version.
+                        drifted = any(
+                            field in projection and current.get(field) != projection[field]
+                            for field in (
+                                "annotation_preview", "labels", "label_counts",
+                                "annotation_scope",
+                            )
+                        )
+                        if not drifted:
+                            continue
                     current.update(projection)
                     changed.append(self._write_row(database, current))
                 if changed:

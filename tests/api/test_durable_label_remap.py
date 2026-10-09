@@ -86,7 +86,65 @@ def test_v52_label_remap_is_durable_and_mutates_only_in_worker(
     assert formal["boxes"][0]["class_id"] == 1
     material = app_module.material_store(project_id).get_many([image["id"]])[0]
     assert material["labels"] == ["smoke"]
+    assert material["label_counts"] == {"smoke": 1}
+    assert material["annotation_preview"][0]["label"] == "smoke"
+    assert material["annotation_preview"][0]["class_id"] == 1
     assert repository.get(task_id).result_ref == "result.json"
+
+
+def test_remap_repairs_legacy_stale_thumbnail_with_equal_annotation_digest(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    assert scheduler.run_once() is True
+    project_dir = app_module.project_dir(project_id)
+    annotations = AnnotationRepository(project_dir)
+    formal = annotations.get(image["id"])
+    material_before = app_module.material_store(project_id).get(image["id"])
+    assert formal["boxes"][0]["label"] == "smoke"
+    assert material_before["annotation_preview"][0]["label"] == "smoke"
+
+    # Reproduce a historical material-only thumbnail drift without changing GT.
+    with sqlite3.connect(project_dir / "materials.sqlite3") as database:
+        database.execute(
+            """UPDATE materials
+               SET payload_json=json_set(payload_json, '$.annotation_preview[0].label', 'fire')
+               WHERE id=?""",
+            (image["id"],),
+        )
+    legacy = app_module.material_store(project_id).get(image["id"])
+    assert legacy["annotation_preview"][0]["label"] == "fire"
+    assert legacy["annotation_hash"] == formal["content_digest"]
+
+    # Idempotent GT remap must reconcile equal-version derived preview drift.
+    result = annotations.remap_labels_if_digests(
+        [{
+            "image_id": image["id"],
+            "expected_digest": annotations.record_digest(formal),
+        }],
+        source_label="fire",
+        target_label="smoke",
+        target_class_id=1,
+        project_material=True,
+    )
+    assert result[0]["status"] == "unchanged"
+    repaired = app_module.material_store(project_id).get(image["id"])
+    assert repaired["annotation_version"] == material_before["annotation_version"]
+    assert repaired["annotation_hash"] == formal["content_digest"]
+    assert repaired["annotation_preview"][0]["label"] == "smoke"
+    assert repaired["labels"] == ["smoke"]
+    assert repaired["label_counts"] == {"smoke": 1}
 
 
 def test_label_remap_fails_closed_if_target_is_disabled_before_worker(
