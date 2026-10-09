@@ -1027,21 +1027,14 @@ class TrainingPrepareHandler:
         version_id = str(base.get("base_version_id") or "").strip()
 
         if not version_id:
-            canonical = next(
-                (
-                    name
-                    for name in OFFICIAL_DOWNLOADABLE_MODELS
-                    if str(name).casefold() == base_path.casefold()
-                ),
-                None,
-            )
-            if canonical is not None and "/" not in base_path and "\\" not in base_path:
-                return {
-                    "type": "official",
-                    "reference": canonical,
-                    "base_selection_reason": str(base.get("base_selection_reason") or "mother_model"),
-                    "base_training_mode": str(base.get("base_training_mode") or "mother_model_init"),
-                }
+            # Submission must have frozen a concrete local mother weight.
+            # Never send a DOWNLOADABLE name to a remote Agent for implicit GitHub fetching.
+            if base_path in OFFICIAL_DOWNLOADABLE_MODELS:
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED",
+                    "请先在训练资源预置 .pt 母模型；远程训练不允许自动下载",
+                    target_status=TaskStatus.FAILED,
+                )
             staged = self._stage_direct_model(
                 provider=provider,
                 source_id=source_id,
