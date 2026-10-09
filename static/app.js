@@ -3842,7 +3842,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;
   window.trainTarget429=function(){const t=selectedTarget429(),sel=document.getElementById('tr429Alg');if(!sel)return;sel.innerHTML=(t?.algorithms||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.name||x.short_name||x.key)}</option>`).join('')||'<option value="">当前资源没有可执行训练算法</option>';const c=cfg429();c.device='auto';window.TrainingDraftRuntime?.update?.({config:c,resource:{device:'auto'}});trainAlg429()};
   function preparedModels429(target){
-    return (target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&/\\.pt$/i.test(String(m.value||'')));
+    return (target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&/\.pt$/i.test(String(m.value||'')));
   }
   function syncMotherModel429(){
     const select=document.getElementById('tr429MotherModel');
