@@ -16,13 +16,12 @@ import re
 import sqlite3
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote
 
 
 def _select(db_path: Path, sql: str, ids: list[str]) -> dict[str, dict]:
     if not db_path.is_file():
         return {}
-    uri = 'file:' + quote(str(db_path.resolve()), safe='/') + '?mode=ro'
+    uri = db_path.resolve().as_uri() + '?mode=ro'
     rows = {}
     with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
