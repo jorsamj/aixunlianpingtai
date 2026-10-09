@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
 
@@ -21,7 +22,8 @@ def _source(tmp_path):
     return file_path
 
 
-def test_formal_annotation_import_501_images_keeps_canonical_admission_limit(client, tmp_path):
+@pytest.mark.parametrize('image_count', [501, 3042])
+def test_formal_annotation_import_keeps_canonical_500_admission_limit(client, tmp_path, image_count):
     import app as app_module
 
     project_id = _project(client)
@@ -30,7 +32,7 @@ def test_formal_annotation_import_501_images_keeps_canonical_admission_limit(cli
     app_module._v50_begin_image_batch(project_id)
     ids = []
     try:
-        for index in range(501):
+        for index in range(image_count):
             record = app_module.add_image_record(
                 project_id, source, f'bounded_{index:04d}.png',
                 'imported_yolo', 'default',
@@ -45,14 +47,15 @@ def test_formal_annotation_import_501_images_keeps_canonical_admission_limit(cli
         if app_module._v50_active_image_batch(project_id):
             app_module._v50_end_image_batch(save=False)
 
-    assert len(committed) == 501
+    assert len(committed) == image_count
     repository = AnnotationRepository(app_module.project_dir(project_id))
     for offset in range(0, len(ids), 500):
         annotations = repository.get_many(ids[offset:offset + 500])
         assert len(annotations) == len(ids[offset:offset + 500])
         assert all(row['annotation_state'] == 'annotated' and row['version'] >= 1 for row in annotations.values())
-    assert len(app_module.material_store(project_id).get_many(ids[:500])) == 500
-    assert len(app_module.material_store(project_id).get_many(ids[500:])) == 1
+    for offset in range(0, len(ids), 500):
+        material_chunk = app_module.material_store(project_id).get_many(ids[offset:offset + 500])
+        assert len(material_chunk) == len(ids[offset:offset + 500])
 
 
 def test_failed_zip_with_indexed_material_cannot_restart_import(client, tmp_path):
