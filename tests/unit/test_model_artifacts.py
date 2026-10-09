@@ -1560,3 +1560,18 @@ def test_active_durable_task_blocks_destructive_artifact_oss_changes(tmp_path: P
         "bucket": "other-bucket",
     }))
     assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID).config["bucket"] == "other-bucket"
+
+
+@pytest.mark.parametrize('endpoint', [
+    'https://example.com:oss-cn-hangzhou.aliyuncs.com',
+    'https://oss-cn-hangzhou.aliyuncs.com:bad-port',
+    'https://[not-a-valid-ipv6',
+])
+def test_artifact_oss_malformed_endpoint_yields_structured_422(endpoint):
+    from platform_core.model_artifacts import _normalize_artifact_oss_endpoint
+
+    with pytest.raises(PlatformError) as failure:
+        _normalize_artifact_oss_endpoint(endpoint, 'artifact-bucket')
+    assert failure.value.code == 'MODEL_ARTIFACT_OSS_ENDPOINT_INVALID'
+    assert failure.value.status_code == 422
+    assert 'oss-cn-hangzhou.aliyuncs.com:bad-port' not in failure.value.detail
