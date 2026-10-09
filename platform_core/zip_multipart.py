@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import uuid
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
@@ -229,12 +230,13 @@ class ZipMultipartRepository:
                         continue
                     if (
                         isinstance(existing, dict)
-                        and existing.get('status') != 'completed'
+                        and existing.get('status') not in {'completed', 'cancelled'}
                         and str(existing.get('fingerprint') or '') == fingerprint
                         and str(existing.get('dataset_id') or '') == str(dataset_id)
                         and str(existing.get('file_name') or '') == str(file_name)
                         and int(existing.get('file_size') or 0) == size
                     ):
+                        existing['status'] = 'uploading'
                         self._touch(existing)
                         _atomic_json(meta_path, existing)
                         return {**self._public(existing), 'cleanup': cleanup}
@@ -256,6 +258,40 @@ class ZipMultipartRepository:
             _atomic_json(self._meta_path(upload_id), meta)
             return {**self._public(meta), 'cleanup': cleanup}
 
+    def pause(self, upload_id: str) -> dict[str, Any]:
+        with self.lock:
+            meta = self._read(upload_id)
+            if meta.get('status') not in {'uploading', 'paused'}:
+                raise ValueError('ZIP upload cannot be paused after finalization or cancellation')
+            meta['status'] = 'paused'
+            self._touch(meta)
+            _atomic_json(self._meta_path(upload_id), meta)
+            return self._public(meta)
+
+    def cancel(self, upload_id: str) -> dict[str, Any]:
+        # Tombstone the session first: no fresh writer can be admitted.
+        # Drain every per-part writer before removing its temporary bytes.
+        with self.lock:
+            meta = self._read(upload_id)
+            if meta.get('status') not in {'uploading', 'paused', 'cancelled'}:
+                raise ValueError('ZIP upload cannot be cancelled after finalization')
+            meta['status'] = 'cancelled'
+            self._touch(meta)
+            _atomic_json(self._meta_path(upload_id), meta)
+            total = int(meta['total_parts'])
+        with ExitStack() as locks:
+            for number in range(total):
+                target = self._part_path(upload_id, number)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                locks.enter_context(FileLock(str(target) + '.lock', timeout=60))
+            with self.lock:
+                for number in range(total):
+                    target = self._part_path(upload_id, number)
+                    target.unlink(missing_ok=True)
+                    target.with_suffix('.tmp').unlink(missing_ok=True)
+                # Keep only a bounded-lived cancelled receipt; no ZIP bytes.
+                return self._public(self._read(upload_id))
+
     def write_part(self, upload_id: str, part_number: int, stream: BinaryIO) -> dict[str, Any]:
         # Different part numbers are independent and may be written in parallel.
         # A per-part lock protects duplicate retries without serialising the whole upload.
@@ -266,6 +302,8 @@ class ZipMultipartRepository:
                 raise FileNotFoundError(upload_id)
         if meta.get('status') == 'completed':
             return self._public(meta)
+        if meta.get('status') != 'uploading':
+            raise ValueError('multipart upload is paused or cancelled')
         total_parts = int(meta['total_parts'])
         number = int(part_number)
         if number < 0 or number >= total_parts:
@@ -277,6 +315,9 @@ class ZipMultipartRepository:
         target.parent.mkdir(parents=True, exist_ok=True)
         part_lock = FileLock(str(target) + '.lock', timeout=30)
         with part_lock:
+            with self.lock:
+                if self._read(upload_id).get('status') != 'uploading':
+                    raise ValueError('multipart upload is paused or cancelled')
             temporary = target.with_suffix('.tmp')
             written = 0
             digest = hashlib.sha256()
@@ -294,6 +335,9 @@ class ZipMultipartRepository:
             temporary.replace(target)
         with self.lock:
             latest = self._read(upload_id)
+            if latest.get('status') == 'cancelled':
+                target.unlink(missing_ok=True)
+                raise ValueError('multipart upload is cancelled')
             self._touch(latest)
             _atomic_json(self._meta_path(upload_id), latest)
             public = self._public(latest)
