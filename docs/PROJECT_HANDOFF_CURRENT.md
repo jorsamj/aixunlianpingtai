@@ -2878,3 +2878,9 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 切换或载入 RKNN 资源时，精度列表统一遵循资源真实 `supported_precisions`，缺省仅使用现有 RKNN 转换引擎的 FP16/INT8 支持范围，禁用未声明可用的 FP32。无合法精度时禁止创建任务；后端对算法版本 INT8 冻结校准集合同仍保留硬阻断，不因下拉可选而假称可执行。
 - 部署插件页 `rockchip` 就绪必须同时存在 ready、rockchip target 和真实上报 `supported_chips`，不能把“运行进程存活但未上报芯片”报告为可转换。
 - 修复代码首次提交 `0404fb5f27963ba7231c51f2aa9459638de9dc75`；后续精度与插件补充提交需以长期分支最新 HEAD 为准。VERSION.txt 继续保持 42.24.342。
+
+### CI 真实失败归因与原回归测试合同同步
+
+- 初始 RKNN 修复代码 `0404fb5f` 的 `Remote Conversion Runtime` 曾失败，实际日志指向旧测试断言：`deployment-artifact-refresh.test.mjs` 仍精确匹配不带 `cache: 'no-store'` 的旧 API 调用；`deployment-progress-performance.spec.mjs` 仍要求两次打开转换弹窗只 GET 一次资源，违反本轮明确的“每次打开获取权威状态”需求。两项测试保留并调整为更严格的新合同：缓存历史可复用，但资源每次打开必须重新 GET，且禁用浏览器 HTTP 缓存。
+- `Training Create First Open` 失败日志属于此前精简训练弹窗与未展开高级字段的历史浏览器断言，不由此次 RKNN 转换修改引入。此处只记录，不擅自重新设计训练弹窗。
+- 不得将初始修复提交的失败或最新提交尚在 queued 的测试记为通过。正式验收必须按最新 HEAD 重新确认。
