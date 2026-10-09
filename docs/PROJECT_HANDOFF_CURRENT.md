@@ -2929,3 +2929,5 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 测试：`tests/api/test_label_integrity.py` 新增预览独立漏检、正式框不变、成功后复审、重放已解决、并发正式 GT 修改后拒绝覆盖；`tests/frontend/label-management-owner.test.mjs` 增加 UI 按钮与唯一后台任务入口合同。
 - **验收边界**：GitHub CI 应确认新增提交的全部 Actions / Check Runs terminal-success；生产上线前仍要备份数据、空闲任务确认和可回滚部署，并在真实历史项目运行 Full Audit → 预览投影修复 → 再次 Full Audit。代码修复不会在部署时擅自清洗、重写或自动迁移生产历史标注。
 <!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09_END -->
+
+- 安全入口追加：普通素材批处理 `parse_request` 明确拒绝直接创建 `REPAIR_ANNOTATION_PROJECTIONS`（422）；只有已完成且同项目授权的 Full Audit 专用路由可冻结候选并创建任务。新增通用 API 绕过防护测试。

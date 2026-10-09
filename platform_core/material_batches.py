@@ -123,6 +123,12 @@ def parse_request(payload):
             "标签完整性审计必须通过项目级专用入口创建，不能伪造普通素材 selection",
             422,
         )
+    if operation is BatchOperation.REPAIR_ANNOTATION_PROJECTIONS:
+        raise BatchRequestError(
+            "LABEL_PREVIEW_REPAIR_DEDICATED_PREPARE_REQUIRED",
+            "历史缩略图修复只能由已完成的标签完整性审计创建",
+            422,
+        )
     if operation is BatchOperation.AUDIT_MATERIAL_INTEGRITY:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_DEDICATED_PREPARE_REQUIRED",

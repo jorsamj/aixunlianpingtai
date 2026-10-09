@@ -1003,3 +1003,18 @@ def test_preview_repair_fails_closed_if_formal_gt_changes_after_freeze(
     assert "ANNOTATION_CHANGED_DURING_PROJECTION_REPAIR" in str(outcome)
     assert annotations.get(image["id"])["version"] == new_truth["version"]
     assert materials.get(image["id"])["annotation_preview"][0]["label"] == "smoke"
+
+
+def test_projection_repair_rejects_generic_batch_creation(
+    client, seeded_project,
+):
+    project_id, _image = seeded_project
+    response = client.post(
+        f"/api/v62/projects/{project_id}/material-batches",
+        json={
+            "operation": "REPAIR_ANNOTATION_PROJECTIONS",
+            "selection_spec": {"scope": "FILTERED", "filters": {}},
+        },
+    )
+    assert response.status_code == 422
+    assert "LABEL_PREVIEW_REPAIR_DEDICATED_PREPARE_REQUIRED" in response.text
