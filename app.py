@@ -6979,7 +6979,7 @@ def training_catalog():
 async def upload_preinstalled_base_model(file: UploadFile = File(...)):
     """Explicit opt-in preload to durable storage. Does not invoke Ultralytics."""
     filename = str(file.filename or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\\.pt", filename, re.IGNORECASE):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.pt", filename, re.IGNORECASE):
         raise HTTPException(status_code=422, detail="母模型文件名仅支持字母数字点横线下划线，必须为 .pt")
     root = DATA_DIR / "models"
     root.mkdir(parents=True, exist_ok=True)
@@ -7145,17 +7145,18 @@ def training_options(project_id: Optional[str] = None):
         for m in ultra.get("models", []) if isinstance(ultra.get("models", []), list) else []:
             if str(m.get("path", "")).lower().endswith(".pt"):
                 models.append({"label": m.get("name") or Path(m.get("path", "")).name, "value": m.get("path"), "framework":"ultralytics", "source":"env", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
-        # 不在页面硬塞所有官方模型。训练算法/权重优先来自已检测环境或项目模型。
-        # 如果环境里一个 .pt 都没有，才给一个 YOLO11n 默认兜底（Ultralytics 首次训练可自动下载）。
+        # Shared MODEL directory is already searched by canonical ModelResolver.
+        # Never advertise a missing official name as a training-ready weight.
+        models.extend(_prepared_mother_model_rows())
         if not models:
             resolution = resolve_ultralytics_model("yolo11n.pt", project_id)
-            models.append({
-                "label": "yolo11n.pt（默认，可自动下载）",
-                "value": str(resolution.path) if resolution.found else resolution.reference,
-                "framework":"ultralytics",
-                "source":"official",
-                **resolution.as_dict(),
-            })
+            if resolution.found:
+                models.append({
+                    "label": "yolo11n.pt（已就绪）",
+                    "value": str(resolution.path),
+                    "framework":"ultralytics", "source":"official",
+                    **resolution.as_dict(),
+                })
         if project_id:
             try:
                 for m in list_models_internal(project_id):
@@ -7177,7 +7178,7 @@ def training_options(project_id: Optional[str] = None):
             "name": ultra.get("name") or "本机 Ultralytics",
             "type":"local",
             "framework":"ultralytics",
-            "status":"ready",
+            "status":"ready" if models else "warning",
             "python_path": ultra.get("python_path"),
             "root": ultra.get("root"),
             "version": ultra.get("version"),
@@ -7246,28 +7247,16 @@ def training_options(project_id: Optional[str] = None):
             for item in TRAINING_CATALOG["algorithms"]
             if str(item.get("framework") or "").lower() == "ultralytics"
         ]
-        scheduler_models = []
-        seen_scheduler_models = set()
-        for item in scheduler_algs:
-            reference = str(item.get("base_model") or "").strip()
-            if not reference or reference in seen_scheduler_models:
-                continue
-            seen_scheduler_models.add(reference)
-            scheduler_models.append({
-                "label": reference,
-                "value": reference,
-                "framework": "ultralytics",
-                "source": "official",
-                "model_status": "DOWNLOADABLE",
-                "downloadable": True,
-            })
+        # Each Agent receives an existing verified object staged by the
+        # current portable training transport; never a downloadable filename.
+        scheduler_models = _prepared_mother_model_rows()
         options.insert(0, {
             "id": "cluster_scheduler",
             "server_id": "",
             "name": f"GPU 集群自动调度（推荐） · {len(training_agents)} 节点在线",
             "type": "server",
             "framework": "ultralytics",
-            "status": "ready",
+            "status": "ready" if scheduler_models else "warning",
             "scheduler_owned": True,
             "online_training_nodes": len(training_agents),
             "algorithms": scheduler_algs,
@@ -8247,6 +8236,10 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()
+    if not list(asset_algorithm.get("versions") or []):
+        # Resolve prior to enqueue: no hidden GitHub download in resource
+        # planning, Trainer, or a remotely assigned Agent.
+        payload.model = _ready_ultralytics_mother_model(project_id, payload.model)
     try:
         requested_split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
