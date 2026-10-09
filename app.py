@@ -13849,7 +13849,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
         # Only bounded per-class source refs are stored, never preview image
         # bytes or guessed target labels. The API serves images from source.zip
         # before any AnnotationRepository/MaterialRepository mutation.
-        class_samples = build_zip_class_samples(zf, images, external_classes, detected_format, limit=8)
+        class_samples = build_zip_class_samples(zf, images, external_classes, detected_format, limit=8, normalize_name=normalize_label)
         if progress_cb:
             try:
                 progress_cb(
@@ -14779,11 +14779,11 @@ def _v19_zip_class_sample(project_id: str, job_id: str, class_id: str, index: in
 
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/samples")
 def v19_label_samples(project_id: str, job_id: str, class_id: str):
-    _v19_zip_class_sample_check = v19_read_job(project_id, job_id)
     get_project(project_id)
-    if str(_v19_zip_class_sample_check.get("status") or "").lower() != "selecting":
+    job = v19_read_job(project_id, job_id)
+    if str(job.get("status") or "").lower() != "selecting":
         raise HTTPException(status_code=409, detail="当前 ZIP 已不在标签确认阶段")
-    if str(class_id) not in {str(row.get("class_id")) for row in _v19_zip_class_sample_check.get("external_classes", [])}:
+    if str(class_id) not in {str(row.get("class_id")) for row in job.get("external_classes", [])}:
         raise HTTPException(status_code=404, detail="外部标签不存在")
     samples = v19_read_class_samples(project_id, job_id).get(str(class_id), [])[:8]
     route = (
@@ -14814,7 +14814,13 @@ def v19_label_sample_content(project_id: str, job_id: str, class_id: str, index:
         raise HTTPException(status_code=409, detail="ZIP 原始文件已不可用，无法查看样本")
     try:
         with zipfile.ZipFile(archive) as zf:
-            entry = zf.getinfo(image_path)
+            entries = [
+                info for info in zf.infolist()
+                if v19_normalize_zip_path(info.filename) == image_path
+            ]
+            if len(entries) != 1:
+                raise HTTPException(status_code=404, detail="ZIP 原图不存在或路径有歧义")
+            entry = entries[0]
             if entry.is_dir() or entry.file_size > 12 * 1024 * 1024:
                 raise HTTPException(status_code=413, detail="预览图片超过 12 MiB 限制")
             with zf.open(entry) as source:
