@@ -27,7 +27,7 @@ function setup(getResource) {
   const status = {innerHTML: ''};
   const submit = {disabled: false};
   const precision = new Select();
-  precision.innerHTML = '<option value="fp16">FP16</option><option value="int8">INT8</option>';
+  precision.innerHTML = '<option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8</option>';
   const elems = {
     conv428Resource: select, conv428Chip: chip, conv428Warn: warning,
     conv428ResourceStatus: status, conv428ChipField: {querySelector: () => ({textContent: ''})},
@@ -66,7 +66,7 @@ function setup(getResource) {
   // In browsers, window properties are also global name bindings.
   ctx.window = ctx;
   vm.runInNewContext(runtimeSource, ctx, {filename: 'app.js:canonical-conversion'});
-  return {win:ctx, state, select, chip, warning, status, submit, radio, calls, storage};
+  return {win:ctx, state, select, chip, precision, warning, status, submit, radio, calls, storage};
 }
 const resource = (id, chips, state = 'ready', mode='local') => ({
   id, name: id, kind: 'rockchip', mode, status: state,
@@ -149,4 +149,12 @@ test('T06: failed authoritative fetch disables submit, it never restores cached 
   assert.equal(h.state.conv428ResourcesCurrent,false);
   assert.equal(h.submit.disabled,true);
   assert.deepEqual(h.chip.options.map(o=>o.value),['']);
+});
+
+test('T10 and T13: RKNN FP16 remains eligible, unsupported FP32 is not selectable', async () => {
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('algo','v1');
+  assert.equal(h.precision.value,'fp16');
+  assert.equal(h.precision.options.find(option=>option.value==='fp32').disabled,true);
+  assert.equal(h.submit.disabled,false);
 });

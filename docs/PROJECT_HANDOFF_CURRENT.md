@@ -2872,3 +2872,9 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - **自动检测、组件扫描**：自动检测优先在已配置资源的现有 Python 环境执行，不覆盖 `id` 或 `python_path`，真实失败也更新资源状态；组件扫描在基础扫描阶段保持 running/98%，RKNN 汇总完成后才将 scan/latest 统一发布为 done/100%；异常明确 failed，不出现假完成。
 - **新增可执行测试**：`tests/frontend/rknn-conversion-resource-live.test.mjs` 对真实转换 UI runtime 运行测试（读取 `static/app.js` 后执行 VM 环境），覆盖旧缓存、已就绪资源、切换本机/Agent、失效芯片、离线/失败、并发旧请求及重复打开；现有 `tests/api/test_conversion_portable_contract.py` 新增本机 RK3568 FP16 任务受理、缺 SDK/非法芯片拒绝、自定义 Python 保留、组件检测最终发布合同。已将新测试纳入 `remote-conversion-runtime.yml`。
 - **边界与上线门槛**：本次明确不修改 VERSION.txt、不合并 main、不部署生产、不清理 `deploy_resources.json` 或生产数据。GitHub Actions queued/in_progress 不计通过；要以最终 HEAD 相关 CI、真实 Chrome UAT、Ubuntu RKNN 自定义解释器重新检测、实际 .rknn 生成/产物核验及目标 RK3568/RK3576 板端校验为准。未有真实产物时只能称“代码修复待验收”。
+
+### 同轮修补：RKNN 精度与插件 ready 必须一致
+
+- 切换或载入 RKNN 资源时，精度列表统一遵循资源真实 `supported_precisions`，缺省仅使用现有 RKNN 转换引擎的 FP16/INT8 支持范围，禁用未声明可用的 FP32。无合法精度时禁止创建任务；后端对算法版本 INT8 冻结校准集合同仍保留硬阻断，不因下拉可选而假称可执行。
+- 部署插件页 `rockchip` 就绪必须同时存在 ready、rockchip target 和真实上报 `supported_chips`，不能把“运行进程存活但未上报芯片”报告为可转换。
+- 修复代码首次提交 `0404fb5f27963ba7231c51f2aa9459638de9dc75`；后续精度与插件补充提交需以长期分支最新 HEAD 为准。VERSION.txt 继续保持 42.24.342。

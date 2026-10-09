@@ -5166,12 +5166,12 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx',resourceId=document.getElementById('conv428Resource')?.value||'',resource=(state.conv428Resources||[]).find(x=>x.id===resourceId),precision=document.getElementById('conv428Precision'),panel=document.getElementById('conv428Calibration'),supported=(resource?.supported_precisions||[]).map(x=>String(x||'').toLowerCase()).filter(Boolean);
     if(precision){
       [...precision.options].forEach(option=>{
-        if(target==='rockchip'&&supported.length)option.disabled=!supported.includes(option.value);
+        if(target==='rockchip')option.disabled=!(supported.length?supported:['fp16','int8']).includes(option.value);
         else if(target==='tensorrt')option.disabled=!['fp16','fp32'].includes(option.value);
         else if(target==='sophon')option.disabled=!['fp16','bf16','fp32','int8'].includes(option.value);
         else option.disabled=option.value==='bf16'||option.value==='int8';
       });
-      if(precision.selectedOptions?.[0]?.disabled)precision.value='fp16';
+      if(precision.selectedOptions?.[0]?.disabled)precision.value=[...precision.options].find(option=>!option.disabled)?.value||'';
     }
     const int8=['rockchip','sophon'].includes(target)&&(precision?.value||'fp16')==='int8';
     if(panel)panel.hidden=!int8;
@@ -5216,9 +5216,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     }
     const selected=ready.find(x=>String(x.id)===String(sel?.value));
     const options=applyConversionChipOptions428(target,selected,selected?.id===oldResource?oldChip:'');
-    const submit=document.querySelector('.convert428-create [data-convert-submit]');
-    if(submit)submit.disabled=conversionResourcesLoading416||state.conv428ResourcesCurrent!==true||!selected||(target==='rockchip'&&!options.length);
     refreshConvertCalibration428();
+    const chosenPrecision=document.getElementById('conv428Precision');
+    const submit=document.querySelector('.convert428-create [data-convert-submit]');
+    if(submit)submit.disabled=conversionResourcesLoading416||state.conv428ResourcesCurrent!==true||!selected||(target==='rockchip'&&!options.length)||!chosenPrecision?.value||Boolean(chosenPrecision.selectedOptions?.[0]?.disabled);
     if(status)status.innerHTML=conversionResourcesLoading416?'<div class="loading">正在读取最新部署资源与芯片能力…</div>':state.conv428ResourcesCurrent!==true?'<div class="alert err">无法获取最新资源信息，请点击“刷新资源”。</div>':resourceStatusHtml416(configured,target);
     if(warn){
       if(conversionResourcesLoading416)warn.textContent='正在从服务器核验部署资源及可用芯片…';

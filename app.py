@@ -18524,7 +18524,11 @@ def v41_deploy_plugins():
                      else _detect_agent_deploy_resource(r) if mode=='agent'
                      else _detect_local_deploy_resource(r))
             except Exception:chk={**r,'status':'missing','targets':[]}
-            if p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or [])):ready.append(chk)
+            if p['id']=='rockchip':
+                if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []) and chk.get('supported_chips'):
+                    ready.append(chk)
+            elif p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or [])):
+                ready.append(chk)
         p['status']='ready' if ready else 'missing'; p['resources']=ready; p['configured_count']=len(matches)
         rows.append(p)
     return {'ok':True,'items':rows,'version':APP_VERSION,'host_os':'windows' if os.name=='nt' else 'linux'}
