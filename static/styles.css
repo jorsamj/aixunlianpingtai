@@ -1171,3 +1171,16 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .platform-pagination.is-loading{cursor:progress}
 .platform-pagination.is-loading .platform-pagination__controls{opacity:.76}
 @media(max-width:700px){.platform-pagination{padding:10px}.platform-pagination__controls{justify-content:flex-start}.platform-pagination__pages{order:3;width:100%;justify-content:center;overflow:hidden}.platform-pagination__divider{display:none}.platform-pagination__jump{margin-left:auto}.platform-pagination__size{width:100%;justify-content:center}.platform-pagination__footer{justify-content:flex-start}}
+
+/* v42.24.340 ZIP manual label inspection: visual evidence, not auto mapping. */
+.zip-label-confirm .label-mapping-review-row{gap:12px;align-items:center}
+.zip-label-confirm .label-mapping-review-row>span>b{font-size:15px}
+.zip-label-confirm .label-mapping-review-row>span>small{font-size:12px}
+.zip-label-confirm .label-mapping-review-row .row{display:flex;flex-wrap:wrap;gap:8px}
+.zip-label-confirm .label-mapping-review-row .btn{min-height:36px;font-size:12px}
+.zip-label-confirm .label-mapping-sample-panel{border-color:#c9d9f0;background:#f7faff}
+.zip-label-confirm .label-mapping-sample-panel>div:first-child>b{font-size:16px;color:#172b4d}
+.zip-label-confirm .label-mapping-sample-box{color:#f43f5e;border-width:3px;box-shadow:0 0 0 1px rgba(255,255,255,.85),0 0 6px rgba(244,63,94,.25)}
+.zip-label-confirm .label-mapping-sample-card footer b{font-size:12px}
+.zip-label-confirm .label-mapping-sample-card footer span{font-size:11px}
+@media(max-width:840px){.zip-label-confirm .label-mapping-review-row .row{min-width:0}.zip-label-confirm .label-mapping-sample-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
