@@ -3208,14 +3208,20 @@ def _v50_end_image_batch(save: bool = True):
                         batch.get("annotation_repository")
                         or AnnotationRepository(project_dir(project_id))
                     )
-                    annotation_repository.upsert_many(
-                        deferred_annotations,
-                        project_material=True,
-                        return_rows=True,
-                    )
-                    return repository.get_many(
-                        str(record.get("id") or "") for record in records
-                    )
+                    # Formal Material admission is bounded to 500 IDs per call.
+                    # Keep that safety contract and batch the importer instead
+                    # of sending the entire ZIP's annotations in one call.
+                    for offset in range(0, len(deferred_annotations), 500):
+                        annotation_repository.upsert_many(
+                            deferred_annotations[offset:offset + 500],
+                            project_material=True,
+                            return_rows=True,
+                        )
+                    persisted = []
+                    record_ids = [str(record.get("id") or "") for record in records]
+                    for offset in range(0, len(record_ids), 500):
+                        persisted.extend(repository.get_many(record_ids[offset:offset + 500]))
+                    return persisted
                 return persisted_materials
     except Exception as error:
         # Material and Annotation are separate SQLite commits. If the Material
@@ -14412,6 +14418,19 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         return v19_public_job(project_id, job)
     if job.get("status") not in {"selecting", "failed"}:
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
+
+    if job.get("status") == "failed":
+        # The legacy ZIP worker committed Material before bounded formal GT.
+        # Never restart a partially indexed failed import: re-running it
+        # generates new image IDs and silently duplicates source material.
+        imported_ids = list(v19_read_import_report(project_id, job_id, job).get("imported_image_ids") or [])
+        materials = material_store(project_id)
+        for offset in range(0, len(imported_ids), 500):
+            if materials.get_many(imported_ids[offset:offset + 500]):
+                raise HTTPException(
+                    status_code=409,
+                    detail="该失败任务已有素材写入正式索引，禁止重复导入；请先完成 Material/Annotation 完整性审计与恢复。",
+                )
 
     if payload.create_labels:
         raise HTTPException(status_code=409, detail=IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
