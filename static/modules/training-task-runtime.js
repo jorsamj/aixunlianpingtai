@@ -602,19 +602,21 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     );
   };
   window.deleteTrain428 = async id => {
-    if (typeof window.confirm === 'function' && !window.confirm('确认删除这条训练任务记录？已经生成的算法版本不会删除。')) return false;
+    const job = (state().jobs || []).find(item => String(item?.id || item?.task_id || '') === String(id));
+    // Single-item controls must honor the same terminal-only contract as
+    // the canonical table action and batch delete. Never stop-to-delete.
+    if (!job || !trainingBatchActionEligible(job, 'delete')) {
+      notify?.('仅已结束的训练任务可以删除记录，请先停止任务并等待终态确认');
+      return false;
+    }
+    if (typeof window.confirm === 'function' && !window.confirm('确认删除这条已结束训练任务记录？已经生成的算法版本不会删除。')) return false;
     const key = `delete:${id}`;
     if (mutationLocks.has(key)) return false;
     mutationLocks.add(key);
     try {
       const pid = encodeURIComponent(projectId?.() || '');
       const encodedId = encodeURIComponent(id);
-      const job = (state().jobs || []).find(item => String(item.id) === String(id));
-      if (job && ['running', 'paused', 'queued', 'waiting'].includes(trainingDisplayStatus(job))) {
-        const stopResponse = await nativeFetch(`/api/v48/projects/${pid}/jobs/${encodedId}/stop`, {method: 'POST'});
-        const stopError = await responseError(stopResponse, '停止训练失败');
-        if (stopError) throw stopError;
-      }
+      // Only terminal tasks reach this endpoint; no implicit stop/delete chain.
       const deleteResponse = await nativeFetch(`/api/v12/projects/${pid}/jobs/${encodedId}`, {method: 'DELETE'});
       const deleteError = await responseError(deleteResponse, '删除任务失败');
       if (deleteError) throw deleteError;

@@ -105,7 +105,16 @@ async function routeReadyTrainingRuntime(page) {
 }
 
 
+async function expandTrainingAdvanced(trainingDialog) {
+  const root = trainingDialog.locator('.train429-create');
+  if (!(await root.getAttribute('class')).includes('train-create-show-advanced')) {
+    await trainingDialog.locator('[data-train-advanced-toggle]').click();
+  }
+  await expect(root).toHaveClass(/train-create-show-advanced/);
+}
+
 async function openTrainingSettings(page, trainingDialog) {
+  await expandTrainingAdvanced(trainingDialog);
   const advanced = trainingDialog.locator('details.train-ui-advanced');
   if (!(await advanced.getAttribute('open'))) {
     await advanced.locator(':scope > summary').click();
@@ -143,6 +152,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(trainingDialog).toBeVisible();
   await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
+  await expandTrainingAdvanced(trainingDialog);
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
   await expect(trainingDialog.getByText('从本次训练素材随机抽取试验集')).toBeVisible();
   await expect(trainingDialog.locator('#trV3Experiment')).toHaveValue('20');
@@ -206,6 +216,7 @@ test('training submit sends the selected candidate pool and configured experimen
   const fireLabel = dialog.locator('[data-training-label-code="fire"]');
   await expect(fireLabel).toBeVisible();
   await fireLabel.check();
+  await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
@@ -338,6 +349,7 @@ test('versioned training locks the latest version and projects the current rando
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
+  await expandTrainingAdvanced(dialog);
   await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');

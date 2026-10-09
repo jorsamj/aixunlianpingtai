@@ -623,6 +623,14 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   const dialog=page.getByRole('dialog',{name:'训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout:10000});
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
+  // Availability alone must NOT silently replace the default 60/20/20 split.
+  await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();
+  await dialog.locator('[data-train-advanced-toggle]').click();
+  const splitDetails = dialog.locator('.train-create-split-details');
+  if (!(await splitDetails.getAttribute('open'))) await splitDetails.locator(':scope > summary').click();
+  await expect(dialog.locator('#trV3Experiment')).toHaveValue('20');
+  await expect(dialog.locator('#trV3Validation')).toHaveValue('20');
+  await dialog.locator('#trV3BenchmarkReuse').check();
   await expect(dialog.locator('#trV3BenchmarkReuse')).toBeChecked();
   await expect(dialog.locator('[data-benchmark-mode]')).toContainText('服务端固定 Benchmark');
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');

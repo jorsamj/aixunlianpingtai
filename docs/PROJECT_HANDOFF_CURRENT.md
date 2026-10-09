@@ -2900,3 +2900,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 对交接 HEAD `7def2bfd` 重新确认：VERSION `42.24.342`，21/21 Actions、55/55 Checks completed success；检查 ZIP 前台任务身份、正式标注 Remap Worker、训练任务终态操作、60/20/20 分组冻结算法；以上是 CI/代码证据，不代表生产数据已经复核。
 - 发现并补齐一个边界：标签统一 Worker 可能在已提交部分正式标注后以 FAILED/CANCELLED/BLOCKED 终止；此前前端仅 toast，不使训练素材摘要与数据集分页缓存失效。现在失败终态同样按服务端 Ground Truth 重新加载；部分成功/失败显示成功数、失败数、错误原因，并提供复用现有 Label Integrity Full Audit 的人工复核入口。
 - 保留现有 AnnotationRepository / MaterialRepository / REMAP_ANNOTATION_LABELS / PollRegistry Owner；不修改真实生产数据，不自动退役或重试失败标签，不对 FAILED 伪称没有成功写入。补充前端源代码回归断言；最新提交的 CI 结果仍需按新 HEAD 另行核对。
+
+
+### 2026-10-09 追加修复：单任务终态删除合同与 CI 浏览器断言
+
+- 单条 `deleteTrain428` 原本绕过 TrainingBatchActionEligible，在运行/暂停/排队状态暗中执行先 stop 后 delete，虽然新版任务列表已隐藏对应按钮，但仍构成非法操作旁路。现复用已有统一资格判定，未到终态及不存在的任务禁止调用 DELETE，取消隐式停止行为。更新原旧行为回归测试为“拒绝所有非终态并仅允许终态删除”的强断言。
+- 上一提交 `21abe814` 的 `real-chrome` 失败日志有 4 个陈旧浏览器断言：精简训练弹窗将技术配置折叠，但旧测试在展开前检查可见性或填写优先级；固定 Benchmark 已改为用户明确选择，旧测试还认为默认自动勾选。浏览器测试现在先通过用户可操作“高级设置”展示再核验，且固定 Benchmark 明确测试默认不选、手动选后提交。上述修改不放宽原操作正确性判断。
+- 生产环境、真实历史标签的读写证据及 GPU 真实训练仍需用户在生产环境只读核验；未修改版本号，未部署。新 HEAD 的 Actions/Checks 需单独复核 completed/success。
