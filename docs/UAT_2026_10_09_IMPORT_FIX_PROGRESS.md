@@ -4,7 +4,7 @@
 
 - Repo: `jorsamj/aixunlianpingtai`
 - Branch: `feature/external-algorithm-publishing`; base before repair: `474d7f694228632b9fc55a2f20ac7c7cbdb791ac`
-- Bumped `VERSION.txt`: `42.24.335 -> 42.24.336`.
+- Version history for this issue: `42.24.335 -> 42.24.336` (initial repair), then `42.24.337` (read-only audit hardening and regression coverage).
 - **Current implementation is committed but CI is not yet green: HEAD check-runs were queued when this note was written.** Always re-fetch real HEAD and check-runs before declaring safe to deploy. No production deployment or server mutation in this round.
 - Existing unrelated frozen external-weight inheritance requirement remains GitHub Issue #20; out of scope.
 
@@ -65,3 +65,9 @@ python tools/audit_v19_partial_import.py --project-root /PATH/TO/CONSISTENT_PROJ
 - If Material references a remote or non-default local Storage Source, the auditor reports `source_requires_provider_verification` instead of claiming missing/verified bytes. Provider-specific HEAD/GET + SHA256 comparisons must be completed separately.
 - An audit can detect mismatches but **does not repair** them. Before proposing recovery: confirm current running server release/worker version, capture backup manifest, compare all 3042 IDs including missing/duplicate Material and formal GT, protect any already-correct GT, then design a separately reviewed idempotent recovery with dry-run/conflict-detection. Do not retry the failed import, delete bytes or release data to training.
 - **No local execution or CI pass is claimed for new tests yet**; Python runner/repo clone and production SSH access were not available in this continuation. GitHub actions must reach terminal success on the final exact HEAD before launch discussion. Worker extraction pause/resume remains outside the implemented scope (upload pause + guarded worker stop are implemented).
+
+## 2026-10-09 additional 3042-image integration coverage
+
+- Commit `c69304e4804f939ab21d44b5923e841a5b30b976` parameterizes the existing real Material/Annotation bounded-admission regression at **501 and 3042 images**. The test checks every canonical 500-ID chunk, without raising the 500-ID protection limit.
+- ZIP Import Durable Runtime workflow was updated to execute the 3042 regression, multipart API controls, rollback/stop contracts and the read-only integrity auditor tests. This is code and CI configuration committed, **not proof these tests have passed**.
+- Live production backup, source/GT cross-checks and authorized recovery remain the gating P0 task.
