@@ -7137,8 +7137,18 @@ def _remote_capabilities(server: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/api/training_options")
 def training_options(project_id: Optional[str] = None):
-    """给训练页用：先读已接入训练环境，再按环境返回可用算法/模型。前端不再硬编码训练算法。"""
+    """Offer real preloaded mother weights and preserve verified version iteration."""
     options: List[Dict[str, Any]] = []
+    has_iteration_base = False
+    if project_id:
+        try:
+            has_iteration_base = any(
+                is_trainable_version(version, "ultralytics")
+                for algorithm in list_algorithms_internal(project_id)
+                for version in (algorithm.get("versions") or [])
+            )
+        except Exception:
+            has_iteration_base = False
     # 本机 Ultralytics
     ultra = get_active_ultralytics_env()
     if ultra:
@@ -7181,7 +7191,7 @@ def training_options(project_id: Optional[str] = None):
             "name": ultra.get("name") or "本机 Ultralytics",
             "type":"local",
             "framework":"ultralytics",
-            "status":"ready" if models else "warning",
+            "status":"ready" if models or has_iteration_base else "warning",
             "python_path": ultra.get("python_path"),
             "root": ultra.get("root"),
             "version": ultra.get("version"),
@@ -7259,7 +7269,7 @@ def training_options(project_id: Optional[str] = None):
             "name": f"GPU 集群自动调度（推荐） · {len(training_agents)} 节点在线",
             "type": "server",
             "framework": "ultralytics",
-            "status": "ready" if scheduler_models else "warning",
+            "status": "ready" if scheduler_models or has_iteration_base else "warning",
             "scheduler_owned": True,
             "online_training_nodes": len(training_agents),
             "algorithms": scheduler_algs,
