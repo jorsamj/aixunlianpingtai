@@ -856,7 +856,7 @@ def test_explicit_random_test_percentage_is_accepted(client, seeded_project, per
 
 
 @pytest.mark.parametrize(
-    "body, message"
+    "body, message",
     [
         (
             {
