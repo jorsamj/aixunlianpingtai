@@ -5000,12 +5000,16 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   function invalidateTrainingMaterialSummaryAfterLabelMutation414(){
     const runtime=window.TrainingMaterialSummaryRuntime;
     runtime?.invalidate?.();
+    // Formal label remap changes the material projection; no old gallery or
+    // training candidate cache may survive a completed remap.
+    window.MaterialPaginationRuntime61?.invalidate?.();
     const ids=window.TrainingDraftRuntime?.materialIds?.()||[];
     if(ids.length)void runtime?.refresh?.(ids,{force:true});
   }
   async function refreshLabelSchemaAfterRemap414(task,source,target){
     invalidateTrainingMaterialSummaryAfterLabelMutation414();
     await refreshLabels414(true);
+    if(state.page==='数据集')await window.reloadMaterialPage61?.();
     const progressVisible=!!document.getElementById('importRemapStage414');
     if(progressVisible)closeModal();
     if(state.page==='标签管理')window.drawLabel414?.();
@@ -5035,6 +5039,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
   async function refreshLabelIntegrityAfterRepair414(task,source,target){
     invalidateTrainingMaterialSummaryAfterLabelMutation414();state.labelIntegrityAuditResult414=null;
+    if(state.page==='数据集')await window.reloadMaterialPage61?.();
     if(document.getElementById('importRemapStage414'))closeModal();
     const box=document.getElementById('labelIntegrity414Body');if(box)box.innerHTML='<div class="empty compact"><b>本轮修复已完成，请重新运行 Full Audit 验证</b><span>旧审计只是一份诊断快照，不会被当作后续修改依据。</span></div>';
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);toast(failed?`安全修复完成：${changed} 个框已更新，${failed} 张需人工复核`:`安全修复完成：${source} → ${target} · ${changed} 个框`);state.annotationRemapOrigin414='';
@@ -5447,7 +5452,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     const splitDetailsWasOpen=panel.querySelector('.train-create-split-details')?.open===true;
     const s=splitState(),random=s.mode==='random_test_from_training_pool',labels=selectedLabels([...s.train]),split=splitPresentation(s);
-    panel.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练数据集</b><small>统一素材池 · 按图片精确选择</small></div></header><div class="train-v3-summary"><div><span>本次训练素材</span><b id="tr429Count">${s.train.size} 张</b><em id="tr429Labels">${esc(labels.join('、')||'尚未选择')}</em></div><div><span>试验素材</span><b>${random?'随机抽取':s.test.size+' 张'}</b><em>${random?`${s.experiment}% / 每次重新抽取`:'与训练素材严格隔离'}</em></div><div><span>可选素材</span><b>${allCandidates().length} 张</b><em>已清洗均可选 · 待标注不当负样本</em></div></div><div class="train-ui-dataset-actions"><button class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button><button class="btn" onclick="trainQuality429()" ${s.train.size?'':'disabled'}>数据质量</button></div><details class="train-create-split-details" ${splitDetailsWasOpen||!random?'open':''}><summary>数据划分</summary><div class="train-v3-mode"><label class="check"><input type="radio" name="trV3Mode" value="random_test_from_training_pool" ${random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 从本次训练素材随机抽取试验集</label><label class="check"><input type="radio" name="trV3Mode" value="independent_test_set" ${!random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 单独选择试验素材</label></div><section class="train-ui-split"><header><span class="train-ui-card-icon">▥</span><div><b>数据划分比例</b><small>继续使用当前 Draft 中的真实比例</small></div></header><div class="train-ui-split-fields"><label><span>训练集</span><div><b>${split.training}</b><em>%</em></div></label><label><span>验证集</span><div class="input-suffix428"><input id="trV3Validation" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.validation}"><span>%</span></div></label>${random?`<label><span>试验集</span><div class="input-suffix428"><input id="trV3Experiment" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.experiment}"><span>%</span></div></label>`:`<label><span>试验集</span><div class="train-ui-independent-test"><b>${s.test.size}</b><em>张</em></div></label>`}</div><div class="train-ui-split-bar" aria-label="训练 ${split.training}%、验证 ${split.validation}%、试验 ${random?split.experiment:0}%"><i style="width:${split.training}%"><span>${split.training}%</span></i><i style="width:${split.validation}%"><span>${split.validation}%</span></i><i style="width:${random?split.experiment:0}%"><span>${random?split.experiment:0}%</span></i></div>${random?'':`<button class="btn train-ui-test-picker" onclick="openTrainMaterialPickerV3('test')">选择独立试验素材</button>`}</section></details><small class="train-v3-note" hidden></small>`;
+    panel.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练数据集</b><small>统一素材池 · 按图片精确选择</small></div></header><div class="train-v3-summary"><div><span>本次训练素材</span><b id="tr429Count">${s.train.size} 张</b><em id="tr429Labels">${esc(labels.join('、')||'尚未选择')}</em></div><div><span>试验素材</span><b>${random?'随机抽取':s.test.size+' 张'}</b><em>${random?`${s.experiment}% / 每次重新抽取`:'与训练素材严格隔离'}</em></div><div><span>可选素材</span><b>${allCandidates().length} 张</b><em>已清洗均可选 · 待标注不当负样本</em></div></div><div class="train-ui-dataset-actions"><button class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button><button class="btn" onclick="trainQuality429()" ${s.train.size?'':'disabled'}>数据质量</button></div><details class="train-create-split-details" ${splitDetailsWasOpen||!random?'open':''}><summary>数据划分</summary><div class="train-v3-mode"><label class="check"><input type="radio" name="trV3Mode" value="random_test_from_training_pool" ${random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 从本次训练素材随机抽取试验集</label><label class="check"><input type="radio" name="trV3Mode" value="independent_test_set" ${!random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 单独选择试验素材</label></div><section class="train-ui-split"><header><span class="train-ui-card-icon">▥</span><div><b>数据划分比例</b><small>继续使用当前 Draft 中的真实比例</small></div></header><div class="train-ui-split-fields"><label><span>训练集</span><div><b>${split.training}</b><em>%</em></div></label><label><span>验证集</span><div class="input-suffix428"><input id="trV3Validation" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.validation}" oninput="syncTrainSplitPercentV3('validation')"><span>%</span></div></label>${random?`<label><span>试验集</span><div class="input-suffix428"><input id="trV3Experiment" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.experiment}" oninput="syncTrainSplitPercentV3('experiment')"><span>%</span></div></label>`:`<label><span>试验集</span><div class="train-ui-independent-test"><b>${s.test.size}</b><em>张</em></div></label>`}</div><div class="train-ui-split-bar" aria-label="训练 ${split.training}%、验证 ${split.validation}%、试验 ${random?split.experiment:0}%"><i style="width:${split.training}%"><span>${split.training}%</span></i><i style="width:${split.validation}%"><span>${split.validation}%</span></i><i style="width:${random?split.experiment:0}%"><span>${random?split.experiment:0}%</span></i></div>${random?'':`<button class="btn train-ui-test-picker" onclick="openTrainMaterialPickerV3('test')">选择独立试验素材</button>`}</section></details><small class="train-v3-note" hidden></small>`;
     applyBenchmarkReuseUi(panel,s);
     queueMicrotask(() => {
       refreshTrainingCreateUi();
@@ -5456,6 +5461,19 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     // TrainingSubmitRuntime is the sole owner of submit-button readiness.
     // Legacy renderSplit must never write the disabled state from train428/train429 mirrors.
   }
+  window.syncTrainSplitPercentV3=function(changed){
+    const root=document.querySelector('.train429-create'),validationInput=root?.querySelector('#trV3Validation'),testInput=root?.querySelector('#trV3Experiment');
+    if(!validationInput||!testInput)return;
+    const clamp=v=>Math.round(Math.max(.1,Math.min(99.8,Number(v)||.1))*10)/10;
+    let validation=clamp(validationInput.value),experiment=clamp(testInput.value);
+    if(validation+experiment>99.9){if(changed==='validation')experiment=Math.round((99.9-validation)*10)/10;else validation=Math.round((99.9-experiment)*10)/10;}
+    validationInput.value=String(validation);testInput.value=String(experiment);
+    const training=Math.round((100-validation-experiment)*10)/10,parts=root.querySelectorAll('.train-ui-split-bar i');
+    const trainValue=root.querySelector('.train-ui-split-fields label:first-child b');if(trainValue)trainValue.textContent=String(training);
+    [training,validation,experiment].forEach((n,i)=>{if(parts[i]){parts[i].style.width=n+'%';const label=parts[i].querySelector('span');if(label)label.textContent=n+'%';}});
+    root.querySelector('.train-ui-split-bar')?.setAttribute('aria-label',`训练 ${training}%、验证 ${validation}%、试验 ${experiment}%`);
+    window.TrainingDraftRuntime?.update?.({validationPercent:validation,experimentPercent:experiment});window.refreshTrainingCreateUi?.();
+  };
   window.refreshTrainingMaterialSelectionUiV3=renderSplit;
   function pickerRows(){const p=state.trainMaterialPickerV3;if(!p)return[];const blocked=splitState().mode==='independent_test_set'?splitState()[otherRole(p.role)]:new Set();return(trainingApi()?.filterTrainingMaterials(state.images||[],{query:p.query,labelCodes:[...p.labels]})||[]).filter(row=>!blocked.has(imageId(row)))}
   function renderPicker(){

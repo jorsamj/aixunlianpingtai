@@ -49,7 +49,7 @@ def test_mode_b_draws_test_first_then_validation_without_leakage():
         validation_percent=20,
     )
     manifest = build_split_manifest(rows, request, seed=42)
-    assert manifest.counts == {"train": 12, "validation": 3, "test": 5, "total": 20}
+    assert manifest.counts == {"train": 11, "validation": 4, "test": 5, "total": 20}
     assert manifest.requested["test_source"] == "random_from_training_pool"
     assert not set(manifest.ids["train"]) & set(manifest.ids["validation"])
     assert not set(manifest.ids["test"]) & (
@@ -130,8 +130,8 @@ def test_large_random_split_keeps_exact_component_counts_at_20k_scale():
     manifest = build_split_manifest(rows, request, seed=42)
 
     assert manifest.counts == {
-        "train": 12_800,
-        "validation": 3_200,
+        "train": 12_000,
+        "validation": 4_000,
         "test": 4_000,
         "total": 20_000,
     }
@@ -320,3 +320,13 @@ def test_reserved_test_components_are_removed_before_fixed_benchmark_training():
 
     assert filtered == ("safe",)
     assert excluded == ("benchmark", "duplicate-content", "same-group")
+
+
+def test_random_split_refuses_validation_plus_test_consuming_all_training_data():
+    with pytest.raises(ValueError, match="之和必须小于 100"):
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(str(i) for i in range(20)),
+            experiment_percent=80,
+            validation_percent=20,
+        )

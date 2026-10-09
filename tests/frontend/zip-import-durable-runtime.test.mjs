@@ -188,3 +188,11 @@ test('ZIP class mapping review uses the single shared numeric pagination present
   assert.doesNotMatch(source,/class="row between label-mapping-review-pager"><button/);
   assert.match(source,/mountLabelReviewPagination\(current\.id\)/);
 });
+
+
+test('restored ZIP completion cannot auto-open stale import-cleaning decision',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/if\(!foregroundImports\.has\(id\)\|\|completionEffects\.has\(id\)\)return/);
+  assert.match(source,/foregroundImports\.add\(String\(provisional\.id\)\)/);
+  assert.match(source,/foregroundImports\.add\(id\);started\.add\(id\)/);
+});

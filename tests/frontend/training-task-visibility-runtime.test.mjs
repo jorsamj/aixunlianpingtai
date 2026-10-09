@@ -8,6 +8,7 @@ import {
   reconcileTrainingBatchSelection,
   tickTrainingClockRows,
   trainingTaskStatusCounts,
+  trainingTaskPresentationRow,
 } from '../../static/modules/training-task-visibility-runtime.js';
 
 function cleanup() {
@@ -477,4 +478,16 @@ test('training selection is not pruned against the current visible page', () => 
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /if \(!visibleIds\.has\(id\)\) selectedIds\.delete\(id\)/);
   assert.match(source, /reconcileTrainingBatchSelection\(selectedIds, result\)/);
+});
+
+
+test('active task uses stable identity and never offers unsafe delete', () => {
+  const active=trainingTaskPresentationRow({id:'train_12345678',status:'running',asset_algorithm_name:'烟火检测'});
+  assert.match(active,/训练 · 12345678/);
+  assert.doesNotMatch(active,/deleteTrain428/);
+  assert.match(active,/pauseTrain428/);
+  const queued=trainingTaskPresentationRow({id:'train_12345678',status:'queued'});
+  assert.doesNotMatch(queued,/deleteTrain428/);
+  const done=trainingTaskPresentationRow({id:'train_12345678',status:'completed'});
+  assert.match(done,/deleteTrain428/);
 });

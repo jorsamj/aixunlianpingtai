@@ -41,3 +41,11 @@ test('material batch terminal truth refreshes the canonical dataset page owner',
   assert.match(pollOwner, /else \{[\s\S]*stopPolling\(id\);[\s\S]*await refresh\?\.\(\)/);
   assert.match(main, /refresh: async \(\) => \{[\s\S]*await window\.reloadMaterialPage61\?\.\(\)/);
 });
+
+
+test('restoring finished clean/skip task does not open AI review modal',()=>{
+  const source=readFileSync(new URL('../../static/modules/material-batches.js',import.meta.url),'utf8');
+  assert.match(source,/foreground && task\.operation === 'AI_ANNOTATE' && task\.review_required/);
+  assert.match(source,/poll\(taskId\);/);
+  assert.match(source,/poll\(task\.task_id, \{foreground: true\}\)/);
+});

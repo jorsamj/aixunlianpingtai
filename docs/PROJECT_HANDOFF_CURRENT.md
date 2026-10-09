@@ -2884,3 +2884,12 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 初始 RKNN 修复代码 `0404fb5f` 的 `Remote Conversion Runtime` 曾失败，实际日志指向旧测试断言：`deployment-artifact-refresh.test.mjs` 仍精确匹配不带 `cache: 'no-store'` 的旧 API 调用；`deployment-progress-performance.spec.mjs` 仍要求两次打开转换弹窗只 GET 一次资源，违反本轮明确的“每次打开获取权威状态”需求。两项测试保留并调整为更严格的新合同：缓存历史可复用，但资源每次打开必须重新 GET，且禁用浏览器 HTTP 缓存。
 - `Training Create First Open` 失败日志属于此前精简训练弹窗与未展开高级字段的历史浏览器断言，不由此次 RKNN 转换修改引入。此处只记录，不擅自重新设计训练弹窗。
 - 不得将初始修复提交的失败或最新提交尚在 queued 的测试记为通过。正式验收必须按最新 HEAD 重新确认。
+
+
+### 2026-10-09 训练/标签/导入一致性修复
+
+- 刷新页面恢复 ZIP 导入或素材批任务时，不再触发完成后导入复核/清洗弹窗；仅本标签页新发起并完成的 ZIP 可展示复核入口，后台任务仍然可恢复。
+- 标签统一 `REMAP_ANNOTATION_LABELS` 正式标注和 MaterialRepository 投影由既有 Durable Worker 改写，不引入第二 Owner；前端统一完成后失效 MaterialPaginationRuntime61 与训练素材摘要缓存，数据集页面重拉素材。部分成功时继续保留来源标签并提示复核。
+- 训练任务名缺失时展示稳定任务短 ID，不再显示笼统“训练任务”；运行中/排队中/暂停中任务不展示非法删除操作，仅已结束任务可删除。
+- 随机试验模式比例以全量冻结素材为分母：先预留试验，再换算剩余池内验证比例，保证全量目标比例（受不可拆分组件及四舍五入约束）；拒绝验证与试验之和 ≥100%；训练/验证/试验保持隔离与 leakage guard。创建弹窗三种比例联动，默认验证、试验各20%。
+- 本次仅长期开发分支提交；无生产部署，无 `VERSION.txt` 修改。
