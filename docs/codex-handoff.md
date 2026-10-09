@@ -1,3 +1,10 @@
+## 2026-10-09 当前接手入口：Issue #21 生产 UAT 七项修复验收
+
+- 主事实/逐项表：`docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`，GitHub Issue #21。只在 `feature/external-algorithm-publishing` 开发，生产、main、tag、release 不动。
+- 已补强原 `tools/audit_v19_partial_import.py` 为只读源文件 SHA256 / 大小 / Material-Annotation 版本摘要 / 框数 / 来源 / 报告数量差异审计，配套 `tests/unit/test_audit_v19_partial_import.py` 与既有 ZIP workflow 的显式 pytest 覆盖；不新建数据 Owner。
+- P0：现场 3042 张失败素材尚未备份、运行审计或修复；禁止重新导入、删除、直接训练。该脚本仅用于一致快照，不提供修复权限。P1/P2：上传暂停/续传/取消、双弹窗仍待真实浏览器及大文件现场回归。
+- 交接时 `0cf23360` 为 55/55 checks queued；以后只采信最终真实 HEAD 的 terminal CI。生产部署版本尚未用主机 SSH 确认。
+
 ## 2026-10-09 Gate S15：AUDIT-167/177 最小安全隔离与标签反馈引用（42.24.335）
 
 - 前置精准 HEAD `ee2b0e5fb5bb6cc347ef21dd8831697abc960a71` / `42.24.334`：已实时确认 **22/22 Actions、57/57 check-runs 全部 completed-success**；这是真实 GitHub CI VERIFIED，不代表 OSS/GPU/Agent UAT。
