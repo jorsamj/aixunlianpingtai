@@ -45,6 +45,8 @@ class SplitRequest:
                 raise ValueError("随机抽取模式不能设置 test_image_ids")
             if self.experiment_percent is None or not 0 < float(self.experiment_percent) < 100:
                 raise ValueError("experiment_percent 必须大于 0 且小于 100")
+            if float(self.experiment_percent) + float(self.validation_percent) >= 100:
+                raise ValueError("experiment_percent 与 validation_percent 之和必须小于 100，保留训练集")
 
 
 @dataclass(frozen=True)
@@ -595,10 +597,14 @@ def build_split_manifest(
             min_remaining_groups=2,
             reserved_component_keys=reserved_train_components,
         )
+        # Percentages are measured against the complete frozen pool.
+        # The test holdout is frozen first, so rebase the validation target
+        # onto the remaining pool without weakening the leakage guard.
+        validation_of_remaining = float(request.validation_percent) * 100.0 / (100.0 - float(request.experiment_percent))
         train_rows, validation_rows = _select_grouped(
             after_test,
             component_keys,
-            request.validation_percent,
+            validation_of_remaining,
             validation_seed,
             reserved_component_keys=reserved_train_components,
         )

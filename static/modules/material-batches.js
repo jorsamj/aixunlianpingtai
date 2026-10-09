@@ -79,7 +79,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     return registry.clear(pollKey(taskId));
   }
 
-  function poll(taskId) {
+  function poll(taskId, {foreground = false} = {}) {
     const id = String(taskId || '');
     if (!id) return false;
     stopPolling(id);
@@ -93,7 +93,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         } else {
           stopPolling(id);
           await refresh?.();
-          if (task.review_required && typeof window.reviewAiLabel427 === 'function') {
+          if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
         }
@@ -146,7 +146,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     }));
     remember(task);
     announce(task);
-    poll(task.task_id);
+    poll(task.task_id, {foreground: true});
     return task;
   }
 

@@ -101,6 +101,9 @@ export function trainingDraftToRequest(draft, parameters = {}) {
       && !(normalized.experimentPercent > 0 && normalized.experimentPercent < 100)) {
     throw new Error('试验集比例必须在 0 到 100 之间');
   }
+  if (normalized.splitMode === 'random_test_from_training_pool' && normalized.validationPercent + normalized.experimentPercent >= 100) {
+    throw new Error('训练集比例必须大于 0；请调整验证集和试验集比例');
+  }
   if (normalized.splitMode === 'independent_test_set' && !normalized.testMaterialIds.length) {
     throw new Error('请选择独立试验素材');
   }

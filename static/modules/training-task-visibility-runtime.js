@@ -156,10 +156,10 @@ function taskActions(job) {
   const detail = `<button onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
   const log = `<button onclick="showTrainLog423('${id}')">日志</button>`;
   if (['starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return `${detail}${log}<span class="train428-action-lock">状态切换中</span>`;
-  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}<details class="entity-more"><summary>•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
+  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}${trainingBatchActionEligible(job, 'delete') ? `<details class="entity-more"><summary>•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除记录</button></div></details>` : ''}`;
 }
 
 export function trainingTaskPresentationRow(job, {batchMode = false, selected = false} = {}) {
@@ -169,7 +169,7 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
   const percent = canonicalTaskProgressPercent(job);
   const stage = trainingStageView(job);
   const algorithmName = job?.asset_algorithm_name || job?.algorithm_name || '未命名算法';
-  const taskName = job?.task_name || job?.run_name || job?.auto_version_name || '训练任务';
+  const taskName = [job?.task_name, job?.run_name, job?.auto_version_name].map(v => String(v || '').trim()).find(v => v && v !== '训练任务') || `训练 · ${id.slice(-8) || '待分配'}`;
   const elapsed = progress.elapsedSeconds == null ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
   const eta = progress.etaSeconds == null ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
   const active = ['starting', 'running', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status);
