@@ -47,10 +47,26 @@ export function formatTrainingValidationError(body = {}) {
   }).join('；');
 }
 
+export function validatePreparedMotherModel({draft, target} = {}) {
+  // Current training version is the only allowed iteration base. The selected
+  // mother checkpoint matters only when there is no previous version.
+  if (String(draft?.baseVersionId || '').trim()) return true;
+  if (!Array.isArray(target?.base_models)) return true; // legacy standalone builder
+  const selected = String(draft?.config?.model || '').trim();
+  const available = target.base_models.some(model =>
+    String(model?.value || '') === selected
+    && String(model?.model_status || '').toUpperCase() === 'FOUND'
+    && /\.pt$/i.test(selected)
+  );
+  if (!available) throw new Error('首次训练母模型尚未预置；请先到训练资源上传并选择已就绪的 .pt 权重');
+  return true;
+}
+
 export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
   required(target?.id, '请选择可用训练资源');
   required(algorithm?.key, '请选择可用训练算法');
+  validatePreparedMotherModel({draft,target});
 
   const config = draft.config || {};
   return {
