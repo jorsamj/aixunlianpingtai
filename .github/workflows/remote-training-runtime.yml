@@ -67,6 +67,9 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
+      - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
   pull_request:
@@ -135,6 +138,9 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
+      - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
 
@@ -284,13 +290,14 @@ jobs:
       - name: Install focused training API dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
           boto3 oss2 cryptography
       - name: Compile production training creation path
         run: >-
           python -m py_compile
           app.py
+          tests/api/test_mother_model_preinstall.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_tasks.py
           platform_core/remote_execution_transport.py
@@ -300,6 +307,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_training_request.py
+          tests/api/test_mother_model_preinstall.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py
       - name: Permanent remote training preparation guards
