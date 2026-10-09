@@ -14050,6 +14050,7 @@ class V19MultipartUploadReq(BaseModel):
     file_size: int = Field(gt=0)
     fingerprint: str = ""
     part_size: int = 8 * 1024 * 1024
+    resume_upload_id: str = ""
 
 
 def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
@@ -14063,6 +14064,20 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
     if Path(filename).suffix.lower() != ".zip":
         raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
     repository = _v19_multipart_repository(project_id)
+    if payload.resume_upload_id:
+        # An explicit resume must never create a new empty task on a file mismatch.
+        try:
+            previous = repository.get(payload.resume_upload_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=409, detail="原 ZIP 上传会话已失效，请重新选择上传") from error
+        if (
+            str(previous.get("fingerprint") or "") != str(payload.fingerprint or "")
+            or str(previous.get("dataset_id") or "") != str(dataset_id)
+            or str(previous.get("file_name") or "") != filename
+            or int(previous.get("file_size") or 0) != int(payload.file_size)
+            or str(previous.get("status") or "") not in {"uploading", "paused"}
+        ):
+            raise HTTPException(status_code=409, detail="ZIP 文件身份与原上传会话不一致，已拒绝创建新任务")
     try:
         session = repository.create_or_resume(
             dataset_id=dataset_id, file_name=filename, file_size=int(payload.file_size),
