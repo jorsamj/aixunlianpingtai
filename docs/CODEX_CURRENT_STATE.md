@@ -1,3 +1,6 @@
+<!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
+> 2026-10-09 现场 UAT #21 正在验收：七项问题代码提交已存在，3042 张生产失败导入素材尚未实际审计/恢复。新补源文件 SHA256、GT 框数/投影/lineage 只读审计及对应 ZIP CI 测试；此前精确 HEAD 的 55 check-runs 全 queued，不能认定通过。唯一详细事实源见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`、GitHub Issue #21。禁止部署、重导入、清理部分提交素材，Issue 不关闭。
+
 <!-- LIVE_HANDOFF_2026_10_09_GATE_S15 -->
 > 2026-10-09：42.24.334 精确 HEAD ee2b0e5 的 22/22 Actions 和 57/57 Checks 全部 success。T1 确认 AUDIT-167 INT8 version Snapshot drift、AUDIT-177 pending feedback label drift，42.24.335 做最小隔离/引用保护并新增回归；新 HEAD CI/UAT 尚未验证。详见 docs/codex-handoff.md 顶部 Gate S15。禁止据此部署生产。
 
