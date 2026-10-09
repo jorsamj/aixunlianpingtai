@@ -6,6 +6,7 @@ import {
   benchmarkReuseContext,
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
+  validatePreparedMotherModel,
   installTrainingSubmitRuntime,
   normalizeTrainingPrecision,
   supplementCandidateContext,
@@ -43,6 +44,27 @@ const target = {
   algorithms: [{key: 'yolo_detect', base_model: 'yolo11n.pt'}],
 };
 const algorithm = target.algorithms[0];
+
+
+test('first training only accepts a selected and prepared .pt checkpoint', () => {
+  const prepared = {id:'remote-agent', framework:'ultralytics', type:'server',
+    base_models:[
+      {value:'/data/platform-data/models/yolo11n.pt', model_status:'FOUND', source:'preinstalled'},
+      {value:'yolo11s.pt', model_status:'DOWNLOADABLE', source:'official'},
+    ]};
+  const d = draft({config:{model:'/data/platform-data/models/yolo11n.pt'}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:prepared}),true);
+  assert.equal(buildTrainingEngineParameters({draft:d,target:prepared,algorithm}).model,
+    '/data/platform-data/models/yolo11n.pt');
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared}),/预置/);
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:''}}),target:prepared}),/预置/);
+  assert.throws(()=>buildTrainingEngineParameters({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared,algorithm}),/预置/);
+});
+
+test('iteration retains latest checkpoint contract without requiring mother-model selection', () => {
+  const d = draft({baseVersionId:'current-version',config:{model:''}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:{base_models:[]}}),true);
+});
 
 function installDom() {
   const controls = {
