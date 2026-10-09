@@ -106,6 +106,25 @@ export async function listZipJobs(projectId,{fetchImpl=globalThis.fetch}={}) {
 export async function getZipJob(projectId,jobId,{fetchImpl=globalThis.fetch}={}) {
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs/${encodeURIComponent(String(jobId))}`,{credentials:'same-origin'}));
 }
+export async function completeZipUpload(projectId,uploadId,{fetchImpl=globalThis.fetch}={}) {
+  const url=`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/uploads/${encodeURIComponent(String(uploadId))}/complete`;
+  try {
+    return json(await fetchImpl(url,{method:'POST',credentials:'same-origin'}));
+  } catch (error) {
+    // A dropped response is not proof the server rejected the completion.
+    // Read the durable job before allowing a new upload or another POST.
+    const networkFailure=error instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message||''));
+    if(!networkFailure)throw error;
+    try {
+      const observed=await getZipJob(projectId,uploadId,{fetchImpl});
+      if(['merging','validating','selecting','running','done','failed'].includes(status(observed)))return observed;
+    } catch (_) {}
+    const uncertain=new Error(`ZIP 分片已传完，但服务器的合并确认连接中断（任务 ${uploadId}）。请从右下角任务中心查看状态，不要重复上传；连接恢复后可重新选择同一 ZIP 续传。`);
+    uncertain.zipCompletionUncertain=true;
+    throw uncertain;
+  }
+}
+
 export async function startZipJob(projectId,jobId,{fetchImpl=globalThis.fetch,confirmation={}}={}) {
   const body={
     selected_paths:[],
@@ -207,7 +226,7 @@ export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},on
   await Promise.all(Array.from({length:Math.max(1,Math.min(Number(concurrency)||1,4,pending.length||1))},()=>worker()));
   if(control?.state&&control.state!=='active')throw new Error('ZIP 上传已暂停或取消');
   onPhase({stage:'正在合并与校验 ZIP',message:'所有分片上传完成，服务器正在合并并校验压缩包'});
-  return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/uploads/${encodeURIComponent(uploadId)}/complete`,{method:'POST',credentials:'same-origin'}));
+  return completeZipUpload(projectId,uploadId,{fetchImpl});
 }
 
 export function isZipBootstrapReconcile(reason='') {
@@ -270,7 +289,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     s.import411={...(same?previous:{}),active:ACTIVE_ZIP_STATUSES.has(v.status),jobId:String(job.id||''),fileName:job.file_name||previous.fileName||'ZIP 数据导入',fileSize:Number(job.uploaded_bytes||previous.fileSize||0),stage:v.stage,message:v.message,progress:v.progress,eta:phase.etaSeconds??job.eta_seconds??null,uploadSeconds:job.upload_seconds??previous.uploadSeconds??null,processSeconds:job.processing_seconds??job.scan_seconds??previous.processSeconds??null,serverStatus:v.status,queuePosition:v.queue.position,resultHtml:nextResult};
   }
   function body(job){
-    const v=zipView(job,jobs),phase=zipPhaseDetail(job),active=activeZipJobs(jobs);
+    const s=status(job),v=zipView(job,jobs),phase=zipPhaseDetail(job),active=activeZipJobs(jobs);
     const queue=v.queue.waits?`队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
     const stateResult=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
     const workerActions=s==='running'&&['QUEUE','EXTRACT','ANNOTATION_PARSE'].includes(String(job?.phase||''))?`<div class="row end"><button class="btn danger" ${job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.stopImport('${esc(job.id)}')">${job.cancel_requested?'正在安全停止…':'停止后台导入并清理未提交缓存'}</button></div>`:'';
@@ -395,7 +414,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   function publishTaskCenterJob(project,job){
     const v=zipView(job,jobs),s=status(job),localUpload=Boolean(uploading?.uploadId)&&String(uploading.uploadId)===String(job.id||'');
-    const task={id:`zip:${job.id}`,kind:'zip',title:job.file_name||'ZIP 数据导入',status:String(job.status||'').toUpperCase(),progress:v.progress,stage:v.stage,detail:v.message,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(job.id))}`};
+    const task={id:`zip:${job.id}`,kind:'zip',title:job.file_name||'ZIP 数据导入',status:String(job.status||'').toUpperCase(),progress:v.progress,stage:v.stage,detail:v.message,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(job.id))}`,pollOwner:'zip-import-runtime'};
     if(s==='uploading'&&localUpload){task.browserTransfer=true;task.resumeRequired=false}
     else if(s!=='uploading'){task.browserTransfer=false;task.resumeRequired=false}
     window.UploadTaskCenterRuntime?.upsert?.(task);
@@ -459,14 +478,37 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     }else open();
     render();
     try{
-      const response=await uploadZipMultipartJob(project,file,{fetchImpl,control,onSession:session=>{multipartTaskId=String(session.upload_id||'');if(expectedUploadId&&multipartTaskId!==expectedUploadId)throw new Error('原 ZIP 身份未匹配历史会话，已阻止向新会话发送数据；请确认文件名、大小和修改时间');control.uploadId=multipartTaskId;const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false})},onTransfer:e=>{if(control.state!=='active'||!uploading)return;const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false});render()},onPhase:phase=>{uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false});render()}});uploading=null;resumeFile=null;if(uploadControl===control)uploadControl=null;
+      const response=await uploadZipMultipartJob(project,file,{fetchImpl,control,onSession:session=>{multipartTaskId=String(session.upload_id||'');if(expectedUploadId&&multipartTaskId!==expectedUploadId)throw new Error('原 ZIP 身份未匹配历史会话，已阻止向新会话发送数据；请确认文件名、大小和修改时间');control.uploadId=multipartTaskId;const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'})},onTransfer:e=>{if(control.state!=='active'||!uploading)return;const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'});render()},onPhase:phase=>{uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false,pollOwner:'zip-import-runtime'});render()}});uploading=null;resumeFile=null;if(uploadControl===control)uploadControl=null;
       const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};knownJobs.set(String(provisional.id),provisional);writeIntent(project,provisional.id,'deferred');
-      await reconcile('upload');open();return response;
-    }catch(e){uploading=null;
+      try {
+        await reconcile('upload');
+      } catch (refreshError) {
+        // Completion is already accepted. A failed follow-up GET must not
+        // turn the upload into a new failed transfer or invite duplicate import.
+        jobs=mergeJobs([...jobs,provisional]);
+        current=pickZipJob(jobs);
+        if(current)patchState(current);
+        publishTaskCenterJob(project,provisional);
+        render();arm();
+        notify?.('ZIP 已由服务器受理，但状态刷新暂时中断；可从右下角任务中心继续查看，请勿重复上传。');
+      }
+      open();return response;
+    }catch(e){const lastUploadProgress=Number(uploading?.progress||0);uploading=null;
       // A failed browser transfer must relinquish its active controller; otherwise
       // choosing the same ZIP again is permanently blocked as "already uploading".
       if(uploadControl===control&&control.state==='active')uploadControl=null;
       if(control.state==='paused'||control.state==='cancelled')return null;
+      if(multipartTaskId){
+        // A browser transport failure does not mean the server lost its parts.
+        // Yield to the task center until the canonical runtime can reconnect.
+        window.UploadTaskCenterRuntime?.upsert?.({
+          id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'WAITING',
+          progress:Math.max(0,lastUploadProgress),
+          stage:e?.zipCompletionUncertain?'等待服务器确认':'上传中断，等待续传',
+          detail:String(e?.message||e),serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(multipartTaskId)}`,
+          browserTransfer:false,resumeRequired:!e?.zipCompletionUncertain,pollOwner:'',
+        });
+      }
       const html=`<div class="zip411" data-zip-runtime="1"><div class="alert err">${esc(e.message||e)}</div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`;
       if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
       notify?.(e.message||e);throw e
