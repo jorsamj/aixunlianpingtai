@@ -156,3 +156,13 @@ test('ZIP task center rows reopen their durable runtime instead of becoming dead
   assert.match(runtime,/ZipImportRuntime\?\.openTask\?\./);
   assert.match(runtime,/\.utc-row\[data-utc-kind="zip"\]/);
 });
+
+
+test('paused ZIP task remains visible and can be resumed after page refresh', () => {
+  assert.equal(isUploadTaskActive({id:'zip:paused',kind:'zip',status:'PAUSED'}),true);
+  const html=renderUploadTaskCenterRow({
+    id:'zip:paused',kind:'zip',title:'dataset.zip',status:'PAUSED',stage:'上传已暂停',progress:48,
+  });
+  assert.match(html,/已暂停/);
+  assert.match(html,/utc-reopenable/);
+});
