@@ -146,13 +146,17 @@ export function validateTrainingDevice(draft, devices = [], target = null) {
   return match;
 }
 
-export function trainingSubmitReadiness({draft, base, benchmarkStatus, compatibility, submitting = false} = {}) {
+export function trainingSubmitReadiness({draft, base, target, benchmarkStatus, compatibility, submitting = false} = {}) {
   if (submitting) return {ready: false, reason: 'submitting'};
   if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
   if (draft?.benchmarkReuseEnabled && benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
   if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
   if (base?.blocked) return {ready: false, reason: 'iteration'};
+  if (!base?.hasPrevious && Array.isArray(target?.base_models)) {
+    try { validatePreparedMotherModel({draft, target}); }
+    catch (_) { return {ready: false, reason: 'mother-model-not-ready'}; }
+  }
   if (compatibility !== undefined && compatibility?.ready !== true) {
     return {ready: false, reason: 'material-compatibility-loading'};
   }
@@ -343,8 +347,10 @@ export function installTrainingSubmitRuntime({
       ? state.trainingBenchmarkReuse
       : null;
     const compatibility = materialSummaryRuntime?.compatibilityFor?.(draft);
+    const selectedTargetId = document.getElementById?.('tr429Target')?.value || '';
+    const selectedTarget = (state.targets || []).find(row => String(row?.id || '') === String(selectedTargetId));
     const baseReadiness = trainingSubmitReadiness({
-      draft, base, benchmarkStatus, compatibility, submitting,
+      draft, base, target:selectedTarget, benchmarkStatus, compatibility, submitting,
     });
     const asset = (state.algorithms || []).find(
       row => String(row?.id || '') === String(draft?.algorithmId || '')
