@@ -68,7 +68,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
           default_imgsz: 640,
           default_batch: 4,
         }],
-        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
       }]})
     });
   });
@@ -176,7 +176,7 @@ test('training dialog shows canonical inherited labels horizontally without hist
       framework: 'ultralytics',
       status: 'ready',
       algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 20, default_imgsz: 640, default_batch: 4}],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -281,7 +281,7 @@ test('same selected materials reload canonical labels after a completed label un
         default_imgsz: 640,
         default_batch: 4,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -384,7 +384,7 @@ test('training target is the only automatic early-stop control', async ({page, r
         default_imgsz: 640,
         default_batch: 4,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -481,7 +481,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
         default_imgsz: 640,
         default_batch: 4,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -608,7 +608,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   const scopeId = 'b'.repeat(64);
-  await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n'}]}]})}));
+  await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]})}));
   await page.route('**/api/system/recommendation', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({device:'cpu',batch:4,workers:0})}));
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
