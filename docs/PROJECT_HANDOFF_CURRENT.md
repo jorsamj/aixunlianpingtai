@@ -2838,3 +2838,17 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 >
 > VERSION `42.24.305` 接入数据集、训练任务和 AI 审核 final owner。数据集第 50 页使用一次服务端 numbered query，训练任务仍消费唯一 durable queue snapshot，AI 审核仍消费 CandidateStore authoritative total/offset；共享组件没有 API、业务 rows 或 poller。余下 phase 2/3 入口见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，不得提前声称全平台 CLOSED。
 >
+
+
+---
+
+## 2026-10-09｜ZIP 原图框证据与精简训练弹窗：42.24.341 收口接力
+
+- 唯一工作分支：`feature/external-algorithm-publishing`；本批核心修复提交：`2ff4f2c226e2464fa8c0d1bceda5ff11e35ae93c`。
+- 实际确认：ZIP 样本构建以 image_path 去重时，会丢失同一图片上相同外部类别的第二个及后续框；原有列表匹配还会在每条注释上遍历全部图片路径，对大 ZIP 存在二次复杂度风险。
+- 修复：`platform_core/zip_label_samples.py` 使用预先建立的完整路径/路径后缀/唯一 stem 索引，重复路径含义不明时不猜测；同类最多保留 8 张图，每图显示来自原 ZIP 的所有原始框（受 256 框安全上限约束）。保留兼容字段 `bbox`，新增 `bboxes`；只读样本 API、原 ZIP 图片流和前端叠框同步使用，未写入 AnnotationRepository 或 Material。
+- `static/app.js` 将训练摘要与“高级设置”展开状态关联；默认简洁，高级模式可查看完整摘要，保留唯一 TrainingDraftRuntime / TrainingSubmitRuntime 及原有表单字段。没有修改母模型的 `FOUND` / `.pt` 检查、版本迭代和训练提交合同。
+- 新增自动化测试场景：YOLO 同图同类多框、COCO/VOC 原始 class 与坐标、20,000 个图片路径的同名 split 不混淆；更新浏览器训练标签用例，使其按真实折叠状态展开后验证，并明确模拟已就绪母模型。
+- 修正本批静态缓存入口和回归守卫中的旧缓存标记；不删除、不弱化原有自动化测试。旧提交实际 CI 失败包括：标签规范化工作流检查旧的 ZIP bootstrap 缓存键、前端测试固定旧 app/main 资源键，以及浏览器测试仍要求默认可见的训练摘要。修复后的 CI 需要在本批最终 HEAD 上重新执行确认，旧 SHA 的结果不能算当前通过。
+- 尚未完成的真实验收：Python/Node 正式测试执行结果、GitHub Actions 全绿、1366×768 与窄屏 Chrome 实际截图、真实 YOLO/COCO/VOC 大 ZIP、1k/10k/20k 导入全流程性能、Ubuntu/GPU Agent 首次预置模型训练与后续迭代。没有现场条件时必须报告“未验证”。
+- 安全与现场边界：不部署生产，不合并 main/tag/release；此前失败的 3042 张导入素材由用户在 Ubuntu 服务器手动删除源图片，但 Material/Annotation/任务索引一致性尚未得到只读核实，严禁推断正式记录全部清除或擅自清理。

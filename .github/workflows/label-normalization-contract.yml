@@ -312,7 +312,7 @@ jobs:
                   'server-material-import.js?v=422526',
               ),
               'static/zip-import-bootstrap.mjs': (
-                  'zip-import-runtime.js?v=422612',
+                  'zip-import-runtime.js?v=422616',
               ),
           }
           bodies = {
