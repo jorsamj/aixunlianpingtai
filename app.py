@@ -14112,7 +14112,7 @@ async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     job = read_json(v19_job_file(project_id, upload_id), {})
-    if isinstance(job, dict) and job:
+    if isinstance(job, dict) and job and job.get("status") == "uploading" and result.get("status") == "uploading":
         completed = len(result.get("completed_parts") or [])
         total_parts = int(result.get("total_parts") or 0)
         job.update({
@@ -14128,6 +14128,49 @@ async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number
         })
         v19_write_job(project_id, job)
     return {"ok": True, **result}
+
+
+@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/pause")
+def v19_pause_multipart_upload(project_id: str, upload_id: str):
+    get_project(project_id)
+    job = v19_read_job(project_id, upload_id)
+    if str(job.get("status") or "") not in {"uploading", "paused"}:
+        raise HTTPException(status_code=409, detail="已进入合并或正式导入阶段，不能暂停上传")
+    try:
+        session = _v19_multipart_repository(project_id).pause(upload_id)
+    except (FileNotFoundError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    v19_update_job(
+        project_id, upload_id, status="paused", stage="已暂停，等待继续上传",
+        phase="UPLOAD", uploaded_bytes=int(session.get("received_bytes") or 0),
+        upload_progress=float(session.get("upload_progress") or 0),
+        phase_completed=int(session.get("received_bytes") or 0),
+        message=f"已暂停，保存 {len(session.get('completed_parts') or [])}/{session.get('total_parts')} 个分片",
+    )
+    return {"ok": True, **session}
+
+
+@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/cancel")
+def v19_cancel_multipart_upload(project_id: str, upload_id: str):
+    get_project(project_id)
+    job = v19_read_job(project_id, upload_id)
+    if str(job.get("status") or "") not in {"uploading", "paused", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail="任务已进入合并、解析或正式入库阶段，不可直接清理源文件；请先进行数据完整性核验。",
+        )
+    try:
+        session = _v19_multipart_repository(project_id).cancel(upload_id)
+    except (FileNotFoundError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    v19_update_job(
+        project_id, upload_id, status="cancelled", stage="用户取消上传",
+        phase="CANCELLED", progress=0,
+        uploaded_bytes=0, upload_progress=0, phase_completed=0,
+        message="已取消上传并清理未提交的 ZIP 分片缓存",
+        finished_at=now_iso(),
+    )
+    return {"ok": True, **session}
 
 
 _V19_UPLOAD_FINALIZE_GUARD = threading.Lock()
@@ -14318,6 +14361,8 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
         raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
     job = v19_read_job(project_id, upload_id)
     status = str(job.get("status") or "").strip().lower()
+    if str(session.get("status") or "") in {"paused", "cancelled"}:
+        raise HTTPException(status_code=409, detail="ZIP 会话已暂停或取消，无法合并")
 
     if status in {"selecting", "running", "done"}:
         return v19_public_job(project_id, job, image_limit=500 if status == "selecting" else 0)
