@@ -3845,6 +3845,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const advanced=root.classList.toggle('train-create-show-advanced');
     const button=root.querySelector('[data-train-advanced-toggle]');
     if(button)button.textContent=advanced?'收起高级设置':'高级设置';
+    const summary=root.querySelector('.train-ui-summary-card');
+    if(summary)summary.hidden=!advanced;
   };
   window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;
   window.trainTarget429=function(){const t=selectedTarget429(),sel=document.getElementById('tr429Alg');if(!sel)return;sel.innerHTML=(t?.algorithms||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.name||x.short_name||x.key)}</option>`).join('')||'<option value="">当前资源没有可执行训练算法</option>';const c=cfg429();c.device='auto';window.TrainingDraftRuntime?.update?.({config:c,resource:{device:'auto'}});trainAlg429()};

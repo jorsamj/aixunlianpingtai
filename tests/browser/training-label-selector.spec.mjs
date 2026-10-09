@@ -68,7 +68,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     body: JSON.stringify({targets: [{
       id: 'browser-ultralytics', name: '浏览器测试 Ultralytics', type: 'local', framework: 'ultralytics', status: 'ready',
       algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 10, default_imgsz: 640, default_batch: 2}],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status: 'FOUND'}],
     }]})
   }));
   await page.route('**/api/v62/training-devices', route => route.fulfill({
@@ -143,6 +143,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
   await expect(dialog.locator('.train-create-right')).toBeVisible();
+  await expect(dialog.locator('#trainUiSummary')).toBeHidden();
+  await dialog.getByRole('button', {name: '高级设置', exact: true}).click();
   await expect(dialog.locator('#trainUiSummary')).toBeVisible();
   await expect(dialog.locator('details.train-ui-advanced')).toBeVisible();
 
@@ -164,6 +166,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(smoke).not.toBeChecked();
   await fire.check();
 
+  await dialog.locator('details.train-create-technical > summary').click();
+  await dialog.locator('details.train-create-split-details > summary').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');

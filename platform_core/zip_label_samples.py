@@ -21,26 +21,50 @@ def _read_member(zf, name: str) -> bytes:
         return source.read(_MAX_LABEL_BYTES + 1)[:_MAX_LABEL_BYTES]
 
 
-def _pair_image(reference: str, images: list[str]) -> str:
-    """Avoid a false visual example when duplicate stems exist across splits."""
+def _index_images(images: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Index path suffixes once: 20k images must not require 20k scans per label."""
+    by_suffix: dict[str, str] = {}
+    by_stem: dict[str, str] = {}
+    for image in images:
+        positions = [0] + [i + 1 for i, char in enumerate(image) if char == "/"]
+        for position in positions:
+            suffix = image[position:]
+            previous = by_suffix.get(suffix)
+            if previous is None:
+                by_suffix[suffix] = image
+            elif previous != image:
+                by_suffix[suffix] = ""
+        stem = PurePosixPath(image).stem
+        previous = by_stem.get(stem)
+        if previous is None:
+            by_stem[stem] = image
+        elif previous != image:
+            by_stem[stem] = ""
+    return by_suffix, by_stem
+
+
+def _pair_image(reference: str, lookup: tuple[dict[str, str], dict[str, str]]) -> str:
+    """Fail closed when an original label could reference multiple ZIP images."""
+    by_suffix, by_stem = lookup
     normalized = str(reference or "").replace("\\", "/").lstrip("/")
-    candidates = [
-        image for image in images
-        if image == normalized or image.endswith("/" + normalized)
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
+    if not normalized:
+        return ""
+    exact = by_suffix.get(normalized, "")
+    if exact:
+        return exact
     ref = PurePosixPath(normalized)
     prefixes = str(ref.parent).replace("/labels", "/images").replace("labels/", "images/")
     if prefixes == "labels":
         prefixes = "images"
-    for suffix in _IMAGE_EXTENSIONS:
-        target = f"{prefixes}/{ref.stem}{suffix}".strip("./")
-        exact = [image for image in images if image == target or image.endswith("/" + target)]
-        if len(exact) == 1:
-            return exact[0]
-    same_stem = [image for image in images if PurePosixPath(image).stem == ref.stem]
-    return same_stem[0] if len(same_stem) == 1 else ""
+    possible = {
+        by_suffix.get(f"{prefixes}/{ref.stem}{suffix}".strip("./"), "")
+        for suffix in _IMAGE_EXTENSIONS
+    } - {""}
+    if len(possible) == 1:
+        return next(iter(possible))
+    if len(possible) > 1:
+        return ""
+    return by_stem.get(ref.stem, "")
 
 
 def build_zip_class_samples(
@@ -55,24 +79,35 @@ def build_zip_class_samples(
     cap = max(1, min(12, int(limit)))
     keys = {str(row.get("class_id")) for row in classes}
     samples: dict[str, list[dict]] = {key: [] for key in keys}
-    used: dict[str, set[str]] = {key: set() for key in keys}
+    grouped: dict[str, dict[str, dict]] = {key: {} for key in keys}
     image_paths = [
         str(row.get("path") or "") for row in images
         if PurePosixPath(str(row.get("path") or "")).suffix.lower() in _IMAGE_EXTENSIONS
     ]
 
+    lookup = _index_images(image_paths)
+
     def add(key, path, bbox):
         key = str(key)
-        if key not in samples or len(samples[key]) >= cap or not path or path in used[key]:
+        if key not in samples or not path:
             return
         values = [float(bbox.get(k, 0)) for k in ("cx", "cy", "w", "h")]
-        if not all(0 <= n <= 1 for n in values):
+        if not all(0 <= n <= 1 for n in values) or values[2] <= 0 or values[3] <= 0:
             return
-        used[key].add(path)
-        samples[key].append({
+        normalized_box = dict(zip(("cx", "cy", "w", "h"), values))
+        existing = grouped[key].get(path)
+        if existing is not None:
+            if len(existing["bboxes"]) < 256:
+                existing["bboxes"].append(normalized_box)
+            return
+        if len(samples[key]) >= cap:
+            return
+        row = {
             "image_path": path, "filename": PurePosixPath(path).name,
-            "bbox": dict(zip(("cx", "cy", "w", "h"), values)),
-        })
+            "bbox": normalized_box, "bboxes": [normalized_box],
+        }
+        grouped[key][path] = row
+        samples[key].append(row)
 
     if str(fmt).upper() == "YOLO":
         for name in zf.namelist():
@@ -81,7 +116,7 @@ def build_zip_class_samples(
                 "classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"
             }:
                 continue
-            path = _pair_image(name, image_paths)
+            path = _pair_image(name, lookup)
             if not path:
                 continue
             try:
@@ -116,7 +151,7 @@ def build_zip_class_samples(
                 if not isinstance(annotation, dict):
                     continue
                 original = records.get(str(annotation.get("image_id"))) or {}
-                path = _pair_image(str(original.get("file_name") or ""), image_paths)
+                path = _pair_image(str(original.get("file_name") or ""), lookup)
                 box = annotation.get("bbox") or []
                 try:
                     width, height = float(original.get("width") or 0), float(original.get("height") or 0)
@@ -136,7 +171,7 @@ def build_zip_class_samples(
                 continue
             try:
                 root = ET.fromstring(_read_member(zf, name))
-                path = _pair_image(root.findtext("filename") or name, image_paths)
+                path = _pair_image(root.findtext("filename") or name, lookup)
                 width = float(root.findtext("size/width") or 0)
                 height = float(root.findtext("size/height") or 0)
                 if not path or width <= 0 or height <= 0:

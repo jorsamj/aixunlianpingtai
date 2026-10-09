@@ -101,3 +101,73 @@ def test_zip_pre_import_samples_are_bounded_to_eight_and_do_not_choose_labels():
         )
     assert len(evidence["0"]) == 8
     assert all("target_label" not in row and "mapping" not in row for row in evidence["0"])
+
+
+
+def test_same_image_preserves_multiple_original_boxes_for_its_class():
+    from platform_core.zip_label_samples import build_zip_class_samples
+
+    raw = BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr("train/images/people.jpg", _image("white"))
+        archive.writestr("train/labels/people.txt",
+                         "0 0.2 0.2 0.2 0.2\n0 0.8 0.8 0.1 0.1\n1 0.5 0.5 0.3 0.3\n")
+    raw.seek(0)
+    with zipfile.ZipFile(raw) as archive:
+        samples = build_zip_class_samples(
+            archive, [{"path": "train/images/people.jpg"}],
+            [{"class_id": "0"}, {"class_id": "1"}], "YOLO")
+    assert len(samples["0"]) == 1
+    assert [round(box["cx"], 2) for box in samples["0"][0]["bboxes"]] == [0.2, 0.8]
+    assert len(samples["1"][0]["bboxes"]) == 1
+    assert samples["0"][0]["image_path"] == samples["1"][0]["image_path"]
+
+
+def test_coco_and_voc_source_boxes_use_original_class_ids_and_dimensions():
+    import json
+    from platform_core.zip_label_samples import build_zip_class_samples
+
+    raw = BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr("data/images/coco.jpg", _image("green"))
+        archive.writestr("data/images/voc.jpg", _image("yellow"))
+        archive.writestr("data/annotations.json", json.dumps({
+            "images": [{"id": 41, "file_name": "coco.jpg", "width": 64, "height": 48}],
+            "annotations": [{"image_id": 41, "category_id": 7, "bbox": [8, 12, 16, 24]},
+                            {"image_id": 41, "category_id": 7, "bbox": [32, 12, 8, 12]}]
+        }))
+        archive.writestr("data/Annotations/voc.xml", """<annotation>
+            <filename>voc.jpg</filename><size><width>64</width><height>48</height></size>
+            <object><name>helmet</name><bndbox>
+            <xmin>8</xmin><ymin>12</ymin><xmax>24</xmax><ymax>36</ymax>
+            </bndbox></object></annotation>""")
+    raw.seek(0)
+    images = [{"path": "data/images/coco.jpg"}, {"path": "data/images/voc.jpg"}]
+    with zipfile.ZipFile(raw) as archive:
+        coco = build_zip_class_samples(archive, images, [{"class_id": "7"}], "COCO")
+        voc = build_zip_class_samples(
+            archive, images, [{"class_id": "helmet"}], "Pascal VOC",
+            normalize_name=lambda value: value.strip().lower())
+    assert coco["7"][0]["filename"] == "coco.jpg"
+    assert len(coco["7"][0]["bboxes"]) == 2
+    assert coco["7"][0]["bbox"] == {"cx": 0.25, "cy": 0.5, "w": 0.25, "h": 0.5}
+    assert voc["helmet"][0]["filename"] == "voc.jpg"
+    assert voc["helmet"][0]["bbox"] == coco["7"][0]["bbox"]
+
+
+def test_large_image_inventory_uses_unambiguous_path_pairing():
+    from platform_core.zip_label_samples import build_zip_class_samples
+
+    paths = [{"path": f"dataset/train/images/other_{index}.jpg"} for index in range(20_000)]
+    paths.extend([{"path": "dataset/train/images/same.jpg"},
+                  {"path": "dataset/val/images/same.jpg"}])
+    raw = BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr("dataset/train/labels/same.txt", "0 0.4 0.5 0.2 0.3\n")
+        archive.writestr("dataset/val/labels/same.txt", "1 0.6 0.5 0.2 0.3\n")
+    raw.seek(0)
+    with zipfile.ZipFile(raw) as archive:
+        samples = build_zip_class_samples(archive, paths,
+                     [{"class_id": "0"}, {"class_id": "1"}], "YOLO")
+    assert samples["0"][0]["image_path"] == "dataset/train/images/same.jpg"
+    assert samples["1"][0]["image_path"] == "dataset/val/images/same.jpg"

@@ -409,10 +409,13 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
 
   function sampleCardsMarkup(classId,name,samples){
     const cards=(samples||[]).map((sample,index)=>{
-      const box=labelSampleOverlay(sample.bbox||{});
-      const style=`left:${box.left.toFixed(3)}%;top:${box.top.toFixed(3)}%;width:${box.width.toFixed(3)}%;height:${box.height.toFixed(3)}%`;
+      const overlays=(Array.isArray(sample.bboxes)&&sample.bboxes.length?sample.bboxes:[sample.bbox]).slice(0,256).map(bbox=>{
+        const box=labelSampleOverlay(bbox||{});
+        const style=`left:${box.left.toFixed(3)}%;top:${box.top.toFixed(3)}%;width:${box.width.toFixed(3)}%;height:${box.height.toFixed(3)}%`;
+        return `<i class="label-mapping-sample-box" style="${style}"></i>`;
+      }).join('');
       const url=String(sample.preview_url||'');
-      return `<article class="label-mapping-sample-card"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="查看原图"><span class="label-mapping-sample-image"><img loading="lazy" decoding="async" src="${esc(url)}" alt="${esc(name)} 第 ${index+1} 张"><i class="label-mapping-sample-box" style="${style}"></i></span></a><footer><b>${esc(sample.filename||'ZIP 原图')}</b><span>红框为该外部类别的原始标注</span></footer></article>`;
+      return `<article class="label-mapping-sample-card"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="查看原图"><span class="label-mapping-sample-image"><img loading="lazy" decoding="async" src="${esc(url)}" alt="${esc(name)} 第 ${index+1} 张">${overlays}</span></a><footer><b>${esc(sample.filename||'ZIP 原图')}</b><span>红框为该外部类别的原始标注</span></footer></article>`;
     }).join('');
     return `<div class="row between"><b>外部类别 ${esc(name||('class_'+classId))} · 原图与标注框</b><button class="btn mini" onclick="this.closest('[data-zip-class-samples]').hidden=true">收起</button></div><div class="label-mapping-sample-grid">${cards||'<div class="empty">当前类别未找到可展示的图片与框；请核对 ZIP 原始数据后再决定映射。</div>'}</div>`;
   }

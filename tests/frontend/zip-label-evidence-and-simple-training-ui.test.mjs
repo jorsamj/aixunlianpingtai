@@ -11,7 +11,8 @@ const modalStyles = readFileSync(new URL('../../static/training-create-modal.css
 test('ZIP source class offers real source image and box preview before manual mapping', () => {
   assert.match(zip,/showLabelSamples\('/);
   assert.match(zip,/data-zip-class-samples/);
-  assert.match(zip,/labelSampleOverlay\(sample\.bbox\|\|\{\}\)/);
+  assert.match(zip,/sample\.bboxes/);
+  assert.match(zip,/labelSampleOverlay\(bbox\|\|\{\}\)/);
   assert.match(zip,/classes\/\$\{encodeURIComponent\(String\(classId\)\)\}\/samples/);
   assert.match(zip,/classSampleCache/);
   assert.match(app,/def v19_label_samples\(/);
@@ -43,6 +44,7 @@ test('training first-open uses compact visible model and epochs and expandable t
   assert.match(creation,/data-train-advanced-toggle/);
   assert.match(creation,/train-ui-summary-card" hidden/);
   assert.match(training,/window\.toggleTrainAdvanced429=function/);
+  assert.match(training,/if\(summary\)summary\.hidden=!advanced/);
   assert.match(training,/window\.setQuickEpoch429=function/);
   assert.match(modalStyles,/font-size:15px/);
   assert.match(modalStyles,/train-create-show-advanced/);

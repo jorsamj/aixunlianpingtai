@@ -14794,6 +14794,7 @@ def v19_label_samples(project_id: str, job_id: str, class_id: str):
         {
             "filename": row.get("filename") or "",
             "bbox": row.get("bbox") or {},
+            "bboxes": (row.get("bboxes") or [row.get("bbox") or {}])[:256],
             "preview_url": f"{route}?index={index}",
             "content_url": f"{route}?index={index}",
         }

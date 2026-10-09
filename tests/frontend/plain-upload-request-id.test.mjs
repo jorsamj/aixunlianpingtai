@@ -81,7 +81,7 @@ test('source, project, and file identity are fenced independently', () => {
 });
 
 test('fetch and XHR ordinary image upload paths reuse one request envelope', () => {
-  assert.ok(indexHtml.includes('app.js?v=42.25.328'), 'the new runtime must not use the stale cached app.js');
+  assert.ok(indexHtml.includes('app.js?v=42.25.331'), 'the new runtime must not use the stale cached app.js');
   assert.ok(source.includes("preparePlainUpload411(opt.body)"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(form);const xhr=new XMLHttpRequest()"));
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
