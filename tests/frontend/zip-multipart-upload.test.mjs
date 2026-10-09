@@ -68,6 +68,53 @@ test('resume sends only missing parts and never merges before all acknowledgemen
   assert.equal(body.resume_upload_id,'existing');
 });
 
+test('ZIP complete lost response recovers using the same durable job id without a second complete POST', async () => {
+  const {completeZipUpload}=await import('../../static/modules/zip-import-runtime.js');
+  const requests=[];
+  const fetchImpl=async (url, options={})=>{
+    requests.push({url, method:options.method || 'GET'});
+    if (url.endsWith('/complete')) throw new TypeError('Failed to fetch');
+    return {ok:true,status:200,json:async()=>({id:'job-42',status:'merging',stage:'正在合并 ZIP 分片'})};
+  };
+  const result=await completeZipUpload('p1','job-42',{fetchImpl});
+  assert.equal(result.status,'merging');
+  assert.equal(requests.filter(x=>x.method==='POST').length,1);
+  assert.equal(requests.filter(x=>x.method==='GET').length,1);
+});
+
+test('ZIP complete unknown network state remains recoverable and never blindly retries POST', async () => {
+  const {completeZipUpload}=await import('../../static/modules/zip-import-runtime.js');
+  const requests=[];
+  const fetchImpl=async (url,options={})=>{
+    requests.push({url,method:options.method || 'GET'});
+    throw new TypeError('Failed to fetch');
+  };
+  await assert.rejects(
+    completeZipUpload('p1','job-42',{fetchImpl}),
+    error=>error.zipCompletionUncertain===true && /不要重复上传/.test(error.message) && /job-42/.test(error.message),
+  );
+  assert.deepEqual(requests.map(x=>x.method),['POST','GET']);
+});
+
+test('ZIP complete HTTP rejection is not treated as a network acknowledgement', async () => {
+  const {completeZipUpload}=await import('../../static/modules/zip-import-runtime.js');
+  const requests=[];
+  const fetchImpl=async (url,options={})=>{
+    requests.push({url,method:options.method||'GET'});
+    return {ok:false,status:409,json:async()=>({detail:'ZIP 分片尚未全部上传：44/46'})};
+  };
+  await assert.rejects(completeZipUpload('p1','job-44',{fetchImpl}),/44\/46/);
+  assert.equal(requests.length,1);
+});
+
+test('ZIP runtime has one active task-center polling owner and a declared modal status',()=>{
+  const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/pollOwner:'zip-import-runtime'/);
+  assert.match(source,/function body\(job\)\{\s*const s=status\(job\)/);
+  assert.match(source,/catch \(refreshError\) \{/);
+  assert.match(source,/publishTaskCenterJob\(project,provisional\)/);
+});
+
 test('interrupted ZIP view exposes pause resume and safe cancellation without stacking a second modal',()=>{
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   assert.match(source,/pauseUpload\('/);
@@ -83,5 +130,5 @@ test('failed ZIP network transfer releases stale active controller so same-file 
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   // Paused/cancelled sessions deliberately retain control for later resumption;
   // only failed active transfers should drop the stale browser-owned controller.
-  assert.match(source,/catch\(e\)\{uploading=null;[\s\S]*?if\(uploadControl===control&&control\.state==='active'\)uploadControl=null;[\s\S]*?if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null;/);
+  assert.match(source,/catch\(e\)\{const lastUploadProgress=Number\(uploading\?\.progress\|\|0\);uploading=null;[\s\S]*?if\(uploadControl===control&&control\.state==='active'\)uploadControl=null;[\s\S]*?if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null;/);
 });
