@@ -142,3 +142,39 @@ def test_multipart_assemble_reports_real_byte_progress(tmp_path: Path):
     assert events
     assert events[-1] == (len(payload), len(payload), session['total_parts'], session['total_parts'])
     assert all(current[0] >= previous[0] for previous, current in zip(events, events[1:]))
+
+
+def test_pause_preserves_parts_and_cancel_erases_only_temporary_bytes(tmp_path: Path):
+    repository = ZipMultipartRepository(tmp_path)
+    data = b'z' * (4 * 1024 * 1024)
+    session = repository.create_or_resume(
+        dataset_id='default', file_name='pause.zip', file_size=2 * len(data),
+        fingerprint='pause-resume', part_size=len(data),
+    )
+    key = session['upload_id']
+    repository.write_part(key, 0, BytesIO(data))
+    paused = repository.pause(key)
+    assert paused['status'] == 'paused'
+    assert paused['completed_parts'] == [0]
+    with pytest.raises(ValueError, match='paused or cancelled'):
+        repository.write_part(key, 1, BytesIO(data))
+    resumed = repository.create_or_resume(
+        dataset_id='default', file_name='pause.zip', file_size=2 * len(data),
+        fingerprint='pause-resume', part_size=len(data),
+    )
+    assert resumed['upload_id'] == key
+    assert resumed['status'] == 'uploading'
+    assert resumed['completed_parts'] == [0]
+    stopped = repository.cancel(key)
+    assert stopped['status'] == 'cancelled'
+    assert stopped['completed_parts'] == []
+    assert stopped['received_bytes'] == 0
+    assert not list((tmp_path / 'import_uploads' / key / 'parts').glob('*.part'))
+    assert repository.cancel(key)['status'] == 'cancelled'
+    with pytest.raises(ValueError, match='paused or cancelled'):
+        repository.write_part(key, 1, BytesIO(data))
+    other = repository.create_or_resume(
+        dataset_id='default', file_name='pause.zip', file_size=2 * len(data),
+        fingerprint='pause-resume', part_size=len(data),
+    )
+    assert other['upload_id'] != key
