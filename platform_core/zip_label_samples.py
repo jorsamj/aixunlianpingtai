@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 import xml.etree.ElementTree as ET
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-_MAX_LABEL_BYTES = 4 * 1024 * 1024
+_MAX_LABEL_BYTES = 32 * 1024 * 1024
 
 
 def _read_member(zf, name: str) -> bytes:
@@ -44,7 +44,8 @@ def _pair_image(reference: str, images: list[str]) -> str:
 
 
 def build_zip_class_samples(
-    zf, images: list[dict], classes: list[dict], fmt: str, *, limit: int = 8
+    zf, images: list[dict], classes: list[dict], fmt: str, *,
+    limit: int = 8, normalize_name=None,
 ) -> dict[str, list[dict]]:
     """Inspect source annotations once during scan and save <=8 refs per class.
 
@@ -141,7 +142,8 @@ def build_zip_class_samples(
                 if not path or width <= 0 or height <= 0:
                     continue
                 for obj in root.findall("object"):
-                    key = str(obj.findtext("name") or "").strip()
+                    original_name = str(obj.findtext("name") or "").strip()
+                    key = normalize_name(original_name) if normalize_name else original_name
                     rect = obj.find("bndbox")
                     if rect is None:
                         continue
