@@ -8236,10 +8236,6 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在")
     reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()
-    if not list(asset_algorithm.get("versions") or []):
-        # Resolve prior to enqueue: no hidden GitHub download in resource
-        # planning, Trainer, or a remotely assigned Agent.
-        payload.model = _ready_ultralytics_mother_model(project_id, payload.model)
     try:
         requested_split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
@@ -8289,6 +8285,12 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
                     "ok": True, "task": _public_task(existing_task), "idempotent": True,
                 })
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
+    if not list(asset_algorithm.get("versions") or []):
+        # Idempotent replays are resolved above without doing new filesystem IO.
+        # On first creation, freeze the local path before persisting any task.
+        prepared_model = _ready_ultralytics_mother_model(project_id, payload.model)
+        payload.model = prepared_model
+        raw_request["model"] = prepared_model
     prepare_task_id = f"trainprep_{task_id}"
     request_payload = {
         **raw_request,
