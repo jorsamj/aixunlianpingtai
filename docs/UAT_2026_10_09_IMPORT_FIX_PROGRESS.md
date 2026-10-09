@@ -49,3 +49,19 @@ node --test tests/frontend/zip-multipart-upload.test.mjs tests/frontend/zip-impo
 - Product scope clarification if persistent pause/resume of a **background worker** (rather than safe stop/restart) is required; not silently presented as implemented.
 
 **Status:** CODE PATCHES COMMITTED; INTEGRATION VERIFICATION AND LIVE DATA REPAIR OPEN. Do not close Issue #21 until both are complete.
+
+## 2026-10-09 continuation — independent verification gap and auditor hardening
+
+- Re-read remote development HEAD `0cf233602a34bb27ee2a620e1ca02d2371f10b86` and `VERSION.txt=42.24.336`; its **55/55 check-runs queued** and 21 related runs queued when sampled. This is *not* a successful CI report.
+- Found a concrete acceptance blind spot in `tools/audit_v19_partial_import.py`: the previous report checked source existence, Material/Annotation rows and digest projections, but did **not** recompute source SHA256, check material source size, formal boxes vs report totals or box import provenance. Counts of indexed materials could not establish safety.
+- Additional code commits: `fdbb38828f22` (bounded, read-only SHA256/source/box/lineage/report reconciliation), `2d97a439cfd9` (four new regression tests), `dbf6698e5d10` (portable SQLite read-only URI). `61e8edce0654` wires these and the existing 501-image, stop and multipart regression tests into `.github/workflows/zip-import-durable-runtime.yml`, including a push path filter.
+- New audit is **read-only** and explicitly returns `training_approved=false`. All checks require running against a *consistent backup of production project data* after ensuring its SQLite databases, report.json and local source bytes belong to the same snapshot. Source hashes are checked by default; `--skip-source-hash` is permitted only for incomplete triage, never acceptance.
+- Recommended read-only command (against backup, not directly against mutable production databases):
+
+```bash
+python tools/audit_v19_partial_import.py --project-root /PATH/TO/CONSISTENT_PROJECT_BACKUP --job-id da0ac602ba454a33
+```
+
+- If Material references a remote or non-default local Storage Source, the auditor reports `source_requires_provider_verification` instead of claiming missing/verified bytes. Provider-specific HEAD/GET + SHA256 comparisons must be completed separately.
+- An audit can detect mismatches but **does not repair** them. Before proposing recovery: confirm current running server release/worker version, capture backup manifest, compare all 3042 IDs including missing/duplicate Material and formal GT, protect any already-correct GT, then design a separately reviewed idempotent recovery with dry-run/conflict-detection. Do not retry the failed import, delete bytes or release data to training.
+- **No local execution or CI pass is claimed for new tests yet**; Python runner/repo clone and production SSH access were not available in this continuation. GitHub actions must reach terminal success on the final exact HEAD before launch discussion. Worker extraction pause/resume remains outside the implemented scope (upload pause + guarded worker stop are implemented).
