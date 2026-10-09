@@ -6496,6 +6496,40 @@ def resolve_ultralytics_model(model_value: str, project_id: Optional[str] = None
     return resolver.resolve(model_value, project_id=project_id)
 
 
+def _ready_ultralytics_mother_model(project_id: str, requested: str) -> str:
+    """Require a real local weight, never a downloadable filename, at submission."""
+    reference = str(requested or "").strip()
+    if not reference:
+        raise HTTPException(status_code=409, detail="尚未选择母模型，请先到训练资源上传 .pt 权重")
+    resolution = resolve_ultralytics_model(reference, project_id)
+    candidate = resolution.path
+    if not resolution.found or candidate is None:
+        raise HTTPException(status_code=409, detail=f"母模型 {Path(reference).name} 未就绪；请先在训练资源预置 .pt 权重，训练时不自动下载")
+    candidate = candidate.resolve()
+    if candidate.suffix.lower() != ".pt" or not candidate.is_file() or candidate.stat().st_size < 1024:
+        raise HTTPException(status_code=409, detail="母模型不是可用的本地 .pt 权重文件")
+    return str(candidate)
+
+
+def _prepared_mother_model_rows() -> List[Dict[str, Any]]:
+    """Read-only view of the existing ModelResolver DATA_DIR/models directory."""
+    root = DATA_DIR / "models"
+    if not root.is_dir():
+        return []
+    result: List[Dict[str, Any]] = []
+    for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_file() or path.suffix.lower() != ".pt" or path.stat().st_size < 1024:
+            continue
+        result.append({
+            "label": f"{path.name}（已预置）", "name": path.name,
+            "value": str(path.resolve()), "framework": "ultralytics",
+            "train_framework": "ultralytics", "source": "preinstalled",
+            "model_status": "FOUND", "found": True, "downloadable": False,
+            "size_bytes": path.stat().st_size, "trainable": True,
+        })
+    return result
+
+
 def resolve_ultralytics_model_path(model_value: str, project_id: Optional[str] = None) -> str:
     """Backward-compatible string wrapper around structured model resolution."""
     resolution = resolve_ultralytics_model(model_value, project_id)
@@ -6941,10 +6975,51 @@ def training_catalog():
     return {"ok": True, **TRAINING_CATALOG}
 
 
+@app.post("/api/v63/base-models/upload")
+async def upload_preinstalled_base_model(file: UploadFile = File(...)):
+    """Explicit opt-in preload to durable storage. Does not invoke Ultralytics."""
+    filename = str(file.filename or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}\\.pt", filename, re.IGNORECASE):
+        raise HTTPException(status_code=422, detail="母模型文件名仅支持字母数字点横线下划线，必须为 .pt")
+    root = DATA_DIR / "models"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / filename
+    temp = root / f".{uuid.uuid4().hex}.model-upload"
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with temp.open("xb") as stream:
+            while chunk := await file.read(4 * 1024 * 1024):
+                size += len(chunk)
+                if size > 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="母模型最大允许 1 GiB")
+                digest.update(chunk)
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if size < 1024:
+            raise HTTPException(status_code=422, detail="母模型文件过小")
+        with FileLock(str(root / f".{filename}.lock"), timeout=30):
+            if path.is_file():
+                if path.stat().st_size != size or sha256_file(path) != digest.hexdigest():
+                    raise HTTPException(status_code=409, detail="同名权重内容不同；请换名称上传，不能静默覆盖母模型")
+                reused = True
+            else:
+                os.replace(temp, path)
+                reused = False
+        return {"ok": True, "reused": reused, "name": filename, "path": str(path.resolve()),
+                "size_bytes": size, "sha256": digest.hexdigest(), "model_status": "FOUND"}
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="相同母模型正在上传，请稍后重试") from error
+    finally:
+        temp.unlink(missing_ok=True)
+        await file.close()
+
+
 @app.get("/api/base_models")
 def list_base_models(project_id: Optional[str] = None):
     """训练页基础模型下拉框。区分 Ultralytics 可训练权重和飞桨模型源。"""
-    items: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = _prepared_mother_model_rows()
     for name in ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]:
         resolution = resolve_ultralytics_model(name, project_id)
         items.append({
@@ -6954,7 +7029,7 @@ def list_base_models(project_id: Optional[str] = None):
             "framework_key": "ultralytics",
             "train_framework": "ultralytics",
             "trainable": True,
-            "note": "已发现本地权重。" if resolution.found else "尚未下载，首次使用时可自动下载。",
+            "note": "已发现本地权重。" if resolution.found else "尚未预置，须先在训练资源上传，训练时不自动下载。",
             **resolution.as_dict(),
         })
     active_env = get_active_ultralytics_env()
