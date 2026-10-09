@@ -1184,3 +1184,9 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .zip-label-confirm .label-mapping-sample-card footer b{font-size:12px}
 .zip-label-confirm .label-mapping-sample-card footer span{font-size:11px}
 @media(max-width:840px){.zip-label-confirm .label-mapping-review-row .row{min-width:0}.zip-label-confirm .label-mapping-sample-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Align source bounding boxes to actual image pixels, including portrait frames. */
+.zip-label-confirm.storage61-import-mapping{max-height:min(74vh,820px);overflow-y:auto}
+.zip-label-confirm .label-mapping-review-rows{max-height:360px;overflow-y:auto}
+.zip-label-confirm .label-mapping-sample-image{aspect-ratio:auto;height:auto;min-height:0}
+.zip-label-confirm .label-mapping-sample-image img{display:block;width:100%;height:auto;max-height:none;object-fit:fill}
