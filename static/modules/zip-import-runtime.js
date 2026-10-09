@@ -397,12 +397,22 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   async function upload(input){
     const file=input?.files?.[0];if(!file)return null;if(!/\.zip$/i.test(file.name||'')){notify?.('请选择 ZIP 压缩包');input.value='';return null}const project=pid();if(!project){notify?.('当前项目未加载，请刷新后重试');return null}
-    let multipartTaskId='';uploading={progress:0,message:'准备上传',uploadId:''};window.closeModal?.();open();render();
+    let multipartTaskId='';uploading={progress:0,message:'准备上传',uploadId:''};
+    // The chooser already owns a modal. Replace that modal's content instead
+    // of closing it asynchronously and stacking a second, inert dialog.
+    const chooserBody=input.closest?.('.modal')?.querySelector('.modal-body');
+    if(chooserBody){
+      if(window.ModalContentRuntime?.replace)window.ModalContentRuntime.replace(chooserBody,uploadBody());
+      else chooserBody.innerHTML=uploadBody();
+      const title=chooserBody.closest('.modal')?.querySelector('.modal-title');
+      if(title)title.textContent='ZIP 数据导入';
+    }else open();
+    render();
     try{
       const response=await uploadZipMultipartJob(project,file,{fetchImpl,onSession:session=>{multipartTaskId=String(session.upload_id||'');const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false})},onTransfer:e=>{const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false});render()},onPhase:phase=>{uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false});render()}});uploading=null;
       const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};knownJobs.set(String(provisional.id),provisional);writeIntent(project,provisional.id,'deferred');
       await reconcile('upload');open();return response;
-    }catch(e){uploading=null;window.modal?.('ZIP 数据导入',`<div class="alert err">${esc(e.message||e)}</div>`,true);notify?.(e.message||e);throw e}finally{input.value=''}
+    }catch(e){uploading=null;const html=`<div class="zip411" data-zip-runtime="1"><div class="alert err">${esc(e.message||e)}</div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`;if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);notify?.(e.message||e);throw e}finally{input.value=''}
   }
 
   function forgetTerminal(){
