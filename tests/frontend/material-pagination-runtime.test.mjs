@@ -165,3 +165,30 @@ test('label remap invalidation drops the stored paginated material card snapshot
   assert.match(invalidator,/state\.images = \[\]/);
   assert.match(invalidator,/invalidateFullPool61\(\)/);
 });
+
+test('failed label remap refreshes persisted material truth even after a partial worker commit',()=>{
+  const app=fs.readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const start=app.indexOf('  async function refreshLabelRemapAfterFailure414(');
+  const end=app.indexOf('  async function refreshLabelSchemaAfterRemap414(',start);
+  assert.ok(start>=0&&end>start);
+  const failed=app.slice(start,end);
+  assert.match(failed,/invalidateTrainingMaterialSummaryAfterLabelMutation414\(\)/);
+  assert.match(failed,/await refreshLabels414\(/);
+  assert.match(failed,/await window\.reloadMaterialPage61\?\.\(\)/);
+  assert.match(failed,/showLabelRemapReview414\(task,source,target\)/);
+  const poll=app.slice(app.indexOf('  window.pollImportRemap414='),app.indexOf('  window.cancelImportRemap414='));
+  assert.match(poll,/return refreshLabelRemapAfterFailure414\(task,source,target\)/);
+});
+
+test('partial remap shows failed counts, reason, and existing Full Audit recovery action',()=>{
+  const app=fs.readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const start=app.indexOf('  function showLabelRemapReview414(');
+  const end=app.indexOf('  async function refreshLabelRemapAfterFailure414(',start);
+  assert.ok(start>=0&&end>start);
+  const review=app.slice(start,end);
+  assert.match(review,/task\?\.error_examples\?\.\[0\]/);
+  assert.match(review,/成功 \$\{completed\} 张 · 失败 \$\{failed\} 张/);
+  assert.match(review,/setPage\('标签管理'\);startLabelIntegrityAudit414\(\)/);
+  const success=app.slice(app.indexOf('  async function refreshLabelSchemaAfterRemap414('),app.indexOf('  window.pollImportRemap414='));
+  assert.equal((success.match(/if\(failed\)showLabelRemapReview414\(task,source,target\)/g)||[]).length,3);
+});

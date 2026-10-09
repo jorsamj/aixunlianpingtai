@@ -2893,3 +2893,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 训练任务名缺失时展示稳定任务短 ID，不再显示笼统“训练任务”；运行中/排队中/暂停中任务不展示非法删除操作，仅已结束任务可删除。
 - 随机试验模式比例以全量冻结素材为分母：先预留试验，再换算剩余池内验证比例，保证全量目标比例（受不可拆分组件及四舍五入约束）；拒绝验证与试验之和 ≥100%；训练/验证/试验保持隔离与 leakage guard。创建弹窗三种比例联动，默认验证、试验各20%。
 - 本次仅长期开发分支提交；无生产部署，无 `VERSION.txt` 修改。
+
+
+### 2026-10-09 四组修复的追加静态验收（只读代码复核后补丁）
+
+- 对交接 HEAD `7def2bfd` 重新确认：VERSION `42.24.342`，21/21 Actions、55/55 Checks completed success；检查 ZIP 前台任务身份、正式标注 Remap Worker、训练任务终态操作、60/20/20 分组冻结算法；以上是 CI/代码证据，不代表生产数据已经复核。
+- 发现并补齐一个边界：标签统一 Worker 可能在已提交部分正式标注后以 FAILED/CANCELLED/BLOCKED 终止；此前前端仅 toast，不使训练素材摘要与数据集分页缓存失效。现在失败终态同样按服务端 Ground Truth 重新加载；部分成功/失败显示成功数、失败数、错误原因，并提供复用现有 Label Integrity Full Audit 的人工复核入口。
+- 保留现有 AnnotationRepository / MaterialRepository / REMAP_ANNOTATION_LABELS / PollRegistry Owner；不修改真实生产数据，不自动退役或重试失败标签，不对 FAILED 伪称没有成功写入。补充前端源代码回归断言；最新提交的 CI 结果仍需按新 HEAD 另行核对。

@@ -5006,6 +5006,27 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const ids=window.TrainingDraftRuntime?.materialIds?.()||[];
     if(ids.length)void runtime?.refresh?.(ids,{force:true});
   }
+  function showLabelRemapReview414(task,source,target){
+    const failed=Math.max(0,Number(task?.failed??task?.result?.failed??0));
+    const completed=Math.max(0,Number(task?.succeeded??task?.result?.succeeded??0));
+    const status=String(task?.status||'').toUpperCase();
+    const example=task?.error_examples?.[0];
+    const reason=String((typeof example==='string'?example:example?.error)||task?.error||'部分标注可能已更新，请核验实际来源标签引用。');
+    const heading=status==='PARTIAL_SUCCESS'?'标签统一部分成功':status==='CANCELLED'?'标签统一已取消':'标签统一未完成';
+    modal('标签统一待复核',`<div class="label414-remap-review"><div class="alert warn"><b>${esc(heading)} · 成功 ${completed} 张 · 失败 ${failed} 张</b><span>${esc(reason)}</span><small>${esc(source)} → ${esc(target)}。可能已有部分正式标注和素材投影更新；不得据此认为来源标签已完全清零。</small></div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button><button class="btn primary" onclick="closeModal();setPage('标签管理');startLabelIntegrityAudit414()">运行 Full Audit 复核</button></div></div>`,true);
+  }
+  async function refreshLabelRemapAfterFailure414(task,source,target){
+    // A worker can fail after committing one or more annotation/projection batches.
+    // Error status does not imply that persisted Ground Truth is unchanged.
+    invalidateTrainingMaterialSummaryAfterLabelMutation414();
+    try{
+      await refreshLabels414(state.annotationRemapOrigin414==='label-schema');
+      if(state.page==='数据集')await window.reloadMaterialPage61?.();
+      if(state.page==='标签管理')window.drawLabel414?.();
+    }catch(error){toast(`标签统一后刷新失败：${error?.message||error}`)}
+    showLabelRemapReview414(task,source,target);
+    state.annotationRemapOrigin414='';
+  }
   async function refreshLabelSchemaAfterRemap414(task,source,target){
     invalidateTrainingMaterialSummaryAfterLabelMutation414();
     await refreshLabels414(true);
@@ -5014,6 +5035,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(progressVisible)closeModal();
     if(state.page==='标签管理')window.drawLabel414?.();
     const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),scopeChanged=Number(task?.result?.changed_scope_images??0),failed=Number(task?.failed||0);
+    if(failed)showLabelRemapReview414(task,source,target);
     toast(failed?`标签统一完成：${changed} 个框、${scopeChanged} 个负样本范围已更新，${failed} 张需复核；来源标签未退役`:`标签统一完成：${source} → ${target} · ${changed} 个框 · ${scopeChanged} 个负样本范围 · 来源标签已退役`);
     state.annotationRemapOrigin414='';
   }
@@ -5035,6 +5057,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     }else if(state.page==='数据集'){
       renderDatasets424();
     }
+    if(failed)showLabelRemapReview414(task,source,target);
     toast(failed?`标签统一完成：${changed} 个框已更新，${failed} 张需复核`:`标签统一完成：${changed} 个框 · ${source} → ${target}`);
   }
   async function refreshLabelIntegrityAfterRepair414(task,source,target){
@@ -5042,7 +5065,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     if(state.page==='数据集')await window.reloadMaterialPage61?.();
     if(document.getElementById('importRemapStage414'))closeModal();
     const box=document.getElementById('labelIntegrity414Body');if(box)box.innerHTML='<div class="empty compact"><b>本轮修复已完成，请重新运行 Full Audit 验证</b><span>旧审计只是一份诊断快照，不会被当作后续修改依据。</span></div>';
-    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);toast(failed?`安全修复完成：${changed} 个框已更新，${failed} 张需人工复核`:`安全修复完成：${source} → ${target} · ${changed} 个框`);state.annotationRemapOrigin414='';
+    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);if(failed)showLabelRemapReview414(task,source,target);toast(failed?`安全修复完成：${changed} 个框已更新，${failed} 张需人工复核`:`安全修复完成：${source} → ${target} · ${changed} 个框`);state.annotationRemapOrigin414='';
   }
   window.pollImportRemap414=async function(taskId,source,target){
     try{
@@ -5061,7 +5084,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       if(['FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)){
         window.PollRegistryRuntime?.clear?.('annotation-label-remap');
         window.renderLabelRemapBanner414?.(null);
-        return toast(task?.error_examples?.[0]?.error||'标签统一任务未完成，请查看任务状态');
+        return refreshLabelRemapAfterFailure414(task,source,target);
       }
       armImportRemap414(taskId,source,target);
     }catch(e){
