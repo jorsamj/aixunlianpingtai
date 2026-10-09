@@ -145,6 +145,7 @@ from platform_core.storage.import_tasks import (
     server_import_dir,
 )
 from platform_core.zip_multipart import ZipMultipartRepository
+from platform_core.zip_label_samples import build_zip_class_samples
 from platform_core.storage.zip_import import (
     ServerZipImportError,
     resolve_server_zip,
@@ -13448,6 +13449,19 @@ def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, A
     write_json(path, list(images or []))
 
 
+def v19_class_samples_file(project_id: str, job_id: str) -> Path:
+    return v19_job_dir(project_id, job_id) / "scan-class-samples.json"
+
+
+def v19_write_class_samples(project_id: str, job_id: str, samples: Dict[str, List[Dict[str, Any]]]):
+    atomic_write_json(v19_class_samples_file(project_id, job_id), dict(samples or {}))
+
+
+def v19_read_class_samples(project_id: str, job_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    value = read_json(v19_class_samples_file(project_id, job_id), {})
+    return value if isinstance(value, dict) else {}
+
+
 def v19_read_scan_images(project_id: str, job_id: str) -> List[Dict[str, Any]]:
     path = v19_scan_images_file(project_id, job_id)
     if path.is_file():
@@ -13832,6 +13846,10 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
                 detected_format = "YOLO"
 
+        # Only bounded per-class source refs are stored, never preview image
+        # bytes or guessed target labels. The API serves images from source.zip
+        # before any AnnotationRepository/MaterialRepository mutation.
+        class_samples = build_zip_class_samples(zf, images, external_classes, detected_format, limit=8)
         if progress_cb:
             try:
                 progress_cb(
@@ -13844,6 +13862,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 pass
 
     return {
+        "class_samples": class_samples,
         "file_count": file_count,
         "image_count": len(images),
         "images": images,
@@ -14426,7 +14445,9 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
         if scan.get("image_count", 0) == 0:
             raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
         scan_images = list(scan.pop("images", []) or [])
+        scan_class_samples = dict(scan.pop("class_samples", {}) or {})
         v19_write_scan_images(project_id, upload_id, scan_images)
+        v19_write_class_samples(project_id, upload_id, scan_class_samples)
         latest = v19_read_job(project_id, upload_id)
         finished = {
             **latest, **scan,
@@ -14454,6 +14475,7 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
                 else "后台扫描完成，等待开始正式导入"
             ),
             "scan_images_ref": "scan-images.json",
+            "class_samples_ref": "scan-class-samples.json",
             "uploaded_at": latest.get("uploaded_at") or now_iso(),
             "updated_at": now_iso(),
         }
@@ -14586,7 +14608,9 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
     scan_images = list(scan.pop("images", []) or [])
+    scan_class_samples = dict(scan.pop("class_samples", {}) or {})
     v19_write_scan_images(project_id, job_id, scan_images)
+    v19_write_class_samples(project_id, job_id, scan_class_samples)
     job = {
         "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
         "batch_id": job_id,
@@ -14602,6 +14626,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
             else "上传与ZIP校验完成，等待开始后台导入"
         ),
         "scan_images_ref": "scan-images.json",
+        "class_samples_ref": "scan-class-samples.json",
         "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
     }
     v19_write_job(project_id, job)
@@ -14737,6 +14762,71 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
     )
     th.start()
     return v19_public_job(project_id, v19_read_job(project_id, job_id))
+
+
+def _v19_zip_class_sample(project_id: str, job_id: str, class_id: str, index: int) -> Dict[str, Any]:
+    get_project(project_id)
+    job = v19_read_job(project_id, job_id)
+    if str(job.get("status") or "").lower() != "selecting":
+        raise HTTPException(status_code=409, detail="仅待确认的 ZIP 导入任务可查看原始标签样本")
+    if str(class_id) not in {str(row.get("class_id")) for row in job.get("external_classes", [])}:
+        raise HTTPException(status_code=404, detail="外部标签不存在")
+    samples = v19_read_class_samples(project_id, job_id).get(str(class_id), [])
+    if index < 0 or index >= len(samples):
+        raise HTTPException(status_code=404, detail="该标签没有可预览的样本")
+    return dict(samples[index])
+
+
+@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/samples")
+def v19_label_samples(project_id: str, job_id: str, class_id: str):
+    _v19_zip_class_sample_check = v19_read_job(project_id, job_id)
+    get_project(project_id)
+    if str(_v19_zip_class_sample_check.get("status") or "").lower() != "selecting":
+        raise HTTPException(status_code=409, detail="当前 ZIP 已不在标签确认阶段")
+    if str(class_id) not in {str(row.get("class_id")) for row in _v19_zip_class_sample_check.get("external_classes", [])}:
+        raise HTTPException(status_code=404, detail="外部标签不存在")
+    samples = v19_read_class_samples(project_id, job_id).get(str(class_id), [])[:8]
+    route = (
+        f"/api/v19/projects/{quote(project_id, safe='')}/import/jobs/{quote(job_id, safe='')}"
+        f"/classes/{quote(str(class_id), safe='')}/sample-content"
+    )
+    return {"job_id": job_id, "class_id": str(class_id), "samples": [
+        {
+            "filename": row.get("filename") or "",
+            "bbox": row.get("bbox") or {},
+            "preview_url": f"{route}?index={index}",
+            "content_url": f"{route}?index={index}",
+        }
+        for index, row in enumerate(samples)
+    ], "count": len(samples)}
+
+
+@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/sample-content")
+def v19_label_sample_content(project_id: str, job_id: str, class_id: str, index: int = Query(ge=0, le=11)):
+    sample = _v19_zip_class_sample(project_id, job_id, class_id, index)
+    image_path = str(sample.get("image_path") or "")
+    suffix = Path(image_path).suffix.lower()
+    content_types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    if suffix not in content_types:
+        raise HTTPException(status_code=415, detail="不支持预览此图片格式")
+    archive = v19_job_dir(project_id, job_id) / "source.zip"
+    if not archive.is_file():
+        raise HTTPException(status_code=409, detail="ZIP 原始文件已不可用，无法查看样本")
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            entry = zf.getinfo(image_path)
+            if entry.is_dir() or entry.file_size > 12 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="预览图片超过 12 MiB 限制")
+            with zf.open(entry) as source:
+                content = source.read(12 * 1024 * 1024 + 1)
+            if len(content) > 12 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="预览图片超过 12 MiB 限制")
+    except (KeyError, zipfile.BadZipFile, RuntimeError, OSError) as error:
+        raise HTTPException(status_code=404, detail="ZIP 样本已不可用") from error
+    return Response(content=content, media_type=content_types[suffix], headers={
+        "Cache-Control": "private, max-age=60",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.get("/api/v19/projects/{project_id}/import/jobs")
