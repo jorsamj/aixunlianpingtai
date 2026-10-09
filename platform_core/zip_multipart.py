@@ -289,8 +289,13 @@ class ZipMultipartRepository:
                     target = self._part_path(upload_id, number)
                     target.unlink(missing_ok=True)
                     target.with_suffix('.tmp').unlink(missing_ok=True)
-                # Keep only a bounded-lived cancelled receipt; no ZIP bytes.
-                return self._public(self._read(upload_id))
+                # Preserve only bounded-lived cancellation metadata for audit.
+                receipt = self._public(self._read(upload_id))
+        # Part locks are released here. Clear their zero-byte lock files and
+        # the empty parts directory as well as the actual temporary ZIP bytes.
+        with self.lock:
+            shutil.rmtree(self._dir(upload_id) / 'parts', ignore_errors=True)
+        return receipt
 
     def write_part(self, upload_id: str, part_number: int, stream: BinaryIO) -> dict[str, Any]:
         # Different part numbers are independent and may be written in parallel.
