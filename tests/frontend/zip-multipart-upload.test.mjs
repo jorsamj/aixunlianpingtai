@@ -115,6 +115,23 @@ test('ZIP runtime has one active task-center polling owner and a declared modal 
   assert.match(source,/publishTaskCenterJob\(project,provisional\)/);
 });
 
+test('legacy ZIP dock patches text without replacing its content during progress updates',()=>{
+  const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  const render=source.match(/function render\(\)\{([\s\S]*?)\n  function clearPoll\(\)/)?.[1];
+  assert.ok(render, 'ZIP render must be present');
+  assert.doesNotMatch(render,/d\.innerHTML=/);
+  assert.match(render,/updateDockContent\(d,/);
+  assert.match(source,/data-zip-dock-title/);
+  assert.match(source,/heading\.textContent!==title/);
+});
+
+test('unconfirmed ZIP network completion leaves durable status polling enabled but blocks false upload progress',()=>{
+  const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/zipCompletionUncertain=true/);
+  assert.match(source,/status:'WAITING'/);
+  assert.match(source,/browserTransfer:false,resumeRequired:true,pollOwner:''/);
+});
+
 test('interrupted ZIP view exposes pause resume and safe cancellation without stacking a second modal',()=>{
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   assert.match(source,/pauseUpload\('/);
