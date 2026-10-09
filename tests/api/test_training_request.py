@@ -8,6 +8,25 @@ import pytest
 from PIL import Image
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _preinstalled_mother_model_for_existing_training_contracts():
+    """The training API suite uses a preloaded fixture rather than the retired
+    implicit GitHub download from an official model name."""
+    import app as platform
+
+    target = platform.DATA_DIR / "models" / "yolo11n.pt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    previous = target.read_bytes() if target.is_file() else None
+    target.write_bytes(b"preinstalled-test-mother" * 128)
+    try:
+        yield
+    finally:
+        if previous is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.write_bytes(previous)
+
+
 def test_server_generated_training_task_id_uses_canonical_contract():
     import app as app_module
 
