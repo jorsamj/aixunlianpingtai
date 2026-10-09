@@ -37,6 +37,7 @@ on:
       - 'tests/api/test_v19_import_scalability.py'
       - 'tests/api/test_v19_import_report_externalization.py'
       - 'docs/PROJECT_HANDOFF_CURRENT.md'
+      - 'docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md'
       - 'docs/BUG_AUDIT_2026-09-17.md'
       - '.github/workflows/zip-import-durable-runtime.yml'
 
