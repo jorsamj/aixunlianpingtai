@@ -1,5 +1,20 @@
+<!-- LIVE_UAT_2026_10_09_MOTHER_MODEL_339 -->
+> ## 2026-10-09 母模型预置 / 训练选择 / GPU Agent 安全对接（Issue #22）
+>
+> 当前代码目标版本 `42.24.339`。用户确认首次训练不能依赖 Ultralytics 在训练准备时下载 `yolo11n.pt`；应提前上传可信 `.pt` 母模型，创建训练任务时明确选择。
+>
+> **已提交代码（待 CI 验收）**：`/api/v63/base-models/upload` 采用分片流式接收（4 MiB）、大小上限（1 GiB）、SHA256 校验、同名锁与无覆盖原子提交至已有 `DATA_DIR/models`；`/api/base_models` 和 `/api/training_options` 读取实际本地文件，而非把官方可下载名称视为已就绪。训练资源页新增母模型上传及已预置列表，创建训练弹窗新增首次训练母模型选项。TrainingSubmitRuntime 限制仅选真实已就绪权重并使未准备好时按钮不可提交；后端 v12 Durable Training 再验证文件并冻结绝对路径，保持 request_identity/idempotent replay 与 Frozen Label/Model SHA 合同；Remote TrainingPrepare 原有对象存储传输承担 Agent 分发，拒绝把未经预置的 official 名称交给新的任务下载。**已有算法版本仍按之前 verified best.pt 继承，不改版次 lineage Owner。**
+>
+> 测试：新增 `tests/api/test_mother_model_preinstall.py`、`tests/frontend/mother-model-preinstall.test.mjs`，扩展 `training-submit.test.mjs`、远程准备集成测试、浏览器训练入口 mock，CI 契约纳入 `remote-training-runtime.yml` 与 `training-create-first-open.yml`。JS V8 静态解析已通过（非 Node/pytest/Chrome 执行），确切 HEAD CI 仍必须查证 terminal-success，队列未跑完不能视为完成。
+>
+> 安全验收：需真实 Ubuntu Linux + GPU Agent 对含有效 YOLO .pt 的首次训练进行首次上传、离线断网、缓存复用、训练资源解析、原始模型转换与后续版本续训；需验证 Web/Worker 运行账户对 `DATA_DIR/models` 的目录和文件权限。自定义 `.pt` 可能包含 Python pickle，不得接受非可信来源权重。远端遗留 already-staged official-type 历史任务不能当成已迁移；本轮新任务从 control plane 拒绝该类型。
+>
+> **本轮绝不操作生产文件、训练数据、服务重启或 main/tag/release。**
+>
+<!-- LIVE_UAT_2026_10_09_MOTHER_MODEL_339_END -->
+
 <!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
-> 2026-10-09 接手优先级切换到 Issue #21：7 项生产 UAT 修复验收。最新修复及生产风险边界详见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`；新增加只读生产 ZIP 审计 SHA256/正式 GT 框数/lineage 和 CI 合同。3042 张失败导入未恢复，HEAD CI 尚未证实通过；生产/主分支不动，Issue 保持 OPEN。不得继续普通分页改造或混入 Issue #20。
+> 2026-10-09 接手优先级切换到 Issue #21：7 项生产 UAT 修复验收。最新修复及生产风险边界详见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`；新增加只读生产 ZIP 审计 SHA256/正式 GT 框数/lineage 和 CI 合同。此前失败 ZIP 的 3042 张图片已被用户在 Ubuntu 上直接删除，但 Material/Annotation DB 索引是否同步清除尚未只读核验；HEAD CI 尚未证实通过，生产/主分支不动，Issue 保持 OPEN。不得继续普通分页改造或混入 Issue #20。
 
 <!-- LIVE_HANDOFF_2026_10_08_AUDIT_099_098 -->
 > ## 2026-10-08 当前接手入口：AUDIT-099 / AUDIT-098 commit fence 已实现（最高优先级）
