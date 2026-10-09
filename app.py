@@ -7034,7 +7034,8 @@ def list_base_models(project_id: Optional[str] = None):
         })
     active_env = get_active_ultralytics_env()
     for m in active_env.get("models", []) if isinstance(active_env.get("models", []), list) else []:
-        if str(m.get("path", "")).lower().endswith(".pt"):
+        candidate = Path(str(m.get("path") or ""))
+        if candidate.suffix.lower() == ".pt" and candidate.is_file() and candidate.stat().st_size >= 1024:
             items.append({
                 "label": f"已检测 Ultralytics 环境模型：{m.get('name')}",
                 "value": m.get("path"),
@@ -7067,7 +7068,8 @@ def list_base_models(project_id: Optional[str] = None):
             pass
     local = read_json(LOCAL_MODELS_FILE, {})
     for m in (local.get("items", []) if isinstance(local, dict) else []):
-        if m.get("trainable_current_platform"):
+        local_candidate = Path(str(m.get("path") or ""))
+        if m.get("trainable_current_platform") and local_candidate.suffix.lower() == ".pt" and local_candidate.is_file() and local_candidate.stat().st_size >= 1024:
             items.append({
                 "label": f"本机 .pt：{m.get('name')}",
                 "value": m.get("path"),
@@ -7143,8 +7145,9 @@ def training_options(project_id: Optional[str] = None):
         algs = [a for a in TRAINING_CATALOG["algorithms"] if a.get("framework") == "ultralytics"]
         models = []
         for m in ultra.get("models", []) if isinstance(ultra.get("models", []), list) else []:
-            if str(m.get("path", "")).lower().endswith(".pt"):
-                models.append({"label": m.get("name") or Path(m.get("path", "")).name, "value": m.get("path"), "framework":"ultralytics", "source":"env", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
+            candidate = Path(str(m.get("path") or ""))
+            if candidate.suffix.lower() == ".pt" and candidate.is_file() and candidate.stat().st_size >= 1024:
+                models.append({"label": m.get("name") or candidate.name, "value": str(candidate.resolve()), "framework":"ultralytics", "source":"env", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
         # Shared MODEL directory is already searched by canonical ModelResolver.
         # Never advertise a missing official name as a training-ready weight.
         models.extend(_prepared_mother_model_rows())
@@ -12751,7 +12754,8 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
             items.append({"label": f"本机模型：{m.get('name')}", "model_name": f"local::{m.get('path')}", "model_source": "local", "path": m.get("path")})
     active_env = get_active_ultralytics_env()
     for m in active_env.get("models", []) if isinstance(active_env.get("models", []), list) else []:
-        if str(m.get("path", "")).lower().endswith(".pt"):
+        candidate = Path(str(m.get("path") or ""))
+        if candidate.suffix.lower() == ".pt" and candidate.is_file() and candidate.stat().st_size >= 1024:
             items.append({"label": f"Ultralytics环境：{m.get('name')}", "model_name": f"local::{m.get('path')}", "model_source": "local", "path": m.get("path")})
     # 飞桨内置/配置模型：只有检测到 paddlex 时才展示，避免误选后 Internal Server Error。
     p_env = get_active_paddle_env()
