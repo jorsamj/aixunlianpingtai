@@ -847,3 +847,159 @@ def test_merged_scope_fixture_repairs_once_and_stays_clean_across_full_audits(
         assert issues["groups"] == []
         assert annotations.get("empty-scope-history")["annotation_scope"] == sorted(active_scope)
         assert annotations.get("persisted-merged-scope")["annotation_scope"] == sorted(active_scope)
+
+
+def test_preview_only_drift_full_audit_and_durable_repair_preserve_formal_gt(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    materials = app_module.material_store(project_id)
+    before = annotations.upsert(
+        image["id"],
+        [{
+            "label": "fire", "class_id": 0,
+            "canonical_label_id": "fire", "canonical_project_class_id": 0,
+            "x1": 5, "y1": 8, "x2": 32, "y2": 47,
+        }],
+        annotation_state="annotated",
+        annotation_scope=["fire"],
+    )
+    correct = materials.get(image["id"])
+    assert correct["annotation_preview"][0]["label"] == "fire"
+    materials.patch({
+        image["id"]: {
+            "annotation_preview": [{
+                **correct["annotation_preview"][0], "label": "fire_old",
+            }],
+        },
+    })
+    assert materials.get(image["id"])["labels"] == ["fire"]
+    assert materials.get(image["id"])["annotation_hash"] == before["content_digest"]
+
+    _repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    )
+    assert audit.status_code == 202, audit.text
+    premature = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{audit.json()['task_id']}/projection-repairs"
+    )
+    assert premature.status_code == 409
+    assert scheduler.run_once() is True
+    issues = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{audit.json()['task_id']}/issues"
+    )
+    assert issues.status_code == 200, issues.text
+    kinds = {row["issue_type"] for row in issues.json()["items"]}
+    assert "PROJECTION_PREVIEW_DRIFT" in kinds
+    assert "PROJECTION_DRIFT" not in kinds
+    preview = next(
+        row for row in issues.json()["items"]
+        if row["issue_type"] == "PROJECTION_PREVIEW_DRIFT"
+    )
+    assert preview["details"]["expected_labels"] == ["fire"]
+    assert preview["details"]["projected_labels"] == ["fire_old"]
+    assert any(
+        group["issue_type"] == "PROJECTION_PREVIEW_DRIFT"
+        and group["image_count"] == 1
+        for group in issues.json()["groups"]
+    )
+
+    task = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{audit.json()['task_id']}/projection-repairs"
+    )
+    assert task.status_code == 202, task.text
+    assert task.json()["still_requires_repair"] == 1
+    assert task.json()["operation"] == "REPAIR_ANNOTATION_PROJECTIONS"
+    with closing(BatchSelection(
+        artifacts.artifact_path(task.json()["task_id"], "selection.sqlite3")
+    )) as manifest:
+        rows = manifest.database.execute(
+            "SELECT image_id,tombstone_json FROM selection"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["image_id"] == image["id"]
+        assert json.loads(rows[0]["tombstone_json"])["expected_digest"] == before["content_digest"]
+    assert scheduler.run_once() is True
+    final = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task.json()['task_id']}"
+    )
+    assert final.status_code == 200, final.text
+    assert final.json()["status"] == "SUCCEEDED"
+    assert final.json()["changed_images"] == 1
+    assert final.json()["failed"] == 0
+    assert materials.get(image["id"])["annotation_preview"] == correct["annotation_preview"]
+    after = annotations.get(image["id"])
+    assert after["version"] == before["version"]
+    assert after["content_digest"] == before["content_digest"]
+    assert after["boxes"] == before["boxes"]
+
+    follow_up = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    clean = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{follow_up['task_id']}/issues"
+    ).json()
+    assert not any(
+        item["issue_type"] == "PROJECTION_PREVIEW_DRIFT"
+        for item in clean["items"]
+    )
+    replay = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{audit.json()['task_id']}/projection-repairs"
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["still_requires_repair"] == 0
+    assert replay.json()["already_resolved"] == 1
+    assert scheduler.run_once() is True
+
+
+def test_preview_repair_fails_closed_if_formal_gt_changes_after_freeze(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, image = seeded_project
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    materials = app_module.material_store(project_id)
+    annotations.upsert(
+        image["id"],
+        [{"label": "fire", "class_id": 0}],
+        annotation_state="annotated", annotation_scope=["fire"],
+    )
+    original_preview = materials.get(image["id"])["annotation_preview"]
+    materials.patch({
+        image["id"]: {
+            "annotation_preview": [{**original_preview[0], "label": "old_fire"}],
+        },
+    })
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    audit = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits"
+    ).json()
+    assert scheduler.run_once() is True
+    queued = client.post(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/"
+        f"{audit['task_id']}/projection-repairs"
+    )
+    assert queued.status_code == 202, queued.text
+
+    new_truth = annotations.upsert(
+        image["id"],
+        [{"label": "smoke", "class_id": 1}],
+        annotation_state="annotated", annotation_scope=["smoke"],
+    )
+    assert scheduler.run_once() is True
+    outcome = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/"
+        f"{queued.json()['task_id']}"
+    ).json()
+    assert outcome["status"] == "FAILED"
+    assert outcome["failed"] == 1
+    assert "ANNOTATION_CHANGED_DURING_PROJECTION_REPAIR" in str(outcome)
+    assert annotations.get(image["id"])["version"] == new_truth["version"]
+    assert materials.get(image["id"])["annotation_preview"][0]["label"] == "smoke"

@@ -4568,6 +4568,11 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const summary=result?.summary||{},groups=labelIntegrityRepairGroups414(result);state.labelIntegrityGroups414=groups;
     const targets=labelUnifyRows414();
     box.innerHTML=`<div class="label-integrity414-summary"><div><span>已审计</span><b>${Number(summary.scanned_images||0)}</b></div><div><span>异常素材</span><b>${Number(summary.affected_images||0)}</b></div><div><span>问题记录</span><b>${Number(summary.issue_count||0)}</b></div></div>${groups.length?`<div class="label-integrity414-list">${groups.map((group,index)=>{const hint=group.issue_types.includes('ORPHAN_LABEL')?'请查看样例确认历史标签真实语义，并手工选择目标标签。':group.issue_types.includes('INCOMPLETE_MERGE')?'已根据历史合并关系预填当前目标，可与其他映射一起统一修复。':'请查看样例确认历史标签真实语义，并手工选择目标标签。';return `<div class="label-integrity414-row"><div><b>${esc(group.source_label)}</b><span>${group.image_count} 张 · ${group.box_count} 框 · ${group.issue_types.map(esc).join(' / ')}</span>${group.merge_chain.length>1?`<small class="muted-line">历史合并：${group.merge_chain.map(esc).join(' → ')}</small>`:''}</div><select class="select" data-label-integrity-target="${index}" onchange="refreshLabelIntegrityBatchSummary414()"><option value="">由你选择当前 active 目标标签</option>${targets.filter(item=>String(item.code)!==group.source_label).map(item=>`<option value="${esc(item.code)}" ${group.default_target===String(item.code)?'selected':''}>${esc(item.display_name||item.code)} · ${esc(item.code)}</option>`).join('')}</select><div class="label-integrity414-actions"><div class="row"><button class="btn mini" onclick="openLabelIntegritySamples414(${index})">查看样例</button></div><small>${hint}</small></div></div>`}).join('')}</div><div class="label-integrity414-batch"><div><b id="labelIntegrityBatchCount414">已配置 0 个 · 未配置 ${groups.length} 个</b><span>只提交已明确配置的映射；同一图片由服务端聚合后仅写入一次。</span></div><button id="labelIntegrityBatchButton414" class="btn primary" onclick="startLabelIntegrityBatchRepair414()">统一创建后台修复</button></div>`:'<div class="empty compact"><b>未发现需要人工映射的历史标签</b><span>审计快照仍保留 projection 与 canonical identity 对账详情。</span></div>'}`;
+    const previewDrift=(result?.groups||[]).find(item=>item.issue_type==='PROJECTION_PREVIEW_DRIFT');
+    if(previewDrift){
+      const count=Math.max(0,Number(previewDrift.image_count||0));
+      box.insertAdjacentHTML('beforeend',`<div class="label-integrity414-batch"><div><b>缩略图标注投影不一致 · ${count} 张</b><span>正式标注为唯一真相。修复只校正素材预览框和派生索引，不修改正式标注；历史审计快照不会直接作为写入依据。</span></div><button class="btn" onclick="startLabelPreviewRepair414()">修复历史缩略图</button></div>`);
+    }
     window.refreshLabelIntegrityBatchSummary414();
   }
   function labelIntegritySampleCard414(sample){
@@ -4621,6 +4626,21 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const button=document.getElementById('labelIntegrityAuditButton414');if(button){button.disabled=true;button.textContent='正在创建…'}
     try{const task=await api(`/api/v54/projects/${pid()}/labels/integrity/audits`,{method:'POST'});state.labelIntegrityAuditTask414=task;renderLabelIntegrityTask414(task);armLabelIntegrityAudit414(task.task_id)}
     catch(e){toast(e.message||e)}finally{if(button){button.disabled=false;button.textContent='运行 Full Audit'}}
+  };
+  window.startLabelPreviewRepair414=function(){
+    const auditTaskId=String(state.labelIntegrityAuditTask414?.task_id||'');
+    if(!auditTaskId)return toast('审计记录已失效，请重新运行 Full Audit');
+    modal('修复历史缩略图',`<div class="label-integrity414-confirm"><div class="alert warn"><b>仅修复历史派生预览</b><span>服务端重新读取正式标注，冻结待修复图片与摘要，并由现有后台任务逐张校验后更新 MaterialRepository。不会重写正式标注；并发变更会拒绝旧快照。完成后请重新运行 Full Audit。</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmLabelPreviewRepair414()">确认创建修复任务</button></div></div>`,true);
+  };
+  window.confirmLabelPreviewRepair414=async function(){
+    const auditTaskId=String(state.labelIntegrityAuditTask414?.task_id||'');
+    if(!auditTaskId)return toast('审计记录已失效，请重新运行 Full Audit');
+    try{
+      const task=await api(`/api/v54/projects/${pid()}/labels/integrity/audits/${auditTaskId}/projection-repairs`,{method:'POST'});
+      closeModal();
+      window.MaterialBatchRuntime62?.poll?.(task.task_id);
+      toast(`缩略图后台修复已创建：待处理 ${Number(task.still_requires_repair||0)} 张，已恢复 ${Number(task.already_resolved||0)} 张；任务完成后重新运行 Full Audit`);
+    }catch(e){toast(e.message||e)}
   };
   window.startLabelIntegrityBatchRepair414=function(){
     const mappings=configuredLabelIntegrityMappings414();if(!mappings.length)return toast('请至少配置一个 source → active target');

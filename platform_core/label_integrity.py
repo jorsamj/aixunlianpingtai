@@ -16,6 +16,7 @@ from urllib.parse import quote
 from filelock import FileLock
 
 from .annotation_repository import AnnotationRepository, _normalize_scope
+from .annotations import annotation_summary
 from .material_repository import MaterialRepository
 from .task_runtime import TaskKind, TaskRecord, TaskStatus
 from .task_runtime.models import utc_now
@@ -258,6 +259,29 @@ def run_label_integrity_audit(project_path: str | Path, artifact_path: str | Pat
                                 "projected_scope_ref": code in projected_scopes,
                             },
                         )
+                # Thumbnail overlay reads the bounded ordered annotation_preview.
+                # Audit it against formal Annotation GT independently of label counts.
+                expected_preview = annotation_summary(
+                    record.get("boxes") or [], record.get("annotation_state"),
+                )["annotation_preview"]
+                material_preview = material.get("annotation_preview") if material else None
+                if material is not None and (material_preview or []) != expected_preview:
+                    preview_labels = (
+                        [str(box.get("label") or "") for box in material_preview]
+                        if isinstance(material_preview, list)
+                        and all(isinstance(box, dict) for box in material_preview)
+                        else []
+                    )
+                    _insert_issue(
+                        database, record, "PROJECTION_PREVIEW_DRIFT", "",
+                        {"box_count": len(expected_preview), "scope_ref": 0, "class_ids": set()},
+                        {
+                            "expected_count": len(expected_preview),
+                            "projected_count": len(material_preview) if isinstance(material_preview, list) else None,
+                            "expected_labels": [str(box.get("label") or "") for box in expected_preview],
+                            "projected_labels": preview_labels,
+                        },
+                    )
                 scanned += 1
                 if database.execute(
                     "SELECT 1 FROM issues WHERE image_id=? LIMIT 1", (image_id,)
@@ -382,8 +406,9 @@ def _active_integrity_repair(project_id, repository, artifacts):
             )
             options = dict(request.get("options") or {})
             if (
-                request.get("operation") == "REMAP_ANNOTATION_LABELS"
-                and bool(options.get("repair_mode"))
+                (request.get("operation") == "REMAP_ANNOTATION_LABELS"
+                 and bool(options.get("repair_mode")))
+                or request.get("operation") == "REPAIR_ANNOTATION_PROJECTIONS"
             ):
                 return task
         if not page.next_cursor:
@@ -620,6 +645,110 @@ def create_orphan_repair(
             frozen_mappings,
             audit_path,
         )
+
+
+
+def create_annotation_preview_repair(
+    project_id, project_path, repository, artifacts, audit_task_id,
+):
+    """Freeze only audited preview drift into the existing MaterialBatch owner."""
+    from .annotations import annotation_summary
+    from .material_batches import BatchRequestError, BatchSelection, SELECTION_REF
+
+    project_path = Path(project_path)
+    audit_path = artifacts.artifact_path(audit_task_id, AUDIT_REF)
+    if not audit_path.is_file():
+        raise BatchRequestError(
+            "LABEL_INTEGRITY_AUDIT_INCOMPLETE", "完整性审计尚未完成", 409,
+        )
+    lock = FileLock(
+        str(repository.path.resolve()) + ".label-integrity-"
+        + hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:16]
+        + ".lock",
+        timeout=30,
+    )
+    with lock:
+        if _active_integrity_repair(project_id, repository, artifacts):
+            raise BatchRequestError(
+                "LABEL_INTEGRITY_REPAIR_ACTIVE",
+                "已有标签完整性修复任务运行中，请完成后重新审计", 409,
+            )
+        with closing(sqlite3.connect(audit_path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            image_ids = [
+                str(row[0]) for row in db.execute(
+                    "SELECT DISTINCT image_id FROM issues "
+                    "WHERE issue_type='PROJECTION_PREVIEW_DRIFT' ORDER BY image_id"
+                )
+            ]
+        if len(image_ids) > 100000:
+            raise BatchRequestError(
+                "LABEL_PREVIEW_REPAIR_TOO_LARGE",
+                "单次缩略图修复最多处理 100000 张，请分批审计", 422,
+            )
+        annotations = AnnotationRepository(project_path)
+        materials = MaterialRepository(project_path)
+        pending = []
+        already_resolved = 0
+        missing_material = 0
+        for offset in range(0, len(image_ids), 500):
+            batch_ids = image_ids[offset:offset + 500]
+            current = annotations.get_many(batch_ids)
+            projected = {
+                str(item["id"]): item for item in materials.get_many(batch_ids)
+            }
+            for image_id in batch_ids:
+                material = projected.get(image_id)
+                if material is None:
+                    missing_material += 1
+                    continue
+                record = current[image_id]
+                expected = annotation_summary(
+                    record.get("boxes") or [], record.get("annotation_state"),
+                )["annotation_preview"]
+                if (material.get("annotation_preview") or []) == expected:
+                    already_resolved += 1
+                    continue
+                pending.append((
+                    image_id,
+                    json.dumps({
+                        "operation": "REPAIR_ANNOTATION_PROJECTIONS",
+                        "expected_digest": annotations.record_digest(record),
+                        "expected_version": int(record.get("version") or 0),
+                    }, ensure_ascii=False, sort_keys=True),
+                ))
+        task_id = uuid.uuid4().hex
+        selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+        with closing(BatchSelection(selection_path)) as manifest:
+            with manifest.transaction():
+                manifest.database.executemany(
+                    "INSERT INTO selection(image_id,tombstone_json) VALUES (?,?)",
+                    pending,
+                )
+                manifest.database.executemany(
+                    "INSERT INTO meta(key,value) VALUES (?,?)",
+                    (
+                        ("frozen", utc_now()),
+                        ("selection_kind", "annotation_preview_repair"),
+                        ("audit_task_id", str(audit_task_id)),
+                    ),
+                )
+            checkpoint = manifest.summary()
+        stats = {
+            "candidate_images": len(image_ids),
+            "still_requires_repair": len(pending),
+            "already_resolved": already_resolved,
+            "missing_material": missing_material,
+        }
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "operation": "REPAIR_ANNOTATION_PROJECTIONS",
+            "options": {"audit_task_id": str(audit_task_id), **stats},
+        })
+        artifacts.atomic_write_json(task_id, "checkpoints/worker.json", checkpoint)
+        task = TaskRecord.new(
+            task_id, str(project_id), TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}", required_capabilities=("materials.batch",),
+        )
+        return repository.create(task, artifacts=artifacts), stats
 
 
 def read_audit_issues(path: str | Path, *, cursor: int = 0, limit: int = 100) -> dict:
@@ -895,6 +1024,25 @@ def label_integrity_router(get_project, material_store, task_repository, task_ar
             )
         except ValueError as error:
             raise HTTPException(422, detail=str(error)) from error
+
+    @router.post("/audits/{task_id}/projection-repairs", status_code=202)
+    def create_projection_repair(project_id: str, task_id: str):
+        audit = require_audit(project_id, task_id)
+        if audit.status.value != "SUCCEEDED":
+            raise HTTPException(409, detail="label integrity audit is not complete")
+        try:
+            materials = material_store(project_id)
+            task, stats = create_annotation_preview_repair(
+                project_id, materials.project_path,
+                task_repository(), task_artifacts(), task_id,
+            )
+        except BatchRequestError as error:
+            raise HTTPException(
+                error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+        from .material_batches import public_batch
+        return {**public_batch(task, task_artifacts(), task_repository()), **stats}
 
     @router.post("/audits/{task_id}/repairs", status_code=202)
     def create_repair(project_id: str, task_id: str, payload: dict = Body(...)):

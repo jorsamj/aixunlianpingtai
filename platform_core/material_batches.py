@@ -56,6 +56,7 @@ class BatchOperation(str, Enum):
     ADD_LABELS = "ADD_LABELS"
     REMOVE_LABELS = "REMOVE_LABELS"
     REMAP_ANNOTATION_LABELS = "REMAP_ANNOTATION_LABELS"
+    REPAIR_ANNOTATION_PROJECTIONS = "REPAIR_ANNOTATION_PROJECTIONS"
     AUDIT_LABEL_INTEGRITY = "AUDIT_LABEL_INTEGRITY"
     AUDIT_MATERIAL_INTEGRITY = "AUDIT_MATERIAL_INTEGRITY"
     AI_ANNOTATE = "AI_ANNOTATE"
@@ -1165,6 +1166,8 @@ class MaterialBatchHandler:
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         if str((payload or {}).get("operation") or "").upper() == BatchOperation.REMAP_ANNOTATION_LABELS.value:
             return self._run_annotation_remap(context, manifest, payload)
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value:
+            return self._run_annotation_projection_repair(context, manifest, payload)
         operation, selection, options = parse_request(payload)
         if operation is BatchOperation.AI_ANNOTATE:
             confirmation = context.artifacts.read_json(
@@ -1558,6 +1561,124 @@ class MaterialBatchHandler:
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
         append_task_log(context, "finished", TaskStatus.SUCCEEDED.value)
         return TaskStatus.SUCCEEDED, RESULT_REF
+
+    def _run_annotation_projection_repair(self, context, manifest, payload):
+        """Reconcile stale Material previews from frozen formal GT, never edit GT."""
+        from .annotations import annotation_summary
+
+        _project_id, project_path = _safe_project_path(self.data_dir, context.task.project_id)
+        if not manifest.frozen():
+            raise BatchRequestError(
+                "BATCH_SELECTION_NOT_FROZEN", "缩略图修复缺少冻结范围", 409,
+            )
+        if context.task.retry_of:
+            while stale := manifest.rows(("failed", "running")):
+                _check_active(context, "REPAIRING_ANNOTATION_PREVIEWS")
+                manifest.transition([item["image_id"] for item in stale], "pending")
+        annotations = AnnotationRepository(project_path)
+        materials = MaterialRepository(project_path)
+        total = int(manifest.summary().get("total") or 0)
+        append_task_log(
+            context, "processing",
+            f"operation={BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value} total={total}",
+        )
+        while batch := manifest.rows():
+            _check_active(context, "REPAIRING_ANNOTATION_PREVIEWS")
+            batch = list(batch[:REMAP_BATCH_SIZE])
+            ids = [str(row["image_id"]) for row in batch]
+            manifest.transition(ids, "running")
+            # Shared lifecycle fence prevents concurrent human GT updates or
+            # source deletion between the CAS check and derived projection write.
+            with material_annotation_lifecycle_fence(project_path):
+                current = annotations.get_many(ids)
+                projected = {
+                    str(row["id"]): row for row in materials.get_many(ids)
+                }
+                for item in batch:
+                    image_id = str(item["image_id"])
+                    plan = {}
+                    try:
+                        plan = json.loads(item["tombstone_json"] or "{}")
+                        if plan.get("operation") != BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value:
+                            raise ValueError("PROJECTION_REPAIR_PLAN_INVALID")
+                        record = current[image_id]
+                        material = projected.get(image_id)
+                        if material is None:
+                            raise ValueError("MATERIAL_NOT_FOUND")
+                        if (
+                            int(record.get("version") or 0) != int(plan.get("expected_version") or 0)
+                            or annotations.record_digest(record) != str(plan.get("expected_digest") or "")
+                        ):
+                            raise ValueError("ANNOTATION_CHANGED_DURING_PROJECTION_REPAIR")
+                        if int(record.get("version") or 0) <= 0:
+                            raise ValueError("LEGACY_ANNOTATION_REQUIRES_FORMAL_MIGRATION")
+                        formal = annotation_summary(
+                            record.get("boxes") or [], record.get("annotation_state"),
+                        )
+                        expected_preview = formal["annotation_preview"]
+                        if (material.get("annotation_preview") or []) == expected_preview:
+                            plan["noop_resolved"] = True
+                        else:
+                            projection = {
+                                key: formal[key]
+                                for key in (
+                                    "annotation_preview", "labels", "label_counts",
+                                    "box_count", "annotation_state", "annotated",
+                                )
+                            }
+                            projection.update({
+                                "annotation_scope": list(record.get("annotation_scope") or []),
+                                "annotation_version": int(record["version"]),
+                                "annotation_hash": annotations.record_digest(record),
+                            })
+                            materials.patch_annotation_projections({image_id: projection})
+                            updated = materials.get(image_id)
+                            if updated is None or (updated.get("annotation_preview") or []) != expected_preview:
+                                raise ValueError("PROJECTION_REPAIR_NOT_PERSISTED")
+                            plan["projection_repaired"] = True
+                        manifest.database.execute(
+                            "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                            (json.dumps(plan, ensure_ascii=False, sort_keys=True), image_id),
+                        )
+                        manifest.transition([image_id], "succeeded")
+                    except (PermissionError, InterruptedError):
+                        raise
+                    except Exception as error:
+                        public_error = redact_storage_error(error)
+                        manifest.transition([image_id], "failed", public_error)
+                        append_task_log(
+                            context, "projection_repair_conflict",
+                            f"image_id={image_id} error={public_error}",
+                        )
+            checkpoint = manifest.summary()
+            context.save_checkpoint(checkpoint)
+            _check_active(
+                context, "REPAIRING_ANNOTATION_PREVIEWS",
+                f"正在校验缩略图派生框 {checkpoint['processed']}/{max(1, total)}",
+                min(99.0, round(checkpoint["processed"] * 99.0 / max(1, total), 1)),
+            )
+        summary = manifest.summary()
+        repaired = noop = 0
+        for row in manifest.database.execute(
+            "SELECT tombstone_json FROM selection WHERE state='succeeded'"
+        ):
+            plan = json.loads(row[0] or "{}")
+            repaired += int(bool(plan.get("projection_repaired")))
+            noop += int(bool(plan.get("noop_resolved")))
+        summary.update({
+            "changed_images": repaired,
+            "noop_resolved": noop,
+            "audit_task_id": str((payload.get("options") or {}).get("audit_task_id") or ""),
+        })
+        context.save_checkpoint(summary)
+        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
+        status = (
+            TaskStatus.PARTIAL_SUCCESS if summary["failed"] and summary["succeeded"]
+            else TaskStatus.FAILED if summary["failed"]
+            else TaskStatus.SUCCEEDED
+        )
+        append_task_log(context, "finished", status.value)
+        return status, RESULT_REF
 
     def _run_annotation_remap(self, context, manifest, payload):
         options = dict((payload or {}).get("options") or {})
@@ -2189,6 +2310,7 @@ def public_batch(task, artifacts, repository=None):
         artifacts.read_json(task.task_id, RESULT_REF, default={})
         if request.get("operation") in {
             BatchOperation.REMAP_ANNOTATION_LABELS.value,
+            BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value,
             BatchOperation.AUDIT_LABEL_INTEGRITY.value,
             BatchOperation.AUDIT_MATERIAL_INTEGRITY.value,
         }

@@ -35,6 +35,12 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /labels\/integrity\/audits\/\$\{taskId\}\/issues/);
   assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/samples/);
   assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/repairs/);
+  assert.match(app, /PROJECTION_PREVIEW_DRIFT/);
+  assert.match(app, /window\.startLabelPreviewRepair414=function/);
+  assert.match(app, /window\.confirmLabelPreviewRepair414=async function/);
+  assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/projection-repairs/);
+  assert.match(app, /MaterialBatchRuntime62\?\.poll\?\.\(task\.task_id\)/);
+
   assert.match(app, /PollRegistryRuntime\?\.startTimeout\('label-integrity-audit'/);
   assert.match(app, /由你选择当前 active 目标标签/);
   assert.match(app, /查看样例/);

@@ -2916,3 +2916,16 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 已追踪到 `static/app.js::ov412` 的缩略图叠框读取 MaterialRepository 的 `annotation_preview`。原 `AnnotationRepository.remap_labels_if_digests` 只更新正式 boxes、annotation_scope、labels、label_counts 与 digest/version，未更新 `annotation_preview`；故 UI 缓存失效仍可能显示旧 label。
 - 复用已存在的 `annotation_summary` 生成 `annotation_preview`，由单一 AnnotationRepository remap 写入既有 MaterialRepository 投影。对相同版本与相同 digest 但派生字段仍陈旧的 MaterialRepository 记录，允许基于权威投影数据幂等修复；同版本不同 digest 仍严格报冲突，不放宽 CAS。
 - API 回归测试要求 Remap 后正式 label、class_id、labels、label_counts、annotation_preview 全部正确，并通过人工模拟“旧预览/新 GT”重试验证相同 digest 的派生投影可修复。历史数据在生产是否残留必须仍单独只读审计；不在未核实前宣称已批量恢复，也不直接修改生产数据。
+
+    
+<!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09 -->
+## 2026-10-09 缩略图预览与正式 GT 不一致：审计及历史修复闭环
+
+- 范围：长期分支 `feature/external-algorithm-publishing`；保留现有 `VERSION.txt=42.24.342`，不动 main、tag、release 或生产环境。
+- 根因：Full Audit 既有 `PROJECTION_DRIFT` 仅比对标签数量/审核范围，忽略素材 `annotation_preview`；缩略图叠框由该派生字段渲染，故正式 `fire1`、Material 标签索引 `fire1`、历史叠框仍为 `fire` 可能漏检。
+- 审计：`AUDIT_LABEL_INTEGRITY` 从正式 `AnnotationRepository` 的有序前 32 个框生成 `annotation_summary(...).annotation_preview`，逐图与 Material `annotation_preview` 比较；新增 `PROJECTION_PREVIEW_DRIFT` 诊断记录及旧新标签样本说明，审计依旧严格只读，复用原 SQLite 审计快照。
+- 修复：Full Audit 后标签管理页面出现“修复历史缩略图”手动确认；`POST /api/v54/projects/{project_id}/labels/integrity/audits/{task_id}/projection-repairs` 仅使用已完成且授权的审计任务筛选候选。创建时重新读取 GT 与派生投影，冻结候选 image_id、GT version 和 content digest，已恢复的图片直接排除。沿用唯一 `TaskKind.MATERIAL_BATCH` / `BatchSelection` / `MaterialBatchHandler` 执行 `REPAIR_ANNOTATION_PROJECTIONS`；不增新数据 Owner / Poller / Worker。
+- Worker 在 Material/Annotation 共同生命周期锁内重新校验当前正式 GT/version/digest；对并发人工改动、缺素材、legacy version=0、投影相同版本但 hash 不同等情况 fail closed，不能用审计快照覆盖现有真相。仅通过 `MaterialRepository.patch_annotation_projections` 写派生 `annotation_preview` 和标签索引字段，禁止修改 `AnnotationRepository` 的正式框或版本。保留任务进度、失败记录、重试及重新 Full Audit 验证的路径。
+- 测试：`tests/api/test_label_integrity.py` 新增预览独立漏检、正式框不变、成功后复审、重放已解决、并发正式 GT 修改后拒绝覆盖；`tests/frontend/label-management-owner.test.mjs` 增加 UI 按钮与唯一后台任务入口合同。
+- **验收边界**：GitHub CI 应确认新增提交的全部 Actions / Check Runs terminal-success；生产上线前仍要备份数据、空闲任务确认和可回滚部署，并在真实历史项目运行 Full Audit → 预览投影修复 → 再次 Full Audit。代码修复不会在部署时擅自清洗、重写或自动迁移生产历史标注。
+<!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09_END -->
