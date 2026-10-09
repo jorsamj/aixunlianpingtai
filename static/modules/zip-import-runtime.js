@@ -411,14 +411,14 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   const uploadActionUrl=(project,id,action)=>`/api/v19/projects/${encodeURIComponent(project)}/import/uploads/${encodeURIComponent(id)}/${action}`;
   async function uploadAction(project,id,action){return json(await fetchImpl(uploadActionUrl(project,id,action),{method:'POST',credentials:'same-origin'}))}
   async function pauseUpload(id=''){
-    const uploadId=String(id||uploading?.uploadId||current?.id||'');
+    const uploadId=String(id||(uploading?uploading.uploadId:current?.id)||'');
     if(!uploadId){notify?.('上传会话正在创建，尚不能暂停');return false}
     if(uploadControl?.uploadId===uploadId){uploadControl.state='paused';for(const xhr of uploadControl.xhrs)xhr.abort?.()}
     try{await uploadAction(pid(),uploadId,'pause');uploading=null;await reconcile('pause');open();return true}
     catch(error){notify?.(error.message||error);await reconcile('pause-error');return false}
   }
   async function cancelUpload(id=''){
-    const uploadId=String(id||uploading?.uploadId||current?.id||'');
+    const uploadId=String(id||(uploading?uploading.uploadId:current?.id)||'');
     if(!uploadId){notify?.('上传会话尚未创建，不能清理');return false}
     if(!window.confirm?.('确定永久中断本次 ZIP 上传并清理该任务尚未提交的所有分片？此操作不可恢复。'))return false;
     if(uploadControl?.uploadId===uploadId){uploadControl.state='cancelled';for(const xhr of uploadControl.xhrs)xhr.abort?.()}
