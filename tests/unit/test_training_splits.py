@@ -228,8 +228,8 @@ def test_random_test_split_preserves_two_source_groups_for_train_and_validation(
         SplitRequest(
             mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
             train_image_ids=("a", "b", "c"),
-            experiment_percent=60,
-            validation_percent=50,
+            experiment_percent=20,
+            validation_percent=20,
         ),
         seed=3,
     )

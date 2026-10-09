@@ -531,7 +531,7 @@ test('active training row exposes the 10 product-facing task fields without inte
   assert.match(html, /日志/);
   assert.match(html, /暂停/);
   assert.match(html, /停止/);
-  assert.match(html, /删除/);
+  assert.doesNotMatch(html, /删除/);
 });
 
 test('partial-success training row is completed but explicitly labeled as partial', () => {

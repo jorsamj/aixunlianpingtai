@@ -33,7 +33,7 @@ test('large explicit ready selections reuse the durable material-batch owner', (
 
 
 test('material batch terminal truth refreshes the canonical dataset page owner', () => {
-  const pollStart = source.indexOf('function poll(taskId)');
+  const pollStart = source.indexOf('function poll(taskId,');
   const resumeStart = source.indexOf('function resume()', pollStart);
   assert.ok(pollStart >= 0 && resumeStart > pollStart);
   const pollOwner = source.slice(pollStart, resumeStart);

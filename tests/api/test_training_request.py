@@ -824,7 +824,7 @@ def test_training_route_rejects_dataset_group_contract(client, seeded_project):
     assert "image_id" in response.text
 
 
-@pytest.mark.parametrize("percent", [1, 12.5, 37, 99])
+@pytest.mark.parametrize("percent", [1, 12.5, 37, 79, 99])
 def test_explicit_random_test_percentage_is_accepted(client, seeded_project, percent):
     project_id, seed_image = seeded_project
     one = _mark_training_ready(client, project_id, seed_image)
@@ -848,11 +848,15 @@ def test_explicit_random_test_percentage_is_accepted(client, seeded_project, per
             "validation_percent": 20,
         },
     )
-    assert response.status_code == 202, response.text
+    if percent == 99:
+        assert response.status_code == 400, response.text
+        assert '之和必须小于 100' in response.text
+    else:
+        assert response.status_code == 202, response.text
 
 
 @pytest.mark.parametrize(
-    "body, message",
+    "body, message"
     [
         (
             {
