@@ -254,7 +254,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
-  function resultMarkup(job){const s=status(job),r=job?.report||{};if(s==='done'){const warns=(r.warnings||[]).map(x=>`<li>${esc(x)}</li>`).join('');return `<div class="alert ok"><b>导入完成</b>：${Number(r.imported_images||0)} 张图片，其中 ${Number(r.annotated_images||0)} 张带标注，${Number(r.boxes||0)} 个框。</div>${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`}if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;return''}
+  function resultMarkup(job){const s=status(job),r=job?.report||{};if(s==='done'){const warns=(r.warnings||[]).map(x=>`<li>${esc(x)}</li>`).join('');return `<div class="alert ok"><b>导入完成</b>：${Number(r.imported_images||0)} 张图片，其中 ${Number(r.annotated_images||0)} 张带标注，${Number(r.boxes||0)} 个框。</div>${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`}if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;if(s==='cancelled'||s==='canceled')return '<div class="alert warn">本次 ZIP 导入已中断；未提交的缓存已由后台按安全边界清理。</div>';return''}
   function setZipProgressBar(node,value){
     if(!node)return;
     const progress=clamp(value);
@@ -273,8 +273,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const v=zipView(job,jobs),phase=zipPhaseDetail(job),active=activeZipJobs(jobs);
     const queue=v.queue.waits?`队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
     const stateResult=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
+    const workerActions=s==='running'&&['QUEUE','EXTRACT','ANNOTATION_PARSE'].includes(String(job?.phase||''))?`<div class="row end"><button class="btn danger" ${job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.stopImport('${esc(job.id)}')">${job.cancel_requested?'正在安全停止…':'停止后台导入并清理未提交缓存'}</button></div>`:'';
     const uploadActions=(s==='uploading'||s==='paused')?`<div class="row end"><button class="btn" onclick="window.ZipImportRuntime?.pauseUpload('${esc(job.id)}')" ${s==='paused'?'disabled':''}>暂停上传</button><button class="btn primary" onclick="window.ZipImportRuntime?.promptResume('${esc(job.id)}')">继续上传</button><button class="btn danger" onclick="window.ZipImportRuntime?.cancelUpload('${esc(job.id)}')">中断并清理</button><input id="zipResumeFile" type="file" accept=".zip" style="display:none" onchange="window.ZipImportRuntime?.resumeFromFile(this,'${esc(job.id)}')"></div>`:'';
-    return `<div class="zip411" data-zip-runtime="1"><section class="zip411-head"><div><b>${esc(job?.file_name||(getState()||{}).import411?.fileName||'ZIP 数据导入')}</b><span>${bytes(job?.uploaded_bytes||(getState()||{}).import411?.fileSize||0)}</span></div><button class="btn" onclick="closeModal()">关闭窗口</button></section><div class="zip411-main"><div class="zip411-progress"><div><span id="zipDurableStage">${esc(v.stage)}</span><b id="zipDurablePct">${Math.round(v.progress)}%</b></div><i><em id="zipDurableBar" data-progress="${Number(v.progress).toFixed(2)}" style="transform:scaleX(${(Number(v.progress)/100).toFixed(4)})"></em></i><p id="zipDurableMsg">${esc(v.message)}</p><small id="zipDurablePhaseMeta" class="item-sub">${esc(phase.text)}</small></div><div id="zipDurableQueue" class="alert ${v.queue.waits?'warn':'ok'}">${esc(queue)}</div><div class="zip411-times"><div><span>上传时间</span><b>${seconds(job?.upload_seconds)}</b></div><div><span>ZIP扫描</span><b>${seconds(job?.scan_seconds)}</b></div><div><span>后台处理</span><b>${seconds(job?.processing_seconds)}</b></div></div><div id="zip411Result">${stateResult}</div>${labelMappingMarkup(job)}${uploadActions}</div></div>`;
+    return `<div class="zip411" data-zip-runtime="1"><section class="zip411-head"><div><b>${esc(job?.file_name||(getState()||{}).import411?.fileName||'ZIP 数据导入')}</b><span>${bytes(job?.uploaded_bytes||(getState()||{}).import411?.fileSize||0)}</span></div><button class="btn" onclick="closeModal()">关闭窗口</button></section><div class="zip411-main"><div class="zip411-progress"><div><span id="zipDurableStage">${esc(v.stage)}</span><b id="zipDurablePct">${Math.round(v.progress)}%</b></div><i><em id="zipDurableBar" data-progress="${Number(v.progress).toFixed(2)}" style="transform:scaleX(${(Number(v.progress)/100).toFixed(4)})"></em></i><p id="zipDurableMsg">${esc(v.message)}</p><small id="zipDurablePhaseMeta" class="item-sub">${esc(phase.text)}</small></div><div id="zipDurableQueue" class="alert ${v.queue.waits?'warn':'ok'}">${esc(queue)}</div><div class="zip411-times"><div><span>上传时间</span><b>${seconds(job?.upload_seconds)}</b></div><div><span>ZIP扫描</span><b>${seconds(job?.scan_seconds)}</b></div><div><span>后台处理</span><b>${seconds(job?.processing_seconds)}</b></div></div><div id="zip411Result">${stateResult}</div>${labelMappingMarkup(job)}${uploadActions}${workerActions}</div></div>`;
   }
   function uploadBody(){return `<div class="zip411" data-zip-runtime="1"><div class="zip411-main"><div class="zip411-progress"><div><span>正在上传 ZIP</span><b id="zipDurableUploadPct">${Math.round(uploading?.progress||0)}%</b></div><i><em id="zipDurableUploadBar" data-progress="${Number(uploading?.progress||0).toFixed(2)}" style="transform:scaleX(${(Number(uploading?.progress||0)/100).toFixed(4)})"></em></i><p id="zipDurableUploadMsg">${esc(uploading?.message||'准备上传')}</p></div><div class="alert warn">这里仅显示当前网络上传的真实进度；上传完成后，合并、校验、扫描、解压和入库均以服务器任务状态为准。</div><div class="row end"><button class="btn" onclick="window.ZipImportRuntime?.pauseUpload()">暂停上传</button><button class="btn danger" onclick="window.ZipImportRuntime?.cancelUpload()">中断并清理</button></div></div></div>`}
   function replaceOpenRuntime(html){
@@ -424,6 +425,14 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     try{await uploadAction(pid(),uploadId,'cancel');uploading=null;resumeFile=null;await reconcile('cancel');open();return true}
     catch(error){notify?.(error.message||error);await reconcile('cancel-error');return false}
   }
+  async function stopImport(id){
+    const jobId=String(id||current?.id||'');if(!jobId)return false;
+    if(!window.confirm?.('停止此后台导入？尚未提交的素材会安全回滚并清理；若已开始正式提交则无法中断。'))return false;
+    try{
+      await json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(pid())}/import/jobs/${encodeURIComponent(jobId)}/stop`,{method:'POST',credentials:'same-origin'}));
+      await reconcile('stop-requested');open();return true;
+    }catch(error){notify?.(error.message||error);await reconcile('stop-failed');return false}
+  }
   function promptResume(id){
     const target=String(id||'');
     if(resumeFile&&uploadControl?.uploadId===target){
@@ -487,7 +496,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     current=job;patchState(job);open();return job;
   }
 
-  const runtime={upload,pauseUpload,cancelUpload,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>upload(input).catch(()=>{});
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};
