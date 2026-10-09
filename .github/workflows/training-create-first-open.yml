@@ -11,6 +11,8 @@ on:
       - 'platform_core/training_label_tasks.py'
       - 'static/main.mjs'
       - 'static/app.js'
+      - 'static/training-create-modal.css'
+      - 'tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs'
       - 'static/modules/training-create-hydration.js'
       - 'static/modules/training-task-visibility-runtime.js'
       - 'static/modules/training-draft.js'
@@ -65,6 +67,7 @@ jobs:
           tests/frontend/training-draft-runtime.test.mjs
           tests/frontend/training-modal-device-probe.test.mjs
           tests/frontend/training-submit.test.mjs
+          tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs
           tests/frontend/mother-model-preinstall.test.mjs
           tests/frontend/training-submit-validation.test.mjs
           tests/frontend/training-labels.test.mjs
