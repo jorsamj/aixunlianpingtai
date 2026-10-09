@@ -1,3 +1,6 @@
+<!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
+> 2026-10-09 接手优先级切换到 Issue #21：7 项生产 UAT 修复验收。最新修复及生产风险边界详见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`；新增加只读生产 ZIP 审计 SHA256/正式 GT 框数/lineage 和 CI 合同。3042 张失败导入未恢复，HEAD CI 尚未证实通过；生产/主分支不动，Issue 保持 OPEN。不得继续普通分页改造或混入 Issue #20。
+
 <!-- LIVE_HANDOFF_2026_10_08_AUDIT_099_098 -->
 > ## 2026-10-08 当前接手入口：AUDIT-099 / AUDIT-098 commit fence 已实现（最高优先级）
 >
