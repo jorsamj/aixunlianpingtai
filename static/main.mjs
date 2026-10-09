@@ -22,7 +22,7 @@ import {installTrainingProgressStream} from './modules/training-progress-stream.
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422519';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422596';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422597';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
@@ -44,7 +44,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66009';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
-import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422401';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
