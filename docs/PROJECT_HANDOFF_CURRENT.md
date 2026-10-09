@@ -2852,3 +2852,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 修正本批静态缓存入口和回归守卫中的旧缓存标记；不删除、不弱化原有自动化测试。旧提交实际 CI 失败包括：标签规范化工作流检查旧的 ZIP bootstrap 缓存键、前端测试固定旧 app/main 资源键，以及浏览器测试仍要求默认可见的训练摘要。修复后的 CI 需要在本批最终 HEAD 上重新执行确认，旧 SHA 的结果不能算当前通过。
 - 尚未完成的真实验收：Python/Node 正式测试执行结果、GitHub Actions 全绿、1366×768 与窄屏 Chrome 实际截图、真实 YOLO/COCO/VOC 大 ZIP、1k/10k/20k 导入全流程性能、Ubuntu/GPU Agent 首次预置模型训练与后续迭代。没有现场条件时必须报告“未验证”。
 - 安全与现场边界：不部署生产，不合并 main/tag/release；此前失败的 3042 张导入素材由用户在 Ubuntu 服务器手动删除源图片，但 Material/Annotation/任务索引一致性尚未得到只读核实，严禁推断正式记录全部清除或擅自清理。
+
+
+### 同轮补充：42.24.342 原图异常显式处理与模块缓存一致性
+
+- 复核发现：当标签样本 API 已返回引用，但随后图片内容请求（ZIP 缺文件、图片损坏、权限/网络错误）失败时，浏览器会显示破图而非明确错误。前端现通过一次性图片 `error` 监听，将图框区域切换成“原图读取失败，无法核对标注框”，停止错误链接点击、移除该图上的伪视觉框，并提示核查 ZIP；标签人工确认合同没有变化。
+- ZIP Import Runtime 中纯函数模块 `label-mapping-review.js` 的 ESM URL 版本改为与 `main.mjs` 一致的 `422571`，避免不同入口加载不同缓存版本。ZIP runtime/入口缓存键同步刷新为 `422617`；版本 `42.24.342`。
+- 已补充前端来源守卫；浏览器加载错误行为、真实 ZIP 与 GPU 现场仍待实跑。所有 GitHub Actions `queued` 不代表通过；部署继续阻断。

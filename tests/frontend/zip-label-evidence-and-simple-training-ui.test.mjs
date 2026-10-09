@@ -12,6 +12,8 @@ test('ZIP source class offers real source image and box preview before manual ma
   assert.match(zip,/showLabelSamples\('/);
   assert.match(zip,/data-zip-class-samples/);
   assert.match(zip,/sample\.bboxes/);
+  assert.match(zip,/label-mapping-sample-load-error/);
+  assert.match(zip,/addEventListener\('error'/);
   assert.match(zip,/labelSampleOverlay\(bbox\|\|\{\}\)/);
   assert.match(zip,/classes\/\$\{encodeURIComponent\(String\(classId\)\)\}\/samples/);
   assert.match(zip,/classSampleCache/);

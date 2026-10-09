@@ -1,4 +1,4 @@
-import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './label-mapping-review.js?v=422570';
+import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './label-mapping-review.js?v=422571';
 
 export const ACTIVE_ZIP_STATUSES = new Set(['uploading','paused','merging','validating','selecting','queued','waiting','running']);
 export const IMPORT_QUEUE_ZIP_STATUSES = new Set(['selecting','queued','waiting','running']);
@@ -435,7 +435,19 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         cached=await json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(id)}/classes/${encodeURIComponent(String(classId))}/samples`,{credentials:'same-origin'}));
         classSampleCache.set(key,cached);
       }
-      if(panel.isConnected&&panel.dataset.sampleClass===String(classId))panel.innerHTML=sampleCardsMarkup(classId,name,cached.samples||[]);
+      if(panel.isConnected&&panel.dataset.sampleClass===String(classId)){
+         panel.innerHTML=sampleCardsMarkup(classId,name,cached.samples||[]);
+         panel.querySelectorAll('.label-mapping-sample-image img').forEach(img=>img.addEventListener('error',()=>{
+           if(!panel.isConnected||panel.dataset.sampleClass!==String(classId))return;
+           const card=img.closest('.label-mapping-sample-card'),frame=card?.querySelector('.label-mapping-sample-image');
+           if(!frame)return;
+           frame.classList.add('label-mapping-sample-load-error');
+           frame.textContent='原图读取失败，无法核对标注框';
+           card?.querySelector('a')?.removeAttribute('href');
+           const note=card?.querySelector('footer span');
+           if(note)note.textContent='请核查 ZIP 原始文件后再决定映射';
+         },{once:true}));
+       }
       return cached;
     }catch(error){
       if(panel.isConnected&&panel.dataset.sampleClass===String(classId))panel.innerHTML=`<div class="alert err">原图读取失败：${esc(error.message||error)}。请勿在无法确认类别含义时盲目映射。</div>`;
