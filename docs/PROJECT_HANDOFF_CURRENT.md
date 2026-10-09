@@ -2907,3 +2907,5 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 单条 `deleteTrain428` 原本绕过 TrainingBatchActionEligible，在运行/暂停/排队状态暗中执行先 stop 后 delete，虽然新版任务列表已隐藏对应按钮，但仍构成非法操作旁路。现复用已有统一资格判定，未到终态及不存在的任务禁止调用 DELETE，取消隐式停止行为。更新原旧行为回归测试为“拒绝所有非终态并仅允许终态删除”的强断言。
 - 上一提交 `21abe814` 的 `real-chrome` 失败日志有 4 个陈旧浏览器断言：精简训练弹窗将技术配置折叠，但旧测试在展开前检查可见性或填写优先级；固定 Benchmark 已改为用户明确选择，旧测试还认为默认自动勾选。浏览器测试现在先通过用户可操作“高级设置”展示再核验，且固定 Benchmark 明确测试默认不选、手动选后提交。上述修改不放宽原操作正确性判断。
 - 生产环境、真实历史标签的读写证据及 GPU 真实训练仍需用户在生产环境只读核验；未修改版本号，未部署。新 HEAD 的 Actions/Checks 需单独复核 completed/success。
+
+- 再次复核精简弹窗 DOM：全局“高级设置”切换后，内部技术选项与数据划分各自仍为原生折叠 `details`。浏览器 helper 需额外按用户实际操作展开各自 summary，才能有效测试真实可见性、优先级与随机试验比例；未改变生产 UI 或断言。

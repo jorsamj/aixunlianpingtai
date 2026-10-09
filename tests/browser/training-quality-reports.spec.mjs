@@ -111,6 +111,14 @@ async function expandTrainingAdvanced(trainingDialog) {
     await trainingDialog.locator('[data-train-advanced-toggle]').click();
   }
   await expect(root).toHaveClass(/train-create-show-advanced/);
+  // Both technical fields and data split live inside their own native
+  // disclosures. Global advanced visibility does not expand those details.
+  for (const selector of ['details.train-create-technical', 'details.train-create-split-details']) {
+    const disclosure = trainingDialog.locator(selector);
+    if (await disclosure.count() && (await disclosure.getAttribute('open')) === null) {
+      await disclosure.locator(':scope > summary').click();
+    }
+  }
 }
 
 async function openTrainingSettings(page, trainingDialog) {
