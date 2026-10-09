@@ -23,6 +23,7 @@ on:
       - 'tests/frontend/training-draft-runtime.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'tests/frontend/training-submit-validation.test.mjs'
       - 'tests/frontend/training-labels.test.mjs'
       - 'tests/frontend/training-material-summary-runtime.test.mjs'
@@ -64,6 +65,7 @@ jobs:
           tests/frontend/training-draft-runtime.test.mjs
           tests/frontend/training-modal-device-probe.test.mjs
           tests/frontend/training-submit.test.mjs
+          tests/frontend/mother-model-preinstall.test.mjs
           tests/frontend/training-submit-validation.test.mjs
           tests/frontend/training-labels.test.mjs
           tests/frontend/training-material-summary-runtime.test.mjs
