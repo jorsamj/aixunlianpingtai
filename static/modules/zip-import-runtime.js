@@ -150,11 +150,11 @@ export async function zipFingerprint(file) {
   return `v2:${file.name}:${size}:${Number(file.lastModified||0)}:${digest}`;
 }
 
-async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch}={}) {
+async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch,expectedUploadId=''}={}) {
   const fingerprint=await zipFingerprint(file);
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/datasets/default/import/uploads`,{
     method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024}),
+    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024,resume_upload_id:expectedUploadId||''}),
   }));
 }
 
@@ -178,7 +178,7 @@ function uploadZipPartXHR(projectId,uploadId,part,file,{onTransfer=()=>{},xhrFac
 }
 
 export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},onSession=()=>{},onPhase=()=>{},fetchImpl=globalThis.fetch,xhrFactory=()=>new XMLHttpRequest(),concurrency=4,retries=2,control=null}={}) {
-  const session=await createZipUploadSession(projectId,file,{fetchImpl});
+  const session=await createZipUploadSession(projectId,file,{fetchImpl,expectedUploadId:control?.expectedUploadId||''});
   const uploadId=String(session.upload_id||'');
   if(!uploadId)throw new Error('服务器未返回 ZIP 上传会话 ID');
   onSession(session);
@@ -436,7 +436,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   async function upload(input,expectedUploadId=''){
     const file=input?.files?.[0];if(!file)return null;if(!/\.zip$/i.test(file.name||'')){notify?.('请选择 ZIP 压缩包');input.value='';return null}const project=pid();if(!project){notify?.('当前项目未加载，请刷新后重试');return null}
     if(uploadControl?.state==='active')return notify?.('已有 ZIP 上传正在进行，请先暂停或等待结束');
-    const control={state:'active',xhrs:new Set(),uploadId:'',file};
+    const control={state:'active',xhrs:new Set(),uploadId:'',file,expectedUploadId};
     uploadControl=control;resumeFile=file;
     let multipartTaskId='';uploading={progress:0,message:'准备上传',uploadId:''};
     // The chooser already owns a modal. Replace that modal's content instead
