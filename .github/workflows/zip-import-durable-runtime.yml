@@ -22,6 +22,11 @@ on:
       - 'static/styles.css'
       - 'tests/unit/test_secrets.py'
       - 'tests/unit/test_zip_multipart.py'
+      - 'tools/audit_v19_partial_import.py'
+      - 'tests/unit/test_audit_v19_partial_import.py'
+      - 'tests/api/test_v19_import_bounded_admission.py'
+      - 'tests/api/test_v19_multipart_controls.py'
+      - 'tests/api/test_v19_import_failure_rollback.py'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - 'tests/frontend/zip-multipart-upload.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
@@ -144,16 +149,20 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
           tests/unit/test_secrets.py
           tests/unit/test_zip_multipart.py
+          tests/unit/test_audit_v19_partial_import.py
       - name: Durable v19 persistence and bounded 10k hot-state tests
         run: >-
           python -m pytest -q
           tests/api/test_v19_job_atomic_persistence.py
           tests/api/test_v19_import_scalability.py
           tests/api/test_v19_import_report_externalization.py
+          tests/api/test_v19_import_bounded_admission.py
+          tests/api/test_v19_multipart_controls.py
+          tests/api/test_v19_import_failure_rollback.py
       - name: Backend syntax and wiring guards
         shell: bash
         run: |
-          python -m py_compile app.py platform_core/secrets.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py
+          python -m py_compile app.py platform_core/secrets.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py tools/audit_v19_partial_import.py
           grep -Fq 'class V19MultipartUploadReq' app.py
           grep -Fq 'ZipMultipartRepository' app.py
           grep -Fq '正在合并 ZIP 分片' app.py
