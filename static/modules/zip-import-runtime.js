@@ -337,12 +337,35 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(q)q.textContent=v.queue.waits?`队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
     if(result)result.innerHTML=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
   }
+  function updateDockContent(node,title,detail){
+    // Keep the existing nodes during each progress tick; replacing innerHTML
+    // causes visible repaint/flicker on the legacy fallback dock.
+    if(!node.querySelector('[data-zip-dock-title]')){
+      node.innerHTML='<span><b data-zip-dock-title></b><small data-zip-dock-detail></small></span><strong>展开</strong>';
+    }
+    const heading=node.querySelector('[data-zip-dock-title]'),subtitle=node.querySelector('[data-zip-dock-detail]');
+    if(heading&&heading.textContent!==title)heading.textContent=title;
+    if(subtitle&&subtitle.textContent!==detail)subtitle.textContent=detail;
+  }
   function render(){
     const d=dock(),active=activeZipJobs(jobs);
     if(window.UploadTaskCenterRuntime)d.classList.add('hidden');
-    if(uploading){if(!window.UploadTaskCenterRuntime)d.classList.remove('hidden');d.innerHTML=`<span><b>正在上传 ZIP</b><small>${Math.round(uploading.progress)}% · ${esc(uploading.message)}</small></span><strong>展开</strong>`;const pct=document.getElementById('zipDurableUploadPct'),bar=document.getElementById('zipDurableUploadBar'),msg=document.getElementById('zipDurableUploadMsg');if(pct)pct.textContent=`${Math.round(uploading.progress)}%`;setZipProgressBar(bar,uploading.progress);if(msg)msg.textContent=uploading.message;return}
+    if(uploading){
+      if(!window.UploadTaskCenterRuntime)d.classList.remove('hidden');
+      updateDockContent(d,'正在上传 ZIP',`${Math.round(uploading.progress)}% · ${uploading.message}`);
+      const pct=document.getElementById('zipDurableUploadPct'),bar=document.getElementById('zipDurableUploadBar'),msg=document.getElementById('zipDurableUploadMsg');
+      if(pct)pct.textContent=`${Math.round(uploading.progress)}%`;
+      setZipProgressBar(bar,uploading.progress);
+      if(msg)msg.textContent=uploading.message;
+      return;
+    }
     current=pickZipJob(jobs);
-    if(!active.length)d.classList.add('hidden');else{const v=zipView(current,jobs);if(!window.UploadTaskCenterRuntime)d.classList.remove('hidden');d.innerHTML=`<span><b>${esc(v.stage)}</b><small>${Math.round(v.progress)}% · ${active.length} 个活动任务</small></span><strong>展开</strong>`}
+    if(!active.length)d.classList.add('hidden');
+    else{
+      const v=zipView(current,jobs);
+      if(!window.UploadTaskCenterRuntime)d.classList.remove('hidden');
+      updateDockContent(d,v.stage,`${Math.round(v.progress)}% · ${active.length} 个活动任务`);
+    }
     updateOpenModal(current,active);
   }
   function clearPoll(){if(window.PollRegistryRuntime?.clear)window.PollRegistryRuntime.clear('zip-import-runtime');else if(timer)clearTimeout(timer);timer=null}
