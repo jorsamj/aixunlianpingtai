@@ -347,7 +347,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   runtime.uploadMotherModel = async input => {
     const file = input?.files?.[0];
     if (!file) return null;
-    if (!/\\.pt$/i.test(file.name)) { input.value=''; notify('请选择 .pt 权重文件'); return null; }
+    if (!/\.pt$/i.test(file.name)) { input.value=''; notify('请选择 .pt 权重文件'); return null; }
     if (file.size > 1024 * 1024 * 1024) { input.value=''; notify('母模型最大允许 1 GiB'); return null; }
     const form = new FormData();
     form.append('file', file);
