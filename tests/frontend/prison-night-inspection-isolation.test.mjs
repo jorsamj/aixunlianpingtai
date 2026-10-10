@@ -11,8 +11,8 @@ test('standalone large navigation entry follows the collapsible advanced menu',(
   assert.ok(nav.includes('nav-advanced427'));
   assert.ok(nav.indexOf('nav-night-isolated')>nav.indexOf('nav-advanced427'));
   assert.ok(nav.indexOf('nav-footer')>nav.indexOf('nav-night-isolated'));
-  assert.match(nav,/setPage\('监所夜间离床研判'\)/);
-  assert.match(main,/registerPageOwner\(\s*'监所夜间离床研判'/);
+  assert.match(nav,/setPage\('AI算法底座'\)/);
+  assert.match(main,/registerPageOwner\(\s*'AI算法底座'/);
 });
 test('the imported demo cannot access or pollute the parent DOM, CSS or storage',()=>{
   assert.match(entry,/sandbox="allow-scripts allow-modals"/);
@@ -26,4 +26,7 @@ test('the imported demo cannot access or pollute the parent DOM, CSS or storage'
   assert.doesNotMatch(html,/(^|[^\w])localStorage(?:\.|\[)/);
   assert.match(css,/#nightInspectionIsolated iframe/);
   assert.doesNotMatch(entry,/TrainingSubmit|MaterialBatch|PollRegistry|setInterval|setTimeout/);
+  assert.match(entry,/aria-label="AI算法底座"/);
+  assert.match(html,/ai-foundation-sandbox-nav-scroll/);
+  assert.match(html, /\.sidebar \.nav\{flex:1 1 auto;min-height:0;overflow-y:auto/);
 });

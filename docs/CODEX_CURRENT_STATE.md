@@ -1,3 +1,7 @@
+## 2026-10-10｜独立演示菜单改名 AI算法底座 + iframe 内长菜单滚动修复
+
+按用户要求仅将平台独立一级菜单和 NavigationStability Page Owner「监所夜间离床研判」统一更名为「AI算法底座」，同步 iframe 的页面可访问性标题；嵌入 HTML 内的监所夜间离床业务示例及数据不改为生产功能。该模块仍仅为独立前端演示，无真实设备接入、后端持久化、推理调度或告警服务。追查前一精确 HEAD `207165a0` 的 Chrome 红灯，唯一失败是独立 Demo 长侧边栏的工作流入口滚动后被父层 #view 拦截点击；仅在 sandbox HTML 内配置 .sidebar flex 与 .nav 独立滚动，保留真实浏览器点击验收，不 force click、不跳过用例。同步更新隔离测试和严格入口缓存断言；VERSION.txt 保持 `42.24.349`，不修改主算法、训练、导入、资源调度的 Owner。新 HEAD CI 须独立验收。
+
 ## 2026-10-10｜监所夜间离床研判独立演示菜单（不污染平台模块）
 
 独立 HTML 副本经 Chromium sandbox 真实点击 13 个内页确认可切换；已修复原 Demo 内部 window.events 与 DOM ID 冲突、旧事件列表节点被后续 UI 替换时的空引用、未声明 renderTasksV4 的 ReferenceError。只对独立 HTML 进行了 14 处定点兼容保护，未接入业务服务；浏览器验收覆盖多内页并保留 pageerror 断言。

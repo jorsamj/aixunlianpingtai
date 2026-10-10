@@ -455,6 +455,15 @@
   #algoModal .event-model-tip{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style>
 <script id="night-demo-sandbox-storage">const __nightDemoStorage=(()=>{const data=new Map();return {getItem:key=>data.has(String(key))?data.get(String(key)):null,setItem:(key,value)=>data.set(String(key),String(value)),removeItem:key=>data.delete(String(key))};})();</script>
+<style id="ai-foundation-sandbox-nav-scroll">
+  /* Confined to the iframe document: the long demo navigation owns its scroll. */
+  .sidebar{display:flex;flex-direction:column;overflow:hidden;min-height:0}
+  .sidebar .brand{flex:0 0 auto}
+  .sidebar .nav{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding-bottom:96px;scrollbar-width:thin}
+  .sidebar .nav::-webkit-scrollbar{width:6px}
+  .sidebar .nav::-webkit-scrollbar-thumb{background:rgba(148,163,184,.3);border-radius:999px}
+  @media(max-width:1320px){.sidebar .nav{padding-bottom:12px}}
+</style>
 </head>
 <body>
   <div class="app">

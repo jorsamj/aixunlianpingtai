@@ -1,4 +1,4 @@
-import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010a';
+import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010b';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
@@ -473,7 +473,7 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
 ));
 // Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
 const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
-  '监所夜间离床研判', () => renderPrisonNightInspectionPage()
+  'AI算法底座', () => renderPrisonNightInspectionPage()
 );
 const canonicalPageOwnerDisposers = [
   unregisterPrisonNightPageOwner,
