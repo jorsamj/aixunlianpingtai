@@ -60,7 +60,7 @@ async function openQualityFeedbackFromResult(page, {
 
   const detail = page.getByRole('dialog', {name: '检测详情'});
   await expect(detail).toBeVisible();
-  await detail.getByRole('button', {name: /A 模型 · 提交抽检反馈/}).click();
+  await detail.getByRole('button', {name: /检测模型 · 提交抽检反馈/}).click();
   await expect.poll(async () => page.evaluate(() => state.lastOnlinePrediction63?.prediction_id || ''))
     .toBe(predictionId);
 }
