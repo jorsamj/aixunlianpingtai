@@ -800,6 +800,19 @@ test('four modes freeze only training semantics while GPU resources resolve at w
   }
 });
 
+test('old automatic GPU policy cannot bypass custom-mode physical GPU exclusivity', () => {
+  const d = draft({
+    trainingMode: 'custom',
+    baseVersionId: 'previous-ok',
+    resource: {strategy:'manual',profile:'performance',device:'auto',gpuPolicy:'auto',batch:8,workers:0,cache:false},
+    config: {model:'custom.pt',epochs:30,imgsz:640},
+  });
+  const payload = buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+  assert.equal(d.resource.gpuPolicy, 'exclusive');
+  assert.equal(payload.gpu_policy, 'exclusive');
+  assert.equal(payload.resource_strategy, 'manual');
+});
+
 test('custom mode freezes entered Batch Workers Cache and epochs rather than silently adjusting', () => {
   const d = draft({
     trainingMode:'custom',

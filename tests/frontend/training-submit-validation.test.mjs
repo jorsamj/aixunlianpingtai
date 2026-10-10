@@ -78,7 +78,9 @@ test('compact training UI keeps four modes and canonical label/material selectio
   assert.match(source, /性能优先（推荐）/);
   assert.match(source, /稳定优先/);
   assert.match(source, /手动模式是硬约束，不满足预算时会在启动 Trainer 前失败/);
-  assert.doesNotMatch(modal, /id="ts428Batch"|id="ts428Workers"|data-train-advanced-toggle/);
+  const renderedForm = modal.slice(0, modal.indexOf('window.toggleTrainAdvanced429=function'));
+  assert.ok(renderedForm.includes('id="trainModeCustomSlotV3"'));
+  assert.doesNotMatch(renderedForm, /id="ts428Batch"|id="ts428Workers"|data-train-advanced-toggle/);
   assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
 });
 
