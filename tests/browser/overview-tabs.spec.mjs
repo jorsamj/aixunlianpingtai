@@ -51,7 +51,7 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await expect(tabs.getByRole('tab')).toHaveCount(2);
   await expect(tabs.getByRole('tab',{name:'算法一张图'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#view')).toContainText('算法生产总览');
-  await expect(page.getByRole('button',{name:'消防烟雾'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'消防烟雾'}).first()).toBeVisible();
   await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('2');
   await expect(page.locator('.ov348-stat').filter({hasText:'有版本算法'})).toContainText('1');
   await expect(page.locator('.ov348-accuracy').first()).toContainText('88.0%');

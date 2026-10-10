@@ -1,6 +1,6 @@
 // Standalone read-only integration of the provided HTML demo. All demo JS/CSS and
 // fixture state live in a sandboxed iframe, never in the training platform realm.
-const DEMO_URL='/static/isolated/prison-night-inspection-demo.html?v=20261010b';
+const DEMO_URL='/static/isolated/prison-night-inspection-demo.html?v=20261010c';
 export function renderPrisonNightInspectionPage(){
   const view=document.getElementById('view');
   if(!view)return false;
