@@ -498,3 +498,15 @@ def test_auto_small_dataset_keeps_multiple_optimizer_updates(monkeypatch):
     assert result["loader_batches"] >= 4
     assert result["resolved_workers"] <= 12
     assert any("small training set" in note for note in result["adjustments"])
+
+
+def test_auto_workers_are_bounded_by_actual_host_ram(monkeypatch):
+    _patch_host(monkeypatch)
+    monkeypatch.setattr(training_metrics, "host_resources", lambda: (16, 8 * GIB))
+    resolved = training_metrics.resolve_resources(
+        _request(batch=-1, workers=0, resource_profile="performance"),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    assert resolved["resolved_workers"] <= 2
