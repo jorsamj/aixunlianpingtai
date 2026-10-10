@@ -2575,15 +2575,35 @@ window.installUsability417=function(){
     layer.addEventListener('mousedown',e=>{if(e.target===layer)closeModal()});
     document.body.appendChild(layer); dynamicModalStack.push(layer); return layer;
   }
+  // Presentation-only import modal control: keep original upload and durable task owners.
+  function decorateImportModal424(layer,title){
+    if(!layer||!/(?:ZIP|导入|上传)/.test(String(title||'')))return layer;
+    layer.classList.add('import350-modal');
+    const head=layer.querySelector('.modal-head'),close=head?.querySelector('.icon');
+    if(!head||head.querySelector('[data-import-minimize]'))return layer;
+    const button=document.createElement('button');
+    button.type='button';button.className='btn mini import350-minimize';
+    button.dataset.importMinimize='1';button.textContent='最小化';
+    button.setAttribute('aria-label','最小化导入窗口');
+    button.onclick=()=>{
+      const mini=layer.classList.toggle('import350-minimized');
+      button.textContent=mini?'展开':'最小化';
+      button.setAttribute('aria-label',mini?'展开导入窗口':'最小化导入窗口');
+    };
+    if(close)head.insertBefore(button,close);else head.appendChild(button);
+    return layer;
+  }
   modal=function modalStackCanonical424(title,body,wide=false){
     if(baseModal && baseModal.classList.contains('hidden') && dynamicModalStack.length===0){
-      modalBase(title,body,wide); return baseModal;
+      baseModal.classList.remove('import350-modal','import350-minimized');
+      modalBase(title,body,wide);return decorateImportModal424(baseModal,title);
     }
-    return makeLayer424(title,body,wide);
+    return decorateImportModal424(makeLayer424(title,body,wide),title);
   };
   window.modal=modal;
   closeModal=function closeModalStackCore424(){
     if(dynamicModalStack.length){const top=dynamicModalStack.pop();top.remove();return}
+    baseModal?.classList.remove('import350-modal','import350-minimized');
     closeModalBase();
   };
   window.closeModalCore424=closeModal;

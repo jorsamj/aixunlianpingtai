@@ -34,3 +34,12 @@ test('upload task center stays below modal interaction layer', () => {
   assert.ok(modal, 'modal z-index must be explicit');
   assert.ok(Number(dock[1]) < Number(modal[1]), `task center z-index ${dock[1]} must stay below modal ${modal[1]}`);
 });
+
+test('import modal remains mounted while minimized without creating a second uploader',()=>{
+ const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+ const css=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
+ assert.match(app,/decorateImportModal424/);
+ assert.match(app,/data-import-minimize/);
+ assert.match(css,/\.modal\.import350-minimized/);
+ assert.match(css,/\.modal\.import350-minimized \.modal-body\{display:none/);
+});

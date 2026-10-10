@@ -1227,3 +1227,16 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .label-mapping-sample-panel .label-mapping-sample-image{min-height:130px}.label-mapping-sample-panel .label-mapping-sample-card{min-width:0}
 .label-mapping-sample-panel .row.between{position:sticky;top:-17px;z-index:2;background:#fff;padding:5px 0 12px}
 @media(max-width:780px){.label-mapping-sample-panel:not([hidden]){width:calc(100vw - 24px);right:12px;top:72px;max-height:calc(100dvh - 90px)}}
+
+/* Import / upload dialogs: moderate default footprint, reversible minimization.
+   Minimized layer stays mounted, preserving XHR progress and durable task state. */
+.modal.import350-modal .modal-card{width:min(830px,94vw);height:auto;max-height:min(87dvh,900px);border-radius:18px}
+.modal.import350-modal .modal-body{min-height:0;overflow:auto}
+.import350-minimize{margin-left:auto;height:32px!important;font-size:13px!important;border:1px solid #cad9e9!important;background:#f1f6fd!important;color:#2c5b90!important}
+.modal.import350-modal .modal-head .icon{margin-left:7px}
+.modal.import350-minimized{position:fixed;inset:auto auto 18px max(226px,calc(50vw - 540px));width:min(340px,calc(100vw - 25px));height:auto;display:block;padding:0;background:transparent;backdrop-filter:none;pointer-events:none;z-index:1200}
+.modal.import350-minimized .modal-card{width:100%!important;height:auto!important;max-height:75px!important;box-shadow:0 12px 42px #13243c4d;border:1px solid #b8cde5;pointer-events:auto}
+.modal.import350-minimized .modal-head{height:65px!important;min-height:65px!important;border:0;padding:0 12px}
+.modal.import350-minimized .modal-body{display:none!important}
+.modal.import350-minimized .modal-title{font-size:15px;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:750px){.modal.import350-minimized{left:12px;bottom:14px}}
