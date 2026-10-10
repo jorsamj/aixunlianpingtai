@@ -1,3 +1,7 @@
+## 2026-10-10｜训练创建弹窗四模式简化与标签保留（PENDING CI/UAT）
+
+已在唯一训练草稿/提交 Owner 上接入快速、完整（默认）、复杂、自定义四模式，非自定义资源由目标 Worker 入场前决议，自定义为手动硬约束。创建页只保留算法身份、任务优先级、首次母模型选择、训练素材/划分、四模式、**末尾完整的 canonical 训练标签选择和搜索**；取消重复名称/ID/Batch 展示并提高字号。既有标签继承、显式新增、benchmark、精确素材和测试集隔离保持不变。设计及待验收清单：[TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。静态 JS/V8 定向校验已完成；GitHub Actions 当前 HEAD 与真实 Chrome UAT 尚未完成。不得 merge main/tag/release/deploy。
+
 ## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
 
 正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
