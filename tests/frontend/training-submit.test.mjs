@@ -744,3 +744,27 @@ test('created task notice distinguishes effective training truth from pending an
   assert.match(notices[0], /待标注 8000 张已保留/);
   cleanup(runtime);
 });
+
+
+test('training defaults use exclusive performance with 150 first epochs and 80 iteration epochs', () => {
+  const first = createTrainingDraft({config: {model: 'yolo11n.pt'}});
+  const initial = buildTrainingEngineParameters({draft: first, target, algorithm});
+  assert.equal(initial.epochs, 150);
+  assert.equal(initial.resource_strategy, 'auto');
+  assert.equal(initial.resource_profile, 'performance');
+  assert.equal(initial.gpu_policy, 'exclusive');
+  assert.equal(initial.early_stopping_enabled, false);
+
+  const inherited = createTrainingDraft({baseVersionId: 'verified-previous-version'});
+  const next = buildTrainingEngineParameters({draft: inherited, target, algorithm});
+  assert.equal(next.epochs, 80);
+
+  const manual = createTrainingDraft({
+    baseVersionId: 'verified-previous-version',
+    config: {epochs: 300, early_stopping_enabled: true, patience: 40},
+  });
+  const explicit = buildTrainingEngineParameters({draft: manual, target, algorithm});
+  assert.equal(explicit.epochs, 300);
+  assert.equal(explicit.patience, 40);
+  assert.equal(explicit.early_stopping_enabled, true);
+});
