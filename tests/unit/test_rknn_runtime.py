@@ -121,3 +121,15 @@ def test_rknn_conversion_runner_rejects_incompatible_onnx_before_loading_model(m
         rknn_convert_runner.main()
     assert "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE" in str(raised.value)
     assert "onnx.mapping" in str(raised.value)
+
+
+
+def test_standalone_rknn_runner_does_not_import_platform_control_plane():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "rknn_convert_runner.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from platform_core" not in source
+    assert "import platform_core" not in source
+    assert "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE" in source

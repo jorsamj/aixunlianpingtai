@@ -6,7 +6,9 @@ import argparse
 import json
 from pathlib import Path
 
-from platform_core.rknn_runtime import RKNN_ONNX_DEPENDENCY_CODE, rknn_onnx_dependency_error
+# This runner executes inside a separate RKNN virtualenv. Keep it independent of
+# platform_core/__init__.py and of the control-plane's installed dependencies.
+RKNN_ONNX_DEPENDENCY_CODE = "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE"
 
 
 def parse_triplet(text, default):
@@ -35,12 +37,13 @@ def main():
         raise SystemExit(
             f"{RKNN_ONNX_DEPENDENCY_CODE}: RKNN Python 环境未安装 ONNX: {error}"
         ) from None
-    incompatibility = rknn_onnx_dependency_error(
-        getattr(onnx_module, "__version__", ""),
-        hasattr(onnx_module, "mapping"),
-    )
-    if incompatibility:
-        raise SystemExit(f"{RKNN_ONNX_DEPENDENCY_CODE}: {incompatibility}")
+    if not hasattr(onnx_module, "mapping"):
+        version = str(getattr(onnx_module, "__version__", "未知"))
+        raise SystemExit(
+            f"{RKNN_ONNX_DEPENDENCY_CODE}: "
+            f"当前 RKNN Python 环境的 ONNX {version} 缺少 onnx.mapping；"
+            "请在该环境中安装 onnx==1.18.0 后重试。"
+        )
     try:
         from rknn.api import RKNN
     except Exception as e:

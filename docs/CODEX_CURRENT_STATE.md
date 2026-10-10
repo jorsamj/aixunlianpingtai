@@ -1,3 +1,7 @@
+## 2026-10-10｜独立 RKNN venv 装配边界补充核验
+
+RKNN 转换执行器的 Python 只安装 RKNN SDK，不应导入 platform_core/__init__.py 以致加载平台批量材料 Repository 或额外依赖。执行器仅用标准库与 ONNX 属性执行最后一道兼容性检查；平台内的节点/Worker 仍复用同一探测 owner。新增 Runner 独立运行边界静态回归。
+
 ## 2026-10-10｜RKNN 依赖故障最小回归补齐
 
 新增 runner 缺失 onnx.mapping 在 load_onnx 之前中断断言，以及 Agent 实际子进程失败后读取 job.json 错误码、避免传播 traceback / 上传假产物的集成式单测。沿用既有 tests/unit 文件，无新 owner；仍需当前 HEAD GitHub Actions 验证。
