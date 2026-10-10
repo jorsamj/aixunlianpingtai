@@ -22,8 +22,13 @@ export function orderZipJobs(jobs) {
 }
 export function activeZipJobs(jobs) { return orderZipJobs(jobs).filter(job => ACTIVE_ZIP_STATUSES.has(status(job))); }
 export function zipQueueInfo(job,jobs) {
-  const active=orderZipJobs(jobs).filter(row=>IMPORT_QUEUE_ZIP_STATUSES.has(status(row))), index=active.findIndex(x=>String(x?.id||'')===String(job?.id||''));
-  return {index, position:index>=0?index+1:null, ahead:index>0?index:0, canStart:status(job)==='selecting'&&index===0, waits:status(job)==='selecting'&&index>0};
+  // Only v19 server truth determines position in the formal FIFO queue.
+  // Unconfirmed ZIPs are outside that queue, even if uploaded first.
+  void jobs;
+  const position=Number(job?.queue_position)>0?Number(job.queue_position):null;
+  const ready=status(job)==='selecting'&&!zipNeedsLabelConfirmation(job);
+  return {index:position===null?-1:position-1,position,ahead:position?position-1:0,
+    canStart:ready,waits:status(job)==='running'&&String(job?.phase||'')==='QUEUE'&&position>1};
 }
 export function pickZipJob(jobs) {
   const active=activeZipJobs(jobs), running=active.find(x=>status(x)==='running');
@@ -72,7 +77,7 @@ export function zipView(job,jobs) {
   if(s==='paused') return {status:s,progress,stage:'上传已暂停',message:job?.message||'已保存分片，可选择原文件继续。',queue:q};
   if(s==='merging') return {status:s,progress,stage:canonicalStage||'正在合并 ZIP 分片',message:canonicalMessage||job?.message||'文件已上传，服务器正在合并分片。',queue:q};
   if(s==='validating') return {status:s,progress,stage:canonicalStage||'正在校验 ZIP',message:canonicalMessage||job?.message||'服务器正在校验压缩包目录结构。',queue:q};
-  if(s==='selecting'&&q.waits) return {status:s,progress,stage:'等待前序 ZIP 导入任务',message:`前面还有 ${q.ahead} 个导入任务；同一项目 ZIP 导入按后台顺序串行执行。`,queue:q};
+  if(q.waits) return {status:s,progress,stage:'等待项目正式导入队列',message:`已就绪，正式执行队列第 ${q.position} 位；前面还有 ${q.ahead} 个任务。`,queue:q};
   if(zipNeedsLabelConfirmation(job)) return {status:s,progress,stage:'等待确认标注',message:`检测到 ${job.external_classes.length} 个外部标签，请统一到平台标签后再入库。`,queue:q};
   if(s==='selecting') return {status:s,progress,stage:canonicalStage||'等待启动后台导入',message:canonicalMessage||job?.message||'ZIP 已上传并完成校验，正在确认后台启动状态。',queue:q};
   if(s==='running') return {status:s,progress,stage:canonicalStage||job?.stage||'后台导入中',message:canonicalMessage||job?.message||'后台正在处理 ZIP 数据。',queue:q};
@@ -88,7 +93,8 @@ export function zipNeedsLabelConfirmation(job) {
 }
 export function zipStartDisposition(job,jobs,{intent='',eligibleForMs=0,graceMs=LEGACY_START_GRACE_MS}={}) {
   if(status(job)!=='selecting') return 'none';
-  if(!zipQueueInfo(job,jobs).canStart) return 'wait';
+  // No frontend queue gate: v19 start persists FIFO admission atomically.
+  void jobs;
   if(zipNeedsLabelConfirmation(job)) return 'confirm-labels';
   if(intent==='deferred') return 'start';
   if(['submitting','submitted','ambiguous'].includes(intent)) return 'observe';
@@ -236,7 +242,7 @@ export function isZipBootstrapReconcile(reason='') {
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null,uploadControl=null,resumeFile=null;
-  let batchRunning=false;
+  let batchRunning=false,selectedJobId='';
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),foregroundImports=new Set(),labelReviews=new Map(),classSampleCache=new Map();
   const pid=()=>String(projectId?.()||'');
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
@@ -290,13 +296,20 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const phase=zipPhaseDetail(job);
     s.import411={...(same?previous:{}),active:ACTIVE_ZIP_STATUSES.has(v.status),jobId:String(job.id||''),fileName:job.file_name||previous.fileName||'ZIP 数据导入',fileSize:Number(job.uploaded_bytes||previous.fileSize||0),stage:v.stage,message:v.message,progress:v.progress,eta:phase.etaSeconds??job.eta_seconds??null,uploadSeconds:job.upload_seconds??previous.uploadSeconds??null,processSeconds:job.processing_seconds??job.scan_seconds??previous.processSeconds??null,serverStatus:v.status,queuePosition:v.queue.position,resultHtml:nextResult};
   }
+  function queueRowsMarkup(){
+    return orderZipJobs(jobs).filter(row=>row?.id).map(row=>{
+      const view=zipView(row,jobs),id=String(row.id);
+      const serverPosition=Number(row.queue_position)>0?` · 正式第 ${row.queue_position} 位`:'';
+      return `<button type="button" class="zip-batch-job ${id===String(current?.id||'')?'current':''}" onclick="window.ZipImportRuntime?.openTask('${esc(id)}')"><span><b>${esc(row.file_name||'ZIP 文件')}</b><small>${bytes(row.uploaded_bytes||Number(row.file_size_mb||0)*1048576)}${serverPosition}</small></span><span class="zip-batch-status">${esc(view.stage)}<b>${Math.round(view.progress)}%</b></span></button>`;
+    }).join('');
+  }
   function body(job){
     const s=status(job),v=zipView(job,jobs),phase=zipPhaseDetail(job),active=activeZipJobs(jobs);
-    const queue=v.queue.waits?`队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
+    const queue=v.queue.waits?`正式队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
     const stateResult=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
     const workerActions=s==='running'&&['QUEUE','EXTRACT','ANNOTATION_PARSE'].includes(String(job?.phase||''))?`<div class="row end"><button class="btn danger" ${job.cancel_requested?'disabled':''} onclick="window.ZipImportRuntime?.stopImport('${esc(job.id)}')">${job.cancel_requested?'正在安全停止…':'停止后台导入并清理未提交缓存'}</button></div>`:'';
     const uploadActions=(s==='uploading'||s==='paused')?`<div class="row end"><button class="btn" onclick="window.ZipImportRuntime?.pauseUpload('${esc(job.id)}')" ${s==='paused'?'disabled':''}>暂停上传</button><button class="btn primary" onclick="window.ZipImportRuntime?.promptResume('${esc(job.id)}')">继续上传</button><button class="btn danger" onclick="window.ZipImportRuntime?.cancelUpload('${esc(job.id)}')">中断并清理</button><input id="zipResumeFile" type="file" accept=".zip" style="display:none" onchange="window.ZipImportRuntime?.resumeFromFile(this,'${esc(job.id)}')"></div>`:'';
-    return `<div class="zip411" data-zip-runtime="1"><section class="zip411-head"><div><b>${esc(job?.file_name||(getState()||{}).import411?.fileName||'ZIP 数据导入')}</b><span>${bytes(job?.uploaded_bytes||(getState()||{}).import411?.fileSize||0)}</span></div><button class="btn" onclick="closeModal()">关闭窗口</button></section><div class="zip411-main"><div class="zip411-progress"><div><span id="zipDurableStage">${esc(v.stage)}</span><b id="zipDurablePct">${Math.round(v.progress)}%</b></div><i><em id="zipDurableBar" data-progress="${Number(v.progress).toFixed(2)}" style="transform:scaleX(${(Number(v.progress)/100).toFixed(4)})"></em></i><p id="zipDurableMsg">${esc(v.message)}</p><small id="zipDurablePhaseMeta" class="item-sub">${esc(phase.text)}</small></div><div id="zipDurableQueue" class="alert ${v.queue.waits?'warn':'ok'}">${esc(queue)}</div><div class="zip411-times"><div><span>上传时间</span><b>${seconds(job?.upload_seconds)}</b></div><div><span>ZIP扫描</span><b>${seconds(job?.scan_seconds)}</b></div><div><span>后台处理</span><b>${seconds(job?.processing_seconds)}</b></div></div><div id="zip411Result">${stateResult}</div>${labelMappingMarkup(job)}${uploadActions}${workerActions}</div></div>`;
+    return `<div class="zip411" data-zip-runtime="1"><div class="zip-batch-queue"><div class="row between"><b>ZIP 导入任务</b><small>正式就绪队列按服务端 FIFO 执行</small></div><div id="zipBatchQueueList">${queueRowsMarkup()}</div></div><section class="zip411-head"><div><b>${esc(job?.file_name||(getState()||{}).import411?.fileName||'ZIP 数据导入')}</b><span>${bytes(job?.uploaded_bytes||(getState()||{}).import411?.fileSize||0)}</span></div><button class="btn" onclick="closeModal()">关闭窗口</button></section><div class="zip411-main"><div class="zip411-progress"><div><span id="zipDurableStage">${esc(v.stage)}</span><b id="zipDurablePct">${Math.round(v.progress)}%</b></div><i><em id="zipDurableBar" data-progress="${Number(v.progress).toFixed(2)}" style="transform:scaleX(${(Number(v.progress)/100).toFixed(4)})"></em></i><p id="zipDurableMsg">${esc(v.message)}</p><small id="zipDurablePhaseMeta" class="item-sub">${esc(phase.text)}</small></div><div id="zipDurableQueue" class="alert ${v.queue.waits?'warn':'ok'}">${esc(queue)}</div><div class="zip411-times"><div><span>上传时间</span><b>${seconds(job?.upload_seconds)}</b></div><div><span>ZIP扫描</span><b>${seconds(job?.scan_seconds)}</b></div><div><span>后台处理</span><b>${seconds(job?.processing_seconds)}</b></div></div><div id="zip411Result">${stateResult}</div>${labelMappingMarkup(job)}${uploadActions}${workerActions}</div></div>`;
   }
   function uploadBody(){return `<div class="zip411" data-zip-runtime="1"><div class="zip411-main"><div class="zip411-progress"><div><span>正在上传 ZIP</span><b id="zipDurableUploadPct">${Math.round(uploading?.progress||0)}%</b></div><i><em id="zipDurableUploadBar" data-progress="${Number(uploading?.progress||0).toFixed(2)}" style="transform:scaleX(${(Number(uploading?.progress||0)/100).toFixed(4)})"></em></i><p id="zipDurableUploadMsg">${esc(uploading?.message||'准备上传')}</p></div><div class="alert warn">这里仅显示当前网络上传的真实进度；上传完成后，合并、校验、扫描、解压和入库均以服务器任务状态为准。</div><div class="row end"><button class="btn" onclick="window.ZipImportRuntime?.pauseUpload()">暂停上传</button><button class="btn danger" onclick="window.ZipImportRuntime?.cancelUpload()">中断并清理</button></div></div></div>`}
   function replaceOpenRuntime(html){
@@ -336,7 +349,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(!job)return;
     const v=zipView(job,jobs),phase=zipPhaseDetail(job),stage=document.getElementById('zipDurableStage'),pct=document.getElementById('zipDurablePct'),bar=document.getElementById('zipDurableBar'),msg=document.getElementById('zipDurableMsg'),phaseMeta=document.getElementById('zipDurablePhaseMeta'),q=document.getElementById('zipDurableQueue'),result=document.getElementById('zip411Result');
     if(stage)stage.textContent=v.stage;if(pct)pct.textContent=`${Math.round(v.progress)}%`;setZipProgressBar(bar,v.progress);if(msg)msg.textContent=v.message;if(phaseMeta)phaseMeta.textContent=phase.text;
-    if(q)q.textContent=v.queue.waits?`队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
+    if(q)q.textContent=v.queue.waits?`正式队列第 ${v.queue.position} 位 · 前面 ${v.queue.ahead} 个任务`:(active.length>1?`当前 ${active.length} 个活动 ZIP 导入任务`:'后台任务状态以服务器为准');
+    const queueList=document.getElementById('zipBatchQueueList');
+    if(queueList){const html=queueRowsMarkup();if(queueList.innerHTML!==html)queueList.innerHTML=html}
     if(result)result.innerHTML=String((getState()||{}).import411?.resultHtml||resultMarkup(job));
   }
   function updateDockContent(node,title,detail){
@@ -361,7 +376,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       if(msg)msg.textContent=uploading.message;
       return;
     }
-    current=pickZipJob(jobs);
+    current=jobs.find(job=>String(job?.id||'')===selectedJobId)||pickZipJob(jobs);
     if(!active.length)d.classList.add('hidden');
     else{
       const v=zipView(current,jobs);
@@ -499,7 +514,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       notify?.(error?.message||error);throw error;
     }
   }
-  async function maybeStart(project){const next=orderZipJobs(jobs).find(row=>status(row)==='selecting'&&zipQueueInfo(row,jobs).canStart);if(!next)return;const id=String(next.id||'');if(started.has(id))return;const now=Date.now();if(!eligibleSince.has(id))eligibleSince.set(id,now);const action=zipStartDisposition(next,jobs,{intent:readIntent(project,id),eligibleForMs:now-eligibleSince.get(id)});if(!['start','start-legacy-recovery'].includes(action))return;started.add(id);writeIntent(project,id,'submitting');try{await startZipJob(project,id,{fetchImpl});writeIntent(project,id,'submitted')}catch(e){started.delete(id);writeIntent(project,id,'ambiguous');throw e}}
+  async function maybeStart(project){const next=orderZipJobs(jobs).find(row=>status(row)==='selecting'&&!zipNeedsLabelConfirmation(row)&&!started.has(String(row.id||'')));if(!next)return;const id=String(next.id||'');if(started.has(id))return;const now=Date.now();if(!eligibleSince.has(id))eligibleSince.set(id,now);const action=zipStartDisposition(next,jobs,{intent:readIntent(project,id),eligibleForMs:now-eligibleSince.get(id)});if(!['start','start-legacy-recovery'].includes(action))return;started.add(id);writeIntent(project,id,'submitting');try{await startZipJob(project,id,{fetchImpl});writeIntent(project,id,'submitted')}catch(e){started.delete(id);writeIntent(project,id,'ambiguous');throw e}}
   async function applyCompletion(job,reason){
     if(!job||status(job)!=='done')return;const id=String(job.id||'');
     // Recovered jobs must never auto-open a finished import or cleaning modal.
@@ -517,7 +532,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   async function reconcile(reason='manual'){
     if(busy||destroyed)return current;const project=pid();if(!project)return null;busy=true;
     try{
-      let server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);for(const job of jobs)publishTaskCenterJob(project,job);await maybeStart(project);await refreshKnown(project);if(!isZipBootstrapReconcile(reason))server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);current=pickZipJob(jobs);
+      let server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);for(const job of jobs)publishTaskCenterJob(project,job);await maybeStart(project);await refreshKnown(project);if(!isZipBootstrapReconcile(reason))server=await listZipJobs(project,{fetchImpl});jobs=mergeJobs(server);current=jobs.find(job=>String(job?.id||'')===selectedJobId)||pickZipJob(jobs);
       if(current){patchState(current);if(TERMINAL_ZIP_STATUSES.has(status(current))){writeIntent(project,current.id,'');eligibleSince.delete(String(current.id||''))}}
       render();await applyCompletion(current,reason);return current;
     }finally{busy=false;arm()}
@@ -671,7 +686,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     let job=jobs.find(row=>String(row?.id||'')===id)||knownJobs.get(id);
     if(!job){await reconcile('open-task');job=jobs.find(row=>String(row?.id||'')===id)||knownJobs.get(id)}
     if(!job){notify?.('该导入任务已结束或不存在');return null}
-    current=job;patchState(job);open();return job;
+    selectedJobId=id;current=job;patchState(job);open();return job;
   }
 
   const runtime={upload,uploadBatch,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};

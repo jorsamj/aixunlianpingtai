@@ -21,8 +21,8 @@ const running={id:'job-a',status:'running',created_at:'2026-09-16T10:00:00Z',sta
 const selecting={id:'job-b',status:'selecting',created_at:'2026-09-16T10:05:00Z',progress:48,message:'上传与ZIP校验完成，等待开始后台导入',zip_display_progress:{phase:'READY',phase_label:'等待启动后台导入',phase_progress:100,overall_progress:48,completed:1,total:1,unit:'step',eta_seconds:null}};
 
 test('refresh restoration picks server running job',()=>assert.equal(pickZipJob([selecting,running]).id,'job-a'));
-test('second ZIP exposes explicit queue wait',()=>{const v=zipView(selecting,[selecting,running]);assert.equal(v.stage,'等待前序 ZIP 导入任务');assert.equal(v.queue.position,2);assert.match(v.message,/前面还有 1 个导入任务/)});
-test('only queue head selecting job can start',()=>{const a={...selecting,id:'a',created_at:'2026-09-16T10:00:00Z'},b={...selecting,id:'b'};assert.equal(zipQueueInfo(a,[b,a]).canStart,true);assert.equal(zipQueueInfo(b,[b,a]).canStart,false)});
+test('server-accepted ZIP exposes server-owned FIFO position',()=>{const second={...running,phase:'QUEUE',queue_position:2};const v=zipView(second,[selecting,second]);assert.equal(v.stage,'等待项目正式导入队列');assert.equal(v.queue.position,2);assert.match(v.message,/前面还有 1 个任务/)});
+test('unconfirmed ZIP does not block later ready ZIP',()=>{const blocked={...selecting,label_confirmation_required:true,external_classes:[{class_id:'0',name:'class_0'}]},ready={...selecting,id:'ready'};assert.equal(zipQueueInfo(blocked,[blocked,ready]).canStart,false);assert.equal(zipQueueInfo(ready,[blocked,ready]).canStart,true);assert.equal(zipQueueInfo(ready,[blocked,ready]).position,null)});
 test('server projection owns ZIP phase and overall progress',()=>{
   assert.equal(backendZipProgress(running),54.28);
   assert.equal(overallZipProgress(selecting),48);
@@ -34,7 +34,7 @@ test('server projection owns ZIP phase and overall progress',()=>{
   assert.equal(zipPhaseDetail(selecting).etaSeconds,null);
   assert.equal(overallZipProgress({status:'done',progress:100}),100);
 });
-test('new deferred upload waits behind running job then becomes startable',()=>{assert.equal(zipStartDisposition(selecting,[running,selecting],{intent:'deferred'}),'wait');assert.equal(zipStartDisposition(selecting,[selecting],{intent:'deferred'}),'start')});
+test('two ready uploads can both enter authoritative backend FIFO',()=>{assert.equal(zipStartDisposition(selecting,[running,selecting],{intent:'deferred'}),'start');assert.equal(zipStartDisposition(selecting,[selecting],{intent:'deferred'}),'start')});
 test('legacy selecting job gets grace window before recovery start',()=>{assert.equal(zipStartDisposition(selecting,[selecting],{eligibleForMs:LEGACY_START_GRACE_MS-1}),'confirm');assert.equal(zipStartDisposition(selecting,[selecting],{eligibleForMs:LEGACY_START_GRACE_MS}),'start-legacy-recovery')});
 test('submitted start is observed rather than posted twice',()=>assert.equal(zipStartDisposition(selecting,[selecting],{intent:'submitted',eligibleForMs:99999}),'observe'));
 test('terminal jobs are not active',()=>{const done={id:'d',status:'done'};assert.deepEqual(activeZipJobs([done]),[]);assert.equal(ACTIVE_ZIP_STATUSES.has('done'),false)});
