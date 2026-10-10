@@ -195,7 +195,11 @@ def resolve_resources(request, context, model, torch):
         # number of installed GPUs. An idle multi-GPU server should not throttle
         # a single training job before the other GPUs have work. The final
         # DataLoader batch-count cap is applied after GPU batch resolution.
-        workers = min(cap, cpu_loader_budget)
+        # Shared canonical resolver: reserve 4 GiB for the trainer and
+        # at least 2 GiB of free host RAM for each DataLoader process.
+        # Both local and Agent resource-resolution subprocesses apply this.
+        ram_worker_budget = max(0, (ram_available - 4 * GIB) // (2 * GIB)) if ram_available else 0
+        workers = min(cap, cpu_loader_budget, int(ram_worker_budget))
         if request.get("device") == "cpu":
             workers = 0
         reasons.append(
@@ -282,6 +286,16 @@ def resolve_resources(request, context, model, torch):
     else:
         batch = requested_batch
 
+    # A small dataset should not become one giant optimizer update per
+    # epoch merely because an exclusive GPU has spare VRAM.
+    if strategy == "auto" and train_image_count < 512:
+        small_set_cap = max(1, math.ceil(train_image_count / 4))
+        if batch > small_set_cap:
+            adjustments.append(
+                f"small training set: batch capped {batch}->{small_set_cap} "
+                f"to preserve >=4 loader batches per epoch when possible"
+            )
+            batch = small_set_cap
     candidate_batch = int(batch)
     candidate_workers = int(workers)
     loader = effective_loader_resources(train_image_count, candidate_batch, candidate_workers)
