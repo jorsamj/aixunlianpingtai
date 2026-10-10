@@ -65,7 +65,7 @@ test('empty canonical draft has safe defaults and no label-history state', () =>
   assert.equal(draft.experimentPercent, 20);
   assert.equal(draft.validationPercent, 20);
   assert.deepEqual(draft.resource, {
-    strategy: 'auto', profile: 'balanced', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null,
+    strategy: 'auto', profile: 'performance', device: 'auto', gpuPolicy: 'exclusive', batch: null, workers: null, cache: null,
   });
   assert.equal(draft.priority, 50);
 });
@@ -106,8 +106,8 @@ test('first training still requires at least one explicit material label', () =>
   })), /首次训练至少选择一个训练标签/);
 });
 
-test('retired shared GPU draft state normalizes to safe auto isolation', () => {
-  assert.equal(createTrainingDraft({resource: {gpuPolicy: 'shared'}}).resource.gpuPolicy, 'auto');
+test('retired shared GPU draft state normalizes to exclusive GPU ownership', () => {
+  assert.equal(createTrainingDraft({resource: {gpuPolicy: 'shared'}}).resource.gpuPolicy, 'exclusive');
   assert.equal(createTrainingDraft({resource: {gpuPolicy: 'exclusive'}}).resource.gpuPolicy, 'exclusive');
 });
 
