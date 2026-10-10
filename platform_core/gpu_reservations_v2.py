@@ -447,9 +447,10 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
                 (self.node_id, gpu["gpu_uuid"], now),
             ).fetchall()
             count = len(active)
-            if count >= self.config.max_concurrent or (
-                count and (policy == "exclusive" or any(r["policy"] == "exclusive" for r in active))
-            ):
+            # Global single-card exclusivity also applies to legacy "auto"
+            # requests and operator configs that still allow 2+ slots.
+            # A second physical GPU on this node remains independently usable.
+            if count:
                 reasons.append("GPU_CONCURRENCY_LIMIT: GPU is reserved on this node")
                 continue
             capacity = min(int(total * self.config.max_reserved_ratio), total - self.config.safety_bytes)
