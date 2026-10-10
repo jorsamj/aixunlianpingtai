@@ -45,11 +45,9 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady)),{timeout:20000}).toBe(true);
   await page.evaluate(()=>window.setPage('总览'));
   const tabs=page.locator('[data-overview-tabs]');
-  await expect(tabs.getByRole('tab')).toHaveCount(3);
-  await expect(tabs.getByRole('tab',{name:'算法生产总览'})).toHaveAttribute('aria-selected','true');
+  await expect(tabs.getByRole('tab')).toHaveCount(2);
+  await expect(tabs.getByRole('tab',{name:'算法总览'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#view')).toContainText('算法生产总览');
-
-  await tabs.getByRole('tab',{name:'算法一张图'}).click();
   await expect(page.getByRole('button',{name:'消防烟雾'})).toBeVisible();
   await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('2');
   await expect(page.locator('.ov348-stat').filter({hasText:'有版本算法'})).toContainText('1');
@@ -78,8 +76,8 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await page.locator('[data-overview-refresh]').click();
   await expect(page.locator('.ov348-error')).toContainText('nodes: HTTP 503');
   await expect(page.locator('.ov348-node')).toHaveCount(0);
-  await tabs.getByRole('tab',{name:'算法生产总览'}).click();
-  await expect(tabs.getByRole('tab',{name:'算法生产总览'})).toHaveAttribute('aria-selected','true');
+  await tabs.getByRole('tab',{name:'算法总览'}).click();
+  await expect(tabs.getByRole('tab',{name:'算法总览'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#view')).toContainText('算法生产总览');
   expect(pageErrors).toEqual([]);
 });

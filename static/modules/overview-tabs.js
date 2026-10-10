@@ -1,8 +1,7 @@
 // Canonical overview tabs: reuse the production dashboard and existing telemetry
 // sources. A missing metric is unknown; never manufacture "0%" accuracy or cloud bytes.
 export const OVERVIEW_TABS = Object.freeze([
-  {id:'production',label:'算法生产总览'},
-  {id:'algorithm',label:'算法一张图'},
+  {id:'algorithm',label:'算法总览'},
   {id:'compute',label:'算力一张图'},
 ]);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -117,7 +116,7 @@ function overviewAlgorithm(m) {
   const industryPanel=panel('行业场景分布',m.industries.length?
     rows(m.industries,x=>bar(x.name,x.count,industryMax,null)):
     empty('暂无行业分类记录'),'按行业归属统计');
-  const accuracy=panel('模型准确率分析',m.scores.length?
+  const accuracy=panel('模型质量排行',m.scores.length?
     rows(m.scores,x=>'<div class="ov348-accuracy"><button type="button" class="ov348-algo-link" data-overview-algorithm-id="'+esc(x.id)+'">'+esc(x.name)+'</button><div>'+
        '<span>mAP50 '+pct(x.map50)+'</span><span>Precision '+pct(x.precision)+'</span><span>Recall '+pct(x.recall)+'</span><span>策略准确率 —</span></div></div>'):
     empty('暂无算法资产'),'全部算法 · 缺失的评测指标显示 —');
@@ -127,12 +126,14 @@ function overviewAlgorithm(m) {
     metric('有版本算法',fmt(m.withVersions),'累计 '+fmt(m.versionCount)+' 个版本')+
     metric('模型评测覆盖',fmt(m.measured)+' / '+fmt(m.total),'具备 Precision / Recall / mAP')+
     metric('策略准确率','—','尚无策略判定结果事实源')+'</div>'+
-    '<div class="ov348-grid">'+typePanel+industryPanel+'</div>'+
-    '<div class="ov348-grid">'+accuracy+
-      panel('高频使用算法排行',empty('尚未接入生产推理调用次数，不能用训练任务数替代使用量'),'生产运行次数 · 待接入')+'</div>'+
+    '<div class="ov350-section"><h3>算法资产与模型表现</h3><span>有效数据优先</span></div>'+
+    '<div class="ov348-grid ov350-leader-grid">'+accuracy+typePanel+'</div>'+
+    '<div class="ov348-grid">'+industryPanel+'</div>'+
+    '<div class="ov350-section"><h3>运行与应用</h3><span>待接入数据源</span></div>'+
     '<div class="ov348-grid">'+
-      panel('各单位算法运行状况',empty('尚未接入单位、算法部署实例及其运行状态的关联数据'),'单位维度 · 待接入')+
-      panel('单位算法数量排行',empty('尚无可信的单位归属记录，暂不生成排行'),'单位维度 · 待接入')+
+      panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+
+      panel('各单位算法运行状况',empty('尚未接入单位与部署实例运行数据'),'单位维度 · 待接入')+'</div>'+
+    '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div>'+
     '</div><div class="ov348-footnote">统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。</div></div>';
 }
 function overviewCompute(m,placementFilter='all') {
@@ -183,7 +184,7 @@ export function installOverviewTabsRuntime({
   },
 }={}) {
   if(typeof document==='undefined')return null;
-  let active='production',placementFilter='all',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}},loading={};
+  let active='algorithm',placementFilter='all',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}},loading={};
   const ttl=60000;
   const state=()=>getState?.()||{};
   const project=()=>String(state().project?.id||'');
@@ -196,44 +197,43 @@ export function installOverviewTabsRuntime({
     const view=document.getElementById('view');
     if(!view||state().page!=='总览')return false;
     resetIfProjectChanged();
-    if(active==='production') {
-      renderProduction?.();
-    } else {
-      const has=active==='algorithm'?cache.algorithms!==null:cache.nodes!==null;
-      let content=active==='algorithm'?(has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('当前项目的算法资产尚未取得')):
-        (has?overviewCompute(buildComputeMap(cache.nodes.items,cache.storage?.items,cache.gpuRuntime),placementFilter):empty('服务节点状态尚未取得'));
-      if(!has&&!cache.loadedAt[active==='algorithm'?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(active==='algorithm'?'算法资产':'算力资源')+'数据…</div>'+content;
-      const failures=Object.entries(cache.errors).filter(([kind,value])=>
-        (active==='algorithm'?['quality','algorithms'].includes(kind):!['quality','algorithms'].includes(kind))&&value);
-      if(failures.length)content='<div class="ov348-error">部分数据读取失败：'+esc(failures.map(([kind,value])=>kind+': '+value).join(' · '))+'</div>'+content;
-      view.innerHTML=content;
-      view.querySelectorAll?.('[data-overview-placement]').forEach(button=>button.addEventListener('click',()=>{
-        placementFilter=button.dataset.overviewPlacement;render({load:false});
-      }));
-      view.querySelectorAll?.('[data-overview-algorithm-id]').forEach(button=>button.addEventListener('click',()=>{
-        const id=button.dataset.overviewAlgorithmId;
-        if((state().algorithms||[]).some(a=>String(a.id)===id))window.viewAlgorithm428?.(id);
-        else window.setPage?.('算法列表');
-      }));
-    }
+    const algorithm=active==='algorithm',has=algorithm?cache.algorithms!==null:cache.nodes!==null;
+    // Keep existing production dashboard owner and prepend algorithm intelligence.
+    if(algorithm)renderProduction?.();
+    let content=algorithm?(has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
+      (has?overviewCompute(buildComputeMap(cache.nodes.items,cache.storage?.items,cache.gpuRuntime),placementFilter):empty('服务节点尚未取得'));
+    if(!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
+    const errors=Object.entries(cache.errors).filter(([key,value])=>
+      (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
+    if(errors.length)content='<div class="ov348-error">部分数据读取失败：'+esc(errors.map(([key,value])=>key+': '+value).join(' · '))+'</div>'+content;
+    if(algorithm)view.insertAdjacentHTML('afterbegin',content+'<div class="ov350-section ov350-production-heading"><h3>生产运行</h3></div>');
+    else view.innerHTML=content;
+    view.querySelectorAll?.('[data-overview-placement]').forEach(button=>button.addEventListener('click',()=>{
+      placementFilter=button.dataset.overviewPlacement;render({load:false});
+    }));
+    view.querySelectorAll?.('[data-overview-algorithm-id]').forEach(button=>button.addEventListener('click',()=>{
+      const id=button.dataset.overviewAlgorithmId;
+      if((state().algorithms||[]).some(a=>String(a.id)===id))window.viewAlgorithm428?.(id);
+      else window.setPage?.('算法列表');
+    }));
     view.insertAdjacentHTML('afterbegin','<div class="ov348-header" data-overview-tabs="1">'+
       '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>总览</h2></div>'+
       '<div class="ov348-toolbar" role="tablist" aria-label="总览类型">'+OVERVIEW_TABS.map(x=>
         '<button type="button" role="tab" data-overview-tab="'+x.id+'" aria-selected="'+(active===x.id)+'"'+
         ' class="'+(active===x.id?'active':'')+'">'+esc(x.label)+'</button>').join('')+
-      '</div>'+(active==='production'?'':'<button type="button" class="ov348-refresh" data-overview-refresh="1" title="刷新当前视图">刷新</button>')+'</div>');
+      '</div><button type="button" class="ov348-refresh" data-overview-refresh="1" title="刷新当前视图">刷新</button></div>');
     const tabs=view.querySelector('[data-overview-tabs]');
     tabs.addEventListener('click',event=>{
       const selected=event.target.closest('[data-overview-tab]');
       if(selected){active=selected.dataset.overviewTab;render();return}
       if(event.target.closest('[data-overview-refresh]')){void loadTab(active,true);}
     });
-    if(load&&active!=='production')void loadTab(active);
+    if(load)void loadTab(active);
     return true;
   }
   async function loadTab(tab,force=false) {
     resetIfProjectChanged();
-    const id=project();if(!id||state().page!=='总览'||tab==='production')return;
+    const id=project();if(!id||state().page!=='总览')return;
     const fetchOne=async(key,url)=>{
       if(!force&&cache.loadedAt[key]&&Date.now()-cache.loadedAt[key]<ttl)return;
       if(loading[key])return loading[key];
@@ -266,6 +266,6 @@ export function installOverviewTabsRuntime({
     ]);
     if(state().page==='总览'&&active===tab&&project()===id)render({load:false});
   }
-  return Object.freeze({render,select(tab){if(OVERVIEW_TABS.some(x=>x.id===tab)){active=tab;return render()}return false},
+  return Object.freeze({render,select(tab){const target=tab==='production'?'algorithm':tab;if(OVERVIEW_TABS.some(x=>x.id===target)){active=target;return render()}return false},
     get activeTab(){return active},refresh(){return loadTab(active,true)}});
 }

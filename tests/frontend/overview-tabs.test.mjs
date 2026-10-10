@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {OVERVIEW_TABS,buildAlgorithmMap,buildComputeMap,installOverviewTabsRuntime} from '../../static/modules/overview-tabs.js';
 
 test('overview tabs expose three exclusive dashboard views, preserving old production owner', () => {
-  assert.deepEqual(OVERVIEW_TABS.map(x=>x.label),['算法生产总览','算法一张图','算力一张图']);
+  assert.deepEqual(OVERVIEW_TABS.map(x=>x.label),['算法总览','算力一张图']);
   const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
   assert.match(main,/\['总览', 'renderDashboardCanonical422'\]/);
   assert.match(main,/registerPageOwner\(\s*'总览', \(\) => overviewTabsRuntime\.render\(\)/);
