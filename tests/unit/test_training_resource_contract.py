@@ -484,3 +484,17 @@ def test_deferred_auto_reservation_scales_with_candidate_gpu_headroom():
         active_count=1,
     )
     assert shared == payload["gpu_memory_floor_bytes"]
+
+
+def test_auto_small_dataset_keeps_multiple_optimizer_updates(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(batch=-1, workers=0, resource_profile="performance"),
+        _context(train_image_count=80),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    assert result["resolved_batch"] <= 20
+    assert result["loader_batches"] >= 4
+    assert result["resolved_workers"] <= 12
+    assert any("small training set" in note for note in result["adjustments"])
