@@ -60,6 +60,7 @@ export function createTrainingDraft(values = {}) {
   // explicitly selects full; the mode belongs to this canonical draft.
   const legacyManualInput = values.resource?.strategy === 'manual'
     || (values.trainingMode == null && values.resource != null
+      && values.resource.strategy == null
       && ['batch', 'workers', 'cache'].some(key => values.resource[key] != null));
   const requestedMode = String(values.trainingMode || (legacyManualInput ? 'custom' : 'full'));
   const trainingMode = ['quick', 'full', 'complex', 'custom'].includes(requestedMode) ? requestedMode : 'full';
