@@ -85,9 +85,8 @@ export function createTrainingDraft(values = {}) {
       strategy: automaticMode ? 'auto' : String(values.resource?.strategy || 'manual'),
       profile: automaticMode ? 'performance' : String(values.resource?.profile || 'performance'),
       device: String(values.resource?.device || 'auto'),
-      gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'exclusive'))
-        ? String(values.resource?.gpuPolicy || 'exclusive')
-        : 'exclusive',
+      // Legacy auto must not override the single-physical-GPU reservation contract.
+      gpuPolicy: 'exclusive',
       batch: automaticMode ? null : (values.resource?.batch ?? null),
       workers: automaticMode ? null : (values.resource?.workers ?? null),
       cache: automaticMode ? null : (values.resource?.cache ?? null),
