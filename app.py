@@ -13989,6 +13989,50 @@ def _v19_check_stop(project_id: str, job_id: str) -> None:
         raise _V19ImportStopped("用户中断了尚未提交的 ZIP 素材导入")
 
 
+
+def _v19_fifo_import_jobs(project_id: str) -> List[Dict[str, Any]]:
+    """Read existing v19 durable job files; no separate queue store or scheduler."""
+    jobs = []
+    for filename in v19_import_jobs_dir(project_id).glob("*/job.json"):
+        job = read_json(filename, {})
+        if isinstance(job, dict) and str(job.get("status") or "").lower() == "running":
+            jobs.append(job)
+
+    def order(job):
+        # Pre-FIFO running jobs take precedence: a migration must not overtake
+        # work that was accepted under the previous contract.
+        sequence = int(job.get("enqueue_sequence") or 0)
+        return (
+            0 if sequence <= 0 else 1,
+            sequence if sequence > 0 else 0,
+            str(job.get("enqueued_at") or job.get("created_at") or ""),
+            str(job.get("id") or ""),
+        )
+
+    return sorted(jobs, key=order)
+
+
+def _v19_fifo_queue_position(project_id: str, job_id: str) -> Optional[int]:
+    return next(
+        (number for number, job in enumerate(_v19_fifo_import_jobs(project_id), 1)
+         if str(job.get("id") or "") == str(job_id)),
+        None,
+    )
+
+
+def _v19_wait_fifo_turn(project_id: str, job_id: str) -> None:
+    """The earliest *confirmed* durable job runs; an unconfirmed ZIP never blocks."""
+    while True:
+        _v19_check_stop(project_id, job_id)
+        job = v19_read_job(project_id, job_id)
+        if str(job.get("status") or "").lower() in {"cancelled", "canceled", "done", "failed"}:
+            raise _V19ImportStopped("该 ZIP 导入任务已结束，禁止再次正式写入")
+        queue = _v19_fifo_import_jobs(project_id)
+        if not queue or str(queue[0].get("id") or "") == str(job_id):
+            return
+        time.sleep(0.2)
+
+
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
     processing_started = time.time()
@@ -14001,8 +14045,11 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
     frozen_mapping = dict(job.get("label_mapping") or {}) or None
     lock = _v50_project_import_lock(project_id)
     try:
-        # 同一项目的压缩包导入串行执行，避免大型导入争用磁盘与任务状态。
-        with lock:
+        # Queue precedence is durable, while FileLock serializes writes across
+        # web/worker processes. The former in-process RLock remains in place.
+        _v19_wait_fifo_turn(project_id, job_id)
+        with FileLock(str(v19_import_jobs_dir(project_id) / ".formal-import.lock"), timeout=-1), lock:
+            _v19_wait_fifo_turn(project_id, job_id)
             _v19_check_stop(project_id, job_id)
             _v19_assert_frozen_mapping_targets_active(project_id, frozen_mapping)
             _v50_begin_image_batch(project_id)
@@ -14696,6 +14743,12 @@ def v19_stop_import_job(project_id: str, job_id: str):
 
 @app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
 def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartReq):
+    # Same-project submit is one atomic operation even across API processes.
+    with FileLock(str(v19_import_jobs_dir(project_id) / ".enqueue.lock"), timeout=120):
+        return _v19_start_import_job_locked(project_id, job_id, payload)
+
+
+def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
     if job.get("status") == "running":
         return v19_public_job(project_id, job)
@@ -14786,8 +14839,14 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         if not selected_paths:
             raise HTTPException(status_code=400, detail="没有选择有效图片")
     import threading
+    highest_sequence = max(
+        (int(read_json(filename, {}).get("enqueue_sequence") or 0)
+         for filename in v19_import_jobs_dir(project_id).glob("*/job.json")),
+        default=0,
+    )
     v19_update_job(
         project_id, job_id,
+        enqueued_at=now_iso(), enqueue_sequence=highest_sequence + 1,
         status="running",
         stage="等待项目导入资源",
         progress=48,
@@ -14890,6 +14949,12 @@ def v19_list_import_jobs(project_id: str):
             # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
             preview = 300 if job.get("status") == "selecting" else 0
             jobs.append(v19_public_job(project_id, job, image_limit=preview))
+    positions = {
+        str(job.get("id") or ""): pos
+        for pos, job in enumerate(_v19_fifo_import_jobs(project_id), 1)
+    }
+    for job in jobs:
+        job["queue_position"] = positions.get(str(job.get("id") or ""))
     jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"ok": True, "items": jobs}
 
@@ -14898,7 +14963,9 @@ def v19_list_import_jobs(project_id: str):
 def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
     job = v19_read_job(project_id, job_id)
     _v19_recover_multipart_finalize(project_id, job)
-    return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
+    result = v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
+    result["queue_position"] = _v19_fifo_queue_position(project_id, job_id)
+    return result
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs")
