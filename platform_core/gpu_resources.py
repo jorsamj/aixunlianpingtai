@@ -518,7 +518,9 @@ class GPUResourceManager:
                 "SELECT * FROM gpu_reservations WHERE gpu_uuid=?", (gpu["gpu_uuid"],)
             ).fetchall()
             count = len(active)
-            if count >= self.config.max_concurrent or (count and (policy == "exclusive" or any(r["policy"] == "exclusive" for r in active))):
+            # Never auto-share a physical GPU. The environment's legacy
+            # max-concurrent setting cannot override exclusive ownership.
+            if count:
                 reasons.append("GPU_CONCURRENCY_LIMIT: GPU is reserved")
                 continue
             capacity = min(int(total * self.config.max_reserved_ratio), total - self.config.safety_bytes)
