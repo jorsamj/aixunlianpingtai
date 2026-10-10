@@ -117,13 +117,14 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 1_500});
   await expect(page.locator('[data-training-create-shell="1"]')).toHaveCount(0);
   await expect(dialog.locator('#tr429Target')).toHaveValue('first-open-ultralytics');
   await expect(dialog.locator('#tr429Target')).toContainText('首次打开 Ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
-  await expect(dialog.locator('#tr429Model')).toHaveText('yolo11n.pt');
+  await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
 
   expect(trainingOptionsCalls).toBe(beforeOptions);
   expect(recommendationCalls).toBe(beforeRecommendation);
@@ -154,7 +155,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   const reloadedCard = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await reloadedCard.getByRole('button', {name: '训练'}).click();
-  const secondDialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
   await expect(secondDialog.locator('#trV3Device')).toContainText('CPU');
   await page.waitForTimeout(180);
@@ -217,7 +218,7 @@ test('training dialog shows canonical inherited labels horizontally without hist
 
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
 
   await page.evaluate(({algorithmId}) => {
@@ -325,7 +326,7 @@ test('same selected materials reload canonical labels after a completed label un
 
   let card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  let dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  let dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await page.evaluate(() => {
     if (!(state.labels || []).some(row => String(row?.code || '') === 'fire')) {
@@ -351,7 +352,7 @@ test('same selected materials reload canonical labels after a completed label un
 
   card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
 
@@ -404,12 +405,12 @@ test('training target is the only automatic early-stop control', async ({page, r
 
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
 
-  await dialog.getByText('进阶配置（可选）', {exact: true}).click();
-  await expect(dialog.getByRole('button', {name: '编辑全部训练参数'})).toBeVisible();
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.getByRole('button', {name: '配置更多专业参数'})).toBeVisible();
+  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settings).toBeVisible();
   await expect(settings.getByText('阶段试验与目标')).toBeVisible();
@@ -419,11 +420,12 @@ test('training target is the only automatic early-stop control', async ({page, r
   await expect(settings.getByText('目标正确率', {exact: true})).toBeVisible();
   await expect(settings.locator('#ts428Goal')).toHaveValue('90');
   await expect(settings.locator('#ts428Low')).toHaveCount(0);
-  await expect(settings.locator('#ts428Patience')).toHaveCount(0);
+  await expect(settings.locator('#ts428Patience')).toHaveValue('40');
+  await expect(settings.locator('#ts428EarlyStop')).not.toBeChecked();
   await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
 
   await settings.getByRole('button', {name: '应用配置'}).click();
-  await expect(dialog.locator('#tr429Gate')).toContainText('≥ 90.0%');
+  await expect(dialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
   const config = await page.evaluate(() => window.trainingConfigCanonical428?.());
   expect(config.stop_threshold).toBe(0.9);
   expect(config.continue_threshold).toBe(0);
@@ -541,7 +543,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('#tr429Target')).toHaveValue('feedback-training-target');
 
