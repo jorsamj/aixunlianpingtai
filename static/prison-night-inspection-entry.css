@@ -1,0 +1,19 @@
+/* Intentionally restricted to one isolated navigation entry and its own view. */
+#nav .nav-night-isolated{margin:13px 2px 4px;padding-top:12px;border-top:1px solid #e1e8f3}
+#nav .nav-night-isolated-btn{width:100%;height:70px;padding:10px 12px;display:flex;gap:8px;align-items:center;justify-content:space-between;background:linear-gradient(125deg,#f0f5ff,#eaf9ff);border:1px solid #cce2ff;border-radius:13px;color:#1e40af;box-shadow:0 5px 16px rgba(37,99,235,.06);text-align:left}
+#nav .nav-night-isolated-btn:hover{background:linear-gradient(125deg,#e6efff,#ddf7ff);border-color:#8dc5ff}
+#nav .nav-night-isolated-btn.active{background:linear-gradient(125deg,#1e40af,#0369a1);color:white;border-color:#1d4ed8;box-shadow:0 7px 18px rgba(37,99,235,.18)}
+#nav .nav-night-isolated-main{display:flex;min-width:0;flex-direction:column;gap:2px;align-items:flex-start}
+#nav .nav-night-isolated-btn .nav-left{display:flex;gap:8px;align-items:center;min-width:0}
+#nav .nav-night-isolated-btn .nav-left i{width:28px;height:28px;display:grid;place-items:center;border-radius:9px;background:rgba(59,130,246,.12);color:inherit;font-style:normal;font-size:18px;flex-shrink:0}
+#nav .nav-night-isolated-btn .nav-left b{font-size:13px;white-space:nowrap;color:inherit}
+#nav .nav-night-isolated-btn small{padding-left:36px;font-size:10px;color:#61809f;white-space:nowrap}
+#nav .nav-night-isolated-btn.active small{color:#d1efff}
+body.sidebar-collapsed #nav .nav-night-isolated-btn{height:52px;justify-content:center;padding:8px 4px}
+body.sidebar-collapsed #nav .nav-night-isolated-main{align-items:center}
+body.sidebar-collapsed #nav .nav-night-isolated-btn small,body.sidebar-collapsed #nav .nav-night-isolated-btn .nav-arrow{display:none}
+body:has(#nightInspectionIsolated) #summary{display:none!important}
+#view:has(#nightInspectionIsolated){max-width:none;width:100%;padding:10px 14px 14px;margin:0}
+#nightInspectionIsolated{height:calc(100vh - 98px);min-height:540px;width:100%;overflow:hidden;border:1px solid #d6e5f6;border-radius:16px;background:#07111f;box-shadow:0 12px 30px rgba(15,23,42,.08)}
+#nightInspectionIsolated iframe{display:block;border:0;background:#07111f;width:100%;height:100%}
+@media(max-width:900px){#view:has(#nightInspectionIsolated){padding:8px}#nightInspectionIsolated{height:calc(100dvh - 90px);min-height:400px}}

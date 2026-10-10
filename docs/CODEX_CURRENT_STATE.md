@@ -1,3 +1,7 @@
+## 2026-10-10｜监所夜间离床研判独立演示菜单（不污染平台模块）
+
+新增独立一级入口「监所夜间离床研判」，位于原左侧「展开/收起高级功能」菜单下方。用户提供的 4296 行 HTML Demo 完整保存为独立静态资源（主页大屏、事件中心、设备通道、视频任务、模型/算法、工作流、字典模板等），通过仅含 allow-scripts/allow-modals 的 sandbox iframe 呈现。禁止 allow-same-origin；Demo 的 4 处 localStorage 引用转换为 frame 内内存存储以适配受限 origin（跨页面刷新不承诺持久化），所有示例数据/服务状态均为 Demo，**不接通生产监控/告警/训练/调度/OSS**。既有 NavigationStability 注册一个独立 Page Owner，未复用训练/标注/Agent Owner、未增加后台接口/数据库表/轮询；样式仅作用于入口和本页面，退出后 iframe 自行销毁。加入 frontend 静态和 Playwright 隔离验收；最终精确 HEAD CI 尚需独立验证。平台 VERSION.txt 遵照现有冻结约束未改变。
+
 ## 2026-10-10｜场景算法实测检测框回退预览
 
 精确 HEAD `032641d2` 的 34/34 Actions、95/95 Check Runs 已核验成功。进一步源码审查发现无 `result_image_url` 时旧结果组件只显示检测列表而不显示真实框。现优先保留服务端结果图；仅在原图 URL 可用而结果图缺失时，按已有推理 `x1/y1/x2/y2` 坐标绘制 SVG 预测框，图片加载失败明确提示、不伪造框、不触碰 Durable Task/模型身份/训练调度。Chrome 场景检测测试新增真实 BMP 与非空坐标断言，静态资源 `app.js`/`styles.css` 缓存键同步递增，`VERSION.txt` 不变。本提交产生的新 HEAD 必须重新验收自己的 CI；真实 GPU 推理与生产数据仍需现场验证。

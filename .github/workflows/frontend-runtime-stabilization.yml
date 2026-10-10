@@ -34,6 +34,8 @@ jobs:
           node --check static/modules/training-task-visibility-runtime.js &&
           node --check static/modules/training-progress-stream.js &&
           node --check tests/browser/navigation-stability.spec.mjs &&
+          node --check tests/browser/prison-night-isolation.spec.mjs &&
+          node --check static/modules/prison-night-inspection-entry.mjs &&
           node --check tests/browser/material-pagination-performance.spec.mjs &&
           node --check tests/browser/page-loading-performance.spec.mjs &&
           node --check tests/browser/algorithm-list-performance.spec.mjs &&
@@ -440,6 +442,7 @@ jobs:
           npx playwright test
           tests/browser/navigation-stability.spec.mjs
           tests/browser/overview-tabs.spec.mjs
+          tests/browser/prison-night-isolation.spec.mjs
           tests/browser/quality-detection-workbench.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs

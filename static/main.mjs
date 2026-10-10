@@ -1,3 +1,4 @@
+import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010a';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
@@ -470,7 +471,12 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
     return renderer();
   })
 ));
+// Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
+const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
+  '监所夜间离床研判', () => renderPrisonNightInspectionPage()
+);
 const canonicalPageOwnerDisposers = [
+  unregisterPrisonNightPageOwner,
   ...canonicalWindowPageOwners,
   navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),
   navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render()),
