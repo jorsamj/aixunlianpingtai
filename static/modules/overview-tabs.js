@@ -266,9 +266,34 @@ export function installOverviewTabsRuntime({
       })().finally(()=>{if(loading[key]===task)delete loading[key]});
       loading[key]=task;return task;
     };
+    const mergedQuality=async()=>{
+      // Production dashboard already owns this quality GET and its 60s cache.
+      // Reuse that completed or pending request instead of double-reading it.
+      const owner=state(),target=cache;
+      const reuse=()=>{
+        if(project()!==id||cache!==target)return false;
+        const quality=state().v42?.quality;
+        if(String(state().dashboard422ExtrasProjectId||'')!==id||!Array.isArray(quality?.algorithms))return false;
+        cache.quality=quality;cache.loadedAt.quality=Date.now();delete cache.errors.quality;
+        return true;
+      };
+      if(!force&&reuse())return;
+      const inFlight=owner.dashboard422ExtrasRefreshPromise;
+      if(inFlight){
+        try{await inFlight}catch(_){}
+        if(project()!==id||cache!==target)return;
+        if(reuse())return;
+        // An already failed production owner must not induce a second
+        // immediate quality GET. Keep its source unavailable for this view.
+        cache.quality=null;cache.loadedAt.quality=Date.now();
+        cache.errors.quality='生产质量概览读取失败';
+        return;
+      }
+      await fetchOne('quality','/api/v42/projects/'+encodeURIComponent(id)+'/quality-overview');
+    };
     if(tab==='algorithm')await Promise.all([
       fetchOne('algorithms','/api/v12/projects/'+encodeURIComponent(id)+'/algorithms'),
-      fetchOne('quality','/api/v42/projects/'+encodeURIComponent(id)+'/quality-overview'),
+      mergedQuality(),
     ]);
     if(tab==='compute')await Promise.all([
       fetchOne('nodes','/api/v63/service-nodes'),

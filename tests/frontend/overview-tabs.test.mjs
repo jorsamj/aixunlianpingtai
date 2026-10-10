@@ -112,12 +112,12 @@ test('algorithm model version counts are distinct from measured model quality',(
 
 test('overview request identity fence rejects stale A → B → A response and fetches scoped algorithms',async()=>{
   const old=globalThis.document;
-  const view={innerHTML:'',insertAdjacentHTML(){},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
   const state={page:'总览',project:{id:'A'},algorithms:[]};
   const pending=[];
   globalThis.document={getElementById(id){return id==='view'?view:null}};
   try{
-    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request(url){
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){view.innerHTML=''},request(url){
       return new Promise((resolve,reject)=>pending.push({url,resolve,reject}));
     }});
     runtime.select('algorithm');
@@ -138,7 +138,7 @@ test('overview request identity fence rejects stale A → B → A response and f
 
 test('failed algorithm fetch cannot present former algorithm totals as live',async()=>{
   const old=globalThis.document;
-  const view={innerHTML:'',insertAdjacentHTML(){},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
   globalThis.document={getElementById(){return view}};
   const state={page:'总览',project:{id:'P'}};
   let fail=false;
@@ -161,4 +161,27 @@ test('local controller snapshot is a read-only observer, not a schedulable Agent
  assert.match(backend,/controller-snapshot/);
  assert.match(backend,/scheduler_admission.*not_evaluated/);
  assert.match(frontend,/service-nodes\/controller-snapshot/);
+});
+
+test('merged production quality request is reused instead of issuing a duplicate',async()=>{
+  const previous=globalThis.document;
+  const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  let resolve;
+  const qualityPromise=new Promise(done=>{resolve=done});
+  const state={page:'总览',project:{id:'P'},algorithms:[],v42:{quality:null},
+    dashboard422ExtrasProjectId:'',dashboard422ExtrasRefreshPromise:qualityPromise};
+  const calls=[];
+  globalThis.document={getElementById(){return view}};
+  try{
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){view.innerHTML=''},
+      request:async url=>{calls.push(url);return {items:[{id:'a',name:'真实算法'}]}}});
+    runtime.render();
+    state.v42.quality={algorithms:[{id:'a',metrics:{map50:0.88}}]};
+    state.dashboard422ExtrasProjectId='P';
+    resolve(true);
+    await new Promise(done=>setImmediate(done));
+    assert.equal(calls.filter(url=>url.includes('quality-overview')).length,0);
+    assert.match(view.innerHTML,/真实算法/);
+    assert.match(view.innerHTML,/88.0%/);
+  }finally{globalThis.document=previous}
 });
