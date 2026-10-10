@@ -131,7 +131,9 @@ test('ZIP label confirmation never preselects, recommends, or implicitly creates
 
 test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
-  assert.match(source,/系统只展示外部标签事实，不自动选择/);
+  assert.match(source,/英文编码一致时自动关联已有平台标签/);
+  assert.match(source,/applyExactLabelCodeMatches\(review,labelItems\(\)\)/);
+  assert.match(source,/buildManualLabelMapping\(review\)/);
   assert.doesNotMatch(source,/自动匹配/);
   assert.doesNotMatch(source,/__create__/);
   assert.match(source,/data-zip-confirm-button/);

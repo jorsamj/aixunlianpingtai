@@ -143,7 +143,7 @@ test('failed algorithm fetch cannot present former algorithm totals as live',asy
   const state={page:'总览',project:{id:'P'}};
   let fail=false;
   try{
-    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request:async url=>{
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){view.innerHTML=''},request:async url=>{
       if(fail&&url.includes('/algorithms'))throw new Error('offline');
       return url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'one',name:'旧算法'}]};
     }});
@@ -189,11 +189,11 @@ test('merged production quality request is reused instead of issuing a duplicate
 
 test('local controller stays visible if service-node API fails without claiming zero Agent nodes',async()=>{
   const original=globalThis.document;
-  const view={innerHTML:'',insertAdjacentHTML(value){this.innerHTML=value+this.innerHTML},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
   globalThis.document={getElementById:()=>view};
   const state={page:'总览',project:{id:'P'}};
   try{
-    const rt=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request:async url=>{
+    const rt=installOverviewTabsRuntime({getState:()=>state,renderProduction(){view.innerHTML=''},request:async url=>{
       if(url==='/api/v63/service-nodes')throw Error('HTTP 503');
       if(url.endsWith('/controller-snapshot'))return {name:'控制端（本机）',sampled_at:'2026-10-10T00:00:00Z',
         resources:{cpu:{usage_percent:19},memory:{usage_percent:25,used_bytes:25,total_bytes:100},
