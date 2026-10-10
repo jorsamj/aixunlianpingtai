@@ -4,7 +4,7 @@ test('independent night inspection menu and iframe cannot replace training platf
   page.on('pageerror',error=>parentErrors.push(error.message));
   await page.setViewportSize({width:1366,height:768});
   await page.goto('/');
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.state?.uiReady)),{timeout:20000}).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady)),{timeout:20000}).toBe(true);
   const menu=page.locator('#nav .nav-night-isolated-btn');
   await expect(menu).toBeVisible();
   await expect(page.locator('#nav .nav-advanced427')).toBeVisible();
