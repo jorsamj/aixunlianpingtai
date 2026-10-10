@@ -1,5 +1,10 @@
 # Repository Agent Handoff
 
+## 2026-10-10｜训练默认性能与独占优化（PENDING CI/UAT）
+
+首训 150 / 续训 80 Epoch，Auto Performance，单卡独占，多卡节点允许不同物理卡并行；小数据集 Batch 保护、RAM/CPU Workers 预算、早停默认关闭。任务 canonical owner 与本地/Agent 资源决议保持一致。本批详细修复记录：`docs/TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md`。Actions 和真机验收尚未完成，不合并 main/tag/release/deploy。
+
+
 ## 2026-10-08 live override — unified pagination phase 2A
 
 - VERSION `42.24.305` migrates the dataset MaterialRepository page, the canonical training-task view, and AI candidate review to the only shared pagination presentation.
