@@ -1613,7 +1613,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--precision", str(payload.get("resolved_precision") or payload.get("precision") or "auto"),
     ]
     value_options = {
-        "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
+        "patience": 40, "workers": 0, "optimizer": "auto", "lr0": 0.01,
         "lrf": 0.01, "weight_decay": 0.0005, "close_mosaic": 10,
         "mosaic": 1.0, "cache": "False", "freeze": 0, "momentum": 0.937,
         "warmup_epochs": 3.0, "save_period": -1, "seed": 0,
@@ -1630,7 +1630,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         argv.extend(["--time", str(float(payload.get("time")))])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
-        "cos_lr": False, "deterministic": True, "auto_supplement": False,
+        "cos_lr": False, "deterministic": True, "early_stopping_enabled": False, "auto_supplement": False,
         "ai_intervention": False,
     }.items():
         payload_key = "ai_intervention_enabled" if key == "ai_intervention" else key
@@ -2842,7 +2842,7 @@ class TrainingHandler:
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
-            "resource_profile": payload.get("resource_profile", "balanced"),
+            "resource_profile": payload.get("resource_profile", "performance"),
             "precision": payload.get("precision", "auto"),
             "resolved_precision": payload.get("resolved_precision", payload.get("precision", "auto")),
             "requested_resources": payload.get("requested_resources") or {},
