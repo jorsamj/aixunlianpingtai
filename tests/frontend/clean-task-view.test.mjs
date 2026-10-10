@@ -292,6 +292,6 @@ test('clean retry source changes invalidate both entrypoint and cleaning module 
     appCacheVersion[1].localeCompare('42.25.315', undefined, {numeric: true}) >= 0,
     '清洗重试修复后的 app.js 缓存版本不能回退',
   );
-  assert.ok(html.includes('/static/main.mjs?v=42.25.349'));
+  assert.ok(html.includes('/static/main.mjs?v=42.25.350'));
   assert.ok(main.includes('./modules/cleaning.js?v=422569'));
 });
