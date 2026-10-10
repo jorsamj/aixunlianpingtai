@@ -22,7 +22,13 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-modals');
   await expect(frame).toHaveAttribute('title','AI算法底座（独立演示）');
   await expect(page.frameLocator('#nightInspectionIsolated iframe').getByText('夜间离床风险智能研判大屏').first()).toBeVisible();
-  await page.frameLocator('#nightInspectionIsolated iframe').locator('[data-page="events"]').first().click();
+
+  const iframeTimeBefore=await page.frameLocator('#nightInspectionIsolated iframe').locator('body').evaluate(()=>performance.timeOrigin);
+  const frameNavEvents=[];
+  const onFrameNavigated=frame=>{if(frame.parentFrame())frameNavEvents.push(frame.url())};
+  page.on('framenavigated',onFrameNavigated);
+    await page.frameLocator('#nightInspectionIsolated iframe').locator('[data-page="events"]').first().click();
+  page.off('framenavigated',onFrameNavigated);
   const navDebug=await page.frameLocator('#nightInspectionIsolated iframe').locator('body').evaluate(()=>{
     const button=document.querySelector('.sidebar .nav button[data-page="events"]');
     const target=document.getElementById('events');
@@ -31,9 +37,9 @@ test('independent night inspection menu and iframe cannot replace training platf
       activePages:[...document.querySelectorAll('.page.active')].map(node=>node.id),
       buttonActive:button?.classList.contains('active'),
       targetClass:target?.className,targetDisplay:target&&getComputedStyle(target).display,
-      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter,init:document.documentElement.dataset.aiNavInitialized,captured:document.documentElement.dataset.aiNavCaptured,firstNode:document.querySelector('[data-page="events"]')?.outerHTML?.slice(0,180),navCount:document.querySelectorAll('.sidebar .nav button[data-page="events"]').length};
+      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,timeOrigin:performance.timeOrigin,observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter,init:document.documentElement.dataset.aiNavInitialized,captured:document.documentElement.dataset.aiNavCaptured,firstNode:document.querySelector('[data-page="events"]')?.outerHTML?.slice(0,180),navCount:document.querySelectorAll('.sidebar .nav button[data-page="events"]').length};
   });
-  console.log('[ai-foundation-nav-diagnostic]',JSON.stringify(navDebug));
+  console.log('[ai-foundation-nav-diagnostic]',JSON.stringify({...navDebug,iframeTimeBefore,frameNavEvents}));
   await expect(page.frameLocator('#nightInspectionIsolated iframe').locator('#events')).toBeVisible();
   for(const pageId of ['deviceAccess','channelView','taskConfig','modelConfig','algoList','workflowConfig','dictTags','templateConfig']){
     await page.frameLocator('#nightInspectionIsolated iframe').locator(`.nav button[data-page="${pageId}"]`).first().click();
