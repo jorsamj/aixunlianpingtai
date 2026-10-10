@@ -37,3 +37,13 @@
 @media(max-width:520px){.ov348-kpis{grid-template-columns:1fr 1fr}.ov348-stat strong{font-size:24px}.ov348-gpu{grid-template-columns:1fr 1fr}.ov348-gpu>small{grid-column:1/-1}.ov348-gpu>div{grid-template-columns:1fr}.ov348-panel{padding:15px}.ov348-refresh{margin-left:auto}}
 
 .ov348-panel:has(.ov348-accuracy) .ov348-rows{max-height:470px;overflow-y:auto;scrollbar-width:thin;padding-right:6px}
+
+/* Operational dashboard legibility and action affordances. */
+.ov348-stat span,.ov348-stat small,.ov348-panel-head>span,.ov348-footnote,.ov348-help{font-size:13px}
+.ov348-accuracy span,.ov348-gauge span,.ov348-gauge small,.ov348-gpu>small{font-size:12px}
+.ov348-bar-title,.ov348-gpu>b,.ov348-gpu>span{font-size:14px}
+.ov348-algo-link{justify-self:start;display:inline-block;border:0;padding:4px 1px;background:transparent;color:#285bb2;font-size:15px;font-weight:750;cursor:pointer;text-align:left}
+.ov348-algo-link:hover{text-decoration:underline}.ov348-algo-link:focus-visible,.ov348-switches button:focus-visible,.ov348-toolbar button:focus-visible{outline:2px solid #3879d9;outline-offset:3px}
+.ov348-switches{display:flex;flex-wrap:wrap;gap:8px;margin:-5px 0 20px}.ov348-switches button{border:1px solid #dce5f2;border-radius:9px;background:#f8faff;color:#51647e;padding:8px 13px;min-height:38px;font-size:13px;font-weight:700;cursor:pointer}.ov348-switches button.active{background:#e8f1ff;color:#205dca;border-color:#9fbee8}
+.ov348-node-unavailable{padding:10px 12px;border-radius:9px;background:#f5f7fb;color:#76869c;font-size:13px}
+@media(max-width:520px){.ov348-stat span,.ov348-stat small{font-size:12px}.ov348-toolbar button{font-size:13px}}

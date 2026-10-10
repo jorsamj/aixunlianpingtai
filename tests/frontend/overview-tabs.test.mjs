@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {OVERVIEW_TABS,buildAlgorithmMap,buildComputeMap} from '../../static/modules/overview-tabs.js';
+import {OVERVIEW_TABS,buildAlgorithmMap,buildComputeMap,installOverviewTabsRuntime} from '../../static/modules/overview-tabs.js';
 
 test('overview tabs expose three exclusive dashboard views, preserving old production owner', () => {
   assert.deepEqual(OVERVIEW_TABS.map(x=>x.label),['算法生产总览','算法一张图','算力一张图']);
@@ -67,4 +67,88 @@ test('unknown GPU runtime evidence must never be interpreted as available',()=>{
   assert.equal(data.gpuMeasured,0);
   assert.equal(data.gpuFreeCandidates,0);
   assert.equal(data.placement.unclassified.length,1);
+});
+
+
+test('GPU telemetry without reservation ledger cannot claim schedulable candidates',()=>{
+  const nodes=[{node_id:'n',status:'ONLINE',online:true,placement:'center',resources:{gpu:{gpus:[{uuid:'g',memory_total_bytes:1000,memory_used_bytes:0,utilization_percent:0}]}}}];
+  const runtime={gpus:[{node_id:'n',gpu_uuid:'g',metrics_fresh:true,telemetry_available:true,free_bytes:1000}]};
+  const x=buildComputeMap(nodes,[],runtime);
+  assert.equal(x.gpuMeasured,0);
+  assert.equal(x.gpuFreeCandidates,0);
+  assert.equal(x.gpus[0].admission,'unknown');
+  const withLedger=buildComputeMap(nodes,[],{...runtime,max_concurrent_per_gpu:1,memory_safety_bytes:20,
+    gpus:[{...runtime.gpus[0],active_tasks:1,reserved_bytes:400,total_bytes:1000}]});
+  assert.equal(withLedger.gpuMeasured,1);
+  assert.equal(withLedger.gpuFreeCandidates,0);
+  assert.equal(withLedger.gpus[0].admission,'occupied');
+});
+
+test('disabled, disconnected and offline nodes retain status but do not reuse stale usage metrics',()=>{
+  const nodes=[
+    {node_id:'on',status:'ONLINE',online:true,placement:'center',resources:{cpu:{usage_percent:90},gpu:{gpus:[]}}},
+    {node_id:'off',status:'OFFLINE',online:false,placement:'edge',resources:{cpu:{usage_percent:100}}},
+    {node_id:'disabled',status:'DISABLED',online:false,resources:{cpu:{usage_percent:100}}},
+    {node_id:'never',status:'NEVER_CONNECTED',online:false,resources:{cpu:{usage_percent:100}}},
+  ];
+  const m=buildComputeMap(nodes);
+  assert.equal(m.nodeCount,4);
+  assert.equal(m.nodes.length,4);
+  assert.equal(m.online,1);
+  assert.equal(m.disabled,1);
+  assert.equal(m.neverConnected,1);
+  assert.equal(m.cpuAvg,90);
+  assert.equal(m.nodes.find(n=>n.id==='off').cpu,null);
+  assert.equal(m.warnings,2);
+  assert.equal(m.monitoredNodeCount,2);
+});
+
+test('algorithm model version counts are distinct from measured model quality',()=>{
+  const m=buildAlgorithmMap([{id:'x',versions:[{id:'v1'},{id:'v2'}]},{id:'y',versions:[]}],{algorithms:[]});
+  assert.equal(m.total,2);assert.equal(m.withVersions,1);assert.equal(m.versionCount,2);assert.equal(m.measured,0);
+});
+
+test('overview request identity fence rejects stale A → B → A response and fetches scoped algorithms',async()=>{
+  const old=globalThis.document;
+  const view={innerHTML:'',insertAdjacentHTML(){},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  const state={page:'总览',project:{id:'A'},algorithms:[]};
+  const pending=[];
+  globalThis.document={getElementById(id){return id==='view'?view:null}};
+  try{
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request(url){
+      return new Promise((resolve,reject)=>pending.push({url,resolve,reject}));
+    }});
+    runtime.select('algorithm');
+    const first=pending.splice(0);assert.equal(first.length,2);
+    state.project={id:'B'};runtime.render();const second=pending.splice(0);assert.equal(second.length,2);
+    state.project={id:'A'};runtime.render();const third=pending.splice(0);assert.equal(third.length,2);
+    for(const x of first)x.resolve(x.url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'stale',name:'旧项目数据'}]});
+    for(const x of second)x.resolve(x.url.includes('quality-overview')?{algorithms:[]}:{items:[]});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.doesNotMatch(view.innerHTML,/旧项目数据/);
+    for(const x of third)x.resolve(x.url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'fresh',name:'新项目数据',algorithm_type:'yolo'}]});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(view.innerHTML,/新项目数据/);
+    assert.doesNotMatch(view.innerHTML,/旧项目数据/);
+    assert.ok(third.some(x=>x.url==='/api/v12/projects/A/algorithms'));
+  }finally{globalThis.document=old}
+});
+
+test('failed algorithm fetch cannot present former algorithm totals as live',async()=>{
+  const old=globalThis.document;
+  const view={innerHTML:'',insertAdjacentHTML(){},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  globalThis.document={getElementById(){return view}};
+  const state={page:'总览',project:{id:'P'}};
+  let fail=false;
+  try{
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request:async url=>{
+      if(fail&&url.includes('/algorithms'))throw new Error('offline');
+      return url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'one',name:'旧算法'}]};
+    }});
+    runtime.select('algorithm');await runtime.refresh();
+    assert.match(view.innerHTML,/旧算法/);
+    fail=true;await runtime.refresh();
+    assert.match(view.innerHTML,/offline/);
+    assert.doesNotMatch(view.innerHTML,/旧算法/);
+  }finally{globalThis.document=old}
 });
