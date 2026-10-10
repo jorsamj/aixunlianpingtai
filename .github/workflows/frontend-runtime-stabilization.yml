@@ -440,6 +440,7 @@ jobs:
           npx playwright test
           tests/browser/navigation-stability.spec.mjs
           tests/browser/overview-tabs.spec.mjs
+          tests/browser/quality-detection-workbench.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
