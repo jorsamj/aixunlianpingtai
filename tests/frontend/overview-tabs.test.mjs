@@ -43,7 +43,9 @@ test('capacity only aggregates fresh online-node telemetry and explicit placemen
       gpu:{gpus:[{uuid:'GPU-stale',name:'stale'}]}}},
   ];
   const stats=buildComputeMap(nodes,[{type:'oss'},{type:'local'}],{
-    gpus:[{node_id:'a',gpu_uuid:'GPU-a',metrics_fresh:true,telemetry_available:true,active_tasks:0,free_bytes:80}],
+    max_concurrent_per_gpu:1,memory_safety_bytes:10,
+    gpus:[{node_id:'a',gpu_uuid:'GPU-a',metrics_fresh:true,telemetry_available:true,
+      active_tasks:0,reserved_bytes:0,total_bytes:100,free_bytes:80}],
   });
   assert.equal(stats.nodeCount,3);
   assert.equal(stats.online,2);
