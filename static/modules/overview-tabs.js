@@ -44,9 +44,9 @@ export function buildAlgorithmMap(algorithms=[],quality=null) {
     const v=key=>{const n=number(m[key]);return n==null?null:Math.max(0,Math.min(100,ratio(n)))};
     return {id:a.id,name:String(a.name||a.id||'未命名算法'),
       precision:v('precision'),recall:v('recall'),map50:v('map50')};
-  }).filter(x=>x.map50!==null||x.precision!==null||x.recall!==null)
-    .sort((a,b)=>(b.map50??-1)-(a.map50??-1));
-  return {total:list.length,types:sorted(types),industries:sorted(industries),scores,
+  }).sort((a,b)=>(b.map50??-1)-(a.map50??-1));
+  const measured=scores.filter(x=>x.map50!==null||x.precision!==null||x.recall!==null).length;
+  return {total:list.length,types:sorted(types),industries:sorted(industries),scores,measured,
     // No authoritative production inference counters, policy adjudications, or unit
     // bindings exist in the current project data contract. Never use training count.
     usage:[],units:[],strategyAccuracy:null};
@@ -74,8 +74,10 @@ export function buildComputeMap(nodes=[],storage=[],gpuRuntime=null) {
     memoryUsed:n.resources?.memory?.used_bytes,memoryTotal:n.resources?.memory?.total_bytes,
     diskUsed:n.resources?.disk?.used_bytes,diskTotal:n.resources?.disk?.total_bytes,
     gpuCount:(n.resources?.gpu?.gpus||[]).length}));
-  const warnings=byNode.filter(x=>[x.cpu,x.mem,x.disk].some(v=>v!==null&&v>=85)).length+
-    list.filter(n=>n?.status==='OFFLINE').length;
+  const warningNodes=new Set(byNode.filter(x=>[x.cpu,x.mem,x.disk].some(v=>v!==null&&v>=85)).map(x=>x.id));
+  for(const n of list)if(n?.status==='OFFLINE')warningNodes.add(n.node_id);
+  const warnings=warningNodes.size;
+  const monitoredNodeCount=list.filter(n=>['ONLINE','OFFLINE'].includes(String(n?.status||''))).length;
   const typeCounts={local:0,oss:0,s3:0,remote:0};
   for(const x of sources)if(Object.hasOwn(typeCounts,String(x?.type||'')))typeCounts[x.type]++;
   return {nodeCount:list.length,online:online.length,offline:list.filter(n=>n?.status==='OFFLINE').length,
@@ -85,7 +87,7 @@ export function buildComputeMap(nodes=[],storage=[],gpuRuntime=null) {
     gpuByPlacement:{center:known.filter(g=>g.placement==='center').length,edge:known.filter(g=>g.placement==='edge').length,
       unclassified:known.filter(g=>g.placement!=='center'&&g.placement!=='edge').length},
     cpuAvg:avg('cpu'),memoryAvg:avg('memory'),diskAvg:avg('disk'),
-    nodes:byNode,warnings,warningRatio:list.length?warnings/list.length*100:null,
+    nodes:byNode,warnings,monitoredNodeCount,warningRatio:monitoredNodeCount?warnings/monitoredNodeCount*100:null,
     storageTypes:typeCounts,storageCount:sources.length,
     // Cloud provider configuration is not provider usage telemetry.
     storageBytes:null,cloudBytes:null};
@@ -100,13 +102,13 @@ function overviewAlgorithm(m) {
     rows(m.industries,x=>bar(x.name,x.count,industryMax,null)):
     empty('暂无行业分类记录'),'按行业归属统计');
   const accuracy=panel('模型准确率分析',m.scores.length?
-    rows(m.scores.slice(0,10),x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div>'+
-       '<span>mAP50 '+pct(x.map50)+'</span><span>Precision '+pct(x.precision)+'</span><span>Recall '+pct(x.recall)+'</span></div></div>'):
-    empty('暂无可用的训练评测指标'),'只统计有真实评测记录的算法');
+    rows(m.scores,x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div>'+
+       '<span>mAP50 '+pct(x.map50)+'</span><span>Precision '+pct(x.precision)+'</span><span>Recall '+pct(x.recall)+'</span><span>策略准确率 —</span></div></div>'):
+    empty('暂无算法资产'),'全部算法 · 缺失的评测指标显示 —');
   return '<div class="ov348-stack"><div class="ov348-kpis">'+
     metric('算法总数',fmt(m.total),'当前空间已登记算法')+
     metric('算法类型',fmt(m.types.length),'按 algorithm_type 归类')+
-    metric('模型评测覆盖',fmt(m.scores.length),'具备 Precision / Recall / mAP')+
+    metric('模型评测覆盖',fmt(m.measured)+' / '+fmt(m.total),'具备 Precision / Recall / mAP')+
     metric('策略准确率','—','尚无策略判定结果事实源')+'</div>'+
     '<div class="ov348-grid">'+typePanel+industryPanel+'</div>'+
     '<div class="ov348-grid">'+accuracy+
@@ -132,9 +134,9 @@ function overviewCompute(m) {
     metric('普通云存储用量','—','OSS/S3 未提供 Bucket 实际用量')+
     metric('已配置存储源',fmt(m.storageCount),'本地 '+m.storageTypes.local+' · 云 '+(m.storageTypes.oss+m.storageTypes.s3))+'</div>'+
     '<div class="ov348-help">服务器磁盘已使用量仅代表节点挂载盘，不等于对象存储 Bucket 占用量。</div>','已配置来源 ≠ 容量');
-  const resources=panel('资源预警占比',m.nodeCount?
-    '<div class="ov348-alert-head"><b>'+pct(m.warningRatio/100)+'</b><span>'+fmt(m.warnings)+' / '+fmt(m.nodeCount)+' 节点触发预警</span></div>'+
-    bar('CPU / 内存 / 磁盘 ≥ 85%，或 Agent 心跳超时',m.warnings,m.nodeCount,fmt(m.warnings)+' 节点'):
+  const resources=panel('资源预警占比',m.monitoredNodeCount?
+    '<div class="ov348-alert-head"><b>'+pct(m.warningRatio/100)+'</b><span>'+fmt(m.warnings)+' / '+fmt(m.monitoredNodeCount)+' 监测节点触发预警</span></div>'+
+    bar('CPU / 内存 / 磁盘 ≥ 85%，或 Agent 心跳超时',m.warnings,m.monitoredNodeCount,fmt(m.warnings)+' 节点'):
     empty('暂无服务节点，无法计算预警占比'),'当前快照 · 阈值 85%');
   return '<div class="ov348-stack"><div class="ov348-kpis">'+
     metric('服务节点',fmt(m.nodeCount),fmt(m.online)+' 在线 · '+fmt(m.offline)+' 心跳超时')+
@@ -176,7 +178,7 @@ export function installOverviewTabsRuntime({
       const has=active==='algorithm'?cache.quality!==null:cache.nodes!==null;
       let content=active==='algorithm'?overviewAlgorithm(buildAlgorithmMap(state().algorithms,cache.quality)):
         overviewCompute(buildComputeMap(cache.nodes?.items,cache.storage?.items,cache.gpuRuntime));
-      if(!has)content='<div class="ov348-loading">正在读取'+(active==='algorithm'?'算法质量':'算力资源')+'数据…</div>'+content;
+      if(!has&&!cache.loadedAt[active==='algorithm'?'quality':'nodes'])content='<div class="ov348-loading">正在读取'+(active==='algorithm'?'算法质量':'算力资源')+'数据…</div>'+content;
       const failures=Object.entries(cache.errors).filter(([kind,value])=>
         (active==='algorithm'?kind==='quality':kind!=='quality')&&value);
       if(failures.length)content='<div class="ov348-error">部分数据读取失败：'+esc(failures.map(([kind,value])=>kind+': '+value).join(' · '))+'</div>'+content;

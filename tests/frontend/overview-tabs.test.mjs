@@ -20,13 +20,15 @@ test('algorithm types sort by real inventory; quality is not strategy accuracy o
   const snapshot=buildAlgorithmMap(algs,{algorithms:[{id:'b',metrics:{map50:0.82,precision:0.75,recall:0.8}},{id:'a',metrics:{map50:null}}]});
   assert.equal(snapshot.total,3);
   assert.deepEqual(snapshot.types,[{name:'yolo',count:2},{name:'paddle',count:1}]);
-  assert.equal(snapshot.scores.length,1);
+  assert.equal(snapshot.scores.length,3);
+  assert.equal(snapshot.measured,1);
   assert.equal(snapshot.scores[0].map50,82);
   assert.equal(snapshot.scores[0].precision,75);
   assert.equal(snapshot.strategyAccuracy,null);
   assert.deepEqual(snapshot.usage,[]);
   assert.deepEqual(snapshot.units,[]);
   assert.equal(buildAlgorithmMap([],null).scores.length,0);
+  assert.equal(buildAlgorithmMap([],null).measured,0);
 });
 
 test('capacity only aggregates fresh online-node telemetry and explicit placement',()=>{
