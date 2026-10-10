@@ -376,11 +376,16 @@ def _node_active_work_count(database, node_id: str) -> int:
 def _assigned_gpu_ids(database, node_id: str) -> set[str]:
     rows = database.execute(
         """
-        SELECT resolved_execution_config
-          FROM task_node_assignments
-         WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')
+        SELECT a.resolved_execution_config
+          FROM task_node_assignments AS a
+          LEFT JOIN tasks AS t ON t.task_id=a.task_id
+         WHERE a.node_id=?
+           AND (
+               a.state IN ('ASSIGNED','CLAIMED')
+               OR (t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?)
+           )
         """,
-        (str(node_id),),
+        (str(node_id), f"agent:{node_id}"),
     ).fetchall()
     assigned: set[str] = set()
     for assignment in rows:
