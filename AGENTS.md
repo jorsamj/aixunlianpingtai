@@ -1,3 +1,7 @@
+## 2026-10-10｜RKNN/ONNX 环境兼容性预检（42.24.347）
+
+现场 RKNN-Toolkit2 2.3.2 的 load_onnx 因 onnx.mapping 缺失异常。统一在平台已有 rknn_runtime.probe_rknn_toolkit 中检查*相同 RKNN Python* 的 ONNX 版本及 mapping 属性；不兼容时 Agent 不上报 conversion.rknn、远程部署资源不标记 rockchip 可用，传统 Worker 在导出模型前以 RKNN_ONNX_DEPENDENCY_INCOMPATIBLE 阻断并提供修复命令，runner 自身也做最后一道检查；Agent 失败记录优先使用 job.json 的可读错误而非堆栈。只在长期开发分支修改代码与定向测试，不自动 pip 改生产 venv，不影响平台自身 ONNX、训练/转换 owner，也不部署生产。当前 HEAD CI 与真实 RKNN 转换仍需验收。
+
 ## 2026-10-10｜训练创建弹窗大屏双栏与标签前置（42.24.346）
 
 训练弹窗由 868px 单列改为最大 1280px、94dvh 双栏：算法信息跨顶部，左侧素材和四模式，右侧正式训练标签。标签列表内部滚动；1050px 以下变成算法→素材→标签→模式。只修改 CSS 视图及缓存键、Chrome 几何合同，不改 TrainingLabelRuntime/TrainingDraftRuntime/Material/Benchmark/TrainingSubmit 等业务 owner。待当前精确 HEAD 的 CI/浏览器验收，不合并 main/tag/release/deploy。

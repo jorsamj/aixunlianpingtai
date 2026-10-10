@@ -8,6 +8,23 @@ from pathlib import Path
 from typing import Any
 
 REMOTE_RKNN_CHIPS = ("rk3568", "rk3576")
+RKNN_ONNX_DEPENDENCY_CODE = "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE"
+
+
+def rknn_onnx_dependency_error(onnx_version: str, mapping_available: bool) -> str:
+    """Validate the legacy ONNX API used by RKNN-Toolkit2 2.3.2.
+
+    The check must run in the RKNN Python interpreter, not the platform venv.
+    """
+    if mapping_available:
+        return ""
+    version = str(onnx_version or "未知").strip()
+    return (
+        f"RKNN-Toolkit2 与当前 ONNX {version} 不兼容（缺少 onnx.mapping）。"
+        "请在该 RKNN 转换节点的 Python 环境中安装兼容版本 onnx==1.18.0，"
+        "核验 onnx.mapping 存在后重试。无需重新训练或导出模型。"
+    )
+
 
 
 def probe_rknn_toolkit(
@@ -24,8 +41,11 @@ def probe_rknn_toolkit(
         "available": False,
         "python_executable": str(executable),
         "version": "",
+        "onnx_version": "",
+        "onnx_mapping_available": False,
         "supported_chips": [],
         "error": "",
+        "error_code": "",
     }
     if not executable.is_file():
         result["error"] = "RKNN Python executable does not exist"
@@ -34,6 +54,7 @@ def probe_rknn_toolkit(
     script = """
 import importlib.metadata as metadata
 import json
+import onnx
 from rknn.api import RKNN
 
 chips = []
@@ -53,6 +74,8 @@ for chip in ("rk3568", "rk3576"):
 
 print(json.dumps({
     "version": metadata.version("rknn-toolkit2"),
+    "onnx_version": str(getattr(onnx, "__version__", "")),
+    "onnx_mapping_available": hasattr(onnx, "mapping"),
     "supported_chips": chips,
 }, ensure_ascii=False))
 """.strip()
@@ -84,6 +107,16 @@ print(json.dumps({
         return result
 
     version = str(payload.get("version") or "").strip()
+    onnx_version = str(payload.get("onnx_version") or "").strip()
+    mapping_available = payload.get("onnx_mapping_available") is True
+    result["version"] = version
+    result["onnx_version"] = onnx_version
+    result["onnx_mapping_available"] = mapping_available
+    incompatible = rknn_onnx_dependency_error(onnx_version, mapping_available)
+    if incompatible:
+        result["error_code"] = RKNN_ONNX_DEPENDENCY_CODE
+        result["error"] = incompatible
+        return result
     reported = {
         str(value or "").strip().lower()
         for value in (payload.get("supported_chips") or [])
@@ -105,4 +138,4 @@ print(json.dumps({
     return result
 
 
-__all__ = ["REMOTE_RKNN_CHIPS", "probe_rknn_toolkit"]
+__all__ = ["REMOTE_RKNN_CHIPS", "RKNN_ONNX_DEPENDENCY_CODE", "rknn_onnx_dependency_error", "probe_rknn_toolkit"]

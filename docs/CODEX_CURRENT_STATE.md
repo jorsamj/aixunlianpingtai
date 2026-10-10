@@ -1,3 +1,9 @@
+## 2026-10-10｜RKNN-Toolkit2 2.3.2 与 ONNX 环境不兼容（42.24.347）
+
+- 用户生产报错：`rknn.load_onnx` → `AttributeError: module 'onnx' has no attribute 'mapping'`，运行环境 `/opt/changlian-rknn-venv`。根因是 Toolkit2 2.3.2 使用旧 ONNX API，转换执行环境装入不兼容版本；不是模型训练问题。
+- 修复：`platform_core/rknn_runtime.py` 对 RKNN Python 真实环境检查 ONNX 版本、`onnx.mapping`，不兼容 fail closed，不宣称 RKNN 转换 capability；传统 Worker 在源模型处理前阻断，错误码 `RKNN_ONNX_DEPENDENCY_INCOMPATIBLE`、可操作解决方案；runner 在 `load_onnx` 前二次检查；远端健康检查也用相同探测；Agent 发布清晰错误而不是整段 traceback。
+- 回归：更新能力探测 unit mock，加缺失 mapping / probe 缺少真相 / worker 预检失败断言。只提交长期分支；未触及生产 Python 环境、版本发布、主分支及部署。实际 RKNN 2.3.2+onnx1.18.0 烧录/转换需现场验证，CI 需以精确 HEAD 为准。
+
 ## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
 
 - 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。

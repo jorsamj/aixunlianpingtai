@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+from platform_core.rknn_runtime import RKNN_ONNX_DEPENDENCY_CODE, rknn_onnx_dependency_error
+
 
 def parse_triplet(text, default):
     try:
@@ -26,6 +28,19 @@ def main():
     ap.add_argument('--std', default='255,255,255')
     ap.add_argument('--verbose', action='store_true')
     args=ap.parse_args()
+    # Guard the *actual* RKNN interpreter before load_onnx emits an opaque traceback.
+    try:
+        import onnx as onnx_module
+    except ImportError as error:
+        raise SystemExit(
+            f"{RKNN_ONNX_DEPENDENCY_CODE}: RKNN Python 环境未安装 ONNX: {error}"
+        ) from None
+    incompatibility = rknn_onnx_dependency_error(
+        getattr(onnx_module, "__version__", ""),
+        hasattr(onnx_module, "mapping"),
+    )
+    if incompatibility:
+        raise SystemExit(f"{RKNN_ONNX_DEPENDENCY_CODE}: {incompatibility}")
     try:
         from rknn.api import RKNN
     except Exception as e:

@@ -969,6 +969,17 @@ class AgentConversionRunner:
             convert_log = job_dir / "convert.log"
             self._forward_log_delta(lease, convert_log, 0)
             if launched.process.returncode != 0:
+                failed_job = self._read_job(job_file)
+                if (
+                    target == "rockchip"
+                    and str(failed_job.get("error_code") or "") == "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE"
+                ):
+                    raise AgentConversionRuntimeError(
+                        "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE: "
+                        + str(failed_job.get("error") or "ONNX 依赖不兼容")
+                        + " "
+                        + str(failed_job.get("solution") or "")
+                    )
                 tail = runtime_log.read_text(
                     encoding="utf-8",
                     errors="ignore",
