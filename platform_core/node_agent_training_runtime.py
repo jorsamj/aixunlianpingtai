@@ -640,7 +640,7 @@ class AgentTrainingRunner:
                 "remote training requested/selected device mismatch"
             )
         gpu_policy = str(
-            self._parameter(payload, "gpu_policy", "auto") or "auto"
+            self._parameter(payload, "gpu_policy", "exclusive") or "exclusive"
         ).strip().lower()
         if gpu_policy not in {"auto", "exclusive"}:
             raise AgentTrainingRuntimeError(
