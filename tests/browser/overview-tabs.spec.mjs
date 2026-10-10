@@ -79,6 +79,7 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   // Triple-click is a UI-only presentation mode; real telemetry is restored when exiting.
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
+  await tabs.getByRole('tab',{name:'算力一张图'}).click();
   await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
   await expect(page.locator('.ov348-node')).toHaveCount(3);
   await expect(page.locator('#view')).toContainText('GPU 训练服务器 A');

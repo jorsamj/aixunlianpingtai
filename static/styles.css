@@ -1258,3 +1258,5 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .detection31-result.missing-rendered>.detection31-rendered-error{display:block!important;padding:20px;color:#fbbf24;font-size:13px}
 .bench351-original-error{color:#fbbf24;font-size:13px;padding:20px;text-align:center}
 .bench351-original-error[hidden]{display:none}
+
+.bench350-detail .bench64-original img[hidden]{display:none!important}

@@ -88,3 +88,16 @@
 .ov351-demo-banner button{border:1px solid #eac59b;background:#fff;border-radius:9px;padding:9px 15px;cursor:pointer;font-size:13px;color:#a35e24;font-weight:750}
 .ov348-stack:has(~ .ov348-footnote){} /* scope remains overview-only */
 @media(max-width:840px){.ov351-algorithm-intro h3{font-size:22px}.ov351-algorithm-intro strong{font-size:32px}.ov351-pending summary{flex-wrap:wrap;gap:8px}}
+
+/* Demo-only visual trend; scoped to the overview dashboard. */
+.ov351-trend-panel{border:1px solid #dce8f6;border-radius:20px;background:linear-gradient(160deg,#fff,#f2f8ff);padding:22px 26px;box-shadow:0 9px 28px rgba(35,78,122,.08)}
+.ov351-trend-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.ov351-trend-heading div{display:grid;gap:6px}
+.ov351-trend-heading b{font-size:20px;color:#21436c}
+.ov351-trend-heading span{font-size:13px;color:#778ea5}
+.ov351-trend-heading strong{font-size:12px;color:#1565b2;background:#e3f1ff;border:1px solid #c7e1fa;border-radius:999px;padding:7px 11px}
+.ov351-trend-panel svg{display:block;width:100%;height:200px;overflow:visible}
+.ov351-trend-legend{display:flex;gap:22px;flex-wrap:wrap;font-size:13px;font-weight:750;color:#396182;margin-top:13px}
+.ov351-trend-legend span:nth-child(2){color:#0c968b}
+.ov351-trend-legend span:nth-child(3){color:#b27e32}
+@media(max-width:700px){.ov351-trend-panel{padding:16px}.ov351-trend-panel svg{height:145px}.ov351-trend-heading{flex-wrap:wrap}}
