@@ -466,6 +466,35 @@
 </style>
 </head>
 <body>
+<script id="ai-foundation-sandbox-navigation-owner">
+/* Isolated demo only. Register before legacy modules so later capture guards
+   cannot swallow navigation. One click owner, one page activation, no timers. */
+(function(){
+  const ids = new Set(['dashboard','events','deviceAccess','channelView',
+    'taskConfig','modelConfig','commonAlgo','algoList','workflowConfig',
+    'dictTags','dictEventTypes','dictEventLevels','templateConfig']);
+  document.addEventListener('click', function(event){
+    const button = event.target.closest('.sidebar .nav button[data-page]');
+    if(!button) return;
+    const id = button.dataset.page;
+    if(!ids.has(id) || !document.getElementById(id)) return;
+    /* Prevent duplicate legacy onclick assignments from racing a user action.
+       The existing showPage still owns per-page business rendering. */
+    event.stopPropagation();
+    try {
+      if(typeof window.showPage === 'function') window.showPage(id);
+    } catch(error) {
+      console.error('Isolated demo navigation render failed:', id, error);
+    }
+    document.querySelectorAll('.page').forEach(page =>
+      page.classList.toggle('active', page.id === id));
+    document.querySelectorAll('.sidebar .nav button[data-page]').forEach(item =>
+      item.classList.toggle('active', item.dataset.page === id));
+    if(id === 'dashboard') window.renderDashboardV10?.();
+    if(id === 'events') window.renderEventCenterV8?.();
+  },true);
+})();
+</script>
   <div class="app">
     <aside class="sidebar">
       <div class="brand"><div class="logo">AI</div><div><strong>夜间离床研判</strong><span>Prison Safety Demo</span></div></div>
@@ -4307,25 +4336,4 @@
 </script>
 
 
-<script id="ai-foundation-sandbox-navigation-guard">
-/* Demo-only compatibility after all source scripts: latest navigation wins. */
-(function(){
-  let navEpoch=0;
-  document.addEventListener('click',function(event){
-    const button=event.target.closest('.sidebar .nav button[data-page]');
-    if(!button)return;
-    const pageId=String(button.dataset.page||''),epoch=++navEpoch;
-    function reconcile(){
-      if(epoch!==navEpoch)return;
-      const page=document.getElementById(pageId);
-      if(!page||page.classList.contains('active'))return;
-      document.querySelectorAll('.page').forEach(item=>item.classList.remove('active'));
-      page.classList.add('active');
-      document.querySelectorAll('.sidebar .nav button[data-page]').forEach(item=>
-        item.classList.toggle('active',item.dataset.page===pageId));
-    }
-    queueMicrotask(reconcile);
-    setTimeout(reconcile,100);
-  },true);
-})();
-</script>
+

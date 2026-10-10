@@ -1,3 +1,11 @@
+## 2026-10-10｜P0 Chrome 导航 Owner 收敛（待精确 HEAD CI 验收）
+
+- 核验长期分支基线 HEAD `13f27c7ff0ae2f2c7f75190b745bb0e4b028632f`、VERSION 42.24.350，现有 37 个 Actions 中仅 Frontend Runtime Stabilization 的 browser-navigation 失败（78/79 Chrome 测试通过）。
+- 源 HTML 中 V4/V5/V6 等多版 showPage/onclick 覆写和多个文档捕获监听，最后执行的点击 guard 可能被更早的捕获监听截断。
+- 在隔离 HTML 的 body 顶部注册导航捕获 Owner，调用现存 window.showPage 进行业务渲染，确定性更新活动 section 与 nav，阻断旧 onclick 重复切页，删除之前的超时 guard。只限 sandbox iframe，不触碰父平台 NavigationStability。
+- Chrome 测试扩展设备接入、通道查看的真实点击与页面显隐，原事件/任务/工作流断言全部保留。
+- ZIP 正式就绪 FIFO 与标签批量确认尚未改动。当前提交待精确 HEAD CI 核验。
+
 ## 2026-10-10｜旧 HTML 最终脚本导航回归与重复合法按钮
 
 浏览器日志表明原 HTML 的多套导航绑定中，较早 guard 会被后置源脚本遮蔽；最终 guard 仅在 iframe HTML 的所有旧脚本之后安装，使用捕获阶段点击监听、navigation epoch 与两次有限校正，不对平台主窗口增设任何路由或任务 Owner。总览里同一算法同时出现在质量排行与正式资产清单是预期双入口；Chrome 验证任意一个真实算法按钮可见，不要求业务上合理重复的按钮 DOM 全局唯一。缓存键严格同步。精确 HEAD CI 待验，不触碰数据真相与算法调度。
