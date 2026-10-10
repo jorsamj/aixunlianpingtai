@@ -75,7 +75,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     server_id: target.server_id,
     algorithm: algorithm.key || '',
     model: config.model || algorithm.base_model || '',
-    epochs: config.epochs ?? algorithm.default_epochs ?? 100,
+    epochs: config.epochs ?? (draft.baseVersionId ? 80 : (algorithm.default_epochs ?? 150)),
     imgsz: config.imgsz ?? algorithm.default_imgsz ?? 640,
     batch: integerParameter(draft.resource?.batch ?? config.batch ?? algorithm.default_batch, 8, 'Batch'),
     device: draft.resource?.device || config.device || 'auto',
@@ -122,8 +122,8 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     auto_convert_targets: config.auto_convert_targets || [],
     ai_intervention_enabled: false,
     resource_strategy: draft.resource?.strategy || config.resource_strategy || 'auto',
-    resource_profile: draft.resource?.profile || config.resource_profile || 'balanced',
-    gpu_policy: draft.resource?.gpuPolicy || config.gpu_policy || 'auto',
+    resource_profile: draft.resource?.profile || config.resource_profile || 'performance',
+    gpu_policy: draft.resource?.gpuPolicy || config.gpu_policy || 'exclusive',
   };
 }
 
