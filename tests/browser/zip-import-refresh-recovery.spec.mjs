@@ -113,11 +113,11 @@ test('exact English source label reuses existing canonical code without recreati
 
   const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
-  await expect(importDialog.getByText('编码一致', {exact: true})).toBeVisible();
+  await expect(importDialog.locator('.zip-label-destination b').first()).toHaveText(/object|helmet/);
   const target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('object');
   await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
-  await expect(importDialog.getByRole('button',{name:'确认标签并开始导入'})).toBeEnabled();
+  await expect(importDialog.getByRole('button',{name:'确认标签并导入'})).toBeEnabled();
 
   const startRequestPromise = page.waitForRequest(req =>
     req.method() === 'POST' &&
@@ -163,7 +163,7 @@ test('explicit source label creation survives refresh and exact mapping is resto
 
   let importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
-  await expect(importDialog.getByText('待选择', {exact: true})).toBeVisible();
+  await expect(importDialog.locator('.zip-label-unmapped')).toBeVisible();
   let target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('');
 
@@ -171,7 +171,8 @@ test('explicit source label creation survives refresh and exact mapping is resto
     req.method() === 'POST' &&
     new URL(req.url()).pathname === `/api/projects/${project.id}/labels`
   );
-  await importDialog.getByRole('button', {name: '＋ 新建平台标签'}).click();
+  await importDialog.getByRole('button', {name: '手动调整'}).click();
+  await importDialog.getByRole('button', {name: '新建平台标签', exact: true}).click();
   const createDialog = page.getByRole('dialog', {name: '新建平台标签'});
   await expect(createDialog).toBeVisible();
   await createDialog.locator('#inlineLabel414Code').fill('helmet');
@@ -197,7 +198,7 @@ test('explicit source label creation survives refresh and exact mapping is resto
   await expect(importDialog).toBeVisible();
   target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('helmet');
-  await expect(importDialog.getByText('编码一致', {exact: true})).toBeVisible();
+  await expect(importDialog.locator('.zip-label-destination b').first()).toHaveText(/object|helmet/);
 
   const startRequestPromise = page.waitForRequest(req =>
     req.method() === 'POST' &&
