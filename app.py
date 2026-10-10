@@ -12748,6 +12748,27 @@ def _labels_b64(labels: List[str]) -> str:
         return ""
 
 
+def _testable_version_pt_path(version: Mapping[str, Any]) -> Optional[Path]:
+    """Return only an existing, nonempty trained PT for this exact algorithm version.
+
+    The stored copy may retain an original filename other than best.pt; training
+    versions carry the authoritative model identity, not the filename alone.
+    """
+    for key in ("best_path", "stored_path"):
+        raw = str(version.get(key) or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.suffix.lower() != ".pt" or path.name.casefold() == "last.pt":
+            continue
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return path
+        except OSError:
+            continue
+    return None
+
+
 @app.get("/api/v12/projects/{project_id}/test_models")
 def v12_test_models(project_id: str, probe_optional: bool = True):
     project = get_project(project_id)
@@ -12789,12 +12810,24 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
     for a in list_algorithms_internal(project_id):
         current_version_id = str(a.get("current_version_id") or "")
         versions = list(a.get("versions", []) or [])
-        versions.sort(key=lambda version: 0 if str(version.get("id") or "") == current_version_id else 1)
+        versions.sort(key=lambda version: (
+            str(version.get("id") or "") == current_version_id,
+            str(version.get("finished_at") or version.get("created_at") or ""),
+        ), reverse=True)
         for v in versions:
-            if str(v.get("stored_path", "")).lower().endswith(".pt"):
-                is_current = str(v.get("id") or "") == current_version_id
-                current_suffix = "（当前）" if is_current else ""
-                items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}{current_suffix}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "is_current_version": is_current, "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
+            verified_path = _testable_version_pt_path(v)
+            if verified_path is None:
+                continue
+            is_current = str(v.get("id") or "") == current_version_id
+            current_suffix = "（当前）" if is_current else ""
+            items.append({
+                "label": f"算法版本：{a.get('name')} / {v.get('version_name') or v.get('id')}{current_suffix}",
+                "algorithm_id": a.get("id"), "version_id": v.get("id"),
+                "version_name": v.get("version_name") or v.get("id"),
+                "is_current_version": is_current, "model_source": "algorithm_version",
+                "framework": "ultralytics", "path": str(verified_path),
+                "artifact_name": verified_path.name, "is_verified_training_weight": True,
+            })
     # Real conversion artifacts are selectable in the deployment test page.
     try:
         for artifact in v39_list_deploy_artifacts(project_id).get("items", []):
@@ -21632,8 +21665,8 @@ def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: s
             if str(algorithm.get("id")) != str(algorithm_id):
                 continue
             version = next((item for item in algorithm.get("versions", []) if str(item.get("id")) == str(version_id)), None)
-            path = Path(str((version or {}).get("stored_path") or ""))
-            if path.is_file():
+            path = _testable_version_pt_path(version or {})
+            if path is not None:
                 return resolve_ultralytics_model(str(path), project_id)
         raise HTTPException(status_code=404, detail="算法版本模型不存在")
     if source == "builtin":

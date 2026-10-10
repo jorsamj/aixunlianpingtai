@@ -49,7 +49,7 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await page.evaluate(()=>window.setPage('总览'));
   const tabs=page.locator('[data-overview-tabs]');
   await expect(tabs.getByRole('tab')).toHaveCount(2);
-  await expect(tabs.getByRole('tab',{name:'算法总览'})).toHaveAttribute('aria-selected','true');
+  await expect(tabs.getByRole('tab',{name:'算法一张图'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#view')).toContainText('算法生产总览');
   await expect(page.getByRole('button',{name:'消防烟雾'})).toBeVisible();
   await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('2');
@@ -76,12 +76,21 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await page.setViewportSize({width:1366,height:768});
   await expect(tabs.getByRole('tab',{name:'算力一张图'})).toBeVisible();
 
+  // Triple-click is a UI-only presentation mode; real telemetry is restored when exiting.
+  await tabs.getByRole('tab',{name:'算力一张图'}).click();
+  await tabs.getByRole('tab',{name:'算力一张图'}).click();
+  await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
+  await expect(page.locator('.ov348-node')).toHaveCount(3);
+  await expect(page.locator('#view')).toContainText('GPU 训练服务器 A');
+  await page.locator('[data-overview-demo-exit]').click();
+  await expect(page.locator('[data-overview-demo]')).toHaveCount(0);
+  await expect(page.locator('.ov348-node')).toHaveCount(2);
   failNodes=true;
   await page.locator('[data-overview-refresh]').click();
   await expect(page.locator('.ov348-error')).toContainText('nodes: HTTP 503');
   await expect(page.locator('.ov348-node')).toHaveCount(0);
-  await tabs.getByRole('tab',{name:'算法总览'}).click();
-  await expect(tabs.getByRole('tab',{name:'算法总览'})).toHaveAttribute('aria-selected','true');
+  await tabs.getByRole('tab',{name:'算法一张图'}).click();
+  await expect(tabs.getByRole('tab',{name:'算法一张图'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('#view')).toContainText('算法生产总览');
   expect(pageErrors).toEqual([]);
 });

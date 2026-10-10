@@ -46,6 +46,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
     {label:'原始模型：YOLO11n 官方预训练',model_name:'yolo11n.pt',model_source:'builtin',framework:'ultralytics',path:'yolo11n.pt'},
     {label:'算法版本：烟雾识别 / v2（当前）',model_source:'algorithm_version',algorithm_id:smoke.id,version_id:'smoke-v2',is_current_version:true,framework:'ultralytics',path:'/models/smoke-v2/best.pt'},
     {label:'算法版本：安全帽识别 / v7',model_source:'algorithm_version',algorithm_id:helmet.id,version_id:'helmet-v7',framework:'ultralytics',path:'/models/helmet-v7/best.pt'},
+    {label:'算法版本：烟雾识别 / v3（当前）',model_source:'algorithm_version',algorithm_id:smoke.id,version_id:'smoke-v3',is_current_version:true,is_verified_training_weight:true,framework:'ultralytics',path:'/models/smoke-v3/trained-accepted.pt'},
   ];
   const creates=[];
   const reviews=[];
@@ -114,15 +115,16 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   });
 
   await page.route('**/fallback-original.bmp',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp(96,72)}));
+  await page.route('**/placeholder.jpg',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp(96,72)}));
   await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
   await page.goto('/');
   await page.evaluate(()=>window.setPage('质量中心'));
-  await page.getByRole('button',{name:'模型检测',exact:true}).click();
+  await page.getByRole('button',{name:'场景算法实测',exact:true}).click();
   await expect.poll(()=>modelLoads).toBe(1);
   await expect.poll(()=>envLoads).toBe(1);
 
   await page.getByRole('button',{name:'质量概览',exact:true}).click();
-  await page.getByRole('button',{name:'模型检测',exact:true}).click();
+  await page.getByRole('button',{name:'场景算法实测',exact:true}).click();
   await expect.poll(()=>modelLoads).toBe(1);
   await expect.poll(()=>envLoads).toBe(1);
 
@@ -136,6 +138,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await expect(b).toBeVisible();
   await expect(a.locator('optgroup').first()).toHaveAttribute('label', /原始 \/ 基础模型/, {timeout:10_000});
   await expect(a.locator(`optgroup[label="算法 · 烟雾识别"]`)).toHaveCount(1);
+  await expect(a.locator('option').filter({hasText:'烟雾识别 · v3'})).toHaveCount(1);
   await expect(b.locator(`optgroup[label="算法 · 安全帽识别"]`)).toHaveCount(1);
 
   await page.locator('#benchModelSearchB').fill('安全帽');
@@ -169,7 +172,8 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchBatchList64').getByRole('button',{name:'查看详情'}).click();
   const detail=page.getByRole('dialog',{name:'检测详情'});
   await expect(detail).toBeVisible();
-  const fallback=detail.locator('.detection31-fallback');
+  await expect.poll(()=>detail.locator('.bench64-original img').evaluate(img=>img.naturalWidth)).toBeGreaterThan(0);
+  const fallback=detail.locator('.detection31-fallback:visible');
   await expect(fallback).toHaveCount(1);
   await expect(fallback.locator('svg')).toHaveAttribute('viewBox','0 0 96 72');
   await expect(fallback.locator('rect')).toHaveAttribute('x','10');

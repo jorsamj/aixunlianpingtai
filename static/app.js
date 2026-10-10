@@ -1172,7 +1172,9 @@ window.installUsability417=function(){
     const marks=boxes.map(([x1,y1,x2,y2])=>`<rect x="${x1}" y="${y1}" width="${x2-x1}" height="${y2-y1}"/>`).join('');
     const inputUrl=String(r.input_image_url||'').trim();
     const renderedUrl=String(r.image_url||r.result_image_url||'').trim();
-    const img=renderedUrl?`<div class="result-img-wrap"><img class="result-img" src="${_esc(renderedUrl)}"></div>`:
+    const img=renderedUrl?`<div class="result-img-wrap detection31-result"><img class="result-img" src="${_esc(renderedUrl)}" alt="真实模型渲染结果" onerror="this.hidden=true;this.parentElement.classList.add('missing-rendered')">${inputUrl?
+        `<div class="detection31-secondary detection31-fallback" data-coords="${normalized?'normalized':'pixels'}"><img class="result-img" src="${_esc(inputUrl)}" alt="真实检测原图" onload="if(this.naturalWidth&&this.naturalHeight&&this.parentElement.dataset.coords==='pixels'){this.nextElementSibling.setAttribute('viewBox','0 0 '+this.naturalWidth+' '+this.naturalHeight)}" onerror="this.parentElement.classList.add('image-error')"><svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="真实推理坐标检测框">${marks}</svg><span class="detection31-image-error">检测图片已不可访问</span></div>`:
+        '<span class="detection31-rendered-error">检测结果图已不可访问</span>'}</div>`:
       inputUrl?`<div class="result-img-wrap detection31-fallback" data-coords="${normalized?'normalized':'pixels'}"><img class="result-img" src="${_esc(inputUrl)}" alt="真实检测原图" onload="if(this.naturalWidth&&this.naturalHeight&&this.parentElement.dataset.coords==='pixels'){this.nextElementSibling.setAttribute('viewBox','0 0 '+this.naturalWidth+' '+this.naturalHeight)}" onerror="this.parentElement.classList.add('image-error')"><svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="根据真实推理坐标绘制的检测框">${marks}</svg><span class="detection31-image-error">检测原图加载失败，无法展示检测框</span></div>`:'';
     return `<div class="compare-card enhanced-result"><div class="compare-head"><div><b>${_esc(title||'检测结果')}</b><div class="item-sub">${_esc(r.model||'')} · ${_esc(r.engine||'')} · ${_esc(r.elapsed_ms||0)}ms</div></div><span class="pill ${dets.length?'ok':'warn'}">${dets.length} 个结果</span></div>${lowConfTip}${note}${img}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table>${zero}</div>`;
   };  window.renderDetectionResultLegacy3=window.renderDetectionResultCore31;
@@ -4106,7 +4108,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   function qualityTabs411(){
     const tab=state.qualityCenterTab411==='detect'?'detect':'overview';
-    return `<div class="quality411-tabs" data-quality-tabs="1"><button class="btn ${tab==='overview'?'primary':'soft'}" onclick="setQualityCenterTab411('overview')">质量概览</button><button class="btn ${tab==='detect'?'primary':'soft'}" onclick="setQualityCenterTab411('detect')">模型检测</button></div>`;
+    return `<div class="quality411-tabs" data-quality-tabs="1"><button class="btn ${tab==='overview'?'primary':'soft'}" onclick="setQualityCenterTab411('overview')">质量概览</button><button class="btn ${tab==='detect'?'primary':'soft'}" onclick="setQualityCenterTab411('detect')">场景算法实测</button></div>`;
   }
   function prependQualityTabs411(){
     const view=document.getElementById('view');if(!view||view.querySelector('[data-quality-tabs="1"]'))return;
@@ -4128,8 +4130,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(state.qualityCenterTab411==='detect'){
       window.renderDetectBench?.();
       prependQualityTabs411();
-      const title=view.querySelector('.bench-panel .panel-title');if(title)title.textContent='模型检测';
-      const sub=view.querySelector('.bench-panel .subline');if(sub)sub.textContent='质量中心内进行原始模型与算法版本的真实同图检测。检测能力保留，但不再属于“测试评测”模块。';
+      const title=view.querySelector('.bench-panel .panel-title');if(title)title.textContent='场景算法实测';
+      const sub=view.querySelector('.bench-panel .subline');if(sub)sub.textContent='';
       return;
     }
     let cached=null;try{cached=JSON.parse(localStorage.getItem(qualityKey411())||'null')}catch(e){}
@@ -7077,7 +7079,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       // Only prepared official originals and real trained best.pt versions are valid here.
       // Other local/project files stay on the deployment test page.
       if(source==='builtin')return /^yolo[0-9a-z_-]+\.pt$/i.test(String(model?.model_name||model?.path||''));
-      if(source==='algorithm_version')return /(?:^|[\\/])best\.pt$/i.test(String(model?.path||''))&&!!model?.algorithm_id&&!!model?.version_id;
+      if(source==='algorithm_version')return !!model?.algorithm_id&&!!model?.version_id&& (model?.is_verified_training_weight===true || /(?:^|[\\/])best\.pt$/i.test(String(model?.path||'')));
       return false;
     });
   }
@@ -7247,11 +7249,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.openBenchResult64=function(index){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||row.status!=='done')return;
     if(!row.previewUrl&&row.file instanceof File)row.previewUrl=URL.createObjectURL(row.file);
-    const originalUrl=row.inputImageUrl||row.previewUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
-    const result=(value,fallback)=>value?window.renderDetectionResult({...value.r,input_image_url:value.r?.input_image_url||originalUrl},resultName64(value,fallback)):'';
+    const originalUrl=row.previewUrl||row.inputImageUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
+    const result=(value,fallback)=>value?window.renderDetectionResult({...value.r,input_image_url:row.previewUrl||value.r?.input_image_url||originalUrl},resultName64(value,fallback)):'';
     const reviewButtons=Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn mini ${row.review===key?'primary':'soft'}" onclick="markBenchReview64(${Number(index)},'${key}')">${label}</button>`).join('');
     const feedbackActions=[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side,value])=>`<button class="btn primary" onclick="openBenchFeedback64(${Number(index)},'${side}')">${side==='A'?'检测模型':'对比模型'} · 提交抽检反馈</button>`).join('');
-    modal('检测详情',`<div class="bench64-detail bench350-detail"><section class="bench64-original"><div class="panel-title">场景原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'检测模型')}${result(row.b,'对比模型')}</div><section class="bench64-review"><div><b>检测质量核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>人工核验不会直接修改训练标注。</p></section>${feedbackActions?`<section class="bench64-feedback"><div><b>进入抽检复核</b><span>仅正式算法版本可提交。提交后先进入待复核，不会自动修改数据集或启动训练。</span></div><div class="row wrap">${feedbackActions}</div></section>`:''}</div>`,true);
+    modal('检测详情',`<div class="bench64-detail bench350-detail"><section class="bench64-original"><div class="panel-title">场景原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="检测原图" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="bench351-original-error" hidden>原图已不可访问，请检查历史检测文件是否仍保留。</span>`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'检测模型')}${result(row.b,'对比模型')}</div><section class="bench64-review"><div><b>检测质量核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>人工核验不会直接修改训练标注。</p></section>${feedbackActions?`<section class="bench64-feedback"><div><b>进入抽检复核</b><span>仅正式算法版本可提交。提交后先进入待复核，不会自动修改数据集或启动训练。</span></div><div class="row wrap">${feedbackActions}</div></section>`:''}</div>`,true);
   };
 
   function durableSide64(model){

@@ -30,7 +30,7 @@ test('retired test routes normalize into quality center and are no longer canoni
 
 test('quality center owns a model-detection tab instead of a standalone test section', () => {
   assert.match(app, /window\.setQualityCenterTab411=async function\(tab\)/);
-  assert.match(app, /模型检测/);
+  assert.match(app, /场景算法实测/);
   assert.match(app, /window\.loadPageExtras413\?\.\('质量中心'\)/);
   assert.match(app, /window\.renderDetectBench\?\.\(\)/);
 });

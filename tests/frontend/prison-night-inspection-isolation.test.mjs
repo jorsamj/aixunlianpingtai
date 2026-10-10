@@ -27,6 +27,8 @@ test('the imported demo cannot access or pollute the parent DOM, CSS or storage'
   assert.match(css,/#nightInspectionIsolated iframe/);
   assert.doesNotMatch(entry,/TrainingSubmit|MaterialBatch|PollRegistry|setInterval|setTimeout/);
   assert.match(entry,/aria-label="AI算法底座"/);
+  assert.match(entry,/classList.add\('sidebar-collapsed'\)/);
+  assert.match(read("static/index.html"),/aiFoundationMenuToggle/);
   assert.match(html,/ai-foundation-sandbox-nav-scroll/);
   assert.match(html, /\.sidebar \.nav\{flex:1 1 auto;min-height:0;overflow-y:auto/);
 });

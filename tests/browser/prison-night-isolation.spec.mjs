@@ -11,6 +11,13 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(page.locator('#nav .nav-advanced427')).toBeVisible();
   await menu.click();
   await expect(page.locator('#nightInspectionIsolated iframe')).toHaveCount(1);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  const expand=page.getByRole('button',{name:'展开或收起平台菜单'});
+  await expect(expand).toBeVisible();
+  await expand.click();
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expand.click();
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
   const frame=page.locator('#nightInspectionIsolated iframe');
   await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-modals');
   await expect(frame).toHaveAttribute('title','AI算法底座（独立演示）');
