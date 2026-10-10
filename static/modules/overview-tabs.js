@@ -129,7 +129,7 @@ function overviewAlgorithm(m) {
     metric('策略准确率','—','尚无策略判定结果事实源')+'</div>'+
     '<div class="ov350-section"><h3>算法资产与模型表现</h3><span>有效数据优先</span></div>'+
     '<div class="ov348-grid ov350-leader-grid">'+accuracy+typePanel+'</div>'+
-    '<div class="ov348-grid">'+industryPanel+'</div>'+
+    '<div class="ov348-grid">'+industryPanel+panel('算法资产清单',m.scores.length?rows(m.scores.slice(0,30),x=>'<div class="ov348-accuracy"><button type="button" class="ov348-algo-link" data-overview-algorithm-id="'+esc(x.id)+'">'+esc(x.name)+'</button><div><span>'+((x.map50!==null||x.precision!==null||x.recall!==null)?'已有模型评测':'待评测')+'</span></div></div>'):empty('尚无算法资产'),'含待评测算法 · 最多显示 30 项')+'</div>'+
     '<div class="ov350-section"><h3>运行与应用</h3><span>待接入数据源</span></div>'+
     '<details class="ov351-pending"><summary>待接入指标 <span>高频排行、单位运行与部署 · 展开</span></summary><div class="ov348-grid">'+
       panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+

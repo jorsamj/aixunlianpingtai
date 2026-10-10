@@ -3739,6 +3739,22 @@
   window.addModelEventRowFix=addEventRow;
 })();
 </script>
+<script id="ai-foundation-sandbox-navigation-guard">
+/* Fix only this demo's legacy navigation collisions; never touch the parent platform. */
+document.addEventListener('click',function(event){
+  const button=event.target.closest('.sidebar .nav button[data-page]');
+  if(!button)return;
+  const targetId=String(button.dataset.page||'');
+  Promise.resolve().then(function(){
+    const target=document.getElementById(targetId);
+    if(!target||target.classList.contains('active'))return;
+    document.querySelectorAll('.page').forEach(page=>page.classList.remove('active'));
+    target.classList.add('active');
+    document.querySelectorAll('.sidebar .nav button[data-page]').forEach(item=>
+      item.classList.toggle('active',item.dataset.page===targetId));
+  });
+});
+</script>
 </body>
 </html>
 

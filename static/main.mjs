@@ -1,4 +1,4 @@
-import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010b';
+import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010c';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
