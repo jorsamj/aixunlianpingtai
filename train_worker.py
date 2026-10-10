@@ -589,8 +589,8 @@ def attach_ai_continuation_callbacks(
 
 
 
-def effective_training_patience(requested_patience, requested_epochs, stop_threshold):
-    """Prevent generic patience from ending target-driven training before its business target."""
+def effective_training_patience(requested_patience, requested_epochs, stop_threshold, *, early_stopping_enabled=False):
+    """Honor explicit patience only when users opt into early stopping."""
     try:
         requested = max(0, int(requested_patience or 0))
     except (TypeError, ValueError, OverflowError):
@@ -603,11 +603,11 @@ def effective_training_patience(requested_patience, requested_epochs, stop_thres
         target = float(stop_threshold or 0)
     except (TypeError, ValueError, OverflowError):
         target = 0.0
-    if target > 0:
-        # Keep Ultralytics' built-in patience beyond the requested training horizon.
-        # The quality-target callback remains the only automatic early-stop owner.
-        return max(requested, epochs + 1)
-    return requested
+    if early_stopping_enabled:
+        return max(1, requested)
+    # Preserve the selected training horizon (except for an explicitly configured
+    # quality-target gate) instead of silently stopping at patience=100.
+    return max(requested, epochs + 1)
 
 
 def decide_training_quality_gate(value, *, metric, stop_threshold, continue_threshold=0.0):
@@ -765,7 +765,8 @@ def main():
     parser.add_argument("--requested-device", default="auto")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--patience", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=40)
+    parser.add_argument("--early-stopping-enabled", default="false")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--optimizer", default="auto")
     parser.add_argument("--lr0", type=float, default=0.01)
@@ -830,7 +831,8 @@ def main():
     runs_dir = project_dir / "runs"
     models_dir = project_dir / "models"
     models_dir.mkdir(exist_ok=True)
-    update_job(job_file, runtime_stop_policy=runtime_stop_policy, gpu_policy=args.gpu_policy)
+    update_job(job_file, runtime_stop_policy=runtime_stop_policy, gpu_policy=args.gpu_policy,
+               early_stopping_enabled=as_bool(args.early_stopping_enabled))
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
@@ -856,7 +858,8 @@ def main():
         "project": str(runs_dir),
         "name": args.run_name,
         "exist_ok": True,
-        "patience": effective_training_patience(args.patience, args.epochs, args.stop_threshold),
+        "patience": effective_training_patience(args.patience, args.epochs, args.stop_threshold,
+                                               early_stopping_enabled=as_bool(args.early_stopping_enabled)),
         "workers": args.workers,
         "optimizer": args.optimizer,
         "lr0": args.lr0,
