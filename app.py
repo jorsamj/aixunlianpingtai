@@ -768,7 +768,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "task": "detect",
             "base_model": "yolo11n.pt",
             "recommended": True,
-            "default_epochs": 30,
+            "default_epochs": 150,
             "default_imgsz": 640,
             "default_batch": 4,
             "description": "最轻量，适合 CPU/普通笔记本先跑通安全帽、人员、烟火等目标检测流程。",
@@ -781,7 +781,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "task": "detect",
             "base_model": "yolo11s.pt",
             "recommended": False,
-            "default_epochs": 50,
+            "default_epochs": 150,
             "default_imgsz": 640,
             "default_batch": 4,
             "description": "比 n 版更准一些，建议有 NVIDIA 显卡或训练服务器时使用。",
@@ -794,7 +794,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "task": "detect",
             "base_model": "yolo11m.pt",
             "recommended": False,
-            "default_epochs": 80,
+            "default_epochs": 150,
             "default_imgsz": 640,
             "default_batch": 2,
             "description": "中等模型，精度更高但资源占用更大，本机 CPU 不建议首选。",
@@ -7121,9 +7121,9 @@ def _remote_capabilities(server: Dict[str, Any]) -> Dict[str, Any]:
         # 兼容旧版远程服务：没有 capabilities 时给默认 Ultralytics 能力
         if "algorithms" not in data:
             data["algorithms"] = [
-                {"key":"yolo11n_det","name":"YOLO11n 目标检测","framework":"ultralytics","base_model":"yolo11n.pt","default_epochs":30,"default_imgsz":640,"default_batch":4},
-                {"key":"yolo11s_det","name":"YOLO11s 目标检测","framework":"ultralytics","base_model":"yolo11s.pt","default_epochs":50,"default_imgsz":640,"default_batch":4},
-                {"key":"yolo11m_det","name":"YOLO11m 目标检测","framework":"ultralytics","base_model":"yolo11m.pt","default_epochs":80,"default_imgsz":640,"default_batch":2},
+                {"key":"yolo11n_det","name":"YOLO11n 目标检测","framework":"ultralytics","base_model":"yolo11n.pt","default_epochs":150,"default_imgsz":640,"default_batch":4},
+                {"key":"yolo11s_det","name":"YOLO11s 目标检测","framework":"ultralytics","base_model":"yolo11s.pt","default_epochs":150,"default_imgsz":640,"default_batch":4},
+                {"key":"yolo11m_det","name":"YOLO11m 目标检测","framework":"ultralytics","base_model":"yolo11m.pt","default_epochs":150,"default_imgsz":640,"default_batch":2},
             ]
         if "base_models" not in data:
             data["base_models"] = [
@@ -7278,7 +7278,7 @@ def training_options(project_id: Optional[str] = None):
             "recommendation": {
                 "device": "auto",
                 "resource_strategy": "auto",
-                "resource_profile": "balanced",
+                "resource_profile": "performance",
             },
         })
 
@@ -7526,13 +7526,13 @@ class TrainReq(BaseModel):
     algorithm: Optional[str] = "yolo11n_det"
     algorithm_asset_id: Optional[str] = ""
     model: str = "yolo11n.pt"
-    epochs: int = 50
+    epochs: int = 150
     imgsz: int = 640
     batch: StrictInt = 8
     resource_strategy: Literal["auto", "manual"] = "auto"
-    resource_profile: Literal["balanced", "performance", "stability"] = "balanced"
+    resource_profile: Literal["balanced", "performance", "stability"] = "performance"
     device: str = "auto"
-    gpu_policy: Literal["auto", "exclusive", "shared"] = "auto"
+    gpu_policy: Literal["auto", "exclusive", "shared"] = "exclusive"
     estimated_gpu_memory_bytes: Optional[int] = Field(default=None, gt=0)
     gpu_sharing_evidence: Optional[Dict[str, Any]] = None
     train_ratio: float = 0.8
