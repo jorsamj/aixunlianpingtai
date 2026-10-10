@@ -259,3 +259,5 @@
  .train-create-saas-v2 .training-label-contract-list{grid-template-columns:1fr}
  .train-create-saas-v2 .train428-footer .train-ui-submit{min-width:0;flex:1}
 }
+
+.train-create-saas-v2 .train350-auto-schedule{margin-left:auto;display:inline-flex;align-items:center;gap:8px;border-radius:99px;border:1px solid #b9d8fa;padding:7px 12px;background:linear-gradient(120deg,#ebf5ff,#e9faf6);color:#18609b;font-size:14px;font-weight:800;white-space:nowrap}.train350-auto-schedule i{width:8px;height:8px;border-radius:50%;background:#19ac83;box-shadow:0 0 0 4px #b8eddf6e}@media(max-width:640px){.train-create-saas-v2 .train350-auto-schedule{font-size:12px;padding:6px 8px}}

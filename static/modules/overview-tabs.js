@@ -136,7 +136,7 @@ function overviewAlgorithm(m) {
     '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div>'+
     '</div><div class="ov348-footnote">统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。</div></div>';
 }
-function overviewCompute(m,placementFilter='all') {
+function overviewCompute(m,placementFilter='all',controller=null) {
   const statusName={ONLINE:'在线',OFFLINE:'心跳超时',DISABLED:'已禁用',NEVER_CONNECTED:'未连接'};
   const chosen=m.nodes.filter(n=>placementFilter==='all'||n.placement===placementFilter);
   const selector='<div class="ov348-switches" role="group" aria-label="筛选服务器部署位置">'+
@@ -163,13 +163,23 @@ function overviewCompute(m,placementFilter='all') {
     '<div class="ov348-alert-head"><b>'+pct(m.warningRatio/100)+'</b><span>'+fmt(m.warnings)+' / '+fmt(m.monitoredNodeCount)+' 监测节点存在当前资源风险</span></div>'+
     bar('CPU / 内存 / 磁盘 ≥ 85%，或 Agent 心跳超时',m.warnings,m.monitoredNodeCount,fmt(m.warnings)+' 节点'):
     empty('暂无服务节点，无法计算预警占比'),'当前快照 · 阈值 85%');
+  const host=controller?.resources;
+  const localPanel=panel('控制端 · 本机资源',host?
+    '<div class="ov350-controller-head"><b>'+esc(controller.name||'控制端（本机）')+'</b><span>'+esc(controller.sampled_at||'')+'</span></div>'+
+    '<div class="ov348-gauges">'+gauge('CPU',percent(host.cpu?.usage_percent),'')+
+    gauge('内存',percent(host.memory?.usage_percent),bytes(host.memory?.used_bytes)+' / '+bytes(host.memory?.total_bytes))+
+    gauge('磁盘',percent(host.disk?.usage_percent),bytes(host.disk?.used_bytes)+' / '+bytes(host.disk?.total_bytes))+'</div>'+
+    '<div class="ov350-local-gpus">'+(Array.isArray(host.gpu?.gpus)&&host.gpu.gpus.length?
+      rows(host.gpu.gpus,g=>'<span>'+esc(g.name||'GPU')+' · 使用率 '+esc(percent(g.utilization_percent)==null?'—':percent(g.utilization_percent)+'%')+' · 显存 '+esc(bytes(g.memory_used_bytes))+' / '+esc(bytes(g.memory_total_bytes))+'</span>'):
+      '<span>本机无可探测 NVIDIA GPU</span>')+'</div>':
+    empty('本机资源尚未采样'),'独立观察 · 不计入 Agent 节点或训练可调度 GPU');
   return '<div class="ov348-stack"><div class="ov348-kpis">'+
     metric('服务节点',fmt(m.nodeCount),fmt(m.online)+' 在线 · '+fmt(m.offline)+' 超时 · '+fmt(m.disabled)+' 禁用 · '+fmt(m.neverConnected)+' 未连接')+
     metric('在线 GPU',fmt(m.gpuCount),'离线 GPU 不计入')+
     metric('平均 CPU',m.cpuAvg==null?'—':m.cpuAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均内存',m.memoryAvg==null?'—':m.memoryAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均磁盘',m.diskAvg==null?'—':m.diskAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
-    '</div><div class="ov348-grid">'+topology+availability+'</div>'+
+    '</div><div class="ov348-grid">'+localPanel+'</div><div class="ov348-grid">'+topology+availability+'</div>'+
     '<div class="ov348-grid">'+panel('服务器运行情况',selector+nodeList,'CPU / 内存 / 磁盘 · Agent 心跳快照','ov348-wide')+'</div>'+
     '<div class="ov348-grid">'+panel('GPU 设备明细',gpuRows,'型号 / 使用率 / 显存 · 当前在线设备')+resources+'</div>'+
     '<div class="ov348-grid">'+storage+'</div>'+
@@ -184,13 +194,13 @@ export function installOverviewTabsRuntime({
   },
 }={}) {
   if(typeof document==='undefined')return null;
-  let active='algorithm',placementFilter='all',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}},loading={};
+  let active='algorithm',placementFilter='all',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}},loading={};
   const ttl=60000;
   const state=()=>getState?.()||{};
   const project=()=>String(state().project?.id||'');
   function resetIfProjectChanged() {
     if(cache.project===project())return;
-    cache={project:project(),algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}};
+    cache={project:project(),algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}};
     loading={};
   }
   function render({load=true}={}) {
@@ -201,7 +211,7 @@ export function installOverviewTabsRuntime({
     // Keep existing production dashboard owner and prepend algorithm intelligence.
     if(algorithm)renderProduction?.();
     let content=algorithm?(has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
-      (has?overviewCompute(buildComputeMap(cache.nodes.items,cache.storage?.items,cache.gpuRuntime),placementFilter):empty('服务节点尚未取得'));
+      (has?overviewCompute(buildComputeMap(cache.nodes.items,cache.storage?.items,cache.gpuRuntime),placementFilter,cache.local):empty('服务节点尚未取得'));
     if(!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
@@ -244,6 +254,7 @@ export function installOverviewTabsRuntime({
           if(['algorithms','nodes','storage'].includes(key)&&!Array.isArray(result?.items))throw new Error('接口未返回有效 items');
           if(key==='quality'&&!Array.isArray(result?.algorithms))throw new Error('质量接口缺少算法列表');
           if(key==='gpuRuntime'&&!Array.isArray(result?.gpus))throw new Error('GPU 运行态接口无效');
+          if(key==='local'&&(!result?.resources||!result?.sampled_at))throw new Error('本机资源采样接口无效');
           if(project()!==id||cache!==target)return;
           cache[key]=result;cache.loadedAt[key]=Date.now();delete cache.errors[key];
         }catch(error){
@@ -263,6 +274,7 @@ export function installOverviewTabsRuntime({
       fetchOne('nodes','/api/v63/service-nodes'),
       fetchOne('storage','/api/v61/storage-sources'),
       fetchOne('gpuRuntime','/api/v62/gpu-runtime'),
+      fetchOne('local','/api/v63/service-nodes/controller-snapshot'),
     ]);
     if(state().page==='总览'&&active===tab&&project()===id)render({load:false});
   }

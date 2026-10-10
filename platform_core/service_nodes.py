@@ -623,6 +623,32 @@ def service_node_router(task_repository):
         node, token = invoke(registry().create, payload)
         return {"node": node, "agent_token": token, "token_version": node["token_version"]}
 
+    # The control host is observed, never silently registered as a training Agent.
+    # Reuse the existing Agent sampler with bounded, read-only cache.
+    controller_cache: dict[str, Any] = {"expires": 0.0, "snapshot": None}
+
+    @router.get("/controller-snapshot")
+    def controller_snapshot():
+        import os
+        import time
+        from .node_agent_runtime import collect_local_snapshot
+
+        now = time.monotonic()
+        if controller_cache["snapshot"] is not None and now < controller_cache["expires"]:
+            return controller_cache["snapshot"]
+        host = collect_local_snapshot(
+            data_dir=os.environ.get("MC_DATA_DIR") or os.environ.get("DATA_DIR") or None,
+            runtime_probe={"source": "controller"},
+        )
+        result = {
+            "name": "控制端（本机）",
+            "sampled_at": host["sampled_at"],
+            "resources": host["resources"],
+            "scheduler_admission": "not_evaluated",
+        }
+        controller_cache.update(snapshot=result, expires=time.monotonic() + 30)
+        return result
+
     @router.get("/{node_id}")
     def get_node(node_id: str):
         return invoke(registry().get_public, node_id)

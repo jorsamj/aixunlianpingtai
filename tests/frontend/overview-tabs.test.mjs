@@ -154,3 +154,11 @@ test('failed algorithm fetch cannot present former algorithm totals as live',asy
     assert.doesNotMatch(view.innerHTML,/旧算法/);
   }finally{globalThis.document=old}
 });
+
+test('local controller snapshot is a read-only observer, not a schedulable Agent',()=>{
+ const backend=readFileSync(new URL('../../platform_core/service_nodes.py',import.meta.url),'utf8');
+ const frontend=readFileSync(new URL('../../static/modules/overview-tabs.js',import.meta.url),'utf8');
+ assert.match(backend,/controller-snapshot/);
+ assert.match(backend,/scheduler_admission.*not_evaluated/);
+ assert.match(frontend,/service-nodes\/controller-snapshot/);
+});

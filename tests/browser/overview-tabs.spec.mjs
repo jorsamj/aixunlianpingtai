@@ -36,6 +36,9 @@ test('three overview tabs preserve production owner, render scoped facts and fai
       body:JSON.stringify({gpus:[{node_id:'center-1',gpu_uuid:'gpu-1',metrics_fresh:true,
         telemetry_available:true,free_bytes:900}],telemetry:{fresh_gpu_count:1}})});
   });
+  await page.route(/\/api\/v63\/service-nodes\/controller-snapshot$/,async route=>{
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({name:'控制端（本机）',sampled_at:new Date().toISOString(),resources:{cpu:{usage_percent:12},memory:{usage_percent:22},disk:{usage_percent:33},gpu:{gpus:[]}}})});
+  });
   await page.route(/\/api\/v61\/storage-sources(?:\?.*)?$/,async route=>{
     await route.fulfill({status:200,contentType:'application/json',
       body:JSON.stringify({items:[{type:'local'},{type:'oss'}]})});
@@ -56,6 +59,7 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   expect(algorithmGets).toBeGreaterThan(0);
 
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
+  await expect(page.locator('#view')).toContainText('控制端 · 本机资源');
   await expect(page.locator('.ov348-gpu')).toContainText('NVIDIA A800');
   await expect(page.locator('.ov348-stat').filter({hasText:'候选空闲 GPU'})).toContainText('—');
   await expect(page.locator('.ov348-node')).toHaveCount(2);
