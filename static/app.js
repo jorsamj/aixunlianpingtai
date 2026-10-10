@@ -5570,7 +5570,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       resource:{
         strategy:mode==='custom'?'manual':'auto',
         profile:'performance',
-        device:'auto',
+        device:resource.device||'auto',
         gpuPolicy:'exclusive',
         batch:mode==='custom'?(wasCustom?(resource.batch??8):8):null,
         workers:mode==='custom'?(wasCustom?(resource.workers??0):0):null,
@@ -5582,7 +5582,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(strategy)strategy.value=patch.resource.strategy;
     const batch=document.getElementById('trV3ManualBatch');if(batch&&mode==='custom')batch.value=String(patch.resource.batch);
     const workers=document.getElementById('trV3ManualWorkers');if(workers&&mode==='custom')workers.value=String(patch.resource.workers);
-    const device=document.getElementById('trV3Device');if(device)device.value='auto';
     window.TrainingDraftRuntime?.update?.(patch);
     window.syncTrainingResourceModeV3?.();
     window.refreshTrainingCreateUi?.();
