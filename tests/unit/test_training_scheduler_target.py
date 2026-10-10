@@ -87,3 +87,14 @@ def test_training_api_defaults_to_exclusive_high_performance_and_150_epochs():
     assert request.resource_profile == "performance"
     assert request.gpu_policy == "exclusive"
     assert request.early_stopping_enabled is False
+
+
+def test_training_mode_is_validated_without_disabling_existing_label_contract():
+    preset = app_module.TrainReq(training_mode="quick", resource_strategy="auto")
+    app_module.validate_train_request(preset)
+    invalid_preset = app_module.TrainReq(training_mode="complex", resource_strategy="manual")
+    with pytest.raises(HTTPException, match="预设训练模式"):
+        app_module.validate_train_request(invalid_preset)
+    invalid_custom = app_module.TrainReq(training_mode="custom", resource_strategy="auto")
+    with pytest.raises(HTTPException, match="自定义训练模式"):
+        app_module.validate_train_request(invalid_custom)
