@@ -78,3 +78,12 @@ def test_training_request_rejects_fake_shared_gpu_policy():
     with pytest.raises(HTTPException, match="GPU 共享") as caught:
         app_module.validate_train_request(payload)
     assert caught.value.status_code == 400
+
+
+def test_training_api_defaults_to_exclusive_high_performance_and_150_epochs():
+    request = app_module.TrainReq()
+    assert request.epochs == 150
+    assert request.resource_strategy == "auto"
+    assert request.resource_profile == "performance"
+    assert request.gpu_policy == "exclusive"
+    assert request.early_stopping_enabled is False
