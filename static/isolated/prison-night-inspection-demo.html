@@ -473,13 +473,15 @@
   const ids = new Set(['dashboard','events','deviceAccess','channelView',
     'taskConfig','modelConfig','commonAlgo','algoList','workflowConfig',
     'dictTags','dictEventTypes','dictEventLevels','templateConfig']);
-  document.addEventListener('click', function(event){
-    const button = event.target.closest('.sidebar .nav button[data-page]');
+  window.addEventListener('click', function(event){
+    const button = event.target.closest?.('.sidebar .nav button[data-page]');
     if(!button) return;
     const id = button.dataset.page;
+    document.documentElement.dataset.aiNavObserved = id;
     if(!ids.has(id) || !document.getElementById(id)) return;
     /* Prevent duplicate legacy onclick assignments from racing a user action.
        The existing showPage still owns per-page business rendering. */
+    event.stopImmediatePropagation();
     event.stopPropagation();
     try {
       if(typeof window.showPage === 'function') window.showPage(id);
@@ -492,6 +494,7 @@
       item.classList.toggle('active', item.dataset.page === id));
     if(id === 'dashboard') window.renderDashboardV10?.();
     if(id === 'events') window.renderEventCenterV8?.();
+    document.documentElement.dataset.aiNavAfter = [...document.querySelectorAll('.page.active')].map(node=>node.id).join(',');
   },true);
 })();
 </script>
