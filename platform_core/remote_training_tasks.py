@@ -90,7 +90,7 @@ def _safe_segment(value: object, fallback: str) -> str:
 
 def _portable_params(payload: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
-        "epochs", "imgsz", "batch", "patience", "workers", "optimizer",
+        "epochs", "imgsz", "batch", "patience", "early_stopping_enabled", "workers", "optimizer",
         "lr0", "lrf", "weight_decay", "close_mosaic", "mosaic", "cache",
         "freeze", "momentum", "warmup_epochs", "save_period", "seed",
         "multi_scale", "hsv_h", "hsv_s", "hsv_v", "degrees", "translate",
