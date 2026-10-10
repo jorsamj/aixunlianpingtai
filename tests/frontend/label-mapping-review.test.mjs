@@ -14,6 +14,7 @@ import {
   setLabelMappingReviewPage,
   setLabelMappingReviewSearch,
   setLabelMappingSelected,
+  applyExactLabelCodeMatches,
 } from '../../static/modules/label-mapping-review.js';
 
 function classes(count) {
@@ -117,4 +118,11 @@ test('changing ZIP review page size preserves manual choices and selected classe
   assert.equal(page.rows[49].code,'helmet');
   assert.equal(page.rows[49].selected,true);
   assert.equal(labelMappingReviewSummary(review).mapped,1);
+});
+
+test('exact English code matching reuses active canonical label only',()=>{
+ const review=createLabelMappingReview([{class_id:'0',name:'smoke'},{class_id:'1',name:'Smoke2'},{class_id:'2',name:'旧标签'},{class_id:'3',name:'helmet'}]);
+ const count=applyExactLabelCodeMatches(review,[{code:'smoke',status:'active'},{code:'helmet',status:'disabled'}]);
+ assert.equal(count,1);assert.deepEqual(review.mapping,{'0':'smoke'});
+ assert.throws(()=>buildManualLabelMapping(review),/3 个外部标签未映射/);
 });

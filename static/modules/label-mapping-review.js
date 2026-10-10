@@ -205,3 +205,19 @@ export function labelSampleOverlay(bbox) {
     height: percent(y2 - y1),
   };
 }
+
+/** Opt-in exact English code binding. No fuzzy alias matching or label creation.
+ * Caller retains the canonical explicit confirmation gate for importing labels. */
+export function applyExactLabelCodeMatches(review,labels=[]) {
+  const allowed=new Map(filterCanonicalLabels(labels).map(label=>[String(label.code).trim().toLowerCase(),String(label.code)]));
+  let matched=0;
+  for(const row of review?.rows||[]) {
+    if(review.mapping[row.classId])continue;
+    const name=String(row.name||'').trim();
+    if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name))continue;
+    const code=allowed.get(name.toLowerCase());
+    if(!code)continue;
+    review.mapping[row.classId]=code;matched++;
+  }
+  return matched;
+}

@@ -1220,3 +1220,10 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .bench350-detail .compare-head{padding:14px}
 .modal:has(.bench350-detail) .modal-card{width:min(1340px,95vw);max-height:92vh}
 @media(max-width:900px){.bench350-comparison .bench350-model-grid{grid-template-columns:1fr!important}.bench350-hero{padding:18px!important}.bench350-hero h2{font-size:24px!important}}
+
+/* Right-side source-class evidence viewer: does not extend the mapping dialog. */
+.label-mapping-sample-panel:not([hidden]){position:fixed;right:22px;top:88px;width:min(470px,40vw);max-height:calc(100dvh - 112px);overflow:auto;z-index:2500;border:1px solid #c4d5e8;border-radius:16px;box-shadow:0 25px 80px #0b24374a;background:#fff;padding:17px}
+.label-mapping-sample-panel .label-mapping-sample-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin-top:12px}
+.label-mapping-sample-panel .label-mapping-sample-image{min-height:130px}.label-mapping-sample-panel .label-mapping-sample-card{min-width:0}
+.label-mapping-sample-panel .row.between{position:sticky;top:-17px;z-index:2;background:#fff;padding:5px 0 12px}
+@media(max-width:780px){.label-mapping-sample-panel:not([hidden]){width:calc(100vw - 24px);right:12px;top:72px;max-height:calc(100dvh - 90px)}}

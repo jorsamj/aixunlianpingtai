@@ -196,3 +196,10 @@ test('restored ZIP completion cannot auto-open stale import-cleaning decision',(
   assert.match(source,/foregroundImports\.add\(String\(provisional\.id\)\)/);
   assert.match(source,/foregroundImports\.add\(id\);started\.add\(id\)/);
 });
+
+test('ZIP exact label reuse and explicit source-code creation preserve manual confirmation',()=>{
+ const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+ assert.match(source,/applyExactLabelCodeMatches\(review,labelItems\(\)\)/);
+ assert.match(source,/async function useSourceLabel/);
+ assert.match(source,/buildManualLabelMapping\(review\)/);
+});
