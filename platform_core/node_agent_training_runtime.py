@@ -742,7 +742,7 @@ class AgentTrainingRunner:
         resource_context_path = job_dir / "resource-context.json"
         _atomic_write_json(resource_context_path, resource_context)
 
-        epochs = max(1, int(self._parameter(payload, "epochs", 30)))
+        epochs = max(1, int(self._parameter(payload, "epochs", 150)))
         imgsz = max(128, int(self._parameter(payload, "imgsz", 640)))
         batch = int(self._parameter(payload, "batch", 4))
         workers = max(0, int(self._parameter(payload, "workers", 0)))
@@ -762,7 +762,7 @@ class AgentTrainingRunner:
                 self._parameter(payload, "resource_strategy", "auto") or "auto"
             ),
             "resource_profile": str(
-                self._parameter(payload, "resource_profile", "balanced") or "balanced"
+                self._parameter(payload, "resource_profile", "performance") or "performance"
             ),
             "gpu_policy": gpu_policy,
             "precision": precision,
