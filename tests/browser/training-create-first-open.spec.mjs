@@ -573,7 +573,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await expect(dialog.locator('[data-supplement-candidate-summary]')).toContainText('反馈补数据');
   await expect(dialog.locator('[data-supplement-candidate-value]')).toHaveText('1 / 1 张');
 
-  const submitButton = dialog.getByRole('button', {name: '开始训练'});
+  const submitButton = dialog.getByRole('button', {name: '创建训练任务'});
   await expect(submitButton).toBeEnabled();
   const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
@@ -622,7 +622,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});
   const card=page.locator('[data-algorithm-card]',{hasText:'首次打开配置回归'});
   await card.getByRole('button',{name:'训练'}).click();
-  const dialog=page.getByRole('dialog',{name:'训练 · 首次打开配置回归'});
+  const dialog=page.getByRole('dialog',{name:'创建训练任务'});
   await expect(dialog).toBeVisible({timeout:10000});
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   // Availability alone must NOT silently replace the default 60/20/20 split.
@@ -638,7 +638,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
   await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
-  const submitButton=dialog.getByRole('button',{name:'开始训练'});
+  const submitButton=dialog.getByRole('button',{name:'创建训练任务'});
   await expect(submitButton).toBeEnabled();
   await submitButton.click();
   await expect.poll(()=>submitted).not.toBeNull();
