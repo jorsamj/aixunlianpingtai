@@ -80,9 +80,15 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   required(algorithm?.key, '请选择可用训练算法');
   validatePreparedMotherModel({draft,target});
 
-  const config = draft.config || {};
+  const rawConfig = draft.config || {};
   const mode = String(draft.trainingMode || (draft.resource?.strategy === 'manual' ? 'custom' : 'full'));
   const preset = trainingModePreset(mode, Boolean(draft.baseVersionId));
+  // Presets never inherit hidden manual/advanced values from a previous custom
+  // task or an old dialog session. Keep only the explicitly selected mother model;
+  // existing optimizer, augmentation and quality defaults remain canonical here.
+  const config = preset
+    ? {model: rawConfig.model, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
+    : rawConfig;
   return {
     framework: target.framework === 'paddle' ? 'paddle' : 'ultralytics',
     target: target.type === 'server' ? 'remote' : 'local',
