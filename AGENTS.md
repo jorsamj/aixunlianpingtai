@@ -1,3 +1,7 @@
+## 2026-10-10｜CI 定点修复 42.24.345（精确 HEAD 待验证）
+
+按上一轮训练创建四模式改造的真实失败 Job 日志修复：修正 TrainingDraft 输出 gpu_policy=exclusive，阻止旧 auto 覆盖；自定义设备选择不再暴露兼容自动隔离；浏览器训练创建使用正式统一标题、独立数据划分 disclosure、自定义专属高级设置；普通上传的缓存键测试校验版本单调递增而不锁死旧版本。保留 TrainingLabelRuntime 正式标签、Exact Material、版本继承、唯一 Submit、GPU Reservation，未新建 Owner。当前提交仍须完整 GitHub Actions 和真 GPU UAT，禁止 main/tag/release/deploy。
+
 # Repository Agent Handoff
 
 ## 2026-10-10｜训练创建 UX（代码已提交，CI/Chrome 待验收）
