@@ -14,7 +14,7 @@ const fmt = value => value === null || value === undefined ? '—' : Number(valu
 const pct = value => number(value) == null ? '—' : ratio(value).toFixed(1)+'%';
 const bytes = value => {
   if (number(value) == null) return '—';
-  const units=['B','KB','GB','TB','PB'];
+  const units=['B','KB','MB','GB','TB','PB'];
   let n=Number(value),index=0;
   while(n>=1024&&index<units.length-1){n/=1024;index++}
   // Memory and disk figures are bytes, not estimated.
@@ -187,7 +187,7 @@ export function installOverviewTabsRuntime({
       '<div class="ov348-toolbar" role="tablist" aria-label="总览类型">'+OVERVIEW_TABS.map(x=>
         '<button type="button" role="tab" data-overview-tab="'+x.id+'" aria-selected="'+(active===x.id)+'"'+
         ' class="'+(active===x.id?'active':'')+'">'+esc(x.label)+'</button>').join('')+
-      '</div><button type="button" class="ov348-refresh" data-overview-refresh="1" title="刷新当前视图">刷新</button></div>');
+      '</div>'+(active==='production'?'':'<button type="button" class="ov348-refresh" data-overview-refresh="1" title="刷新当前视图">刷新</button>')+'</div>');
     const tabs=view.querySelector('[data-overview-tabs]');
     tabs.addEventListener('click',event=>{
       const selected=event.target.closest('[data-overview-tab]');

@@ -455,6 +455,7 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 // renderers remain compatibility entry points, but navigation no longer walks
 // through the chained render() override stack.
 const canonicalWindowPageRenderers = new Map([
+  ['总览', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
   ['素材接入', 'renderSources422'],
   ['标签管理', 'renderLabelManagement414'],
