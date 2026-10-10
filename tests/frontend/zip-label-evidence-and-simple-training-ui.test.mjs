@@ -53,3 +53,15 @@ test('training first-open exposes four modes and visible canonical labels withou
   assert.match(training,/const labelPanel=document\.getElementById\('trainingLabelContractPanel'\)/);
   assert.match(training,/labelSlot\.appendChild\(labelPanel\)/);
 });
+
+test('ZIP labels have one batch source plan with explicit durable creation and readable evidence layout',()=>{
+  assert.match(zip,/确认素材标签/);
+  assert.match(zip,/一键使用原始标签/);
+  assert.match(zip,/previewOriginalLabels/);
+  assert.match(zip,/confirmOriginalLabels/);
+  assert.match(zip,/planOriginalLabelMappings\(review,labelItems\(\)\)/);
+  assert.match(zip,/await createPlatformLabel\(item\.code,item\.source\)/);
+  assert.match(zip,/review\.mapping\[item\.classId\]/);
+  assert.match(zip,/zip-label-workspace/);
+  assert.match(css,/\.zip-label-confirm \.zip-label-workspace/);
+});

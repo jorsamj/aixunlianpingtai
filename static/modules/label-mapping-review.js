@@ -50,6 +50,9 @@ export function reconcileLabelMappingReview(review, classes) {
     pageSize: review?.pageSize,
     mapping: review?.mapping,
   });
+  next.sourcePlan = review?.sourcePlan||null;
+  next.manualExpanded = Boolean(review?.manualExpanded);
+  next.advancedExpanded = Boolean(review?.advancedExpanded);
   next.query = text(review?.query);
   next.targetQuery = text(review?.targetQuery);
   const allowed = new Set(next.rows.map(row => row.classId));

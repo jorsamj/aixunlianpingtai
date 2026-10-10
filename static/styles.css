@@ -1260,3 +1260,50 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .bench351-original-error[hidden]{display:none}
 
 .bench350-detail .bench64-original img[hidden]{display:none!important}
+
+/* ZIP confirmation: task-first, two-column, full-sized controls. */
+.zip-batch-queue{margin:0 0 18px;padding:14px;border-radius:16px;border:1px solid #d9e2f0;background:#f8fafc}
+.zip-batch-queue>.row>b{font-size:17px}.zip-batch-queue small{font-size:13px;color:#64748b}
+#zipBatchQueueList{display:grid;gap:6px;max-height:230px;overflow-y:auto;margin-top:12px}
+.zip-batch-job{border:1px solid #e2e8f0;background:white;border-radius:12px;padding:11px 13px;display:flex;justify-content:space-between;align-items:center;gap:16px;cursor:pointer;text-align:left;color:#1e293b}
+.zip-batch-job.current{border-color:#2563eb;background:#eff6ff}.zip-batch-job span{min-width:0}.zip-batch-job b{font-size:14px;display:block}.zip-batch-job small{font-size:12px;display:block;margin-top:3px}.zip-batch-status{font-size:12px;text-align:right;color:#475569}
+.zip-label-confirm{padding:0!important;border:0!important;background:white!important;max-width:100%}
+.zip-label-confirm .zip-label-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:4px 0 16px}
+.zip-label-confirm .zip-label-heading h2{font-size:23px;line-height:1.3;margin:0;font-weight:750;color:#0f172a}
+.zip-label-confirm .zip-label-heading p{font-size:14px;margin:5px 0 0;color:#64748b;overflow-wrap:anywhere}
+.zip-label-confirm .zip-label-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}
+.zip-label-confirm .zip-label-metrics span{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:13px;font-size:14px;color:#64748b}
+.zip-label-confirm .zip-label-metrics b{display:block;font-size:23px;margin-top:3px;color:#0f172a}
+.zip-label-confirm .zip-label-actions{display:flex;flex-wrap:wrap;gap:10px;padding:12px 0 16px}
+.zip-label-confirm .zip-label-actions .btn{font-size:15px!important;min-height:40px;padding:8px 15px}
+.zip-label-confirm .zip-label-workspace{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(340px,1.1fr);gap:16px;min-height:340px}
+.zip-label-confirm .zip-label-source-column,.zip-label-confirm .zip-label-preview-column{border:1px solid #dbe3ee;border-radius:14px;background:white;overflow:hidden;min-width:0}
+.zip-label-confirm .zip-label-column-head{background:#f8fafc;padding:13px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid #e2e8f0}
+.zip-label-confirm .zip-label-column-head b{font-size:16px;color:#0f172a}.zip-label-confirm .zip-label-column-head small{font-size:12px;color:#64748b}
+.zip-label-confirm .label-mapping-review-rows{padding:6px;max-height:490px;overflow:auto}
+.zip-label-confirm .zip-label-item{display:grid;grid-template-columns:minmax(120px,1fr) 26px minmax(90px,.9fr);align-items:center;gap:10px;border-bottom:1px solid #edf2f7;padding:11px 9px;min-height:68px}
+.zip-label-confirm .zip-label-source{border:0;background:transparent;text-align:left;cursor:pointer;min-width:0;color:#0f172a;padding:0}
+.zip-label-confirm .zip-label-source:hover strong{color:#2563eb}.zip-label-confirm .zip-label-source strong{display:block;font-size:15px;overflow-wrap:anywhere}
+.zip-label-confirm .zip-label-source small{font-size:12px;color:#64748b;display:block;margin-top:5px}
+.zip-label-confirm .zip-label-arrow{color:#94a3b8;font-size:18px;text-align:center}
+.zip-label-confirm .zip-label-destination{min-width:0}.zip-label-confirm .zip-label-destination>b{color:#166534;font-size:14px;overflow-wrap:anywhere}
+.zip-label-confirm .zip-label-unmapped{color:#b45309;font-size:14px}
+.zip-label-confirm .zip-label-target-select,.zip-label-confirm .zip-label-row-actions{display:none}
+.zip-label-confirm.manual-expanded .zip-label-target-select{display:block!important;margin-top:6px;width:100%;font-size:14px}
+.zip-label-confirm.manual-expanded .zip-label-row-actions{display:flex;grid-column:1/-1;flex-wrap:wrap;gap:7px}
+.zip-label-confirm .zip-label-preview-column>[data-zip-class-samples]{padding:14px;max-height:490px;overflow:auto;min-height:220px;font-size:14px;color:#64748b}
+.zip-label-confirm .label-mapping-sample-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.zip-label-confirm .label-mapping-sample-card img{object-fit:contain;width:100%;height:auto}
+.zip-label-confirm .zip-source-preview{background:#f8fafc;border:1px solid #bfdbfe;border-radius:14px;padding:16px;margin:0 0 14px}
+.zip-label-confirm .zip-source-preview>p{font-size:13px;color:#475569}
+.zip-label-confirm .zip-source-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+.zip-label-confirm .zip-source-summary>div{padding:11px;background:white;border-radius:12px;border:1px solid #e2e8f0;font-size:14px}
+.zip-label-confirm .zip-source-summary strong{font-size:25px;display:block;color:#0f172a}
+.zip-label-confirm .zip-source-codes{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.zip-label-confirm .zip-source-codes span{background:#e2e8f0;border-radius:6px;padding:2px 6px;font-size:12px;overflow-wrap:anywhere}
+.zip-label-confirm .zip-label-advanced{border:1px solid #e2e8f0;border-radius:12px;margin-top:14px;padding:12px 14px}
+.zip-label-confirm .zip-label-advanced summary{font-size:14px;font-weight:650;cursor:pointer}
+.zip-label-confirm .zip-label-footer{position:sticky;bottom:0;z-index:3;border-top:1px solid #e2e8f0;background:white;margin-top:15px;padding:13px 0;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.zip-label-confirm .zip-label-footer small{font-size:14px;color:#475569}.zip-label-confirm .zip-label-footer>div{display:flex;gap:9px}
+.zip-label-confirm .zip-label-footer .btn{min-height:42px;font-size:15px!important}
+@media(max-width:980px){.zip-label-confirm .zip-label-workspace{grid-template-columns:1fr}.zip-label-confirm .zip-label-metrics{grid-template-columns:repeat(2,1fr)}.zip-label-confirm .zip-label-source-summary{grid-template-columns:1fr}}

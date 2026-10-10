@@ -1,4 +1,4 @@
-import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './label-mapping-review.js?v=4226353';
+import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch, planOriginalLabelMappings} from './label-mapping-review.js?v=4226356';
 
 export const ACTIVE_ZIP_STATUSES = new Set(['uploading','paused','merging','validating','selecting','queued','waiting','running']);
 export const IMPORT_QUEUE_ZIP_STATUSES = new Set(['selecting','queued','waiting','running']);
@@ -267,17 +267,45 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     labelReviews.set(id,review);
     return review;
   }
+
   function labelMappingMarkup(job){
     if(!zipNeedsLabelConfirmation(job))return '';
     const id=String(job.id||''),review=mappingReview(job),page=labelMappingReviewPage(review),summary=labelMappingReviewSummary(review),labels=labelItems();
-    const keepCodes=page.rows.map(row=>row.code).filter(Boolean),visibleLabels=filterCanonicalLabels(labels,review.targetQuery,keepCodes);
-    const options=selected=>['<option value="">选择平台标签</option>',...visibleLabels.map(label=>{const code=String(label.code);return `<option value="${esc(code)}" ${String(selected||'')===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`})].join('');
+    const keepCodes=page.rows.map(row=>row.code).filter(Boolean);
+    const visibleLabels=filterCanonicalLabels(labels,review.targetQuery,keepCodes);
+    const options=selected=>['<option value="">选择平台标签</option>',...visibleLabels.map(label=>{
+      const code=String(label.code);return `<option value="${esc(code)}" ${String(selected||'')===code?'selected':''}>${esc(label.display_name||code)} · ${esc(code)}</option>`;
+    })].join('');
     const rows=page.rows.map(row=>{
-      const source=String(row.name||''),matched=labelItems().some(x=>String(x.code)===String(row.code)&&String(x.code).toLowerCase()===source.trim().toLowerCase()),badge=row.code?(matched?'<span class="pill ok">编码一致</span>':'<span class="pill ok">已映射</span>'):'<span class="pill warn">待选择</span>';
-      return `<div class="storage61-mapping-row label-mapping-review-row" data-zip-class="${esc(row.classId)}" data-source-name="${esc(source)}"><label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow('${esc(id)}','${esc(row.classId)}',this.checked)"></label><span><b>${esc(source||`类别 ${row.classId}`)}</b><small>ID ${esc(row.classId)} · ${Number(row.imageCount||0)} 张 · ${Number(row.boxCount||0)} 框</small>${badge}</span><div class="row"><select class="select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping('${esc(id)}','${esc(row.classId)}',this.value)">${options(row.code)}</select><button type="button" class="btn mini" onclick="window.ZipImportRuntime?.showLabelSamples('${esc(id)}','${esc(row.classId)}','${encodeURIComponent(source)}')">查看原图与框</button><button type="button" class="btn mini" onclick="window.ZipImportRuntime?.useSourceLabel('${esc(id)}','${esc(row.classId)}')">使用原标签</button><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.classId))}')">＋ 新建平台标签</button></div></div>`;
+      const source=String(row.name||''),mapped=String(row.code||'');
+      const codeLabel=mapped?esc(mapped):'<span class="zip-label-unmapped">待确认</span>';
+      return `<div class="zip-label-item label-mapping-review-row" data-zip-class="${esc(row.classId)}" data-source-name="${esc(source)}">
+        <button type="button" class="zip-label-source" onclick="window.ZipImportRuntime?.showLabelSamples('${esc(id)}','${esc(row.classId)}','${encodeURIComponent(source)}')"><strong>${esc(source||('class_'+row.classId))}</strong><small>class_id ${esc(row.classId)} · ${Number(row.imageCount||0)} 图 / ${Number(row.boxCount||0)} 框</small></button>
+        <span class="zip-label-arrow">→</span><div class="zip-label-destination"><b>${codeLabel}</b>
+        <select class="select zip-label-target-select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping('${esc(id)}','${esc(row.classId)}',this.value)">${options(row.code)}</select>
+        </div><div class="zip-label-row-actions"><button type="button" class="btn mini" onclick="window.ZipImportRuntime?.useSourceLabel('${esc(id)}','${esc(row.classId)}')">使用原标签</button><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.classId))}')">新建平台标签</button>
+        <label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow('${esc(id)}','${esc(row.classId)}',this.checked)">批量选择</label></div></div>`;
     }).join('');
+    const plan=review.sourcePlan;
+    const names=items=>(items||[]).slice(0,10).map(item=>`<span>${esc(item.source||item.name||item.code)}</span>`).join('')+((items||[]).length>10?`<span>等 ${items.length} 个</span>`:'');
+    const planned=plan?`<section class="zip-source-preview"><div class="row between"><b>原始标签批量确认预览</b><button class="btn mini" onclick="window.ZipImportRuntime?.cancelOriginalLabels('${esc(id)}')">返回调整</button></div>
+      <div class="zip-source-summary"><div><strong>${plan.reuse.length}</strong>直接沿用<div class="zip-source-codes">${names(plan.reuse)}</div></div><div><strong>${plan.create.length}</strong>需要创建<div class="zip-source-codes">${names(plan.create)}</div></div><div><strong>${plan.manual.length}</strong>人工确认<div class="zip-source-codes">${names(plan.manual)}</div></div></div>
+      <p>${plan.preserved.length} 个已有映射保持不变；待创建标签仅在确认后通过正式标签接口建立。</p><button class="btn primary" onclick="window.ZipImportRuntime?.confirmOriginalLabels('${esc(id)}')">确认匹配并创建 ${new Set(plan.create.map(x=>x.code)).size} 个新标签</button>
+    </section>`:'';
     const bulkOptions=['<option value="">批量映射到…</option>',...filterCanonicalLabels(labels,review.targetQuery).map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`)].join('');
-    return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">英文编码一致时自动关联已有平台标签；新标签需手动确认创建。</div></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已映射</span></div><div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索外部标签名称 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台标签编码 / 名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">批量映射已勾选</button></div><div class="label-mapping-review-summary"><span>外部标签 <b>${summary.total}</b></span><span>未映射 <b>${summary.unmapped}</b></span><span>图片引用 <b>${summary.images}</b></span><span>标注框 <b>${summary.boxes}</b></span></div><div class="label-mapping-review-page-info">当前显示 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div class="label-mapping-review-rows">${rows||'<div class="empty">没有匹配的外部标签</div>'}</div><div class="label-mapping-review-pager" data-zip-label-pagination></div><div class="label-mapping-sample-panel" data-zip-class-samples hidden></div><div class="item-sub" data-zip-confirm-status>${summary.unmapped?'还有 '+summary.unmapped+' 个外部标签未映射。':'全部外部标签已映射，可提交。'}确认后才会启动后台导入。</div><div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" data-zip-confirm-button ${summary.unmapped?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">确认标签并开始导入</button></div></div>`;
+    return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review ${review.manualExpanded?'manual-expanded':''}" data-zip-label-mapping data-review-key="${esc(id)}">
+      <header class="zip-label-heading"><div><h2>确认素材标签</h2><p>${esc(job.file_name||'ZIP 素材')}</p></div><span class="pill ${summary.unmapped?'warn':'ok'}">${summary.mapped}/${summary.total} 已匹配</span></header>
+      <div class="zip-label-metrics"><span>图片 <b>${Number(job.image_count||0)}</b></span><span>原始标签 <b>${summary.total}</b></span><span>已匹配 <b>${summary.mapped}</b></span><span>待确认 <b>${summary.unmapped}</b></span></div>
+      <div class="zip-label-actions"><button class="btn primary" onclick="window.ZipImportRuntime?.previewOriginalLabels('${esc(id)}')">一键使用原始标签</button><button class="btn" onclick="window.ZipImportRuntime?.matchExistingLabels('${esc(id)}')">匹配已有标签</button><button class="btn" onclick="window.ZipImportRuntime?.toggleManualLabels('${esc(id)}')">${review.manualExpanded?'完成手动调整':'手动调整'}</button></div>
+      ${planned}
+      <div class="zip-label-workspace"><div class="zip-label-source-column"><div class="zip-label-column-head"><b>原始标签 → 平台标签</b><small>点击名称查看图片</small></div><div class="label-mapping-review-rows">${rows||'<div class="empty">暂无外部标签</div>'}</div></div>
+      <div class="zip-label-preview-column"><div class="zip-label-column-head"><b>真实图片与标注框</b></div><div class="label-mapping-sample-panel" data-zip-class-samples>点击左侧原始标签查看对应图片及真实标注框</div></div></div>
+      <details class="zip-label-advanced" ${review.advancedExpanded?'open':''} ontoggle="window.ZipImportRuntime?.setAdvancedExpanded('${esc(id)}',this.open)"><summary>高级筛选与批量映射</summary>
+        <div class="label-mapping-review-tools"><input class="input" value="${esc(review.query)}" placeholder="搜索原始标签 / class_id" onchange="window.ZipImportRuntime?.setReviewSearch('${esc(id)}',this.value)"><input class="input" value="${esc(review.targetQuery)}" placeholder="搜索平台编码或名称" onchange="window.ZipImportRuntime?.setTargetSearch('${esc(id)}',this.value)"><select class="select" data-zip-bulk-target>${bulkOptions}</select><button class="btn mini" onclick="window.ZipImportRuntime?.bulkMapLabels('${esc(id)}')">映射选中项</button></div>
+        <div class="label-mapping-review-page-info">当前 ${page.rows.length} / ${page.filtered} 条 · 第 ${page.page}/${page.pageCount} 页</div><div data-zip-label-pagination></div>
+      </details>
+      <div class="zip-label-footer"><small data-zip-confirm-status>${summary.unmapped?'还剩 '+summary.unmapped+' 个标签需人工确认':'全部标签已匹配'}</small><div><button class="btn" onclick="closeModal()">关闭</button><button class="btn primary" data-zip-confirm-button ${summary.unmapped?'disabled':''} onclick="window.ZipImportRuntime?.confirmLabels('${esc(id)}')">确认标签并导入</button></div></div>
+    </div>`;
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
@@ -478,15 +506,66 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(!PLATFORM_LABEL_CODE_RE.test(source))return notify?.('原标签不符合平台英文编码规则，请手动新建合法标签');
     try{
       const existing=labelItems().find(label=>String(label.code).toLowerCase()===source.toLowerCase());
+      if(!existing&&!window.confirm?.(`正式创建平台标签 ${source} 并映射当前类别？`))return null;
       const code=existing?.code||await createPlatformLabel(source,source);
       setLabelMapping(review,classId,code);rerenderLabelMapping(jobId);
     }catch(error){notify?.(error.message||error)}
+  }
+  function previewOriginalLabels(jobId){
+    const id=String(jobId||''),review=mappingReview(reviewJob(id));
+    review.sourcePlan=planOriginalLabelMappings(review,labelItems());
+    rerenderLabelMapping(id);
+  }
+  function cancelOriginalLabels(jobId){
+    const id=String(jobId||''),review=mappingReview(reviewJob(id));
+    review.sourcePlan=null;rerenderLabelMapping(id);
+  }
+  async function confirmOriginalLabels(jobId){
+    const id=String(jobId||''),review=mappingReview(reviewJob(id)),preview=review.sourcePlan;
+    if(!preview)return null;
+    const plan=planOriginalLabelMappings(review,labelItems());
+    const same=(rows)=>rows.map(item=>item.classId+':'+item.code).join('|');
+    if(same(plan.create)!==same(preview.create)||same(plan.reuse)!==same(preview.reuse)){
+      review.sourcePlan=plan;rerenderLabelMapping(id);
+      return notify?.('平台标签或映射已变化，请重新核对批量创建预览');
+    }
+    const codes=[...new Set(plan.create.map(item=>item.code))];
+    if(codes.length&&!window.confirm?.(`确认正式创建 ${codes.length} 个平台英文标签？\n${codes.slice(0,20).join('、')}${codes.length>20?'…':''}`))return null;
+    try{
+      const created=new Set();
+      for(const item of plan.create){
+        if(created.has(item.code))continue;
+        await createPlatformLabel(item.code,item.source);
+        created.add(item.code);
+      }
+      for(const item of [...plan.reuse,...plan.create]){
+        if(review.mapping[item.classId])continue;
+        setLabelMapping(review,item.classId,item.code);
+      }
+      review.sourcePlan=null;
+      rerenderLabelMapping(id);
+      return {mapped:plan.reuse.length+plan.create.length,created:codes.length,manual:plan.manual.length};
+    }catch(error){
+      review.sourcePlan=planOriginalLabelMappings(review,labelItems());
+      rerenderLabelMapping(id);notify?.(error.message||error);throw error;
+    }
+  }
+  function matchExistingLabels(jobId){
+    const id=String(jobId||''),review=mappingReview(reviewJob(id));
+    review.sourcePlan=null;applyExactLabelCodeMatches(review,labelItems());rerenderLabelMapping(id);
+  }
+  function toggleManualLabels(jobId){
+    const id=String(jobId||''),review=mappingReview(reviewJob(id));
+    review.manualExpanded=!review.manualExpanded;review.sourcePlan=null;rerenderLabelMapping(id);
+  }
+  function setAdvancedExpanded(jobId,expanded){
+    const review=mappingReview(reviewJob(jobId));review.advancedExpanded=Boolean(expanded);
   }
   function setReviewSearch(jobId,value){const review=mappingReview(reviewJob(jobId));setLabelMappingReviewSearch(review,value);rerenderLabelMapping(jobId)}
   function setTargetSearch(jobId,value){const review=mappingReview(reviewJob(jobId));setLabelMappingTargetSearch(review,value);rerenderLabelMapping(jobId)}
   function setReviewPage(jobId,page){const review=mappingReview(reviewJob(jobId));setLabelMappingReviewPage(review,page);rerenderLabelMapping(jobId)}
   function toggleLabelRow(jobId,classId,selected){const review=mappingReview(reviewJob(jobId));setLabelMappingSelected(review,classId,selected)}
-  function setReviewLabelMapping(jobId,classId,code){const review=mappingReview(reviewJob(jobId));setLabelMapping(review,classId,code);rerenderLabelMapping(jobId)}
+  function setReviewLabelMapping(jobId,classId,code){const review=mappingReview(reviewJob(jobId));setLabelMapping(review,classId,code);review.sourcePlan=null;rerenderLabelMapping(jobId)}
   function bulkMapLabels(jobId){try{const id=String(jobId||''),review=mappingReview(reviewJob(id)),code=String(document.querySelector('.zip-label-confirm [data-zip-bulk-target]')?.value||'').trim();bulkSetLabelMapping(review,code);rerenderLabelMapping(id)}catch(error){notify?.(error?.message||error)}}
 
   async function confirmLabels(jobId){
@@ -689,7 +768,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     selectedJobId=id;current=job;patchState(job);open();return job;
   }
 
-  const runtime={upload,uploadBatch,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,uploadBatch,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>uploadBatch(input).catch(()=>{});
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(()=>null)};
