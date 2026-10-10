@@ -57,3 +57,21 @@ test('backend exposes rolling and absolute session lifetime without exposing ups
   assert.match(app, /_set_auth_cookie/);
   assert.doesNotMatch(app, /"token": result/);
 });
+
+
+test('company branding shares one real logo between login, mobile, and sidebar', () => {
+  const brand = readFileSync('static/company-logo.png');
+  assert.equal(brand.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  const brandUrl = '/static/company-logo.png?v=4226348';
+  assert.match(loginHtml, /class="login-brand-lockup company-brand-login"/);
+  assert.match(loginHtml, /class="login-mobile-company-brand"/);
+  assert.match(indexHtml, /class="brand brand-company"/);
+  assert.match(indexHtml, /class="brand-company-symbol"/);
+  assert.equal(loginHtml.split(brandUrl).length - 1, 2);
+  assert.equal(indexHtml.split(brandUrl).length - 1, 1);
+  assert.doesNotMatch(loginHtml, /class="login-brand-mark">CL|class="login-mobile-mark">CL/);
+  assert.doesNotMatch(indexHtml, /class="brand-logo">CL/);
+  const css = readFileSync('static/auth.css', 'utf8');
+  assert.match(css, /sidebar-collapsed \.side \.brand-company-symbol/);
+  assert.match(css, /login-brand-lockup\.company-brand-login/);
+});

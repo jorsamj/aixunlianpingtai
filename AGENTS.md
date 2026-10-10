@@ -1,3 +1,7 @@
+## 2026-10-10｜企业 Logo 临时替换（42.24.348）
+
+按用户上传的“贵州高速 / 贵州中南交通科技有限公司”透明横版 Logo，临时替换登录封面左上角、系统侧边栏左上角原 CL 占位；移动端登录同样替换。单一 `static/company-logo.png` 保留企业文字与品牌配色，修剪透明边、压缩成 825×96 PNG；深色登录封面加白色底牌使深灰公司名可见；侧边栏收起时使用同图左端标识的裁切显示。修改范围仅 CSS/HTML/静态资源与相关回归，不改登录认证、导航和业务。仅在长期开发分支提交，需精确 HEAD CI/Chrome 验证；不合并 main/tag/release/部署生产。
+
 ## 2026-10-10｜RKNN/ONNX 环境兼容性预检（42.24.347）
 
 现场 RKNN-Toolkit2 2.3.2 的 load_onnx 因 onnx.mapping 缺失异常。统一在平台已有 rknn_runtime.probe_rknn_toolkit 中检查*相同 RKNN Python* 的 ONNX 版本及 mapping 属性；不兼容时 Agent 不上报 conversion.rknn、远程部署资源不标记 rockchip 可用，传统 Worker 在导出模型前以 RKNN_ONNX_DEPENDENCY_INCOMPATIBLE 阻断并提供修复命令，runner 自身也做最后一道检查；Agent 失败记录优先使用 job.json 的可读错误而非堆栈。只在长期开发分支修改代码与定向测试，不自动 pip 改生产 venv，不影响平台自身 ONNX、训练/转换 owner，也不部署生产。当前 HEAD CI 与真实 RKNN 转换仍需验收。

@@ -4,6 +4,9 @@ test('refresh keeps the ChangLian login session and logout closes it', async ({p
   await page.goto('/');
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
   await expect(page.getByRole('heading', {name: '欢迎回来'})).toBeVisible();
+  const loginLogo = page.locator('.company-brand-login .company-brand-image');
+  await expect(loginLogo).toBeVisible();
+  await expect.poll(() => loginLogo.evaluate(img => img.complete && img.naturalWidth === 825)).toBe(true);
 
   await page.locator('#loginUsername').fill('demo');
   await page.locator('#loginPassword').fill('wrong');
@@ -17,6 +20,9 @@ test('refresh keeps the ChangLian login session and logout closes it', async ({p
   ]);
 
   await expect(page.locator('#authUsername')).toHaveText('demo');
+  const shellLogo = page.locator('.brand-company-image');
+  await expect(shellLogo).toBeVisible();
+  await expect.poll(() => shellLogo.evaluate(img => img.complete && img.naturalWidth === 825)).toBe(true);
 
   const cookies = await context.cookies();
   const sessionCookie = cookies.find(cookie => cookie.name === 'mc_changlian_session');
@@ -48,4 +54,14 @@ test('refresh keeps the ChangLian login session and logout closes it', async ({p
 
   await page.goto('/data/private-artifact.bin');
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
+});
+
+
+test('mobile login renders the same company logo', async ({page}) => {
+  await page.setViewportSize({width:390, height:844});
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/login(?:\?|$)/);
+  const logo = page.locator('.login-mobile-company-brand .company-brand-image');
+  await expect(logo).toBeVisible();
+  await expect.poll(() => logo.evaluate(img => img.complete && img.naturalWidth === 825)).toBe(true);
 });
