@@ -83,7 +83,7 @@ async function createSelectingZipJob(request, projectId, {className = 'object', 
   return body;
 }
 
-test('exact platform label code stays unselected until the user maps it', async ({page, request}) => {
+test('exact English source label reuses existing canonical code without recreating it', async ({page, request}) => {
   const project = await createProject(request, [
     {code: 'object', display_name: '对象', color: '#3b82f6'}
   ]);
@@ -113,12 +113,11 @@ test('exact platform label code stays unselected until the user maps it', async 
 
   const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
-  await expect(importDialog.getByText('待选择', {exact: true})).toBeVisible();
+  await expect(importDialog.getByText('编码一致', {exact: true})).toBeVisible();
   const target = importDialog.locator('[data-zip-target]');
-  await expect(target).toHaveValue('');
-  await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
-  await target.selectOption('object');
   await expect(target).toHaveValue('object');
+  await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
+  await expect(importDialog.getByRole('button',{name:'确认标签并开始导入'})).toBeEnabled();
 
   const startRequestPromise = page.waitForRequest(req =>
     req.method() === 'POST' &&
@@ -137,7 +136,7 @@ test('exact platform label code stays unselected until the user maps it', async 
   expect(labelPosts).toHaveLength(0);
 });
 
-test('explicit label creation survives refresh but ZIP mapping still requires a manual choice', async ({page, request}) => {
+test('explicit source label creation survives refresh and exact mapping is restored safely', async ({page, request}) => {
   const project = await createProject(request);
   const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'refresh-recovery.zip'});
   expect(job.id).toBeTruthy();
@@ -197,9 +196,8 @@ test('explicit label creation survives refresh but ZIP mapping still requires a 
   importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
   target = importDialog.locator('[data-zip-target]');
-  await expect(target).toHaveValue('');
-  await target.selectOption('helmet');
   await expect(target).toHaveValue('helmet');
+  await expect(importDialog.getByText('编码一致', {exact: true})).toBeVisible();
 
   const startRequestPromise = page.waitForRequest(req =>
     req.method() === 'POST' &&
