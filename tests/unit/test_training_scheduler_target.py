@@ -60,7 +60,7 @@ def test_training_options_puts_scheduler_owned_gpu_cluster_first(monkeypatch):
     assert target["recommendation"] == {
         "device": "auto",
         "resource_strategy": "auto",
-        "resource_profile": "balanced",
+        "resource_profile": "performance",
     }
     assert target["algorithms"]
     assert all(item["framework"] == "ultralytics" for item in target["algorithms"])
