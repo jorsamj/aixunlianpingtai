@@ -58,7 +58,10 @@ export function createTrainingDraft(values = {}) {
 
   // Existing manual drafts remain valid without a mode field. New create UI
   // explicitly selects full; the mode belongs to this canonical draft.
-  const requestedMode = String(values.trainingMode || (values.resource?.strategy === 'manual' ? 'custom' : 'full'));
+  const legacyManualInput = values.resource?.strategy === 'manual'
+    || (values.trainingMode == null && values.resource != null
+      && ['batch', 'workers', 'cache'].some(key => values.resource[key] != null));
+  const requestedMode = String(values.trainingMode || (legacyManualInput ? 'custom' : 'full'));
   const trainingMode = ['quick', 'full', 'complex', 'custom'].includes(requestedMode) ? requestedMode : 'full';
   const automaticMode = trainingMode !== 'custom';
   const materialIds = unique(values.materialIds);
