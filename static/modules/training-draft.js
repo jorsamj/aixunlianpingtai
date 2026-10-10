@@ -56,10 +56,16 @@ export function createTrainingDraft(values = {}) {
     throw new Error('不支持的训练素材切分方式');
   }
 
+  // Existing manual drafts remain valid without a mode field. New create UI
+  // explicitly selects full; the mode belongs to this canonical draft.
+  const requestedMode = String(values.trainingMode || (values.resource?.strategy === 'manual' ? 'custom' : 'full'));
+  const trainingMode = ['quick', 'full', 'complex', 'custom'].includes(requestedMode) ? requestedMode : 'full';
+  const automaticMode = trainingMode !== 'custom';
   const materialIds = unique(values.materialIds);
   const testMaterialIds = splitMode === 'independent_test_set' ? unique(values.testMaterialIds) : [];
 
   return {
+    trainingMode,
     algorithmId: String(values.algorithmId || '').trim(),
     baseVersionId: String(values.baseVersionId || '').trim(),
     materialIds,
@@ -72,15 +78,15 @@ export function createTrainingDraft(values = {}) {
     newLabelCodes: unique(values.newLabelCodes),
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
-      strategy: String(values.resource?.strategy || 'auto'),
-      profile: String(values.resource?.profile || 'performance'),
+      strategy: automaticMode ? 'auto' : String(values.resource?.strategy || 'manual'),
+      profile: automaticMode ? 'performance' : String(values.resource?.profile || 'performance'),
       device: String(values.resource?.device || 'auto'),
       gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'exclusive'))
         ? String(values.resource?.gpuPolicy || 'exclusive')
         : 'exclusive',
-      batch: values.resource?.batch ?? null,
-      workers: values.resource?.workers ?? null,
-      cache: values.resource?.cache ?? null,
+      batch: automaticMode ? null : (values.resource?.batch ?? null),
+      workers: automaticMode ? null : (values.resource?.workers ?? null),
+      cache: automaticMode ? null : (values.resource?.cache ?? null),
     },
     config: {...(values.config || {})},
     priority: numberOr(values.priority, 50),
@@ -116,6 +122,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const request = {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
+    training_mode: normalized.trainingMode,
     split_mode: normalized.splitMode,
     train_image_ids: normalized.materialIds,
     test_image_ids: normalized.testMaterialIds,
