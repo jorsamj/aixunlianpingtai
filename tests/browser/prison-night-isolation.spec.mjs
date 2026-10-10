@@ -12,7 +12,7 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(page.locator('#nightInspectionIsolated iframe')).toHaveCount(1);
   const frame=page.locator('#nightInspectionIsolated iframe');
   await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-modals');
-  await expect(page.frameLocator('#nightInspectionIsolated iframe').getByText('监所夜间离床风险智能研判系统').first()).toBeVisible();
+  await expect(page.frameLocator('#nightInspectionIsolated iframe').getByText('夜间离床风险智能研判大屏').first()).toBeVisible();
   await page.frameLocator('#nightInspectionIsolated iframe').locator('[data-page="events"]').first().click();
   await expect(page.frameLocator('#nightInspectionIsolated iframe').locator('#events')).toBeVisible();
   for(const pageId of ['taskConfig','modelConfig','algoList','workflowConfig','dictTags','templateConfig']){
