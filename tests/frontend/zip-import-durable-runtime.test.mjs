@@ -55,7 +55,7 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   const appSource=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
   const bootstrap=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
-  assert.match(source,/window\.doUploadZip426=input=>upload\(input\)/);
+  assert.match(source,/window\.doUploadZip426=input=>uploadBatch\(input\)/);
   assert.match(source,/window\.doImportData=\(\)=>/);
   assert.equal(source.includes('classicImportData'),false);
   assert.doesNotMatch(source,/window\.importData\s*=/);

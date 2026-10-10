@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226353';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226354';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -31,7 +31,7 @@ if (runtime) {
       window.toast?.('请选择压缩包');
       return null;
     }
-    return runtime.upload(input).catch(() => null);
+    return runtime.uploadBatch(input).catch(() => null);
   };
   durableUploadFromImportModal.__zipImportRuntimeBridge = true;
   window.doImportUploadV19 = durableUploadFromImportModal;

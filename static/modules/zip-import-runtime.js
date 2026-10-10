@@ -169,7 +169,7 @@ export async function zipFingerprint(file) {
   return `v2:${file.name}:${size}:${Number(file.lastModified||0)}:${digest}`;
 }
 
-async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch,expectedUploadId=''}={}) {
+export async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch,expectedUploadId=''}={}) {
   const fingerprint=await zipFingerprint(file);
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/datasets/default/import/uploads`,{
     method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
@@ -236,6 +236,7 @@ export function isZipBootstrapReconcile(reason='') {
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null,uploadControl=null,resumeFile=null;
+  let batchRunning=false;
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),foregroundImports=new Set(),labelReviews=new Map(),classSampleCache=new Map();
   const pid=()=>String(projectId?.()||'');
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
@@ -609,6 +610,43 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     }finally{input.value=''}
   }
 
+  async function uploadBatch(input,expectedUploadId=''){
+    if(expectedUploadId)return upload(input,expectedUploadId);
+    const files=Array.from(input?.files||[]);
+    if(!files.length)return null;
+    if(batchRunning||uploadControl?.state==='active'){notify?.('已有 ZIP 批次正在上传，请从任务中心查看');return null}
+    const project=pid();
+    if(!project){notify?.('当前项目未加载');return null}
+    if(files.some(file=>!/\.zip$/i.test(file.name||''))){notify?.('只能选择 ZIP 压缩包');return null}
+    batchRunning=true;
+    const sessions=[];
+    try{
+      const seenFingerprints=new Set();
+      // Establish independent durable sessions BEFORE sequential transfers.
+      for(const file of files){
+        const fingerprint=await zipFingerprint(file);
+        if(seenFingerprints.has(fingerprint))throw new Error('本批次选择了重复 ZIP 文件，请分别选择不同数据包');
+        seenFingerprints.add(fingerprint);
+        const session=await createZipUploadSession(project,file,{fetchImpl});
+        const id=String(session.upload_id||'');
+        if(!id||sessions.some(item=>item.id===id))throw new Error('服务器返回了重复 ZIP 身份，停止本次批次以防覆盖');
+        sessions.push({id,file});
+        if(session.job?.id){knownJobs.set(id,session.job);publishTaskCenterJob(project,session.job)}
+      }
+      await reconcile('batch-registered');
+      let last=null;
+      const chooser=input.closest?.('.modal')||null;
+      for(const item of sessions){
+        if(pid()!==project)throw new Error('上传期间已切换项目，请在原项目任务中心续传');
+        last=await upload({files:[item.file],value:'',closest:()=>chooser},item.id);
+      }
+      return last;
+    }catch(error){
+      notify?.('ZIP 批次上传中断：'+String(error?.message||error)+'；已建立的任务可在任务中心恢复');
+      await reconcile('batch-interrupted').catch(()=>{});
+      return null;
+    }finally{batchRunning=false;if(input&&'value' in input)input.value=''}
+  }
   function forgetTerminal(){
     const project=pid(),removed=new Set();
     for(const job of jobs){
@@ -636,10 +674,10 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     current=job;patchState(job);open();return job;
   }
 
-  const runtime={upload,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,uploadBatch,pauseUpload,cancelUpload,stopImport,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
-  window.doUploadZip426=input=>upload(input).catch(()=>{});
-  window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};
+  window.doUploadZip426=input=>uploadBatch(input).catch(()=>{});
+  window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(()=>null)};
   const initialProject=pid();
   reconcile('bootstrap').catch(()=>{});
   if(!initialProject&&window.__v53InitPromise){
