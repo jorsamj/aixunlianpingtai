@@ -32,7 +32,9 @@ test('base modal owns autofocus without a V37 compatibility wrapper', () => {
   assert.equal(app.split(autofocus).length - 1, 1);
   assert.equal(app.includes("function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
   assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), false);
-  assert.equal(app.includes('modalBase(title,body,wide); return baseModal;'), true);
+  assert.equal(app.includes('modalBase(title,body,wide);return decorateImportModal424(baseModal,title);'), true);
+  assert.match(app, /function decorateImportModal424\(layer,title\)/);
+  assert.match(app, /baseModal\.classList\.remove\('import350-modal','import350-minimized'\)/);
   assert.match(app, /modal=function modalStackCanonical424\(title,body,wide=false\)/);
 });
 

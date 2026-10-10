@@ -340,6 +340,20 @@ test('versioned training locks the latest version and projects the current rando
     }})});
   });
   await selectIsolatedTestProject(page, project.id, '算法列表');
+  // Both startup snapshot and project GET represent the same verified
+  // algorithm-version identity; a GET-only fixture leaves startup stale.
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', project.id);
+    const response = await route.fetch({url: url.toString()});
+    const snapshot = await response.json();
+    await route.fulfill({response, json: {
+      ...snapshot,
+      algorithms: (snapshot.algorithms || []).map(item => item.id === algorithm.id
+        ? {...item, current_version_id: latestVersion.id, versions: [latestVersion]}
+        : item),
+    }});
+  });
   await page.goto('/');
   await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
