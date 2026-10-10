@@ -1240,3 +1240,12 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .modal.import350-minimized .modal-body{display:none!important}
 .modal.import350-minimized .modal-title{font-size:15px;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:750px){.modal.import350-minimized{left:12px;bottom:14px}}
+
+/* Genuine inference box fallback when the backend has no rendered result image. */
+.detection31-fallback{position:relative;display:block!important;justify-self:center;max-width:100%;width:max-content;padding:0!important;overflow:hidden}
+.detection31-fallback>.result-img{display:block;width:auto!important;max-width:100%!important;max-height:420px!important;height:auto!important;object-fit:contain}
+.detection31-fallback>svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.detection31-fallback rect{fill:transparent;stroke:#f43f5e;stroke-width:2;vector-effect:non-scaling-stroke}
+.detection31-image-error{display:none}
+.detection31-fallback.image-error>svg,.detection31-fallback.image-error>.result-img{display:none}
+.detection31-fallback.image-error>.detection31-image-error{display:block;padding:24px;color:#b91c1c}

@@ -86,7 +86,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
       id,status:'SUCCEEDED',result:{
         detections:[{label:'object',confidence:0.91,x1:10,y1:8,x2:52,y2:44}],
-        input_image_url:'/placeholder.jpg',result_image_url:'/placeholder.jpg',
+        input_image_url:id==='quality-task-2'?'/fallback-original.bmp':'/placeholder.jpg',result_image_url:id==='quality-task-2'?'':'/placeholder.jpg',
         preprocess_ms:1.2,inference_ms:4.8,postprocess_ms:0.9,total_elapsed_ms:7.3,
       },
     })});
@@ -113,6 +113,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
     return route.continue();
   });
 
+  await page.route('**/fallback-original.bmp',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp(96,72)}));
   await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
   await page.goto('/');
   await page.evaluate(()=>window.setPage('质量中心'));
@@ -168,6 +169,11 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchBatchList64').getByRole('button',{name:'查看详情'}).click();
   const detail=page.getByRole('dialog',{name:'检测详情'});
   await expect(detail).toBeVisible();
+  const fallback=detail.locator('.detection31-fallback');
+  await expect(fallback).toHaveCount(1);
+  await expect(fallback.locator('svg')).toHaveAttribute('viewBox','0 0 96 72');
+  await expect(fallback.locator('rect')).toHaveAttribute('x','10');
+  await expect(fallback.locator('rect')).toHaveAttribute('width','42');
   await detail.getByRole('button',{name:'正确',exact:true}).click();
   await expect.poll(()=>reviews.length).toBe(1);
   expect(reviews[0].review).toBe('correct');

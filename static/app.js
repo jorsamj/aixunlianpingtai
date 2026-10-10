@@ -1165,7 +1165,14 @@ window.installUsability417=function(){
     const rows = dets.map(d=>`<tr><td>${_esc(d.label)}</td><td>${_esc(d.confidence)}</td><td>${_esc(d.x1)}, ${_esc(d.y1)}, ${_esc(d.x2)}, ${_esc(d.y2)}</td></tr>`).join('') || '<tr><td colspan="3">暂无结构化检测框。若图上也没有框，说明模型在当前阈值下没有检出目标。</td></tr>';
     const zero = !dets.length ? `<div class="diag-box"><b>没有结构化结果时怎么判断？</b><ol><li>先确认图上是否有框；没有框就是模型没检出。</li><li>如果 0.01 有很多乱框、0.25 没框，说明模型还没学稳，不是可用效果。</li><li>飞桨模型建议先用训练集原图测试，再用新图测试泛化能力。</li></ol></div>` : '';
     const note = r.note ? `<div class="alert warn mini-alert">${_esc(r.note)}</div>` : '';
-    const img = r.image_url ? `<div class="result-img-wrap"><img class="result-img" src="${_esc(r.image_url)}"></div>` : '';
+    // Only render source prediction coordinates, never fabricated boxes.
+    const boxes=dets.map(d=>[d.x1,d.y1,d.x2,d.y2].map(Number))
+      .filter(v=>v.every(Number.isFinite)&&v[2]>v[0]&&v[3]>v[1]);
+    const normalized=boxes.length>0&&boxes.every(v=>v.every(n=>n>=0&&n<=1));
+    const marks=boxes.map(([x1,y1,x2,y2])=>`<rect x="${x1}" y="${y1}" width="${x2-x1}" height="${y2-y1}"/>`).join('');
+    const inputUrl=String(r.input_image_url||'').trim();
+    const img=r.image_url?`<div class="result-img-wrap"><img class="result-img" src="${_esc(r.image_url)}"></div>`:
+      inputUrl?`<div class="result-img-wrap detection31-fallback" data-coords="${normalized?'normalized':'pixels'}"><img class="result-img" src="${_esc(inputUrl)}" alt="真实检测原图" onload="if(this.naturalWidth&&this.naturalHeight&&this.parentElement.dataset.coords==='pixels'){this.nextElementSibling.setAttribute('viewBox','0 0 '+this.naturalWidth+' '+this.naturalHeight)}" onerror="this.parentElement.classList.add('image-error')"><svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="根据真实推理坐标绘制的检测框">${marks}</svg><span class="detection31-image-error">检测原图加载失败，无法展示检测框</span></div>`:'';
     return `<div class="compare-card enhanced-result"><div class="compare-head"><div><b>${_esc(title||'检测结果')}</b><div class="item-sub">${_esc(r.model||'')} · ${_esc(r.engine||'')} · ${_esc(r.elapsed_ms||0)}ms</div></div><span class="pill ${dets.length?'ok':'warn'}">${dets.length} 个结果</span></div>${lowConfTip}${note}${img}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table>${zero}</div>`;
   };  window.renderDetectionResultLegacy3=window.renderDetectionResultCore31;
 
@@ -7240,7 +7247,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||row.status!=='done')return;
     if(!row.previewUrl&&row.file instanceof File)row.previewUrl=URL.createObjectURL(row.file);
     const originalUrl=row.inputImageUrl||row.previewUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
-    const result=(value,fallback)=>value?window.renderDetectionResult(value.r,resultName64(value,fallback)):'';
+    const result=(value,fallback)=>value?window.renderDetectionResult({...value.r,input_image_url:value.r?.input_image_url||originalUrl},resultName64(value,fallback)):'';
     const reviewButtons=Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn mini ${row.review===key?'primary':'soft'}" onclick="markBenchReview64(${Number(index)},'${key}')">${label}</button>`).join('');
     const feedbackActions=[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side,value])=>`<button class="btn primary" onclick="openBenchFeedback64(${Number(index)},'${side}')">${side==='A'?'检测模型':'对比模型'} · 提交抽检反馈</button>`).join('');
     modal('检测详情',`<div class="bench64-detail bench350-detail"><section class="bench64-original"><div class="panel-title">场景原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'检测模型')}${result(row.b,'对比模型')}</div><section class="bench64-review"><div><b>检测质量核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>人工核验不会直接修改训练标注。</p></section>${feedbackActions?`<section class="bench64-feedback"><div><b>进入抽检复核</b><span>仅正式算法版本可提交。提交后先进入待复核，不会自动修改数据集或启动训练。</span></div><div class="row wrap">${feedbackActions}</div></section>`:''}</div>`,true);
