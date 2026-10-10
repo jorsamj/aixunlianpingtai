@@ -3862,7 +3862,60 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function selectedTrainAlg429(){const t=selectedTarget429(),k=document.getElementById('tr429Alg')?.value;return(t?.algorithms||[]).find(x=>x.key===k)}
   function pool429(){return(state.images||[]).filter(x=>processed429(x)&&x.annotated)}
   function cfg429(){return window.trainingConfigCanonical428()}
-  window.openTrainingCreateDialog429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId=window.TrainingSubmitRuntime?.createTaskId?.();if(!plannedTaskId)return toast('训练任务身份模块尚未就绪，请刷新页面后重试');const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请展开高级功能后配置训练资源');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[]});modal(`训练 · ${a.name}`,`<div class="train428-create train429-create train-create-saas" data-algorithm-id="${esc(a.id)}"><div class="train-create-layout"><div class="train-create-left"><section class="train428-panel train-ui-card train-ui-algorithm-card"><header><span class="train-ui-card-icon">⬡</span><div><b>模型选择</b></div></header><div class="train-create-primary"><div class="field"><label>母模型</label><select id="tr429MotherModel" class="select" onchange="selectTrainingMotherModel429(this.value)"></select></div><div class="field train-create-quick-epochs"><label>训练轮次</label><input id="tr429QuickEpoch" class="input" type="number" min="1" max="10000" value="150" onchange="setQuickEpoch429(this.value)"></div></div><details class="train-create-technical"><summary>更多设置</summary><div class="form two"><div class="field"><label>训练资源</label><select id="tr429Target" class="select" onchange="trainTarget429()">${ts.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.framework==='paddle'?'Paddle':'Ultralytics'}</option>`).join('')}</select></div><div class="field"><label>训练算法</label><select id="tr429Alg" class="select" onchange="trainAlg429()"></select></div><div class="field"><label>算法名称</label><input class="input" value="${esc(a.name)}" readonly></div><div class="field"><label>本次训练任务 ID</label><input id="tr429TaskId" class="input" value="${esc(plannedTaskId)}" readonly></div><div class="field"><label>任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"><small>1 最高，数字越大优先级越低</small></div></div></details></section><section class="train428-panel train-ui-card train-ui-data-card"><header><span class="train-ui-card-icon">▣</span><div><b>训练数据集</b><small>统一素材池 · 仅使用本次明确选择的图片</small></div></header><div class="train429-data-summary"><div><span>本次训练素材</span><b id="tr429Count">${window.TrainingDraftRuntime?.materialIds?.().length||0} 张</b></div><div><span>包含标签</span><b id="tr429Labels">-</b></div><div><span>划分方式</span><b>随机抽取试验集</b></div></div><div class="row"><button class="btn" onclick="openTrainPicker429()">选择训练素材</button><button class="btn" onclick="trainQuality429()">数据质量</button></div></section><section class="train428-panel train428-wide train-ui-card train-ui-config-card"><details class="train-ui-advanced"><summary><span class="train-ui-card-icon">⚙</span><div><b>进阶配置（可选）</b><small>保持当前参数语义与默认值</small></div><i>⌄</i></summary><div class="train-ui-advanced-body"><div class="train428-config-summary"><div><span>基础模型</span><b id="tr429Model">-</b></div><div><span>总轮数</span><b id="tr429Epoch">100</b></div><div><span>图片尺寸</span><b id="tr429Size">640</b></div><div><span>Batch</span><b id="tr429Batch">8</b></div><div><span>阶段检查</span><b id="tr429Gate">-</b></div><div><span>达标后转换</span><b id="tr429Convert">不自动转换</b></div></div><button class="btn train-ui-edit-config" onclick="openTrainSettings429()">编辑全部训练参数</button></div></details></section></div><aside class="train-create-right"><section class="train-ui-card train-ui-labels-card"><header><span class="train-ui-card-icon">◇</span><div><b>本次训练标签选择</b><small>只选择本次素材需要显式加入训练的标签</small></div></header><label class="train-ui-label-search"><span>⌕</span><input id="trainUiLabelSearch" type="search" placeholder="搜索标签"></label><div id="trainUiLabelSlot" class="train-ui-label-slot"><div class="train-ui-label-wait">选择训练素材后显示可训练标签</div></div></section><section class="train-ui-card train-ui-summary-card" hidden><div id="trainUiSummary" class="train-ui-summary"></div></section></aside></div><div id="tr429Estimate" class="estimate424"></div><div class="row end train428-footer"><button type="button" class="btn train-create-advanced-toggle" data-train-advanced-toggle onclick="toggleTrainAdvanced429()">高级设置</button><button class="btn train-ui-cancel" onclick="closeModal()">取消</button><button class="btn primary train-ui-submit" onclick="submitTrain429()"><span>▶</span>开始训练</button></div></div>`,true);trainTarget429()};
+  window.openTrainingCreateDialog429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId=window.TrainingSubmitRuntime?.createTaskId?.();if(!plannedTaskId)return toast('训练任务身份模块尚未就绪，请刷新页面后重试');const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请展开高级功能后配置训练资源');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null},config:{model:'',epochs:150,imgsz:640,patience:40,early_stopping_enabled:false}});
+    modal('创建训练任务',`<div class="train428-create train429-create train-create-saas train-create-saas-v2" data-algorithm-id="${esc(a.id)}" data-training-mode="full">
+      <div class="train-create-layout">
+        <div class="train-create-left">
+          <section class="train428-panel train-ui-card train-ui-algorithm-card">
+            <header><span class="train-ui-card-icon">▣</span><div><b>训练算法</b></div></header>
+            <div class="train-v3-algorithm-line">
+              <div class="train-v3-algorithm-name"><strong>${esc(a.name)}</strong><span id="trainBaseModeLabelV3">首次训练</span></div>
+              <div class="field train-v3-priority"><label for="tr429Priority">任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"></div>
+            </div>
+            <div class="train-v3-mother-row">
+              <div class="field"><label for="tr429MotherModel">基础模型</label><select id="tr429MotherModel" class="select" onchange="selectTrainingMotherModel429(this.value)"></select></div>
+            </div>
+            <div class="train-v3-internals" hidden aria-hidden="true">
+              <select id="tr429Target" onchange="trainTarget429()">${ts.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select>
+              <select id="tr429Alg" onchange="trainAlg429()"></select>
+              <input id="tr429TaskId" value="${esc(plannedTaskId)}" readonly>
+            </div>
+          </section>
+          <section class="train428-panel train-ui-card train-ui-data-card">
+            <header><span class="train-ui-card-icon">▤</span><div><b>训练素材</b></div></header>
+            <div class="train-v3-summary"><div><span>本次训练素材</span><b id="tr429Count">0 张</b></div><div><span>素材标签</span><b id="tr429Labels">—</b></div><div><span>可用素材</span><b>—</b></div></div>
+            <div class="train-ui-dataset-actions"><button type="button" class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button><button type="button" class="btn" onclick="trainQuality429()">数据质量</button></div>
+            <details class="train-create-split-details"><summary>数据划分 <span>70% / 20% / 10%</span></summary></details>
+            <small class="train-v3-note" hidden></small>
+          </section>
+          <section class="train-ui-card train-v3-mode-card" aria-label="训练模式">
+            <header><span class="train-ui-card-icon">⚡</span><div><b>训练模式</b></div></header>
+            <div class="train-v3-mode-options" role="group" aria-label="选择训练模式">
+              <button type="button" class="train-v3-mode-option" data-mode="quick" aria-pressed="false" onclick="setTrainingModeV3('quick')"><b>快速训练</b><span>短周期验证</span></button>
+              <button type="button" class="train-v3-mode-option is-selected" data-mode="full" aria-pressed="true" onclick="setTrainingModeV3('full')"><b>完整训练</b><span>标准正式训练</span></button>
+              <button type="button" class="train-v3-mode-option" data-mode="complex" aria-pressed="false" onclick="setTrainingModeV3('complex')"><b>复杂训练</b><span>长周期、高分辨率</span></button>
+              <button type="button" class="train-v3-mode-option" data-mode="custom" aria-pressed="false" onclick="setTrainingModeV3('custom')"><b>自定义配置</b><span>手动设置参数</span></button>
+            </div>
+            <div id="trainModeBriefV3" class="train-v3-mode-brief" aria-live="polite">150 Epoch · 640 px · GPU 独占 · 资源自动适配</div>
+            <div id="trainModeCustomSlotV3" class="train-v3-custom-slot" hidden>
+              <button type="button" class="btn train-v3-all-settings" onclick="openTrainSettings429()">配置更多专业参数</button>
+            </div>
+          </section>
+        </div>
+        <aside class="train-create-right">
+          <section class="train-ui-card train-ui-labels-card">
+            <header><span class="train-ui-card-icon">◇</span><div><b>训练标签</b><small id="trainUiLabelSelectedV3">请从本次训练素材对应标签中选择</small></div></header>
+            <label class="train-ui-label-search"><span>⌕</span><input id="trainUiLabelSearch" type="search" placeholder="搜索标签"></label>
+            <div id="trainUiLabelSlot" class="train-ui-label-slot"><div class="train-ui-label-wait">选择训练素材后显示可选标签</div></div>
+          </section>
+          <section class="train-ui-card train-ui-summary-card" hidden><div id="trainUiSummary" class="train-ui-summary"></div></section>
+        </aside>
+      </div>
+      <div class="row end train428-footer">
+        <button type="button" class="btn train-ui-cancel" onclick="closeModal()">取消</button>
+        <button type="button" class="btn primary train-ui-submit" onclick="submitTrain429()">创建训练任务</button>
+      </div>
+    </div>`,true);trainTarget429()};
   window.toggleTrainAdvanced429=function(){
     const root=document.querySelector('.train429-create');
     if(!root)return;
