@@ -31,7 +31,7 @@ test('independent night inspection menu and iframe cannot replace training platf
       activePages:[...document.querySelectorAll('.page.active')].map(node=>node.id),
       buttonActive:button?.classList.contains('active'),
       targetClass:target?.className,targetDisplay:target&&getComputedStyle(target).display,
-      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter};
+      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter,init:document.documentElement.dataset.aiNavInitialized,captured:document.documentElement.dataset.aiNavCaptured,firstNode:document.querySelector('[data-page="events"]')?.outerHTML?.slice(0,180),navCount:document.querySelectorAll('.sidebar .nav button[data-page="events"]').length};
   });
   console.log('[ai-foundation-nav-diagnostic]',JSON.stringify(navDebug));
   await expect(page.frameLocator('#nightInspectionIsolated iframe').locator('#events')).toBeVisible();

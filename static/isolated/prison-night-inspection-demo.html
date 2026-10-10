@@ -470,10 +470,12 @@
 /* Isolated demo only. Register before legacy modules so later capture guards
    cannot swallow navigation. One click owner, one page activation, no timers. */
 (function(){
+  document.documentElement.dataset.aiNavInitialized='yes';
   const ids = new Set(['dashboard','events','deviceAccess','channelView',
     'taskConfig','modelConfig','commonAlgo','algoList','workflowConfig',
     'dictTags','dictEventTypes','dictEventLevels','templateConfig']);
   window.addEventListener('click', function(event){
+    document.documentElement.dataset.aiNavCaptured=String(event.target?.outerHTML||event.target?.nodeName||'').slice(0,180);
     const button = event.target.closest?.('.sidebar .nav button[data-page]');
     if(!button) return;
     const id = button.dataset.page;
