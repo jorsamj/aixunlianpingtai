@@ -7529,6 +7529,7 @@ class TrainReq(BaseModel):
     epochs: int = 150
     imgsz: int = 640
     batch: StrictInt = 8
+    training_mode: Optional[Literal["quick", "full", "complex", "custom"]] = None
     resource_strategy: Literal["auto", "manual"] = "auto"
     resource_profile: Literal["balanced", "performance", "stability"] = "performance"
     device: str = "auto"
@@ -7635,6 +7636,10 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="图片尺寸 imgsz 不能小于 32")
     if int(payload.batch) == 0 or int(payload.batch) < -1:
         raise HTTPException(status_code=400, detail="batch 只能是正整数或 -1（Ultralytics 自动批大小）")
+    if payload.training_mode in {"quick", "full", "complex"} and payload.resource_strategy != "auto":
+        raise HTTPException(status_code=400, detail="预设训练模式的资源参数只能在目标 Worker 启动前自动决议")
+    if payload.training_mode == "custom" and payload.resource_strategy != "manual":
+        raise HTTPException(status_code=400, detail="自定义训练模式必须使用手动资源策略")
     if payload.resource_strategy == "manual" and not 1 <= payload.batch <= 4096:
         raise HTTPException(status_code=400, detail="手动资源策略 batch 必须是 1~4096 的整数；自动估算请选择 auto 策略")
     if int(payload.patience) < 0:
