@@ -1,5 +1,7 @@
 ## 2026-10-10｜监所夜间离床研判独立演示菜单（不污染平台模块）
 
+独立 HTML 副本经 Chromium sandbox 真实点击 13 个内页确认可切换；已修复原 Demo 内部 window.events 与 DOM ID 冲突、旧事件列表节点被后续 UI 替换时的空引用、未声明 renderTasksV4 的 ReferenceError。只对独立 HTML 进行了 14 处定点兼容保护，未接入业务服务；浏览器验收覆盖多内页并保留 pageerror 断言。
+
 新增独立一级入口「监所夜间离床研判」，位于原左侧「展开/收起高级功能」菜单下方。用户提供的 4296 行 HTML Demo 完整保存为独立静态资源（主页大屏、事件中心、设备通道、视频任务、模型/算法、工作流、字典模板等），通过仅含 allow-scripts/allow-modals 的 sandbox iframe 呈现。禁止 allow-same-origin；Demo 的 4 处 localStorage 引用转换为 frame 内内存存储以适配受限 origin（跨页面刷新不承诺持久化），所有示例数据/服务状态均为 Demo，**不接通生产监控/告警/训练/调度/OSS**。既有 NavigationStability 注册一个独立 Page Owner，未复用训练/标注/Agent Owner、未增加后台接口/数据库表/轮询；样式仅作用于入口和本页面，退出后 iframe 自行销毁。加入 frontend 静态和 Playwright 隔离验收；最终精确 HEAD CI 尚需独立验证。平台 VERSION.txt 遵照现有冻结约束未改变。
 
 ## 2026-10-10｜场景算法实测检测框回退预览

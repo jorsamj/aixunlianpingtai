@@ -763,7 +763,7 @@
     function now(){return new Date().toLocaleTimeString('zh-CN',{hour12:false})}
     setInterval(()=>$('#clock') && ($('#clock').textContent=now()+'｜夜间巡检'),1000);
     function pageClass(id){return id==='dashboard'?'dashboard':'light'}
-    function showPage(id){$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));$$('.page').forEach(p=>p.classList.remove('active'));$('#'+id).classList.add('active');renderConfigMenus(id);if(id==='events')renderEvents();if(id==='deviceAccess')renderDevices();if(id==='channelView')renderChannels();if(id==='taskConfig')renderTasks();if(id==='algoList')renderAlgos();if(id==='modelConfig')renderModelServices();if(id==='commonAlgo')renderAlgoServices()}
+    function showPage(id){$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));$$('.page').forEach(p=>p.classList.remove('active'));$('#'+id).classList.add('active');renderConfigMenus(id);if(id==='events' && document.getElementById('eventCount'))renderEvents();if(id==='deviceAccess')renderDevices();if(id==='channelView')renderChannels();if(id==='taskConfig')renderTasks();if(id==='algoList')renderAlgos();if(id==='modelConfig')renderModelServices();if(id==='commonAlgo')renderAlgoServices()}
     $$('.nav button').forEach(btn=>btn.onclick=()=>showPage(btn.dataset.page));
     function renderConfigMenus(active){['configMenuA','configMenuB','configMenuC','configMenuD'].forEach(id=>{const el=$('#'+id); if(!el)return; el.innerHTML=`<button data-cfg="modelConfig">🧠 模型配置</button><button data-cfg="commonAlgo">🎯 常规算法配置</button><button data-cfg="algoList">📦 算法列表</button><button data-cfg="workflowConfig">🧩 工作流配置</button>`; el.querySelectorAll('button').forEach(b=>{b.classList.toggle('active',b.dataset.cfg===active);b.onclick=()=>showPage(b.dataset.cfg)});});}
     renderConfigMenus('modelConfig');
@@ -1623,10 +1623,10 @@
     qa('.page').forEach(p=>p.classList.remove('active'));
     const page=q('#'+id); if(page)page.classList.add('active');
     if(typeof renderConfigMenus==='function')renderConfigMenus(id);
-    if(id==='events')renderEvents();
+    if(id==='events' && document.getElementById('eventCount'))renderEvents();
     if(id==='deviceAccess')renderDevices();
     if(id==='channelView')renderChannels();
-    if(id==='taskConfig')renderTasksV4?renderTasksV4():renderTasks();
+    if(id==='taskConfig')typeof renderTasksV4==='function'?renderTasksV4():renderTasks();
     if(id==='algoList')renderAlgos();
     if(id==='modelConfig')renderModelServices();
     if(id==='commonAlgo')renderAlgoServices();
@@ -2022,10 +2022,10 @@
     qa('.page').forEach(p=>p.classList.remove('active'));
     const page=q('#'+id); if(page)page.classList.add('active');
     if(typeof renderConfigMenus==='function')renderConfigMenus(id);
-    if(id==='events')renderEvents();
+    if(id==='events' && document.getElementById('eventCount'))renderEvents();
     if(id==='deviceAccess')renderDevices();
     if(id==='channelView')renderChannels();
-    if(id==='taskConfig')renderTasksV4?renderTasksV4():renderTasks();
+    if(id==='taskConfig')typeof renderTasksV4==='function'?renderTasksV4():renderTasks();
     if(id==='algoList')renderAlgos();
     if(id==='modelConfig')renderModelServices();
     if(id==='commonAlgo')renderAlgoServices();
@@ -2370,10 +2370,10 @@
     qa('.page').forEach(p=>p.classList.remove('active'));
     const page=q('#'+id); if(page)page.classList.add('active');
     if(typeof renderConfigMenus==='function')renderConfigMenus(id);
-    if(id==='events')renderEvents();
+    if(id==='events' && document.getElementById('eventCount'))renderEvents();
     if(id==='deviceAccess')renderDevices();
     if(id==='channelView')renderChannels();
-    if(id==='taskConfig')renderTasksV4?renderTasksV4():renderTasks();
+    if(id==='taskConfig')typeof renderTasksV4==='function'?renderTasksV4():renderTasks();
     if(id==='algoList')renderAlgos();
     if(id==='modelConfig')renderModelServices();
     if(id==='commonAlgo')renderAlgoServices();
@@ -2557,7 +2557,7 @@
   const levelName=l=>l==='L3'?'紧急告警':l==='L2'?'可疑预警':l==='L1'?'普通记录':'无法判断';
   function ensureUrgentEvent(){
     if(!window.events && typeof events==='undefined')return null;
-    const list=window.events||events;
+    const list=Array.isArray(window.events)?window.events:events;
     let e=list.find(x=>x.id==='E20260702001');
     if(!e){
       e={id:'E20260702001',time:'今日 02:14:09',region:'A监区 / A101号房',bed:'B01',type:'高危报警',level:'L3',summary:'床位无人后，门口摄像头联动发现人员反复拉拽门体并出现激烈动作。',status:'待处理',statusKey:'pending',confidence:.81};
@@ -2565,14 +2565,14 @@
     }
     return e;
   }
-  function pendingEvents(){const list=window.events||events;return list.filter(e=>e.statusKey==='pending')}
+  function pendingEvents(){const list=Array.isArray(window.events)?window.events:events;return list.filter(e=>e.statusKey==='pending')}
   function urgentEvents(){return pendingEvents().filter(e=>e.level==='L3'||e.type==='高危报警')}
   function buildCellDots(kind){
     return Array.from({length:12},(_,i)=>`<span class="cell-dot ${kind==='a'&&i===1?'danger':kind==='b'&&i===5?'warn':'ok'}"></span>`).join('')
   }
   function renderDashboardV7(){
     const page=$('#dashboard'); if(!page)return; ensureUrgentEvent();
-    const pend=pendingEvents().length, urg=urgentEvents().length, done=(window.events||events).filter(e=>e.statusKey==='done').length;
+    const pend=pendingEvents().length, urg=urgentEvents().length, done=(Array.isArray(window.events)?window.events:events).filter(e=>e.statusKey==='done').length;
     page.innerHTML=`
       <div class="dashboard-v7">
         <div class="topbar">
@@ -2583,7 +2583,7 @@
           <div class="dash-kpi-v7"><span>监室总数 <i class="mini-tag">在线</i></span><strong>128</strong><em>A监区 / B监区 / C监区</em></div>
           <div class="dash-kpi-v7"><span>受监控人员 <i class="mini-tag">床位绑定</i></span><strong>512</strong><em>512 个床位 ROI 已配置</em></div>
           <div class="dash-kpi-v7"><span>已运行时长 <i class="mini-tag">本轮</i></span><strong id="runtimeV7">07:36:22</strong><em>22:00 至当前</em></div>
-          <div class="dash-kpi-v7"><span>今日告警 <i class="mini-tag">全部</i></span><strong>${(window.events||events).length+14}</strong><em>含记录、预警、紧急告警</em></div>
+          <div class="dash-kpi-v7"><span>今日告警 <i class="mini-tag">全部</i></span><strong>${(Array.isArray(window.events)?window.events:events).length+14}</strong><em>含记录、预警、紧急告警</em></div>
           <div class="dash-kpi-v7"><span>已处理 <i class="mini-tag">闭环</i></span><strong id="dashDoneCountV7">${done+14}</strong><em>含人工复核和误报确认</em></div>
           <div class="dash-kpi-v7"><span>正在处理 <i class="mini-tag">待办</i></span><strong id="dashPendingCountV7">${pend}</strong><em>紧急 ${urg} 条</em></div>
         </div>
@@ -2647,10 +2647,10 @@
   function openModalV7(id){const m=$('#'+id); if(m)m.classList.add('show')}
   function closeModalV7(id){const m=$('#'+id); if(m)m.classList.remove('show')}
   function showToastV7(title,msg){if(typeof showToast==='function')showToast(title,msg,'success');}
-  function openEventByIdV7(id,urgent){const e=(window.events||events).find(x=>x.id===id); if(!e)return; urgent?openUrgentModalV7(e):openEventDetailV7(e)}
+  function openEventByIdV7(id,urgent){const e=(Array.isArray(window.events)?window.events:events).find(x=>x.id===id); if(!e)return; urgent?openUrgentModalV7(e):openEventDetailV7(e)}
   function renderEventCenterV7(){
     const page=$('#events'); if(!page)return; ensureUrgentEvent();
-    const list=window.events||events; const pending=list.filter(e=>e.statusKey==='pending'), done=list.filter(e=>e.statusKey==='done'), urgent=urgentEvents();
+    const list=Array.isArray(window.events)?window.events:events; const pending=list.filter(e=>e.statusKey==='pending'), done=list.filter(e=>e.statusKey==='done'), urgent=urgentEvents();
     page.classList.add('event-page-v7');
     page.innerHTML=`<div class="topbar"><div class="title"><h1>事件中心</h1></div><div class="actions"><button class="btn secondary">导出事件</button><button class="btn">批量处置</button></div></div>
       <div class="event-stat-v7"><div class="summary-card"><span>全部事件</span><strong>${list.length}</strong></div><div class="summary-card"><span>待处理</span><strong>${pending.length}</strong></div><div class="summary-card"><span>紧急告警</span><strong>${urgent.length}</strong></div><div class="summary-card"><span>已处理</span><strong>${done.length}</strong></div></div>
@@ -2662,7 +2662,7 @@
     $$('[data-cat-v7]').forEach(b=>b.onclick=()=>{eventCat=b.dataset.catV7;renderEventCenterV7()});
   }
   function filteredEventsV7(){
-    const list=window.events||events;
+    const list=Array.isArray(window.events)?window.events:events;
     return list.filter(e=>eventStatus==='urgent'?(e.statusKey==='pending'&&(e.level==='L3'||e.type==='高危报警')):e.statusKey===eventStatus).filter(e=>eventCat==='all'||e.type===eventCat);
   }
   function drawEventsV7(){
