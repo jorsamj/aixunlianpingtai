@@ -1,0 +1,229 @@
+// Canonical overview tabs: reuse the production dashboard and existing telemetry
+// sources. A missing metric is unknown; never manufacture "0%" accuracy or cloud bytes.
+export const OVERVIEW_TABS = Object.freeze([
+  {id:'production',label:'算法生产总览'},
+  {id:'algorithm',label:'算法一张图'},
+  {id:'compute',label:'算力一张图'},
+]);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const number = value => value === null || value === undefined || value === '' ? null :
+  (Number.isFinite(Number(value)) ? Number(value) : null);
+const percent = value => number(value) == null ? null : Math.max(0,Math.min(100,number(value)));
+const ratio = value => number(value) == null ? null : (Number(value) <= 1 ? Number(value)*100 : Number(value));
+const fmt = value => value === null || value === undefined ? '—' : Number(value).toLocaleString('zh-CN');
+const pct = value => number(value) == null ? '—' : ratio(value).toFixed(1)+'%';
+const bytes = value => {
+  if (number(value) == null) return '—';
+  const units=['B','KB','GB','TB','PB'];
+  let n=Number(value),index=0;
+  while(n>=1024&&index<units.length-1){n/=1024;index++}
+  // Memory and disk figures are bytes, not estimated.
+  return n.toFixed(index===0?0:1)+' '+units[index];
+};
+const empty = message => '<div class="ov348-empty">'+esc(message)+'</div>';
+const metric = (name,value,note) => '<div class="ov348-stat"><span>'+esc(name)+'</span><strong>'+esc(value)+'</strong><small>'+esc(note||'')+'</small></div>';
+const panel = (title,body,note,cls='') => '<section class="ov348-panel '+cls+'"><div class="ov348-panel-head"><h3>'+esc(title)+'</h3><span>'+esc(note||'')+'</span></div>'+body+'</section>';
+const bar = (name,amount,max,meta) => '<div class="ov348-bar"><div class="ov348-bar-title"><span>'+esc(name)+'</span><b>'+esc(meta==null?fmt(amount):meta)+'</b></div><i><em style="width:'+Math.max(0,Math.min(100,max>0?amount/max*100:0)).toFixed(1)+'%"></em></i></div>';
+const gauge = (name,value,extra) => '<div class="ov348-gauge"><span>'+esc(name)+'</span><b>'+esc(value==null?'—':percent(value).toFixed(1)+'%')+'</b><i><em style="width:'+(value==null?0:percent(value).toFixed(1))+'%"></em></i><small>'+esc(extra||'')+'</small></div>';
+const rows = (items,fn) => '<div class="ov348-rows">'+items.map(fn).join('')+'</div>';
+
+export function buildAlgorithmMap(algorithms=[],quality=null) {
+  const list=Array.isArray(algorithms)?algorithms:[];
+  const types=new Map(),industries=new Map();
+  for(const item of list) {
+    const type=String(item?.algorithm_type||'未分类').trim()||'未分类';
+    const industry=String(item?.industry||'未分类').trim()||'未分类';
+    types.set(type,(types.get(type)||0)+1);
+    industries.set(industry,(industries.get(industry)||0)+1);
+  }
+  const sorted=m=>[...m].map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'zh'));
+  const lookup=new Map((Array.isArray(quality?.algorithms)?quality.algorithms:[])
+    .map(x=>[String(x?.id||''),x?.metrics||{}]));
+  const scores=list.map(a=>{
+    const m=lookup.get(String(a.id))||{};
+    const v=key=>{const n=number(m[key]);return n==null?null:Math.max(0,Math.min(100,ratio(n)))};
+    return {id:a.id,name:String(a.name||a.id||'未命名算法'),
+      precision:v('precision'),recall:v('recall'),map50:v('map50')};
+  }).filter(x=>x.map50!==null||x.precision!==null||x.recall!==null)
+    .sort((a,b)=>(b.map50??-1)-(a.map50??-1));
+  return {total:list.length,types:sorted(types),industries:sorted(industries),scores,
+    // No authoritative production inference counters, policy adjudications, or unit
+    // bindings exist in the current project data contract. Never use training count.
+    usage:[],units:[],strategyAccuracy:null};
+}
+
+export function buildComputeMap(nodes=[],storage=[],gpuRuntime=null) {
+  const list=Array.isArray(nodes)?nodes:[],sources=Array.isArray(storage)?storage:[];
+  const online=list.filter(n=>n?.status==='ONLINE'&&n?.online===true);
+  const placement={center:[],edge:[],unclassified:[]};
+  for(const n of list)placement[['center','edge'].includes(n?.placement)?n.placement:'unclassified'].push(n);
+  const activeGpus=online.flatMap(n=>(Array.isArray(n?.resources?.gpu?.gpus)?n.resources.gpu.gpus:[])
+    .map(g=>({...g,nodeId:String(n.node_id||''),nodeName:String(n.display_name||n.node_id||'未命名节点'),placement:n.placement||'unclassified'})));
+  const inventory=Array.isArray(gpuRuntime?.gpus)?gpuRuntime.gpus:[];
+  const runtimeGpus=new Map(inventory.filter(x=>x?.metrics_fresh===true)
+    .map(x=>[String(x.node_id||'')+'|'+String(x.gpu_uuid||''),x]));
+  const known=activeGpus.map(g=>{
+    const t=runtimeGpus.get(g.nodeId+'|'+String(g.uuid||''));
+    return {...g,admission:t?(Number(t.active_tasks||0)===0&&t.telemetry_available===true&&
+      number(t.free_bytes)!=null&&Number(t.free_bytes)>Number(gpuRuntime?.memory_safety_bytes||0)?'candidate':'occupied'):'unknown'};
+  });
+  const avg=key=>{const v=online.map(n=>percent(n?.resources?.[key]?.usage_percent)).filter(x=>x!==null);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;};
+  const byNode=online.map(n=>({id:n.node_id,name:String(n.display_name||n.node_id||'节点'),
+    placement:n.placement||'unclassified',cpu:percent(n.resources?.cpu?.usage_percent),
+    mem:percent(n.resources?.memory?.usage_percent),disk:percent(n.resources?.disk?.usage_percent),
+    memoryUsed:n.resources?.memory?.used_bytes,memoryTotal:n.resources?.memory?.total_bytes,
+    diskUsed:n.resources?.disk?.used_bytes,diskTotal:n.resources?.disk?.total_bytes,
+    gpuCount:(n.resources?.gpu?.gpus||[]).length}));
+  const warnings=byNode.filter(x=>[x.cpu,x.mem,x.disk].some(v=>v!==null&&v>=85)).length+
+    list.filter(n=>n?.status==='OFFLINE').length;
+  const typeCounts={local:0,oss:0,s3:0,remote:0};
+  for(const x of sources)if(Object.hasOwn(typeCounts,String(x?.type||'')))typeCounts[x.type]++;
+  return {nodeCount:list.length,online:online.length,offline:list.filter(n=>n?.status==='OFFLINE').length,
+    placement,gpus:known,gpuCount:known.length,
+    gpuFreeCandidates:known.filter(g=>g.admission==='candidate').length,
+    gpuMeasured:known.filter(g=>g.admission!=='unknown').length,
+    gpuByPlacement:{center:known.filter(g=>g.placement==='center').length,edge:known.filter(g=>g.placement==='edge').length,
+      unclassified:known.filter(g=>g.placement!=='center'&&g.placement!=='edge').length},
+    cpuAvg:avg('cpu'),memoryAvg:avg('memory'),diskAvg:avg('disk'),
+    nodes:byNode,warnings,warningRatio:list.length?warnings/list.length*100:null,
+    storageTypes:typeCounts,storageCount:sources.length,
+    // Cloud provider configuration is not provider usage telemetry.
+    storageBytes:null,cloudBytes:null};
+}
+function overviewAlgorithm(m) {
+  const biggest=Math.max(1,...m.types.map(x=>x.count));
+  const industryMax=Math.max(1,...m.industries.map(x=>x.count));
+  const typePanel=panel('算法类型数量排行',m.types.length?
+    rows(m.types,(x,i)=>bar((i+1)+'. '+x.name,x.count,biggest,null)):
+    empty('暂无已登记的算法类型'),'按算法类型统计');
+  const industryPanel=panel('行业场景分布',m.industries.length?
+    rows(m.industries,x=>bar(x.name,x.count,industryMax,null)):
+    empty('暂无行业分类记录'),'按行业归属统计');
+  const accuracy=panel('模型准确率分析',m.scores.length?
+    rows(m.scores.slice(0,10),x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div>'+
+       '<span>mAP50 '+pct(x.map50)+'</span><span>Precision '+pct(x.precision)+'</span><span>Recall '+pct(x.recall)+'</span></div></div>'):
+    empty('暂无可用的训练评测指标'),'只统计有真实评测记录的算法');
+  return '<div class="ov348-stack"><div class="ov348-kpis">'+
+    metric('算法总数',fmt(m.total),'当前空间已登记算法')+
+    metric('算法类型',fmt(m.types.length),'按 algorithm_type 归类')+
+    metric('模型评测覆盖',fmt(m.scores.length),'具备 Precision / Recall / mAP')+
+    metric('策略准确率','—','尚无策略判定结果事实源')+'</div>'+
+    '<div class="ov348-grid">'+typePanel+industryPanel+'</div>'+
+    '<div class="ov348-grid">'+accuracy+
+      panel('高频使用算法排行',empty('尚未接入生产推理调用次数，不能用训练任务数替代使用量'),'生产运行次数 · 待接入')+'</div>'+
+    '<div class="ov348-grid">'+
+      panel('各单位算法运行状况',empty('尚未接入单位、算法部署实例及其运行状态的关联数据'),'单位维度 · 待接入')+
+      panel('单位算法数量排行',empty('尚无可信的单位归属记录，暂不生成排行'),'单位维度 · 待接入')+
+    '</div><div class="ov348-footnote">统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。</div></div>';
+}
+function overviewCompute(m) {
+  const nodeList=m.nodes.length?rows(m.nodes,n=>'<div class="ov348-node"><header><b>'+esc(n.name)+'</b><span>'+esc(n.placement==='center'?'中心端':n.placement==='edge'?'边缘端':'未标注')+' · '+n.gpuCount+' GPU</span></header><div class="ov348-gauges">'+gauge('CPU',n.cpu,'')+gauge('内存',n.mem,bytes(n.memoryUsed)+' / '+bytes(n.memoryTotal))+gauge('磁盘',n.disk,bytes(n.diskUsed)+' / '+bytes(n.diskTotal))+'</div></div>'):empty('暂无在线节点上报的服务器资源');
+  const gpuRows=m.gpus.length?rows(m.gpus,(g,i)=>'<div class="ov348-gpu"><b>'+esc(g.nodeName)+'</b><span>'+esc(g.name||'GPU '+g.index)+'</span><small>'+esc(g.placement==='center'?'中心端':g.placement==='edge'?'边缘端':'未标注')+'</small><div>'+gauge('GPU 使用率',percent(g.utilization_percent),'')+gauge('显存',number(g.memory_total_bytes)>0?Number(g.memory_used_bytes||0)/Number(g.memory_total_bytes)*100:null,bytes(g.memory_used_bytes)+' / '+bytes(g.memory_total_bytes))+'</div></div>'):empty('暂无在线 GPU 设备数据');
+  const placementNames=[['center','中心端'],['edge','边缘端'],['unclassified','未标注']];
+  const topology=panel('GPU 部署分布',rows(placementNames,([key,name])=>bar(name,m.gpuByPlacement[key],Math.max(m.gpuCount,1),m.gpuByPlacement[key]+' 块'))+
+    '<div class="ov348-help">位置由「服务节点 → 编辑 → 部署位置」显式配置，不能通过 Agent 连接方式推断。</div>','中心 / 边缘 / 未分类');
+  const availability=panel('GPU 可用情况',
+    '<div class="ov348-kpis ov348-kpis-small">'+metric('在线 GPU',fmt(m.gpuCount),'有实时心跳的设备')+
+    metric('候选空闲 GPU',m.gpuMeasured?fmt(m.gpuFreeCandidates):'—','仅基于新鲜调度采样与预约状态')+
+    metric('调度真相覆盖',fmt(m.gpuMeasured)+' / '+fmt(m.gpuCount),'未采样不代表空闲')+'</div>',
+    '最终可用性以任务调度器准入为准');
+  const storage=panel('文件存储与云存储',
+    '<div class="ov348-kpis ov348-kpis-small">'+metric('文件存储用量','—','未接入源目录实际容量统计')+
+    metric('普通云存储用量','—','OSS/S3 未提供 Bucket 实际用量')+
+    metric('已配置存储源',fmt(m.storageCount),'本地 '+m.storageTypes.local+' · 云 '+(m.storageTypes.oss+m.storageTypes.s3))+'</div>'+
+    '<div class="ov348-help">服务器磁盘已使用量仅代表节点挂载盘，不等于对象存储 Bucket 占用量。</div>','已配置来源 ≠ 容量');
+  const resources=panel('资源预警占比',m.nodeCount?
+    '<div class="ov348-alert-head"><b>'+pct(m.warningRatio/100)+'</b><span>'+fmt(m.warnings)+' / '+fmt(m.nodeCount)+' 节点触发预警</span></div>'+
+    bar('CPU / 内存 / 磁盘 ≥ 85%，或 Agent 心跳超时',m.warnings,m.nodeCount,fmt(m.warnings)+' 节点'):
+    empty('暂无服务节点，无法计算预警占比'),'当前快照 · 阈值 85%');
+  return '<div class="ov348-stack"><div class="ov348-kpis">'+
+    metric('服务节点',fmt(m.nodeCount),fmt(m.online)+' 在线 · '+fmt(m.offline)+' 心跳超时')+
+    metric('在线 GPU',fmt(m.gpuCount),'离线 GPU 不计入')+
+    metric('平均 CPU',m.cpuAvg==null?'—':m.cpuAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
+    metric('平均内存',m.memoryAvg==null?'—':m.memoryAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
+    metric('平均磁盘',m.diskAvg==null?'—':m.diskAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
+    '</div><div class="ov348-grid">'+topology+availability+'</div>'+
+    '<div class="ov348-grid">'+panel('服务器运行情况',nodeList,'CPU / 内存 / 磁盘 · Agent 心跳快照','ov348-wide')+'</div>'+
+    '<div class="ov348-grid">'+panel('GPU 设备明细',gpuRows,'型号 / 使用率 / 显存 · 当前在线设备')+resources+'</div>'+
+    '<div class="ov348-grid">'+storage+'</div>'+
+    '<div class="ov348-footnote">数据口径：GPU/CPU/内存/磁盘来自现有服务节点 Agent；闲置候选仅在调度记录与设备采样均新鲜时显示。云存储实际用量和历史告警率未采集时保持未知，避免虚构实时数据。</div></div>';
+}
+
+export function installOverviewTabsRuntime({
+  getState,renderProduction,request=async url=>{
+    const response=await fetch(url,{credentials:'same-origin',cache:'no-store'});
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    return response.json();
+  },
+}={}) {
+  if(typeof document==='undefined')return null;
+  let active='production',cache={project:'',quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}},loading={};
+  const ttl=60000;
+  const state=()=>getState?.()||{};
+  const project=()=>String(state().project?.id||'');
+  function resetIfProjectChanged() {
+    if(cache.project===project())return;
+    cache={project:project(),quality:null,nodes:null,storage:null,gpuRuntime:null,loadedAt:{},errors:{}};
+    loading={};
+  }
+  function render({load=true}={}) {
+    const view=document.getElementById('view');
+    if(!view||state().page!=='总览')return false;
+    resetIfProjectChanged();
+    if(active==='production') {
+      renderProduction?.();
+    } else {
+      const has=active==='algorithm'?cache.quality!==null:cache.nodes!==null;
+      let content=active==='algorithm'?overviewAlgorithm(buildAlgorithmMap(state().algorithms,cache.quality)):
+        overviewCompute(buildComputeMap(cache.nodes?.items,cache.storage?.items,cache.gpuRuntime));
+      if(!has)content='<div class="ov348-loading">正在读取'+(active==='algorithm'?'算法质量':'算力资源')+'数据…</div>'+content;
+      const failures=Object.entries(cache.errors).filter(([kind,value])=>
+        (active==='algorithm'?kind==='quality':kind!=='quality')&&value);
+      if(failures.length)content='<div class="ov348-error">部分数据读取失败：'+esc(failures.map(([kind,value])=>kind+': '+value).join(' · '))+'</div>'+content;
+      view.innerHTML=content;
+    }
+    view.insertAdjacentHTML('afterbegin','<div class="ov348-header" data-overview-tabs="1">'+
+      '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>总览</h2></div>'+
+      '<div class="ov348-toolbar" role="tablist" aria-label="总览类型">'+OVERVIEW_TABS.map(x=>
+        '<button type="button" role="tab" data-overview-tab="'+x.id+'" aria-selected="'+(active===x.id)+'"'+
+        ' class="'+(active===x.id?'active':'')+'">'+esc(x.label)+'</button>').join('')+
+      '</div><button type="button" class="ov348-refresh" data-overview-refresh="1" title="刷新当前视图">刷新</button></div>');
+    const tabs=view.querySelector('[data-overview-tabs]');
+    tabs.addEventListener('click',event=>{
+      const selected=event.target.closest('[data-overview-tab]');
+      if(selected){active=selected.dataset.overviewTab;render();return}
+      if(event.target.closest('[data-overview-refresh]')){void loadTab(active,true);}
+    });
+    if(load&&active!=='production')void loadTab(active);
+    return true;
+  }
+  async function loadTab(tab,force=false) {
+    resetIfProjectChanged();
+    const id=project();if(!id||state().page!=='总览'||tab==='production')return;
+    const fetchOne=async(key,url)=>{
+      if(!force&&cache.loadedAt[key]&&Date.now()-cache.loadedAt[key]<ttl)return;
+      if(loading[key])return loading[key];
+      const task=(async()=>{
+        try{
+          const result=await request(url);
+          if(project()!==id)return;
+          cache[key]=result;cache.loadedAt[key]=Date.now();delete cache.errors[key];
+        }catch(error){
+          if(project()!==id)return;
+          cache.errors[key]=String(error?.message||error);
+          cache.loadedAt[key]=Date.now(); // Bounded retry; don't hammer failing APIs.
+        }
+      })().finally(()=>{if(loading[key]===task)delete loading[key]});
+      loading[key]=task;return task;
+    };
+    if(tab==='algorithm')await fetchOne('quality','/api/v42/projects/'+encodeURIComponent(id)+'/quality-overview');
+    if(tab==='compute')await Promise.all([
+      fetchOne('nodes','/api/v63/service-nodes'),
+      fetchOne('storage','/api/v61/storage-sources'),
+      fetchOne('gpuRuntime','/api/v62/gpu-runtime'),
+    ]);
+    if(state().page==='总览'&&active===tab&&project()===id)render({load:false});
+  }
+  return Object.freeze({render,select(tab){if(OVERVIEW_TABS.some(x=>x.id===tab)){active=tab;return render()}return false},
+    get activeTab(){return active},refresh(){return loadTab(active,true)}});
+}

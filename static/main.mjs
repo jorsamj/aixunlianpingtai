@@ -46,6 +46,7 @@ import {buildServerImportRequest, buildImportConfirmation, serverImportView} fro
 import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
+import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226349';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
@@ -454,7 +455,6 @@ window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRunt
 // renderers remain compatibility entry points, but navigation no longer walks
 // through the chained render() override stack.
 const canonicalWindowPageRenderers = new Map([
-  ['总览', 'renderDashboardCanonical422'],
   ['质量中心', 'renderQualityCenter424'],
   ['素材接入', 'renderSources422'],
   ['标签管理', 'renderLabelManagement414'],
@@ -512,6 +512,17 @@ window.PlatformCore.runtime.componentPageOwner = {
   destroy() { unregisterComponentPageOwner?.(); },
 };
 
+const overviewTabsRuntime = installOverviewTabsRuntime({
+  getState: () => state,
+  renderProduction: () => window.renderDashboardCanonical422?.(),
+});
+window.PlatformCore.runtime.overviewTabsRuntime = overviewTabsRuntime;
+const unregisterOverviewTabsPageOwner = navigationStabilityRuntime.registerPageOwner(
+  '总览', () => overviewTabsRuntime.render()
+);
+window.PlatformCore.runtime.overviewTabsPageOwner = {
+  destroy() { unregisterOverviewTabsPageOwner?.(); },
+};
 const serviceNodeRuntime = installServiceNodeRuntime({notify});
 window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;
 
