@@ -153,3 +153,11 @@ test('one-click plan cannot overwrite manually combined source labels',()=>{
   assert.equal(plan.create.length,0);
   assert.deepEqual(buildManualLabelMapping(review),{'0':'safetyhelmet','1':'safetyhelmet'});
 });
+
+test('placeholder source class_0 is never auto-bound even when a same-name platform code exists',()=>{
+  const review=createLabelMappingReview([{class_id:'0',name:'class_0'},{class_id:'1',name:'helmet'}]);
+  const matched=applyExactLabelCodeMatches(review,[{code:'class_0',status:'active'},{code:'helmet',status:'active'}]);
+  assert.equal(matched,1);
+  assert.equal(review.mapping['0'],undefined);
+  assert.equal(review.mapping['1'],'helmet');
+});

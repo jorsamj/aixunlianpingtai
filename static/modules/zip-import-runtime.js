@@ -733,6 +733,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       for(const item of sessions){
         if(pid()!==project)throw new Error('上传期间已切换项目，请在原项目任务中心续传');
         last=await upload({files:[item.file],value:'',closest:()=>chooser},item.id);
+        if(!last)return null; // Paused upload must not skip ahead to the next ZIP.
       }
       return last;
     }catch(error){

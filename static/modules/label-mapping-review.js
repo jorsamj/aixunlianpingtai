@@ -218,6 +218,7 @@ export function applyExactLabelCodeMatches(review,labels=[]) {
     if(review.mapping[row.classId])continue;
     const name=String(row.name||'').trim();
     if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name))continue;
+    if(/^class[_-]?\d+$/i.test(name)||/^label[_-]?\d+$/i.test(name)||/^unknown$/i.test(name))continue;
     const code=allowed.get(name.toLowerCase());
     if(!code)continue;
     review.mapping[row.classId]=code;matched++;
