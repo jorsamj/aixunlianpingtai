@@ -1,3 +1,7 @@
+## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
+
+正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
+
 <!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
 > 2026-10-09 现场 UAT #21 正在验收：七项问题代码提交已存在，3042 张生产失败导入素材尚未实际审计/恢复。新补源文件 SHA256、GT 框数/投影/lineage 只读审计及对应 ZIP CI 测试；此前精确 HEAD 的 55 check-runs 全 queued，不能认定通过。唯一详细事实源见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`、GitHub Issue #21。禁止部署、重导入、清理部分提交素材，Issue 不关闭。
 
