@@ -144,7 +144,7 @@ def ensure_gpu_runtime_schema(database, *, legacy_node_id: str | None = None) ->
 
 @dataclass(frozen=True)
 class GPUConfig:
-    max_concurrent: int = 2
+    max_concurrent: int = 1
     safety_bytes: int = 1024 ** 3
     max_reserved_ratio: float = 0.9
     sample_max_age_seconds: int = 15
@@ -154,7 +154,7 @@ class GPUConfig:
     @classmethod
     def from_env(cls):
         return cls(
-            max_concurrent=max(1, int(os.environ.get("TRAINING_GPU_MAX_CONCURRENT", "2"))),
+            max_concurrent=max(1, int(os.environ.get("TRAINING_GPU_MAX_CONCURRENT", "1"))),
             safety_bytes=max(0, int(os.environ.get("TRAINING_GPU_SAFETY_BYTES", str(1024 ** 3)))),
             max_reserved_ratio=max(0.01, min(1.0, float(os.environ.get("TRAINING_GPU_MAX_RESERVED_RATIO", "0.9")))),
         )
