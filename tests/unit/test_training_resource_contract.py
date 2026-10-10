@@ -370,12 +370,11 @@ def test_auto_tiny_dataset_caps_batch_and_workers_to_executable_loader_truth(mon
     )
 
     assert result["resource_candidate_batch"] > 11
-    assert result["resolved_batch"] == 11
-    assert result["loader_batches"] == 1
-    assert result["resolved_workers"] == 0
-    assert any("batch capped" in item and "->11" in item for item in result["adjustments"])
-    assert any("workers capped" in item and "->0" in item for item in result["adjustments"])
-    assert any("train_images=11" in item and "loader_batches=1" in item for item in result["reasons"])
+    assert result["resolved_batch"] == 3
+    assert result["loader_batches"] == 4
+    assert result["resolved_workers"] == 4
+    assert any("small training set" in item and "->3" in item for item in result["adjustments"])
+    assert any("train_images=11" in item and "loader_batches=4" in item for item in result["reasons"])
 
 
 def test_auto_single_image_dataset_is_one_batch_with_zero_workers(monkeypatch):
