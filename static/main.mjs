@@ -43,10 +43,10 @@ import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMateri
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66009';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
-import {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=422571';
+import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
-import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226350';
+import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226353';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
@@ -121,7 +121,7 @@ window.PlatformCore = {
   pagination: {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
-  labelMappingReview: {bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
+  labelMappingReview: {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
   runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime, trainingDraftControlsRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };

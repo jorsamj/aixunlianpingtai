@@ -139,7 +139,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
 
   await page.locator('#benchModelSearchB').fill('安全帽');
   await expect(b.locator('option')).toHaveCount(1);
-  await expect(b.locator('option')).toContainText('安全帽识别 / v7');
+  await expect(b.locator('option')).toContainText('安全帽识别 · v7');
   await page.locator('#benchModelSearchB').fill('');
 
   await a.selectOption('1');
