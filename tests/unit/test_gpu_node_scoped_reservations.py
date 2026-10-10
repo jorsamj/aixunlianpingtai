@@ -448,3 +448,8 @@ def test_same_worker_id_visibility_is_preserved_across_nodes(tmp_path):
         ("shared-worker", "node-b", "GPU-B", 0),
     ]
     assert "UNIQUE(worker_id, node_id, logical_cuda_index)" in table_sql
+
+
+def test_default_gpu_config_is_single_card_exclusive(monkeypatch):
+    monkeypatch.delenv("TRAINING_GPU_MAX_CONCURRENT", raising=False)
+    assert GPUConfig.from_env().max_concurrent == 1
