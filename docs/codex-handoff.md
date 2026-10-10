@@ -1,3 +1,7 @@
+## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
+
+正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
+
 ## 2026-10-09 当前接手入口：Issue #21 生产 UAT 七项修复验收
 
 - 主事实/逐项表：`docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`，GitHub Issue #21。只在 `feature/external-algorithm-publishing` 开发，生产、main、tag、release 不动。
