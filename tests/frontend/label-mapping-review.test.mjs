@@ -15,6 +15,7 @@ import {
   setLabelMappingReviewSearch,
   setLabelMappingSelected,
   applyExactLabelCodeMatches,
+  planOriginalLabelMappings,
 } from '../../static/modules/label-mapping-review.js';
 
 function classes(count) {
@@ -125,4 +126,30 @@ test('exact English code matching reuses active canonical label only',()=>{
  const count=applyExactLabelCodeMatches(review,[{code:'smoke',status:'active'},{code:'helmet',status:'disabled'}]);
  assert.equal(count,1);assert.deepEqual(review.mapping,{'0':'smoke'});
  assert.throws(()=>buildManualLabelMapping(review),/3 个外部标签未映射/);
+});
+
+test('one-click source code preview separates existing, create and unsafe labels across every page',()=>{
+  const review=createLabelMappingReview([
+    {class_id:'0',name:'smoke'},{class_id:'1',name:'helmet'},
+    {class_id:'2',name:'安全帽'},{class_id:'3',name:'class_0'},
+    ...classes(130),
+  ],{pageSize:10});
+  setLabelMapping(review,'5','approved');
+  const plan=planOriginalLabelMappings(review,[{code:'smoke',status:'active'}]);
+  assert.deepEqual(plan.reuse.map(x=>x.classId),['0']);
+  assert.equal(plan.create.some(x=>x.classId==='1'),true);
+  assert.deepEqual(plan.manual.map(x=>x.classId),['2','3']);
+  assert.equal(plan.preserved.some(x=>x.classId==='5'),true);
+  assert.equal(plan.total,134);
+  assert.equal(labelMappingReviewSummary(review).mapped,1);
+  assert.equal(plan.create.some(x=>x.classId==='129'),true);
+});
+test('one-click plan cannot overwrite manually combined source labels',()=>{
+  const review=createLabelMappingReview([{class_id:'0',name:'helmet'},{class_id:'1',name:'person'}]);
+  setLabelMapping(review,'0','safetyhelmet');
+  setLabelMapping(review,'1','safetyhelmet');
+  const plan=planOriginalLabelMappings(review,[]);
+  assert.equal(plan.preserved.length,2);
+  assert.equal(plan.create.length,0);
+  assert.deepEqual(buildManualLabelMapping(review),{'0':'safetyhelmet','1':'safetyhelmet'});
 });

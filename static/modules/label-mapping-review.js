@@ -221,3 +221,23 @@ export function applyExactLabelCodeMatches(review,labels=[]) {
   }
   return matched;
 }
+
+/** Preview only. Never create labels or overwrite a manual mapping. */
+export function planOriginalLabelMappings(review, labels=[]) {
+  const active=new Map(filterCanonicalLabels(labels).map(row=>[text(row.code).toLowerCase(),text(row.code)]));
+  const reuse=[],create=[],manual=[],preserved=[];
+  for(const row of review?.rows||[]){
+    if(text(review.mapping?.[row.classId])){preserved.push({...row,code:text(review.mapping[row.classId])});continue}
+    const source=text(row.name);
+    if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(source) ||
+       /^class[_-]?\\d+$/i.test(source) || /^label[_-]?\\d+$/i.test(source) ||
+       /^unknown$/i.test(source)){
+      manual.push({...row,source,reason:'原始类别含义或英文编码需要人工确认'});
+      continue;
+    }
+    const existing=active.get(source.toLowerCase());
+    if(existing)reuse.push({...row,source,code:existing});
+    else create.push({...row,source,code:source});
+  }
+  return {reuse,create,manual,preserved,total:(review?.rows||[]).length};
+}
