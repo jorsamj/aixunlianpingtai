@@ -1,5 +1,10 @@
 # Repository Agent Handoff
 
+## 2026-10-10｜训练创建 UX（代码已提交，CI/Chrome 待验收）
+
+四模式训练弹窗：快速/完整/复杂/自定义，默认完整；标签必须沿用 TrainingLabelRuntime 的正式选择合同、素材 exact image ID、迭代继承、Benchmark；每张 GPU 独占；非自定义 Worker 启动前 Auto freeze、自定义 Manual fail closed。见 `docs/TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md`。尚未做真实 Chrome/GPU 验收，不合并 main/tag/release/deploy。
+
+
 ## 2026-10-10｜训练默认性能与独占优化（PENDING CI/UAT）
 
 首训 150 / 续训 80 Epoch，Auto Performance，单卡独占，多卡节点允许不同物理卡并行；小数据集 Batch 保护、RAM/CPU Workers 预算、早停默认关闭。任务 canonical owner 与本地/Agent 资源决议保持一致。本批详细修复记录：`docs/TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md`。Actions 和真机验收尚未完成，不合并 main/tag/release/deploy。
