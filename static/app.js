@@ -5564,7 +5564,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!['quick','full','complex','custom'].includes(mode))return;
     const draft=state.trainingDraft||{},wasCustom=draft.trainingMode==='custom';
     const resource=draft.resource||{},config=draft.config||{};
-    const preset=window.TrainingSubmitRuntime?.modePreset?.(mode,Boolean(state.trainingDraftBase?.hasPrevious));
+    const hasPrevious=Boolean(state.trainingDraftBase?.hasPrevious);
+    const preset=window.TrainingSubmitRuntime?.modePreset?.(mode,hasPrevious);
+    const preceding=window.TrainingSubmitRuntime?.modePreset?.(draft.trainingMode||'full',hasPrevious);
     const patch={
       trainingMode:mode,
       resource:{
@@ -5576,7 +5578,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         workers:mode==='custom'?(wasCustom?(resource.workers??0):0):null,
         cache:mode==='custom'?(wasCustom?(resource.cache??false):false):null
       },
-      config:mode==='custom'?{...config,epochs:config.epochs??150,imgsz:config.imgsz??640}:{...config,epochs:preset.epochs,imgsz:preset.imgsz}
+      config:mode==='custom'
+        ? {...config,epochs:wasCustom?(config.epochs??150):(preceding?.epochs??config.epochs??150),imgsz:wasCustom?(config.imgsz??640):(preceding?.imgsz??config.imgsz??640)}
+        : {...config,epochs:preset.epochs,imgsz:preset.imgsz}
     };
     const strategy=document.getElementById('trV3ResourceStrategy');
     if(strategy)strategy.value=patch.resource.strategy;
