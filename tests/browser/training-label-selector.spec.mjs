@@ -137,16 +137,16 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('.train-create-saas')).toBeVisible();
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
   await expect(dialog.locator('.train-create-right')).toBeVisible();
   await expect(dialog.locator('#trainUiSummary')).toBeHidden();
-  await dialog.getByRole('button', {name: '高级设置', exact: true}).click();
-  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
-  await expect(dialog.locator('details.train-ui-advanced')).toBeVisible();
+  await expect(dialog.locator('.train-v3-mode-option')).toHaveCount(4);
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('#trainUiLabelSlot')).toBeVisible();
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -166,18 +166,16 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(smoke).not.toBeChecked();
   await fire.check();
 
-  await dialog.locator('details.train-create-technical > summary').click();
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.locator('#trV3ManualBatch')).toBeVisible();
   await dialog.locator('details.train-create-split-details > summary').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
-  await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
-  await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
+  await expect(dialog.locator('#trV3ResourceStrategy')).toHaveValue('manual');
+  await expect(dialog.locator('#trV3GpuPolicy')).toHaveValue('exclusive');
 
-  const advancedConfig = dialog.locator('details.train-ui-advanced');
-  await advancedConfig.locator('summary').click();
-  await expect(advancedConfig).toHaveAttribute('open', '');
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
   await settings.getByText('高级训练参数', {exact: true}).click();
@@ -241,8 +239,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
   }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
-  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
-  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
+  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeEnabled();
+  expect(await dialog.getByRole('button', {name: '创建训练任务'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
   submitted = undefined;
   await page.evaluate(async projectId => {
@@ -257,7 +255,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect.poll(async () => {
     if (submitted) return 'submitted';
     const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
@@ -272,6 +270,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.training_mode).toBe('custom');
   expect(submitted.resource_strategy).toBe('manual');
   expect(submitted.device).toBe('cpu');
   expect(submitted.gpu_policy).toBe('exclusive');
@@ -288,7 +287,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await secondCard.getByRole('button', {name: '训练'}).click();
-  const secondDialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
