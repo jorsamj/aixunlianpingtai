@@ -185,3 +185,26 @@ test('merged production quality request is reused instead of issuing a duplicate
     assert.match(view.innerHTML,/88.0%/);
   }finally{globalThis.document=previous}
 });
+
+
+test('local controller stays visible if service-node API fails without claiming zero Agent nodes',async()=>{
+  const original=globalThis.document;
+  const view={innerHTML:'',insertAdjacentHTML(value){this.innerHTML=value+this.innerHTML},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  globalThis.document={getElementById:()=>view};
+  const state={page:'总览',project:{id:'P'}};
+  try{
+    const rt=installOverviewTabsRuntime({getState:()=>state,renderProduction(){},request:async url=>{
+      if(url==='/api/v63/service-nodes')throw Error('HTTP 503');
+      if(url.endsWith('/controller-snapshot'))return {name:'控制端（本机）',sampled_at:'2026-10-10T00:00:00Z',
+        resources:{cpu:{usage_percent:19},memory:{usage_percent:25,used_bytes:25,total_bytes:100},
+          disk:{usage_percent:10,used_bytes:10,total_bytes:100},gpu:{gpus:[]}}};
+      if(url.includes('gpu-runtime'))return {gpus:[]};
+      return {items:[]};
+    }});
+    rt.select('compute');await rt.refresh();
+    assert.match(view.innerHTML,/控制端 · 本机资源/);
+    assert.match(view.innerHTML,/HTTP 503/);
+    assert.match(view.innerHTML,/节点状态尚未取得/);
+    assert.doesNotMatch(view.innerHTML,/服务节点<\/span><strong>0/);
+  }finally{globalThis.document=original}
+});

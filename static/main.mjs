@@ -46,7 +46,7 @@ import {buildServerImportRequest, buildImportConfirmation, serverImportView} fro
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
-import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226353';
+import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226354';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422403';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 

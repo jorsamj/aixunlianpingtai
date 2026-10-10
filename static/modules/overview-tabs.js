@@ -93,7 +93,7 @@ export function buildComputeMap(nodes=[],storage=[],gpuRuntime=null) {
   const monitoredNodeCount=list.filter(n=>['ONLINE','OFFLINE'].includes(String(n?.status||''))).length;
   const typeCounts={local:0,oss:0,s3:0,remote:0};
   for(const x of sources)if(Object.hasOwn(typeCounts,String(x?.type||'')))typeCounts[x.type]++;
-  return {nodeCount:list.length,online:online.length,offline:list.filter(n=>n?.status==='OFFLINE').length,
+  return {nodesKnown:Array.isArray(nodes),nodeCount:list.length,online:online.length,offline:list.filter(n=>n?.status==='OFFLINE').length,
     disabled:list.filter(n=>n?.status==='DISABLED').length,
     neverConnected:list.filter(n=>n?.status==='NEVER_CONNECTED').length,
     placement,gpus:known,gpuCount:known.length,
@@ -150,7 +150,7 @@ function overviewCompute(m,placementFilter='all',controller=null) {
   const topology=panel('GPU 部署分布',rows(placementNames,([key,name])=>bar(name,m.gpuByPlacement[key],Math.max(m.gpuCount,1),m.gpuByPlacement[key]+' 块'))+
     '<div class="ov348-help">位置由「服务节点 → 编辑 → 部署位置」显式配置，不能通过 Agent 连接方式推断。</div>','中心 / 边缘 / 未分类');
   const availability=panel('GPU 可用情况',
-    '<div class="ov348-kpis ov348-kpis-small">'+metric('在线 GPU',fmt(m.gpuCount),'有实时心跳的设备')+
+    '<div class="ov348-kpis ov348-kpis-small">'+metric('在线 GPU',m.nodesKnown?fmt(m.gpuCount):'—','有实时心跳的 Agent 设备')+
     metric('候选空闲 GPU',m.gpuMeasured?fmt(m.gpuFreeCandidates):'—','需要预约账本与调度政策，不把采样当准入')+
     metric('调度证据覆盖',fmt(m.gpuMeasured)+' / '+fmt(m.gpuCount),'无法核验预约时显示未知')+'</div>',
     '最终可用性以任务调度器准入为准');
@@ -162,7 +162,7 @@ function overviewCompute(m,placementFilter='all',controller=null) {
   const resources=panel('资源风险节点占比',m.monitoredNodeCount?
     '<div class="ov348-alert-head"><b>'+pct(m.warningRatio/100)+'</b><span>'+fmt(m.warnings)+' / '+fmt(m.monitoredNodeCount)+' 监测节点存在当前资源风险</span></div>'+
     bar('CPU / 内存 / 磁盘 ≥ 85%，或 Agent 心跳超时',m.warnings,m.monitoredNodeCount,fmt(m.warnings)+' 节点'):
-    empty('暂无服务节点，无法计算预警占比'),'当前快照 · 阈值 85%');
+    empty(m.nodesKnown?'暂无服务节点，无法计算风险占比':'服务节点状态未取得'),'当前快照 · 阈值 85%');
   const host=controller?.resources;
   const localPanel=panel('控制端 · 本机资源',host?
     '<div class="ov350-controller-head"><b>'+esc(controller.name||'控制端（本机）')+'</b><span>'+esc(controller.sampled_at||'')+'</span></div>'+
@@ -174,8 +174,8 @@ function overviewCompute(m,placementFilter='all',controller=null) {
       '<span>本机无可探测 NVIDIA GPU</span>')+'</div>':
     empty('本机资源尚未采样'),'独立观察 · 不计入 Agent 节点或训练可调度 GPU');
   return '<div class="ov348-stack"><div class="ov348-kpis">'+
-    metric('服务节点',fmt(m.nodeCount),fmt(m.online)+' 在线 · '+fmt(m.offline)+' 超时 · '+fmt(m.disabled)+' 禁用 · '+fmt(m.neverConnected)+' 未连接')+
-    metric('在线 GPU',fmt(m.gpuCount),'离线 GPU 不计入')+
+    metric('服务节点',m.nodesKnown?fmt(m.nodeCount):'—',m.nodesKnown?fmt(m.online)+' 在线 · '+fmt(m.offline)+' 超时 · '+fmt(m.disabled)+' 禁用 · '+fmt(m.neverConnected)+' 未连接':'节点状态尚未取得')+
+    metric('在线 GPU',m.nodesKnown?fmt(m.gpuCount):'—','离线 GPU 不计入')+
     metric('平均 CPU',m.cpuAvg==null?'—':m.cpuAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均内存',m.memoryAvg==null?'—':m.memoryAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均磁盘',m.diskAvg==null?'—':m.diskAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
@@ -211,7 +211,7 @@ export function installOverviewTabsRuntime({
     // Keep existing production dashboard owner and prepend algorithm intelligence.
     if(algorithm)renderProduction?.();
     let content=algorithm?(has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
-      (has?overviewCompute(buildComputeMap(cache.nodes.items,cache.storage?.items,cache.gpuRuntime),placementFilter,cache.local):empty('服务节点尚未取得'));
+      overviewCompute(buildComputeMap(cache.nodes ? cache.nodes.items : null,cache.storage?.items,cache.gpuRuntime),placementFilter,cache.local);
     if(!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
