@@ -78,7 +78,7 @@ async function routeReadyTrainingRuntime(page) {
         default_imgsz: 640,
         default_batch: 8,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测', model_status: 'FOUND'}],
     }]}),
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
