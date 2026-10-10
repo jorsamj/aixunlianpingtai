@@ -1,3 +1,7 @@
+## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
+
+正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
+
 <!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10 -->
 > **2026-10-10 新增用户确认的分布式 Worker 集群/轻量控制端目标要求（仅文档，不代表已开发）**：详细规范统一归档到 [docs/DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md](DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md)。涵盖 A/B/C/D 节点能力硬白名单、真实空闲容量准入、中央自动调度、同机训练/清洗/ZIP 并行资源隔离、正式标签统一的唯一数据 Owner、NAS/OSS 直达 Worker 的目标数据链、控制端可选本机 Worker，以及新增服务节点 Token/刷新异常的现场待查边界。当前本分支已有部分 Agent/调度能力，但**不能标记完整实现或生产验收通过**。后续实施必须先读该规范和实际 HEAD，沿用唯一 Task/GT/Storage/ModelArtifact Owner，禁止第二套调度器及绕过正式提交。
 <!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10_END -->
