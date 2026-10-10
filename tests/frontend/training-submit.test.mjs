@@ -761,6 +761,8 @@ test('training defaults use exclusive performance with 150 first epochs and 80 i
 
   const manual = createTrainingDraft({
     baseVersionId: 'verified-previous-version',
+    trainingMode: 'custom',
+    resource: {strategy: 'manual', batch: 8, workers: 0, cache: false},
     config: {epochs: 300, early_stopping_enabled: true, patience: 40},
   });
   const explicit = buildTrainingEngineParameters({draft: manual, target, algorithm});
