@@ -2830,7 +2830,7 @@ class TrainingHandler:
             "dataset_revision_id": snapshot["dataset_revision_id"],
             "supplement_provenance": snapshot.get("supplement_provenance"),
             "dataset_counts": manifest.counts,
-            "epochs": int(payload.get("epochs") or 50),
+            "epochs": int(payload.get("epochs") or 150),
             "imgsz": int(payload.get("imgsz") or 640),
             "batch": int(payload.get("batch") or 8),
             "device": assigned_device,
