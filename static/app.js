@@ -1171,7 +1171,8 @@ window.installUsability417=function(){
     const normalized=boxes.length>0&&boxes.every(v=>v.every(n=>n>=0&&n<=1));
     const marks=boxes.map(([x1,y1,x2,y2])=>`<rect x="${x1}" y="${y1}" width="${x2-x1}" height="${y2-y1}"/>`).join('');
     const inputUrl=String(r.input_image_url||'').trim();
-    const img=r.image_url?`<div class="result-img-wrap"><img class="result-img" src="${_esc(r.image_url)}"></div>`:
+    const renderedUrl=String(r.image_url||r.result_image_url||'').trim();
+    const img=renderedUrl?`<div class="result-img-wrap"><img class="result-img" src="${_esc(renderedUrl)}"></div>`:
       inputUrl?`<div class="result-img-wrap detection31-fallback" data-coords="${normalized?'normalized':'pixels'}"><img class="result-img" src="${_esc(inputUrl)}" alt="真实检测原图" onload="if(this.naturalWidth&&this.naturalHeight&&this.parentElement.dataset.coords==='pixels'){this.nextElementSibling.setAttribute('viewBox','0 0 '+this.naturalWidth+' '+this.naturalHeight)}" onerror="this.parentElement.classList.add('image-error')"><svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="根据真实推理坐标绘制的检测框">${marks}</svg><span class="detection31-image-error">检测原图加载失败，无法展示检测框</span></div>`:'';
     return `<div class="compare-card enhanced-result"><div class="compare-head"><div><b>${_esc(title||'检测结果')}</b><div class="item-sub">${_esc(r.model||'')} · ${_esc(r.engine||'')} · ${_esc(r.elapsed_ms||0)}ms</div></div><span class="pill ${dets.length?'ok':'warn'}">${dets.length} 个结果</span></div>${lowConfTip}${note}${img}<table class="table mini-table"><thead><tr><th>标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table>${zero}</div>`;
   };  window.renderDetectionResultLegacy3=window.renderDetectionResultCore31;
