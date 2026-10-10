@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +11,7 @@ from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_node_assignments import (
     AssignmentAwareFencedTaskRepository,
     CentralTaskAllocator,
+    _assigned_gpu_ids,
     task_node_capability,
     task_node_connection_mode,
     task_preemptible,
@@ -1373,3 +1376,35 @@ def test_confirmed_material_import_is_released_back_to_local_worker_owner(tmp_pa
     confirmed = repository.get(task.task_id)
     assert confirmed.accepted is True
     assert task_node_capability(confirmed, artifacts) is None
+
+
+def test_running_agent_still_excludes_its_gpu_after_assignment_release():
+    """Central allocator must not reuse cuda:0 while Agent training is RUNNING."""
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    try:
+        database.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, worker_id TEXT)"
+        )
+        database.execute(
+            "CREATE TABLE task_node_assignments "
+            "(task_id TEXT, node_id TEXT, state TEXT, resolved_execution_config TEXT)"
+        )
+        database.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?)",
+            ("training-active", "RUNNING", "agent:gpu-node"),
+        )
+        database.execute(
+            "INSERT INTO task_node_assignments VALUES (?, ?, ?, ?)",
+            (
+                "training-active", "gpu-node", "RELEASED",
+                json.dumps({"selected_gpu": {"id": "cuda:0"}}),
+            ),
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == {"cuda:0"}
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='training-active'"
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == set()
+    finally:
+        database.close()
