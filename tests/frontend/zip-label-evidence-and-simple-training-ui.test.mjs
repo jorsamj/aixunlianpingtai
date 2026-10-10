@@ -32,23 +32,23 @@ test('ZIP category mapping preserves preview while user decides destination', ()
   assert.doesNotMatch(zip,/automaticLabelGuess/);
 });
 
-test('training first-open uses compact visible model and epochs and expandable technical details', () => {
+test('training first-open exposes four modes and visible canonical labels without duplicate tech fields', () => {
   const start = training.indexOf('window.openTrainingCreateDialog429=function');
-  const end = training.indexOf('window.openTrainingCreateDialog423=',start);
+  const end = training.indexOf('window.openTrainingCreateDialog423=', start);
   assert.ok(start >= 0 && end > start);
-  const creation = training.slice(start,end);
-  assert.match(creation,/train-create-technical/);
-  assert.match(creation,/train-create-primary/);
-  assert.match(creation,/tr429MotherModel/);
-  assert.match(creation,/tr429QuickEpoch/);
-  assert.match(creation,/tr429Target/);
-  assert.match(creation,/tr429TaskId/);
-  assert.match(creation,/data-train-advanced-toggle/);
-  assert.match(creation,/train-ui-summary-card" hidden/);
-  assert.match(training,/window\.toggleTrainAdvanced429=function/);
-  assert.match(training,/if\(summary\)summary\.hidden=!advanced/);
-  assert.match(training,/window\.setQuickEpoch429=function/);
-  assert.match(modalStyles,/font-size:15px/);
-  assert.match(modalStyles,/train-create-show-advanced/);
-  assert.match(modalStyles,/train-create-split-details/);
+  const creation = training.slice(start, end);
+  for (const part of [
+    'train-create-saas-v2', 'train-v3-mode-options',
+    "setTrainingModeV3('quick')", "setTrainingModeV3('full')",
+    "setTrainingModeV3('complex')", "setTrainingModeV3('custom')",
+    'tr429MotherModel', 'tr429Priority', 'tr429Target', 'tr429TaskId',
+    'trainUiLabelSlot', 'trainUiLabelSearch', '训练标签',
+  ]) assert.ok(creation.includes(part), part);
+  assert.doesNotMatch(creation,/id="tr429QuickEpoch"/);
+  assert.doesNotMatch(creation,/编辑全部训练参数/);
+  assert.match(creation,/train-v3-internals" hidden/);
+  assert.match(modalStyles,/train-create-saas-v2/);
+  assert.match(modalStyles,/training-label-choice b\{font-size:15px/);
+  assert.match(training,/const labelPanel=document\.getElementById\('trainingLabelContractPanel'\)/);
+  assert.match(training,/labelSlot\.appendChild\(labelPanel\)/);
 });
