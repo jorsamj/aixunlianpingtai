@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS service_nodes (
     node_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     connection_mode TEXT NOT NULL CHECK(connection_mode IN ('local','agent')),
+    placement TEXT NOT NULL DEFAULT 'unclassified' CHECK(placement IN ('center','edge','unclassified')),
     agent_url TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     allowed_capabilities TEXT NOT NULL DEFAULT '[]',
@@ -243,6 +244,14 @@ class ServiceNodeRepository:
         self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
         with closing(self.task_repository._connect()) as database:
             database.executescript(_SCHEMA)
+            # Placement is a physical topology choice, never an inference from
+            # local/agent connection mode. Existing rows remain unclassified.
+            columns = {str(column["name"]) for column in database.execute("PRAGMA table_info(service_nodes)")}
+            if "placement" not in columns:
+                database.execute(
+                    "ALTER TABLE service_nodes ADD COLUMN placement TEXT NOT NULL DEFAULT 'unclassified'"
+                )
+                database.commit()
 
     def _row(self, node_id: str):
         with closing(self.task_repository._connect()) as database:
@@ -314,6 +323,7 @@ class ServiceNodeRepository:
             "node_id": str(row["node_id"]),
             "display_name": str(row["display_name"]),
             "connection_mode": str(row["connection_mode"]),
+            "placement": str(row["placement"] or "unclassified"),
             "agent_url": str(row["agent_url"]),
             "enabled": enabled,
             "status": status,
@@ -416,6 +426,9 @@ class ServiceNodeRepository:
         mode = _text(body.get("connection_mode") or "agent", field="connection_mode", limit=16, required=True).lower()
         if mode not in {"local", "agent"}:
             raise ServiceNodeError("INVALID_CONNECTION_MODE", "connection_mode must be local or agent", 422)
+        placement = str(body.get("placement") or "unclassified").strip().lower()
+        if placement not in {"center", "edge", "unclassified"}:
+            raise ServiceNodeError("INVALID_NODE_PLACEMENT", "placement must be center/edge/unclassified", 422)
         token, token_hash = _new_token(node_id)
         now = utc_now()
         try:
@@ -424,14 +437,15 @@ class ServiceNodeRepository:
                 database.execute(
                     """
                     INSERT INTO service_nodes
-                        (node_id,display_name,connection_mode,agent_url,enabled,allowed_capabilities,
+                        (node_id,display_name,connection_mode,placement,agent_url,enabled,allowed_capabilities,
                          token_hash,token_version,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         node_id,
                         name,
                         mode,
+                        placement,
                         _text(body.get("agent_url"), field="agent_url", limit=1000),
                         int(bool(body.get("enabled", True))),
                         _dump(_capabilities(body.get("allowed_capabilities"))),
@@ -461,6 +475,12 @@ class ServiceNodeRepository:
                 raise ServiceNodeError("INVALID_CONNECTION_MODE", "connection_mode must be local or agent", 422)
             updates.append("connection_mode=?")
             values.append(mode)
+        if "placement" in body:
+            placement = str(body.get("placement") or "unclassified").strip().lower()
+            if placement not in {"center", "edge", "unclassified"}:
+                raise ServiceNodeError("INVALID_NODE_PLACEMENT", "placement must be center/edge/unclassified", 422)
+            updates.append("placement=?")
+            values.append(placement)
         if "agent_url" in body:
             updates.append("agent_url=?")
             values.append(_text(body.get("agent_url"), field="agent_url", limit=1000))

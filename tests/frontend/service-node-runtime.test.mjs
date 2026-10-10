@@ -210,3 +210,12 @@ test('service node revisit is cache-first and stale snapshots revalidate in back
   assert.match(source, /if \(loadInflight\) return loadInflight/);
   assert.match(source, /if \(hasSnapshot\) \{[\s\S]*?paintPage\(\);[\s\S]*?if \(reload && !snapshotFresh\(\)\) \{[\s\S]*?void refresh\(\{paint: true, silent: true\}\)[\s\S]*?return true;/);
 });
+
+
+test('node configuration adds explicit center/edge placement without guessing Agent mode', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /id="node633Placement"/);
+  assert.match(source, /placement: root\.querySelector\('#node633Placement'\)/);
+  assert.match(source, /中心端/);
+  assert.match(source, /边缘端/);
+});

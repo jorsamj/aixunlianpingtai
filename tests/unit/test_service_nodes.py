@@ -185,3 +185,30 @@ def test_rknn_board_deployment_capability_is_first_class(tmp_path):
         }},
     })
     assert node["effective_capabilities"] == ["deployment-test.rknn"]
+
+
+def test_placement_is_explicit_and_survives_registry_reopen(tmp_path):
+    repository, nodes = registry(tmp_path)
+    created, _ = nodes.create({
+        "node_id": "gpu-center-1", "display_name": "中心 GPU",
+        "connection_mode": "agent", "placement": "center",
+    })
+    assert created["placement"] == "center"
+    assert nodes.update("gpu-center-1", {"placement": "edge"})["placement"] == "edge"
+    with pytest.raises(ServiceNodeError) as raised:
+        nodes.update("gpu-center-1", {"placement": "invalid"})
+    assert raised.value.code == "INVALID_NODE_PLACEMENT"
+    assert nodes.create({"node_id": "unclassified", "display_name": "未分组"})[0]["placement"] == "unclassified"
+    assert ServiceNodeRepository(repository).get_public("gpu-center-1")["placement"] == "edge"
+
+
+def test_service_node_placement_migration_preserves_legacy_nodes(tmp_path):
+    import platform_core.service_nodes as service_nodes
+    repository, original = registry(tmp_path)
+    original.create({"node_id": "legacy-node", "display_name": "原有服务节点"})
+    with repository._connect() as database:
+        # Reproduce the pre-placement persisted table without touching the task owner.
+        database.execute("ALTER TABLE service_nodes DROP COLUMN placement")
+        database.commit()
+    upgraded = ServiceNodeRepository(repository)
+    assert upgraded.get_public("legacy-node")["placement"] == "unclassified"
