@@ -150,3 +150,13 @@ test('backend feedback-evidence promotion is explicit, formal-version-only and s
   assert.match(backend, /source_channel": "quality_center_detection"/);
   assert.match(backend, /"feedback_eligible": True/);
 });
+
+
+test('scenario testing keeps only original models and trained best.pt versions',()=>{
+ const s=app.slice(app.lastIndexOf('v64: quality-center model detection workbench'));
+ assert.match(s,/场景算法实测/);
+ assert.match(s,/场景来源/);
+ assert.match(s,/添加对比模型/);
+ assert.match(s,/best\\.pt/);
+ assert.doesNotMatch(s,/同一批图片，直接比较两个真实模型/);
+});

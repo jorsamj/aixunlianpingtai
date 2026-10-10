@@ -44,8 +44,8 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
 
   const models=[
     {label:'原始模型：YOLO11n 官方预训练',model_name:'yolo11n.pt',model_source:'builtin',framework:'ultralytics',path:'yolo11n.pt'},
-    {label:'算法版本：烟雾识别 / v2（当前）',model_source:'algorithm_version',algorithm_id:smoke.id,version_id:'smoke-v2',is_current_version:true,framework:'ultralytics',path:'/models/smoke-v2.pt'},
-    {label:'算法版本：安全帽识别 / v7',model_source:'algorithm_version',algorithm_id:helmet.id,version_id:'helmet-v7',framework:'ultralytics',path:'/models/helmet-v7.pt'},
+    {label:'算法版本：烟雾识别 / v2（当前）',model_source:'algorithm_version',algorithm_id:smoke.id,version_id:'smoke-v2',is_current_version:true,framework:'ultralytics',path:'/models/smoke-v2/best.pt'},
+    {label:'算法版本：安全帽识别 / v7',model_source:'algorithm_version',algorithm_id:helmet.id,version_id:'helmet-v7',framework:'ultralytics',path:'/models/helmet-v7/best.pt'},
   ];
   const creates=[];
   const reviews=[];
@@ -130,6 +130,8 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await expect.poll(()=>envLoads).toBe(2);
   const a=page.locator('#benchModelA'),b=page.locator('#benchModelB');
   await expect(a).toBeVisible();
+  await expect(b).toBeHidden();
+  await page.locator('#benchAddCompare64').click();
   await expect(b).toBeVisible();
   await expect(a.locator('optgroup').first()).toHaveAttribute('label', /原始 \/ 基础模型/, {timeout:10_000});
   await expect(a.locator(`optgroup[label="算法 · 烟雾识别"]`)).toHaveCount(1);
@@ -143,7 +145,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await a.selectOption('1');
   await b.selectOption('2');
   await page.locator('#benchConf').fill('0.42');
-  await expect(page.locator('#benchMode64').locator('option')).toHaveText(['同图 A / B 对比','只测 A 模型','只测 B 模型']);
+  await expect(page.locator('#benchMode64').locator('option')).toHaveText(['只测 A 模型','同图 A / B 对比','只测 B 模型']);
   expect(await page.locator('#benchFolder64').evaluate(el=>el.hasAttribute('webkitdirectory'))).toBeTruthy();
 
   await page.locator('#benchFiles64').setInputFiles([
