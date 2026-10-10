@@ -768,3 +768,59 @@ test('training defaults use exclusive performance with 150 first epochs and 80 i
   assert.equal(explicit.patience, 40);
   assert.equal(explicit.early_stopping_enabled, true);
 });
+
+
+test('four modes freeze only training semantics while GPU resources resolve at worker start', () => {
+  const specs = [
+    ['quick', 30, 20, 640],
+    ['full', 150, 80, 640],
+    ['complex', 250, 150, 800],
+  ];
+  for (const [trainingMode, firstEpochs, iterationEpochs, imgsz] of specs) {
+    for (const [baseVersionId, expectedEpochs] of [['', firstEpochs], ['previous-ok', iterationEpochs]]) {
+      const d = draft({
+        trainingMode,
+        baseVersionId,
+        resource: {strategy:'manual', profile:'stability', device:'auto', gpuPolicy:'auto', batch:128, workers:8, cache:'ram'},
+        config: {model:'custom.pt', epochs:999, imgsz:320},
+      });
+      const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+      assert.equal(payload.training_mode, trainingMode);
+      assert.equal(payload.epochs, expectedEpochs);
+      assert.equal(payload.imgsz, imgsz);
+      assert.equal(payload.resource_strategy, 'auto');
+      assert.equal(payload.resource_profile, 'performance');
+      assert.equal(payload.gpu_policy, 'exclusive');
+      assert.equal(payload.batch, 8); // non-manual candidate only; Worker resolves at execution
+      assert.equal(payload.workers, 0);
+      assert.equal(payload.cache, 'False');
+    }
+  }
+});
+
+test('custom mode freezes entered Batch Workers Cache and epochs rather than silently adjusting', () => {
+  const d = draft({
+    trainingMode:'custom',
+    resource:{strategy:'manual', profile:'performance', device:'auto', gpuPolicy:'exclusive', batch:64, workers:6, cache:'disk'},
+    config:{model:'custom.pt', epochs:310, imgsz:960, patience:45, early_stopping_enabled:true},
+  });
+  const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+  assert.equal(payload.training_mode, 'custom');
+  assert.equal(payload.resource_strategy, 'manual');
+  assert.equal(payload.epochs, 310);
+  assert.equal(payload.imgsz, 960);
+  assert.equal(payload.batch, 64);
+  assert.equal(payload.workers, 6);
+  assert.equal(payload.cache, 'disk');
+  assert.equal(payload.early_stopping_enabled, true);
+});
+
+test('first-training explicit label rule remains active for every training mode', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    const resource = trainingMode === 'custom'
+      ? {strategy:'manual', batch:8, workers:0, cache:false}
+      : {strategy:'auto'};
+    const d = createTrainingDraft({algorithmId:'alg-1',materialIds:['image-1'],trainingMode,resource,newLabelCodes:[]});
+    assert.throws(() => buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest}), /至少选择一个训练标签/);
+  }
+});
