@@ -67,7 +67,7 @@ test('app.js visible training entrypoint owns canonical reset before rendering t
   const dialogAlias = app.indexOf('window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;', dialogOwner);
   assert.ok(dialogOwner >= 0 && dialogAlias > dialogOwner);
   const dialogSource = app.slice(dialogOwner, dialogAlias);
-  const canonicalWrite = dialogSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
+  const canonicalWrite = dialogSource.indexOf("window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null}");
   const modalOpen = dialogSource.indexOf("modal('创建训练任务'");
   assert.ok(canonicalWrite >= 0 && modalOpen > canonicalWrite);
   assert.match(dialogSource, /data-training-mode="full"/);
