@@ -369,7 +369,7 @@ def test_auto_tiny_dataset_caps_batch_and_workers_to_executable_loader_truth(mon
         _Torch(_Cuda()),
     )
 
-    assert result["resource_candidate_batch"] > 11
+    assert result["resource_candidate_batch"] == 3
     assert result["resolved_batch"] == 3
     assert result["loader_batches"] == 4
     assert result["resolved_workers"] == 4
