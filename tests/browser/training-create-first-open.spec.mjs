@@ -627,7 +627,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   // Availability alone must NOT silently replace the default 60/20/20 split.
   await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();
-  await dialog.locator('[data-train-advanced-toggle]').click();
+  // Data partition is its own disclosure in the new creation form.
   const splitDetails = dialog.locator('.train-create-split-details');
   if (!(await splitDetails.getAttribute('open'))) await splitDetails.locator(':scope > summary').click();
   await expect(dialog.locator('#trV3Experiment')).toHaveValue('20');

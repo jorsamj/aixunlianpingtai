@@ -58,25 +58,28 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 });
 
 
-test('recommended training UI exposes the bounded adaptive controls without expert-only clutter', () => {
+test('compact training UI keeps four modes and canonical label/material selections', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('window.openTrainingCreateDialog429=function(aid)');
+  const end = source.indexOf('window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;', start);
+  assert.ok(start >= 0 && end > start);
+  const modal = source.slice(start, end);
+  for (const token of [
+    "modal('创建训练任务'", 'data-training-mode="full"',
+    'data-mode="quick"', 'data-mode="full"', 'data-mode="complex"', 'data-mode="custom"',
+    'id="trainUiLabelSlot"', 'id="trainUiLabelSearch"',
+    'class="train-create-split-details"', 'id="tr429MotherModel"', 'id="tr429Priority"',
+  ]) assert.ok(modal.includes(token), `missing training creation contract: ${token}`);
+  assert.match(modal, /id="trainModeCustomSlotV3"[^>]*hidden/);
+  assert.match(modal, /gpuPolicy:'exclusive'/);
+  assert.match(source, /window\.setTrainingModeV3=function\(mode\)/);
+  assert.match(source, /window\.syncTrainingResourceModeV3=function\(\)/);
   assert.match(source, /自动调度（推荐）/);
-  assert.match(source, /智能推荐（推荐）/);
-  assert.match(source, /性能优先/);
+  assert.match(source, /性能优先（推荐）/);
   assert.match(source, /稳定优先/);
-  assert.match(source, /最大训练时长/);
-  assert.match(source, /训练精度/);
-  assert.doesNotMatch(source, /ts428Patience/);
-  assert.match(source, /ts428Goal/);
-  assert.match(source, /stop_threshold:goal/);
-  assert.match(source, /ts428Lrf/);
-  assert.match(source, /ts428Warmup/);
-  assert.match(source, /ts428CloseMosaic/);
-  assert.match(source, /Batch（手动模式）/);
-  assert.match(source, /Workers（手动模式）/);
-  assert.match(source, /缓存（手动模式）/);
-  assert.doesNotMatch(source, /量化感知训练（QAT）/);
-  assert.doesNotMatch(source, /torch\.compile 模式/);
+  assert.match(source, /手动模式是硬约束，不满足预算时会在启动 Trainer 前失败/);
+  assert.doesNotMatch(modal, /id="ts428Batch"|id="ts428Workers"|data-train-advanced-toggle/);
+  assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
 });
 
 test('external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local', () => {
@@ -207,25 +210,25 @@ test('algorithm card keeps training transition states active and empty confirmat
 });
 
 
-test('scheduler-owned cluster hides controller-local cuda choices and keeps safe isolation', () => {
+test('scheduler-owned cluster hides controller CUDA and enforces GPU exclusivity', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /schedulerOwned=target\?\.scheduler_owned===true/);
   assert.match(source, /中央自动分配/);
-  assert.match(source, /单卡单任务安全隔离/);
+  assert.match(source, /单卡独占训练/);
   assert.match(source, /不会把控制机本地 cuda:N 当作远端集群设备/);
   assert.match(source, /existing\?\.dataset\?\.targetId===targetId/);
+  assert.match(source, /gpuPolicy:'exclusive'/);
+  assert.doesNotMatch(source, /<option value="auto">兼容自动隔离<\/option>/);
 });
 
-test('training form exposes bounded professional augmentation without fake GPU sharing', () => {
+test('custom settings retain professional augmentation without a GPU-sharing bypass', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /GPU 使用策略[\s\S]*自动隔离（推荐）[\s\S]*独占指定 GPU/);
+  assert.match(source, /GPU 使用策略[\s\S]*单卡独占训练/);
   assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
   for (const id of [
     'ts428MultiScale', 'ts428HsvH', 'ts428HsvS', 'ts428HsvV',
     'ts428Translate', 'ts428Scale', 'ts428FlipUD', 'ts428FlipLR', 'ts428Rect',
-  ]) {
-    assert.match(source, new RegExp('id="' + id + '"'));
-  }
+  ]) assert.match(source, new RegExp('id="' + id + '"'));
   assert.match(source, /multi_scale:num\('ts428MultiScale'/);
   assert.match(source, /hsv_h:num\('ts428HsvH'/);
   assert.match(source, /translate:num\('ts428Translate'/);
