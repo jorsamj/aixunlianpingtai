@@ -179,6 +179,9 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchRun64').click();
   await expect.poll(()=>creates.length).toBe(3);
   expect(creates[2].raw).toContain('\r\n\r\nA\r\n');
+  await page.locator('#benchBatchList64').getByRole('button',{name:'查看详情'}).first().click();
+  await expect(page.getByRole('dialog',{name:'检测详情'})).not.toContainText('本模式未运行该模型');
+  await page.evaluate(()=>window.closeModal());
 
   await page.evaluate(()=>window.clearBenchFiles64());
   await page.locator('#benchFiles64').setInputFiles({name:'b-only.bmp',mimeType:'image/bmp',buffer:bmp(96,72,[180,100,70])});

@@ -7240,9 +7240,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const row=state.benchBatch64?.results?.[Number(index)];if(!row||row.status!=='done')return;
     if(!row.previewUrl&&row.file instanceof File)row.previewUrl=URL.createObjectURL(row.file);
     const originalUrl=row.inputImageUrl||row.previewUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
-    const result=(value,fallback)=>value?window.renderDetectionResult(value.r,resultName64(value,fallback)):'<div class="bench64-result-empty">本模式未运行该模型</div>';
+    const result=(value,fallback)=>value?window.renderDetectionResult(value.r,resultName64(value,fallback)):'';
     const reviewButtons=Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn mini ${row.review===key?'primary':'soft'}" onclick="markBenchReview64(${Number(index)},'${key}')">${label}</button>`).join('');
-    const feedbackActions=[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side,value])=>`<button class="btn primary" onclick="openBenchFeedback64(${Number(index)},'${side}')">${side} 模型 · 提交抽检反馈</button>`).join('');
+    const feedbackActions=[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side,value])=>`<button class="btn primary" onclick="openBenchFeedback64(${Number(index)},'${side}')">${side==='A'?'检测模型':'对比模型'} · 提交抽检反馈</button>`).join('');
     modal('检测详情',`<div class="bench64-detail bench350-detail"><section class="bench64-original"><div class="panel-title">场景原图</div>${originalUrl?`<img src="${escAttr64(originalUrl)}" alt="">`:'<div class="bench64-result-empty">原图地址不可用</div>'}<b>${esc(row.file?.webkitRelativePath||row.file?.name||row.originalFilename||'检测图片')}</b></section><div class="bench64-compare">${result(row.a,'检测模型')}${result(row.b,'对比模型')}</div><section class="bench64-review"><div><b>检测质量核验</b><span id="benchReviewStatus64">${row.review?'已标记：'+esc(REVIEW_NAMES64[row.review]):'尚未核验'}</span></div><div class="row wrap">${reviewButtons}</div><p>人工核验不会直接修改训练标注。</p></section>${feedbackActions?`<section class="bench64-feedback"><div><b>进入抽检复核</b><span>仅正式算法版本可提交。提交后先进入待复核，不会自动修改数据集或启动训练。</span></div><div class="row wrap">${feedbackActions}</div></section>`:''}</div>`,true);
   };
 
