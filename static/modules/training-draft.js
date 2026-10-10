@@ -73,11 +73,11 @@ export function createTrainingDraft(values = {}) {
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
       strategy: String(values.resource?.strategy || 'auto'),
-      profile: String(values.resource?.profile || 'balanced'),
+      profile: String(values.resource?.profile || 'performance'),
       device: String(values.resource?.device || 'auto'),
-      gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'auto'))
-        ? String(values.resource?.gpuPolicy || 'auto')
-        : 'auto',
+      gpuPolicy: ['auto', 'exclusive'].includes(String(values.resource?.gpuPolicy || 'exclusive'))
+        ? String(values.resource?.gpuPolicy || 'exclusive')
+        : 'exclusive',
       batch: values.resource?.batch ?? null,
       workers: values.resource?.workers ?? null,
       cache: values.resource?.cache ?? null,
