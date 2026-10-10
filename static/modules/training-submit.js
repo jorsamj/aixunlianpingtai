@@ -62,6 +62,18 @@ export function validatePreparedMotherModel({draft, target} = {}) {
   return true;
 }
 
+// The sole predefined-mode policy. No resource resolution is done in the browser:
+// the assigned Worker owns final Batch/Workers/Cache decisions at execution time.
+export function trainingModePreset(mode, hasPrevious = false) {
+  const iteration = Boolean(hasPrevious);
+  switch (String(mode || 'full')) {
+    case 'quick': return {epochs: iteration ? 20 : 30, imgsz: 640};
+    case 'complex': return {epochs: iteration ? 150 : 250, imgsz: 800};
+    case 'full': return {epochs: iteration ? 80 : 150, imgsz: 640};
+    default: return null;
+  }
+}
+
 export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
   required(target?.id, '请选择可用训练资源');
@@ -69,14 +81,16 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   validatePreparedMotherModel({draft,target});
 
   const config = draft.config || {};
+  const mode = String(draft.trainingMode || (draft.resource?.strategy === 'manual' ? 'custom' : 'full'));
+  const preset = trainingModePreset(mode, Boolean(draft.baseVersionId));
   return {
     framework: target.framework === 'paddle' ? 'paddle' : 'ultralytics',
     target: target.type === 'server' ? 'remote' : 'local',
     server_id: target.server_id,
     algorithm: algorithm.key || '',
     model: config.model || algorithm.base_model || '',
-    epochs: config.epochs ?? (draft.baseVersionId ? 80 : (algorithm.default_epochs ?? 150)),
-    imgsz: config.imgsz ?? algorithm.default_imgsz ?? 640,
+    epochs: preset?.epochs ?? config.epochs ?? (draft.baseVersionId ? 80 : (algorithm.default_epochs ?? 150)),
+    imgsz: preset?.imgsz ?? config.imgsz ?? algorithm.default_imgsz ?? 640,
     batch: integerParameter(draft.resource?.batch ?? config.batch ?? algorithm.default_batch, 8, 'Batch'),
     device: draft.resource?.device || config.device || 'auto',
     include_empty: false,
@@ -122,9 +136,9 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     stop_threshold: config.stop_threshold ?? 0,
     auto_convert_targets: config.auto_convert_targets || [],
     ai_intervention_enabled: false,
-    resource_strategy: draft.resource?.strategy || config.resource_strategy || 'auto',
-    resource_profile: draft.resource?.profile || config.resource_profile || 'performance',
-    gpu_policy: draft.resource?.gpuPolicy || config.gpu_policy || 'exclusive',
+    resource_strategy: preset ? 'auto' : (draft.resource?.strategy || config.resource_strategy || 'manual'),
+    resource_profile: preset ? 'performance' : (draft.resource?.profile || config.resource_profile || 'performance'),
+    gpu_policy: 'exclusive',
   };
 }
 
@@ -546,6 +560,7 @@ export function installTrainingSubmitRuntime({
     build: 'training-submit-422596',
     submit,
     createTaskId: createCanonicalTrainingTaskId,
+    modePreset: trainingModePreset,
     isCanonicalTaskId: isCanonicalTrainingTaskId,
     updateReadiness,
     isSubmitting: () => submitting,
