@@ -230,7 +230,7 @@ export function planOriginalLabelMappings(review, labels=[]) {
     if(text(review.mapping?.[row.classId])){preserved.push({...row,code:text(review.mapping[row.classId])});continue}
     const source=text(row.name);
     if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(source) ||
-       /^class[_-]?\\d+$/i.test(source) || /^label[_-]?\\d+$/i.test(source) ||
+       /^class[_-]?\d+$/i.test(source) || /^label[_-]?\d+$/i.test(source) ||
        /^unknown$/i.test(source)){
       manual.push({...row,source,reason:'原始类别含义或英文编码需要人工确认'});
       continue;

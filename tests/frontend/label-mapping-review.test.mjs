@@ -140,7 +140,7 @@ test('one-click source code preview separates existing, create and unsafe labels
   assert.equal(plan.create.some(x=>x.classId==='1'),true);
   assert.deepEqual(plan.manual.map(x=>x.classId),['2','3']);
   assert.equal(plan.preserved.some(x=>x.classId==='5'),true);
-  assert.equal(plan.total,134);
+  assert.equal(plan.total,130);
   assert.equal(labelMappingReviewSummary(review).mapped,1);
   assert.equal(plan.create.some(x=>x.classId==='129'),true);
 });
