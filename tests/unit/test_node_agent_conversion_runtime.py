@@ -763,3 +763,52 @@ def test_agent_conversion_runner_rejects_rk3578_as_non_product_target(tmp_path):
     assert session.puts == []
     assert not any(event[0] == "prepare" for event in client.events)
     assert client.finish_calls[-1]["status"] == "FAILED"
+
+
+
+def test_agent_rknn_reports_dependency_error_without_traceback_or_upload(tmp_path):
+    source = b"portable-rknn-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    script = runtime_root / "deployment_worker.py"
+    script.write_text(
+        """
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--job-dir', required=True)
+args = parser.parse_args()
+job_file = Path(args.job_dir) / 'job.json'
+job = json.loads(job_file.read_text(encoding='utf-8'))
+job.update(
+    status='failed',
+    error='ONNX 1.20.0 缺少 onnx.mapping',
+    error_code='RKNN_ONNX_DEPENDENCY_INCOMPATIBLE',
+    solution='请在 RKNN Python 环境中安装 onnx==1.18.0',
+)
+job_file.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
+raise RuntimeError('Traceback: simulated internal RKNN stack')
+""",
+        encoding="utf-8",
+    )
+    client = FakeClient()
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+    outcome = runner.run(_rknn_lease(source))
+    assert outcome.status == "FAILED"
+    assert "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE" in outcome.error
+    assert "onnx.mapping" in outcome.error
+    assert "onnx==1.18.0" in outcome.error
+    assert "Traceback" not in outcome.error
+    assert not any(event[0] == "prepare" for event in client.events)
+    assert client.finish_calls[-1]["status"] == "FAILED"

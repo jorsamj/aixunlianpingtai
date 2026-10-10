@@ -1,3 +1,7 @@
+## 2026-10-10｜RKNN 依赖故障最小回归补齐
+
+新增 runner 缺失 onnx.mapping 在 load_onnx 之前中断断言，以及 Agent 实际子进程失败后读取 job.json 错误码、避免传播 traceback / 上传假产物的集成式单测。沿用既有 tests/unit 文件，无新 owner；仍需当前 HEAD GitHub Actions 验证。
+
 ## 2026-10-10｜RKNN-Toolkit2 2.3.2 与 ONNX 环境不兼容（42.24.347）
 
 - 用户生产报错：`rknn.load_onnx` → `AttributeError: module 'onnx' has no attribute 'mapping'`，运行环境 `/opt/changlian-rknn-venv`。根因是 Toolkit2 2.3.2 使用旧 ONNX API，转换执行环境装入不兼容版本；不是模型训练问题。

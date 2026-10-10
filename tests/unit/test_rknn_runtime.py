@@ -100,3 +100,24 @@ def test_rknn_probe_rejects_missing_onnx_dependency_evidence(monkeypatch):
 def test_rknn_onnx_dependency_compatibility_does_not_block_valid_mapping():
     assert runtime.rknn_onnx_dependency_error("1.18.0", True) == ""
     assert "onnx.mapping" in runtime.rknn_onnx_dependency_error("1.19.1", False)
+
+
+def test_rknn_conversion_runner_rejects_incompatible_onnx_before_loading_model(monkeypatch):
+    import types
+    import pytest
+    import rknn_convert_runner
+
+    fake_onnx = types.ModuleType("onnx")
+    fake_onnx.__version__ = "1.20.0"
+    monkeypatch.setitem(sys.modules, "onnx", fake_onnx)
+    monkeypatch.setattr(sys, "argv", [
+        "rknn_convert_runner.py",
+        "--onnx", "/does/not/need/to/exist.onnx",
+        "--output", "/tmp/unused.rknn",
+        "--chip", "rk3568",
+    ])
+
+    with pytest.raises(SystemExit) as raised:
+        rknn_convert_runner.main()
+    assert "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE" in str(raised.value)
+    assert "onnx.mapping" in str(raised.value)
