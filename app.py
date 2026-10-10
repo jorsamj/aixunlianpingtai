@@ -7545,6 +7545,7 @@ class TrainReq(BaseModel):
     paddle_command: Optional[str] = ""
     # v20 进阶训练参数，Ultralytics 本机训练生效。
     patience: int = 100
+    early_stopping_enabled: bool = False
     time: Optional[float] = None
     precision: Literal["auto", "fp16", "bf16", "fp32"] = "auto"
     workers: StrictInt = 0
@@ -7638,6 +7639,8 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="手动资源策略 batch 必须是 1~4096 的整数；自动估算请选择 auto 策略")
     if int(payload.patience) < 0:
         raise HTTPException(status_code=400, detail="patience 不能小于 0")
+    if payload.early_stopping_enabled and int(payload.patience) < 1:
+        raise HTTPException(status_code=400, detail="开启智能早停时，patience 必须至少为 1")
     if int(payload.workers) < 0:
         raise HTTPException(status_code=400, detail="workers 不能小于 0")
     allowed_optimizers = {"auto", "sgd", "musgd", "adam", "adamax", "adamw", "nadam", "radam", "rmsprop"}
@@ -8335,8 +8338,8 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
         "requested_device": payload.device,
         "requested_resources": {
             "resource_strategy": str(payload.resource_strategy or "auto").lower(),
-            "resource_profile": str(payload.resource_profile or "balanced").lower(),
-            "gpu_policy": str(payload.gpu_policy or "auto").lower(),
+            "resource_profile": str(payload.resource_profile or "performance").lower(),
+            "gpu_policy": str(payload.gpu_policy or "exclusive").lower(),
             "requested_device": str(payload.device or "auto"),
             "batch": int(payload.batch),
             "workers": int(payload.workers),
