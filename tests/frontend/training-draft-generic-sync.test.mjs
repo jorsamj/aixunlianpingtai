@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   createTrainingDraft,
-  trainingInheritanceFromAlgorithm,
+  trainingBaseVersionFromAlgorithm,
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
 import {TRAINING_DRAFT_CONTROL_IDS} from '../../static/modules/training-draft-controls.js';
@@ -11,7 +11,7 @@ import {TRAINING_DRAFT_CONTROL_IDS} from '../../static/modules/training-draft-co
 function dependencies() {
   return {
     createTrainingDraft,
-    trainingInheritanceFromAlgorithm,
+    trainingBaseVersionFromAlgorithm,
   };
 }
 

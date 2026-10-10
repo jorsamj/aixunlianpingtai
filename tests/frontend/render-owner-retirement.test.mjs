@@ -4,6 +4,8 @@ import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const trainingVisibility = fs.readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+const pollRegistrySource = fs.readFileSync(new URL('../../static/modules/poll-registry.js', import.meta.url), 'utf8');
 
 test('historical render assignment chain is physically retired', () => {
   assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
@@ -29,15 +31,120 @@ test('algorithm and dataset navigation are canonical owners', () => {
   assert.match(main, /registerPageOwner\('数据集'/);
 });
 
-test('shadowed v424 and v425 training-task renderers are physically retired', () => {
-  assert.equal(app.includes('window.renderTraining424=function(){'), false);
-  assert.equal(app.includes('window.renderTraining424=window.renderTraining425=function(){'), false);
-  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
+test('shadowed v423 v424 and v425 training-task render aliases are absent from app.js', () => {
+  for (const token of ['window.renderTraining423', 'window.renderTraining424', 'window.renderTraining425', 'renderTrainingLegacyBridge']) {
+    assert.equal(app.includes(token), false, token);
+  }
+  assert.equal(app.includes('function trainActions428('), false);
+  assert.equal(app.includes('function trainRows428('), false);
+  assert.equal(app.includes('state.train428Tab'), false);
+  assert.equal(app.includes('window.refreshTrainPage428='), false);
 });
 
-test('training navigation is a canonical owner', () => {
+test('shadowed classic renderTraining declarations are physically retired', () => {
+  assert.equal((app.match(/\\bfunction renderTraining\\(\\)/g) || []).length, 0);
+});
+
+test('pre-canonical training page and refresh compatibility owners stay physically retired', () => {
+  for (const token of [
+    'renderTrainingCompatibility',
+    'trainJobRowsHtml',
+    'window.updateTrainingJobTable=',
+    'window.refreshJobsOnly=',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.equal(pollRegistrySource.includes('refreshJobsOnly'), false);
+  assert.match(main, /navigationStabilityRuntime\.registerPageOwner\('训练任务', \(\) => trainingTaskVisibilityRuntime\.render\(\)\)/);
+});
+
+test('zero-reference pre-canonical training helpers stay physically retired', () => {
+  for (const token of [
+    'function curTarget(){',
+    'window.fillTrain=',
+    'window.applyAlg=',
+    'window.fillTrainLegacy=',
+    'window.applyAlgLegacy=',
+    'window.showLogLegacy=',
+    'window.stopJob=',
+    'window.deleteJob=',
+    'state.activeLogJob',
+    'function statusPillClass(',
+    'function jobEtaText(',
+    'function renderJobProgress(',
+    'function hasLiveJob(',
+    'function pollActiveLog(',
+    'window.showLog=',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
+test('classic single-task mutation owners are physically retired from app.js', () => {
+  for (const token of [
+    'window.promoteTrain428=async function',
+    'window.pauseTrain428=async function',
+    'window.resumeTrain428=async function',
+    'window.stopTrain428=async function',
+    'window.deleteTrain428=async function',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
+test('v423 v424 and v425 legacy task-list generations stay physically retired', () => {
+  for (const token of [
+    'trainTaskRows423',
+    'renderTrainingLegacy423_1',
+    'window.filterTrain423=',
+    'window.refreshTrain423=async function',
+    'window.stopJob423=',
+    'window.deleteJob423=',
+    'state.train424Expanded',
+    'function trainStatus424(',
+    'function jobRows424(',
+    'window.toggleTrain424=',
+    'function rowsTrain425(',
+  ]) assert.equal(app.includes(token), false, token);
+});
+
+test('pre-canonical v423 training create modal stays physically retired', () => {
+  for (const token of [
+    'openTrainTask423',
+    'startAlgorithmTrainingLegacy423_1',
+    'trainAssetChanged423',
+    'trainTargetChanged423',
+    'toggleTrainConfig423',
+    'syncTrainConfigSummary423',
+    'eligibleTargets423',
+    'selectedAsset423',
+    'lockTrain423',
+    'train423AlgorithmId',
+    'train423Edit',
+    'startTrain423()',
+    'startAlgorithmTraining428=window.startAlgorithmTraining423',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.match(app, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
+  assert.match(app, /window\.startAlgorithmTraining423=window\.openTrainingCreateCanonical429/);
+});
+
+test('legacy training log modal generations stay physically retired', () => {
+  for (const token of [
+    'showTrainLogLegacy423_1',
+    'showTrainLogLegacy423_2',
+    'showTrainLogLegacy423_3',
+    'showTrainLogLegacy423_4',
+    'refreshTrainLog423',
+    'refreshTrainLog426',
+    'refreshTrainLog428',
+    'metricFromLog426',
+    'DONE428',
+  ]) assert.equal(app.includes(token), false, token);
+  assert.match(app, /const ACTIVE428=new Set\(/);
+});
+
+test('training navigation is canonical and visibility runtime solely owns compatibility aliases', () => {
   assert.match(main, /registerPageOwner\('训练任务'/);
-  assert.match(app, /window\.renderTraining425=window\.renderTraining424=window\.renderTraining423=function\(\)/);
+  assert.equal(app.includes('window.renderTraining423'), false);
+  assert.equal(app.includes('window.renderTraining424'), false);
+  assert.equal(app.includes('window.renderTraining425'), false);
+  for (const name of ['renderTraining423', 'renderTraining424', 'renderTraining425']) {
+    assert.equal((trainingVisibility.match(new RegExp('window\\.' + name + '\\s*=\\s*renderTraining', 'g')) || []).length, 1, name);
+  }
 });
 
 test('auto-label cleanup navigation is a canonical owner', () => {

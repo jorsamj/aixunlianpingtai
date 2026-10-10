@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   buildImportConfirmation,
@@ -158,3 +159,23 @@ test('server import confirmation stays mapping-only after explicit canonical lab
   ]), /显式平台标签创建操作/);
 });
 
+
+
+test('server import and rescan use the shared bounded manual label review model', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /labelReviewMarkup61\('storage-import',taskId,classes\)/);
+  assert.match(source, /labelReviewMarkup61\('rescan',String\(task\.task_id\|\|taskId\),classes\)/);
+  assert.match(source, /buildManualLabelMapping/);
+  assert.match(source, /labelMappingReviewSummary/);
+  assert.doesNotMatch(source, /classes\.map\(row=>`<div class="storage61-mapping-row" data-import-class/);
+});
+
+
+test('shared label review loads bounded real samples lazily with bbox evidence', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /labelReviewSamples61/);
+  assert.match(source, /\/label-review\/\$\{encodeURIComponent\(key\)\}\/classes\/\$\{encodeURIComponent\(classId\)\}\/samples\?limit=8/);
+  assert.match(source, /loading="lazy"/);
+  assert.match(source, /label-mapping-sample-box/);
+  assert.match(source, /仅作为人工判断证据，不代表系统推荐/);
+});

@@ -178,7 +178,7 @@ jobs:
           grep -Fq 'window.renderComponentCheckV40?.()' static/main.mjs
           grep -Fq "registry.startTimeout(pollKey, '训练资源', tick, 1100)" static/modules/resource-discovery.js
           grep -Fq 'patchResourceDiscoveryProgress(live, task, kind)' static/modules/resource-discovery.js
-          grep -Fq "build: 'material-batch-runtime-422402'" static/modules/material-batches.js
+          grep -Fq "build: 'material-batch-runtime-422403'" static/modules/material-batches.js
           grep -Fq 'registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500)' static/modules/material-batches.js
           if grep -Fq 'setTimeout(' static/modules/material-batches.js; then echo 'material batch polling must stay PollRegistry-owned' >&2; exit 1; fi
           grep -Eq "build: 'model-artifacts-[0-9]+'" static/modules/model-artifact-runtime.js
@@ -284,7 +284,13 @@ jobs:
           done
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
-          grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
+          if grep -Fq 'replaceTrainingJobTimer' static/app.js; then
+            echo 'classic app.js must not own training polling lifecycle' >&2
+            exit 1
+          fi
+          grep -Fq 'pollRegistry?.replaceTrainingJobTimer?.();' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();' static/main.mjs
+          grep -Fq 'window.refreshJobsOnly = focusedRefresh;' static/modules/training-task-runtime.js
       - name: Retired navigation setPage guard
         run: |
           for token in set423Base setBase424 oldSetV39 oldSet42 set422Base; do
@@ -373,7 +379,7 @@ jobs:
           grep -Fq 'MaterialPaginationRuntime61?.beforeNavigate?.(page)' static/main.mjs
           grep -Fq "if (requested === '部署转换' || requested === '部署产物') return '算法列表';" static/modules/navigation-stability.js
           grep -Fq "'deploy-jobs-v39','部署转换'" static/app.js
-          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422549';" static/main.mjs
+          grep -Fq "import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';" static/main.mjs
           grep -Fq 'const serviceNodeRuntime = installServiceNodeRuntime({notify});' static/main.mjs
           grep -Fq "registerPageOwner('平台对接'" static/main.mjs
           grep -Fq "['标签管理', 'renderLabelManagement414']" static/main.mjs

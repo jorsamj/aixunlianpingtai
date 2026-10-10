@@ -129,7 +129,21 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     claimed = client.claim_assignment()
     assert claimed["assignment"]["assignment_lease_token"] == "assignment-secret"
     current = client.start_execution("task-1", "assignment-secret")
-    heartbeat = client.heartbeat(current, progress=25, stage="running")
+    heartbeat = client.heartbeat(
+        current,
+        progress=25,
+        stage="running",
+        resource_resolution={
+            "resource_strategy": "auto",
+            "resolved_batch": 32,
+            "resolved_workers": 4,
+            "resolved_cache": False,
+            "node_id": "node:1",
+            "execution_generation": 1,
+            "assigned_device": "cuda:0",
+            "gpu_uuid": "GPU-node-1",
+        },
+    )
     logged = client.append_log(current, "hello\n")
     prepared = client.prepare_result_upload(current, sha256="a" * 64, size_bytes=123)
     confirmed = client.confirm_result_upload(
@@ -156,11 +170,45 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[1]["url"].endswith("/assignments/task-1/start")
     assert session.calls[2]["json"]["execution_generation"] == 1
     assert session.calls[2]["json"]["execution_lease_token"] == "execution-secret"
+    assert session.calls[2]["json"]["resource_resolution"]["resolved_batch"] == 32
     assert session.calls[4]["url"].endswith("/executions/task-1/result-upload/prepare")
     assert session.calls[4]["json"]["sha256"] == "a" * 64
     assert session.calls[4]["json"]["size_bytes"] == 123
     assert session.calls[5]["url"].endswith("/executions/task-1/result-upload/confirm")
     assert session.calls[5]["json"]["runtime_result"]["engine"] == "ultralytics"
+
+
+def test_executor_client_heartbeat_projects_live_training_runtime_resources():
+    current = lease("train-runtime", generation=7)
+    session = ScriptedSession(
+        FakeResponse(200, {"task": {"progress": 5}, "cancel_requested": False}),
+    )
+    client = NodeExecutorClient(
+        "https://control.example.test",
+        "node:1",
+        "node-secret",
+        session=session,
+        timeout=7,
+    )
+    runtime_resources = {
+        "node_id": "node:1",
+        "execution_generation": 7,
+        "actual_device": "cuda:0",
+        "actual_batch": 32,
+        "actual_workers": 4,
+        "actual_cache": False,
+        "actual_precision": "fp16",
+        "runtime_batch": 32,
+        "runtime_workers": 4,
+        "runtime_cache": False,
+    }
+
+    body = client.heartbeat(current, runtime_resources=runtime_resources)
+
+    assert body["cancel_requested"] is False
+    assert session.calls[0]["json"]["runtime_resources"] == runtime_resources
+    assert session.calls[0]["json"]["execution_generation"] == 7
+    assert session.calls[0]["json"]["execution_lease_token"] == "execution-secret"
 
 
 def test_executor_client_uses_fenced_training_model_upload_routes():

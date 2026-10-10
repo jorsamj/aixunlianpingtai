@@ -416,7 +416,8 @@ test('YOLO rescan keeps frontend request, review truth, mapping and conflict pol
   await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
   await expect(page.locator('#sr61Mapping')).toContainText('smoke');
-  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('smoke');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('');
+  await page.locator('[data-rescan-class="0"] [data-label-code]').selectOption('smoke');
   await page.locator('#sr61AnnotationRemoved').check();
   await page.locator('#sr61AnnotationConflicts').check();
   await page.getByRole('button',{name:'确认应用'}).click();
@@ -494,7 +495,8 @@ test('COCO rescan uses the same frontend delta, mapping and confirmation truth',
   await expect.poll(()=>submitted).toEqual({execution_mode:'agent',import_format:'coco'});
   await expect(page.locator('#sr61Status')).toContainText('标注变化 1');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
-  await expect(page.locator('[data-rescan-class="7"] [data-label-code]')).toHaveValue('smoke');
+  await expect(page.locator('[data-rescan-class="7"] [data-label-code]')).toHaveValue('');
+  await page.locator('[data-rescan-class="7"] [data-label-code]').selectOption('smoke');
   await page.getByRole('button',{name:'确认应用'}).click();
   await expect.poll(()=>confirmation).not.toBeNull();
   expect(confirmation.label_mapping).toEqual({'7':'smoke'});
@@ -573,10 +575,24 @@ test('Pascal VOC rescan shares the same frontend delta, mapping and confirmation
   await expect.poll(()=>submitted).toEqual({execution_mode:'agent',import_format:'voc'});
   await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
-  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('fire');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('');
+  await page.locator('[data-rescan-class="0"] [data-label-code]').selectOption('fire');
   await page.getByRole('button',{name:'确认应用'}).click();
   await expect.poll(()=>confirmation).not.toBeNull();
   expect(confirmation.label_mapping).toEqual({'0':'fire'});
   expect(confirmation.annotation_changed).toBe('update');
   expect(confirmation.annotation_conflicts).toBe('keep');
+});
+
+
+test('storage mapping review exposes bounded shared controls without automatic choice', async ({page}) => {
+  await page.goto('/');
+  const source = await page.evaluate(() => ({
+    hasSharedReview: Boolean(window.PlatformCore?.labelMappingReview),
+    pageSize: window.PlatformCore?.labelMappingReview?.createLabelMappingReview?.(
+      Array.from({length:120},(_,i)=>({class_id:String(i),name:'c'+i}))
+    )?.pageSize,
+  }));
+  expect(source.hasSharedReview).toBe(true);
+  expect(source.pageSize).toBe(50);
 });

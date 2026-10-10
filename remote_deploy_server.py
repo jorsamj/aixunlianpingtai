@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from platform_core.rknn_runtime import probe_rknn_toolkit
+
 BASE_DIR = Path(__file__).resolve().parent
 REMOTE_DIR = BASE_DIR / 'remote_deploy_data'
 JOBS_DIR = REMOTE_DIR / 'jobs'
@@ -83,15 +85,14 @@ def detect_tools():
     py=str(cfg.get('python_path') or sys.executable)
     ultra_py=str(cfg.get('ultralytics_python') or py)
     ultra=False;paddle=False;rknn=False;rknn_version=''
+    rknn_probe={}
     try: ultra=subprocess.run([ultra_py,'-c','import ultralytics;print(ultralytics.__version__)'],capture_output=True,text=True,timeout=10).returncode==0
     except:pass
     try: paddle=subprocess.run([py,'-c','import paddle;print(paddle.__version__)'],capture_output=True,text=True,timeout=10).returncode==0
     except:pass
-    try:
-        cp=subprocess.run([py,'-c',"from rknn.api import RKNN; import importlib.metadata as m; print(m.version('rknn-toolkit2'))"],capture_output=True,text=True,encoding='utf-8',errors='ignore',timeout=15)
-        rknn=cp.returncode==0
-        if rknn:rknn_version=(cp.stdout or '').strip().splitlines()[-1]
-    except:pass
+    rknn_probe=probe_rknn_toolkit(py, timeout=15)
+    rknn=bool(rknn_probe.get('available'))
+    rknn_version=str(rknn_probe.get('version') or '')
     npu=''
     soc_versions=[]
     nsmi=which('npu-smi')
@@ -113,7 +114,10 @@ def detect_tools():
     return {
         'ultralytics':ultra,'paddle':paddle,'paddledet':str(paddledet) if paddledet and paddledet.exists() else '',
         'model_transform':transform,'model_deploy':deploy,'run_calibration':cali,'trtexec':trtexec,'atc':atc,'paddle2onnx':paddle2onnx,
-        'targets':targets,'rknn_toolkit2':rknn,'rknn_version':rknn_version,'npu_info':npu,'npu_smi':nsmi,'soc_versions':soc_versions,'atlas_om_ready':bool(atc),'versions':{'trtexec':command_version(trtexec),'atc':command_version(atc),'model_deploy':command_version(deploy),'rknn_toolkit2':rknn_version}
+        'targets':targets,'rknn_toolkit2':rknn,'rknn_version':rknn_version,
+        'rknn_onnx_version':str(rknn_probe.get('onnx_version') or ''),
+        'rknn_error_code':str(rknn_probe.get('error_code') or ''),
+        'rknn_error':str(rknn_probe.get('error') or ''),'npu_info':npu,'npu_smi':nsmi,'soc_versions':soc_versions,'atlas_om_ready':bool(atc),'versions':{'trtexec':command_version(trtexec),'atc':command_version(atc),'model_deploy':command_version(deploy),'rknn_toolkit2':rknn_version}
     }
 
 @app.get('/api/deploy/health')

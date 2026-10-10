@@ -405,8 +405,16 @@ export function installModelArtifactRuntime({getState, notify, pollRegistry} = {
     const close = () => mask.remove();
     mask.addEventListener('click', event => { if (event.target === mask || event.target.closest('[data-audit-close]')) close(); });
     mask.querySelector('[data-audit-copy]')?.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(diagnosticText(row));
-      notify?.('诊断信息已复制，可直接发给 AI 排查');
+      if (!window.BrowserCapabilityRuntime?.has('clipboard')) {
+        notify?.('当前浏览器环境不支持自动复制，请手动选择诊断信息复制');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(diagnosticText(row));
+        notify?.('诊断信息已复制，可直接发给 AI 排查');
+      } catch (_) {
+        notify?.('浏览器未允许自动复制，请手动选择诊断信息复制');
+      }
     });
   }
 

@@ -5,11 +5,17 @@ import json
 from pathlib import Path
 
 from PIL import Image
+import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.errors import PlatformError
 from platform_core.material_repository import MaterialRepository
 from platform_core.online_feedback import build_supplement_candidate_set
-from platform_core.remote_training_tasks import RemoteTrainingPrepareHandler
+import platform_core.remote_training_tasks as remote_training_tasks_module
+from platform_core.remote_training_tasks import (
+    RemoteTrainingPreparationError,
+    RemoteTrainingPrepareHandler,
+)
 from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource, StorageSourceRepository
 from platform_core.task_runtime import (
@@ -25,6 +31,42 @@ from platform_core.task_runtime import (
 class FakeCredentials:
     def get(self, _reference):
         return {}
+
+
+def test_external_training_preflight_preserves_canonical_failure_code(tmp_path, monkeypatch):
+    class FailingService:
+        def __init__(self, **_kwargs):
+            pass
+
+        def training_preflight(self, **_kwargs):
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_INACTIVE",
+                "该外部算法已停用，不能训练",
+                "algorithm-fire",
+                "请先在新畅联恢复算法。",
+                409,
+            )
+
+    monkeypatch.setattr(
+        remote_training_tasks_module,
+        "ExternalAlgorithmPlatformService",
+        FailingService,
+    )
+    handler = RemoteTrainingPrepareHandler(tmp_path / "data")
+
+    with pytest.raises(RemoteTrainingPreparationError) as captured:
+        handler._refresh_external_algorithm(
+            "project-1",
+            {
+                "id": "algorithm-fire",
+                "source_type": "EXTERNAL",
+                "provider_type": "CHANG_LIAN",
+            },
+        )
+
+    assert captured.value.code == "EXTERNAL_ALGORITHM_INACTIVE"
+    assert str(captured.value) == "该外部算法已停用，不能训练"
+    assert captured.value.target_status is TaskStatus.FAILED
 
 
 class FakeConfigRepository:
@@ -79,6 +121,9 @@ def _build_project(data_dir: Path):
     (project / "uploads").mkdir(parents=True)
     (project / "annotations").mkdir()
     (project / "models").mkdir()
+    # A prepared weight is shared by the control-plane staging path. The test
+    # proves remote preparation transfers it as an object, never an official URL.
+    (project / "models" / "yolo11n.pt").write_bytes(b"preinstalled-yolo11n-weight" * 128)
     (project / "jobs").mkdir()
     (project / "meta.json").write_text(
         json.dumps({
@@ -137,6 +182,24 @@ def _build_project(data_dir: Path):
     return project_id
 
 
+def test_remote_official_filename_never_becomes_agent_download_contract(tmp_path):
+    project_id = _build_project(tmp_path)
+    handler = RemoteTrainingPrepareHandler(tmp_path)
+    with pytest.raises(RemoteTrainingPreparationError) as captured:
+        handler._prepare_base_model(
+            provider=FakeObjectProvider(),
+            source_id="test-oss",
+            project_id=project_id,
+            task_id="train_remote_unprepared",
+            payload={
+                "framework": "ultralytics",
+                "algorithm_asset_id": "algorithm-fire",
+                "model": "yolo11n.pt",
+            },
+        )
+    assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
+
+
 def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
     runtime = data_dir / "task_runtime"
     repository = TaskRepository(runtime / "tasks.sqlite3")
@@ -150,7 +213,7 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "remote_input_state": "PREPARING",
         "remote_prepare_task_id": prep_id,
         "algorithm_asset_id": "algorithm-fire",
-        "model": "yolo11n.pt",
+        "model": str(data_dir / "projects" / project_id / "models" / "yolo11n.pt"),
         "split_mode": "independent_test_set",
         "train_image_ids": ["image-0", "image-1", "image-2", "image-3"],
         "test_image_ids": ["image-4"],
@@ -166,6 +229,17 @@ def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
         "time": 2.5,
         "requested_device": "auto",
         "device": "auto",
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-fire",
+            "effective_label_codes": ["fire"],
+            "effective_label_schema": [
+                {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
     }
     if supplement_candidate_set is not None:
         target_payload["supplement_candidate_set"] = dict(supplement_candidate_set)
@@ -241,7 +315,7 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
 
     prep = repository.get(prep_id)
     target = repository.get(target_id)
-    assert prep is not None and prep.status is TaskStatus.SUCCEEDED
+    assert prep is not None and prep.status is TaskStatus.SUCCEEDED, prep.error if prep else "missing prep"
     assert target is not None and target.status is TaskStatus.QUEUED
 
     payload = artifacts.read_json(target_id, "payload.json")
@@ -255,8 +329,15 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["framework"] == "ultralytics"
     assert training["snapshot_id"]
     assert len(training["dataset_revision_id"]) == 64
-    assert training["model"]["type"] == "official"
-    assert training["model"]["reference"] == "yolo11n.pt"
+    assert training["label_codes"] == ["fire"]
+    assert training["label_schema"][0]["code"] == "fire"
+    assert training["label_contract"]["algorithm_id"] == "algorithm-fire"
+    assert training["label_contract"]["effective_label_codes"] == ["fire"]
+    assert training["model"]["type"] == "object"
+    assert training["model"]["file_name"] == "yolo11n.pt"
+    assert training["model"]["size_bytes"] > 1024
+    assert len(training["model"]["sha256"]) == 64
+    assert any(key.startswith("training-input-models/") for key, _ in provider.upload_calls)
     assert training["params"]["runtime_stop_policy"] == "target_only"
     assert training["params"]["resource_strategy"] == "auto"
     assert training["params"]["resource_profile"] == "performance"
@@ -314,11 +395,63 @@ def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_que
     assert prep is not None and prep.status is TaskStatus.FAILED
     assert target is not None
     assert target.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
-    assert target.stage == "remote_input_preparation_failed"
+    assert target.stage == "training_input_preparation_failed"
     assert "REMOTE_TRAINING_STORAGE_REQUIRED" in str(target.error)
     payload = artifacts.read_json(target_id, "payload.json")
     assert payload["remote_input_state"] == "PREPARING"
     assert "remote_execution" not in payload
+
+
+def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+    meta["labels"].append("smoke")
+    meta["label_meta"].append({"code": "smoke", "class_id": 1})
+    (project / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    AnnotationRepository(project).upsert(
+        "image-3",
+        [{
+            "id": "image-3-smoke",
+            "label": "smoke",
+            "class_id": 1,
+            "x1": 5,
+            "y1": 5,
+            "x2": 40,
+            "y2": 40,
+        }],
+        "annotated",
+        annotation_scope=["fire", "smoke"],
+    )
+    repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload["schema_version"] = 4
+    payload["training_input_state"] = "PREPARING"
+    payload["train_labels"] = ["fire", "smoke"]
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "training-prep-scope-drift",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    )
+
+    assert scheduler.run_once() is True
+
+    prep = repository.get(prep_id)
+    target = repository.get(target_id)
+    assert prep is not None and prep.status is TaskStatus.FAILED
+    assert target is not None and target.status is TaskStatus.FAILED
+    assert "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE" in str(target.error)
+    manifest = artifacts.read_json(target_id, "input-compatibility/manifest.json")
+    assert manifest["issue_count"] == 4
+    assert manifest["required_label_codes"] == ["fire", "smoke"]
+    page = artifacts.read_json(target_id, manifest["pages"][0]["ref"])
+    assert len(page) == 4
+    assert all(item["missing_label_codes"] == ["smoke"] for item in page)
 
 
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):

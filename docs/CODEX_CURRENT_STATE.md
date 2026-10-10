@@ -1,3 +1,48 @@
+## 2026-10-10｜独立 RKNN venv 装配边界补充核验
+
+RKNN 转换执行器的 Python 只安装 RKNN SDK，不应导入 platform_core/__init__.py 以致加载平台批量材料 Repository 或额外依赖。执行器仅用标准库与 ONNX 属性执行最后一道兼容性检查；平台内的节点/Worker 仍复用同一探测 owner。新增 Runner 独立运行边界静态回归。
+
+## 2026-10-10｜RKNN 依赖故障最小回归补齐
+
+新增 runner 缺失 onnx.mapping 在 load_onnx 之前中断断言，以及 Agent 实际子进程失败后读取 job.json 错误码、避免传播 traceback / 上传假产物的集成式单测。沿用既有 tests/unit 文件，无新 owner；仍需当前 HEAD GitHub Actions 验证。
+
+## 2026-10-10｜RKNN-Toolkit2 2.3.2 与 ONNX 环境不兼容（42.24.347）
+
+- 用户生产报错：`rknn.load_onnx` → `AttributeError: module 'onnx' has no attribute 'mapping'`，运行环境 `/opt/changlian-rknn-venv`。根因是 Toolkit2 2.3.2 使用旧 ONNX API，转换执行环境装入不兼容版本；不是模型训练问题。
+- 修复：`platform_core/rknn_runtime.py` 对 RKNN Python 真实环境检查 ONNX 版本、`onnx.mapping`，不兼容 fail closed，不宣称 RKNN 转换 capability；传统 Worker 在源模型处理前阻断，错误码 `RKNN_ONNX_DEPENDENCY_INCOMPATIBLE`、可操作解决方案；runner 在 `load_onnx` 前二次检查；远端健康检查也用相同探测；Agent 发布清晰错误而不是整段 traceback。
+- 回归：更新能力探测 unit mock，加缺失 mapping / probe 缺少真相 / worker 预检失败断言。只提交长期分支；未触及生产 Python 环境、版本发布、主分支及部署。实际 RKNN 2.3.2+onnx1.18.0 烧录/转换需现场验证，CI 需以精确 HEAD 为准。
+
+## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
+
+- 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。
+- Training Create First Open：训练弹窗 Browser 测试使用已删除的全局高级展开按钮和旧弹窗标题；改为现有“创建训练任务”及数据划分原生 disclosure，训练素材/固定 Benchmark/标签规则仍继续检查。
+- Frontend Runtime Stabilization：对应旧标题、旧高级配置与创建提交文案、TrainingDraft 写入顺序的断言漂移，已按可见真 UI 更新；导航与标签的真实操作仍须 Chrome 复验。
+- Training Task Visibility / Algorithm SQL Store：同一 `four modes freeze only training semantics` 前端测试揭露生产链缺陷：`trainingDraftToRequest` 通过 `createTrainingDraft` 把历史 `gpuPolicy:auto` 覆盖掉 builder 的 `exclusive`；现在四模式规范化统一强制独占。保留中央 TaskScheduler、GPU Reservation 和 Worker 运行前真实资源决议。
+- Remote Material Import 两次：原测试把 `app.js?v=42.25.333` 当成永远不变的字面缓存版本；现在验证版本不回退到旧修复点，同时入口缓存版本实际升级至 `42.25.345`。
+- 自定义模式取消“兼容自动隔离”选项；普通模式不显示 Batch/Workers 专业设置；标签搜索、勾选、正式 GT、首次母模型、续训有效版本继承、60/20/20 比例以及单一 TrainingSubmit Owner 均保留。
+- 本次只修改对应最小生产文件、前端测试、Browser 测试和现有文档，不另建 Owner、不删减安全测试；最新精确 HEAD 的全量 Linux/Windows/Chrome CI 仍待核验，真实 NVIDIA 同卡阻塞/双卡并发、OSS、Agent、10k/20k 素材 UAT 仍需现场执行。**不合并 main、tag、release、部署生产。**
+
+## 2026-10-10｜训练创建弹窗四模式简化与标签保留（PENDING CI/UAT）
+
+已在唯一训练草稿/提交 Owner 上接入快速、完整（默认）、复杂、自定义四模式，非自定义资源由目标 Worker 入场前决议，自定义为手动硬约束。创建页只保留算法身份、任务优先级、首次母模型选择、训练素材/划分、四模式、**末尾完整的 canonical 训练标签选择和搜索**；取消重复名称/ID/Batch 展示并提高字号。既有标签继承、显式新增、benchmark、精确素材和测试集隔离保持不变。设计及待验收清单：[TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。静态 JS/V8 定向校验已完成；GitHub Actions 当前 HEAD 与真实 Chrome UAT 尚未完成。不得 merge main/tag/release/deploy。
+
+## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
+
+正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
+
+<!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
+> 2026-10-09 现场 UAT #21 正在验收：七项问题代码提交已存在，3042 张生产失败导入素材尚未实际审计/恢复。新补源文件 SHA256、GT 框数/投影/lineage 只读审计及对应 ZIP CI 测试；此前精确 HEAD 的 55 check-runs 全 queued，不能认定通过。唯一详细事实源见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`、GitHub Issue #21。禁止部署、重导入、清理部分提交素材，Issue 不关闭。
+
+<!-- LIVE_HANDOFF_2026_10_09_GATE_S15 -->
+> 2026-10-09：42.24.334 精确 HEAD ee2b0e5 的 22/22 Actions 和 57/57 Checks 全部 success。T1 确认 AUDIT-167 INT8 version Snapshot drift、AUDIT-177 pending feedback label drift，42.24.335 做最小隔离/引用保护并新增回归；新 HEAD CI/UAT 尚未验证。详见 docs/codex-handoff.md 顶部 Gate S15。禁止据此部署生产。
+
+<!-- CURRENT_STATE_ANNOTATION_CLEANING_2026_09_25 -->
+> ## 2026-09-25 标注与数据清洗当前状态
+>
+> 最新详细交接已转到 docs/CODEX_HANDOFF_2026-09-25_ANNOTATION_CLEANING.md。文档写入前 cutoff c1e9dc2d...，VERSION.txt=42.24.0；34 workflows 中 31 success / 3 failure。标注/清洗关键 workflow 均 success；Label Normalization 两个红灯为 source guard exact literal，Training Task Visibility Real Chrome 需另行 focused reproduce。
+>
+> 标注 durable v60 / provenance / legacy v47 retirement / UI owner 已收口。新的产品优先级是复用现有 MATERIAL_BATCH/CLEAN + OpenCV/Pillow/hash runtime，区分已标注、未标注、已确认无目标，并把图片质量与标注质量分层；默认中央 Worker，远程 Agent 仅在 cleaning capability + portable storage preflight 通过时提供。
+>
 <!-- CURRENT_STATE_TRAINING_DETAIL_CI_FOLLOWUP_2026_09_24 -->
 > ## 2026-09-24 训练详情收口后的 CI 红灯分类
 >
@@ -2561,3 +2606,37 @@ version remove 实际副作用
 - `External Algorithm Publish` CI 已固定 root precedence 和两条回归测试名称，禁止后续又退回旧根优先。
 - 这次属于后端结果发现/同步修复，不改变前端字段或交互；`VERSION.txt` 仍为 `42.24.0`。
 - 当前 GitHub Actions 仍必须以最新 HEAD 的实际 completed 结果为准；queued 不等于通过，也不具备部署资格。
+# 2026-10-08 current override — R0 Material / Annotation lifecycle
+
+VERSION `42.24.300` adds one project-scoped coordination fence between canonical Material lifecycle mutations and formal AnnotationRepository commits. Dataset delete claim/finalize, Storage Rescan content replacement, manual/AI/import formal writes and label remap reuse existing owners. Material annotation projections are version-monotonic and remain rebuildable derived state. Deferred structured imports preserve explicit `confirmed_empty`; plain uploads remain explicitly `unannotated`; batch contracts require Material identity before formal GT and target the versioned projection owner. See `docs/codex-handoff.md` for verification and CI status.
+## 2026-10-08 AUDIT-084 / AUDIT-168 当前状态（最高优先级）
+
+- 候选版本 `42.24.301`。Canonical MaterialBatch destructive publication、Training admission、Agent RKNN INT8 calibration admission 已接入同一个既有 Material lifecycle fence。
+- 活动依赖来自 TaskRepository 的 `QUEUED / RUNNING / CANCEL_REQUESTED` 与已有 task artifacts；终态自动释放。删除任务的 selection 使用其现有 SQLite manifest 做 bounded membership lookup，不建立第二份依赖 truth。
+- `DELETE_SOURCE` 用 MaterialRepository payload 中的内部 destructive claim 跨越锁外 provider I/O；一旦 provider delete 可能成功，索引/GT finalize 不再被 cancellation 打断。模糊失败保持 fail-closed，使用原 task retry 恢复。
+- RKNN 最终入队重验 frozen calibration identity。删除端同时匹配 image ID 和 storage source/object reference。
+- 本地相关测试已通过；精确提交 HEAD CI 尚待推送后读取。真实 OSS/RKNN/GPU/生产恢复为 `PENDING USER UAT`。
+- 下一批只进入 AUDIT-178 Storage Source config/secret lifecycle；不要在本批新增 storage generation owner。
+
+## 2026-10-08 AUDIT-178 当前状态（最高优先级）
+
+- 候选版本 `42.24.302`。Storage Source 破坏性 PATCH 与 Import/Rescan、MaterialBatch CLEAN/AI、AI Annotation、TRAINING/PREPARE、RKNN calibration 的最终 durable admission 使用同一短 Source lifecycle fence。
+- 活动引用从 TaskRepository + 既有 artifacts + MaterialRepository bounded query 派生；不保存第二份 pin/dependency truth。仍可能读取源字节的 QUEUED/RUNNING/CANCEL_REQUESTED 以及 Import/Rescan AWAITING_CONFIRMATION 保护 Source；已只剩证据确认、不再 materialize 的 review stage 释放，terminal 释放。
+- name-only 允许；disable/config/credential replace/clear 活动期间 409。Import/Rescan/RKNN staging 在锁外，publish 时核验 runtime generation。
+- credential replace 使用 versioned Secret ref，SQLite publication 失败不覆盖旧 Secret generation；没有向 task artifact 复制 credential。
+- 本地 focused tests 已通过；精确 HEAD CI 待推送后读取。真实 OSS/Keyring/Agent/RKNN/GPU 为 `PENDING USER UAT`。
+<!-- CURRENT_STATE_UNIFIED_PAGINATION_PHASE1_2026_10_08 -->
+> ## 2026-10-08 统一分页第一阶段
+>
+> `VERSION.txt=42.24.303`。训练 compatibility 重复正式 Material/Annotation IO 已通过 revision-complete disposable projection 消除；最终训练 admission/Prepare/Snapshot 不使用该缓存。唯一公共分页 UI 为 `static/modules/pagination.js`，首批接入训练 picker、兼容性问题和任务 input issues。训练 picker 后端支持真实 page/page_size，cursor consumer 保留。相关 Python 125、frontend 39、Real Chrome 1、1k/10k/20k lightweight 3 均通过；精确 HEAD CI 和生产部署仍 PENDING。全平台迁移状态见 `docs/PAGINATION_INVENTORY_V42_24_303.md`。
+>
+<!-- CURRENT_STATE_PAGINATION_PHASE1_CI_FOLLOWUP_2026_10_08 -->
+> ## 2026-10-08 分页 phase 1 CI follow-up
+>
+> `VERSION.txt=42.24.304`。仅将两个精确静态 cache-key 测试从旧 `main 42.25.294 / picker 422548` 同步到 phase 1 的真实 `main 42.25.303 / picker 422603`；`42.24.303` frontend 其余 842 项通过。产品实现仍为下节所述，最新精确 HEAD CI 待推送核验。
+>
+<!-- CURRENT_STATE_PAGINATION_PHASE_2A_2026_10_08 -->
+> ## 2026-10-08 统一分页第二阶段 A 批
+>
+> VERSION `42.24.305`：数据集 MaterialRepository 真页码、训练任务 canonical snapshot 视图和 AI CandidateStore offset 审核均接入唯一 `pagination.js`。cursor consumer 保持兼容，未新增业务 owner。清洗/导入/模型及 phase 3 仍待后续独立批次；精确 HEAD CI 与生产部署为 PENDING。
+>

@@ -10,9 +10,15 @@ from pathlib import Path
 from filelock import FileLock
 from PIL import Image
 
-from platform_core.annotation_repository import AnnotationRepository
+from platform_core.annotation_repository import (
+    AnnotationConflictError,
+    AnnotationRepository,
+)
 from platform_core.annotation_schema import validate_canonical_annotation_evidence
-from platform_core.material_repository import MaterialRepository
+from platform_core.material_repository import (
+    AnnotationMaterialLifecycleError,
+    MaterialRepository,
+)
 from platform_core.task_runtime import TaskStatus
 
 from .detection_import import DetectionDatasetScanner
@@ -544,6 +550,10 @@ class StorageRescanHandler(StorageImportHandler):
                         'image_id': material['id'],
                         'boxes': boxes,
                         'annotation_state': state,
+                        'expected_version': int(current_annotation.get('version') or 0),
+                        'source_content_sha256': str(
+                            material.get('content_sha256') or ''
+                        ).strip().lower(),
                     })
                     apply_evidence[material_id] = evidence
                 elif category not in {'ANNOTATION_UNCHANGED'}:
@@ -556,10 +566,16 @@ class StorageRescanHandler(StorageImportHandler):
                         'external_annotation_needs_review': True,
                         'external_annotation_review_reason': reason,
                     }
-            persisted = annotations.upsert_many(
-                annotation_rows,
-                return_rows=True,
-            ) if annotation_rows else []
+            try:
+                persisted = annotations.upsert_many(
+                    annotation_rows,
+                    return_rows=True,
+                ) if annotation_rows else []
+            except (AnnotationConflictError, AnnotationMaterialLifecycleError) as error:
+                raise ValueError(
+                    'platform material or annotation changed while applying rescan; '
+                    'create a new rescan'
+                ) from error
             for saved in persisted:
                 image_id = str(saved['image_id'])
                 evidence = apply_evidence[image_id]

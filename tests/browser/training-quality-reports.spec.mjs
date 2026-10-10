@@ -6,11 +6,6 @@ async function waitForCanonicalApp(page) {
     {timeout: 15_000},
   ).toBe(true);
 }
-import {promises as fs} from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-
 async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const url = new URL(route.request().url());
@@ -40,7 +35,7 @@ function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   return buffer;
 }
 
-async function seedTrainingProject(request, {withVersion = false} = {}) {
+async function seedTrainingProject(request) {
   const project = await (await request.post('/api/projects', {data: {
     name: `训练浏览器-${Date.now()}`,
     labels: [{code: 'fire', display_name: '明火'}, {code: 'smoke', display_name: '烟雾'}]
@@ -55,20 +50,12 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
   for (const [index, image] of images.entries()) {
     await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
       class_id: index, label: index ? 'smoke' : 'fire', x1: 10, y1: 10, x2: 70, y2: 60
-    }]}});
+    }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
     await request.patch(`/api/v12/projects/${project.id}/images/${image.id}`, {data: {split: index ? 'val' : 'train'}});
   }
   const algorithm = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
     name: '烟火迭代算法', industry: '工业安全', algorithm_type: 'yolo_ultralytics', remark: ''
   }})).json();
-  if (withVersion) {
-    const modelPath = path.join(os.tmpdir(), `browser-version-${Date.now()}.pt`);
-    await fs.writeFile(modelPath, Buffer.from('browser model fixture'));
-    const assigned = await request.post(`/api/v12/projects/${project.id}/algorithms/${algorithm.algorithm.id}/versions`, {data: {
-      model_name: path.basename(modelPath), model_source: 'local', local_path: modelPath
-    }});
-    expect(assigned.ok()).toBeTruthy();
-  }
   const listed = await (await request.get(`/api/v12/projects/${project.id}/algorithms`)).json();
   return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
 }
@@ -91,7 +78,7 @@ async function routeReadyTrainingRuntime(page) {
         default_imgsz: 640,
         default_batch: 8,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测', model_status: 'FOUND'}],
     }]}),
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -107,15 +94,29 @@ async function routeReadyTrainingRuntime(page) {
       options: [{id: 'cpu', label: 'CPU', available: true}],
     }),
   }));
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
 }
 
 
-async function openTrainingSettings(page, trainingDialog) {
-  const advanced = trainingDialog.locator('details.train-ui-advanced');
-  if (!(await advanced.getAttribute('open'))) {
-    await advanced.locator(':scope > summary').click();
+async function expandTrainingAdvanced(trainingDialog) {
+  const split = trainingDialog.locator('details.train-create-split-details');
+  if (await split.count() && !(await split.evaluate(element => element.open))) {
+    await split.locator(':scope > summary').click();
   }
-  const button = advanced.locator('.train-ui-edit-config');
+}
+
+async function openTrainingSettings(page, trainingDialog) {
+  // Expert controls only exist after explicitly selecting custom mode.
+  await trainingDialog.locator('[data-mode="custom"]').click();
+  await expect(trainingDialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
+  const button = trainingDialog.getByRole('button', {name: '配置更多专业参数'});
   await expect(button).toBeVisible();
   await button.click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
@@ -126,8 +127,12 @@ async function openTrainingSettings(page, trainingDialog) {
 async function selectAllTrainingMaterials(page, trainingDialog) {
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  const selectAll = picker.getByRole('button', {name: '全选全部可用素材'});
+  await expect(selectAll).toBeEnabled();
+  await selectAll.click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText(/已选 [1-9]\d* 张/);
   await picker.getByRole('button', {name: '确认选择'}).click();
+  await expect(trainingDialog.locator('.train-v3-summary')).not.toContainText('本次训练素材0 张');
 }
 
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {
@@ -141,10 +146,12 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(algorithmCard.getByRole('button', {name: '报告', exact: true})).toBeVisible({timeout: 20_000});
   await algorithmCard.getByRole('button', {name: '训练'}).click();
 
-  const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const trainingDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(trainingDialog).toBeVisible();
   await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
+  await expandTrainingAdvanced(trainingDialog);
+  await expect(trainingDialog.locator('#trainBaseModeLabelV3')).toContainText('首次训练');
+  await expect(trainingDialog.locator('#tr429MotherModel')).toBeVisible();
   await expect(trainingDialog.getByText('从本次训练素材随机抽取试验集')).toBeVisible();
   await expect(trainingDialog.locator('#trV3Experiment')).toHaveValue('20');
   const priority = trainingDialog.locator('#tr429Priority');
@@ -152,7 +159,8 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(priority).toHaveAttribute('min', '1');
   await expect(priority).toHaveAttribute('max', '999');
   await expect(priority).toHaveValue('50');
-  await expect(trainingDialog.getByText('1 最高，数字越大优先级越低')).toBeVisible();
+  await expect(trainingDialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(trainingDialog.locator('#trainUiLabelSlot')).toBeVisible();
   const settingsDialog = await openTrainingSettings(page, trainingDialog);
   const advanced = settingsDialog.locator('details.advanced427-box');
   await expect(advanced).not.toHaveAttribute('open', '');
@@ -200,12 +208,16 @@ test('training submit sends the selected candidate pool and configured experimen
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
+  const fireLabel = dialog.locator('[data-training-label-code="fire"]');
+  await expect(fireLabel).toBeVisible();
+  await fireLabel.check();
+  await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
@@ -221,7 +233,7 @@ test('training submit sends the selected candidate pool and configured experimen
     if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
   };
   page.on('request', capturePostSubmit);
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect.poll(() => submitted).toBeTruthy();
   await expect.poll(async () => page.evaluate(() =>
     window.PlatformCore?.runtime?.trainingSubmitRuntime?.state?.().submitting ?? true
@@ -252,7 +264,7 @@ test('training material selection does not depend on dataset groups and supports
     state.datasets = [];
     await window.startAlgorithmTraining429(algorithmId);
   }, algorithm.id);
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
 
@@ -285,11 +297,41 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeDisabled();
+  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeDisabled();
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
-  const {project, algorithm} = await seedTrainingProject(request, {withVersion: true});
+  const {project, algorithm} = await seedTrainingProject(request);
+  // The former POST /versions "fixture" was deliberately retired in the
+  // minimal-safe-launch contract: arbitrary local .pt bytes cannot become a
+  // verified training version. Prove the real write endpoint stays closed.
+  const manualVersion = await request.post(
+    `/api/v12/projects/${project.id}/algorithms/${algorithm.id}/versions`,
+    {data: {model_name: 'unverified.pt', model_source: 'local', local_path: '/tmp/unverified.pt'}},
+  );
+  expect(manualVersion.status()).toBe(409);
+
+  // This browser test owns only the read-side version projection. Supply one
+  // verified, successful version through the actual GET /algorithms response,
+  // without manufacturing verified lineage in the server's persistent store.
+  const latestVersion = {
+    id: 'latest-version', version_name: 'v3',
+    model_name: 'latest-best.pt', stored_path: 'browser-fixture/latest-best.pt',
+    training_status: 'SUCCEEDED', artifact_verified: true, trainable: true,
+    finished_at: '2026-10-08T08:00:00Z',
+  };
+  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    await route.fulfill({response, json: {
+      ...body,
+      items: (body.items || []).map(item => item.id === algorithm.id
+        ? {...item, current_version_id: latestVersion.id, versions: [latestVersion]}
+        : item),
+    }});
+  });
   await routeReadyTrainingRuntime(page);
   await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
     await new Promise(resolve => setTimeout(resolve, 1200));
@@ -303,12 +345,13 @@ test('versioned training locks the latest version and projects the current rando
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
-  await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
-  await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
+  await expandTrainingAdvanced(dialog);
+  await expect(dialog.locator('#trainBaseModeLabelV3')).toContainText('继承当前有效模型版本');
+  await expect(dialog.locator('#tr429MotherModel')).toBeDisabled();
+  await expect(dialog.locator('#trainModeBriefV3')).toContainText('80 Epoch');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
   const settings = await openTrainingSettings(page, dialog);
   await expect(settings.locator('#ts428Model')).toBeDisabled();

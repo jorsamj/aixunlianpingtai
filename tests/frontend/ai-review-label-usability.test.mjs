@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
 
 function reviewBlock() {
   const start = app.indexOf('function ensureReviewShell()');
@@ -62,3 +63,108 @@ test('AI mapping renderer skips rebuild when labels and mapping signature are un
   assert.match(source, /box\.dataset\.signature===signature/);
   assert.match(source, /datalist\.dataset\.signature!==signature/);
 });
+
+
+test('AI review is a dedicated human-review workbench with explicit per-image accept and reject', () => {
+  const source = reviewBlock();
+  assert.match(source, /AI标注审核工作台/);
+  assert.match(source, /ai-review-workbench-modal/);
+  assert.match(source, /data-ai66-filter="empty"/);
+  assert.match(source, /window\.setAiDecision60/);
+  assert.match(source, />采用<\/button>/);
+  assert.match(source, />拒绝<\/button>/);
+  assert.match(source, /AI判断无目标/);
+  assert.match(source, /已人工修改/);
+});
+
+test('AI review confirmation follows durable commit to terminal and invalidates material truth', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('window.completeAiReview60=async mode=>');
+  const end = source.indexOf('window.confirmAiLabel427=', start);
+  const complete = source.slice(start, end);
+  assert.match(complete, /waitForTaskTerminal/);
+  assert.match(complete, /ai-review-commit:/);
+  assert.match(complete, /MaterialPaginationRuntime61\?\.invalidate/);
+  assert.match(complete, /AI审核结果已写入正式标注/);
+});
+
+
+test('AI candidate editing is visual-first rather than coordinate-first', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('function ensureCandidateEditorShell60');
+  const end = source.indexOf('window.completeAiReview60=async mode=>', start);
+  const editor = source.slice(start, end);
+  assert.match(editor, /VISUAL BOX EDITOR/);
+  assert.match(editor, /pointerdown/);
+  assert.match(editor, /pointermove/);
+  assert.match(editor, /pointerup/);
+  assert.match(editor, /data-h="nw"/);
+  assert.match(editor, /空白处拖拽新建/);
+  assert.match(editor, /ai_candidate_reviewed/);
+  assert.match(editor, /高级坐标/);
+});
+
+test('AI review exposes low-confidence filtering', () => {
+  const source = reviewBlock();
+  assert.match(source, /data-ai66-filter="low"/);
+  assert.match(source, /Number\(box\.confidence\)<\.6/);
+});
+
+test('AI review keeps mapping bounded and candidate actions readable without sticky overlays', () => {
+  assert.match(styles, /\.ai66-label-tools\{[^}]*max-height:min\(34vh,320px\)[^}]*overflow:auto/s);
+  assert.match(styles, /\.ai66-candidate-card>footer \.btn\{min-height:32px;font-size:12px\}/);
+  assert.match(styles, /\.ai66-review-footer\{position:relative!important/);
+});
+
+test('AI review KPI separates total truth from current-page decisions', () => {
+  const source = reviewBlock();
+  assert.match(source, /id="ai66Total"/);
+  assert.match(source, /id="ai66Accepted"/);
+  assert.match(source, /id="ai66Rejected"/);
+  assert.match(source, /id="ai66Boxes"/);
+  assert.match(source, /本页无目标/);
+  assert.match(source, /本页失败/);
+  assert.match(source, /review\.decisions\.get\(String\(item\.image_id\)\)===false/);
+  assert.match(source, /reduce\(\(sum,item\)=>sum\+\(item\.status==='failed'\?0:\(item\.boxes\|\|\[\]\)\.length\),0\)/);
+});
+
+
+test('AI candidate overlay labels stay inside the visible image stage', () => {
+  assert.match(styles, /\.ai66-candidate-card \.data412-box em\{[^}]*left:2px;top:2px[^}]*max-width:180px[^}]*text-overflow:ellipsis/s);
+});
+
+
+test('single AI review decisions patch one card instead of rebuilding the page', () => {
+  const source = reviewBlock();
+  assert.match(source, /function renderReviewMetrics60\(review\)/);
+  assert.match(source, /function patchAiDecisionCard60\(id\)/);
+  assert.match(source, /data-ai66-image-id=/);
+  assert.match(source, /data-ai66-decision="accept"/);
+  assert.doesNotMatch(source, /window\.toggleAiDecision60=/);
+
+  const start = source.indexOf('window.setAiDecision60=(id,accepted)=>');
+  const end = source.indexOf('function renderReviewPage()', start);
+  const decision = source.slice(start, end);
+  assert.match(decision, /if\(String\(review\.filter\|\|'all'\)==='rejected'\)return renderReviewPage\(\)/);
+  assert.match(decision, /renderReviewMetrics60\(review\);patchAiDecisionCard60\(key\)/);
+  assert.doesNotMatch(decision, /grid\.innerHTML/);
+});
+
+test('AI review keeps historical candidate hydration page-scoped', () => {
+  const source = reviewBlock();
+  const start = source.indexOf('async function loadReviewPage(offset)');
+  const end = source.indexOf('window.reviewAiLabel427=', start);
+  const loader = source.slice(start, end);
+  assert.match(loader, /review\.seen\.clear\(\)/);
+  assert.match(loader, /review\.seen\.set\(String\(item\.image_id\),item\)/);
+  assert.doesNotMatch(loader, /ensureFullPool/);
+  assert.doesNotMatch(loader, /MaterialPaginationRuntime61/);
+});
+
+test('AI review delegates numbered navigation to the shared pagination component', () => {
+  const source = reviewBlock();
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /onPageChange: page=>loadReviewPage\(\(page-1\)\*review\.limit\)/);
+  assert.doesNotMatch(source, /pager\.innerHTML=`<button class="btn mini"/);
+});
+

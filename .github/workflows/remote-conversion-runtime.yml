@@ -37,6 +37,7 @@ on:
       - 'tests/frontend/deployment-action-owner-retirement.test.mjs'
       - 'tests/frontend/deployment-artifact-refresh.test.mjs'
       - 'tests/frontend/deployment-runtime-source.test.mjs'
+      - 'tests/frontend/rknn-conversion-resource-live.test.mjs'
       - 'tests/frontend/resource-deployment-public-owner.test.mjs'
       - 'tests/api/test_rknn_board_validation.py'
       - '.github/workflows/remote-conversion-runtime.yml'
@@ -136,7 +137,9 @@ jobs:
           node --test
           tests/frontend/deployment-action-owner-retirement.test.mjs
           tests/frontend/deployment-artifact-refresh.test.mjs
+          tests/frontend/conversion-unified-task-truth.test.mjs
           tests/frontend/deployment-runtime-source.test.mjs
+          tests/frontend/rknn-conversion-resource-live.test.mjs
           tests/frontend/resource-deployment-public-owner.test.mjs
 
   control-plane:
@@ -163,15 +166,19 @@ jobs:
           platform_core/node_agent_conversion_runtime.py
           tests/api/test_conversion_portable_contract.py
           tests/api/test_rknn_board_validation.py
+          tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_model_artifacts.py
       - name: Portable creation and result commit contracts
         run: >-
           python -m pytest -q
           tests/api/test_conversion_portable_contract.py
           tests/api/test_rknn_board_validation.py
+          tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_model_artifacts.py
       - name: Permanent Remote Conversion guards
         shell: bash
         run: |
@@ -198,13 +205,14 @@ jobs:
           grep -Fq 'value="agent"' static/app.js
           grep -Fq '"conversion.rknn",' platform_core/service_nodes.py
           grep -Fq 'probe_rknn_toolkit' node_agent.py
-          grep -Fq 'rk3576' platform_core/conversion.py
+          grep -Fq 'SUPPORTED_ROCKCHIP_CHIPS = frozenset({"rk3568", "rk3576"})' platform_core/conversion.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS = SUPPORTED_ROCKCHIP_CHIPS' platform_core/remote_execution_transport.py
           grep -Fq "target_contract = validate_target(target, params)" deployment_worker.py
-          grep -Fq "supported = {'rk3568', 'rk3576'}" deployment_worker.py
-          if grep -Eiq 'rk3588|rk3566|rk3562|rv1103|rv1106|rv1126|rk2118' deployment_worker.py; then echo 'product RKNN worker must only support RK3568/RK3576' >&2; exit 1; fi
+          grep -Fq 'if chip not in SUPPORTED_ROCKCHIP_CHIPS:' deployment_worker.py
+          if grep -Eiq 'rk3588|rk3578|rk3566|rk3562|rv1103|rv1106|rv1126|rk2118' deployment_worker.py; then echo 'product RKNN worker must only support RK3568/RK3576' >&2; exit 1; fi
           grep -Fq 'value="rk3568"' static/app.js
           grep -Fq 'value="rk3576"' static/app.js
-          if grep -Fq 'option value="rk3588"' static/app.js; then echo 'product RKNN UI must only expose RK3568/RK3576' >&2; exit 1; fi
+          if grep -Eq 'option value="rk(3578|3588)"' static/app.js; then echo 'product RKNN UI must only expose RK3568/RK3576' >&2; exit 1; fi
           grep -Fq 'build_rknn_calibration_snapshot' platform_core/remote_execution_transport.py
           grep -Fq 'REMOTE_CONVERSION_DOWNLOADING_CALIBRATION' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'calibration_snapshot=portable_calibration' app.py
@@ -235,6 +243,9 @@ jobs:
           grep -Fq '("agent.remote",)' app.py
           grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
           grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
+          grep -Fq 'created_destination = False' platform_core/remote_execution_transport.py
+          grep -Fq 'if not job_committed:' platform_core/remote_execution_transport.py
+          grep -Fq 'test_model_conversion_commit_rolls_back_new_local_file_before_job_commit' tests/unit/test_remote_execution_transport.py
           grep -Fq '"params": params' platform_core/remote_execution_transport.py
           grep -Fq 'from .external_publish_request import (' platform_core/remote_execution_transport.py
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/remote_execution_transport.py
@@ -242,10 +253,18 @@ jobs:
           grep -Fq 'assert job["params"]["chip"] == "rk3568"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
           grep -Fq 'test_deliverable_conversion_finalization_requests_existing_publish_owner' tests/unit/test_conversion_tasks.py
+          grep -Fq 'def conversion_job_artifact_references(' platform_core/model_artifacts.py
+          grep -Fq "WHEN TRIM(excluded.conversion_job_id) <> ''" platform_core/model_artifacts.py
+          grep -Fq 'CONVERSION_JOB_DELIVERY_IMMUTABLE' app.py
+          grep -Fq 'CONVERSION_JOB_ARTIFACT_REFERENCED' app.py
+          grep -Fq 'test_successful_conversion_record_cannot_be_deleted_independently' tests/api/test_deployment_artifact_visibility.py
+          grep -Fq 'test_failed_unreferenced_conversion_record_can_be_deleted' tests/api/test_deployment_artifact_visibility.py
+          grep -Fq 'test_conversion_job_reference_falls_back_to_canonical_identity' tests/unit/test_model_artifacts.py
+          grep -Fq "deletable=['failed','stopped','cancelled','blocked_by_environment'].includes(status)" static/app.js
           ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_conversion_runtime.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 
@@ -283,5 +302,5 @@ jobs:
           grep -Fq 'RK3568' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'RK3576' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

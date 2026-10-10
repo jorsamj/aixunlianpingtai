@@ -99,9 +99,9 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
     const status = url.searchParams.get('processing_status');
     const query = url.searchParams.get('query') || '';
-    const cursor = url.searchParams.get('cursor') || '';
+    const requestedPage = Number(url.searchParams.get('page') || 1);
     const annotated = url.searchParams.get('annotated');
-    const limit = Number(url.searchParams.get('limit') || 48);
+    const limit = Number(url.searchParams.get('page_size') || url.searchParams.get('limit') || 48);
 
     let body;
     if (limit === 1 && status === 'unprocessed') {
@@ -113,11 +113,13 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
     } else if (limit === 1) {
       body = {items: [], total: 96, next_cursor: null};
     } else if (query === 'smoke') {
-      body = {items: [material('m-search', 'smoke-filtered.jpg')], total: 1, next_cursor: null};
-    } else if (cursor === 'cursor-2') {
-      body = {items: [material('m-2', 'page-two.jpg')], total: 96, next_cursor: null};
+      body = {items: [material('m-search', 'smoke-filtered.jpg')], total: 1, page: 1, page_size: limit, total_pages: 1, has_previous: false, has_next: false, next_cursor: null};
+    } else if (requestedPage === 50) {
+      body = {items: [material('m-50', 'page-fifty.jpg')], total: 4800, page: 50, page_size: limit, total_pages: 100, has_previous: true, has_next: true, next_cursor: null};
+    } else if (requestedPage === 2) {
+      body = {items: [material('m-2', 'page-two.jpg')], total: 4800, page: 2, page_size: limit, total_pages: 100, has_previous: true, has_next: true, next_cursor: null};
     } else {
-      body = {items: [material('m-1', 'page-one.jpg')], total: 96, next_cursor: 'cursor-2'};
+      body = {items: [material('m-1', 'page-one.jpg')], total: 4800, page: 1, page_size: limit, total_pages: 100, has_previous: false, has_next: true, next_cursor: null};
     }
 
     await route.fulfill({
@@ -142,7 +144,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
   await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#data412Grid')).toContainText('page-one.jpg', {timeout: 10_000});
-  await expect(page.locator('#data412Pager')).toContainText('1 / 2');
+  await expect(page.locator('#data412Pager')).toContainText('当前第 1 页');
 
   await page.evaluate(() => {
     document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
@@ -161,19 +163,29 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.waitForTimeout(320);
   expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().requestSerial)).toBe(stableSerial);
 
-  const next = page.locator('#data412Pager button:last-child');
+  const next = page.locator('#data412Pager').getByRole('button', {name: '下一页'});
   await expect(next).toBeEnabled();
   const secondPageRequest = page.waitForRequest(request => {
     const url = new URL(request.url());
     return url.pathname.includes('/api/v61/projects/')
       && url.pathname.endsWith('/materials')
-      && url.searchParams.get('cursor') === 'cursor-2';
+      && url.searchParams.get('page') === '2';
   });
   await next.click();
   await secondPageRequest;
   await expect(page.locator('#data412Grid')).toContainText('page-two.jpg', {timeout: 10_000});
-  await expect(page.locator('#data412Pager')).toContainText('2 / 2');
+  await expect(page.locator('#data412Pager')).toContainText('当前第 2 页');
   await expect(page.locator('.data426-shell')).toHaveAttribute('data-performance-marker', 'preserve-me');
+
+  const jumpRequest = page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return url.pathname.endsWith('/materials') && url.searchParams.get('page') === '50';
+  });
+  await page.locator('#data412Pager [data-pagination-input]').fill('50');
+  await page.locator('#data412Pager').getByRole('button', {name: '跳转'}).click();
+  await jumpRequest;
+  await expect(page.locator('#data412Grid')).toContainText('page-fifty.jpg', {timeout: 10_000});
+  await expect(page.locator('#data412Pager')).toContainText('当前第 50 页');
 
   await page.locator('#data412Q').fill('smoke');
   await expect(page.locator('#data412Grid')).toContainText('smoke-filtered.jpg', {timeout: 10_000});

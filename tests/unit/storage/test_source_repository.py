@@ -112,6 +112,10 @@ def test_existing_wal_connection_does_not_reapply_journal_mode(monkeypatch, tmp_
         def fetchone(self):
             return [self.value]
 
+        def fetchall(self):
+            # Schema initialization will see the current revision column.
+            return [{"name": "runtime_revision"}]
+
     class FakeDatabase:
         def __init__(self):
             self.row_factory = None
@@ -147,6 +151,10 @@ def test_non_wal_connection_sets_busy_timeout_before_switching_mode(monkeypatch,
         def fetchone(self):
             return [self.value]
 
+        def fetchall(self):
+            # Schema initialization will see the current revision column.
+            return [{"name": "runtime_revision"}]
+
     class FakeDatabase:
         def __init__(self):
             self.row_factory = None
@@ -180,6 +188,10 @@ def test_concurrent_first_initialization_serializes_wal_transition(monkeypatch, 
 
         def fetchone(self):
             return [self.value]
+
+        def fetchall(self):
+            # Schema initialization will see the current revision column.
+            return [{"name": "runtime_revision"}]
 
     transition = threading.Lock()
 
@@ -228,3 +240,54 @@ def test_concurrent_first_initialization_serializes_wal_transition(monkeypatch, 
                 errors.append(error)
 
     assert errors == []
+
+
+def test_runtime_revision_monotonic_for_config_changes_but_not_cosmetic_edits(tmp_path):
+    repository = StorageSourceRepository(tmp_path / "storage.sqlite3")
+    source = repository.create({
+        "id": "revision_guard", "name": "guard", "type": "local",
+        "config": {"root": "A"}, "enabled": True,
+    })
+    first = source.runtime_revision
+    rename = repository.update(source.id, {"name": "new-display-name"})
+    assert rename.runtime_revision == first
+    other = repository.update(source.id, {"config": {"root": "B"}})
+    assert other.runtime_revision == first + 1
+    restored = repository.update(source.id, {"config": {"root": "A"}})
+    assert restored.runtime_revision == first + 2
+    assert restored.config == source.config
+    disabled = repository.update(source.id, {"enabled": False})
+    assert disabled.runtime_revision == first + 3
+    with_secret = repository.update(source.id, {"secret_ref": "new-version"})
+    assert with_secret.runtime_revision == first + 4
+    repository.record_health(source.id, ok=True, message="ok")
+    assert repository.get(source.id).runtime_revision == first + 4
+
+
+def test_legacy_storage_source_schema_migrates_revision_without_losing_records(tmp_path):
+    db_path = tmp_path / "storage.sqlite3"
+    with sqlite3.connect(db_path) as database:
+        database.execute("""
+            CREATE TABLE storage_sources (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL, config_json TEXT NOT NULL DEFAULT '{}',
+                secret_ref TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
+                health_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                health_message TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+        """)
+        database.execute(
+            "INSERT INTO storage_sources "
+            "(id,name,type,config_json,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("legacy_local", "legacy", "local", '{"root":"old"}', "old", "old"),
+        )
+    migrated = StorageSourceRepository(db_path)
+    assert migrated.get("legacy_local").config == {"root": "old"}
+    assert migrated.get("legacy_local").runtime_revision == 1
+    changed = migrated.update("legacy_local", {"config": {"root": "new"}})
+    assert changed.runtime_revision == 2
+    assert StorageSourceRepository(db_path).get("legacy_local").runtime_revision == 2

@@ -93,8 +93,31 @@ test('durable stream updates a known training row without a canonical GET per pr
     phase: 'training',
     progress_percent: 42.5,
     current_item: 'Epoch 12/30 · Batch 20/100',
+    current_epoch: 12,
+    total_epochs: 30,
+    current_batch: 20,
+    total_batches: 100,
+    elapsed_seconds: 88,
+    eta_seconds: 132,
     worker_id: 'gpu-worker-1',
     updated_at: '2026-09-22T00:00:01Z',
+    training_display_progress: {
+      revision: 200,
+      updated_at: '2026-09-22T00:00:01Z',
+      status: 'RUNNING',
+      phase: 'training',
+      phase_progress: 37.33,
+      overall_progress: 42.5,
+      current_epoch: 12,
+      total_epochs: 30,
+      current_batch: 20,
+      total_batches: 100,
+      elapsed_seconds: 88,
+      eta_seconds: 132,
+      throughput: 21.5,
+      message: 'Epoch 12/30 · Batch 20/100',
+      telemetry_source: 'worker_training_telemetry',
+    },
   });
 
   assert.equal(realtime.at(-1), true);
@@ -104,6 +127,9 @@ test('durable stream updates a known training row without a canonical GET per pr
   assert.equal(state.jobs[0].current_batch, 20);
   assert.equal(state.jobs[0].total_batches, 100);
   assert.equal(state.jobs[0].task_worker_id, 'gpu-worker-1');
+  assert.equal(state.jobs[0].elapsed_seconds, 88);
+  assert.equal(state.jobs[0].eta_seconds, 132);
+  assert.equal(state.jobs[0].training_display_progress.revision, 200);
   assert.equal(renders, 1);
   assert.equal(refreshes, 0);
   assert.equal(detailUpdates.length, 1);
@@ -211,6 +237,37 @@ test('stream errors restore polling and leaving the page closes the connection',
   assert.equal(source.closed, true);
   assert.equal(cleared.includes('training-jobs'), true);
 
+  runtime.destroy();
+  cleanup();
+});
+
+
+test('older stream revision cannot overwrite newer canonical training display truth', () => {
+  const state = {
+    page: '训练任务', project: {id: 'p1'},
+    jobs: [{
+      id: 'train-1', task_id: 'train-1', status: 'running', task_status: 'RUNNING',
+      progress_percent: 55, current_epoch: 16, total_epochs: 30,
+      training_display_progress: {revision: 300, overall_progress: 55, current_epoch: 16, total_epochs: 30},
+    }],
+  };
+  globalThis.document = {visibilityState: 'visible', addEventListener() {}, removeEventListener() {}};
+  globalThis.window = {TrainingTaskVisibilityRuntime: {render() { return true; }}};
+  const runtime = installTrainingProgressStream({
+    getState: () => state,
+    projectId: () => state.project.id,
+    trainingTaskRuntime: {async refresh() { return {stale: false, jobs: state.jobs}; }},
+    pollRegistry: {setTrainingRealtimeActive() {}, clear() {}},
+    EventSourceImpl: FakeEventSource,
+    documentImpl: globalThis.document,
+  });
+
+  assert.equal(runtime.applyUpdate({
+    task_id: 'train-1', project_id: 'p1', status: 'RUNNING', progress_percent: 42,
+    training_display_progress: {revision: 299, overall_progress: 42, current_epoch: 12, total_epochs: 30},
+  }), false);
+  assert.equal(state.jobs[0].progress_percent, 55);
+  assert.equal(state.jobs[0].current_epoch, 16);
   runtime.destroy();
   cleanup();
 });

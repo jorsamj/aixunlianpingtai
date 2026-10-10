@@ -1,5 +1,6 @@
 import pytest
 
+from platform_core import snapshots as snapshots_module
 from platform_core.snapshots import (
     build_snapshot,
     dataset_revision_document,
@@ -11,8 +12,8 @@ from platform_core.training_splits import SplitMode, SplitRequest, build_split_m
 
 def test_snapshot_contains_only_processed_images_and_is_deterministic():
     images = [
-        {"id": "b", "processing_status": "processed", "labels": ["smoke"], "boxes": [{"label": "smoke"}]},
-        {"id": "a", "processing_status": "processed", "labels": ["fire"], "boxes": [{"label": "fire"}]},
+        {"id": "b", "processing_status": "processed", "labels": ["smoke"], "annotation_scope": ["fire", "smoke"], "boxes": [{"label": "smoke"}]},
+        {"id": "a", "processing_status": "processed", "labels": ["fire"], "annotation_scope": ["fire", "smoke"], "boxes": [{"label": "fire"}]},
         {"id": "c", "processing_status": "unprocessed", "labels": [], "boxes": []},
     ]
 
@@ -24,18 +25,68 @@ def test_snapshot_contains_only_processed_images_and_is_deterministic():
     assert first["val_image_ids"] == ["b"]
     assert first["label_counts"] == {"fire": 1, "smoke": 1}
     assert first["images"][0]["annotation_state"] == "annotated"
-    assert first["images"][0]["annotation_scope"] == ["fire"]
+    assert first["images"][0]["annotation_scope"] == ["fire", "smoke"]
 
 
-def test_unprocessed_selected_image_is_rejected():
-    images = [{"id": "raw", "processing_status": "unprocessed", "labels": []}]
+def test_annotated_partial_review_scope_cannot_enter_multiclass_training():
+    images = [{
+        "id": "positive", "annotation_state": "annotated",
+        "annotation_scope": ["smoke"],
+        "boxes": [{"label": "smoke"}],
+    }]
+    schema = [{"code": "smoke"}, {"code": "fire"}]
+    with pytest.raises(ValueError, match="标注审核范围未覆盖"):
+        build_snapshot(images, ["positive"], [], schema, seed=1)
 
-    try:
-        build_snapshot(images, ["raw"], [], [{"code": "fire"}], seed=1)
-    except ValueError as error:
-        assert "未处理" in str(error)
-    else:
-        raise AssertionError("unprocessed training material must not enter a snapshot")
+    # The source is usable only after both target classes have actually been
+    # reviewed; it must not be widened by the training snapshot itself.
+    images[0]["annotation_scope"] = ["smoke", "fire"]
+    valid = build_snapshot(images, ["positive"], [], schema, seed=1)
+    assert valid["images"][0]["annotation_scope"] == ["fire", "smoke"]
+
+
+def test_annotated_partial_review_scope_cannot_enter_durable_snapshot():
+    images = [
+        {
+            "id": f"image-{index}", "dataset_id": "pool",
+            "annotation_state": "annotated",
+            "annotation_scope": ["smoke"],
+            "boxes": [{"label": "smoke", "x1": 1, "y1": 1, "x2": 3, "y2": 3}],
+            "content_sha256": f"hash-{index}", "group_id": f"group-{index}",
+        }
+        for index in range(6)
+    ]
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=20,
+            validation_percent=20,
+        ),
+        seed=19,
+    )
+    with pytest.raises(ValueError, match="标注审核范围未覆盖"):
+        build_snapshot(
+            images, manifest,
+            [{"code": "smoke", "class_id": 0}, {"code": "fire", "class_id": 1}],
+        )
+
+
+def test_legacy_snapshot_freezes_formal_ground_truth_without_owning_processing_admission():
+    images = [{
+        "id": "raw",
+        "processing_status": "unprocessed",
+        "labels": ["fire"],
+        "annotation_state": "annotated",
+        "annotated": True,
+        "boxes": [{"label": "fire"}],
+    }]
+
+    snapshot = build_snapshot(images, ["raw"], [], [{"code": "fire"}], seed=1)
+
+    assert snapshot["train_image_ids"] == ["raw"]
+    assert snapshot["images"][0]["annotation_state"] == "annotated"
 
 
 def test_v3_snapshot_contains_three_roles_provenance_content_hash_and_annotation_contract():
@@ -51,6 +102,9 @@ def test_v3_snapshot_contains_three_roles_provenance_content_hash_and_annotation
                 "video_task_id": "video-1" if index < 2 else "",
                 "group_id": "video-1" if index < 2 else f"g{index}",
                 "content_sha256": f"hash-{index}",
+                "annotated": True,
+                "annotation_state": "annotated",
+                "annotation_scope": ["fire"],
                 "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 2, "y2": 2}],
             }
         )
@@ -215,7 +269,7 @@ def test_dataset_revision_is_split_independent_but_snapshot_is_not():
     first = build_snapshot(images, first_manifest, [{"code": "fire", "class_id": 0}])
     second = build_snapshot(images, second_manifest, [{"code": "fire", "class_id": 0}])
 
-    assert first["dataset_revision_schema_version"] == 1
+    assert first["dataset_revision_schema_version"] == 2
     assert first["canonical_annotation_schema_version"] == 1
     assert first["dataset_revision_id"] == second["dataset_revision_id"]
     assert first["snapshot_id"] != second["snapshot_id"]
@@ -260,6 +314,83 @@ def test_dataset_revision_changes_with_platform_or_external_annotation_truth():
         [{"code": "fire", "class_id": 0}],
     )
     assert platform_snapshot["dataset_revision_id"] != original["dataset_revision_id"]
+
+
+def test_dataset_revision_v2_tracks_source_annotation_identity():
+    images = _revision_images()
+    for index, row in enumerate(images):
+        row["source_annotation_state"] = "annotated"
+        row["source_annotation_hash"] = f"{index + 100:064x}"
+        row["source_labels"] = ["fire"]
+        row["training_projection_policy"] = "selected_labels_v1"
+        row["training_projection_digest"] = f"{index + 200:064x}"
+
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=17,
+    )
+    original = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    assert original["dataset_revision_schema_version"] == 2
+
+    changed_source = [dict(row) for row in images]
+    changed_source[1]["source_annotation_hash"] = "f" * 64
+    changed = build_snapshot(
+        changed_source,
+        manifest,
+        [{"code": "fire", "class_id": 0}],
+    )
+
+    assert changed["dataset_revision_id"] != original["dataset_revision_id"]
+    original_row = next(
+        row for row in original["images"] if row["image_id"] == "1"
+    )
+    changed_row = next(
+        row for row in changed["images"] if row["image_id"] == "1"
+    )
+    assert original_row["annotation_hash"] == changed_row["annotation_hash"]
+    assert (
+        original_row["training_projection_digest"]
+        == changed_row["training_projection_digest"]
+    )
+
+
+def test_dataset_revision_v1_identity_remains_backward_compatible():
+    images = _revision_images()
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=23,
+    )
+    current = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    legacy_id = snapshots_module._dataset_revision_id(
+        current["images"],
+        current["label_schema"],
+        schema_version=1,
+    )
+    legacy = {
+        **current,
+        "dataset_revision_schema_version": 1,
+        "dataset_revision_id": legacy_id,
+    }
+
+    normalized = ensure_dataset_revision(legacy)
+    document = dataset_revision_document(legacy)
+
+    assert normalized["dataset_revision_schema_version"] == 1
+    assert normalized["dataset_revision_id"] == legacy_id
+    assert document["schema_version"] == 1
+    assert document["dataset_revision_id"] == legacy_id
 
 
 def test_dataset_revision_document_and_persistence_are_immutable(tmp_path):
@@ -364,3 +495,49 @@ def test_feedback_provenance_changes_only_feedback_backed_revision_identity():
     assert set(feedback["supplement_provenance"]["adopted_material_ids"]) == {"img-0", "img-3"}
     revision = dataset_revision_document(feedback)
     assert revision["supplement_provenance"]["adoption_id"] == feedback["supplement_provenance"]["adoption_id"]
+
+
+@pytest.mark.parametrize("state,boxes", [
+    ("annotated", [{"label": "fire", "x1": 1, "y1": 1, "x2": 20, "y2": 20}]),
+    ("confirmed_empty", []),
+])
+def test_rescan_stale_ground_truth_is_rejected_then_reconfirmed(state, boxes):
+    image = {
+        "id": "image-1", "content_sha256": "b" * 64,
+        "annotation_state": state, "annotation_scope": ["fire"],
+        "annotation_needs_review": True,
+        "annotation_review_reason": "SOURCE_CONTENT_CHANGED",
+        "boxes": boxes,
+    }
+    with pytest.raises(ValueError, match="需要重新审核"):
+        build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+
+    # Clearing the flag cannot turn stale H1 formal annotations into H2 truth.
+    image["annotation_needs_review"] = False
+    image["annotation_review_reason"] = ""
+    image["annotation_source_content_sha256"] = "a" * 64
+    with pytest.raises(ValueError, match="内容已变化"):
+        build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+
+    image["annotation_source_content_sha256"] = "b" * 64
+    accepted = build_snapshot([image], ["image-1"], [], [{"code": "fire"}], seed=1)
+    assert accepted["images"][0]["annotation_state"] == state
+
+
+def test_durable_split_snapshot_rejects_any_rescan_stale_gt():
+    images = [{
+        "id": f"item-{i}", "dataset_id": "training",
+        "group_id": f"group-{i}", "content_sha256": f"content-{i}",
+        "annotation_state": "annotated", "annotation_scope": ["fire"],
+        "annotation_needs_review": i == 0,
+        "annotation_review_reason": "SOURCE_CONTENT_CHANGED" if i == 0 else "",
+        "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 2, "y2": 2}],
+    } for i in range(6)]
+    split = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in images),
+        experiment_percent=20, validation_percent=20,
+    )
+    manifest = build_split_manifest(images, split, seed=17)
+    with pytest.raises(ValueError, match="需要重新审核"):
+        build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])

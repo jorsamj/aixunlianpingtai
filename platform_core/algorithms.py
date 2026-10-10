@@ -12,6 +12,16 @@ def _update_lock(path: Path) -> FileLock:
     return FileLock(str(path.resolve()) + ".lock", timeout=30)
 
 
+def _version_cleanup_snapshot(version: Mapping[str, Any]) -> dict[str, str]:
+    """Persist only bounded identity/path evidence needed to retry post-delete cleanup."""
+    snapshot = {"id": str(version.get("id") or "").strip()}
+    for field in ("stored_path", "best_path", "last_path", "path"):
+        value = str(version.get(field) or "").strip()
+        if value:
+            snapshot[field] = value
+    return snapshot
+
+
 def is_trainable_version(version: Mapping[str, Any], framework: str) -> bool:
     status = str(version.get("training_status") or "").strip().upper()
     successful = status in {
@@ -254,6 +264,11 @@ def algorithm_store_status(path: Path) -> dict[str, Any]:
     return AlgorithmSqlStore(Path(path)).migration_status()
 
 
+def algorithm_store_revision(path: Path) -> int:
+    """Return the canonical algorithm graph revision for read-cache invalidation."""
+    return AlgorithmSqlStore(Path(path)).revision()
+
+
 def create_algorithm(
     path: Path,
     payload: Mapping[str, Any],
@@ -298,6 +313,20 @@ def delete_algorithm(path: Path, algorithm_id: str) -> None:
 
 def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
     return AlgorithmSqlStore(Path(path)).attach_version(str(algorithm_id), version)
+
+def attach_version_if_current(
+    path: Path,
+    algorithm_id: str,
+    version: Mapping[str, Any],
+    *,
+    expected_current_version_id: str | None,
+) -> dict:
+    """Atomically attach a training version only if its frozen base is still current."""
+    return AlgorithmSqlStore(Path(path)).attach_version_if_current(
+        str(algorithm_id),
+        version,
+        expected_current_version_id=expected_current_version_id,
+    )
 
 def update_algorithm_version(
     path: Path,
@@ -366,6 +395,7 @@ def rollback_algorithm_version(
         "cleanup_status": "cleanup_pending",
         "cleanup_targets": [],
         "cleanup_errors": [],
+        "cleanup_version": _version_cleanup_snapshot(current),
     }
     try:
         removed_version = store.rollback_version(
@@ -457,6 +487,7 @@ def delete_algorithm_version(
         "cleanup_status": "cleanup_pending",
         "cleanup_targets": [],
         "cleanup_errors": [],
+        "cleanup_version": _version_cleanup_snapshot(target),
     }
     try:
         removed = store.delete_version_with_operation(
@@ -501,3 +532,117 @@ def delete_algorithm_version(
         "remote_delete": dict(remote_result),
     }
 
+
+
+
+def retry_algorithm_version_cleanup(
+    path: Path,
+    algorithm_id: str,
+    operation_id: str,
+    *,
+    cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]],
+) -> dict:
+    """Retry only the post-delete cleanup recorded by an existing version operation.
+
+    Remote provider deletion and algorithm-version metadata mutation are deliberately
+    not repeated here. The existing operation remains the single recovery journal.
+    """
+    path = Path(path)
+    algorithm_id = str(algorithm_id)
+    operation_id = str(operation_id)
+    with _update_lock(path):
+        store = AlgorithmSqlStore(path)
+        algorithm = store.read_one(algorithm_id)
+        if algorithm is None:
+            raise PlatformError(
+                "ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。",
+                "请刷新算法列表后重试。", 404,
+            )
+        operation = next(
+            (
+                item for item in (algorithm.get("version_operations") or [])
+                if str(item.get("id") or "") == operation_id
+            ),
+            None,
+        )
+        if not isinstance(operation, Mapping):
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_OPERATION_NOT_FOUND", "版本清理审计不存在",
+                f"找不到操作记录 {operation_id}。",
+                "请刷新算法版本操作记录后重试。", 404,
+            )
+        if str(operation.get("action") or "") not in {"rollback_and_delete", "delete_version"}:
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_OPERATION_INVALID", "该操作不支持版本产物续清理",
+                f"operation={operation_id}; action={operation.get('action') or '-'}",
+                "只能重试由版本回退或历史版本删除产生的 cleanup 操作。", 409,
+            )
+
+        deleted_version_id = str(operation.get("deleted_version_id") or "").strip()
+        if not deleted_version_id:
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_IDENTITY_MISSING", "版本清理身份不完整",
+                f"operation={operation_id} 缺少 deleted_version_id。",
+                "请检查版本操作审计后再执行清理。", 409,
+            )
+
+        cleanup_status = str(operation.get("cleanup_status") or "cleanup_pending")
+        if cleanup_status == "cleanup_completed":
+            return {
+                "algorithm_id": algorithm_id,
+                "operation_id": operation_id,
+                "deleted_version_id": deleted_version_id,
+                "cleanup_status": cleanup_status,
+                "cleanup_targets": [str(item) for item in operation.get("cleanup_targets") or []],
+                "cleanup_errors": [str(item) for item in operation.get("cleanup_errors") or []],
+                "already_completed": True,
+            }
+        if cleanup_status not in {"cleanup_pending", "cleanup_failed"}:
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_STATE_INVALID", "版本清理状态不可重试",
+                f"operation={operation_id}; cleanup_status={cleanup_status}",
+                "请先核对版本操作审计，平台不会猜测未知清理状态。", 409,
+            )
+
+        raw_snapshot = operation.get("cleanup_version")
+        version_snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, Mapping) else {}
+        snapshot_id = str(version_snapshot.get("id") or "").strip()
+        if snapshot_id and snapshot_id != deleted_version_id:
+            raise PlatformError(
+                "ALGORITHM_CLEANUP_IDENTITY_CONFLICT", "版本清理快照身份冲突",
+                f"operation={operation_id}; deleted={deleted_version_id}; snapshot={snapshot_id}",
+                "请停止自动清理并核对版本操作审计。", 409,
+            )
+        version_snapshot["id"] = deleted_version_id
+
+        try:
+            cleanup_result = dict(cleanup(dict(algorithm), version_snapshot) or {})
+        except Exception as error:
+            cleanup_result = {
+                "status": "cleanup_failed",
+                "targets": [],
+                "errors": [str(error)],
+            }
+        status = str(cleanup_result.get("status") or "cleanup_failed")
+        if status not in {"cleanup_completed", "cleanup_pending", "cleanup_failed"}:
+            status = "cleanup_failed"
+        targets = [str(item) for item in cleanup_result.get("targets") or []]
+        errors = [str(item) for item in cleanup_result.get("errors") or []]
+        store.update_version_operation(
+            algorithm_id,
+            operation_id,
+            {
+                "cleanup_status": status,
+                "cleanup_targets": targets,
+                "cleanup_errors": errors,
+            },
+        )
+        return {
+            "algorithm_id": algorithm_id,
+            "operation_id": operation_id,
+            "deleted_version_id": deleted_version_id,
+            "cleanup_status": status,
+            "cleanup_targets": targets,
+            "cleanup_errors": errors,
+            "already_completed": False,
+        }

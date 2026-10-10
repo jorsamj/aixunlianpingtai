@@ -151,6 +151,23 @@ def _read_json(path: Path, default: Any) -> Any:
     return value
 
 
+def _tail_log_text(path: Path, *, max_chars: int = 6000) -> str:
+    """Read only a bounded UTF-8 suffix from a potentially large runtime log."""
+    try:
+        size = int(path.stat().st_size)
+        if size <= 0:
+            return ""
+        max_chars = max(1, int(max_chars))
+        max_bytes = max(4096, max_chars * 4 + 4)
+        start = max(0, size - max_bytes)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            raw = stream.read(max_bytes)
+        return raw.decode("utf-8", errors="replace")[-max_chars:].strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(
@@ -190,6 +207,7 @@ class AgentTrainingRunner:
         heartbeat_interval: float = 5.0,
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
+        resource_resolver=None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -201,6 +219,7 @@ class AgentTrainingRunner:
         self.heartbeat_interval = max(1.0, float(heartbeat_interval))
         self.transfer_timeout = max(30.0, float(transfer_timeout))
         self.process_poll_interval = max(0.05, float(process_poll_interval))
+        self.resource_resolver = resource_resolver or self._resolve_resource_contract_subprocess
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
@@ -322,11 +341,15 @@ class AgentTrainingRunner:
         progress: float,
         stage: str,
         current_item: str = "",
+        resource_resolution: Mapping[str, Any] | None = None,
+        runtime_resources: Mapping[str, Any] | None = None,
     ) -> None:
         monitor.beat(
             progress=max(0.0, min(100.0, float(progress))),
             stage=str(stage),
             current_item=current_item or None,
+            resource_resolution=resource_resolution,
+            runtime_resources=runtime_resources,
         )
         self._assert_active(monitor)
 
@@ -504,6 +527,81 @@ class AgentTrainingRunner:
             return default
         return _primitive(params.get(key), default)
 
+    def _resolve_resource_contract_subprocess(
+        self,
+        request: Mapping[str, Any],
+        context: Mapping[str, Any],
+        model_argument: str,
+        output_path: Path,
+    ) -> dict[str, Any]:
+        """Run the canonical resolver in the same Python environment as Ultralytics."""
+        output_path = Path(output_path)
+        request_path = output_path.with_name("resource-request.json")
+        context_path = output_path.with_name("resource-context.json")
+        _atomic_write_json(request_path, dict(request))
+        _atomic_write_json(context_path, dict(context))
+        command = [
+            str(self.ultralytics_python),
+            "-m",
+            "platform_core.training_metrics",
+            "--request",
+            str(request_path),
+            "--context",
+            str(context_path),
+            "--model",
+            str(model_argument),
+            "--output",
+            str(output_path),
+        ]
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.runtime_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=self.transfer_timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise AgentTrainingRuntimeError(
+                f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
+            ) from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+            canonical_errors = re.findall(
+                r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)",
+                detail,
+            )
+            if canonical_errors:
+                code, message = canonical_errors[-1]
+                raise AgentTrainingRuntimeError(
+                    f"{code}: {message.strip()}"
+                )
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_FAILED: " + detail[-4000:]
+            )
+        resolved = _read_json(output_path, {})
+        if not (
+            isinstance(resolved, dict)
+            and int(resolved.get("resolved_batch") or 0) > 0
+            and int(
+                resolved.get("resolved_workers")
+                if resolved.get("resolved_workers") is not None else -1
+            ) >= 0
+            and str(resolved.get("resource_strategy") or "")
+            == str(request.get("resource_strategy") or "auto")
+        ):
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: remote resource contract is missing or invalid"
+            )
+        return dict(resolved)
+
     def _prepare_project(
         self,
         lease: RemoteExecutionLease,
@@ -542,7 +640,7 @@ class AgentTrainingRunner:
                 "remote training requested/selected device mismatch"
             )
         gpu_policy = str(
-            self._parameter(payload, "gpu_policy", "auto") or "auto"
+            self._parameter(payload, "gpu_policy", "exclusive") or "exclusive"
         ).strip().lower()
         if gpu_policy not in {"auto", "exclusive"}:
             raise AgentTrainingRuntimeError(
@@ -644,10 +742,82 @@ class AgentTrainingRunner:
         resource_context_path = job_dir / "resource-context.json"
         _atomic_write_json(resource_context_path, resource_context)
 
-        epochs = max(1, int(self._parameter(payload, "epochs", 30)))
+        epochs = max(1, int(self._parameter(payload, "epochs", 150)))
         imgsz = max(128, int(self._parameter(payload, "imgsz", 640)))
         batch = int(self._parameter(payload, "batch", 4))
         workers = max(0, int(self._parameter(payload, "workers", 0)))
+        resource_request = {
+            **{
+                str(key): value
+                for key, value in (payload.get("params") or {}).items()
+                if value is None or isinstance(value, (str, int, float, bool))
+            },
+            "data": str(data_yaml),
+            "device": selected_device,
+            "batch": batch,
+            "workers": workers,
+            "cache": self._parameter(payload, "cache", False),
+            "imgsz": imgsz,
+            "resource_strategy": str(
+                self._parameter(payload, "resource_strategy", "auto") or "auto"
+            ),
+            "resource_profile": str(
+                self._parameter(payload, "resource_profile", "performance") or "performance"
+            ),
+            "gpu_policy": gpu_policy,
+            "precision": precision,
+        }
+        resolved_resources = self.resource_resolver(
+            resource_request,
+            resource_context,
+            model_argument,
+            job_dir / "resolved-resources.json",
+        )
+        node_id = (
+            str(lease.worker_id).split(":", 1)[1].strip()
+            if str(lease.worker_id).startswith("agent:")
+            else ""
+        )
+        resolved_precision = str(
+            resolved_resources.get("resolved_precision") or ""
+        ).strip().lower()
+        if resolved_precision not in {"fp16", "fp32"}:
+            raise AgentTrainingRuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: remote precision was not resolved before Trainer startup"
+            )
+        expected_gpu_uuid = str(resource_context.get("gpu_uuid") or "").strip()
+        resolved_gpu_uuid = str(resolved_resources.get("gpu_uuid") or "").strip()
+        if (
+            expected_gpu_uuid
+            and resolved_gpu_uuid
+            and expected_gpu_uuid.lower().removeprefix("gpu-")
+            != resolved_gpu_uuid.lower().removeprefix("gpu-")
+        ):
+            raise AgentTrainingRuntimeError(
+                "GPU_IDENTITY_MISMATCH: resource resolution no longer matches assigned GPU"
+            )
+        if not node_id:
+            raise AgentTrainingRuntimeError(
+                "REMOTE_TRAINING_NODE_ID_MISSING: execution lease has no Agent node identity"
+            )
+        resolved_resources = {
+            **dict(resolved_resources),
+            "node_id": node_id,
+            "execution_generation": int(lease.generation),
+            "assigned_device": selected_device,
+            "gpu_uuid": resolved_gpu_uuid or resource_context.get("gpu_uuid"),
+            "gpu_name": resolved_resources.get("gpu_name") or resource_context.get("gpu_name"),
+            "gpu_index": resource_context.get("gpu_index"),
+            "gpu_free_bytes_at_assignment": resource_context.get("gpu_free_bytes"),
+            "gpu_total_bytes_at_assignment": resource_context.get("gpu_total_bytes"),
+            "gpu_utilization_percent_at_assignment": resource_context.get(
+                "gpu_utilization_percent"
+            ),
+        }
+        _atomic_write_json(
+            job_dir / "resolved-resources.json",
+            resolved_resources,
+        )
         run_name = f"remote_{lease.task_id}_{lease.generation}"
         runtime_stop_policy = str(
             self._parameter(payload, "runtime_stop_policy", "target_only") or "target_only"
@@ -681,8 +851,19 @@ class AgentTrainingRunner:
                 "selected_gpu": gpu,
                 "gpu_policy": gpu_policy,
                 "precision": precision,
+                "resolved_precision": resolved_precision,
                 "concurrent_reservations": concurrent_reservations,
                 "runtime_stop_policy": runtime_stop_policy,
+                "requested_resources": {
+                    "resource_strategy": resource_request["resource_strategy"],
+                    "resource_profile": resource_request["resource_profile"],
+                    "gpu_policy": gpu_policy,
+                    "precision": precision,
+                    "batch": batch,
+                    "workers": workers,
+                    "cache": resource_request["cache"],
+                },
+                "resolved_resources": resolved_resources,
                 "quality_gate": {
                     "runtime_stop_policy": runtime_stop_policy,
                     "eval_interval": max(0, int(self._parameter(payload, "eval_interval", 0))),
@@ -711,7 +892,7 @@ class AgentTrainingRunner:
             "--imgsz",
             str(imgsz),
             "--batch",
-            str(batch),
+            str(int(resolved_resources["resolved_batch"])),
             "--device",
             selected_device,
             "--assigned-device",
@@ -723,9 +904,11 @@ class AgentTrainingRunner:
             "--run-name",
             run_name,
             "--patience",
-            str(max(0, int(self._parameter(payload, "patience", 100)))),
+            str(max(0, int(self._parameter(payload, "patience", 40)))),
+            "--early-stopping-enabled",
+            str(bool(self._parameter(payload, "early_stopping_enabled", False))).lower(),
             "--workers",
-            str(workers),
+            str(int(resolved_resources["resolved_workers"])),
             "--optimizer",
             str(self._parameter(payload, "optimizer", "auto") or "auto"),
             "--lr0",
@@ -739,15 +922,15 @@ class AgentTrainingRunner:
             "--mosaic",
             str(float(self._parameter(payload, "mosaic", 1.0))),
             "--cache",
-            str(self._parameter(payload, "cache", False)),
+            str(resolved_resources.get("resolved_cache", False)),
             "--resource-strategy",
             str(self._parameter(payload, "resource_strategy", "auto") or "auto"),
             "--resource-profile",
-            str(self._parameter(payload, "resource_profile", "balanced") or "balanced"),
+            str(self._parameter(payload, "resource_profile", "performance") or "performance"),
             "--gpu-policy",
             gpu_policy,
             "--precision",
-            precision,
+            resolved_precision,
             "--resource-context",
             str(resource_context_path),
             "--resource-resolution",
@@ -1046,6 +1229,12 @@ class AgentTrainingRunner:
                 workdir,
                 monitor,
             )
+            self._heartbeat(
+                monitor,
+                progress=13,
+                stage="REMOTE_TRAINING_RESOLVING_RESOURCES",
+                current_item="核验远程 GPU 的 Batch / Workers / Precision / Cache",
+            )
             project, job_file, _worker, command = self._prepare_project(
                 lease,
                 payload,
@@ -1060,10 +1249,22 @@ class AgentTrainingRunner:
                 f"[agent] starting training worker "
                 f"generation={lease.generation} snapshot={snapshot_id}\n",
             )
+            prepared_job = _read_json(job_file, {})
+            resource_resolution = (
+                prepared_job.get("resolved_resources")
+                if isinstance(prepared_job, Mapping)
+                else None
+            )
+            if not isinstance(resource_resolution, Mapping):
+                raise AgentTrainingRuntimeError(
+                    "RESOURCE_PREPARE_REQUIRED: remote resolved resource truth is missing before Trainer spawn"
+                )
             self._heartbeat(
                 monitor,
                 progress=15,
                 stage="REMOTE_TRAINING_STARTING_WORKER",
+                current_item="资源校验完成，准备启动训练器",
+                resource_resolution=resource_resolution,
             )
 
             env = {
@@ -1092,6 +1293,31 @@ class AgentTrainingRunner:
                     self._terminate_active(strict=True)
                     raise
                 next_projection = 0.0
+                last_runtime_resources_signature = ""
+
+                def runtime_resources_projection(job: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
+                    raw = job.get("runtime_resources")
+                    if not isinstance(raw, Mapping) or not raw:
+                        return None, ""
+                    projection = {
+                        **dict(raw),
+                        "node_id": self.client.node_id,
+                        "execution_generation": lease.generation,
+                    }
+                    try:
+                        signature = json.dumps(
+                            projection,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (TypeError, ValueError, OverflowError) as error:
+                        raise AgentTrainingRuntimeError(
+                            "REMOTE_RUNTIME_RESOURCES_INVALID: Trainer runtime resources are not finite JSON"
+                        ) from error
+                    return projection, signature
+
                 try:
                     while launched.process.poll() is None:
                         self._assert_active(monitor)
@@ -1118,12 +1344,20 @@ class AgentTrainingRunner:
                                 if isinstance(job, Mapping)
                                 else ""
                             )
+                            runtime_projection, runtime_signature = runtime_resources_projection(
+                                job if isinstance(job, Mapping) else {}
+                            )
+                            if runtime_signature == last_runtime_resources_signature:
+                                runtime_projection = None
                             self._heartbeat(
                                 monitor,
                                 progress=progress,
                                 stage=stage,
                                 current_item=current_item,
+                                runtime_resources=runtime_projection,
                             )
+                            if runtime_projection is not None:
+                                last_runtime_resources_signature = runtime_signature
                             log_offset = self._forward_log_delta(
                                 lease,
                                 runtime_log,
@@ -1151,18 +1385,20 @@ class AgentTrainingRunner:
                 raise AgentTrainingRuntimeError(
                     "training worker produced no durable job result"
                 )
+            final_runtime_projection, final_runtime_signature = runtime_resources_projection(job)
+            if (
+                final_runtime_projection is not None
+                and final_runtime_signature != last_runtime_resources_signature
+            ):
+                monitor.beat(runtime_resources=final_runtime_projection)
+                self._assert_active(monitor)
+                last_runtime_resources_signature = final_runtime_signature
             if launched.process.returncode != 0:
                 error = str(job.get("error") or "").strip()
                 if not error:
                     error = str(job.get("message") or "").strip()
                 if not error:
-                    try:
-                        error = runtime_log.read_text(
-                            encoding="utf-8",
-                            errors="replace",
-                        )[-6000:]
-                    except OSError:
-                        error = ""
+                    error = _tail_log_text(runtime_log, max_chars=6000)
                 raise AgentTrainingRuntimeError(
                     error
                     or f"training worker exited with code "

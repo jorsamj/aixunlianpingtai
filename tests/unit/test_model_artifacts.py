@@ -1,13 +1,14 @@
 import hashlib
 import sqlite3
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from platform_core.errors import PlatformError
-from platform_core.algorithms import save_algorithms
+from platform_core.algorithms import list_algorithms, save_algorithms
 from platform_core.model_artifacts import (
     ARTIFACT_OSS_SOURCE_ID,
     ArtifactOSSConfigPayload,
@@ -15,6 +16,7 @@ from platform_core.model_artifacts import (
     ModelArtifactService,
     build_artifact_object_key,
     build_public_url,
+    model_delivery_version_fence,
 )
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
 from platform_core.storage.models import ObjectMetadata, StorageHealth
@@ -105,6 +107,114 @@ def test_purge_algorithm_deletes_remote_objects_and_canonical_rows(tmp_path: Pat
     assert result == {"artifacts_deleted": 1, "remote_objects_deleted": 1}
     assert provider.deleted == ["models/a1/best.pt"]
     assert service.repository.get("artifact-a1") is None
+
+
+def test_purge_version_deletes_only_target_version_objects_and_rows(
+    tmp_path: Path, monkeypatch,
+):
+    service = _service(tmp_path)
+
+    def add(artifact_id: str, version_id: str, object_key: str):
+        source = (
+            tmp_path / "projects" / "p1" / "algorithm_versions"
+            / "a1" / version_id / f"{artifact_id}.pt"
+        )
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(artifact_id.encode("utf-8"))
+        service.repository.upsert({
+            "artifact_id": artifact_id,
+            "project_id": "p1",
+            "algorithm_id": "a1",
+            "version_id": version_id,
+            "artifact_kind": "original",
+            "target": "original",
+            "chip_code": "",
+            "conversion_job_id": "",
+            "file_name": source.name,
+            "source_path": str(source),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "size_bytes": source.stat().st_size,
+            "metadata": {},
+        })
+        service.repository.patch(
+            artifact_id,
+            storage_source_id="default_local",
+            object_key=object_key,
+            public_url=f"https://models.example.com/{object_key}",
+            storage_status="UPLOADED",
+        )
+
+    add("artifact-v1", "v1", "models/a1/v1.pt")
+    add("artifact-v2", "v2", "models/a1/v2.pt")
+
+    class Provider:
+        def __init__(self):
+            self.deleted = []
+
+        def exists(self, _key):
+            return True
+
+        def delete(self, key):
+            self.deleted.append(key)
+
+    provider = Provider()
+    monkeypatch.setattr(service, "_provider", lambda _project_id, _source_id: provider)
+
+    result = service.purge_version("p1", "a1", "v1")
+
+    assert result == {"artifacts_deleted": 1, "remote_objects_deleted": 1}
+    assert provider.deleted == ["models/a1/v1.pt"]
+    assert service.repository.get("artifact-v1") is None
+    assert service.repository.get("artifact-v2") is not None
+
+
+def test_purge_version_keeps_canonical_rows_when_remote_delete_fails(
+    tmp_path: Path, monkeypatch,
+):
+    service = _service(tmp_path)
+    source = (
+        tmp_path / "projects" / "p1" / "algorithm_versions"
+        / "a1" / "v1" / "best.pt"
+    )
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"model")
+    service.repository.upsert({
+        "artifact_id": "artifact-v1",
+        "project_id": "p1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "artifact_kind": "original",
+        "target": "original",
+        "chip_code": "",
+        "conversion_job_id": "",
+        "file_name": "best.pt",
+        "source_path": str(source),
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "size_bytes": source.stat().st_size,
+        "metadata": {},
+    })
+    service.repository.patch(
+        "artifact-v1",
+        storage_source_id="default_local",
+        object_key="models/a1/v1.pt",
+        public_url="https://models.example.com/models/a1/v1.pt",
+        storage_status="UPLOADED",
+    )
+
+    class Provider:
+        def exists(self, _key):
+            return True
+
+        def delete(self, _key):
+            raise PermissionError("delete denied")
+
+    monkeypatch.setattr(service, "_provider", lambda _project_id, _source_id: Provider())
+
+    with pytest.raises(PlatformError) as exc_info:
+        service.purge_version("p1", "a1", "v1")
+
+    assert exc_info.value.code == "ALGORITHM_VERSION_ARTIFACT_PURGE_FAILED"
+    assert service.repository.get("artifact-v1") is not None
 
 
 def test_artifact_oss_config_is_standalone_from_material_storage(tmp_path: Path):
@@ -245,6 +355,232 @@ def _seed(root: Path):
     }), encoding="utf-8")
     (root / "projects.json").write_text(json.dumps([{"id": "p1", "name": "项目1"}]), encoding="utf-8")
     return model, output
+
+
+def test_stale_auto_upload_snapshot_does_not_revive_retired_version(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    stale_version = dict(algorithm["versions"][0])
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["versions"] = []
+    current[0]["current_version_id"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    summary = service.ingest_version("p1", algorithm, stale_version)
+
+    assert summary == {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_retry_refuses_to_reupload_artifact_after_version_retired(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "original"
+    )
+    row = service.repository.upsert(discovered)
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["versions"] = []
+    current[0]["current_version_id"] = ""
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    with pytest.raises(PlatformError) as error:
+        service.retry(row["artifact_id"])
+    assert error.value.code == "MODEL_ARTIFACT_VERSION_RETIRED"
+
+
+def test_auto_upload_stale_snapshot_skips_external_algorithm_delete_pending(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    stale = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["source_type"] = "EXTERNAL"
+    current[0]["provider_type"] = "CHANG_LIAN"
+    current[0]["external_active"] = False
+    current[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    result = service.ingest_version("p1", stale, stale["versions"][0])
+
+    assert result == {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_retry_refuses_external_algorithm_delete_pending_even_if_version_remains(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "original"
+    )
+    row = service.repository.upsert(discovered)
+
+    current = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    current[0]["source_type"] = "EXTERNAL"
+    current[0]["provider_type"] = "CHANG_LIAN"
+    current[0]["external_active"] = False
+    current[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), current)
+
+    with pytest.raises(PlatformError) as error:
+        service.retry(row["artifact_id"])
+    assert error.value.code == "MODEL_ARTIFACT_ALGORITHM_RETIRING"
+
+
+def test_empty_upsert_does_not_erase_conversion_job_provenance(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    first = service.repository.upsert(discovered)
+    assert first["conversion_job_id"] == "convert-1"
+
+    second = service.repository.upsert({**discovered, "conversion_job_id": ""})
+    assert second["artifact_id"] == first["artifact_id"]
+    assert second["conversion_job_id"] == "convert-1"
+
+
+def test_conversion_job_reference_falls_back_to_canonical_identity(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    row = service.repository.upsert(discovered)
+    with sqlite3.connect(service.repository.db_path) as database:
+        database.execute(
+            "UPDATE model_artifacts SET conversion_job_id='' WHERE artifact_id=?",
+            (row["artifact_id"],),
+        )
+
+    job = json.loads(
+        (
+            _project_dir(tmp_path, "p1")
+            / "deployment" / "jobs" / "convert-1" / "job.json"
+        ).read_text(encoding="utf-8")
+    )
+    references = service.conversion_job_artifact_references("p1", job)
+    assert [item["artifact_id"] for item in references] == [row["artifact_id"]]
+
+
+def test_conversion_validation_refresh_waits_for_retirement_fence(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with model_delivery_version_fence(tmp_path, "p1", "local-a1", "v1"):
+            future = executor.submit(
+                service.refresh_conversion_artifacts,
+                "p1", "local-a1", "v1", "convert-1",
+            )
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.05)
+
+            algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+            algorithms[0]["versions"] = []
+            algorithms[0]["current_version_id"] = ""
+            save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+
+        assert future.result(timeout=1) == []
+    finally:
+        executor.shutdown(wait=True)
+
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_conversion_validation_refresh_skips_external_algorithm_delete_pending(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_active"] = False
+    algorithms[0]["external_delete_pending"] = True
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+
+    refreshed = service.refresh_conversion_artifacts(
+        "p1", "local-a1", "v1", "convert-1"
+    )
+
+    assert refreshed == []
+    assert service.repository.list(
+        project_id="p1", algorithm_id="local-a1", version_id="v1"
+    ) == []
+
+
+def test_conversion_validation_promotes_on_same_canonical_artifact_identity(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithm = algorithms[0]
+    version = algorithm["versions"][0]
+
+    job_path = (
+        _project_dir(tmp_path, "p1")
+        / "deployment" / "jobs" / "convert-1" / "job.json"
+    )
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job.update({
+        "validation_status": "converted_unverified",
+        "runtime_verified": False,
+        "hardware_verified": False,
+        "conversion_status": "converted",
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    first = next(
+        item for item in service.discover_version_artifacts("p1", algorithm, version)
+        if item["target"] == "rockchip"
+    )
+    first_row = service.repository.upsert(first)
+    service.repository.patch(
+        first_row["artifact_id"],
+        storage_source_id="default_local",
+        object_key="immutable/rknn/model.rknn",
+        public_url="https://models.example.test/immutable/rknn/model.rknn",
+        storage_status="UPLOADED",
+    )
+
+    job.update({
+        "validation_status": "hardware_verified",
+        "runtime_verified": True,
+        "hardware_verified": True,
+        "conversion_status": "hardware_verified",
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    refreshed = service.refresh_conversion_artifacts(
+        "p1", "local-a1", "v1", "convert-1"
+    )
+    assert len(refreshed) == 1
+    promoted = refreshed[0]
+    assert promoted["artifact_id"] == first_row["artifact_id"]
+    assert promoted["sha256"] == first_row["sha256"]
+    assert promoted["storage_status"] == "UPLOADED"
+    assert promoted["object_key"] == "immutable/rknn/model.rknn"
+    assert promoted["metadata"]["validation_status"] == "hardware_verified"
+    assert promoted["metadata"]["runtime_verified"] is True
+    assert promoted["metadata"]["hardware_verified"] is True
+    assert promoted["metadata"]["conversion_status"] == "hardware_verified"
 
 
 @pytest.mark.parametrize(
@@ -1152,3 +1488,90 @@ def test_generic_storage_health_contract_still_blocks_bucket_metadata_access_den
 
     assert blocked.value.code == "MODEL_STORAGE_HEALTH_AUTH_FAILED"
     assert provider.operations == ["health"]
+
+
+@pytest.mark.parametrize("kind", ["TRAINING", "MODEL_CONVERSION"])
+def test_active_durable_task_blocks_destructive_artifact_oss_changes(tmp_path: Path, kind: str):
+    from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
+
+    service = _service(tmp_path)
+    original = ArtifactOSSConfigPayload(
+        endpoint="https://oss-cn-hangzhou.aliyuncs.com",
+        bucket="safe-model-bucket",
+        access_key_id="artifact-key",
+        access_key_secret="original-secret",
+        public_base_url="https://models.example.com",
+        root_prefix="changlian-ai/artifacts",
+    )
+    service.save_artifact_oss_config(original)
+    repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    task_id = "active-artifact-" + kind.lower()
+    repository.create(TaskRecord.new(
+        task_id, "p1", TaskKind(kind),
+        "payload.json", "training:cpu" if kind == "TRAINING" else "conversion:cpu",
+    ))
+
+    before = service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+    original_secret = service.storage_credentials_factory().get(before.secret_ref)
+
+    for updates in (
+        {"bucket": "other-bucket"},
+        {"endpoint": "https://oss-cn-shanghai.aliyuncs.com"},
+        {"root_prefix": "changed/artifacts"},
+        {"access_key_id": "new-key", "access_key_secret": "new-secret"},
+    ):
+        proposed = original.model_copy(update={
+            "access_key_id": "", "access_key_secret": "", **updates,
+        })
+        with pytest.raises(PlatformError) as blocked:
+            service.save_artifact_oss_config(proposed)
+        assert blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+        assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID).config == before.config
+        assert service.storage_credentials_factory().get(before.secret_ref) == original_secret
+
+    # Public URL also contributes to the StorageSource generation identity;
+    # no config field may silently bump the generation of an active task.
+    with pytest.raises(PlatformError) as url_blocked:
+        service.save_artifact_oss_config(original.model_copy(update={
+            "access_key_id": "", "access_key_secret": "",
+            "public_base_url": "https://cdn.example.com",
+        }))
+    assert url_blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+    same = service.save_artifact_oss_config(original.model_copy(update={
+        "access_key_id": "", "access_key_secret": "",
+    }))
+    assert same["artifact_storage"]["bucket"] == "safe-model-bucket"
+
+    # Legacy configuration route cannot bypass the same active-task fence.
+    with pytest.raises(PlatformError) as legacy_blocked:
+        service.save_config(ModelArtifactConfigPayload(
+            storage_source_id="default_local",
+            root_prefix="unsafe/new-root",
+            auto_upload_enabled=True,
+        ))
+    assert legacy_blocked.value.code == "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK"
+
+    repository.fail_queued_precondition(
+        task_id, "injected terminal state",
+        status=TaskStatus.FAILED,
+    )
+    service.save_artifact_oss_config(original.model_copy(update={
+        "access_key_id": "", "access_key_secret": "",
+        "bucket": "other-bucket",
+    }))
+    assert service.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID).config["bucket"] == "other-bucket"
+
+
+@pytest.mark.parametrize('endpoint', [
+    'https://example.com:oss-cn-hangzhou.aliyuncs.com',
+    'https://oss-cn-hangzhou.aliyuncs.com:bad-port',
+    'https://[not-a-valid-ipv6',
+])
+def test_artifact_oss_malformed_endpoint_yields_structured_422(endpoint):
+    from platform_core.model_artifacts import _normalize_artifact_oss_endpoint
+
+    with pytest.raises(PlatformError) as failure:
+        _normalize_artifact_oss_endpoint(endpoint, 'artifact-bucket')
+    assert failure.value.code == 'MODEL_ARTIFACT_OSS_ENDPOINT_INVALID'
+    assert failure.value.status_code == 422
+    assert 'oss-cn-hangzhou.aliyuncs.com:bad-port' not in failure.value.detail

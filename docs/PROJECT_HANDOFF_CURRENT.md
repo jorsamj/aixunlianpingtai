@@ -1,3 +1,139 @@
+## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
+
+- 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。
+- Training Create First Open：训练弹窗 Browser 测试使用已删除的全局高级展开按钮和旧弹窗标题；改为现有“创建训练任务”及数据划分原生 disclosure，训练素材/固定 Benchmark/标签规则仍继续检查。
+- Frontend Runtime Stabilization：对应旧标题、旧高级配置与创建提交文案、TrainingDraft 写入顺序的断言漂移，已按可见真 UI 更新；导航与标签的真实操作仍须 Chrome 复验。
+- Training Task Visibility / Algorithm SQL Store：同一 `four modes freeze only training semantics` 前端测试揭露生产链缺陷：`trainingDraftToRequest` 通过 `createTrainingDraft` 把历史 `gpuPolicy:auto` 覆盖掉 builder 的 `exclusive`；现在四模式规范化统一强制独占。保留中央 TaskScheduler、GPU Reservation 和 Worker 运行前真实资源决议。
+- Remote Material Import 两次：原测试把 `app.js?v=42.25.333` 当成永远不变的字面缓存版本；现在验证版本不回退到旧修复点，同时入口缓存版本实际升级至 `42.25.345`。
+- 自定义模式取消“兼容自动隔离”选项；普通模式不显示 Batch/Workers 专业设置；标签搜索、勾选、正式 GT、首次母模型、续训有效版本继承、60/20/20 比例以及单一 TrainingSubmit Owner 均保留。
+- 本次只修改对应最小生产文件、前端测试、Browser 测试和现有文档，不另建 Owner、不删减安全测试；最新精确 HEAD 的全量 Linux/Windows/Chrome CI 仍待核验，真实 NVIDIA 同卡阻塞/双卡并发、OSS、Agent、10k/20k 素材 UAT 仍需现场执行。**不合并 main、tag、release、部署生产。**
+
+## 2026-10-10｜训练创建弹窗四模式简化与标签保留（PENDING CI/UAT）
+
+已在唯一训练草稿/提交 Owner 上接入快速、完整（默认）、复杂、自定义四模式，非自定义资源由目标 Worker 入场前决议，自定义为手动硬约束。创建页只保留算法身份、任务优先级、首次母模型选择、训练素材/划分、四模式、**末尾完整的 canonical 训练标签选择和搜索**；取消重复名称/ID/Batch 展示并提高字号。既有标签继承、显式新增、benchmark、精确素材和测试集隔离保持不变。设计及待验收清单：[TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。静态 JS/V8 定向校验已完成；GitHub Actions 当前 HEAD 与真实 Chrome UAT 尚未完成。不得 merge main/tag/release/deploy。
+
+## 2026-10-10｜训练默认性能/独占优化（代码已提交，验收待定）
+
+正式首训默认 150 Epoch、继承有效上一版本默认 80 Epoch；Auto + Performance；单物理 GPU 独占；小训练集 Batch 限幅以保留每轮多次更新，canonical 资源解析器按 RAM/CPU 限制 Workers；早停显式可选、默认关闭。旧任务和显式参数不迁移、不改写。详见 [本轮专项修复记录](TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md)。**GitHub Actions 精确 HEAD / 真机 GPU UAT 尚未完成，严禁提前宣称全绿或生产完成。** 不合并 main / tag / release / 部署。
+
+<!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10 -->
+> **2026-10-10 新增用户确认的分布式 Worker 集群/轻量控制端目标要求（仅文档，不代表已开发）**：详细规范统一归档到 [docs/DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md](DISTRIBUTED_WORKER_CLUSTER_ARCHITECTURE_2026_10_10.md)。涵盖 A/B/C/D 节点能力硬白名单、真实空闲容量准入、中央自动调度、同机训练/清洗/ZIP 并行资源隔离、正式标签统一的唯一数据 Owner、NAS/OSS 直达 Worker 的目标数据链、控制端可选本机 Worker，以及新增服务节点 Token/刷新异常的现场待查边界。当前本分支已有部分 Agent/调度能力，但**不能标记完整实现或生产验收通过**。后续实施必须先读该规范和实际 HEAD，沿用唯一 Task/GT/Storage/ModelArtifact Owner，禁止第二套调度器及绕过正式提交。
+<!-- DISTRIBUTED_WORKER_CLUSTER_REQUIREMENTS_2026_10_10_END -->
+
+<!-- LIVE_UAT_2026_10_09_MOTHER_MODEL_339 -->
+> ## 2026-10-09 母模型预置 / 训练选择 / GPU Agent 安全对接（Issue #22）
+>
+> 当前代码目标版本 `42.24.339`。用户确认首次训练不能依赖 Ultralytics 在训练准备时下载 `yolo11n.pt`；应提前上传可信 `.pt` 母模型，创建训练任务时明确选择。
+>
+> **已提交代码（待 CI 验收）**：`/api/v63/base-models/upload` 采用分片流式接收（4 MiB）、大小上限（1 GiB）、SHA256 校验、同名锁与无覆盖原子提交至已有 `DATA_DIR/models`；`/api/base_models` 和 `/api/training_options` 读取实际本地文件，而非把官方可下载名称视为已就绪。训练资源页新增母模型上传及已预置列表，创建训练弹窗新增首次训练母模型选项。TrainingSubmitRuntime 限制仅选真实已就绪权重并使未准备好时按钮不可提交；后端 v12 Durable Training 再验证文件并冻结绝对路径，保持 request_identity/idempotent replay 与 Frozen Label/Model SHA 合同；Remote TrainingPrepare 原有对象存储传输承担 Agent 分发，拒绝把未经预置的 official 名称交给新的任务下载。**已有算法版本仍按之前 verified best.pt 继承，不改版次 lineage Owner。**
+>
+> 测试：新增 `tests/api/test_mother_model_preinstall.py`、`tests/frontend/mother-model-preinstall.test.mjs`，扩展 `training-submit.test.mjs`、远程准备集成测试、浏览器训练入口 mock，CI 契约纳入 `remote-training-runtime.yml` 与 `training-create-first-open.yml`。JS V8 静态解析已通过（非 Node/pytest/Chrome 执行），确切 HEAD CI 仍必须查证 terminal-success，队列未跑完不能视为完成。
+>
+> 安全验收：需真实 Ubuntu Linux + GPU Agent 对含有效 YOLO .pt 的首次训练进行首次上传、离线断网、缓存复用、训练资源解析、原始模型转换与后续版本续训；需验证 Web/Worker 运行账户对 `DATA_DIR/models` 的目录和文件权限。自定义 `.pt` 可能包含 Python pickle，不得接受非可信来源权重。远端遗留 already-staged official-type 历史任务不能当成已迁移；本轮新任务从 control plane 拒绝该类型。
+>
+> **本轮绝不操作生产文件、训练数据、服务重启或 main/tag/release。**
+>
+<!-- LIVE_UAT_2026_10_09_MOTHER_MODEL_339_END -->
+
+<!-- LIVE_UAT_2026_10_09_ISSUE_21 -->
+> 2026-10-09 接手优先级切换到 Issue #21：7 项生产 UAT 修复验收。最新修复及生产风险边界详见 `docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md`；新增加只读生产 ZIP 审计 SHA256/正式 GT 框数/lineage 和 CI 合同。此前失败 ZIP 的 3042 张图片已被用户在 Ubuntu 上直接删除，但 Material/Annotation DB 索引是否同步清除尚未只读核验；HEAD CI 尚未证实通过，生产/主分支不动，Issue 保持 OPEN。不得继续普通分页改造或混入 Issue #20。
+
+<!-- LIVE_HANDOFF_2026_10_08_AUDIT_099_098 -->
+> ## 2026-10-08 当前接手入口：AUDIT-099 / AUDIT-098 commit fence 已实现（最高优先级）
+>
+> 实现候选版本：`42.24.296`，长期分支仍为 `feature/external-algorithm-publishing`。Storage Rescan 写正式 Annotation Ground Truth 时，现把预检读取的 Annotation version 作为 `expected_version` 交给唯一 AnnotationRepository 的批量事务；任一图片并发变化会整批回滚并要求重新 Rescan review，不能覆盖刚保存的人工标注。
+>
+> MaterialBatch AI 继续复用唯一 CandidateStore。success/empty/failed 候选写入都传入 WorkerContext-backed commit guard；BatchSelection 的结果 transition 也新增可选 guard，并在其 `BEGIN IMMEDIATE` 事务提交前检查 execution/lease/cancel。候选已持久化但 selection 提交失去 lease 时，候选保留作为避免重复计费的恢复证据，旧 Worker 不能推进 selection。
+>
+> 直接回归：commit fencing / rescan / MaterialBatch API `25 passed`；关联 annotation/material `52 passed`；durable remap / cleaning `32 passed`。Windows 上两条远程 ZIP review 集成用例在进入本批代码前因既有临时目录创建失败，等待 Linux CI 结论；不得把该本机失败写成通过。目标 HEAD 的全部 Actions/check-runs 仍须 terminal success。
+>
+
+<!-- LIVE_HANDOFF_2026_10_08_TRAINING_SCOPE_REMEDIATION -->
+> ## 2026-10-08 当前接手入口：训练标签审核范围补审闭环已实现（最高优先级）
+>
+> 实现候选版本：`42.24.295`，长期分支仍为 `feature/external-algorithm-publishing`。`42.24.294` 的 CI 失败已定位为旧测试/守卫未同步新正式合同：路由注入、显式空样本补审、兼容性预检 fixture 与 recovery cache key；生产 fail-closed 规则未回退。目标 HEAD 的 GitHub Actions/check-runs 必须在推送后重新读取，queued/in_progress/cancelled 不得当作成功。
+>
+> 人工标注工作台现已区分“普通保存”和“保存并确认审核”。普通保存只修改框并保留既有 scope；补审仅加入用户显式勾选的当前有效标签，使用 AnnotationRepository 原有 version CAS，并同时核验 Material content SHA、删除/来源状态和标签治理状态。禁止新写 `*`，AI 未检出不会自动产生负类审核证据。
+>
+> 训练 Picker、提交 admission、TRAINING_PREPARE 与最终 Snapshot 共享相同的 task-specific scope 规则。创建弹窗保持轻量；问题素材支持分页、筛选、真实图片补审和仅从当前训练草稿排除。Prepare 漂移失败会把完整问题列表分页写入既有 Durable ArtifactStore，并由现有训练详情 Runtime 展示。AUDIT-148 Snapshot fail-closed 未放宽。
+>
+> 历史兼容只迁移可由旧正样本框证明的标签范围；旧 confirmed_empty 没有可靠逐类证据时保持空范围。对已经被旧 UI 扩成全部 active labels 的现存记录无法可靠区分真实逐类确认，因此本批不猜测、不批量改写 Ground Truth。
+>
+> `42.24.295` 精确 HEAD 已确认 31/31 workflow runs 与 86/86 check-runs 全部 completed-success。AUDIT-099/098 已进入后续 `42.24.296` 批次；Linux/NVIDIA、OSS、外部畅联云和硬件环境未在标签范围批次现场验证，不得写成 VERIFIED。
+>
+
+<!-- LIVE_HANDOFF_2026_10_05_DELIVERY_CLOSURE -->
+> ## 2026-10-05 当前项目接手入口：发布 / 回退 / GC / 外部对账已收口（最高优先级）
+>
+> 本节写入前真实远端：`18eeb5a59d7319841d5f0a992abf1b7eccd75f0a`，`VERSION.txt=42.24.108`；该 HEAD **21 / 21 workflows completed success，failure / queued / in_progress = 0 / 0 / 0**。本次仅更新交接文档，正式版本递增到 `42.24.109`；新文档提交自身的 Actions 必须由接手者重新读取，不能直接沿用 21 / 21。
+>
+> 当前项目已经从早期训练 / Annotation GT / Training Picker / Dataset Revision 收口继续推进到：**canonical ModelArtifact、RKNN board validation、external Version/Weight reconciliation、version rollback/delete、remote execution staging GC、conversion local orphan、remote training generation orphan、RKNN board durable evidence retirement，以及 version retirement 与新引用创建双向 fence**。这些主链均继续复用既有 owner，没有新增第二套 artifact / publication / GC truth。
+>
+> 当前产品 Rockchip canonical 转换目标只有 **RK3568 / RK3576**。本文后面 2026-09-28 等旧段落中把 RK3578 当正向产品能力的描述已经被 supersede；**不要恢复 RK3578**，RK3588 当前也不开放。
+>
+> AnnotationRepository 仍是唯一 Annotation Ground Truth；Training Picker / Dataset Revision v2 / Source GT 与 Training Projection 分离保持 CLOSED；Trainer 不得重新决定 Batch / Workers / Cache / Precision，不得恢复 runtime re-plan。
+>
+> external publication 当前长期合同以 `docs/EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md` 最新版为准；最近会话详细交接以 `docs/codex-handoff.md` 顶部 2026-10-05 章节为准；新会话可直接使用 `docs/CODEX_TAKEOVER_PROMPT_2026-10-05_DELIVERY_CLOSURE.md`。
+>
+> **下一优先级不是继续开放式重构发布/GC。** 接手必须先重读实时 HEAD / VERSION / 最近 commits / Actions / failure logs；随后只处理新的真实 CI 红灯、现场复现、生产外部接口证据或用户新增需求。若进入生产验收，重点补 Linux/NVIDIA、正式 OSS、新畅联生产接口和 RK3568/RK3576 实板证据。
+>
+> 下方所有旧 LIVE HANDOFF 保留作历史审计，但凡与本节冲突，一律以实时 GitHub + 本节 + `docs/codex-handoff.md` 最新章节为准。
+>
+
+<!-- LIVE_HANDOFF_2026_09_28_TRAINING_RK3578_GREEN -->
+> ## 2026-09-28 当前接手入口：训练主链 / RK3578 / 新畅联即时发布 wake 已收口，代码 cutoff 63/63 全绿（最高优先级）
+>
+> 已验证代码 cutoff：`fcc8a3a75d9f6c94555de120ae08dc190849ee5c`；`VERSION.txt=42.24.0`。该 cutoff **63 checks：63 success / 0 failure / 0 queued / 0 in_progress**。
+>
+> 本轮训练 P0 审计继续确认：v12 Durable Training 唯一创建 owner、effective split / Ground Truth / Snapshot / Dataset Revision / label contract / base checkpoint submit-time freeze、Local/Remote `resolve_frozen_training_base`、stale-base CAS、redaction v2 默认 + v1 replay 均保持。confirmed_empty 仍是显式 Ground Truth 负样本，清洗状态不能自动变成负样本。
+>
+> RK3578 已从 external publish chipCode 规范化贯通到 canonical conversion allowlist、Agent portable RKNN、服务节点 capability、deployment worker、自动转换、board preflight/evidence 与 UI/Browser contracts。canonical 产品集合为 `RK3568 / RK3578 / RK3576`；**没有新增 RK3588 支持**。
+>
+> Durable Local / Remote Training 在版本 CAS commit 成功后现在会调用既有 `request_external_auto_publish_if_enabled`，立即唤醒唯一 external publisher；失败不反向污染训练成功 truth，30 秒 recovery scan 继续兜底。为避免 training core 被 `model_artifacts/pydantic` 重依赖污染，Local 侧通过 lazy delegate 调用；真实 Ubuntu/Windows jpeg-cache 红灯已关闭。
+>
+> 关键提交：`4b0499f3`、`38288cb1`、`d5cbfab3`、`04da021c`、`fcc8a3a7`。
+>
+> 下一步进入批量图片上传 / ZIP 1k-20k / confirmed_empty / 人工标注 / AI Review / 清洗 / 标签统一的主流程审计。真实 Linux/NVIDIA GPU、正式 OSS、新畅联生产接口、RK3568/RK3578 实板仍未现场 VERIFIED。
+>
+> **注意：** 本文档提交本身会生成新的 HEAD 与新一轮 CI。任何新会话第一步仍必须重读远端 HEAD / VERSION / checks，不能把上面的代码 cutoff 当作未来最新 HEAD。
+>
+
+<!-- LIVE_HANDOFF_2026_09_28_LABEL_SAVE_GREEN -->
+> ## 2026-09-28 当前接手入口：标签保存主流程已收口，代码 cutoff 59/59 全绿（最高优先级）
+>
+> 已验证代码 cutoff：`5954a7919608930aff5472206d492a277fa9cd54`；`VERSION.txt=42.24.0`。该 cutoff **59 checks：59 success / 0 failure / 0 queued / 0 in_progress**；Frontend Runtime 的 `frontend` 与 `browser-navigation` 均 completed success。
+>
+> 本轮 CLOSED：标签编辑保存不再等待 v54 usage 统计后才关 Modal；POST/PUT mutation 返回/使用 canonical `items`，先 patch authoritative label truth、关闭 Modal、局部 render，再后台刷新 usage。Browser 永久测试会故意卡住 usage 请求，仍要求保存后的 Modal 及时关闭，因此不是放宽 timeout。Source Import terminal 的 labels 与当前 v61 paged materials 也已改为 `Promise.allSettled` 并发局部刷新，避免标签请求阻断素材页刷新，且不恢复 broad project/material pool reload。
+>
+> 并发提交 `b9522d9` 的标签统一跨 UI scope bridge 已保留，并同步更新永久 source guard；没有恢复旧 owner。当前标签管理 owner 为 `renderLabelManagement414 + window.saveLabel414`，Source Import terminal owner 为 `window.refreshSourceImportTasksV36 + PollRegistry(source-import-v36)`。
+>
+> 下一步进入既定 P0 主流程准确性审计：训练创建/输入冻结/迭代标签继承/显式标签选择/Local-Remote 一致/训练终态 truth/训练完成后的新畅联发布。不要重新设计已经 CLOSED 的 AI CandidateStore、AnnotationRepository、ZIP progress、标签统一或训练 redaction v2。
+>
+> **验证边界：** 59/59 是 GitHub Actions code cutoff 证据；Linux/NVIDIA 真实训练、正式 OSS、新畅联生产接口、RK3568/RK3578 实板仍未现场 VERIFIED。本文档提交自身会生成新的 HEAD 和新 CI，接手必须先重读实时远端，不得把上面的 cutoff 当成未来最新 HEAD。
+>
+<!-- LIVE_HANDOFF_2026_09_28_CURRENT -->
+> ## 2026-09-28 当前接手入口（最高优先级）
+>
+> 代码状态 cutoff：`ce383fcc1af6ee5420860a42e65181a594545c5e`；`VERSION.txt=42.24.0`。该 cutoff 当前 **58 checks：57 success / 1 failure / 0 queued / 0 in_progress**。唯一红灯是 Frontend Runtime Stabilization 的 `browser-navigation`：76 个 Playwright case 中 75 passed / 1 failed，失败为标签管理“编辑标签”点击保存后 modal 5 秒内仍未关闭。
+>
+> 近期已完成：新畅联 sync 单 operation + analysis summary N+1 优化且 detail truth 不降级；ZIP selected-tree 重复 I/O 消除 + 服务端真实 phase/counter/ETA；AI v60 模型配置 submit-time 冻结、secret 仅保留 reference、用户显式选择 canonical labels、参考图不自动扩张标签；AI Review commit journal/cancellation gap 与 AnnotationRepository CAS 并发覆盖防护；训练未选标签对象 redaction 升级为 `redact_excluded_objects_v2_preserve_selected`，避免大 excluded box 抹掉已选正样本像素，同时保留 v1 历史 replay。
+>
+> 下一步不要重新修已经消失的历史红灯。先 focused reproduce 当前唯一 Browser failure，查保存 API/返回状态/局部 refresh/modal close 真相；禁止只加 timeout，禁止恢复 full material pool。修复后重新看最新 HEAD 的全部 Actions。
+>
+> 完整说明：`docs/codex-handoff.md` 顶部“2026-09-28 当前真实接管点”；可直接复制的新会话指令：`docs/CODEX_TAKEOVER_PROMPT_2026-09-28.md`。
+>
+
+<!-- LIVE_HANDOFF_2026_09_25_ANNOTATION_CLEANING -->
+> ## 2026-09-25 标注 / 数据清洗最新接手入口（最高优先级）
+>
+> 文档写入前代码/CI cutoff：c1e9dc2dbae57c0c36c251e95f918a0ffac8ec3e；VERSION.txt=42.24.0。该 cutoff 34 workflows：31 success / 3 failure。Frontend Runtime Stabilization、AI Annotation Recovery、Remote Cleaning Runtime、Remote Material Import、ZIP Import Durable Runtime、Task Runtime Truth 均 success；两个 Label Normalization Contract 为旧 source literal guard 红灯，Training Task Visibility Real Chrome 仍需 focused reproduce。
+>
+> 标注主线已收口到 durable v60 Candidate -> 人工审核 -> Commit -> Ground Truth；legacy v47 直接写入链已退役，provenance 由后端拥有并覆盖 manual / ai_confirmed / mixed / imported / confirmed_empty。UI/动画已做专业化且 reduced-motion / pointer hot-path guard 完整。
+>
+> 新优先级是上传后数据清洗：继续复用现有 OpenCV/Pillow/SHA256+dHash 的 MATERIAL_BATCH/CLEAN runtime；默认中央 Materials Worker，可选具备 cleaning 能力的远程 Agent。清洗 UI/结果必须区分 全部 / 已标注 / 未标注 / 已确认无目标，并把 图片质量 与 标注质量 分层，不能把无框图片直接视为坏数据。
+>
+> 完整说明：docs/CODEX_HANDOFF_2026-09-25_ANNOTATION_CLEANING.md；新会话指令：docs/CODEX_TAKEOVER_PROMPT_2026-09-25.md。
+>
 <!-- LIVE_HANDOFF_2026_09_24_CURRENT_CUTOFF -->
 > ## 2026-09-24 当前接手入口（最高优先级）
 >
@@ -2680,3 +2816,140 @@ VERSION.txt 仍为 42.24.0
 - `External Algorithm Publish` CI 已固定 root precedence 和两条回归测试名称，禁止后续又退回旧根优先。
 - 这次属于后端结果发现/同步修复，不改变前端字段或交互；`VERSION.txt` 仍为 `42.24.0`。
 - 当前 GitHub Actions 仍必须以最新 HEAD 的实际 completed 结果为准；queued 不等于通过，也不具备部署资格。
+
+## 2026-10-08 — 训练标签审核范围适配闭环（设计已确认）
+
+- 基线为远端 `e9af882afc8136ffea4390a378204578d40ad28a` / `42.24.292`；隔离开发分支为 `codex/training-label-scope-fix`。
+- 根因是本次训练继承/新增后的 `effective_label_codes` 超出部分历史素材真实 `annotation_scope`；Full Audit 的项目级标签完整性职责不包含任务特定覆盖率。
+- 用户已确认补审交互：普通保存保留已有 scope；“保存并确认审核”只增加用户明确勾选的待审标签，支持部分确认，禁止自动全选、AI 未检出推断、`person/people` 语义猜测和 `*`。
+- 后续实现必须复用 AnnotationRepository CAS、Training Label Contract、现有 Summary/Submit/Recovery Runtime 与 Snapshot；任务特定问题通过有界分页显示，排除只改当前训练草稿。
+- 当前 `42.24.293` 仅为设计文档提交目标，尚无生产代码修改，不得标记 AUDIT-147/148/150 CLOSED。
+# 2026-10-08 override — R0 annotation lifecycle safety
+
+Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit for missing/deleting/unavailable Material or a mismatched frozen content SHA. Dataset deletion and Rescan share the same short cross-process lifecycle fence. Material searchable Annotation projection is monotonic by canonical Annotation version; it is not a second truth owner. Deferred structured imports keep explicit empty Ground Truth; plain uploads remain unannotated; batch contracts require Material identity before formal GT and target the versioned projection owner. Exact remote HEAD and CI terminal status must be re-read after push.
+## 2026-10-08 当前接手入口：活动训练 / RKNN 校准与素材删除双向 fence
+
+- 当前候选 VERSION：`42.24.301`；长期分支：`feature/external-algorithm-publishing`。
+- AUDIT-084/168 已实现：训练或转换先受理时，MaterialBatch 删除拒绝；删除先受理时，训练/转换拒绝。双方共享既有 Material lifecycle fence，依赖真相仍在 TaskRepository/ArtifactStore，素材/删除占用仍在 MaterialRepository/MaterialBatch。
+- `DELETE_SOURCE` 不持锁执行 OSS/文件 I/O；删除前有 durable Material claim，删除后立即提交 Annotation/index 删除。取消、lease recovery 和 retry 不会把缺失源文件当成可训练素材。
+- RKNN INT8 校准在最终任务 publish 前重验 frozen material identity，活动任务期间 DELETE_SOURCE/DELETE_INDEX 均被阻止；终态自动释放。
+- 本地 focused tests 通过；提交、推送和 exact-HEAD Actions/check-runs 仍待完成。现场 OSS、Agent、Rockchip、GPU 为 `PENDING USER UAT`。
+- 下一独立批次是 AUDIT-178；开始前仍需重新读真实远端 HEAD/VERSION/checks。
+
+## 2026-10-08 当前接手入口：Storage Source 活动任务 lifecycle fence
+
+- 当前候选 VERSION：`42.24.302`；长期分支：`feature/external-algorithm-publishing`。
+- AUDIT-178 已实现：Source runtime config/enable/credentials 与现有 durable task admission 双向协调。活动 Import/Rescan、CLEAN/AI、TRAINING/PREPARE、RKNN calibration 阻止 destructive PATCH；name-only 不阻止；终态释放。
+- Source/Secret/Task/Material 仍是原有 canonical owners。无依赖表、无第二 scheduler/runtime、无明文 credential task snapshot。
+- 外部 staging/OSS I/O 不持 fence；最终 publish 重验 Source generation。credential replace 的 Secret ref 使用新 generation，SQLite 失败保持旧配置可用。
+- `42.24.301` 精确 HEAD 为 45/46 workflows success；唯一失败是 stale source grep，实际 job pytest 41 passed。本候选已把 guard 对齐到当前更强 lifecycle fence，精确 HEAD CI 尚待提交推送。
+- 现场 OSS、生产 Keyring、Agent/RKNN/GPU 仍为 `PENDING USER UAT`。下一步先完成本批提交、推送与 exact-HEAD CI。
+- AUDIT-152 定向清洗回归与 1k/10k/20k bounded annotation-read 合同已通过；compatibility 翻页仍会重新评估全部选中素材，已确认为不影响正确性的既有性能 follow-up，后续应以 keyset/既有 owner 方案处理，禁止为此新增全局缓存 truth。
+<!-- PROJECT_HANDOFF_UNIFIED_PAGINATION_PHASE1_2026_10_08 -->
+> ## 2026-10-08 分页与训练兼容性最新覆盖
+>
+> `42.24.303` 完成第一阶段：共享无业务状态分页组件；训练素材真实随机页；兼容性跨页 revision-keyed 只读投影；训练 picker、创建兼容性问题与任务 input issues 接入。AUDIT-148 和正式 Snapshot 路径未缓存、未放宽。Cursor API 保持兼容。后续阶段清单见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，精确 pushed HEAD CI 与用户部署验收仍 PENDING。
+>
+<!-- PROJECT_HANDOFF_PAGINATION_PHASE1_CI_FOLLOWUP_2026_10_08 -->
+> ## 2026-10-08 分页 phase 1 CI 合同同步
+>
+> `42.24.304` 只更新两个过期 cache-key guard 到 phase 1 当前静态入口，不恢复旧资源、不放宽测试。`42.24.303` 的三项 check failure 均由这两个字面量造成；最新 HEAD CI 仍 PENDING。
+>
+<!-- LIVE_HANDOFF_2026_10_08_PAGINATION_PHASE_2A -->
+> ## 2026-10-08 当前接手入口：统一分页第二阶段 A 批
+>
+> VERSION `42.24.305` 接入数据集、训练任务和 AI 审核 final owner。数据集第 50 页使用一次服务端 numbered query，训练任务仍消费唯一 durable queue snapshot，AI 审核仍消费 CandidateStore authoritative total/offset；共享组件没有 API、业务 rows 或 poller。余下 phase 2/3 入口见 `docs/PAGINATION_INVENTORY_V42_24_303.md`，不得提前声称全平台 CLOSED。
+>
+
+
+---
+
+## 2026-10-09｜ZIP 原图框证据与精简训练弹窗：42.24.341 收口接力
+
+- 唯一工作分支：`feature/external-algorithm-publishing`；本批核心修复提交：`2ff4f2c226e2464fa8c0d1bceda5ff11e35ae93c`。
+- 实际确认：ZIP 样本构建以 image_path 去重时，会丢失同一图片上相同外部类别的第二个及后续框；原有列表匹配还会在每条注释上遍历全部图片路径，对大 ZIP 存在二次复杂度风险。
+- 修复：`platform_core/zip_label_samples.py` 使用预先建立的完整路径/路径后缀/唯一 stem 索引，重复路径含义不明时不猜测；同类最多保留 8 张图，每图显示来自原 ZIP 的所有原始框（受 256 框安全上限约束）。保留兼容字段 `bbox`，新增 `bboxes`；只读样本 API、原 ZIP 图片流和前端叠框同步使用，未写入 AnnotationRepository 或 Material。
+- `static/app.js` 将训练摘要与“高级设置”展开状态关联；默认简洁，高级模式可查看完整摘要，保留唯一 TrainingDraftRuntime / TrainingSubmitRuntime 及原有表单字段。没有修改母模型的 `FOUND` / `.pt` 检查、版本迭代和训练提交合同。
+- 新增自动化测试场景：YOLO 同图同类多框、COCO/VOC 原始 class 与坐标、20,000 个图片路径的同名 split 不混淆；更新浏览器训练标签用例，使其按真实折叠状态展开后验证，并明确模拟已就绪母模型。
+- 修正本批静态缓存入口和回归守卫中的旧缓存标记；不删除、不弱化原有自动化测试。旧提交实际 CI 失败包括：标签规范化工作流检查旧的 ZIP bootstrap 缓存键、前端测试固定旧 app/main 资源键，以及浏览器测试仍要求默认可见的训练摘要。修复后的 CI 需要在本批最终 HEAD 上重新执行确认，旧 SHA 的结果不能算当前通过。
+- 尚未完成的真实验收：Python/Node 正式测试执行结果、GitHub Actions 全绿、1366×768 与窄屏 Chrome 实际截图、真实 YOLO/COCO/VOC 大 ZIP、1k/10k/20k 导入全流程性能、Ubuntu/GPU Agent 首次预置模型训练与后续迭代。没有现场条件时必须报告“未验证”。
+- 安全与现场边界：不部署生产，不合并 main/tag/release；此前失败的 3042 张导入素材由用户在 Ubuntu 服务器手动删除源图片，但 Material/Annotation/任务索引一致性尚未得到只读核实，严禁推断正式记录全部清除或擅自清理。
+
+
+### 同轮补充：42.24.342 原图异常显式处理与模块缓存一致性
+
+- 复核发现：当标签样本 API 已返回引用，但随后图片内容请求（ZIP 缺文件、图片损坏、权限/网络错误）失败时，浏览器会显示破图而非明确错误。前端现通过一次性图片 `error` 监听，将图框区域切换成“原图读取失败，无法核对标注框”，停止错误链接点击、移除该图上的伪视觉框，并提示核查 ZIP；标签人工确认合同没有变化。
+- ZIP Import Runtime 中纯函数模块 `label-mapping-review.js` 的 ESM URL 版本改为与 `main.mjs` 一致的 `422571`，避免不同入口加载不同缓存版本。ZIP runtime/入口缓存键同步刷新为 `422617`；版本 `42.24.342`。
+- 已补充前端来源守卫；浏览器加载错误行为、真实 ZIP 与 GPU 现场仍待实跑。所有 GitHub Actions `queued` 不代表通过；部署继续阻断。
+
+
+---
+
+## 2026-10-09｜瑞芯微 RKNN 部署资源与版本转换弹窗一致性修复（保持 VERSION.txt 42.24.342）
+
+- **任务背景**：生产 `changlian` 用户通过 `/opt/changlian-rknn-venv/bin/python` 真实探测 RKNN-Toolkit2 2.3.2，报告 `available=True`，`supported_chips=['rk3568','rk3576']`；已配置本机 Rockchip 资源 `6b70d11b5d54` status=ready、targets=['rockchip']。转换弹窗却提示“当前资源未上报可用型号”。
+- **已确认根因**：`static/app.js::deployResources428(false)` 读取无可靠失效时间的 `localStorage` 旧快照，`resources416`、`openNewConvertCore416` 继承旧数据；切换资源时曾重建 select 并清空/覆盖芯片选择；任务提交仅检查 Agent 上报的 RKNN 支持芯片，本机资源没有相同检查；`v39_detect_local_deploy_resources` 默认拿 `sys.executable` 检测，同种既有资源可能被自动检测覆盖自定义独立 Python 路径；基础组件扫描先写 `done` 后再追加 RKNN，前端可能提前停止轮询。
+- **代码处理**：保留唯一部署资源 API、转换弹窗、Worker、组件扫描 Owner；版本转换每次打开、手动刷新和任务提交前均向 `/api/v39/deploy/resources` 请求最新资源数据（禁用浏览器 HTTP 缓存、不允许从 `localStorage` 回退为 ready）。并发请求采用 generation fencing，资源保存/检测/删除/自动检测/SDK 更新主动失效。根据真正选中的 ready+targets 资源生成 RKNN 芯片选项；仅把该资源真实上报并属于产品许可范围的 rk3568/rk3576 显示；切换时保留合法芯片，重选非法芯片，无有效芯片/请求失败即禁用按钮。启动前再次刷新并核验真实资源。
+- **后端强制校验**：`_v39_create_deploy_job_under_version_fence` 对本机/远程/Agent RKNN 均按真实资源探测（本机沿用资源 `python_path`）重新核验 status、targets、supported_chips、precision；禁止空芯片或未探测芯片创建任务，`params.chip` 归一化为小写。原有 SDK 执行器及部署转换 Worker 无需替换，合法任务仍使用 `resource.python_path`。
+- **自动检测、组件扫描**：自动检测优先在已配置资源的现有 Python 环境执行，不覆盖 `id` 或 `python_path`，真实失败也更新资源状态；组件扫描在基础扫描阶段保持 running/98%，RKNN 汇总完成后才将 scan/latest 统一发布为 done/100%；异常明确 failed，不出现假完成。
+- **新增可执行测试**：`tests/frontend/rknn-conversion-resource-live.test.mjs` 对真实转换 UI runtime 运行测试（读取 `static/app.js` 后执行 VM 环境），覆盖旧缓存、已就绪资源、切换本机/Agent、失效芯片、离线/失败、并发旧请求及重复打开；现有 `tests/api/test_conversion_portable_contract.py` 新增本机 RK3568 FP16 任务受理、缺 SDK/非法芯片拒绝、自定义 Python 保留、组件检测最终发布合同。已将新测试纳入 `remote-conversion-runtime.yml`。
+- **边界与上线门槛**：本次明确不修改 VERSION.txt、不合并 main、不部署生产、不清理 `deploy_resources.json` 或生产数据。GitHub Actions queued/in_progress 不计通过；要以最终 HEAD 相关 CI、真实 Chrome UAT、Ubuntu RKNN 自定义解释器重新检测、实际 .rknn 生成/产物核验及目标 RK3568/RK3576 板端校验为准。未有真实产物时只能称“代码修复待验收”。
+
+### 同轮修补：RKNN 精度与插件 ready 必须一致
+
+- 切换或载入 RKNN 资源时，精度列表统一遵循资源真实 `supported_precisions`，缺省仅使用现有 RKNN 转换引擎的 FP16/INT8 支持范围，禁用未声明可用的 FP32。无合法精度时禁止创建任务；后端对算法版本 INT8 冻结校准集合同仍保留硬阻断，不因下拉可选而假称可执行。
+- 部署插件页 `rockchip` 就绪必须同时存在 ready、rockchip target 和真实上报 `supported_chips`，不能把“运行进程存活但未上报芯片”报告为可转换。
+- 修复代码首次提交 `0404fb5f27963ba7231c51f2aa9459638de9dc75`；后续精度与插件补充提交需以长期分支最新 HEAD 为准。VERSION.txt 继续保持 42.24.342。
+
+### CI 真实失败归因与原回归测试合同同步
+
+- 初始 RKNN 修复代码 `0404fb5f` 的 `Remote Conversion Runtime` 曾失败，实际日志指向旧测试断言：`deployment-artifact-refresh.test.mjs` 仍精确匹配不带 `cache: 'no-store'` 的旧 API 调用；`deployment-progress-performance.spec.mjs` 仍要求两次打开转换弹窗只 GET 一次资源，违反本轮明确的“每次打开获取权威状态”需求。两项测试保留并调整为更严格的新合同：缓存历史可复用，但资源每次打开必须重新 GET，且禁用浏览器 HTTP 缓存。
+- `Training Create First Open` 失败日志属于此前精简训练弹窗与未展开高级字段的历史浏览器断言，不由此次 RKNN 转换修改引入。此处只记录，不擅自重新设计训练弹窗。
+- 不得将初始修复提交的失败或最新提交尚在 queued 的测试记为通过。正式验收必须按最新 HEAD 重新确认。
+
+
+### 2026-10-09 训练/标签/导入一致性修复
+
+- 刷新页面恢复 ZIP 导入或素材批任务时，不再触发完成后导入复核/清洗弹窗；仅本标签页新发起并完成的 ZIP 可展示复核入口，后台任务仍然可恢复。
+- 标签统一 `REMAP_ANNOTATION_LABELS` 正式标注和 MaterialRepository 投影由既有 Durable Worker 改写，不引入第二 Owner；前端统一完成后失效 MaterialPaginationRuntime61 与训练素材摘要缓存，数据集页面重拉素材。部分成功时继续保留来源标签并提示复核。
+- 训练任务名缺失时展示稳定任务短 ID，不再显示笼统“训练任务”；运行中/排队中/暂停中任务不展示非法删除操作，仅已结束任务可删除。
+- 随机试验模式比例以全量冻结素材为分母：先预留试验，再换算剩余池内验证比例，保证全量目标比例（受不可拆分组件及四舍五入约束）；拒绝验证与试验之和 ≥100%；训练/验证/试验保持隔离与 leakage guard。创建弹窗三种比例联动，默认验证、试验各20%。
+- 本次仅长期开发分支提交；无生产部署，无 `VERSION.txt` 修改。
+
+
+### 2026-10-09 四组修复的追加静态验收（只读代码复核后补丁）
+
+- 对交接 HEAD `7def2bfd` 重新确认：VERSION `42.24.342`，21/21 Actions、55/55 Checks completed success；检查 ZIP 前台任务身份、正式标注 Remap Worker、训练任务终态操作、60/20/20 分组冻结算法；以上是 CI/代码证据，不代表生产数据已经复核。
+- 发现并补齐一个边界：标签统一 Worker 可能在已提交部分正式标注后以 FAILED/CANCELLED/BLOCKED 终止；此前前端仅 toast，不使训练素材摘要与数据集分页缓存失效。现在失败终态同样按服务端 Ground Truth 重新加载；部分成功/失败显示成功数、失败数、错误原因，并提供复用现有 Label Integrity Full Audit 的人工复核入口。
+- 保留现有 AnnotationRepository / MaterialRepository / REMAP_ANNOTATION_LABELS / PollRegistry Owner；不修改真实生产数据，不自动退役或重试失败标签，不对 FAILED 伪称没有成功写入。补充前端源代码回归断言；最新提交的 CI 结果仍需按新 HEAD 另行核对。
+
+
+### 2026-10-09 追加修复：单任务终态删除合同与 CI 浏览器断言
+
+- 单条 `deleteTrain428` 原本绕过 TrainingBatchActionEligible，在运行/暂停/排队状态暗中执行先 stop 后 delete，虽然新版任务列表已隐藏对应按钮，但仍构成非法操作旁路。现复用已有统一资格判定，未到终态及不存在的任务禁止调用 DELETE，取消隐式停止行为。更新原旧行为回归测试为“拒绝所有非终态并仅允许终态删除”的强断言。
+- 上一提交 `21abe814` 的 `real-chrome` 失败日志有 4 个陈旧浏览器断言：精简训练弹窗将技术配置折叠，但旧测试在展开前检查可见性或填写优先级；固定 Benchmark 已改为用户明确选择，旧测试还认为默认自动勾选。浏览器测试现在先通过用户可操作“高级设置”展示再核验，且固定 Benchmark 明确测试默认不选、手动选后提交。上述修改不放宽原操作正确性判断。
+- 生产环境、真实历史标签的读写证据及 GPU 真实训练仍需用户在生产环境只读核验；未修改版本号，未部署。新 HEAD 的 Actions/Checks 需单独复核 completed/success。
+
+- 再次复核精简弹窗 DOM：全局“高级设置”切换后，内部技术选项与数据划分各自仍为原生折叠 `details`。浏览器 helper 需额外按用户实际操作展开各自 summary，才能有效测试真实可见性、优先级与随机试验比例；未改变生产 UI 或断言。
+
+
+### 2026-10-09 严格复核：标签统一的缩略图投影遗漏（新增真实 Bug）
+
+- 已追踪到 `static/app.js::ov412` 的缩略图叠框读取 MaterialRepository 的 `annotation_preview`。原 `AnnotationRepository.remap_labels_if_digests` 只更新正式 boxes、annotation_scope、labels、label_counts 与 digest/version，未更新 `annotation_preview`；故 UI 缓存失效仍可能显示旧 label。
+- 复用已存在的 `annotation_summary` 生成 `annotation_preview`，由单一 AnnotationRepository remap 写入既有 MaterialRepository 投影。对相同版本与相同 digest 但派生字段仍陈旧的 MaterialRepository 记录，允许基于权威投影数据幂等修复；同版本不同 digest 仍严格报冲突，不放宽 CAS。
+- API 回归测试要求 Remap 后正式 label、class_id、labels、label_counts、annotation_preview 全部正确，并通过人工模拟“旧预览/新 GT”重试验证相同 digest 的派生投影可修复。历史数据在生产是否残留必须仍单独只读审计；不在未核实前宣称已批量恢复，也不直接修改生产数据。
+
+    
+<!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09 -->
+## 2026-10-09 缩略图预览与正式 GT 不一致：审计及历史修复闭环
+
+- 范围：长期分支 `feature/external-algorithm-publishing`；保留现有 `VERSION.txt=42.24.342`，不动 main、tag、release 或生产环境。
+- 根因：Full Audit 既有 `PROJECTION_DRIFT` 仅比对标签数量/审核范围，忽略素材 `annotation_preview`；缩略图叠框由该派生字段渲染，故正式 `fire1`、Material 标签索引 `fire1`、历史叠框仍为 `fire` 可能漏检。
+- 审计：`AUDIT_LABEL_INTEGRITY` 从正式 `AnnotationRepository` 的有序前 32 个框生成 `annotation_summary(...).annotation_preview`，逐图与 Material `annotation_preview` 比较；新增 `PROJECTION_PREVIEW_DRIFT` 诊断记录及旧新标签样本说明，审计依旧严格只读，复用原 SQLite 审计快照。
+- 修复：Full Audit 后标签管理页面出现“修复历史缩略图”手动确认；`POST /api/v54/projects/{project_id}/labels/integrity/audits/{task_id}/projection-repairs` 仅使用已完成且授权的审计任务筛选候选。创建时重新读取 GT 与派生投影，冻结候选 image_id、GT version 和 content digest，已恢复的图片直接排除。沿用唯一 `TaskKind.MATERIAL_BATCH` / `BatchSelection` / `MaterialBatchHandler` 执行 `REPAIR_ANNOTATION_PROJECTIONS`；不增新数据 Owner / Poller / Worker。
+- Worker 在 Material/Annotation 共同生命周期锁内重新校验当前正式 GT/version/digest；对并发人工改动、缺素材、legacy version=0、投影相同版本但 hash 不同等情况 fail closed，不能用审计快照覆盖现有真相。仅通过 `MaterialRepository.patch_annotation_projections` 写派生 `annotation_preview` 和标签索引字段，禁止修改 `AnnotationRepository` 的正式框或版本。保留任务进度、失败记录、重试及重新 Full Audit 验证的路径。
+- 测试：`tests/api/test_label_integrity.py` 新增预览独立漏检、正式框不变、成功后复审、重放已解决、并发正式 GT 修改后拒绝覆盖；`tests/frontend/label-management-owner.test.mjs` 增加 UI 按钮与唯一后台任务入口合同。
+- **验收边界**：GitHub CI 应确认新增提交的全部 Actions / Check Runs terminal-success；生产上线前仍要备份数据、空闲任务确认和可回滚部署，并在真实历史项目运行 Full Audit → 预览投影修复 → 再次 Full Audit。代码修复不会在部署时擅自清洗、重写或自动迁移生产历史标注。
+<!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09_END -->
+
+- 安全入口追加：普通素材批处理 `parse_request` 明确拒绝直接创建 `REPAIR_ANNOTATION_PROJECTIONS`（422）；只有已完成且同项目授权的 Full Audit 专用路由可冻结候选并创建任务。新增通用 API 绕过防护测试。

@@ -19,6 +19,18 @@ test('training material picker query is cursor paged and server filtered', () =>
   assert.deepEqual(query.getAll('label'), ['smoke', 'person']);
 });
 
+test('training material picker supports authoritative page-number queries', () => {
+  const query = new URLSearchParams(buildTrainingMaterialQuery({
+    page: 7,
+    pageSize: 20,
+    query: 'smoke',
+    labels: ['smoke'],
+  }));
+  assert.equal(query.get('page'), '7');
+  assert.equal(query.get('page_size'), '20');
+  assert.equal(query.has('cursor'), false);
+});
+
 test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /DEFAULT_PAGE_SIZE = 60/);
   assert.match(source, /\/api\/v62\/projects\/\$\{encodeURIComponent\(pid\)\}\/training-materials/);
@@ -73,6 +85,15 @@ test('picker UI uses larger bounded preview cards rather than a dense thumbnail 
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
 });
 
+test('picker delegates all numbered navigation and jump input to shared pagination', () => {
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /onPageChange:/);
+  assert.match(source, /onPageSizeChange:/);
+  assert.match(source, /page: picker\.page/);
+  assert.match(source, /totalPages: picker\.totalPages/);
+  assert.doesNotMatch(source, /pager\.innerHTML = `<button[^`]*上一页/);
+});
+
 test('picker caps first-paint thumbnails and only expands loading after scroll', () => {
   assert.match(source, /THUMBNAIL_EAGER_COUNT = 15/);
   assert.match(source, /THUMBNAIL_PRELOAD_MARGIN = 120/);
@@ -110,9 +131,18 @@ test('annotated preview uses source coordinates as the SVG viewBox', () => {
 
 test('empty boxes preserve confirmed-empty and unannotated as distinct states', () => {
   const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
-  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'unannotated', boxes: []});
+  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, processing_status: 'processed', annotation_state: 'unannotated', boxes: []});
   assert.match(confirmed, /已确认无目标/);
-  assert.match(unannotated, /未标注/);
+  assert.match(unannotated, /已清洗 · 待标注/);
   assert.doesNotMatch(confirmed, /<svg/);
   assert.doesNotMatch(unannotated, /<svg/);
+});
+
+
+test('cleaned unannotated materials are selectable for train but fenced from independent test', () => {
+  assert.match(source, /missingTestTruth = picker\.role === 'test'/);
+  assert.match(source, /role: picker\?\.role \|\| 'train'/);
+  assert.match(source, /试验集必须已标注/);
+  assert.match(source, /待标注素材会保留在任务中/);
+  assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
 });

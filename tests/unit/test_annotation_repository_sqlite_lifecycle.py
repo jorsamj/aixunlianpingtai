@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import platform_core.annotation_repository as annotation_repository_module
+import platform_core.material_repository_batch as material_repository_batch_module
 from platform_core.annotation_repository import AnnotationRepository
 
 
@@ -124,3 +125,28 @@ def test_concurrent_annotation_repository_initialization_has_one_schema_owner(tm
 
     repository = AnnotationRepository(project)
     assert repository.summary()["total"] == 8
+
+
+def test_incomplete_reference_index_rebuild_is_recovered_on_reopen(tmp_path):
+    project = tmp_path / "project"
+    repository = AnnotationRepository(project)
+    repository.upsert(
+        "image-1",
+        [{"label": "head", "class_id": 12}],
+        project_material=False,
+    )
+    with repository._connect() as database:
+        database.execute("DELETE FROM annotation_label_references")
+        database.execute(
+            "DELETE FROM annotation_meta WHERE key='index_rebuilt_at'"
+        )
+        database.commit()
+
+    # A real crash clears the process-local constructor fast-path cache.
+    material_repository_batch_module._ANNOTATION_INIT_READY.discard(
+        repository.path.resolve()
+    )
+
+    reopened = AnnotationRepository(project)
+
+    assert reopened.label_reference_preview(["head"])["boxes"] == 1

@@ -11,6 +11,9 @@ import {
   externalCategoryMatches,
   externalCategoryTreeRows,
   externalCategoryVisibleRows,
+  externalSyncOperationActive,
+  externalSyncOperationHtml,
+  externalSyncOperationPhaseText,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
   safeExternalPlatformConfigSnapshot,
@@ -349,6 +352,10 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   const syncBlock = source.slice(syncStart, syncEnd);
   assert.doesNotMatch(syncBlock, /await save\(/);
   assert.match(syncBlock, /credentials\?\.configured !== true/);
+  assert.match(source, /sync-operation\?project_id=/);
+  assert.match(syncBlock, /ensureSyncOperationPolling/);
+  assert.match(source, /document\.querySelectorAll\('\[data-algorithm-sync\]'\)/);
+  assert.doesNotMatch(source, /data-external-list-sync/);
   assert.match(source, /id="externalPlatformTest"/);
   assert.match(source, /id="externalPlatformSave"/);
   assert.match(source, /id="externalPlatformSync"/);
@@ -414,4 +421,45 @@ test('external training preflight exposes freshness without weakening the author
   assert.match(source, /Boolean\(cached\?\.algorithm\) && age >= 0 && age < Math\.max\(0, Number\(maxAgeMs\) \|\| 0\)/);
   assert.match(source, /trainingPreflightFresh,/);
   assert.match(source, /async function preflightTraining\(algorithmId, \{request, force = false, maxAgeMs = 30000\} = \{\}\)/);
+});
+
+
+test('sync operation UI reports real phase and counters without inventing a percentage', () => {
+  const operation = {
+    operation_id: 'sync-1',
+    status: 'running',
+    current_phase: 'fetch_analyses',
+    started_at: '2026-09-28T04:00:00Z',
+    processed_products: 37,
+    total_products: 126,
+    last_request_duration_ms: 420,
+    success_count: 37,
+    error_count: 0,
+  };
+
+  assert.equal(externalSyncOperationActive(operation), true);
+  assert.equal(externalSyncOperationPhaseText(operation.current_phase), '核验产品分析详情');
+  const html = externalSyncOperationHtml(operation);
+  assert.match(html, /37 \/ 126/);
+  assert.match(html, /420 ms/);
+  assert.match(html, /成功 \/ 错误/);
+  assert.doesNotMatch(html, /%/);
+});
+
+
+test('sync operation UI exposes listAll optimization source without changing progress into a fake percent', () => {
+  const html = externalSyncOperationHtml({
+    operation_id: 'sync-list-all',
+    status: 'running',
+    current_phase: 'fetch_analyses',
+    processed_products: 2,
+    total_products: 9,
+    analysis_list_source: 'list_all',
+    success_count: 2,
+    error_count: 0,
+  });
+  assert.match(html, /listAll 一次读取/);
+  assert.match(html, /2 \/ 9/);
+  assert.doesNotMatch(html, /%/);
+  assert.equal(externalSyncOperationPhaseText('fetch_analysis_index'), '读取分析方式索引');
 });

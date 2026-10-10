@@ -11,6 +11,8 @@ export function requiresFullMaterialPool(page) {
 export function buildMaterialQuery({
   limit = 48,
   cursor = '',
+  page = null,
+  pageSize = null,
   query = '',
   sourceId = 'all',
   processingStatus = '',
@@ -18,8 +20,13 @@ export function buildMaterialQuery({
   annotated = 'all',
 } = {}) {
   const params = new URLSearchParams();
-  params.set('limit', String(Math.max(1, Math.min(1000, Number(limit) || 48))));
-  if (cursor) params.set('cursor', String(cursor));
+  if (page !== null && page !== undefined) {
+    params.set('page', String(Math.max(1, Number(page) || 1)));
+    params.set('page_size', String(Math.max(1, Math.min(1000, Number(pageSize) || Number(limit) || 48))));
+  } else {
+    params.set('limit', String(Math.max(1, Math.min(1000, Number(limit) || 48))));
+    if (cursor) params.set('cursor', String(cursor));
+  }
   if (query) params.set('query', String(query));
   if (sourceId && sourceId !== 'all') params.append('storage_source_id', String(sourceId));
   if (processingStatus) params.set('processing_status', String(processingStatus));
@@ -222,11 +229,15 @@ export function installMaterialPaginationRuntime() {
     return true;
   }
 
-  async function fetchMaterialPage61(cursor = '') {
+  async function fetchMaterialPage61(page = 1) {
     const pid = projectId();
     if (!pid) return {items: [], total: 0, next_cursor: null};
     const f = filters61();
-    const params = buildMaterialQuery({...f, cursor, limit: transport.pageSize || 48});
+    const params = buildMaterialQuery({
+      ...f,
+      page,
+      pageSize: transport.pageSize || 48,
+    });
     return responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
@@ -356,7 +367,23 @@ export function installMaterialPaginationRuntime() {
     const pager = document.getElementById('data412Pager');
     if (pager) {
       const pages = Math.max(1, Math.ceil(Number(info.total || 0) / Number(transport.pageSize || 48)));
-      pager.innerHTML = `<button class="btn mini" ${info.page <= 1 ? 'disabled' : ''} onclick="materialPrev61()">上一页</button><span>${info.page} / ${pages}</span><button class="btn mini" ${!info.nextCursor ? 'disabled' : ''} onclick="materialNext61()">下一页</button>`;
+      window.PlatformCore?.pagination?.mountPagination?.(pager, {
+        page: info.page,
+        pageSize: transport.pageSize || 48,
+        total: Number(info.total || 0),
+        totalPages: pages,
+        hasPrevious: info.page > 1,
+        hasNext: info.page < pages,
+      }, {
+        label: '数据集素材分页',
+        showPageSize: true,
+        pageSizes: [10, 20, 48, 50, 100],
+        onPageChange: targetPage => loadMaterialPage61({page: targetPage}),
+        onPageSizeChange: pageSize => {
+          transport.pageSize = pageSize;
+          return loadMaterialPage61({reset: true});
+        },
+      });
     }
     decorateStorage61();
     restoreControls61();
@@ -395,18 +422,14 @@ export function installMaterialPaginationRuntime() {
     return 'patch';
   }
 
-  async function loadMaterialPage61({reset = false, cursor = undefined, page = undefined} = {}) {
+  async function loadMaterialPage61({reset = false, page = undefined} = {}) {
     if (!isPagedDataset()) return {stale: true};
     const info = state.materialPage61;
     if (reset) {
-      info.cursor = '';
-      info.nextCursor = '';
-      info.cursorStack = [];
       info.page = 1;
     }
-    const requestedCursor = cursor === undefined ? info.cursor : (cursor || '');
     const requestedPage = page === undefined ? Math.max(1, Number(info.page) || 1) : Math.max(1, Number(page) || 1);
-    const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedCursor, requestedPage]);
+    const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedPage, transport.pageSize || 48]);
     if (pageLoadFlight && pageLoadFlightKey === flightKey) return pageLoadFlight;
 
     const run = (async () => {
@@ -417,13 +440,12 @@ export function installMaterialPaginationRuntime() {
           fetchStatusTotal61('unprocessed'),
           fetchStatusTotal61('processed'),
         ]);
-        const materialPage = await fetchMaterialPage61(requestedCursor);
+        const materialPage = await fetchMaterialPage61(requestedPage);
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
-        info.cursor = requestedCursor;
         info.nextCursor = materialPage.next_cursor || '';
         info.total = Number(materialPage.total || 0);
-        info.page = requestedPage;
+        info.page = Math.max(1, Number(materialPage.page || requestedPage));
         transport.lastPage = materialPage;
         state.materialFilterSignature61 = filterSignature61();
         rememberDatasetPage61();
@@ -457,7 +479,7 @@ export function installMaterialPaginationRuntime() {
     if (!isPagedDataset()) return false;
     const info = state.materialPage61;
     await Promise.all([
-      loadMaterialPage61({cursor: info.cursor || '', page: info.page || 1}),
+      loadMaterialPage61({page: info.page || 1}),
       refreshSummary61(),
     ]);
     return true;
@@ -465,16 +487,15 @@ export function installMaterialPaginationRuntime() {
 
   window.materialNext61 = async () => {
     const info = state.materialPage61;
-    if (!info.nextCursor) return;
-    info.cursorStack.push(info.cursor || '');
-    await loadMaterialPage61({cursor: info.nextCursor, page: info.page + 1});
+    const pages = Math.max(1, Math.ceil(Number(info.total || 0) / Number(transport.pageSize || 48)));
+    if (info.page >= pages) return;
+    await loadMaterialPage61({page: info.page + 1});
   };
 
   window.materialPrev61 = async () => {
     const info = state.materialPage61;
     if (info.page <= 1) return;
-    const previous = info.cursorStack.pop() || '';
-    await loadMaterialPage61({cursor: previous, page: info.page - 1});
+    await loadMaterialPage61({page: info.page - 1});
   };
 
   window.materialFilteredIds61 = async () => {
@@ -534,7 +555,8 @@ export function installMaterialPaginationRuntime() {
       storage_source_ids: value.sourceId && value.sourceId !== 'all' ? [value.sourceId] : [],
       processing_status: value.processingStatus,
       labels: [...value.labels],
-      annotated: value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
+      // Raw-batch bulk actions must not include already annotated or index-pending rows.
+      annotated: value.processingStatus === 'unprocessed' ? false : value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
     };
   };
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
@@ -588,7 +610,7 @@ export function installMaterialPaginationRuntime() {
     if (needsLoad) {
       cachedEntryPending = false;
       const info = state.materialPage61 || {};
-      if (useCachedEntry) void loadMaterialPage61({cursor: info.cursor || '', page: info.page || 1});
+      if (useCachedEntry) void loadMaterialPage61({page: info.page || 1});
       else void loadMaterialPage61({reset: true});
     }
     return mode;
@@ -671,6 +693,17 @@ export function installMaterialPaginationRuntime() {
     load: loadMaterialPage61,
     ensureFullPool: ensureFullPool61,
     refresh: focusedRefresh61,
+    invalidate() {
+      invalidateFullPool61();
+      // Label remap updates MaterialRepository projection; a navigation cache
+      // must never restore a pre-remap label card after this invalidation.
+      state.materialPageCache61 = null;
+      state.images = [];
+      state.materialFilterSignature61 = '';
+      state.materialShellSignature61 = '';
+      cachedEntryPending = false;
+      return true;
+    },
     patch: patchPagedDataset61,
     render: renderPagedDataset61,
     beforeNavigate: beforeNavigate61,

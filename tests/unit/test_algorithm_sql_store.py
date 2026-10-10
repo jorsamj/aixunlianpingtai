@@ -228,7 +228,7 @@ def test_schema_v1_store_upgrades_indexes_without_rewriting_data(tmp_path: Path)
             ).fetchall()
         }
 
-    assert schema_version == "3"
+    assert schema_version == "4"
     assert "idx_algorithms_project_sort" in indexes
     assert "idx_analyses_algorithm_sort" in indexes
     assert reopened.read_one("algorithm-preserved")["name"] == "保留算法"
@@ -290,7 +290,7 @@ def test_schema_v2_backfills_only_durable_timestamp_training_version_numbers(tmp
         schema_version = connection.execute(
             "SELECT value FROM algorithm_store_meta WHERE key='schema_version'"
         ).fetchone()[0]
-    assert schema_version == "3"
+    assert schema_version == "4"
 
 
 def test_concurrent_attach_version_keeps_both_versions_after_store_initialization(tmp_path: Path):
@@ -342,6 +342,159 @@ def test_concurrent_attach_version_keeps_both_versions_after_store_initializatio
         "version-task-1",
         "version-task-2",
     }
+
+
+def test_atomic_training_attach_allows_only_one_child_of_same_base(tmp_path: Path):
+    project = tmp_path / "projects" / "p-training-cas"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.create_algorithm({
+        "id": "algorithm-cas",
+        "name": "CAS 训练算法",
+        "versions": [],
+        "current_version_id": None,
+    })
+    store.attach_version("algorithm-cas", {
+        "id": "v1",
+        "task_id": "seed-task",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "finished_at": "2026-09-28T00:00:00Z",
+    })
+
+    barrier = threading.Barrier(2)
+
+    def finalize(index: int):
+        barrier.wait(timeout=2)
+        try:
+            value = AlgorithmSqlStore(json_path).attach_version_if_current(
+                "algorithm-cas",
+                {
+                    "id": f"v-child-{index}",
+                    "task_id": f"train-child-{index}",
+                    "training_status": "SUCCEEDED",
+                    "artifact_verified": True,
+                    "trainable": True,
+                    "framework": "ultralytics",
+                    "base_version_id": "v1",
+                    "finished_at": f"2026-09-28T00:00:0{index}Z",
+                },
+                expected_current_version_id="v1",
+            )
+            return ("ok", value["id"])
+        except PlatformError as error:
+            return (error.code, "")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(finalize, (1, 2)))
+
+    assert [status for status, _ in outcomes].count("ok") == 1
+    assert [status for status, _ in outcomes].count("ALGORITHM_VERSION_CONFLICT") == 1
+    persisted = AlgorithmSqlStore(json_path).read_one("algorithm-cas")
+    child_versions = [
+        row for row in persisted["versions"]
+        if str(row.get("id") or "").startswith("v-child-")
+    ]
+    assert len(child_versions) == 1
+    assert persisted["current_version_id"] == child_versions[0]["id"]
+    assert child_versions[0]["base_version_id"] == "v1"
+
+
+def test_atomic_training_attach_retry_is_idempotent_before_base_conflict(tmp_path: Path):
+    project = tmp_path / "projects" / "p-training-cas-retry"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.create_algorithm({
+        "id": "algorithm-cas",
+        "name": "CAS 幂等",
+        "versions": [],
+        "current_version_id": None,
+    })
+    store.attach_version("algorithm-cas", {
+        "id": "v1",
+        "task_id": "seed-task",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+    })
+    first = store.attach_version_if_current(
+        "algorithm-cas",
+        {
+            "id": "v2",
+            "task_id": "train-retry",
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "base_version_id": "v1",
+        },
+        expected_current_version_id="v1",
+    )
+    retry = store.attach_version_if_current(
+        "algorithm-cas",
+        {
+            "id": "v2-different-generated-id",
+            "task_id": "train-retry",
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "base_version_id": "v1",
+        },
+        expected_current_version_id="v1",
+    )
+
+    assert first["id"] == "v2"
+    assert retry["id"] == "v2"
+    persisted = store.read_one("algorithm-cas")
+    assert persisted["current_version_id"] == "v2"
+    assert [row["task_id"] for row in persisted["versions"]].count("train-retry") == 1
+
+
+def test_atomic_first_training_attach_rejects_existing_legacy_version(tmp_path: Path):
+    project = tmp_path / "projects" / "p-training-first-cas"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text(
+        json.dumps([{
+            "id": "algorithm-first",
+            "name": "历史算法",
+            "versions": [{
+                "id": "legacy-v1",
+                "training_status": "SUCCEEDED",
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    store = AlgorithmSqlStore(json_path)
+
+    with pytest.raises(PlatformError) as captured:
+        store.attach_version_if_current(
+            "algorithm-first",
+            {
+                "id": "new-first",
+                "task_id": "new-first-task",
+                "training_status": "SUCCEEDED",
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+            },
+            expected_current_version_id=None,
+        )
+
+    assert captured.value.code == "ALGORITHM_VERSION_CONFLICT"
+    persisted = store.read_one("algorithm-first")
+    assert {row["id"] for row in persisted["versions"]} == {"legacy-v1"}
 
 
 def test_legacy_json_is_migrated_losslessly_and_sql_becomes_source_of_truth(tmp_path: Path):
@@ -820,3 +973,89 @@ def test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type(tmp_path:
     by_id = {row["analysis_id"]: row for row in persisted["external_analyses"]}
     assert by_id["legacy-visual"]["active"] is False
     assert by_id["missing-type"]["status"] == "1"
+
+
+
+def test_algorithm_revision_is_durable_monotonic_and_read_only_reads_do_not_bump(tmp_path: Path):
+    project = tmp_path / "projects" / "p-revision"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+
+    initial = store.revision()
+    assert store.read_all() == []
+    assert store.revision() == initial
+
+    store.create_algorithm({
+        "id": "algo-revision",
+        "name": "Revision 算法",
+        "versions": [],
+        "current_version_id": None,
+        "created_at": "2026-09-28T04:30:00Z",
+        "updated_at": "2026-09-28T04:30:00Z",
+    })
+    created_revision = store.revision()
+    assert created_revision == initial + 1
+    assert store.read_one("algo-revision")["name"] == "Revision 算法"
+    assert store.revision() == created_revision
+
+    store.patch_algorithm("algo-revision", {
+        "remark": "changed",
+        "updated_at": "2026-09-28T04:31:00Z",
+    })
+    patched_revision = store.revision()
+    assert patched_revision == created_revision + 1
+
+    store.attach_version("algo-revision", {
+        "id": "v-revision",
+        "version_name": "20260928123100",
+        "task_id": "train-revision",
+        "framework": "ultralytics",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "finished_at": "2026-09-28T04:31:00Z",
+    })
+    assert store.revision() == patched_revision + 1
+
+
+def test_external_sync_does_not_bump_algorithm_revision_when_master_data_is_unchanged(tmp_path: Path):
+    project = tmp_path / "projects" / "p-revision-sync"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    store = AlgorithmSqlStore(json_path)
+    store.ensure_ready()
+    incoming = {
+        "product-1": {
+            "id": "external-product-1",
+            "name": "外部算法",
+            "source_type": "EXTERNAL",
+            "provider_type": "CHANG_LIAN",
+            "external_product_id": "product-1",
+            "external_active": True,
+            "master_data_readonly": True,
+            "versions": [],
+            "external_analyses": [],
+        }
+    }
+
+    first = store.sync_external_algorithms(
+        incoming,
+        provider="CHANG_LIAN",
+        synced_at="2026-09-28T04:32:00Z",
+    )
+    first_revision = store.revision()
+    second = store.sync_external_algorithms(
+        incoming,
+        provider="CHANG_LIAN",
+        synced_at="2026-09-28T04:33:00Z",
+    )
+
+    assert first["added"] == 1
+    assert second["unchanged"] == 1
+    assert store.revision() == first_revision
+    persisted = store.read_one("external-product-1")
+    assert persisted["external_last_synced_at"] == "2026-09-28T04:33:00Z"

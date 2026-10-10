@@ -18,11 +18,14 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/algorithms.py'
+      - 'platform_core/algorithm_sql_store.py'
       - 'platform_core/training_metrics.py'
       - 'platform_core/training_devices.py'
       - 'platform_core/training_precision.py'
@@ -42,6 +45,7 @@ on:
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -50,17 +54,22 @@ on:
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_local_auto_resource_admission.py'
       - 'tests/unit/test_training_metrics_fd.py'
       - 'tests/unit/test_training_realtime_progress.py'
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
       - 'tests/unit/test_training_scheduler_target.py'
+      - 'tests/unit/test_algorithm_sql_store.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
+      - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
   pull_request:
@@ -80,11 +89,14 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
+      - 'platform_core/algorithms.py'
+      - 'platform_core/algorithm_sql_store.py'
       - 'platform_core/training_metrics.py'
       - 'platform_core/training_devices.py'
       - 'platform_core/training_precision.py'
@@ -104,6 +116,7 @@ on:
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -112,17 +125,22 @@ on:
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/test_training_resource_contract.py'
+      - 'tests/unit/test_local_auto_resource_admission.py'
       - 'tests/unit/test_training_metrics_fd.py'
       - 'tests/unit/test_training_realtime_progress.py'
       - 'tests/unit/test_training_precision_contract.py'
       - 'tests/unit/test_training_completion_metadata.py'
       - 'tests/unit/test_training_scheduler_target.py'
+      - 'tests/unit/test_algorithm_sql_store.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_mother_model_preinstall.py'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
+      - 'static/modules/resource-discovery.js'
       - 'tests/frontend/training-submit.test.mjs'
       - '.github/workflows/remote-training-runtime.yml'
 
@@ -150,6 +168,8 @@ jobs:
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
           platform_core/training_tasks.py
+          platform_core/algorithms.py
+          platform_core/algorithm_sql_store.py
           platform_core/training_metrics.py
           platform_core/training_devices.py
           platform_core/training_precision.py
@@ -162,6 +182,7 @@ jobs:
           platform_core/node_agent_executor_loop.py
           platform_core/agent_execution.py
           platform_core/remote_execution_transport.py
+          platform_core/remote_material_lifecycle.py
           platform_core/model_artifacts.py
           platform_core/training_recovery_api.py
           node_agent.py
@@ -178,6 +199,7 @@ jobs:
           tests/unit/test_training_lineage.py
           tests/unit/test_training_evaluation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_executor_loop.py
@@ -185,15 +207,18 @@ jobs:
           tests/unit/test_model_artifacts.py
           tests/unit/test_task_node_assignments.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_local_auto_resource_admission.py
           tests/unit/test_training_metrics_fd.py
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
           tests/unit/test_training_scheduler_target.py
+          tests/unit/test_algorithm_sql_store.py
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
           tests/integration/test_training_task_worker.py
+          tests/integration/test_training_completed_job_recovery.py
       - name: Portable bundle and scheduler contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -218,8 +243,14 @@ jobs:
           tests/unit/test_remote_training_results.py
           tests/unit/test_training_evaluation.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_model_artifacts.py
+      - name: Atomic training version commit fencing
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_algorithm_sql_store.py
+          -k "atomic_training_attach or atomic_first_training_attach"
       - name: Worker registration and repository fencing
         run: >-
           python -m pytest -q --confcutdir=tests/unit/task_runtime
@@ -259,21 +290,24 @@ jobs:
       - name: Install focused training API dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
           boto3 oss2 cryptography
       - name: Compile production training creation path
         run: >-
           python -m py_compile
           app.py
+          tests/api/test_mother_model_preinstall.py
           platform_core/remote_training_transport.py
           platform_core/remote_training_tasks.py
+          platform_core/remote_execution_transport.py
           platform_core/task_node_assignments.py
           platform_core/worker_registry.py
       - name: Remote training creation API
         run: >-
           python -m pytest -q
           tests/api/test_training_request.py
+          tests/api/test_mother_model_preinstall.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py
       - name: Permanent remote training preparation guards
@@ -283,6 +317,45 @@ jobs:
           grep -Fq 'SUPPORTED_TRAINING_PRECISIONS = frozenset({"auto", "fp16", "fp32"})' platform_core/training_precision.py
           grep -Fq 'TRAINING_PRECISION_UNSUPPORTED' platform_core/training_precision.py
           grep -Fq 'normalize_training_precision(payload.precision)' app.py
+          grep -Fq 'v12 训练创建必须提交 split_mode 并走 Durable Training 主路径' app.py
+          grep -Fq 'return v12_start_train(project_id, payload)' app.py
+          grep -Fq 'if framework != "ultralytics":' app.py
+          if grep -Fq '"training.paddle"' platform_core/training_runtime_tasks.py; then echo 'Durable production worker must not advertise unsupported Paddle capability' >&2; exit 1; fi
+          grep -Fq 'resolve_frozen_training_base(payload)' platform_core/training_tasks.py
+          grep -Fq 'resolve_frozen_training_base(payload)' platform_core/remote_training_tasks.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS = SUPPORTED_ROCKCHIP_CHIPS' platform_core/remote_execution_transport.py
+          grep -Fq 'SUPPORTED_PORTABLE_RKNN_CHIPS' app.py
+          grep -Fq '@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])' tests/unit/test_remote_execution_transport.py
+          grep -Fq '({"chip": "rk3578", "precision": "fp16"}, "rk3568 or rk3576")' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'assert checked["supported_chips"] == ["rk3568", "rk3576"]' tests/api/test_conversion_portable_contract.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_BASE_VERSION_STALE' platform_core/training_tasks.py
+          grep -Fq 'attach_version_if_current(' platform_core/training_tasks.py
+          grep -Fq 'attach_version_if_current(' platform_core/remote_execution_transport.py
+          grep -Fq 'def _request_external_publish_after_training(' platform_core/training_tasks.py
+          grep -Fq 'from .external_publish_request import request_external_auto_publish_if_enabled' platform_core/training_tasks.py
+          grep -Fq '_request_external_publish_after_training(' platform_core/training_tasks.py
+          grep -Fq 'request_external_auto_publish_if_enabled(' platform_core/remote_execution_transport.py
+          grep -Fq 'assert result["external_publish_requested"] is True' tests/integration/test_training_completed_job_recovery.py
+          grep -Fq 'assert committed["external_publish_requested"] is True' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'def attach_version_if_current(' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_atomic_training_attach_allows_only_one_child_of_same_base' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_atomic_training_attach_retry_is_idempotent_before_base_conflict' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_local_finalization_rejects_stale_iteration_base' tests/integration/test_training_completed_job_recovery.py
+          grep -Fq 'test_local_finalization_reuses_same_task_version_before_stale_check' tests/integration/test_training_completed_job_recovery.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
+          grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
+          grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
+          grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'test_remote_training_commit_reuses_existing_task_version_before_base_stale_check' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'version_id = self._remote_training_version_id(' platform_core/remote_execution_transport.py
+          grep -Fq 'provisional-training-delivery' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_retires_unattached_final_model_delivery' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_refuses_unowned_canonical_row' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_v12_rejects_paddle_before_algorithm_or_material_io' tests/api/test_training_request.py
+          grep -Fq 'test_v12_product_training_rejects_legacy_unsplit_request' tests/api/test_training_request.py
+          grep -Fq 'test_v12_iteration_cannot_bypass_durable_split_with_latest_version' tests/api/test_training_request.py
+          grep -Fq 'test_unversioned_training_url_delegates_to_durable_v12_owner' tests/api/test_training_request.py
           grep -Fq 'verify_effective_training_precision(' train_worker.py
           grep -Fq 'def effective_loader_resources(train_image_count, batch, workers):' platform_core/training_metrics.py
           grep -Fq 'batch capped' platform_core/training_metrics.py
@@ -308,14 +381,15 @@ jobs:
           PY
           grep -Fq '"training-prep": "platform_core.remote_training_tasks"' platform_core/worker_registry.py
           grep -Fq '"training-prep",' platform_core/worker_supervisor.py
-          grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
+          grep -Fq 'class TrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
-          grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          grep -Fq '"runtime_stop_policy": "target_only"' platform_core/training_tasks.py
           grep -Fq '目标正确率必须在 0~1 之间' app.py
           grep -Fq '设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0' app.py
           grep -Fq 'test_training_target_contract_rejects_invalid_metric_threshold_and_interval' tests/api/test_training_request.py
-          grep -Fq 'assert_external_algorithm_master_data_current' app.py
-          test "$(grep -Fc 'assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)' app.py)" = "3"
+          grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
+          grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py
+          ! grep -Fq '_refresh_external_training_algorithm(' app.py
           grep -Fq "val_dir=root/'images'/'val'" train_worker.py
           grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
           grep -Fq 'current_item="独立评测集盲测"' train_worker.py
@@ -333,10 +407,13 @@ jobs:
           grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
           grep -Fq '"external_analysis_id": str(payload.get("external_analysis_id") or "").strip()' platform_core/remote_execution_transport.py
-          grep -Fq '"external_analysis_id": str(payload.get("external_analysis_id") or "").strip()' platform_core/training_tasks.py
+          grep -Fq '"external_analysis_id": str(' platform_core/training_tasks.py
+          grep -Fq 'payload.get("external_analysis_id") or ""' platform_core/training_tasks.py
           grep -Fq '"version_no": version_name' platform_core/training_tasks.py
           grep -Fq 'assert versions[0]["version_no"] == versions[0]["version_name"]' tests/integration/test_training_task_worker.py
-          grep -Fq 'assert versions[0]["external_analysis_id"] == "analysis-durable-1"' tests/integration/test_training_task_worker.py
+          grep -Fq 'test_training_prepare_then_handler_runs_and_commits_verified_result' tests/integration/test_training_task_worker.py
+          grep -Fq 'assert prepared_payload["training_input_state"] == "READY"' tests/integration/test_training_task_worker.py
+          grep -Fq 'assert versions[0]["external_analysis_id"] == ""' tests/integration/test_training_task_worker.py
           grep -Fq 'assert version["external_analysis_id"] == "analysis-visual-1"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py
           grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
@@ -352,6 +429,9 @@ jobs:
           grep -Fq 'confirmed_iteration_action' app.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq '"platform_core.training_metrics"' platform_core/node_agent_training_runtime.py
+          grep -Fq 'resolved-resources.json' platform_core/node_agent_training_runtime.py
+          grep -Fq 'test_remote_manual_resource_validation_fails_before_training_worker' tests/unit/test_node_agent_training_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
           grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
           grep -Fq 'training-models/prepare' platform_core/agent_execution.py
@@ -382,5 +462,5 @@ jobs:
           grep -Fq '"TRAINING",' platform_core/node_agent_executor_loop.py
           ! grep -Fq 'sqlite3' platform_core/remote_training_transport.py
           ! grep -Fq 'TaskRepository' platform_core/remote_training_transport.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

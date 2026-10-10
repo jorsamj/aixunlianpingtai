@@ -56,8 +56,10 @@ def test_target_mode_pushes_generic_patience_beyond_requested_epochs():
     assert effective_training_patience(200, 100, 0.90) == 200
 
 
-def test_no_target_mode_preserves_requested_patience():
-    assert effective_training_patience(20, 100, 0.0) == 20
+def test_patience_is_opt_in_even_without_a_quality_target():
+    assert effective_training_patience(20, 100, 0.0) == 101
+    assert effective_training_patience(20, 100, 0.0, early_stopping_enabled=True) == 20
+    assert effective_training_patience(40, 150, 0.90, early_stopping_enabled=True) == 40
 
 
 def test_below_target_never_stops_training_even_below_reference_line():

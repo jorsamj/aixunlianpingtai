@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from platform_core.conversion import validate_target
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,3 +64,29 @@ def test_missing_vendor_compiler_fails_without_fake_artifact(
     assert result["status"] == "failed"
     assert result["error_code"] == error_code
     assert not list((job_dir / "artifacts").rglob(f"*{forbidden_suffix}"))
+
+
+
+def test_product_contract_rejects_rk3578_target_platform():
+    with pytest.raises(ValueError, match="rk3568.*rk3576"):
+        validate_target("rockchip", {"chip": "rk3578", "precision": "fp16"})
+
+
+
+def test_rknn_preflight_blocks_incompatible_onnx_before_model_export(tmp_path, monkeypatch):
+    import deployment_worker as worker
+
+    fake_python = tmp_path / "rknn-python"
+    fake_python.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(worker, "probe_rknn_toolkit", lambda *_args, **_kwargs: {
+        "available": False,
+        "version": "2.3.2",
+        "onnx_version": "1.20.0",
+        "error_code": "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE",
+        "error": "RKNN-Toolkit2 与 ONNX 1.20.0 不兼容（缺少 onnx.mapping）。",
+    })
+    with pytest.raises(worker.ConversionError) as captured:
+        worker.preflight_vendor_tool("rockchip", {"python_path": str(fake_python)}, {})
+    assert captured.value.code == "RKNN_ONNX_DEPENDENCY_INCOMPATIBLE"
+    assert "onnx.mapping" in str(captured.value)
+    assert "onnx==1.18.0" in captured.value.solution

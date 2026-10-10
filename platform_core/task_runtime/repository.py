@@ -626,6 +626,59 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
+    def activate_prepared_training(
+        self,
+        task_id: str,
+        *,
+        resource_key: str,
+        required_capabilities: tuple[str, ...],
+    ) -> TaskRecord:
+        """Release one prepared TRAINING parent to the canonical scheduler.
+
+        TRAINING parents are admitted durably before their input contract is
+        frozen.  Until the TRAINING_PREPARE child succeeds they deliberately
+        advertise an unclaimable capability.  This transition is the single
+        fence that makes the parent claimable without creating a second task.
+        """
+        now = utc_now()
+        capabilities_json = json.dumps(
+            list(tuple(sorted(set(required_capabilities)))),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.kind is not TaskKind.TRAINING:
+                database.rollback()
+                raise ValueError("only TRAINING tasks can be activated after preparation")
+            if current.status is not TaskStatus.QUEUED:
+                database.rollback()
+                raise ValueError("training task is no longer queued")
+            database.execute(
+                """
+                UPDATE tasks
+                   SET resource_key=?, required_capabilities=?, stage='queued',
+                       progress=MAX(progress, 1.0), current_item=NULL,
+                       resource_wait_reason=NULL, updated_at=?
+                 WHERE task_id=? AND status='QUEUED'
+                """,
+                (str(resource_key), capabilities_json, now, str(task_id)),
+            )
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            database.commit()
+        return _from_row(row)
+
     def begin_finalization(
         self,
         task_id: str,

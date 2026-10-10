@@ -40,3 +40,34 @@ test('version conversion polling is PollRegistry-owned and scoped to the current
   assert.match(finalPoll, /versionConversionRoot428\(aid,vid\)/);
   assert.doesNotMatch(finalPoll, /setTimeout\(/);
 });
+
+
+test('version conversion keeps chip choice capability-owned and submit returns to the existing history dialog', () => {
+  const createStart = source.indexOf('window.openNewConvertCore416=async function');
+  const createEnd = source.indexOf('window.installUsability417?.();', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  const createLayer = source.slice(createStart, createEnd);
+  assert.match(createLayer, /<select id="conv428Chip" class="select"><\/select>/);
+  assert.match(source, /rockchipOrder428=\['rk3568','rk3576'\]/);
+  assert.doesNotMatch(source, /RK3578/i);
+  assert.match(source, /平台不会让用户手工猜型号/);
+
+  const submitStart = source.indexOf('window.submitConvert428=async function');
+  const submitEnd = source.indexOf('// ---------------------- training creation from algorithm', submitStart);
+  assert.ok(submitStart >= 0 && submitEnd > submitStart);
+  const submitLayer = source.slice(submitStart, submitEnd);
+  assert.match(submitLayer, /replaceVersionConversionBody428\(aid,vid,r\)/);
+  assert.match(submitLayer, /if\(!replaceVersionConversionBody428\(aid,vid,r\)\)modal\('版本转换',historyHtml428\(aid,vid,r\),true\)/);
+  assert.match(submitLayer, /正在创建转换任务/);
+});
+
+
+test('version conversion only offers delete for terminal records without deliverable artifacts', () => {
+  const start = source.indexOf('function conversionActions428(job)');
+  const end = source.indexOf('\n  function rememberVersionConversion428', start);
+  assert.ok(start >= 0 && end > start);
+  const actions = source.slice(start, end);
+  assert.match(actions, /deletable=\['failed','stopped','cancelled','blocked_by_environment'\]\.includes\(status\)/);
+  assert.match(actions, /deletable\?`<button class="btn mini danger" onclick="deleteDeployJob/);
+  assert.doesNotMatch(actions, /!active\?`<button class="btn mini danger" onclick="deleteDeployJob/);
+});

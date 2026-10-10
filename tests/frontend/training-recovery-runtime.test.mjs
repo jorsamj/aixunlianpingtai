@@ -372,6 +372,51 @@ test('detail model exposes live metrics resources and dataset evidence', () => {
   assert.match(model.metricLine, /92\.4 img\/s/);
 });
 
+test('detail model keeps requested resolved and runtime precision truth distinct', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-layers',
+    status: 'running',
+    task_status: 'RUNNING',
+    requested_resources: {
+      strategy: 'auto',
+      profile: 'performance',
+      gpu_policy: 'exclusive',
+      batch: 128,
+      workers: 0,
+      precision: 'auto',
+      cache: false,
+    },
+    resolved_resources: {
+      resource_strategy: 'auto',
+      resource_profile: 'performance',
+      resolved_batch: 32,
+      resolved_workers: 8,
+      resolved_precision: 'fp16',
+      resolved_cache: false,
+      gpu_name: 'RTX Test',
+      gpu_uuid: 'GPU-test',
+    },
+    runtime_resources: {
+      runtime_batch: 32,
+      runtime_workers: 8,
+      runtime_cache: false,
+      actual_precision: 'fp16',
+    },
+  }, {});
+
+  assert.equal(model.requestedBatch, 128);
+  assert.equal(model.requestedBatchText, '偏好 128');
+  assert.equal(model.requestedPrecision, 'auto');
+  assert.equal(model.requestedPrecisionText, '自动');
+  assert.equal(model.resolvedBatch, 32);
+  assert.equal(model.resolvedPrecision, 'fp16');
+  assert.equal(model.runtimeBatch, 32);
+  assert.equal(model.runtimePrecision, 'fp16');
+  assert.equal(model.precision, 'fp16');
+  assert.equal(model.gpuName, 'RTX Test');
+  assert.equal(model.gpuUuid, 'GPU-test');
+});
+
 test('detail model exposes runtime resource telemetry from backend metrics truth', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-live',
@@ -401,18 +446,46 @@ test('detail model exposes runtime resource telemetry from backend metrics truth
 
 
 
-test('failure detail source keeps the five diagnostic layers in fixed priority order', async () => {
+test('failure detail shows one backend primary reason and collapses secondary diagnostics', async () => {
   const {readFileSync} = await import('node:fs');
   const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
-  const positions = [
-    '1. Root cause',
-    '2. Failure stage',
-    '3. Process return code',
-    '4. Completion handshake',
-    '5. Checkpoint / Recovery',
-  ].map(label => source.indexOf(label));
-  assert.equal(positions.every(index => index >= 0), true);
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  assert.match(source, /recovery\?\.primary_message/);
+  assert.match(source, /<summary>查看技术详情<\/summary>/);
+  assert.doesNotMatch(source, /1\. Root cause/);
+  assert.doesNotMatch(source, /其他错误与失败证据/);
+  assert.match(source, /readInputIssues\(taskId, page = 1\)/);
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /data-training-input-pagination/);
+  assert.doesNotMatch(source, /data-training-input-page=/);
+  assert.match(source, /data-training-input-exclude/);
+  assert.match(source, /data-training-input-review/);
+  assert.match(source, /训练输入标签适配问题/);
+});
+
+test('failed detail prefers backend primary failure contract over frontend heuristics', () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-resource-invalid',
+    status: 'failed',
+    task_status: 'FAILED',
+    error: 'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+    message: 'job status is not done',
+  }, {
+    primary_error_code: 'RESOURCE_MANUAL_INVALID',
+    primary_stage: 'resource_validation',
+    primary_message: '手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。',
+    secondary_diagnostics: [
+      'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+      'job status is not done',
+    ],
+  });
+
+  assert.equal(model.rootCause, '手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。');
+  assert.equal(model.primaryErrorCode, 'RESOURCE_MANUAL_INVALID');
+  assert.equal(model.failureStage, 'resource_validation');
+  assert.deepEqual(model.errors, [
+    'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
+    'job status is not done',
+  ]);
 });
 
 test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {

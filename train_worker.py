@@ -102,11 +102,6 @@ def parse_cache(v):
     raise ValueError("cache 只支持 False / True / ram / disk")
 
 
-def next_oom_retry_resources(batch, workers):
-    """Step batch down after CUDA OOM without re-coupling DataLoader workers."""
-    return max(1, int(batch) // 2), max(0, int(workers))
-
-
 def resolve_training_model(model_arg: str, pretrained: bool) -> str:
     """When 'pretrained' is off, do not silently keep training from an already-loaded .pt checkpoint."""
     if pretrained:
@@ -594,8 +589,8 @@ def attach_ai_continuation_callbacks(
 
 
 
-def effective_training_patience(requested_patience, requested_epochs, stop_threshold):
-    """Prevent generic patience from ending target-driven training before its business target."""
+def effective_training_patience(requested_patience, requested_epochs, stop_threshold, *, early_stopping_enabled=False):
+    """Honor explicit patience only when users opt into early stopping."""
     try:
         requested = max(0, int(requested_patience or 0))
     except (TypeError, ValueError, OverflowError):
@@ -608,11 +603,11 @@ def effective_training_patience(requested_patience, requested_epochs, stop_thres
         target = float(stop_threshold or 0)
     except (TypeError, ValueError, OverflowError):
         target = 0.0
-    if target > 0:
-        # Keep Ultralytics' built-in patience beyond the requested training horizon.
-        # The quality-target callback remains the only automatic early-stop owner.
-        return max(requested, epochs + 1)
-    return requested
+    if early_stopping_enabled:
+        return max(1, requested)
+    # Preserve the selected training horizon (except for an explicitly configured
+    # quality-target gate) instead of silently stopping at patience=100.
+    return max(requested, epochs + 1)
 
 
 def decide_training_quality_gate(value, *, metric, stop_threshold, continue_threshold=0.0):
@@ -770,7 +765,8 @@ def main():
     parser.add_argument("--requested-device", default="auto")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--patience", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=40)
+    parser.add_argument("--early-stopping-enabled", default="false")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--optimizer", default="auto")
     parser.add_argument("--lr0", type=float, default=0.01)
@@ -780,8 +776,8 @@ def main():
     parser.add_argument("--mosaic", type=float, default=1.0)
     parser.add_argument("--cache", default="False")
     parser.add_argument("--resource-strategy", choices=("auto", "manual"), default="auto")
-    parser.add_argument("--resource-profile", choices=("balanced", "performance", "stability"), default="balanced")
-    parser.add_argument("--gpu-policy", choices=("auto", "exclusive"), default="auto")
+    parser.add_argument("--resource-profile", choices=("balanced", "performance", "stability"), default="performance")
+    parser.add_argument("--gpu-policy", choices=("auto", "exclusive"), default="exclusive")
     parser.add_argument("--precision", choices=("auto", "fp16", "bf16", "fp32"), default="auto")
     parser.add_argument("--time", type=float, default=None)
     parser.add_argument("--resource-context", default="")
@@ -835,7 +831,8 @@ def main():
     runs_dir = project_dir / "runs"
     models_dir = project_dir / "models"
     models_dir.mkdir(exist_ok=True)
-    update_job(job_file, runtime_stop_policy=runtime_stop_policy, gpu_policy=args.gpu_policy)
+    update_job(job_file, runtime_stop_policy=runtime_stop_policy, gpu_policy=args.gpu_policy,
+               early_stopping_enabled=as_bool(args.early_stopping_enabled))
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
@@ -861,7 +858,8 @@ def main():
         "project": str(runs_dir),
         "name": args.run_name,
         "exist_ok": True,
-        "patience": effective_training_patience(args.patience, args.epochs, args.stop_threshold),
+        "patience": effective_training_patience(args.patience, args.epochs, args.stop_threshold,
+                                               early_stopping_enabled=as_bool(args.early_stopping_enabled)),
         "workers": args.workers,
         "optimizer": args.optimizer,
         "lr0": args.lr0,
@@ -926,7 +924,7 @@ def main():
         import ultralytics
         import torch
         from ultralytics import YOLO
-        from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
+        from platform_core.training_metrics import TrainingMetrics
         publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
@@ -950,18 +948,23 @@ def main():
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
         model = YOLO(actual_model)
-        publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)
-        resolved = resolve_resources({
-            **train_args,
-            "device": runtime_device,
-            "resource_strategy": args.resource_strategy,
-            "resource_profile": args.resource_profile,
-            "gpu_policy": args.gpu_policy,
-            "precision": precision,
-        }, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
+        resolved = read_json(resolution_path, {})
+        if not (
+            isinstance(resolved, dict)
+            and int(resolved.get("resolved_batch") or 0) > 0
+            and int(resolved.get("resolved_workers") if resolved.get("resolved_workers") is not None else -1) >= 0
+        ):
+            raise RuntimeError("RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid")
+        expected_precision = normalize_training_precision(
+            resolved.get("resolved_precision") or resolved.get("precision") or precision
+        )
+        if expected_precision != precision:
+            raise RuntimeError(
+                "RESOURCE_PREPARE_REQUIRED: Trainer precision does not match frozen resource contract"
+            )
+        publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Precision / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
-        persist_resolution(resolution_path, resolved)
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
@@ -1030,6 +1033,14 @@ def main():
                 effective_precision = verify_effective_training_precision(
                     precision, getattr(trainer, "amp", False)
                 )
+                runtime_resources = {
+                    **runtime_resources,
+                    "actual_device": assigned,
+                    "actual_batch": runtime_resources["runtime_batch"],
+                    "actual_workers": runtime_resources["runtime_workers"],
+                    "actual_cache": runtime_resources["runtime_cache"],
+                    "actual_precision": effective_precision,
+                }
                 runtime_args["batch"] = runtime_resources["runtime_batch"]
                 runtime_args["workers"] = runtime_resources["runtime_workers"]
                 runtime_args["cache"] = runtime_resources["runtime_cache"]
@@ -1073,47 +1084,29 @@ def main():
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
-        retries = 0
         training_start_monotonic = time.monotonic()
-        while True:
-            try:
-                evidence["effective_args"] = recorded_train_params(train_args)
-                update_job(job_file, device_evidence=evidence, actual_train_params=recorded_train_params(train_args))
-                train_result = model.train(**train_args)
-                break
-            except Exception as train_error:
-                is_oom = isinstance(train_error, torch.cuda.OutOfMemoryError) or "cuda out of memory" in str(train_error).lower()
-                is_oom = is_oom or "runtime changed batch; explicit worker retry required" in str(train_error)
-                if not is_oom:
-                    raise
+        try:
+            evidence["effective_args"] = recorded_train_params(train_args)
+            update_job(
+                job_file,
+                device_evidence=evidence,
+                actual_train_params=recorded_train_params(train_args),
+            )
+            train_result = model.train(**train_args)
+        except Exception as train_error:
+            is_oom = (
+                isinstance(train_error, torch.cuda.OutOfMemoryError)
+                or "cuda out of memory" in str(train_error).lower()
+                or "runtime changed batch; explicit worker retry required" in str(train_error).lower()
+            )
+            if is_oom:
                 telemetry.oom = True
-                if args.resource_strategy != "auto" or train_args["batch"] <= 1 or retries >= 6:
-                    raise
-                retries += 1
-                next_batch, next_workers = next_oom_retry_resources(
-                    train_args["batch"], train_args["workers"]
-                )
-                train_args["batch"] = next_batch
-                train_args["workers"] = next_workers
-                resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
-                resolved["reasons"].append(
-                    f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; "
-                    f"workers retained at {train_args['workers']}; same assigned GPU"
-                )
-                with telemetry.lock:
-                    telemetry.resolved = dict(resolved)
-                persist_resolution(resolution_path, resolved)
-                update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args))
-                print(f"[资源调整] CUDA OOM；第 {retries}/6 次重试，batch={train_args['batch']}", flush=True)
-            # Release traceback-held tensors before building the next bounded attempt.
-            del model
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-            model = YOLO(actual_model)
-            model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-            attach_resource_callbacks(model)
-            attach_training_batch_progress(model, job_file, int(args.epochs))
+                raise RuntimeError(
+                    "RESOURCE_RUNTIME_OOM: frozen resolved resource contract "
+                    f"batch={train_args['batch']} did not fit the assigned GPU at runtime; "
+                    "the Trainer will not mutate Batch/Workers after startup"
+                ) from train_error
+            raise
         first_run_dir=runs_dir/args.run_name
         if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"

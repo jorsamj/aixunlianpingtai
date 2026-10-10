@@ -15,12 +15,12 @@ function numericInput(id) {
 export function installTrainingDraftRuntime({
   getState,
   createTrainingDraft,
-  trainingInheritanceFromAlgorithm,
+  trainingBaseVersionFromAlgorithm,
   directControlIds = [],
 } = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__trainingDraftRuntimeInstalled) return window.TrainingDraftRuntime;
-  if (![createTrainingDraft, trainingInheritanceFromAlgorithm].every(fn => typeof fn === 'function')) {
+  if (![createTrainingDraft, trainingBaseVersionFromAlgorithm].every(fn => typeof fn === 'function')) {
     throw new Error('TrainingDraftRuntime missing training draft dependencies');
   }
 
@@ -32,11 +32,11 @@ export function installTrainingDraftRuntime({
   let directControlSkips = 0;
   let initializationCount = 0;
 
-  function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId) {
+  function baseFor(s, algorithmId = s.trainingDraft?.algorithmId) {
     const id = String(algorithmId || '').trim();
     const algorithm = (s.algorithms || []).find(item => String(item?.id || '') === id) || null;
-    return algorithm ? trainingInheritanceFromAlgorithm(algorithm) : {
-      hasAny: false, hasPrevious: false, blocked: false, legacy: false, codes: [], versionId: '',
+    return algorithm ? trainingBaseVersionFromAlgorithm(algorithm) : {
+      hasAny: false, hasPrevious: false, blocked: false, versionId: '',
     };
   }
 
@@ -49,6 +49,9 @@ export function installTrainingDraftRuntime({
     const profile = inputValue('trV3ResourceProfile');
     const device = inputValue('trV3Device');
     const gpuPolicy = inputValue('trV3GpuPolicy');
+    const manualBatch = numericInput('trV3ManualBatch');
+    const manualWorkers = numericInput('trV3ManualWorkers');
+    const manualPrecision = inputValue('trV3ManualPrecision');
 
     return createTrainingDraft({
       ...draft,
@@ -61,6 +64,12 @@ export function installTrainingDraftRuntime({
         profile: profile ?? draft.resource?.profile,
         device: device ?? draft.resource?.device,
         gpuPolicy: gpuPolicy ?? draft.resource?.gpuPolicy,
+        batch: manualBatch ?? draft.resource?.batch,
+        workers: manualWorkers ?? draft.resource?.workers,
+      },
+      config: {
+        ...draft.config,
+        precision: manualPrecision ?? draft.config?.precision,
       },
     });
   }
@@ -77,30 +86,29 @@ export function installTrainingDraftRuntime({
     }
   }
 
-  function commitDraft(s, draft, inheritance, {type = 'sync', patch = null} = {}) {
+  function commitDraft(s, draft, base, {type = 'sync', patch = null} = {}) {
     s.trainingDraft = draft;
-    s.trainingDraftInheritance = inheritance;
+    s.trainingDraftBase = base;
+    delete s.trainingDraftInheritance;
     window.TrainingSubmitRuntime?.updateReadiness?.();
     notifySubscribers(type, draft, patch);
     return draft;
   }
 
   function initializeCanonical(s) {
-    const draft = withLiveControls(createTrainingDraft());
-    const inheritance = inheritanceFor(s, draft.algorithmId);
+    const base = baseFor(s, '');
+    const draft = withLiveControls(createTrainingDraft({baseVersionId: base.versionId || ''}));
     initializationCount += 1;
-    return {draft, inheritance};
+    return {draft, base};
   }
 
   function normalizeCanonical(s, draft) {
-    const inheritance = inheritanceFor(s, draft?.algorithmId);
+    const base = baseFor(s, draft?.algorithmId);
     const normalized = withLiveControls(createTrainingDraft({
       ...(draft || {}),
-      baseVersionId: inheritance.versionId || draft?.baseVersionId || '',
-      inheritedLabelCodes: inheritance.codes,
-      inheritancePending: inheritance.legacy,
+      baseVersionId: base.versionId || '',
     }));
-    return {draft: normalized, inheritance};
+    return {draft: normalized, base};
   }
 
   function sync() {
@@ -109,21 +117,21 @@ export function installTrainingDraftRuntime({
     const result = s.trainingDraft
       ? normalizeCanonical(s, s.trainingDraft)
       : initializeCanonical(s);
-    return commitDraft(s, result.draft, result.inheritance, {type: 'sync'});
+    return commitDraft(s, result.draft, result.base, {type: 'sync'});
   }
 
   function update(patch = {}) {
     if (destroyed) return null;
     const s = state();
-    const base = s.trainingDraft || initializeCanonical(s).draft;
+    const baseDraft = s.trainingDraft || initializeCanonical(s).draft;
     const next = createTrainingDraft({
-      ...base,
+      ...baseDraft,
       ...patch,
-      resource: {...(base?.resource || {}), ...(patch.resource || {})},
-      config: {...(base?.config || {}), ...(patch.config || {})},
+      resource: {...(baseDraft?.resource || {}), ...(patch.resource || {})},
+      config: {...(baseDraft?.config || {}), ...(patch.config || {})},
     });
     const result = normalizeCanonical(s, next);
-    return commitDraft(s, result.draft, result.inheritance, {type: 'update', patch});
+    return commitDraft(s, result.draft, result.base, {type: 'update', patch});
   }
 
   function subscribe(listener) {
@@ -145,10 +153,7 @@ export function installTrainingDraftRuntime({
     const target = event?.target;
     if (!target?.closest) return false;
     if (target.closest('.training-label-contract')) return false;
-    return Boolean(
-      target.closest('.train429-create')
-      || target.closest('.train-v3-picker')
-    );
+    return Boolean(target.closest('.train429-create') || target.closest('.train-v3-picker'));
   }
 
   function ownedDirectControl(event) {
@@ -180,11 +185,12 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422517',
+    build: 'training-draft-runtime-422519',
     sync,
     update,
     subscribe,
     current() { return state().trainingDraft || sync(); },
+    base() { return state().trainingDraftBase || baseFor(state()); },
     materialIds() {
       const draft = state().trainingDraft || sync();
       return [...(draft?.materialIds || [])];
@@ -201,7 +207,6 @@ export function installTrainingDraftRuntime({
       else selected.add(value);
       return runtime.setMaterialIds([...selected]);
     },
-    inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
     state() {
       return {
         directControlSkips,
@@ -209,6 +214,7 @@ export function installTrainingDraftRuntime({
         subscribers: subscribers.size,
         networkOwner: false,
         classicWrapperOwner: false,
+        labelInheritanceOwner: false,
       };
     },
     destroy() {

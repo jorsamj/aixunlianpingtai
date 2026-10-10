@@ -49,12 +49,23 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     artifacts = ArtifactStore(tmp_path / "artifacts")
     monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
     monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
-    monkeypatch.setattr("platform_core.auto_label.provider_factory", lambda _value: FakeVisionProvider())
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "fake-model-config",
+        "name": "Fake Vision",
+        "model_name": "fake-vlm",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://fake-vision.local/v1",
+    }])
+    monkeypatch.setattr(
+        "platform_core.annotation_runtime.provider_factory",
+        lambda _value: FakeVisionProvider(),
+    )
 
     created = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
         "image_ids": [image["id"]],
         "labels_text": "fire",
-        "provider_id": "fake-provider",
+        "model_config_id": "fake-model-config",
         "prompt_template_id": "default",
     })
     assert created.status_code == 202, created.text

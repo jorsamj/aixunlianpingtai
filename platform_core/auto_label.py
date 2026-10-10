@@ -106,22 +106,15 @@ def parse_candidate_response(
     except ValidationError as error:
         raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False)}") from error
 
+    # Alias metadata is intentionally ignored here. The model must return one
+    # of the exact canonical codes explicitly allowed by this task.
+    del label_aliases
     result: list[dict[str, Any]] = []
     for index, box in enumerate(parsed.boxes):
         label = box.label.strip()
         values = (box.confidence, box.x1, box.y1, box.x2, box.y2)
         if not all(math.isfinite(value) for value in values):
             raise ValueError(f"第 {index + 1} 个框包含非有限数字")
-        if label not in label_ids and label:
-            matches = []
-            for code, aliases in (label_aliases or {}).items():
-                if code not in label_ids:
-                    continue
-                values = [str(alias or "").strip() for alias in aliases]
-                if any(alias and label == alias for alias in values):
-                    matches.append(code)
-            if len(matches) == 1:
-                label = matches[0]
         if label not in label_ids:
             raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签：{label}")
         if not 0 <= box.confidence <= 1:

@@ -45,6 +45,8 @@ class SplitRequest:
                 raise ValueError("随机抽取模式不能设置 test_image_ids")
             if self.experiment_percent is None or not 0 < float(self.experiment_percent) < 100:
                 raise ValueError("experiment_percent 必须大于 0 且小于 100")
+            if float(self.experiment_percent) + float(self.validation_percent) >= 100:
+                raise ValueError("experiment_percent 与 validation_percent 之和必须小于 100，保留训练集")
 
 
 @dataclass(frozen=True)
@@ -72,13 +74,13 @@ _COMPONENT_RELATION_FIELDS = (
 
 
 def _processed(row: Mapping[str, Any]) -> bool:
-    return bool(
-        row.get("annotation_state") in {"annotated", "confirmed_empty"}
-        or row.get("annotated")
-        or row.get("processing_status") == "processed"
-        or row.get("cleaned_at")
-        or row.get("clean_skipped")
-    )
+    """Training eligibility is formal annotation truth, never cleaning state."""
+    state = str(row.get("annotation_state") or "").strip().lower()
+    if state:
+        return state in {"annotated", "confirmed_empty"}
+    # Legacy callers may not carry annotation_state yet. Keep only the old
+    # explicit annotation flag; processing/cleaning metadata is not Ground Truth.
+    return bool(row.get("annotated"))
 
 
 def _identity(row: Mapping[str, Any]) -> str:
@@ -341,6 +343,71 @@ def exclude_reserved_test_components(
     )
 
 
+def _row_label_codes(row: Mapping[str, Any]) -> set[str]:
+    return {
+        str(box.get("label") or box.get("code") or "").strip()
+        for box in (row.get("boxes") or [])
+        if isinstance(box, Mapping)
+        and str(box.get("label") or box.get("code") or "").strip()
+    }
+
+
+def _reserve_required_train_components(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    required_labels: Sequence[str],
+    seed: int,
+) -> set[str]:
+    required = tuple(dict.fromkeys(
+        str(value).strip() for value in required_labels if str(value).strip()
+    ))
+    if not required:
+        return set()
+
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    group_labels: dict[str, set[str]] = {}
+    for row in rows:
+        image_id = str(row.get("id") or "")
+        key = component_keys[image_id]
+        grouped.setdefault(key, []).append(row)
+        group_labels.setdefault(key, set()).update(_row_label_codes(row))
+
+    available = set().union(*(group_labels.values())) if group_labels else set()
+    missing = [label for label in required if label not in available]
+    if missing:
+        raise ValueError(
+            "本次新增训练标签在训练候选中没有正样本: "
+            + ", ".join(missing[:20])
+        )
+
+    order = sorted(grouped)
+    random.Random(int(seed)).shuffle(order)
+    rank = {key: index for index, key in enumerate(order)}
+    needed = set(required)
+    reserved: set[str] = set()
+    while needed:
+        candidates = [
+            key for key in order
+            if key not in reserved and group_labels.get(key, set()) & needed
+        ]
+        if not candidates:
+            raise ValueError(
+                "无法为本次新增训练标签保留训练正样本: "
+                + ", ".join(sorted(needed)[:20])
+            )
+        chosen = min(
+            candidates,
+            key=lambda key: (
+                -len(group_labels.get(key, set()) & needed),
+                len(grouped[key]),
+                rank[key],
+            ),
+        )
+        reserved.add(chosen)
+        needed.difference_update(group_labels.get(chosen, set()))
+    return reserved
+
+
 def _select_grouped(
     rows: Sequence[Mapping[str, Any]],
     component_keys: Mapping[str, str],
@@ -348,6 +415,7 @@ def _select_grouped(
     seed: int,
     *,
     min_remaining_groups: int = 1,
+    reserved_component_keys: Sequence[str] = (),
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
@@ -357,18 +425,52 @@ def _select_grouped(
         raise ValueError("按不可拆分数据组件分组后组数不足，无法避免数据泄漏")
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
-    sizes = [len(grouped[key]) for key in keys]
+    reserved = {
+        str(key) for key in reserved_component_keys
+        if str(key) in grouped
+    }
+    selectable_keys = [key for key in keys if key not in reserved]
+    if not selectable_keys:
+        raise ValueError("保留新增标签训练正样本后，没有可用于验证/试验划分的数据组件")
+    sizes = [len(grouped[key]) for key in selectable_keys]
     target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
 
-    choices: dict[int, tuple[int, ...]] = {0: ()}
+    # Exact subset-sum with O(number_of_rows) Python-side state.
+    #
+    # The previous implementation stored the complete selected-index tuple for
+    # every reachable total. With thousands of singleton components that means
+    # sum(1..N) tuple entries and can consume quadratic memory before training
+    # even starts. A Python integer is an efficient reachability bitset; each
+    # total is discovered at most once, while predecessor arrays reconstruct the
+    # exact same first-reached subset semantics as the old DP.
+    max_total = len(rows) - 1
+    reachable = 1  # bit 0
+    mask = (1 << (max_total + 1)) - 1
+    parent_total = [-1] * (max_total + 1)
+    parent_group = [-1] * (max_total + 1)
+    selected_counts = [-1] * (max_total + 1)
+    selected_counts[0] = 0
+
     for index, size in enumerate(sizes):
-        for total, selected in list(choices.items())[::-1]:
-            candidate = total + size
-            if candidate < len(rows) and candidate not in choices:
-                choices[candidate] = (*selected, index)
+        shifted = (reachable << size) & mask
+        newly_reachable = shifted & ~reachable
+        pending = newly_reachable
+        while pending:
+            bit = pending & -pending
+            total = bit.bit_length() - 1
+            previous = total - size
+            parent_total[total] = previous
+            parent_group[total] = index
+            selected_counts[total] = selected_counts[previous] + 1
+            pending ^= bit
+        reachable |= shifted
+
+    max_selected_groups = len(grouped) - int(min_remaining_groups)
     allowed_totals = [
-        total for total, selected in choices.items()
-        if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
+        total
+        for total in range(1, max_total + 1)
+        if ((reachable >> total) & 1)
+        and 0 < selected_counts[total] <= max_selected_groups
     ]
     if not allowed_totals:
         raise ValueError("所选不可拆分数据组件不足以划分训练、验证和试验数据")
@@ -376,7 +478,17 @@ def _select_grouped(
         allowed_totals,
         key=lambda total: (abs(total - target), total > target, total),
     )
-    selected_keys = {keys[index] for index in choices[selected_total]}
+
+    selected_indexes: set[int] = set()
+    cursor = selected_total
+    while cursor:
+        index = parent_group[cursor]
+        previous = parent_total[cursor]
+        if index < 0 or previous < 0 or previous >= cursor:
+            raise RuntimeError("split subset predecessor chain is invalid")
+        selected_indexes.add(index)
+        cursor = previous
+    selected_keys = {selectable_keys[index] for index in selected_indexes}
     selected = [
         row for row in rows
         if component_keys[str(row.get("id") or "")] in selected_keys
@@ -407,6 +519,7 @@ def build_split_manifest(
     request: SplitRequest,
     *,
     seed: int,
+    required_train_labels: Sequence[str] = (),
 ) -> SplitManifest:
     by_id: dict[str, Mapping[str, Any]] = {}
     for row in images:
@@ -453,6 +566,14 @@ def build_split_manifest(
         )
 
     component_keys = _component_keys(canonical_rows)
+    required_labels = tuple(dict.fromkeys(
+        str(value).strip()
+        for value in required_train_labels
+        if str(value).strip()
+    ))
+    reserved_train_components = _reserve_required_train_components(
+        train_pool, component_keys, required_labels, int(seed),
+    )
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
@@ -460,7 +581,11 @@ def build_split_manifest(
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
         test_rows = independent_test_rows
         train_rows, validation_rows = _select_grouped(
-            train_pool, component_keys, request.validation_percent, validation_seed
+            train_pool,
+            component_keys,
+            request.validation_percent,
+            validation_seed,
+            reserved_component_keys=reserved_train_components,
         )
         test_source = "independent_materials"
     else:
@@ -470,9 +595,18 @@ def build_split_manifest(
             float(request.experiment_percent or 0),
             test_seed,
             min_remaining_groups=2,
+            reserved_component_keys=reserved_train_components,
         )
+        # Percentages are measured against the complete frozen pool.
+        # The test holdout is frozen first, so rebase the validation target
+        # onto the remaining pool without weakening the leakage guard.
+        validation_of_remaining = float(request.validation_percent) * 100.0 / (100.0 - float(request.experiment_percent))
         train_rows, validation_rows = _select_grouped(
-            after_test, component_keys, request.validation_percent, validation_seed
+            after_test,
+            component_keys,
+            validation_of_remaining,
+            validation_seed,
+            reserved_component_keys=reserved_train_components,
         )
         test_source = "random_from_training_pool"
 
@@ -500,6 +634,13 @@ def build_split_manifest(
         "validation_percent": request.validation_percent,
         "excluded_duplicate_ids": list(excluded_duplicate_ids),
         "duplicate_group_count": len(duplicate_groups),
+        **(
+            {
+                "required_train_labels": list(required_labels),
+                "reserved_train_component_count": len(reserved_train_components),
+            }
+            if required_labels else {}
+        ),
     }
     actual_ratios = {
         role: round(len(value) * 100 / total, 6) for role, value in ids.items()

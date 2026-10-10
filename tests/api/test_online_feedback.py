@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 import app as app_module
@@ -22,24 +25,37 @@ def _project(client):
 def _algorithm_version(client, project_id: str):
     models = app_module.project_dir(project_id) / "models"
     models.mkdir(parents=True, exist_ok=True)
-    (models / "feedback.pt").write_bytes(b"feedback-model-v1")
+    model_path = models / "feedback.pt"
+    model_path.write_bytes(b"feedback-model-v1")
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "烟雾抽检算法", "remark": "", "industry": "", "algorithm_type": "detection"},
     )
     algorithm.raise_for_status()
     algorithm_id = algorithm.json()["algorithm"]["id"]
-    version = client.post(
-        f"/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions",
-        json={
-            "model_name": "feedback.pt",
-            "model_source": "project",
-            "version_name": "",
-            "remark": "",
+    # Feedback tests need a stable version identity and model SHA, not a
+    # fabricated training-success claim. The manual-attachment HTTP endpoint
+    # is deliberately fail-closed for safe launch; preserve that production gate.
+    version = app_module.attach_algorithm_version_if_current(
+        app_module.algorithms_file(project_id),
+        algorithm_id,
+        {
+            "id": uuid.uuid4().hex[:12],
+            "version_no": 1,
+            "version_name": "feedback-test-fixture",
+            "model_name": model_path.name,
+            "stored_path": str(model_path),
+            "framework": "ultralytics",
+            "training_status": "TEST_FIXTURE",
+            "artifact_verified": False,
+            "trainable": False,
+            "created_at": app_module.now_iso(),
         },
+        expected_current_version_id=None,
     )
-    version.raise_for_status()
-    return algorithm_id, version.json()["version"]
+    assert version["artifact_verified"] is False
+    assert version["trainable"] is False
+    return algorithm_id, version
 
 
 def _prediction(project_id: str, algorithm_id: str, version: dict, *, detections, suffix=""):
@@ -589,3 +605,217 @@ def test_feedback_candidate_freeze_rejects_stale_annotation_and_excludes_pending
     )
     assert stale.status_code == 409
     assert "已经变化" in stale.text
+
+
+
+def test_feedback_label_retirement_before_truth_commit_rolls_back_new_material(
+    client, monkeypatch,
+):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"],
+        algorithm_id,
+        version,
+        detections=[{
+            "class_id": 0,
+            "label": "smoke",
+            "confidence": 0.93,
+            "x1": 10,
+            "y1": 8,
+            "x2": 60,
+            "y2": 52,
+        }],
+        suffix="label-race",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    before_materials = app_module.material_store(project["id"]).count()
+    before_annotations = AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).summary()["total"]
+
+    real_fence = app_module.label_governance_fence
+    changed = {"done": False}
+
+    @contextmanager
+    def retire_before_truth(project_path, **kwargs):
+        if not changed["done"]:
+            changed["done"] = True
+            meta_path = app_module.project_dir(project["id"]) / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["label_meta"][0]["status"] = "active"
+            meta["label_meta"][0]["active"] = False
+            meta_path.write_text(
+                json.dumps(meta, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        with real_fence(project_path, **kwargs):
+            yield
+
+    monkeypatch.setattr(
+        app_module,
+        "label_governance_fence",
+        retire_before_truth,
+    )
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert changed["done"] is True
+    assert "无法唯一映射到当前项目标签" in response.text
+    assert app_module.material_store(project["id"]).count() == before_materials
+    assert AnnotationRepository(
+        app_module.project_dir(project["id"])
+    ).summary()["total"] == before_annotations
+    pending = app_module._online_feedback_repository(project["id"]).get(staged["id"])
+    assert pending["status"] == "pending_review"
+
+
+def test_pending_feedback_prevents_version_retirement_until_review_finishes(client):
+    project = _project(client)
+    project_id = project["id"]
+    algorithm_id, source_version = _algorithm_version(client, project_id)
+    prediction_id, _ = _prediction(
+        project_id, algorithm_id, source_version,
+        detections=[], suffix="retirement-fence",
+    )
+    pending = _stage(client, project_id, prediction_id, "needs_correction")
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == pending["id"]
+
+    other_path = app_module.project_dir(project_id) / "models" / "feedback-next.pt"
+    other_path.write_bytes(b"another-model-for-version-retirement")
+    next_version = app_module.attach_algorithm_version_if_current(
+        app_module.algorithms_file(project_id),
+        algorithm_id,
+        {
+            "id": uuid.uuid4().hex[:12],
+            "version_no": 2,
+            "version_name": "feedback-next-fixture",
+            "model_name": other_path.name,
+            "stored_path": str(other_path),
+            "framework": "ultralytics",
+            "training_status": "TEST_FIXTURE",
+            "artifact_verified": False,
+            "trainable": False,
+            "created_at": app_module.now_iso(),
+        },
+        expected_current_version_id=source_version["id"],
+    )
+    assert next_version["id"] != source_version["id"]
+
+    delete_url = (
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm_id}"
+        f"/versions/{source_version['id']}"
+    )
+    blocked = client.delete(delete_url)
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["code"] == "ALGORITHM_VERSION_IN_USE"
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == pending["id"]
+    assert source_version["id"] in {
+        v["id"] for algo in app_module.list_algorithms_internal(project_id)
+        if algo["id"] == algorithm_id for v in algo["versions"]
+    }
+
+    dismissed = client.post(
+        f"/api/v63/projects/{project_id}/online-feedback/{pending['id']}/dismiss",
+        json={
+            "expected_feedback_type": "needs_correction",
+            "reason": "review completed",
+        },
+    )
+    assert dismissed.status_code == 200, dismissed.text
+    assert app_module._online_feedback_repository(project_id).pending_version_reference(
+        algorithm_id, source_version["id"]
+    ) == ""
+
+    retired = client.delete(delete_url)
+    assert retired.status_code == 200, retired.text
+
+
+def test_pending_correct_feedback_pins_label_rename_delete_and_remap_retirement(client):
+    from platform_core.material_batches import BatchRequestError, _retire_merged_source_labels
+
+    created = client.post("/api/projects", json={
+        "name": f"feedback-label-pin-{uuid.uuid4().hex[:8]}",
+        "labels": ["smoke", "helmet"],
+    })
+    assert created.status_code == 200, created.text
+    project_id = created.json()["id"]
+    algorithm_id, version = _algorithm_version(client, project_id)
+    prediction_id, _ = _prediction(
+        project_id, algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+    )
+    staged = _stage(client, project_id, prediction_id, "correct")
+    assert app_module._online_feedback_repository(project_id).pending_label_reference(
+        ["smoke"]
+    ) == staged["id"]
+
+    changed = client.put(
+        f"/api/v12/projects/{project_id}/labels/0", json={"code": "smoking"},
+    )
+    assert changed.status_code == 409, changed.text
+    deleted = client.delete(f"/api/v12/projects/{project_id}/labels/0")
+    assert deleted.status_code == 409, deleted.text
+
+    with pytest.raises(BatchRequestError) as conflict:
+        _retire_merged_source_labels(
+            app_module.DATA_DIR, project_id, ["smoke"], "helmet",
+        )
+    assert conflict.value.code == "ONLINE_FEEDBACK_LABEL_ACTIVE"
+
+    # A different label is not pinned by smoke predictions.
+    unrelated = client.delete(f"/api/v12/projects/{project_id}/labels/1")
+    assert unrelated.status_code == 200, unrelated.text
+
+    dismissed = client.post(
+        f"/api/v63/projects/{project_id}/online-feedback/{staged['id']}/dismiss",
+        json={"expected_feedback_type": "correct", "reason": "review handled"},
+    )
+    assert dismissed.status_code == 200, dismissed.text
+    assert app_module._online_feedback_repository(project_id).pending_label_reference(
+        ["smoke"]
+    ) == ""
+    renamed = client.put(
+        f"/api/v12/projects/{project_id}/labels/0", json={"code": "smoking"},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+
+def test_stage_correct_prediction_rejects_retired_frozen_label(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+    )
+    deleted = client.delete(f"/api/v12/projects/{project['id']}/labels/0")
+    assert deleted.status_code == 200, deleted.text
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback",
+        json={
+            "prediction_id": prediction_id,
+            "feedback_type": "correct",
+            "note": "retired source label",
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert app_module._online_feedback_repository(project["id"]).list(
+        status="pending_review"
+    ) == []

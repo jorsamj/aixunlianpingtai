@@ -396,6 +396,7 @@ def verify_training_result_archive(
     )).resolve()
     try:
         seen: set[str] = set()
+        extracted_evidence: dict[str, tuple[int, str]] = {}
         total = 0
         files = 0
         with zipfile.ZipFile(source, "r") as archive_file:
@@ -440,6 +441,7 @@ def verify_training_result_archive(
                     )
                 output.parent.mkdir(parents=True, exist_ok=True)
                 written = 0
+                member_digest = hashlib.sha256()
                 with archive_file.open(info, "r") as input_stream, output.open("xb") as output_stream:
                     for chunk in iter(lambda: input_stream.read(1024 * 1024), b""):
                         written += len(chunk)
@@ -449,6 +451,7 @@ def verify_training_result_archive(
                                 "training result archive expanded beyond supported limits",
                                 413,
                             )
+                        member_digest.update(chunk)
                         output_stream.write(chunk)
                 if written != int(info.file_size):
                     raise RemoteTrainingResultError(
@@ -456,6 +459,7 @@ def verify_training_result_archive(
                         "training result member size does not match ZIP metadata",
                         409,
                     )
+                extracted_evidence[name] = (written, member_digest.hexdigest())
         manifest_path = temporary / "manifest.json"
         if not manifest_path.is_file():
             raise RemoteTrainingResultError(
@@ -555,9 +559,10 @@ def verify_training_result_archive(
                         "training result model file is missing",
                         409,
                     )
+                extracted_size, extracted_sha = extracted_evidence.get(ref, (0, ""))
                 if (
-                    int(path.stat().st_size) != expected_model_size
-                    or _sha256(path) != expected_model_sha
+                    extracted_size != expected_model_size
+                    or extracted_sha != expected_model_sha
                 ):
                     raise RemoteTrainingResultError(
                         "TRAINING_RESULT_MODEL_EVIDENCE_MISMATCH",

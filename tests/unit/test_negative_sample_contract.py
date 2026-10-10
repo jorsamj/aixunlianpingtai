@@ -50,6 +50,48 @@ def test_confirmed_empty_without_explicit_scope_persists_active_project_labels(t
     assert saved["annotation_scope"] == ["fire", "smoke"]
 
 
+def test_confirmed_empty_fallback_excludes_merged_and_compatibility_disabled_labels(
+    tmp_path: Path,
+):
+    (tmp_path / "meta.json").write_text(
+        """{
+          "labels": [
+            "safetyhelmet", "NOT_safetyhelmet", "people",
+            "Helmet", "No_Helmet", "No_helmet_detected", "Persona",
+            "Safety_helmet_detected", "helmet", "safetyhelmet2",
+            "compatibility_disabled"
+          ],
+          "label_meta": [
+            {"status": "active"},
+            {"status": "active"},
+            {"status": "active"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+            {"status": "merged", "merged_into": "NOT_safetyhelmet"},
+            {"status": "merged", "merged_into": "people"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "merged", "merged_into": "Helmet"},
+            {"status": "merged", "merged_into": "safetyhelmet"},
+            {"status": "active", "active": false}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    repository = AnnotationRepository(tmp_path)
+
+    saved = repository.upsert(
+        "negative-merged-history",
+        [],
+        annotation_state="confirmed_empty",
+    )
+
+    assert saved["annotation_scope"] == [
+        "NOT_safetyhelmet",
+        "people",
+        "safetyhelmet",
+    ]
+
+
 def test_snapshot_expands_legacy_global_negative_to_locked_schema():
     row = {
         "id": "negative-1",
@@ -168,7 +210,7 @@ def test_confirmed_empty_materializes_as_real_empty_yolo_label_file(tmp_path: Pa
     assert label.read_text(encoding="utf-8") == ""
 
 
-def test_snapshot_preserves_task_filtered_negative_origin():
+def test_snapshot_preserves_redacted_task_negative_projection_evidence():
     row = {
         "id": "task-negative",
         "content_sha256": "hash-task-negative",
@@ -178,9 +220,14 @@ def test_snapshot_preserves_task_filtered_negative_origin():
         "annotated": True,
         "processing_status": "processed",
         "boxes": [],
-        "negative_origin": "filtered_by_training_labels",
+        "negative_origin": "redacted_unselected_labels",
         "source_annotation_state": "annotated",
         "source_labels": ["people"],
+        "training_projection_policy": "redact_excluded_objects_v1",
+        "training_projection_digest": "a" * 64,
+        "training_excluded_boxes": [
+            {"label": "people", "x1": 1, "y1": 1, "x2": 10, "y2": 10}
+        ],
     }
     snapshot = build_snapshot(
         [row],
@@ -188,7 +235,45 @@ def test_snapshot_preserves_task_filtered_negative_origin():
         [{"code": "fire", "class_id": 0}],
     )
     locked = snapshot["images"][0]
-    assert locked["negative_origin"] == "filtered_by_training_labels"
+    assert locked["negative_origin"] == "redacted_unselected_labels"
     assert locked["source_annotation_state"] == "annotated"
     assert locked["source_labels"] == ["people"]
-    assert snapshot["negative_origin_counts"] == {"filtered_by_training_labels": 1}
+    assert locked["training_projection_policy"] == "redact_excluded_objects_v1"
+    assert locked["training_projection_digest"] == "a" * 64
+    assert locked["training_excluded_label_count"] == 1
+    assert snapshot["negative_origin_counts"] == {"redacted_unselected_labels": 1}
+
+def test_projection_digest_changes_snapshot_and_dataset_revision_identity():
+    base = {
+        "id": "projection-cache-key",
+        "content_sha256": "b" * 64,
+        "stored_name": "projection-cache-key.jpg",
+        "annotation_state": "annotated",
+        "annotation_scope": ["fire"],
+        "annotated": True,
+        "processing_status": "processed",
+        "boxes": [
+            {"label": "fire", "x1": 10, "y1": 10, "x2": 30, "y2": 30}
+        ],
+        "source_annotation_state": "annotated",
+        "source_labels": ["fire", "people"],
+        "training_projection_policy": "redact_excluded_objects_v1",
+        "training_excluded_boxes": [
+            {"label": "people", "x1": 40, "y1": 40, "x2": 70, "y2": 70}
+        ],
+    }
+    schema = [{"code": "fire", "class_id": 0}]
+    first = build_snapshot(
+        [{**base, "training_projection_digest": "1" * 64}],
+        _manifest("projection-cache-key", "b" * 64),
+        schema,
+    )
+    second = build_snapshot(
+        [{**base, "training_projection_digest": "2" * 64}],
+        _manifest("projection-cache-key", "b" * 64),
+        schema,
+    )
+
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert first["dataset_revision_id"] != second["dataset_revision_id"]
+

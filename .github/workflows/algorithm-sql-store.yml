@@ -70,11 +70,11 @@ jobs:
           node --test tests/frontend/training-submit.test.mjs
       - name: Permanent invariants
         run: |
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           grep -q 'AlgorithmSqlStore' platform_core/algorithms.py
           grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
           grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
-          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'SCHEMA_VERSION = 4' platform_core/algorithm_sql_store.py
           grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
           grep -Fq 'def _canonical_training_version' platform_core/algorithm_sql_store.py
           grep -Fq 'test_schema_v2_backfills_only_durable_timestamp_training_version_numbers' tests/unit/test_algorithm_sql_store.py
@@ -163,4 +163,4 @@ jobs:
           grep -Fq 'payload.iteration_action' static/modules/training-submit.js
           grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
           grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

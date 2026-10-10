@@ -14,6 +14,7 @@ from platform_core.algorithms import (
     delete_algorithm_version,
     resolve_current_version_id,
     rollback_algorithm_version,
+    retry_algorithm_version_cleanup,
     update_algorithm_version,
 )
 from platform_core.errors import PlatformError
@@ -346,6 +347,68 @@ def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switc
     assert {row["id"] for row in stored["versions"]} == {"v3"}
     assert stored["version_operations"][-1]["cleanup_status"] == "cleanup_failed"
     assert stored["version_operations"][-1]["cleanup_errors"] == ["permission denied"]
+
+
+def test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+    attempts = []
+
+    def cleanup(_algorithm, version):
+        attempts.append(dict(version))
+        if len(attempts) == 1:
+            return {"status": "cleanup_failed", "targets": [], "errors": ["temporary delete failure"]}
+        return {"status": "cleanup_completed", "targets": ["retired-v5"], "errors": []}
+
+    rolled_back = rollback_algorithm_version(
+        path,
+        "algorithm-one",
+        "v3",
+        now="2026-09-15T01:02:03+00:00",
+        delete_current_version=True,
+        expected_current_version_id="v5",
+        dependency_check=lambda _algorithm, _version: [],
+        cleanup=cleanup,
+    )
+    assert rolled_back["cleanup_status"] == "cleanup_failed"
+    operation_id = rolled_back["operation_id"]
+    stored = algorithms_module.list_algorithms(path)[0]
+    operation = stored["version_operations"][-1]
+    assert operation["cleanup_version"]["id"] == "v5"
+    assert operation["cleanup_version"]["stored_path"].endswith("v5.pt")
+    assert [row["id"] for row in stored["versions"]] == ["v3"]
+
+    retried = retry_algorithm_version_cleanup(
+        path,
+        "algorithm-one",
+        operation_id,
+        cleanup=cleanup,
+    )
+    assert retried["cleanup_status"] == "cleanup_completed"
+    assert retried["already_completed"] is False
+    assert attempts[-1]["id"] == "v5"
+    assert attempts[-1]["stored_path"].endswith("v5.pt")
+
+    repeated = retry_algorithm_version_cleanup(
+        path,
+        "algorithm-one",
+        operation_id,
+        cleanup=cleanup,
+    )
+    assert repeated["cleanup_status"] == "cleanup_completed"
+    assert repeated["already_completed"] is True
+    assert len(attempts) == 2
+    stored = algorithms_module.list_algorithms(path)[0]
+    operation = stored["version_operations"][-1]
+    assert operation["cleanup_status"] == "cleanup_completed"
+    assert operation["cleanup_targets"] == ["retired-v5"]
 
 
 def test_iteration_base_uses_persisted_current_version_after_rollback(tmp_path: Path):

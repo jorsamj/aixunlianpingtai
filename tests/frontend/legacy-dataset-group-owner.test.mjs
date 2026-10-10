@@ -31,7 +31,8 @@ test('historical render maps are retired while the bounded dataset delegate rema
   assert.doesNotMatch(app, /\brender\s*=\s*function\b/);
 });
 
-test('R20i keeps the formal visible version independent from internal cache bumps', () => {
-  assert.match(index, /id="versionBadge" class="version-badge">v42\.24\.0</);
+test('R20i keeps formal version truth independent from internal cache bumps', () => {
+  assert.match(index, /id="versionBadge" class="version-badge">v—</);
   assert.match(index, /<script src="\/static\/app\.js\?v=42\.25\.\d+"><\/script>/);
+  assert.match(app, /state\.versionInfo=\{version:String\(s\.platform_version\|\|''\)\.trim\(\)\|\|'—'/);
 });

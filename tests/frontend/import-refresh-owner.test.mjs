@@ -23,6 +23,14 @@ test('durable ZIP completion keeps review ownership and refreshes only label/mat
   assert.equal((app.match(/window\.doUploadZip426=/g)||[]).length,0);
 });
 
+test('post-import label remap refresh stays label/material scoped', () => {
+  const owner=region(app,'async function refreshImportReviewAfterRemap414(task,source,target){','window.pollImportRemap414=async function');
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.match(owner,/reloadMaterialPage61\?\.\(\)/);
+  assert.match(owner,/\/import\/jobs\/\$\{jobId\}\/review/);
+  assert.doesNotMatch(owner,/loadCore412|loadAll\s*\(|loadRelated\s*\(/);
+});
+
 test('server storage import confirmation stays mapping-only and never broad-loads', () => {
   const owner=region(app,'window.confirmStorageImport61=async function(taskId){','window.beforeCloseStorageImport61=function()');
   assert.match(owner,/serverApi\(\)\.buildImportConfirmation\(rows/);
@@ -38,4 +46,15 @@ test('v36 source import polling remains page-scoped through PollRegistry', () =>
   assert.match(owner,/'数据集'/);
   assert.match(owner,/PollRegistryRuntime\?\.clear\?\.\(SOURCE_IMPORT_POLL_KEY_V36\)/);
   assert.doesNotMatch(owner,/__sourceImportTimerV36/);
+});
+
+
+test('post-import review reads the imported batch directly without broad bootstrap refresh', () => {
+  const owner=region(app,'function importRows414()','/* M4 final activation:');
+  assert.match(owner,/Array\.isArray\(r\.images\)\?r\.images/);
+  assert.match(owner,/images:rr\.images\|\|\[\]/);
+  assert.match(owner,/refreshLabels414\(false\)/);
+  assert.doesNotMatch(owner,/showImportReview412=async function\(jobId\)\{await window\.loadCore412/);
+  assert.doesNotMatch(owner,/importRows414\(\).*state\.images/s);
+  assert.match(owner,/runMaterialBatch62\('MARK_CLEAN_SKIPPED',\{scope:'SELECTED',imageIds:ids,skipConfirm:true\}\)/);
 });

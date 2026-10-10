@@ -18,9 +18,12 @@ from pathlib import Path
 
 from .annotations import atomic_write_json
 from .gpu_resources import sample_gpus
-from .training_precision import normalize_training_precision
-
-GIB = 1024 ** 3
+from .training_resource_policy import (
+    GIB,
+    model_memory_components,
+    precision_policy,
+    resource_profile_config,
+)
 
 
 def host_resources():
@@ -125,13 +128,11 @@ def resolve_resources(request, context, model, torch):
     gpu_policy = str(request.get("gpu_policy") or "auto").strip().lower()
     if gpu_policy not in {"auto", "exclusive"}:
         raise ValueError("GPU_POLICY_UNSUPPORTED: shared GPU scheduling is not enabled")
-    precision = normalize_training_precision(request.get("precision") or "auto")
-    activation_precision_factor = (
-        2.0
-        if precision == "fp32"
-        or (precision == "auto" and request.get("amp") is False)
-        else 1.0
-    )
+    requested_device = str(request.get("device") or "").strip().lower()
+    precision_truth = precision_policy(request, device=requested_device)
+    precision = str(precision_truth["requested_precision"])
+    resolved_precision = str(precision_truth["resolved_precision"])
+    activation_precision_factor = float(precision_truth["activation_precision_factor"])
 
     requested_batch = int(request["batch"])
     requested_workers = int(request["workers"])
@@ -147,26 +148,7 @@ def resolve_resources(request, context, model, torch):
         if requested_workers < 0:
             raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
 
-    profile_cfg = {
-        "stability": {
-            "gpu_fraction": 0.58,
-            "worker_cap": 4,
-            "ram_fraction": 0.22,
-            "batch_cap": 64,
-        },
-        "balanced": {
-            "gpu_fraction": 0.70,
-            "worker_cap": 8,
-            "ram_fraction": 0.35,
-            "batch_cap": 128,
-        },
-        "performance": {
-            "gpu_fraction": 0.82,
-            "worker_cap": 12,
-            "ram_fraction": 0.50,
-            "batch_cap": 256,
-        },
-    }[profile]
+    profile_cfg = resource_profile_config(profile)
 
     cores, ram = host_resources()
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
@@ -213,7 +195,11 @@ def resolve_resources(request, context, model, torch):
         # number of installed GPUs. An idle multi-GPU server should not throttle
         # a single training job before the other GPUs have work. The final
         # DataLoader batch-count cap is applied after GPU batch resolution.
-        workers = min(cap, cpu_loader_budget)
+        # Shared canonical resolver: reserve 4 GiB for the trainer and
+        # at least 2 GiB of free host RAM for each DataLoader process.
+        # Both local and Agent resource-resolution subprocesses apply this.
+        ram_worker_budget = max(0, (ram_available - 4 * GIB) // (2 * GIB)) if ram_available else 0
+        workers = min(cap, cpu_loader_budget, int(ram_worker_budget))
         if request.get("device") == "cpu":
             workers = 0
         reasons.append(
@@ -241,19 +227,34 @@ def resolve_resources(request, context, model, torch):
 
     estimated = None
     free = total = None
+    resolution_gpu_uuid = str(context.get("gpu_uuid") or "").strip() or None
+    resolution_gpu_name = str(context.get("gpu_name") or "").strip() or None
     if str(request.get("device", "")).startswith("cuda:"):
         index = int(request["device"].split(":")[1])
         torch.cuda.set_device(index)
         free, total = (int(value) for value in torch.cuda.mem_get_info(index))
-        params = sum(int(value.numel()) for value in model.model.parameters())
-        fixed = max(GIB, params * 24)
-        per_image = int(
-            256 * 1024 ** 2
-            * max(1.0, (params / 3_000_000) ** 0.55)
-            * (int(request["imgsz"]) / 640) ** 2
-            * (1 + float(request.get("multi_scale") or 0)) ** 2
-            * activation_precision_factor
-        )
+        properties_reader = getattr(torch.cuda, "get_device_properties", None)
+        if callable(properties_reader):
+            properties = properties_reader(index)
+            raw_uuid = getattr(properties, "uuid", None)
+            actual_uuid = str(raw_uuid).strip() if raw_uuid is not None else ""
+            if (
+                resolution_gpu_uuid
+                and actual_uuid
+                and resolution_gpu_uuid.lower().removeprefix("gpu-")
+                != actual_uuid.lower().removeprefix("gpu-")
+            ):
+                raise RuntimeError(
+                    "GPU_IDENTITY_MISMATCH: resource resolver GPU UUID differs from assignment"
+                )
+            if actual_uuid:
+                resolution_gpu_uuid = actual_uuid
+            actual_name = str(getattr(properties, "name", "") or "").strip()
+            if actual_name:
+                resolution_gpu_name = actual_name
+        memory = model_memory_components(request, model, device=requested_device)
+        fixed = int(memory["fixed_bytes"])
+        per_image = int(memory["per_image_bytes"])
         other = max(0, int(context.get("other_reserved_bytes") or 0))
         reserve_floor = max(GIB, int(total * 0.05))
         available_after_other = max(0, free - other - reserve_floor)
@@ -285,6 +286,16 @@ def resolve_resources(request, context, model, torch):
     else:
         batch = requested_batch
 
+    # A small dataset should not become one giant optimizer update per
+    # epoch merely because an exclusive GPU has spare VRAM.
+    if strategy == "auto" and train_image_count < 512:
+        small_set_cap = max(1, math.ceil(train_image_count / 4))
+        if batch > small_set_cap:
+            adjustments.append(
+                f"small training set: batch capped {batch}->{small_set_cap} "
+                f"to preserve >=4 loader batches per epoch when possible"
+            )
+            batch = small_set_cap
     candidate_batch = int(batch)
     candidate_workers = int(workers)
     loader = effective_loader_resources(train_image_count, candidate_batch, candidate_workers)
@@ -331,6 +342,8 @@ def resolve_resources(request, context, model, torch):
         resource_profile=profile,
         gpu_policy=gpu_policy,
         precision=precision,
+        requested_precision=precision,
+        resolved_precision=resolved_precision,
         activation_precision_factor=activation_precision_factor,
         requested_batch=requested_batch,
         requested_workers=requested_workers,
@@ -346,6 +359,9 @@ def resolve_resources(request, context, model, torch):
         adjustments=adjustments,
         reasons=reasons,
         estimated_gpu_memory_bytes=estimated,
+        assigned_device=str(request.get("device") or "").strip() or None,
+        gpu_uuid=resolution_gpu_uuid,
+        gpu_name=resolution_gpu_name,
         gpu_free_bytes_at_resolution=free,
         gpu_total_bytes=total,
         target_gpu_memory_fraction=(float(profile_cfg["gpu_fraction"]) if strategy == "auto" else None),
@@ -633,3 +649,32 @@ class TrainingMetrics:
 
 def persist_resolution(path, resolved):
     atomic_write_json(Path(path), resolved)
+
+
+def resource_resolution_cli(argv=None):
+    """Resolve one frozen resource contract in the selected training Python environment."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Resolve training resources before Trainer startup")
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--context", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+
+    request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+    context = json.loads(Path(args.context).read_text(encoding="utf-8"))
+    if not isinstance(request, dict) or not isinstance(context, dict):
+        raise ValueError("RESOURCE_PREPARE_REQUIRED: request/context must be JSON objects")
+
+    import torch
+    from ultralytics import YOLO
+
+    model = YOLO(str(args.model))
+    resolved = resolve_resources(request, context, model, torch)
+    atomic_write_json(Path(args.output), resolved)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(resource_resolution_cli())

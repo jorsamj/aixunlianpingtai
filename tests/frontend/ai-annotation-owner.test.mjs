@@ -56,7 +56,7 @@ test('final label management page owner is the alias-aware schema manager', () =
   assert.match(main, /\['标签管理', 'renderLabelManagement414'\]/);
   assert.match(main, /navigationStabilityRuntime\.registerPageOwner\(page/);
   assert.match(source, /id="label414Aliases"/);
-  assert.match(source, /自动预选后仍需人工确认/);
+  assert.match(source, /不会用于导入时自动选择或推荐平台标签/);
 });
 test('AI review can explicitly create a canonical label but Ground Truth still commits through review mapping', () => {
   const reviewStart = source.lastIndexOf('function renderAiLabelMapping60()');
@@ -70,3 +70,86 @@ test('AI review can explicitly create a canonical label but Ground Truth still c
   assert.match(source, /候选结果不会自动写入正式标注/);
 });
 
+
+
+test('retired AI submit compatibility entrypoint delegates to the v60 owner', () => {
+  const marker = source.lastIndexOf('Persistent v60 AI annotation UI');
+  const end = source.indexOf('/* Explicit canonical-label creation used by import/rescan/ZIP/AI confirmation.', marker);
+  const finalLayer = source.slice(marker, end);
+  assert.match(finalLayer, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
+  assert.doesNotMatch(finalLayer, /\/api\/v47\/projects\/.*ai-label-tasks/);
+  assert.match(finalLayer, /const task=await api\(taskApi\(\),/);
+});
+
+
+test('retired v47 AI review clients are absent from the production frontend', () => {
+  assert.doesNotMatch(source, /\/api\/v47\/projects\/\$\{pid\(\)\}\/ai-label-tasks/);
+  for (const token of [
+    'reviewAiLabelLegacy427',
+    'confirmAiLabelLegacy4271',
+    'submitAiLabelLegacy429_1',
+    'confirmAiLabelLegacy4272',
+    'reviewAiLabelM4',
+    '__m4ReviewCandidates',
+    'candidateBoxM4',
+    'toggleAiConfirm427',
+    'v427AiConfirm',
+  ]) assert.equal(source.includes(token), false, token);
+  assert.match(source, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
+  assert.match(source, /window\.reviewAiLabel427=async function\(id\)/);
+  assert.match(source, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
+});
+
+
+test('AI task creation never resolves display names or aliases into canonical labels', () => {
+  const helperStart = source.lastIndexOf('function explicitCanonicalAiLabelText(value)');
+  const submitStart = source.lastIndexOf('window.submitAiLabel429=async function(ids=[])');
+  assert.ok(helperStart > 0 && submitStart > helperStart);
+  const helper = source.slice(helperStart, submitStart);
+  assert.match(helper, /label\?\.code/);
+  assert.match(helper, /const unknown=parts\.filter\(value=>!allowed\.has\(value\)\)/);
+  assert.doesNotMatch(helper, /display_name|aliases|alias/);
+  const submitEnd = source.indexOf('\n\n  function taskRow', submitStart);
+  const submit = source.slice(submitStart, submitEnd);
+  assert.match(submit, /labels_text:parsed\.text/);
+  assert.match(submit, /只接受当前有效的平台标签 code/);
+  assert.match(source, /中文名、别名、历史 alias 不会自动转换/);
+  assert.doesNotMatch(source, /function normalizedLabelText\(/);
+});
+
+
+test('AI review commit temporarily owns polling without racing the task list poller', () => {
+  const start = source.lastIndexOf('window.completeAiReview60=async mode=>');
+  const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
+  assert.ok(start > 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /ai-review-commit:/);
+  assert.match(block, /waitForTaskTerminal/);
+  assert.match(block, /AutoLabelPollRuntime\?\.deactivate/);
+  assert.match(block, /AutoLabelPollRuntime\?\.activate/);
+  assert.match(block, /pauseListPoll&&state\.page===ownerPage/);
+  assert.doesNotMatch(block, /createTaskPoller/);
+});
+
+test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
+  const start = source.lastIndexOf('function stopAiTaskDetail60');
+  const end = source.indexOf('function explicitCanonicalAiLabelText', start);
+  assert.ok(start > 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /ai-task-detail:/);
+  assert.match(block, /waitForTaskTerminal/);
+  assert.match(block, /registry:window\.PollRegistryRuntime/);
+  assert.match(block, /beforeCloseAiTask60/);
+  assert.match(block, /AutoLabelPollRuntime\?\.deactivate/);
+  assert.match(block, /AutoLabelPollRuntime\?\.activate/);
+  assert.doesNotMatch(block, /createTaskPoller/);
+  assert.doesNotMatch(source, /state\.ai60Pollers/);
+  assert.match(source, /beforeCloseAiTask60\?\.\(top\)/);
+  assert.match(source, /ai60Bar" style="transform:scaleX\(0\)/);
+  assert.doesNotMatch(block, /bar\.style\.width=.*view\.percent/);
+  const rowStart = source.indexOf('function taskRow(task)', end);
+  const rowEnd = source.indexOf('function renderAiTaskRows60', rowStart);
+  const rowBlock = source.slice(rowStart, rowEnd);
+  assert.match(rowBlock, /transform:scaleX/);
+  assert.doesNotMatch(rowBlock, /style="width:/);
+});

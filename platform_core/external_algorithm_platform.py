@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from contextlib import ExitStack
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -31,6 +32,8 @@ SOURCE_EXTERNAL = "EXTERNAL"
 CONFIG_SCHEMA_VERSION = 2
 CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
+SYNC_OPERATION_SCHEMA_VERSION = 1
+SYNC_OPERATION_ACTIVE_STATUSES = frozenset({"queued", "running"})
 # Kept only for config/API backward compatibility. Automatic master-data sync
 # is schedule-owned by AUTO_SYNC_SCHEDULE_LOCAL_TIMES, not interval-owned.
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60
@@ -242,6 +245,7 @@ class ExternalPlatformRepository:
         self.config_path = self.root / "config.json"
         self.cache_path = self.root / "master-data-cache.json"
         self.history_path = self.root / "sync-history.json"
+        self.operations_path = self.root / "sync-operations.json"
         self.lock = FileLock(str(self.root / ".lock"), timeout=30)
 
     def config(self) -> Dict[str, Any]:
@@ -336,6 +340,69 @@ class ExternalPlatformRepository:
                     rows = []
             rows.insert(0, dict(item))
             atomic_write_json(self.history_path, rows[:MAX_SYNC_HISTORY])
+
+    def _read_sync_operations_unlocked(self) -> Dict[str, Dict[str, Any]]:
+        if not self.operations_path.exists():
+            return {}
+        try:
+            value = json.loads(self.operations_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): dict(item)
+            for key, item in value.items()
+            if isinstance(item, dict)
+        }
+
+    def sync_operation(self, project_id: str) -> Dict[str, Any] | None:
+        with self.lock:
+            item = self._read_sync_operations_unlocked().get(str(project_id))
+            return dict(item) if isinstance(item, dict) else None
+
+    def claim_sync_operation(
+        self,
+        project_id: str,
+        operation: Mapping[str, Any],
+    ) -> tuple[bool, Dict[str, Any]]:
+        """Atomically reserve the one current sync operation for a project."""
+        project_key = str(project_id)
+        with self.lock:
+            rows = self._read_sync_operations_unlocked()
+            current = rows.get(project_key)
+            if (
+                isinstance(current, dict)
+                and str(current.get("status") or "") in SYNC_OPERATION_ACTIVE_STATUSES
+            ):
+                return False, dict(current)
+            value = dict(operation)
+            value["schema_version"] = SYNC_OPERATION_SCHEMA_VERSION
+            rows[project_key] = value
+            atomic_write_json(self.operations_path, rows)
+            return True, dict(value)
+
+    def update_sync_operation(
+        self,
+        project_id: str,
+        operation_id: str,
+        patch: Mapping[str, Any],
+    ) -> Dict[str, Any] | None:
+        """CAS-update the current operation so an old worker cannot overwrite a newer one."""
+        project_key = str(project_id)
+        expected = str(operation_id)
+        with self.lock:
+            rows = self._read_sync_operations_unlocked()
+            current = rows.get(project_key)
+            if not isinstance(current, dict) or str(current.get("operation_id") or current.get("id") or "") != expected:
+                return dict(current) if isinstance(current, dict) else None
+            current = dict(current)
+            current.update(dict(patch))
+            current["schema_version"] = SYNC_OPERATION_SCHEMA_VERSION
+            current["updated_at"] = utc_now()
+            rows[project_key] = current
+            atomic_write_json(self.operations_path, rows)
+            return dict(current)
 
 
 def normalize_base_url(value: Any) -> str:
@@ -903,6 +970,50 @@ def _analysis_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisId", "analysis_id", "id") or "").strip()
 
 
+def _analysis_product_id(row: Mapping[str, Any]) -> str:
+    return str(_value_from(row, "productId", "product_id") or "").strip()
+
+
+def _group_analysis_summaries_by_product(
+    rows: Iterable[Mapping[str, Any]],
+    product_ids: Iterable[str],
+) -> Dict[str, list[Dict[str, Any]]] | None:
+    """Group listAll summaries when ownership is explicit and unambiguous.
+
+    listAll is a performance index only. If any row omits productId we return
+    None so callers can fall back to listByProduct without weakening truth.
+    Rows for products outside the visual-product set are ignored.
+    """
+    known = {str(value) for value in product_ids if str(value)}
+    grouped: Dict[str, list[Dict[str, Any]]] = {pid: [] for pid in known}
+    owner_by_analysis: Dict[str, str] = {}
+    seen_by_product: Dict[str, set[str]] = {pid: set() for pid in known}
+
+    for raw in rows:
+        row = dict(raw)
+        product_id = _analysis_product_id(row)
+        if not product_id:
+            return None
+        if product_id not in known:
+            continue
+        analysis_id = _analysis_id(row)
+        previous_owner = owner_by_analysis.get(analysis_id)
+        if previous_owner and previous_owner != product_id:
+            raise PlatformError(
+                "EXTERNAL_ANALYSIS_PRODUCT_AMBIGUOUS",
+                "新畅联分析方式所属产品冲突",
+                f"analysisId={analysis_id}; products={previous_owner},{product_id}",
+                "请核对分析方式 listAll 返回的 productId；平台不会把同一分析方式归入多个算法产品。",
+                502,
+            )
+        owner_by_analysis[analysis_id] = product_id
+        if analysis_id in seen_by_product[product_id]:
+            continue
+        seen_by_product[product_id].add(analysis_id)
+        grouped[product_id].append(row)
+    return grouped
+
+
 def _compute_platform_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "computePlatformId", "compute_platform_id", "id") or "").strip()
 
@@ -1130,6 +1241,8 @@ def mirror_products_to_algorithms(
             ),
             "external_active": product_status == "1",
             "external_status": product_status,
+            "external_delete_pending": False,
+            "external_delete_pending_at": "",
             "external_last_synced_at": synced_at,
             "external_master_data_digest": str(master_digest or ""),
         }
@@ -1490,6 +1603,7 @@ class ExternalAlgorithmPlatformService:
         secret_store_factory: Callable[[], Any],
         client_factory: Callable[..., ChangLianClient] = ChangLianClient,
         local_purger: Any | None = None,
+        thread_factory: Callable[..., Any] = threading.Thread,
     ):
         self.data_dir = Path(data_dir)
         self.repository = ExternalPlatformRepository(self.data_dir)
@@ -1499,6 +1613,7 @@ class ExternalAlgorithmPlatformService:
         self.local_purger = local_purger or ExternalAlgorithmLocalPurger(
             self.data_dir, secret_store_factory,
         )
+        self.thread_factory = thread_factory
 
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
@@ -1506,6 +1621,161 @@ class ExternalAlgorithmPlatformService:
     def _sync_lock(self, project_id: str) -> FileLock:
         digest = hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:20]
         return FileLock(str(self.repository.root / f".sync-{digest}.lock"), timeout=0)
+
+    def _new_sync_operation(
+        self,
+        project_id: str,
+        sync_type: Literal["manual", "auto"],
+    ) -> Dict[str, Any]:
+        started_at = utc_now()
+        operation_id = hashlib.sha256(
+            f"{project_id}:{sync_type}:{started_at}:{time.time_ns()}".encode()
+        ).hexdigest()[:20]
+        return {
+            "schema_version": SYNC_OPERATION_SCHEMA_VERSION,
+            "id": operation_id,
+            "operation_id": operation_id,
+            "project_id": str(project_id),
+            "provider": "changlian",
+            "sync_type": sync_type,
+            "trigger_source": sync_type,
+            "status": "queued",
+            "started_at": started_at,
+            "updated_at": started_at,
+            "finished_at": None,
+            "current_phase": "queued",
+            "processed_products": 0,
+            "total_products": None,
+            "last_request_duration_ms": None,
+            "success_count": 0,
+            "error_count": 0,
+            "counts": {},
+            "error": "",
+            "detail": "",
+        }
+
+    def current_sync_operation(self, project_id: str) -> Dict[str, Any] | None:
+        operation = self.repository.sync_operation(project_id)
+        if not isinstance(operation, dict):
+            return None
+        if str(operation.get("status") or "") not in SYNC_OPERATION_ACTIVE_STATUSES:
+            return operation
+
+        # A live sync always owns the cross-process project lock. Give a newly
+        # queued background thread a short start window, then fail-closed any
+        # persisted RUNNING/QUEUED state whose lock is no longer held after a
+        # process restart.
+        updated_at = str(operation.get("updated_at") or operation.get("started_at") or "")
+        try:
+            stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+        except (TypeError, ValueError):
+            age_seconds = 999.0
+        if age_seconds < 5.0:
+            return operation
+
+        probe = self._sync_lock(project_id)
+        try:
+            probe.acquire(timeout=0)
+        except Timeout:
+            return operation
+        else:
+            try:
+                failed = self._update_sync_operation(
+                    project_id,
+                    str(operation.get("operation_id") or operation.get("id") or ""),
+                    status="failed",
+                    current_phase="failed",
+                    finished_at=utc_now(),
+                    error="同步任务已中断",
+                    detail="检测到持久同步状态仍为运行中，但项目同步锁已释放；服务可能在同步期间重启。",
+                    error_count=max(1, int(operation.get("error_count") or 0)),
+                ) or operation
+                if str(failed.get("status") or "") == "failed":
+                    self.repository.append_history(failed)
+                return failed
+            finally:
+                probe.release()
+
+    def _update_sync_operation(
+        self,
+        project_id: str,
+        operation_id: str,
+        **patch: Any,
+    ) -> Dict[str, Any] | None:
+        return self.repository.update_sync_operation(project_id, operation_id, patch)
+
+    def _assert_sync_active(self) -> None:
+        config = self.repository.config()
+        if str(config.get("mode") or "local") != "external":
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_NOT_ACTIVE",
+                "当前未启用外部算法主数据",
+                "算法主数据来源仍为“本平台”。",
+                "请先切换为“外部平台 / 新畅联”并保存。",
+                409,
+            )
+
+    def start_sync(
+        self,
+        *,
+        project_id: str,
+        algorithms_path: Path,
+        sync_type: Literal["manual", "auto"] = "manual",
+    ) -> Dict[str, Any]:
+        """Start one background sync operation or return the already-active one.
+
+        Manual HTTP and automatic scheduling share the same persisted operation
+        contract. The actual master-data executor remains sync().
+        """
+        self._assert_sync_active()
+        self.current_sync_operation(project_id)
+        operation = self._new_sync_operation(project_id, sync_type)
+        claimed, current = self.repository.claim_sync_operation(project_id, operation)
+        if not claimed:
+            return {"ok": True, "accepted": False, "operation": current}
+
+        def runner() -> None:
+            try:
+                self.sync(
+                    project_id=project_id,
+                    algorithms_path=algorithms_path,
+                    sync_type=sync_type,
+                    operation_id=str(operation["operation_id"]),
+                )
+            except Exception:
+                # sync() persists both operation failure truth and history.
+                return
+
+        thread = self.thread_factory(
+            target=runner,
+            name=f"external-sync-{str(project_id)[:20]}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception as error:
+            failed = self._update_sync_operation(
+                project_id,
+                str(operation["operation_id"]),
+                status="failed",
+                current_phase="failed",
+                finished_at=utc_now(),
+                error="同步后台任务启动失败",
+                detail=str(error)[:1000],
+                error_count=1,
+            ) or operation
+            self.repository.append_history(failed)
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_SYNC_START_FAILED",
+                "新畅联同步后台任务启动失败",
+                str(error),
+                "请检查服务运行状态后重试。",
+                500,
+            ) from error
+        return {"ok": True, "accepted": True, "operation": current}
 
     def public_config(self) -> Dict[str, Any]:
         config = self.repository.config()
@@ -2137,67 +2407,187 @@ class ExternalAlgorithmPlatformService:
         project_id: str,
         algorithms_path: Path,
         sync_type: Literal["manual", "auto"] = "manual",
+        operation_id: str | None = None,
     ) -> Dict[str, Any]:
-        config = self.repository.config()
-        if str(config.get("mode") or "local") != "external":
-            raise PlatformError(
-                "EXTERNAL_PLATFORM_NOT_ACTIVE",
-                "当前未启用外部算法主数据",
-                "算法主数据来源仍为“本平台”。",
-                "请先切换为“外部平台 / 新畅联”并保存。",
-                409,
-            )
+        self._assert_sync_active()
+
+        if operation_id:
+            operation = self.repository.sync_operation(project_id)
+            if (
+                not isinstance(operation, dict)
+                or str(operation.get("operation_id") or operation.get("id") or "") != str(operation_id)
+                or str(operation.get("status") or "") not in SYNC_OPERATION_ACTIVE_STATUSES
+            ):
+                raise PlatformError(
+                    "EXTERNAL_PLATFORM_SYNC_OPERATION_LOST",
+                    "新畅联同步状态已失效",
+                    f"operation={operation_id}",
+                    "请刷新同步状态后重新发起。",
+                    409,
+                )
+        else:
+            self.current_sync_operation(project_id)
+            proposed = self._new_sync_operation(project_id, sync_type)
+            claimed, current = self.repository.claim_sync_operation(project_id, proposed)
+            if not claimed:
+                raise PlatformError(
+                    "EXTERNAL_PLATFORM_SYNC_BUSY",
+                    "新畅联主数据同步正在进行",
+                    f"项目 {project_id} 已有同步任务 {current.get('operation_id') or current.get('id')}。",
+                    "请查看当前同步进度，不要重复发起。",
+                    409,
+                )
+            operation = current
+            operation_id = str(operation["operation_id"])
+
         sync_lock = self._sync_lock(project_id)
         try:
             sync_lock.acquire(timeout=0)
         except Timeout as error:
+            self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                status="failed",
+                current_phase="failed",
+                finished_at=utc_now(),
+                error="新畅联主数据同步正在进行",
+                detail=f"项目 {project_id} 已有同步任务占用。",
+                error_count=1,
+            )
             raise PlatformError(
                 "EXTERNAL_PLATFORM_SYNC_BUSY",
                 "新畅联主数据同步正在进行",
                 f"项目 {project_id} 已有同步任务占用。",
-                "请等待当前同步完成后再点击“立即同步”。",
+                "请查看当前同步进度，不要重复发起。",
                 409,
             ) from error
-        started_at = utc_now()
-        history: Dict[str, Any] = {
-            "id": hashlib.sha256(f"{project_id}:{started_at}".encode()).hexdigest()[:16],
-            "project_id": project_id,
-            "provider": "changlian",
-            "sync_type": sync_type,
-            "status": "running",
-            "started_at": started_at,
-        }
+
+        self._update_sync_operation(
+            project_id,
+            str(operation_id),
+            status="running",
+            current_phase="fetch_categories",
+        )
         try:
             client = self._client()
+
+            request_started = time.perf_counter()
             categories = flatten_category_tree(client.category_tree())
+            self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                current_phase="fetch_products",
+                last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+            )
+
+            request_started = time.perf_counter()
             # Deletion truth must come from the complete provider product set.
-            # Do not use the normal status=1 convenience filter here: status=2
-            # means "已下架", while complete absence means "已删除".
+            # status=2 means inactive; complete absence means deleted.
             products = _validated_external_items(
                 client.products(status=""),
                 id_resolver=_product_id,
                 error_code="EXTERNAL_PRODUCT_ID_MISSING",
                 entity_name="算法产品",
             )
+            self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                current_phase="fetch_compute_platforms",
+                total_products=len(products),
+                last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+            )
+
+            request_started = time.perf_counter()
             compute_platforms = _validated_external_items(
                 client.compute_platforms(),
                 id_resolver=_compute_platform_id,
                 error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
                 entity_name="算力环境",
             )
+            self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                current_phase="fetch_analyses",
+                last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+            )
+
+            product_ids = [_product_id(product) for product in products]
+            summary_index: Dict[str, list[Dict[str, Any]]] | None = None
+            analysis_list_source = "per_product"
+            analysis_list_fallback_reason = ""
+            bulk_loader = getattr(client, "analysis_list_all", None)
+            if callable(bulk_loader):
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="fetch_analysis_index",
+                )
+                request_started = time.perf_counter()
+                try:
+                    bulk_summaries = _validated_external_items(
+                        bulk_loader(),
+                        id_resolver=_analysis_id,
+                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                        entity_name="分析方式",
+                    )
+                    summary_index = _group_analysis_summaries_by_product(
+                        bulk_summaries,
+                        product_ids,
+                    )
+                    if summary_index is None:
+                        analysis_list_source = "per_product_fallback"
+                        analysis_list_fallback_reason = "analysis listAll 缺少 productId，已回退按产品读取"
+                    else:
+                        analysis_list_source = "list_all"
+                except Exception as index_error:
+                    # listAll is an optimization only. The existing
+                    # listByProduct path remains the compatibility source for
+                    # summaries, while getInfo remains the authoritative truth.
+                    summary_index = None
+                    analysis_list_source = "per_product_fallback"
+                    analysis_list_fallback_reason = str(
+                        getattr(index_error, "detail", index_error)
+                    )[:500]
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="fetch_analyses",
+                    analysis_list_source=analysis_list_source,
+                    analysis_list_fallback_reason=analysis_list_fallback_reason,
+                    last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+                )
+
             analyses_by_product: Dict[str, list[Dict[str, Any]]] = {}
+            processed_products = 0
             for product in products:
                 pid = _product_id(product)
-                summaries = _validated_external_items(
-                    client.analyses(pid),
-                    id_resolver=_analysis_id,
-                    error_code="EXTERNAL_ANALYSIS_ID_MISSING",
-                    entity_name=f"算法产品 {pid} 的分析方式",
-                )
+                request_started = time.perf_counter()
+                if summary_index is None:
+                    summaries = _validated_external_items(
+                        client.analyses(pid),
+                        id_resolver=_analysis_id,
+                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                        entity_name=f"算法产品 {pid} 的分析方式",
+                    )
+                else:
+                    summaries = list(summary_index.get(pid) or [])
                 analyses_by_product[pid] = [
                     _analysis_detail_truth(client, summary, product_id=pid)
                     for summary in summaries
                 ]
+                processed_products += 1
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="fetch_analyses",
+                    processed_products=processed_products,
+                    total_products=len(products),
+                    success_count=processed_products,
+                    analysis_list_source=analysis_list_source,
+                    analysis_list_fallback_reason=analysis_list_fallback_reason,
+                    last_request_duration_ms=int((time.perf_counter() - request_started) * 1000),
+                )
+
             synced_at = utc_now()
             digest = master_data_digest(
                 categories=categories,
@@ -2217,6 +2607,11 @@ class ExternalAlgorithmPlatformService:
             }
             previous_cache = self.repository.cache()
 
+            self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                current_phase="purge_removed_algorithms",
+            )
             incoming_product_ids = {_product_id(row) for row in products if _product_id(row)}
             existing_external = [
                 dict(row)
@@ -2231,53 +2626,146 @@ class ExternalAlgorithmPlatformService:
                 "remote_objects_deleted": 0,
                 "publications_deleted": 0,
             }
-            for existing_algorithm in existing_external:
-                product_id = str(existing_algorithm.get("external_product_id") or "")
-                if product_id and product_id in incoming_product_ids:
-                    continue
-                current = self.local_purger.purge(project_id, existing_algorithm)
-                purge_summary["algorithms_purged"] += 1
-                for key in (
-                    "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
-                    "publications_deleted",
+            removed_external = [
+                row
+                for row in existing_external
+                if not str(row.get("external_product_id") or "")
+                or str(row.get("external_product_id") or "") not in incoming_product_ids
+            ]
+            from .model_artifacts import model_delivery_version_fence
+            retirement_store = AlgorithmSqlStore(Path(algorithms_path))
+            # Keep one existing delivery fence per current version until the
+            # canonical mirror has hard-deleted the missing external algorithm.
+            # A durable delete-pending marker blocks new publish/auto-upload work
+            # if purge or mirror later fails and the local row must remain.
+            with ExitStack() as delivery_fences:
+                locked: set[tuple[str, str]] = set()
+                for existing_algorithm in sorted(
+                    removed_external,
+                    key=lambda row: str(row.get("id") or ""),
                 ):
-                    purge_summary[key] += int(current.get(key) or 0)
+                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
+                    for version in sorted(
+                        (
+                            row for row in (existing_algorithm.get("versions") or [])
+                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
+                        ),
+                        key=lambda row: str(row.get("id") or ""),
+                    ):
+                        version_id = str(version.get("id") or "").strip()
+                        identity = (algorithm_id, version_id)
+                        if identity in locked:
+                            continue
+                        delivery_fences.enter_context(
+                            model_delivery_version_fence(
+                                self.data_dir,
+                                project_id,
+                                algorithm_id,
+                                version_id,
+                            )
+                        )
+                        locked.add(identity)
 
-            self.repository.save_cache(cache)
-            try:
-                mirror = mirror_products_to_algorithms(
-                    algorithms_path=algorithms_path,
-                    products=products,
-                    categories=categories,
-                    analyses_by_product=analyses_by_product,
-                    provider=PROVIDER_CHANGLIAN,
-                    synced_at=synced_at,
-                    master_digest=digest,
+                for existing_algorithm in removed_external:
+                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
+                    retiring = retirement_store.patch_algorithm(
+                        algorithm_id,
+                        {
+                            "external_active": False,
+                            "external_status": "deleted_pending_cleanup",
+                            "external_delete_pending": True,
+                            "external_delete_pending_at": synced_at,
+                        },
+                    )
+                    # Re-read/acquire any version that appeared while the first
+                    # lock set was being established. New publication is now
+                    # blocked by external_active=False/delete-pending.
+                    for version in sorted(
+                        (
+                            row for row in (retiring.get("versions") or [])
+                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
+                        ),
+                        key=lambda row: str(row.get("id") or ""),
+                    ):
+                        version_id = str(version.get("id") or "").strip()
+                        identity = (algorithm_id, version_id)
+                        if identity in locked:
+                            continue
+                        delivery_fences.enter_context(
+                            model_delivery_version_fence(
+                                self.data_dir,
+                                project_id,
+                                algorithm_id,
+                                version_id,
+                            )
+                        )
+                        locked.add(identity)
+
+                    current = self.local_purger.purge(project_id, retiring)
+                    purge_summary["algorithms_purged"] += 1
+                    for key in (
+                        "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
+                        "publications_deleted",
+                    ):
+                        purge_summary[key] += int(current.get(key) or 0)
+
+                self._update_sync_operation(
+                    project_id,
+                    str(operation_id),
+                    current_phase="cache_commit",
                 )
-            except Exception:
-                # Keep cache and project algorithm mirror on the same successful
-                # synchronization generation. AlgorithmSqlStore rolls back its
-                # SQLite transaction; restore the previous cache before surfacing
-                # the failed manual/automatic sync.
+                self.repository.save_cache(cache)
                 try:
-                    self.repository.save_cache(previous_cache)
+                    self._update_sync_operation(
+                        project_id,
+                        str(operation_id),
+                        current_phase="algorithm_mirror_commit",
+                    )
+                    mirror = mirror_products_to_algorithms(
+                        algorithms_path=algorithms_path,
+                        products=products,
+                        categories=categories,
+                        analyses_by_product=analyses_by_product,
+                        provider=PROVIDER_CHANGLIAN,
+                        synced_at=synced_at,
+                        master_digest=digest,
+                    )
                 except Exception:
-                    pass
-                raise
-            history.update({
+                    # Cache and algorithm mirror are one successful generation.
+                    try:
+                        self.repository.save_cache(previous_cache)
+                    except Exception:
+                        pass
+                    raise
+
+            counts = {
+                "categories": len(categories),
+                "products": len(products),
+                "analyses": sum(len(rows) for rows in analyses_by_product.values()),
+                "compute_platforms": len(compute_platforms),
+                **mirror,
+                **purge_summary,
+            }
+            finished_at = utc_now()
+            final = self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                status="success",
+                current_phase="completed",
+                finished_at=finished_at,
+                counts=counts,
+                processed_products=len(products),
+                total_products=len(products),
+                success_count=len(products),
+                error_count=0,
+            ) or {
+                **operation,
                 "status": "success",
-                "finished_at": utc_now(),
-                "counts": {
-                    "categories": len(categories),
-                    "products": len(products),
-                    "analyses": sum(len(rows) for rows in analyses_by_product.values()),
-                    "compute_platforms": len(compute_platforms),
-                    **mirror,
-                    **purge_summary,
-                },
-            })
-            self.repository.append_history(history)
-            return {"ok": True, "sync": history, "mirror": mirror}
+                "finished_at": finished_at,
+                "counts": counts,
+            }
+            self.repository.append_history(final)
+            return {"ok": True, "sync": final, "operation": final, "mirror": mirror}
         except Exception as error:
             if isinstance(error, PlatformError):
                 message = error.message
@@ -2285,13 +2773,24 @@ class ExternalAlgorithmPlatformService:
             else:
                 message = "新畅联同步失败"
                 detail = str(error)
-            history.update({
+            failed = self._update_sync_operation(
+                project_id,
+                str(operation_id),
+                status="failed",
+                current_phase="failed",
+                finished_at=utc_now(),
+                error=message,
+                detail=detail[:1000],
+                error_count=1,
+            ) or {
+                **operation,
                 "status": "failed",
                 "finished_at": utc_now(),
                 "error": message,
                 "detail": detail[:1000],
-            })
-            self.repository.append_history(history)
+                "error_count": 1,
+            }
+            self.repository.append_history(failed)
             if isinstance(error, PlatformError):
                 raise
             raise PlatformError(
@@ -2629,7 +3128,19 @@ def external_algorithm_platform_router(
     @router.post("/sync")
     def sync(project_id: str = Query(..., min_length=1)):
         get_project(project_id)
-        return service.sync(project_id=project_id, algorithms_path=algorithms_file(project_id), sync_type="manual")
+        return service.start_sync(
+            project_id=project_id,
+            algorithms_path=algorithms_file(project_id),
+            sync_type="manual",
+        )
+
+    @router.get("/sync-operation")
+    def sync_operation(project_id: str = Query(..., min_length=1)):
+        get_project(project_id)
+        return {
+            "ok": True,
+            "operation": service.current_sync_operation(project_id),
+        }
 
     @router.get("/sync-history")
     def sync_history(limit: int = Query(default=20, ge=1, le=100)):

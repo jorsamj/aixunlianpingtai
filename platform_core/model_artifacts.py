@@ -8,20 +8,22 @@ import sqlite3
 import requests
 import tempfile
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlsplit
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms
 from .errors import PlatformError
 from .secrets import SecretCredentialStore, secret_ref
-from .storage import StorageProviderFactory, StorageSourceRepository
+from .storage import (
+    StorageProviderFactory, StorageSourceRepository, storage_source_lifecycle_fence,
+)
 
 
 SUCCESSFUL_CONVERSION_STATUSES = {
@@ -64,6 +66,41 @@ def _safe_segment(value: Any, fallback: str = "item") -> str:
     import re
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
     return (text or fallback)[:120]
+
+
+@contextmanager
+def model_delivery_version_fence(
+    data_dir: str | Path,
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    *,
+    timeout: float = 120.0,
+):
+    """Cross-process fence for one algorithm-version delivery lifecycle."""
+    identity = hashlib.sha256(
+        f"{project_id}:{algorithm_id}:{version_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    root = Path(data_dir) / "model_artifacts" / "version-fences"
+    root.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(root / f"{identity}.lock"), timeout=max(0.0, float(timeout)))
+    try:
+        lock.acquire()
+    except Timeout as error:
+        raise PlatformError(
+            "MODEL_DELIVERY_VERSION_BUSY",
+            "算法版本交付状态正在变更",
+            f"project={project_id}; algorithm={algorithm_id}; version={version_id}",
+            "请等待当前发布、归档或版本退役事务完成后重试。",
+            409,
+        ) from error
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
 
 
 def _json_load(path: Path, default: Any) -> Any:
@@ -116,8 +153,19 @@ def _normalize_artifact_oss_endpoint(value: Any, bucket: Any) -> str:
         return ""
     if "://" not in text:
         text = "https://" + text
-    parsed = urlsplit(text)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(text)
+        hostname = parsed.hostname
+        parsed_port = parsed.port  # Access validates invalid/non-numeric ports.
+    except ValueError as error:
+        raise PlatformError(
+            "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
+            "算法产物 OSS Endpoint 格式不正确",
+            "Endpoint 主机名或端口无效。",
+            "Endpoint 请填写区域服务地址，例如 https://oss-cn-hangzhou.aliyuncs.com；Bucket 单独填写。",
+            422,
+        ) from error
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
         raise PlatformError(
             "MODEL_ARTIFACT_OSS_ENDPOINT_INVALID",
             "算法产物 OSS Endpoint 格式不正确",
@@ -142,7 +190,7 @@ def _normalize_artifact_oss_endpoint(value: Any, bucket: Any) -> str:
     # new24hlink.new24hlink.oss-cn-hangzhou.aliyuncs.com.
     if bucket_name and host.startswith(bucket_name + "."):
         host = host[len(bucket_name) + 1:]
-    port = f":{parsed.port}" if parsed.port is not None else ""
+    port = f":{parsed_port}" if parsed_port is not None else ""
     return f"{parsed.scheme.lower()}://{host}{port}"
 
 
@@ -334,6 +382,12 @@ class ModelArtifactRepository:
             )
             """
         )
+        database.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_model_artifacts_conversion_job
+            ON model_artifacts(project_id, conversion_job_id)
+            """
+        )
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
@@ -379,6 +433,49 @@ class ModelArtifactRepository:
         with closing(self._connect()) as database:
             row = database.execute("SELECT * FROM model_artifacts WHERE artifact_id = ?", (str(artifact_id),)).fetchone()
         return self._public(row) if row else None
+
+    def find_identity(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        target: str,
+        chip_code: str,
+        sha256: str,
+    ) -> dict[str, Any] | None:
+        with closing(self._connect()) as database:
+            row = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id=? AND algorithm_id=? AND version_id=?
+                  AND target=? AND chip_code=? AND sha256=?
+                """,
+                (
+                    str(project_id), str(algorithm_id), str(version_id),
+                    str(target), str(chip_code or "").strip().lower(),
+                    str(sha256 or "").strip().lower(),
+                ),
+            ).fetchone()
+        return self._public(row) if row else None
+
+    def list_by_conversion_job(
+        self,
+        project_id: str,
+        conversion_job_id: str,
+    ) -> list[dict[str, Any]]:
+        job_id = str(conversion_job_id or "").strip()
+        if not job_id:
+            return []
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id=? AND conversion_job_id=?
+                ORDER BY created_at, artifact_id
+                """,
+                (str(project_id), job_id),
+            ).fetchall()
+        return [self._public(row) for row in rows]
 
     @staticmethod
     def _public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
@@ -440,7 +537,11 @@ class ModelArtifactRepository:
                     file_name=excluded.file_name,
                     size_bytes=excluded.size_bytes,
                     chip_code=excluded.chip_code,
-                    conversion_job_id=excluded.conversion_job_id,
+                    conversion_job_id=CASE
+                        WHEN TRIM(excluded.conversion_job_id) <> ''
+                        THEN excluded.conversion_job_id
+                        ELSE conversion_job_id
+                    END,
                     metadata_json=excluded.metadata_json,
                     updated_at=excluded.updated_at
                 """,
@@ -490,6 +591,30 @@ class ModelArtifactRepository:
         sql = "SELECT * FROM model_artifacts WHERE " + " AND ".join(clauses) + " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         with closing(self._connect()) as database:
             rows = database.execute(sql, args).fetchall()
+        return [self._public(row) for row in rows]
+
+    def delete_version(
+        self, project_id: str, algorithm_id: str, version_id: str,
+    ) -> list[dict[str, Any]]:
+        """Delete canonical ModelArtifact rows owned by one exact algorithm version."""
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            rows = database.execute(
+                """
+                SELECT * FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
+                ORDER BY created_at, artifact_id
+                """,
+                (str(project_id), str(algorithm_id), str(version_id)),
+            ).fetchall()
+            database.execute(
+                """
+                DELETE FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
+                """,
+                (str(project_id), str(algorithm_id), str(version_id)),
+            )
+            database.commit()
         return [self._public(row) for row in rows]
 
     def delete_algorithm(self, project_id: str, algorithm_id: str) -> list[dict[str, Any]]:
@@ -550,6 +675,31 @@ class ModelArtifactService:
         self.storage_credentials_factory = storage_credentials_factory
         self.repository = ModelArtifactRepository(self.data_dir)
 
+    def _current_version(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        algorithm = next(
+            (
+                row for row in list_algorithms(self.algorithms_file(str(project_id)))
+                if str(row.get("id") or "") == str(algorithm_id)
+            ),
+            None,
+        )
+        if algorithm is None:
+            return None, None
+        version = next(
+            (
+                row for row in (algorithm.get("versions") or [])
+                if isinstance(row, Mapping)
+                and str(row.get("id") or "") == str(version_id)
+            ),
+            None,
+        )
+        return dict(algorithm), dict(version) if version is not None else None
+
     def public_config(self) -> dict[str, Any]:
         config = self.repository.config()
         credentials = self.storage_credentials_factory()
@@ -586,7 +736,45 @@ class ModelArtifactService:
             "summary": self.repository.summary(),
         }
 
+    def _assert_artifact_storage_mutation_idle(self) -> None:
+        """Existing durable tasks pin provider identity; prevent destructive config edits."""
+        db_path = self.data_dir / "task_runtime" / "tasks.sqlite3"
+        if not db_path.is_file():
+            return
+        from .task_runtime import TaskKind, TaskRepository, TaskStatus
+        active = TaskRepository(db_path).list(
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION),
+            statuses=(TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED),
+            limit=1,
+        ).items
+        if active:
+            task = active[0]
+            raise PlatformError(
+                "MODEL_ARTIFACT_STORAGE_ACTIVE_TASK",
+                "存在活动训练或转换任务，暂不能更改算法产物存储配置",
+                f"kind={task.kind.value}; task_id={task.task_id}",
+                "请等待相关训练与转换任务结束后再修改 Bucket、Endpoint、归档前缀或凭据。",
+                409,
+            )
+
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
+        """Apply legacy binding changes under the existing source lifecycle fence."""
+        with storage_source_lifecycle_fence(
+            self.data_dir / "storage" / "storage_sources.sqlite3",
+        ):
+            previous = self.repository.config()
+            requested_root = _canonical_prefix(
+                payload.root_prefix or payload.object_prefix or "changlian-ai/artifacts"
+            )
+            if (
+                str(previous.get("storage_source_id") or "") != str(payload.storage_source_id or "")
+                or _canonical_prefix(previous.get("root_prefix") or "") != requested_root
+                or bool(previous.get("auto_upload_enabled")) != bool(payload.auto_upload_enabled)
+            ):
+                self._assert_artifact_storage_mutation_idle()
+            return self._save_config_under_source_fence(payload)
+
+    def _save_config_under_source_fence(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
         if source_id:
             source = self.storage_sources_factory().get(source_id)
@@ -598,6 +786,32 @@ class ModelArtifactService:
 
 
     def save_artifact_oss_config(self, payload: ArtifactOSSConfigPayload) -> dict[str, Any]:
+        """Prevent active remote training/conversion from losing its OSS provider."""
+        with storage_source_lifecycle_fence(
+            self.data_dir / "storage" / "storage_sources.sqlite3",
+        ):
+            current = self.storage_sources_factory().get(ARTIFACT_OSS_SOURCE_ID)
+            stored = self.repository.config()
+            endpoint = _normalize_artifact_oss_endpoint(
+                str(payload.endpoint or "").strip(), str(payload.bucket or "").strip(),
+            )
+            destructive = (
+                current is None
+                or str(current.config.get("endpoint") or "") != endpoint
+                or str(current.config.get("bucket") or "") != str(payload.bucket or "").strip()
+                or str(current.config.get("public_base_url") or "").rstrip("/") != str(payload.public_base_url or "").strip().rstrip("/")
+                or _canonical_prefix(stored.get("root_prefix") or "") != _canonical_prefix(
+                    payload.root_prefix or "changlian-ai/artifacts"
+                )
+                or bool(payload.access_key_id or payload.access_key_secret)
+            )
+            if destructive:
+                self._assert_artifact_storage_mutation_idle()
+            return self._save_artifact_oss_config_under_source_fence(payload)
+
+    def _save_artifact_oss_config_under_source_fence(
+        self, payload: ArtifactOSSConfigPayload,
+    ) -> dict[str, Any]:
         endpoint = str(payload.endpoint or "").strip()
         bucket = str(payload.bucket or "").strip()
         public_base_url = str(payload.public_base_url or "").strip().rstrip("/")
@@ -1196,7 +1410,19 @@ class ModelArtifactService:
                 if raw:
                     output_path = Path(raw).expanduser()
                     if _is_conversion_deliverable(target, output_path):
-                        candidates.append(("conversion", target, output_path, str(job.get("id") or ""), {"chip_code": chip}))
+                        candidates.append((
+                            "conversion",
+                            target,
+                            output_path,
+                            str(job.get("id") or ""),
+                            {
+                                "chip_code": chip,
+                                "validation_status": str(job.get("validation_status") or ""),
+                                "conversion_status": str(job.get("conversion_status") or status),
+                                "runtime_verified": job.get("runtime_verified") is True,
+                                "hardware_verified": job.get("hardware_verified") is True,
+                            },
+                        ))
         seen: set[tuple[str, str, str]] = set()
         result: list[dict[str, Any]] = []
         for kind, target, path, job_id, metadata in candidates:
@@ -1440,18 +1666,131 @@ class ModelArtifactService:
             uploaded = self.repository.patch(str(row["artifact_id"]), public_url=public_url)
         return uploaded
 
+    def conversion_job_artifact_references(
+        self,
+        project_id: str,
+        conversion_job: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve canonical references owned by a conversion record."""
+        project_id = str(project_id or "").strip()
+        job_id = str(conversion_job.get("id") or "").strip()
+        if not project_id or not job_id:
+            return []
+        found = {
+            str(row["artifact_id"]): row
+            for row in self.repository.list_by_conversion_job(project_id, job_id)
+        }
+        algorithm_id = ""
+        version_id = ""
+        for source in (conversion_job.get("source_trace"), conversion_job.get("source_meta")):
+            if not isinstance(source, Mapping):
+                continue
+            candidate_algorithm = str(source.get("algorithm_id") or "").strip()
+            candidate_version = str(source.get("version_id") or "").strip()
+            if candidate_algorithm and candidate_version:
+                algorithm_id, version_id = candidate_algorithm, candidate_version
+                break
+        if not algorithm_id or not version_id:
+            source_id = str(conversion_job.get("source_id") or "").strip()
+            match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+            if match:
+                algorithm_id, version_id = match.group(1), match.group(2)
+        if not algorithm_id or not version_id:
+            return list(found.values())
+        algorithm = next(
+            (item for item in list_algorithms(self.algorithms_file(project_id))
+             if str(item.get("id") or "") == algorithm_id),
+            None,
+        )
+        version = next(
+            (item for item in ((algorithm or {}).get("versions") or [])
+             if isinstance(item, Mapping) and str(item.get("id") or "") == version_id),
+            None,
+        )
+        if algorithm is None or version is None:
+            return list(found.values())
+        for discovered in self.discover_version_artifacts(project_id, algorithm, version):
+            if str(discovered.get("conversion_job_id") or "") != job_id:
+                continue
+            row = self.repository.find_identity(
+                project_id, algorithm_id, version_id,
+                str(discovered.get("target") or ""),
+                str(discovered.get("chip_code") or ""),
+                str(discovered.get("sha256") or ""),
+            )
+            if row is not None:
+                found[str(row["artifact_id"])] = row
+        return [found[key] for key in sorted(found)]
+
+    def refresh_conversion_artifacts(
+        self,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        conversion_job_id: str,
+    ) -> list[dict[str, Any]]:
+        """Refresh canonical conversion metadata under the version delivery fence."""
+        project_id = str(project_id or "").strip()
+        algorithm_id = str(algorithm_id or "").strip()
+        version_id = str(version_id or "").strip()
+        conversion_job_id = str(conversion_job_id or "").strip()
+        if not project_id or not algorithm_id or not version_id or not conversion_job_id:
+            return []
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            algorithm, version = self._current_version(
+                project_id, algorithm_id, version_id,
+            )
+            if (
+                algorithm is None
+                or version is None
+                or algorithm.get("external_delete_pending") is True
+            ):
+                # Board validation may finish while rollback/external retirement
+                # is purging this version. Never recreate a canonical row after
+                # the version delivery lifecycle has retired it.
+                return []
+            rows: list[dict[str, Any]] = []
+            for item in self.discover_version_artifacts(project_id, algorithm, version):
+                if str(item.get("conversion_job_id") or "") != conversion_job_id:
+                    continue
+                rows.append(self.repository.upsert(item))
+            return rows
+
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
-        for item in self.discover_version_artifacts(project_id, algorithm, version):
-            summary["discovered"] += 1
-            row = self.ensure_uploaded(item)
-            status = str(row.get("storage_status") or "PENDING").upper()
-            if status == "UPLOADED":
-                summary["uploaded"] += 1
-            elif status == "FAILED":
-                summary["failed"] += 1
-            else:
-                summary["pending"] += 1
+        algorithm_id = str(algorithm.get("id") or "").strip()
+        version_id = str(version.get("id") or "").strip()
+        if not algorithm_id or not version_id:
+            return summary
+        with model_delivery_version_fence(
+            self.data_dir, str(project_id), algorithm_id, version_id,
+        ):
+            current_algorithm, current_version = self._current_version(
+                str(project_id), algorithm_id, version_id,
+            )
+            if (
+                current_algorithm is None
+                or current_version is None
+                or current_algorithm.get("external_delete_pending") is True
+            ):
+                # run_auto_upload_once may hold a stale list snapshot while a
+                # concurrent rollback/delete or external hard-delete retires
+                # this version. Never revive a canonical row/object after purge.
+                return summary
+            for item in self.discover_version_artifacts(
+                str(project_id), current_algorithm, current_version,
+            ):
+                summary["discovered"] += 1
+                row = self.ensure_uploaded(item)
+                status = str(row.get("storage_status") or "PENDING").upper()
+                if status == "UPLOADED":
+                    summary["uploaded"] += 1
+                elif status == "FAILED":
+                    summary["failed"] += 1
+                else:
+                    summary["pending"] += 1
         return summary
 
     def run_auto_upload_once(self) -> dict[str, int]:
@@ -1476,6 +1815,78 @@ class ModelArtifactService:
                         summary[key] += current[key]
         return summary
 
+    def _purge_remote_objects(
+        self,
+        project_id: str,
+        rows: list[Mapping[str, Any]],
+        *,
+        error_code: str,
+        message: str,
+        solution: str,
+    ) -> int:
+        """Delete immutable delivery objects before their canonical rows."""
+        remote_deleted = 0
+        errors: list[str] = []
+        for row in rows:
+            source_id = str(row.get("storage_source_id") or "").strip()
+            object_key = str(row.get("object_key") or "").strip()
+            if not source_id or not object_key:
+                continue
+            try:
+                provider = self._provider(str(project_id), source_id)
+                if provider.exists(object_key):
+                    provider.delete(object_key)
+                remote_deleted += 1
+            except Exception as error:
+                errors.append(
+                    f"{row.get('artifact_id') or '-'} {object_key}: {error}"
+                )
+        if errors:
+            raise PlatformError(
+                error_code,
+                message,
+                "；".join(errors[:10]),
+                solution,
+                409,
+            )
+        return remote_deleted
+
+    def purge_version(
+        self, project_id: str, algorithm_id: str, version_id: str,
+    ) -> dict[str, Any]:
+        """Purge one version's immutable objects before dropping canonical rows."""
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self.repository.list(
+                project_id=str(project_id),
+                algorithm_id=str(algorithm_id),
+                version_id=str(version_id),
+                limit=500,
+                offset=offset,
+            )
+            rows.extend(page)
+            if len(page) < 500:
+                break
+            offset += len(page)
+        remote_deleted = self._purge_remote_objects(
+            str(project_id),
+            rows,
+            error_code="ALGORITHM_VERSION_ARTIFACT_PURGE_FAILED",
+            message="算法版本模型成果清理失败",
+            solution=(
+                "请检查算法与转换结果存储的删除权限后重试版本清理；"
+                "平台不会在远端对象删除结果不确定时删除对应 ModelArtifact 记录。"
+            ),
+        )
+        removed = self.repository.delete_version(
+            str(project_id), str(algorithm_id), str(version_id),
+        )
+        return {
+            "artifacts_deleted": len(removed),
+            "remote_objects_deleted": remote_deleted,
+        }
+
     def purge_algorithm(self, project_id: str, algorithm_id: str) -> dict[str, Any]:
         """Remove model-delivery objects and rows for a deleted algorithm.
 
@@ -1496,30 +1907,16 @@ class ModelArtifactService:
             if len(page) < 500:
                 break
             offset += len(page)
-        remote_deleted = 0
-        errors: list[str] = []
-        for row in rows:
-            source_id = str(row.get("storage_source_id") or "").strip()
-            object_key = str(row.get("object_key") or "").strip()
-            if not source_id or not object_key:
-                continue
-            try:
-                provider = self._provider(str(project_id), source_id)
-                if provider.exists(object_key):
-                    provider.delete(object_key)
-                remote_deleted += 1
-            except Exception as error:
-                errors.append(
-                    f"{row.get('artifact_id') or '-'} {object_key}: {error}"
-                )
-        if errors:
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_ARTIFACT_PURGE_FAILED",
-                "外部算法模型成果清理失败",
-                "；".join(errors[:10]),
-                "请检查算法与转换结果存储的删除权限后重新同步；平台不会在模型成果未清理完成时删除算法主记录。",
-                409,
-            )
+        remote_deleted = self._purge_remote_objects(
+            str(project_id),
+            rows,
+            error_code="EXTERNAL_ALGORITHM_ARTIFACT_PURGE_FAILED",
+            message="外部算法模型成果清理失败",
+            solution=(
+                "请检查算法与转换结果存储的删除权限后重新同步；"
+                "平台不会在模型成果未清理完成时删除算法主记录。"
+            ),
+        )
         removed = self.repository.delete_algorithm(str(project_id), str(algorithm_id))
         return {
             "artifacts_deleted": len(removed),
@@ -1527,17 +1924,45 @@ class ModelArtifactService:
         }
 
     def retry(self, artifact_id: str) -> dict[str, Any]:
-        row = self.repository.get(artifact_id)
-        if row is None:
+        initial = self.repository.get(artifact_id)
+        if initial is None:
             raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
-        discovered = {
-            "artifact_id": row["artifact_id"], "project_id": row["project_id"], "algorithm_id": row["algorithm_id"],
-            "version_id": row["version_id"], "artifact_kind": row["artifact_kind"], "target": row["target"],
-            "conversion_job_id": row.get("conversion_job_id") or "", "file_name": row["file_name"],
-            "source_path": row["source_path"], "sha256": row["sha256"], "size_bytes": row["size_bytes"],
-            "metadata": row.get("metadata") or {},
-        }
-        return self.ensure_uploaded(discovered, force=True)
+        project_id = str(initial.get("project_id") or "")
+        algorithm_id = str(initial.get("algorithm_id") or "")
+        version_id = str(initial.get("version_id") or "")
+        with model_delivery_version_fence(
+            self.data_dir, project_id, algorithm_id, version_id,
+        ):
+            row = self.repository.get(artifact_id)
+            if row is None:
+                raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
+            algorithm, version = self._current_version(
+                project_id, algorithm_id, version_id,
+            )
+            if algorithm is not None and algorithm.get("external_delete_pending") is True:
+                raise PlatformError(
+                    "MODEL_ARTIFACT_ALGORITHM_RETIRING",
+                    "外部算法正在退役，不能重新上传模型资产",
+                    f"artifact={artifact_id}; algorithm={algorithm_id}",
+                    "请等待新畅联同步完成；远端已删除算法的本地产物不会被重新创建。",
+                    409,
+                )
+            if version is None:
+                raise PlatformError(
+                    "MODEL_ARTIFACT_VERSION_RETIRED",
+                    "算法版本已退役，不能重新上传模型资产",
+                    f"artifact={artifact_id}; version={version_id}",
+                    "请刷新模型资产列表；版本退役后的产物只能由版本级清理/审计流程处理。",
+                    409,
+                )
+            discovered = {
+                "artifact_id": row["artifact_id"], "project_id": row["project_id"], "algorithm_id": row["algorithm_id"],
+                "version_id": row["version_id"], "artifact_kind": row["artifact_kind"], "target": row["target"],
+                "conversion_job_id": row.get("conversion_job_id") or "", "file_name": row["file_name"],
+                "source_path": row["source_path"], "sha256": row["sha256"], "size_bytes": row["size_bytes"],
+                "metadata": row.get("metadata") or {},
+            }
+            return self.ensure_uploaded(discovered, force=True)
 
     def download(self, artifact_id: str):
         row = self.repository.get(artifact_id)

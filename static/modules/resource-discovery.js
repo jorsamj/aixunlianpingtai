@@ -126,6 +126,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     activeEnvironment: {},
     environmentMeta: {},
     officialModels: [],
+    preparedModels: [],
     models: [],
     modelMeta: {},
     modelCursor: null,
@@ -160,9 +161,20 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     return `<div class="rd-official-models"><b>官方基础模型</b>${runtime.officialModels.map(model => {
       const found = status(model.model_status) === 'FOUND' || Boolean(model.found);
       const failed = Boolean(model.download_error || model.error);
-      const text = found ? '已发现' : failed ? '下载失败' : model.downloadable ? '未下载 · 可自动下载' : '未发现';
+      const text = found ? '已发现' : failed ? '下载失败' : model.downloadable ? '未预置 · 请先上传' : '未发现';
       return `<span class="pill ${found ? 'ok' : failed ? 'err' : 'warn'}" title="${escapeHtml(model.note || model.download_error || model.error || '')}">${escapeHtml(model.value || model.label || '')} · ${text}</span>`;
     }).join('')}</div>`;
+  }
+
+  function preparedMotherModels() {
+    const rows = runtime.preparedModels;
+    const summary = rows.length
+      ? rows.map(model => `<article class="item"><div><b>${escapeHtml(model.name || model.label || '')}</b><div class="item-sub">${bytes(model.size_bytes)} · 已预置 · 可供首次训练及 GPU Agent 分发</div></div><span class="pill ok">已就绪</span></article>`).join('')
+      : '<div class="empty">尚未预置母模型。先将官方 YOLO11n/s/m 或可信自定义 .pt 权重下载到电脑，再从这里上传；训练任务不会自动从 GitHub 下载。</div>';
+    return `<div class="rd-cache-head"><div><b>训练母模型库</b><span>持久存储 · 只选择本机真实存在的 .pt · 上传后可用于 GPU 集群</span></div>
+        <div class="row"><input id="rdMotherModelFile" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)">
+        <button class="btn primary small" onclick="document.getElementById('rdMotherModelFile')?.click()">上传母模型 .pt</button></div></div>
+        <div class="item-sub">仅上传可信来源权重。已同名的不同文件不会覆盖，上传结束前不会加入训练列表。</div><div class="card-list">${summary}</div>`;
   }
 
   function modelRows() {
@@ -174,6 +186,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     const root = document.getElementById('resourceDiscoveryCache');
     if (!root) return;
     root.innerHTML = `<div class="rd-cache-head"><div><b>本机资源发现</b><span>读取上次成功缓存；刷新页面不会重新扫描全机。</span></div><button class="btn small" onclick="refreshResourceDiscoveryCache()">刷新缓存</button></div>
+      <section class="rd-cache-section" data-rd-prepared-models>${preparedMotherModels()}</section>
       <section class="rd-cache-section"><header><div><b>Ultralytics 环境</b><span>上次检测：${escapeHtml(dateText(runtime.environmentMeta.updated_at))} · 来源 ${escapeHtml(runtime.environmentMeta.scan_id || '历史配置')}</span></div><button class="btn small" onclick="deepDetectResourceEnvironment()">全机深度检测</button></header>${environmentCards()}${officialModelRows()}</section>
       <section class="rd-cache-section"><header><div><b>本机模型</b><span>共 ${Number(runtime.modelMeta.total) || 0} 个 · 上次检测：${escapeHtml(dateText(runtime.modelMeta.updated_at))} · 来源 ${escapeHtml(runtime.modelMeta.scan_id || '历史缓存')}</span></div></header>${modelRows()}<footer class="rd-pager"><button class="btn mini" ${runtime.modelCursorStack.length ? '' : 'disabled'} onclick="resourceModelsPage(-1)">上一页</button><span>本页 ${runtime.models.length} 个</span><button class="btn mini" ${runtime.modelNextCursor ? '' : 'disabled'} onclick="resourceModelsPage(1)">下一页</button></footer></section>`;
   }
@@ -189,6 +202,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     if (activePath && !runtime.environments.some(candidate => String(candidate.python_path || candidate.python_executable || '').toLocaleLowerCase() === activePath)) runtime.environments.unshift(runtime.activeEnvironment);
     runtime.environmentMeta = environment || {};
     runtime.officialModels = (baseModels?.items || []).filter(model => model.source === 'official');
+    runtime.preparedModels = (baseModels?.items || []).filter(model => model.source === 'preinstalled' && model.model_status === 'FOUND');
   }
 
   async function loadModelCache(cursor = runtime.modelCursor) {
@@ -330,6 +344,32 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   runtime.detectEnvironment = ({scope = 'auto', roots = []} = {}) => createTask('/api/ultralytics_env/detect', {scope, roots}, 'environment');
   runtime.scanModels = ({scope = 'directory', roots = []} = {}) => createTask('/api/local_models/scan', {scope, roots}, 'models');
   runtime.refreshCache = refreshCache;
+  runtime.uploadMotherModel = async input => {
+    const file = input?.files?.[0];
+    if (!file) return null;
+    if (!/\.pt$/i.test(file.name)) { input.value=''; notify('请选择 .pt 权重文件'); return null; }
+    if (file.size > 1024 * 1024 * 1024) { input.value=''; notify('母模型最大允许 1 GiB'); return null; }
+    const form = new FormData();
+    form.append('file', file);
+    input.disabled = true;
+    try {
+      notify('母模型正在上传并校验，请勿重复提交');
+      const result = await request('/api/v63/base-models/upload', {method:'POST',body:form});
+      if (result?.ok !== true || result?.model_status !== 'FOUND') throw new Error('服务器未确认母模型预置成功');
+      runtime.cacheLoadedAt = 0;
+      await refreshCache(true, {force:true});
+      await refreshApplication();
+      notify(`母模型 ${result.name} 已预置，可在创建训练任务时选择`);
+      return result;
+    } catch (error) {
+      notify(error?.message || '上传母模型失败');
+      return null;
+    } finally {
+      input.disabled = false;
+      input.value = '';
+    }
+  };
+  window.uploadResourceMotherModel = input => runtime.uploadMotherModel(input);
 
   window.quickUltraDetect = () => runtime.detectEnvironment({scope: 'auto'});
   window.deepDetectResourceEnvironment = () => runtime.detectEnvironment({scope: 'full'});

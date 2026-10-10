@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS candidate_annotations (
     clipped INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (object_key, line_number)
 );
+CREATE INDEX IF NOT EXISTS ix_candidate_annotations_class
+    ON candidate_annotations(class_id, object_key, line_number);
 CREATE TABLE IF NOT EXISTS label_mapping (
     class_id INTEGER PRIMARY KEY, name TEXT NOT NULL, target_label_id TEXT
 );
@@ -525,6 +527,65 @@ class ImportCandidateStore:
             return [dict(row) for row in db.execute("SELECT DISTINCT l.class_id,l.name FROM label_mapping l "
                 "JOIN candidate_annotations a USING(class_id) JOIN candidates c USING(object_key) "
                 "WHERE c.status='IMPORTABLE' ORDER BY l.class_id LIMIT 10000")]
+
+    @staticmethod
+    def _sample_class_id(value) -> int:
+        try:
+            class_id = int(str(value).strip())
+        except (TypeError, ValueError) as error:
+            raise ValueError("external class_id must be an integer") from error
+        if class_id < 0:
+            raise ValueError("external class_id must be non-negative")
+        return class_id
+
+    def external_class_samples(self, class_id, limit: int = 8) -> list[dict]:
+        """Return at most 12 real images for one external class using indexed SQL."""
+        resolved_class_id = self._sample_class_id(class_id)
+        bounded = max(1, min(12, int(limit or 8)))
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                WITH sample_boxes AS (
+                    SELECT object_key, MIN(line_number) AS line_number
+                    FROM candidate_annotations
+                    WHERE class_id=?
+                    GROUP BY object_key
+                    ORDER BY object_key
+                    LIMIT ?
+                )
+                SELECT c.object_key,c.filename,c.storage_source_id,c.storage_type,
+                       c.width,c.height,a.line_number,a.class_id,
+                       a.cx,a.cy,a.w,a.h,a.clipped
+                FROM sample_boxes s
+                JOIN candidate_annotations a
+                  ON a.object_key=s.object_key AND a.line_number=s.line_number
+                JOIN candidates c ON c.object_key=s.object_key
+                WHERE a.class_id=? AND c.status='IMPORTABLE'
+                ORDER BY c.object_key
+                """,
+                (resolved_class_id, bounded, resolved_class_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def external_class_sample(self, class_id, object_key: str) -> dict | None:
+        """Authorize one sample object only when the class/object relation exists."""
+        resolved_class_id = self._sample_class_id(class_id)
+        key = _key(object_key)
+        with closing(self._connect()) as database:
+            row = database.execute(
+                """
+                SELECT c.object_key,c.filename,c.storage_source_id,c.storage_type,
+                       c.width,c.height,a.line_number,a.class_id,
+                       a.cx,a.cy,a.w,a.h,a.clipped
+                FROM candidate_annotations a
+                JOIN candidates c USING(object_key)
+                WHERE a.class_id=? AND a.object_key=? AND c.status='IMPORTABLE'
+                ORDER BY a.line_number
+                LIMIT 1
+                """,
+                (resolved_class_id, key),
+            ).fetchone()
+        return dict(row) if row else None
 
     def bind_index_batch(self, rows):
         """Freeze resolved image IDs and new/existing provenance before material writes."""

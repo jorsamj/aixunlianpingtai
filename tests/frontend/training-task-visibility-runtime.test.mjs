@@ -5,8 +5,10 @@ import {readFileSync} from 'node:fs';
 import {
   filterTrainingTaskJobs,
   installTrainingTaskVisibilityRuntime,
+  reconcileTrainingBatchSelection,
   tickTrainingClockRows,
   trainingTaskStatusCounts,
+  trainingTaskPresentationRow,
 } from '../../static/modules/training-task-visibility-runtime.js';
 
 function cleanup() {
@@ -48,6 +50,7 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
     train428Tab: 'active',
   };
   const dom = fakeRoot();
+  const listeners = {};
   globalThis.document = {
     querySelector(selector) {
       return ['.train428-page', '.train428-page[data-training-task-shell="canonical"]'].includes(selector)
@@ -55,6 +58,10 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
         : null;
     },
     getElementById() { return null; },
+    addEventListener(type, handler) { listeners[type] = handler; },
+    removeEventListener(type, handler) {
+      if (listeners[type] === handler) delete listeners[type];
+    },
   };
   const calls = [];
   let pollRearms = 0;
@@ -88,8 +95,34 @@ function installFixture({page = '训练任务', jobs = [{id: 'run-1', status: 'r
     loadRelated: async () => undefined,
     renderTraining423() {},
   };
-  return {state, dom, runtime, calls, pollRearms: () => pollRearms};
+  return {state, dom, runtime, calls, listeners, pollRearms: () => pollRearms};
 }
+
+
+test('main owns visibility installation before canonical training page registration', () => {
+  const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';");
+  const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
+  const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
+
+  assert.ok(importAt >= 0);
+  assert.ok(installAt > importAt);
+  assert.ok(ownerAt > installAt);
+  assert.equal(main.includes('return window.renderTraining423?.();'), false);
+  assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js'), false);
+  assert.equal(source.includes("if (typeof window !== 'undefined') {\n  installTrainingTaskVisibilityRuntime({"), false);
+});
+
+test('training task final owner uses the shared pagination presentation', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /data-training-pagination/);
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.doesNotMatch(source, /data-training-page-prev/);
+  assert.doesNotMatch(source, /data-training-page-next/);
+});
 
 test('visibility leaves broad loadRelated ownership untouched', async () => {
   const fixture = installFixture({page: '数据集'});
@@ -132,6 +165,37 @@ test('training-page related refresh routes explicitly through the canonical task
   assert.equal(fixture.calls[0].force, true);
   assert.equal(fixture.calls[0].source, 'related');
   assert.deepEqual(fixture.state.jobs, [{id: 'run-1', status: 'running'}]);
+
+  visibility.destroy();
+  cleanup();
+});
+
+test('manual refresh is never dropped while a previous refresh is still in flight', async () => {
+  const fixture = installFixture();
+  fixture.runtime.state = () => ({inflight: true});
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+  fixture.calls.length = 0;
+  const button = {
+    disabled: false,
+    textContent: '刷新',
+    isConnected: true,
+    closest(selector) { return selector === '#refreshBtn' ? this : null; },
+  };
+  fixture.listeners.click({
+    target: button,
+    preventDefault() {},
+    stopImmediatePropagation() {},
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.calls[0].source, 'manual');
+  assert.equal(fixture.calls[0].force, true);
+  assert.equal(button.disabled, false);
 
   visibility.destroy();
   cleanup();
@@ -392,4 +456,38 @@ test('visibility does not capture or replace broad loadRelated', () => {
   assert.doesNotMatch(source, /legacyLoadRelated/);
   assert.doesNotMatch(source, /window\.loadRelated\s*=/);
   assert.doesNotMatch(source, /__trainingJobsPreserved/);
+});
+
+test('cross-page batch selection retains failed and skipped IDs after partial success', () => {
+  const selected = new Set(['page-one', 'failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {
+    ok: false, succeeded: 1, failed: 1, skipped: 1,
+    succeeded_ids: ['page-one'], failed_ids: ['failed'], skipped_ids: ['skipped'],
+  }), false);
+  assert.deepEqual([...selected], ['failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {cancelled: true}), false);
+  assert.deepEqual([...selected], ['failed', 'skipped']);
+  assert.equal(reconcileTrainingBatchSelection(selected, {
+    ok: true, succeeded: 2, failed: 0, skipped: 0,
+    succeeded_ids: ['failed', 'skipped'],
+  }), true);
+  assert.deepEqual([...selected], []);
+});
+
+test('training selection is not pruned against the current visible page', () => {
+  const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /if \(!visibleIds\.has\(id\)\) selectedIds\.delete\(id\)/);
+  assert.match(source, /reconcileTrainingBatchSelection\(selectedIds, result\)/);
+});
+
+
+test('active task uses stable identity and never offers unsafe delete', () => {
+  const active=trainingTaskPresentationRow({id:'train_12345678',status:'running',asset_algorithm_name:'烟火检测'});
+  assert.match(active,/训练 · 12345678/);
+  assert.doesNotMatch(active,/deleteTrain428/);
+  assert.match(active,/pauseTrain428/);
+  const queued=trainingTaskPresentationRow({id:'train_12345678',status:'queued'});
+  assert.doesNotMatch(queued,/deleteTrain428/);
+  const done=trainingTaskPresentationRow({id:'train_12345678',status:'completed'});
+  assert.match(done,/deleteTrain428/);
 });

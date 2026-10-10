@@ -11,7 +11,8 @@ from .training_splits import SplitManifest
 
 
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
-DATASET_REVISION_SCHEMA_VERSION = 1
+DATASET_REVISION_SCHEMA_VERSION = 2
+LEGACY_DATASET_REVISION_SCHEMA_VERSION = 1
 
 
 def _canonical(value: Any) -> str:
@@ -78,37 +79,73 @@ def _external_annotation_provenance(
     }
 
 
+def _dataset_revision_fields(schema_version: int) -> tuple[str, ...]:
+    if schema_version == LEGACY_DATASET_REVISION_SCHEMA_VERSION:
+        return (
+            "image_id",
+            "dataset_id",
+            "source_type",
+            "source_ref",
+            "group_id",
+            "content_sha256",
+            "storage_source_id",
+            "storage_type",
+            "object_key",
+            "annotation_state",
+            "annotation_scope",
+            "annotation_hash",
+            "negative_origin",
+            "source_annotation_state",
+            "source_labels",
+            "training_projection_policy",
+            "training_projection_digest",
+            "training_excluded_label_count",
+            "box_count",
+            "labels",
+            "external_annotation",
+        )
+    if schema_version == DATASET_REVISION_SCHEMA_VERSION:
+        return (
+            "image_id",
+            "dataset_id",
+            "source_type",
+            "source_ref",
+            "group_id",
+            "content_sha256",
+            "storage_source_id",
+            "storage_type",
+            "object_key",
+            "annotation_state",
+            "annotation_scope",
+            "annotation_hash",
+            "negative_origin",
+            "source_annotation_state",
+            "source_annotation_hash",
+            "source_labels",
+            "training_projection_policy",
+            "training_projection_digest",
+            "training_excluded_label_count",
+            "box_count",
+            "labels",
+            "external_annotation",
+        )
+    raise ValueError(f"不支持的 Dataset Revision schema 版本：{schema_version}")
+
+
 def _dataset_revision_payload(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
     supplement_provenance: Mapping[str, Any] | None = None,
+    *,
+    schema_version: int = DATASET_REVISION_SCHEMA_VERSION,
 ) -> dict[str, Any]:
-    fields = (
-        "image_id",
-        "dataset_id",
-        "source_type",
-        "source_ref",
-        "group_id",
-        "content_sha256",
-        "storage_source_id",
-        "storage_type",
-        "object_key",
-        "annotation_state",
-        "annotation_scope",
-        "annotation_hash",
-        "negative_origin",
-        "source_annotation_state",
-        "source_labels",
-        "box_count",
-        "labels",
-        "external_annotation",
-    )
+    fields = _dataset_revision_fields(int(schema_version))
     images = [
         {field: record.get(field) for field in fields}
         for record in sorted(records, key=lambda row: str(row.get("image_id") or ""))
     ]
     payload = {
-        "schema_version": DATASET_REVISION_SCHEMA_VERSION,
+        "schema_version": int(schema_version),
         "canonical_annotation_schema_version": CANONICAL_ANNOTATION_SCHEMA_VERSION,
         "label_schema": _stable_schema(label_schema),
         "images": images,
@@ -122,8 +159,15 @@ def _dataset_revision_id(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
     supplement_provenance: Mapping[str, Any] | None = None,
+    *,
+    schema_version: int = DATASET_REVISION_SCHEMA_VERSION,
 ) -> str:
-    payload = _dataset_revision_payload(records, label_schema, supplement_provenance)
+    payload = _dataset_revision_payload(
+        records,
+        label_schema,
+        supplement_provenance,
+        schema_version=schema_version,
+    )
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
@@ -137,17 +181,31 @@ def ensure_dataset_revision(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(snapshot)
     records = list(value.get("images") or [])
     label_schema = list(value.get("label_schema") or [])
+    actual = str(value.get("dataset_revision_id") or "").strip().lower()
+    raw_schema_version = value.get("dataset_revision_schema_version")
+    if raw_schema_version in (None, ""):
+        schema_version = (
+            LEGACY_DATASET_REVISION_SCHEMA_VERSION
+            if actual
+            else DATASET_REVISION_SCHEMA_VERSION
+        )
+    else:
+        try:
+            schema_version = int(raw_schema_version)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("Snapshot dataset_revision_schema_version 无效") from error
+    _dataset_revision_fields(schema_version)
     expected = _dataset_revision_id(
         records,
         label_schema,
         value.get("supplement_provenance")
         if isinstance(value.get("supplement_provenance"), Mapping)
         else None,
+        schema_version=schema_version,
     )
-    actual = str(value.get("dataset_revision_id") or "").strip().lower()
     if actual and actual != expected:
         raise ValueError("Snapshot dataset_revision_id 与冻结数据 truth 不一致")
-    value["dataset_revision_schema_version"] = DATASET_REVISION_SCHEMA_VERSION
+    value["dataset_revision_schema_version"] = schema_version
     value["canonical_annotation_schema_version"] = CANONICAL_ANNOTATION_SCHEMA_VERSION
     value["dataset_revision_id"] = expected
     return value
@@ -163,6 +221,7 @@ def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         normalized.get("supplement_provenance")
         if isinstance(normalized.get("supplement_provenance"), Mapping)
         else None,
+        schema_version=int(normalized["dataset_revision_schema_version"]),
     )
     return {
         "dataset_revision_id": str(normalized["dataset_revision_id"]),
@@ -173,6 +232,49 @@ def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 def _annotation_state(image: Mapping[str, Any], boxes: Sequence[Mapping[str, Any]]) -> str:
     return str(image.get("annotation_state") or ("annotated" if boxes else "unannotated"))
+
+
+def is_training_ground_truth(
+    annotation_state: Any,
+    boxes: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Formal training truth is either annotated boxes or explicit confirmed-empty."""
+    state = str(annotation_state or ("annotated" if boxes else "unannotated"))
+    return (
+        (state == "annotated" and bool(boxes))
+        or (state == "confirmed_empty" and not boxes)
+    )
+
+
+def _training_ground_truth_state(
+    image_id: str,
+    image: Mapping[str, Any],
+    boxes: Sequence[Mapping[str, Any]],
+) -> str:
+    """Accept only formal Ground Truth; cleaning never implies a negative label."""
+    # Rescan keeps historical formal GT for review, not as H2 training truth.
+    if image.get("annotation_needs_review"):
+        raise ValueError(
+            f"训练素材 {image_id} 的正式标注需要重新审核: "
+            + str(image.get("annotation_review_reason") or "ANNOTATION_REVIEW_REQUIRED")
+        )
+    verified_source = str(
+        image.get("annotation_source_content_sha256") or ""
+    ).strip().lower()
+    source = str(image.get("content_sha256") or "").strip().lower()
+    if verified_source and verified_source != source:
+        raise ValueError(
+            f"训练素材 {image_id} 内容已变化，正式标注不属于当前素材；请重新审核标注"
+        )
+    state = _annotation_state(image, boxes)
+    if state not in {"annotated", "confirmed_empty"}:
+        raise ValueError(
+            f"训练素材 {image_id} 尚未形成正式标注 Ground Truth；"
+            "清洗完成不能替代人工/导入确认的标注或“已确认无目标”"
+        )
+    if not is_training_ground_truth(state, boxes):
+        raise ValueError(f"训练素材 {image_id} 的正式标注状态与标注框不一致")
+    return state
 
 
 def _annotation_scope(
@@ -215,19 +317,21 @@ def _lock_scope_to_schema(
             f"训练素材 {image_id} 的标注标签不在本次锁定标签结构中: "
             + ", ".join(unknown_labels[:5])
         )
-    if state != "confirmed_empty":
-        return sorted({str(value).strip() for value in raw_scope if str(value).strip()})
-
-    # A YOLO empty label file means that *none* of the locked classes is present.
-    # Partial negative scopes cannot be represented by an empty detection target;
-    # using them would silently teach unverified classes as background.
+    # A standard detector target cannot encode "this class was not reviewed".
+    # Missing positives become implicit background for both annotated and empty
+    # images. Never widen the review scope just because a box was selected.
     normalized = {str(value).strip() for value in raw_scope if str(value).strip()}
     if "*" in normalized:
         return sorted(schema_codes)
     missing = sorted(schema_codes - normalized)
     if missing:
+        if state == "confirmed_empty":
+            raise ValueError(
+                f"负样本 {image_id} 未确认本次算法的全部标签: "
+                + ", ".join(missing[:5])
+            )
         raise ValueError(
-            f"负样本 {image_id} 未确认本次算法的全部标签: "
+            f"训练素材 {image_id} 标注审核范围未覆盖本次算法的全部标签: "
             + ", ".join(missing[:5])
         )
     return sorted(schema_codes)
@@ -284,17 +388,8 @@ def build_snapshot(
         image = by_id.get(image_id)
         if image is None:
             raise ValueError(f"训练素材 {image_id} 不存在")
-        processed = bool(
-            image.get("annotated")
-            or image.get("annotation_state") in {"annotated", "confirmed_empty"}
-            or image.get("processing_status") == "processed"
-            or image.get("cleaned_at")
-            or image.get("clean_skipped")
-        )
-        if not processed:
-            raise ValueError(f"训练素材 {image_id} 仍是未处理状态")
         boxes = list(image.get("boxes") or [])
-        state = _annotation_state(image, boxes)
+        state = _training_ground_truth_state(image_id, image, boxes)
         raw_scope = _annotation_scope(image, boxes)
         scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
         annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
@@ -309,7 +404,11 @@ def build_snapshot(
             "annotation_hash": annotation_hash,
             "negative_origin": str(image.get("negative_origin") or ""),
             "source_annotation_state": str(image.get("source_annotation_state") or ""),
+            "source_annotation_hash": str(image.get("source_annotation_hash") or ""),
             "source_labels": sorted({str(value) for value in (image.get("source_labels") or []) if str(value)}),
+            "training_projection_policy": str(image.get("training_projection_policy") or ""),
+            "training_projection_digest": str(image.get("training_projection_digest") or ""),
+            "training_excluded_label_count": len(image.get("training_excluded_boxes") or []),
             "box_count": len(boxes),
             "labels": sorted({
                 str(box.get("label") or "").strip()
@@ -353,19 +452,11 @@ def _build_snapshot_v2(
             image = by_id.get(image_id)
             if image is None:
                 raise ValueError(f"训练素材 {image_id} 不存在")
-            if not bool(
-                image.get("annotated")
-                or image.get("annotation_state") in {"annotated", "confirmed_empty"}
-                or image.get("processing_status") == "processed"
-                or image.get("cleaned_at")
-                or image.get("clean_skipped")
-            ):
-                raise ValueError(f"训练素材 {image_id} 仍是未处理状态")
             actual_hash = str(image.get("content_sha256") or "").strip()
             if actual_hash != manifest.content_hashes.get(image_id, ""):
                 raise ValueError(f"训练素材 {image_id} content hash 已变化")
             boxes = list(image.get("boxes") or [])
-            state = _annotation_state(image, boxes)
+            state = _training_ground_truth_state(image_id, image, boxes)
             raw_scope = _annotation_scope(image, boxes)
             scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
             annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
@@ -402,7 +493,11 @@ def _build_snapshot_v2(
                     "annotation_hash": annotation_hash,
                     "negative_origin": str(image.get("negative_origin") or ""),
                     "source_annotation_state": str(image.get("source_annotation_state") or ""),
+                    "source_annotation_hash": str(image.get("source_annotation_hash") or ""),
                     "source_labels": sorted({str(value) for value in (image.get("source_labels") or []) if str(value)}),
+                    "training_projection_policy": str(image.get("training_projection_policy") or ""),
+                    "training_projection_digest": str(image.get("training_projection_digest") or ""),
+                    "training_excluded_label_count": len(image.get("training_excluded_boxes") or []),
                     "stored_name": str(image.get("stored_name") or ""),
                     "box_count": len(boxes),
                     "labels": labels,

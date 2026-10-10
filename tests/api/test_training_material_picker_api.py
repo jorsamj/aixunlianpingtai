@@ -24,7 +24,7 @@ def _record(index: int, *, annotated: bool = True) -> dict:
         "processing_status": "processed",
         "box_count": 1 if annotated else 0,
         "annotated": annotated,
-        "labels": ["smoke"] if index % 2 == 0 else ["person"],
+        "labels": (["smoke"] if index % 2 == 0 else ["person"]) if annotated else [],
         "width": 400,
         "height": 200,
         "created_at": f"2026-09-15T12:{index // 60:02d}:{index % 60:02d}+00:00",
@@ -71,7 +71,7 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     first = client.get("/api/v62/projects/p1/training-materials", params={"limit": 120})
     assert first.status_code == 200
     body = first.json()
-    assert body["total"] == 230
+    assert body["total"] == 260
     assert body["limit"] == 120
     assert len(body["items"]) == 120
     assert body["next_cursor"]
@@ -88,7 +88,7 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     )
     assert second.status_code == 200
     second_body = second.json()
-    assert len(second_body["items"]) == 110
+    assert len(second_body["items"]) == 120
     assert {item["id"] for item in body["items"]}.isdisjoint({item["id"] for item in second_body["items"]})
 
     smoke = client.get(
@@ -181,8 +181,16 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert all_available.status_code == 200
     all_body = all_available.json()
     assert all_body["selection_mode"] == "all_available"
-    assert all_body["total"] == 230
-    assert len(all_body["items"]) == 230
+    assert all_body["total"] == 260
+    assert len(all_body["items"]) == 260
+
+    test_only = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={"query": "", "labels": [], "all_available": True, "role": "test"},
+    )
+    assert test_only.status_code == 200
+    assert test_only.json()["total"] == 230
+    assert len(test_only.json()["items"]) == 230
 
 
 def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
@@ -212,3 +220,136 @@ def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
     with Image.open(source) as original:
         assert original.size == (900, 600)
     assert repository.get("m0001") is not None
+
+
+def test_cleaned_unannotated_material_is_selectable_but_not_counted_as_ground_truth(tmp_path):
+    client, _repository = _client(tmp_path)
+
+    page = client.get(
+        "/api/v62/projects/p1/training-materials",
+        params={"limit": 60, "query": "material-0250"},
+    )
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["id"] == "m0250"
+    assert item["processing_status"] == "processed"
+    assert item["annotation_state"] == "unannotated"
+    assert item["training_state"] == "pending_annotation"
+    assert item["annotated"] is False
+
+    summary = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["m0000", "m0001", "m0250"]},
+    )
+    assert summary.status_code == 200
+    facts = summary.json()
+    assert facts["matched_count"] == 3
+    assert facts["selectable_count"] == 3
+    assert facts["eligible_count"] == 2
+    assert facts["pending_annotation_count"] == 1
+    assert facts["selectable_total"] == 260
+    assert facts["eligible_total"] == 230
+    assert facts["pending_annotation_total"] == 30
+
+
+
+def test_training_picker_summary_and_test_bulk_ignore_stale_material_annotation_projection(
+    tmp_path,
+):
+    client, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+
+    # Material projection intentionally remains the opposite of formal GT.
+    assert repository.get("m0000")["annotated"] is True
+    assert repository.get("m0250")["annotated"] is False
+    annotations.upsert(
+        "m0000",
+        [],
+        "unannotated",
+        project_material=False,
+    )
+    annotations.upsert(
+        "m0250",
+        [{
+            "id": "formal-smoke-250",
+            "label": "smoke",
+            "class_id": 0,
+            "x1": 40,
+            "y1": 20,
+            "x2": 200,
+            "y2": 100,
+        }],
+        "annotated",
+        annotation_scope=["smoke"],
+        project_material=False,
+    )
+
+    summary = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["m0000", "m0250"]},
+    )
+    assert summary.status_code == 200, summary.text
+    facts = summary.json()
+    assert facts["matched_count"] == 2
+    assert facts["selectable_count"] == 2
+    assert facts["eligible_count"] == 1
+    assert facts["pending_annotation_count"] == 1
+    assert facts["box_count"] == 1
+    assert facts["label_codes"] == ["smoke"]
+    assert facts["label_counts"] == {"smoke": 1}
+    assert facts["size_bytes"] == repository.get("m0250")["size_bytes"]
+    assert facts["eligible_total"] == 230
+    assert facts["pending_annotation_total"] == 30
+
+    selected = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={
+            "query": "",
+            "labels": [],
+            "all_available": True,
+            "role": "test",
+        },
+    )
+    assert selected.status_code == 200, selected.text
+    body = selected.json()
+    assert body["total"] == 230
+    assert "m0000" not in body["items"]
+    assert "m0250" in body["items"]
+
+    label_page = client.get(
+        "/api/v62/projects/p1/training-materials",
+        params=[("limit", "120"), ("label", "smoke")],
+    )
+    assert label_page.status_code == 200, label_page.text
+    label_page_body = label_page.json()
+    label_page_ids = {item["id"] for item in label_page_body["items"]}
+    assert label_page_body["total"] == 115
+    assert "m0000" not in label_page_ids
+    assert "m0250" in label_page_ids
+
+    label_ids = client.get(
+        "/api/v62/projects/p1/training-materials/ids",
+        params=[("limit", "500"), ("label", "smoke")],
+    )
+    assert label_ids.status_code == 200, label_ids.text
+    label_ids_body = label_ids.json()
+    assert label_ids_body["total"] == 115
+    assert "m0000" not in label_ids_body["items"]
+    assert "m0250" in label_ids_body["items"]
+
+    label_bulk = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={
+            "query": "",
+            "labels": ["smoke"],
+            "all_available": False,
+            "role": "train",
+        },
+    )
+    assert label_bulk.status_code == 200, label_bulk.text
+    label_bulk_body = label_bulk.json()
+    assert label_bulk_body["total"] == 115
+    assert "m0000" not in label_bulk_body["items"]
+    assert "m0250" in label_bulk_body["items"]

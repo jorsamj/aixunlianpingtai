@@ -513,6 +513,13 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
             self.items = []
 
         def purge(self, project_id, algorithm):
+            current = next(
+                row for row in list_algorithms(algorithms_path)
+                if row["id"] == algorithm["id"]
+            )
+            assert current["external_active"] is False
+            assert current["external_status"] == "deleted_pending_cleanup"
+            assert current["external_delete_pending"] is True
             self.items.append((project_id, algorithm["id"], algorithm["external_product_id"]))
             return {
                 "tasks_deleted": 2,
@@ -565,6 +572,91 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
     assert counts["artifacts_deleted"] == 3
     assert counts["remote_objects_deleted"] == 3
     assert counts["publications_deleted"] == 1
+
+
+def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_path: Path):
+    class MissingProductClient(FakeChangLianClient):
+        def products(self, **_filters):
+            return {"data": []}
+
+    class FailingPurger:
+        def purge(self, _project_id, algorithm):
+            assert algorithm["external_active"] is False
+            assert algorithm["external_delete_pending"] is True
+            raise RuntimeError("object storage delete denied")
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=MissingProductClient,
+        local_purger=FailingPurger(),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    algorithms_path = tmp_path / "project-delete-failed" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-p1",
+        "name": "待删除算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": True,
+        "versions": [{"id": "v1"}],
+        "current_version_id": "v1",
+    }])
+
+    with pytest.raises(Exception):
+        service.sync(
+            project_id="project-delete-failed",
+            algorithms_path=algorithms_path,
+        )
+
+    retained = list_algorithms(algorithms_path)
+    assert len(retained) == 1
+    assert retained[0]["external_active"] is False
+    assert retained[0]["external_status"] == "deleted_pending_cleanup"
+    assert retained[0]["external_delete_pending"] is True
+    assert retained[0]["versions"] == [{"id": "v1"}]
+
+
+def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-reappeared" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-p1",
+        "name": "曾待删除算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": False,
+        "external_status": "deleted_pending_cleanup",
+        "external_delete_pending": True,
+        "external_delete_pending_at": "2026-10-04T00:00:00+00:00",
+        "versions": [{"id": "v1"}],
+        "current_version_id": "v1",
+    }])
+
+    result = service.sync(
+        project_id="project-reappeared",
+        algorithms_path=algorithms_path,
+    )
+
+    assert result["ok"] is True
+    row = list_algorithms(algorithms_path)[0]
+    assert row["external_active"] is True
+    assert row["external_status"] == "1"
+    assert row["external_delete_pending"] is False
+    assert row["external_delete_pending_at"] == ""
+    assert row["versions"] == [{"id": "v1"}]
 
 
 def test_sync_rejects_concurrent_project_sync_without_mutating_state(tmp_path: Path):
@@ -1235,37 +1327,61 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
     assert readiness["ready"] is False
 
 
-def test_legacy_v12_training_entry_enforces_external_analysis_gate():
+def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
     end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
-    assert "_refresh_external_training_algorithm(project_id, asset_algorithm)" in block
-    assert "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)" in block
-    assert "resolve_external_training_analysis(" in block
-    assert block.index("_refresh_external_training_algorithm(project_id, asset_algorithm)") < block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)")
-    assert block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)") < block.index("resolve_external_training_analysis(")
-    assert block.index("resolve_external_training_analysis(") < block.index("if payload.split_mode:")
-    assert '"external_analysis_id": external_analysis_id' in block
+    split_gate = "if not payload.split_mode:"
+    enqueue = "return _enqueue_explicit_training(project_id, payload)"
+
+    for marker in (split_gate, enqueue):
+        assert marker in block
+    assert block.index(split_gate) < block.index(enqueue)
+    assert "_refresh_external_training_algorithm(" not in block
+    assert "assert_external_algorithm_master_data_current(" not in block
+    assert "resolve_external_training_analysis(" not in block
 
 
-def test_all_backend_training_create_owners_recheck_external_truth_before_local_gate():
+def test_training_create_has_one_external_truth_owner_plus_compatibility_delegate():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
-    local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
-    owners = (
-        ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def check_ultralytics_train_runtime"),
-        ('@app.post("/api/projects/{project_id}/train/start")', "def resolve_server"),
-        ('@app.post("/api/v12/projects/{project_id}/train/start")', "def _v48_resource_key"),
-    )
-    for start_marker, end_marker in owners:
-        start = source.index(start_marker)
-        end = source.index(end_marker, start)
-        block = source[start:end]
-        assert refresh in block, start_marker
-        assert local_gate in block, start_marker
-        assert block.index(refresh) < block.index(local_gate), start_marker
+
+    enqueue_start = source.index("def _ensure_training_prepare_child(")
+    enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
+    enqueue_block = source[enqueue_start:enqueue_end]
+    assert '"training_input_state": "PREPARING"' in enqueue_block
+    assert "TaskKind.TRAINING_PREPARE" in enqueue_block
+    assert "with FileLock(str(locks_dir / f\"{task_id}.lock\"), timeout=30)" in enqueue_block
+    assert "_enqueue_explicit_training_locked(project_id, payload, task_id)" in enqueue_block
+    assert "_refresh_external_training_algorithm(" not in enqueue_block
+    assert "assert_external_algorithm_master_data_current(" not in enqueue_block
+    assert "resolve_external_training_analysis(" not in enqueue_block
+
+    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    v12_end = source.index("def _v48_resource_key", v12_start)
+    v12_block = source[v12_start:v12_end]
+    assert "return _enqueue_explicit_training(project_id, payload)" in v12_block
+    assert "_refresh_external_training_algorithm(" not in v12_block
+    assert "assert_external_algorithm_master_data_current(" not in v12_block
+    assert "resolve_external_training_analysis(" not in v12_block
+
+    compatibility_start = source.index('@app.post("/api/projects/{project_id}/train/start")')
+    compatibility_end = source.index("def resolve_server", compatibility_start)
+    compatibility_block = source[compatibility_start:compatibility_end]
+    assert "return v12_start_train(project_id, payload)" in compatibility_block
+    assert "_refresh_external_training_algorithm(" not in compatibility_block
+    assert "assert_external_algorithm_master_data_current(" not in compatibility_block
+
+    prepare = (
+        Path(__file__).resolve().parents[2] / "platform_core" / "remote_training_tasks.py"
+    ).read_text(encoding="utf-8")
+    owner_start = prepare.index("class TrainingPrepareHandler:")
+    owner_block = prepare[owner_start:]
+    assert "service.training_preflight(" in owner_block
+    assert "assert_external_algorithm_master_data_current(self.data_dir, algorithm)" in owner_block
+    assert "resolve_external_training_analysis(" in owner_block
+    assert "activate_prepared_training(" in owner_block
 
 
 class DetailOverridesSummaryClient(FakeChangLianClient):
@@ -1565,3 +1681,279 @@ def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(t
 
     assert blocked.value.code == "EXTERNAL_ALGORITHM_INACTIVE"
     assert blocked.value.status_code == 409
+
+
+
+class _DeferredSyncThread:
+    instances = []
+
+    def __init__(self, *, target, name, daemon):
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+        type(self).instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def run(self):
+        assert self.started is True
+        self.target()
+
+
+def test_manual_sync_operation_is_durable_reused_and_finishes_through_canonical_sync(tmp_path: Path):
+    _DeferredSyncThread.instances.clear()
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    service.thread_factory = _DeferredSyncThread
+    algorithms_path = tmp_path / "operation-project" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    first = service.start_sync(
+        project_id="operation-project",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+    second = service.start_sync(
+        project_id="operation-project",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert first["accepted"] is True
+    assert second["accepted"] is False
+    assert first["operation"]["operation_id"] == second["operation"]["operation_id"]
+    assert first["operation"]["status"] == "queued"
+    assert first["operation"]["trigger_source"] == "manual"
+    assert len(_DeferredSyncThread.instances) == 1
+
+    _DeferredSyncThread.instances[0].run()
+
+    operation = service.current_sync_operation("operation-project")
+    assert operation["status"] == "success"
+    assert operation["current_phase"] == "completed"
+    assert operation["processed_products"] == 1
+    assert operation["total_products"] == 1
+    assert operation["success_count"] == 1
+    assert operation["error_count"] == 0
+    assert operation["counts"]["products"] == 1
+    assert operation["counts"]["added"] == 1
+    assert service.repository.history()[0]["operation_id"] == operation["operation_id"]
+    assert list_algorithms(algorithms_path)[0]["external_product_id"] == "p1"
+
+
+def test_sync_operation_cas_prevents_old_operation_from_overwriting_newer_one(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    first = service._new_sync_operation("cas-project", "manual")
+    claimed, _ = service.repository.claim_sync_operation("cas-project", first)
+    assert claimed is True
+
+    service.repository.update_sync_operation(
+        "cas-project",
+        first["operation_id"],
+        {"status": "success", "current_phase": "completed"},
+    )
+    second = service._new_sync_operation("cas-project", "auto")
+    claimed, second_current = service.repository.claim_sync_operation("cas-project", second)
+    assert claimed is True
+
+    returned = service.repository.update_sync_operation(
+        "cas-project",
+        first["operation_id"],
+        {"status": "failed", "current_phase": "failed"},
+    )
+
+    assert returned["operation_id"] == second_current["operation_id"]
+    assert service.repository.sync_operation("cas-project")["operation_id"] == second_current["operation_id"]
+    assert service.repository.sync_operation("cas-project")["status"] == "queued"
+
+
+def test_sync_operation_exposes_real_product_phase_counters_during_fetch(tmp_path: Path):
+    observed = []
+    state = {}
+
+    class ObservedClient(FakeChangLianClient):
+        def analyses(self, product_id):
+            observed.append(dict(state["service"].repository.sync_operation("phase-project")))
+            return super().analyses(product_id)
+
+    service = _configured_external_service(tmp_path, ObservedClient)
+    state["service"] = service
+    algorithms_path = tmp_path / "phase-project" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    service.sync(project_id="phase-project", algorithms_path=algorithms_path, sync_type="auto")
+
+    assert observed
+    current = observed[0]
+    assert current["status"] == "running"
+    assert current["current_phase"] == "fetch_analyses"
+    assert current["processed_products"] == 0
+    assert current["total_products"] == 1
+    final = service.current_sync_operation("phase-project")
+    assert final["processed_products"] == 1
+    assert final["last_request_duration_ms"] >= 0
+
+
+def test_external_sync_router_uses_background_operation_owner():
+    source = (Path(__file__).resolve().parents[2] / "platform_core" / "external_algorithm_platform.py").read_text(encoding="utf-8")
+    route_start = source.index('@router.post("/sync")')
+    route_end = source.index('@router.get("/sync-history")', route_start)
+    block = source[route_start:route_end]
+
+    assert "service.start_sync(" in block
+    assert '@router.get("/sync-operation")' in block
+    assert "service.current_sync_operation(project_id)" in block
+    assert "service.sync(" not in block
+
+
+
+class BulkAnalysisListClient(FakeChangLianClient):
+    analyses_calls = 0
+    analysis_list_all_calls = 0
+    detail_calls = []
+
+    def products(self, **_filters):
+        return {"data": [
+            {"productId": "p1", "productName": "抽烟检测", "categoryId": "c1", "status": 1, "productType": 3},
+            {"productId": "p2", "productName": "打电话检测", "categoryId": "c1", "status": 1, "productType": 3},
+        ]}
+
+    def analysis_list_all(self, **_filters):
+        type(self).analysis_list_all_calls += 1
+        return {"data": [
+            {"analysisId": "a1", "productId": "p1", "analysisName": "抽烟视觉分析", "analysisType": 1, "status": 1},
+            {"analysisId": "a2", "productId": "p2", "analysisName": "打电话视觉分析", "analysisType": 1, "status": 1},
+        ]}
+
+    def analyses(self, product_id):
+        type(self).analyses_calls += 1
+        raise AssertionError(f"listAll 可完整分组时不应再调用 listByProduct: {product_id}")
+
+    def analysis_info(self, analysis_id):
+        type(self).detail_calls.append(str(analysis_id))
+        mapping = {
+            "a1": {"productId": "p1", "analysisName": "抽烟视觉分析"},
+            "a2": {"productId": "p2", "analysisName": "打电话视觉分析"},
+        }
+        row = mapping[str(analysis_id)]
+        return {"data": {
+            "analysisId": str(analysis_id),
+            "productId": row["productId"],
+            "analysisName": row["analysisName"],
+            "analysisType": 1,
+            "status": 1,
+        }}
+
+
+def test_sync_uses_analysis_list_all_once_and_keeps_detail_truth_per_analysis(tmp_path: Path):
+    BulkAnalysisListClient.analyses_calls = 0
+    BulkAnalysisListClient.analysis_list_all_calls = 0
+    BulkAnalysisListClient.detail_calls = []
+    service = _configured_external_service(tmp_path, BulkAnalysisListClient)
+    algorithms_path = tmp_path / "bulk-analysis-index" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-analysis-index",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    assert BulkAnalysisListClient.analysis_list_all_calls == 1
+    assert BulkAnalysisListClient.analyses_calls == 0
+    assert BulkAnalysisListClient.detail_calls == ["a1", "a2"]
+    operation = service.current_sync_operation("bulk-analysis-index")
+    assert operation["analysis_list_source"] == "list_all"
+    assert operation["processed_products"] == 2
+    assert operation["total_products"] == 2
+    rows = sorted(list_algorithms(algorithms_path), key=lambda row: row["external_product_id"])
+    assert [row["external_product_id"] for row in rows] == ["p1", "p2"]
+    assert [row["external_analysis_ids"] for row in rows] == [["a1"], ["a2"]]
+
+
+class BulkAnalysisFallbackClient(FakeChangLianClient):
+    analysis_list_all_calls = 0
+    analyses_calls = 0
+
+    def analysis_list_all(self, **_filters):
+        type(self).analysis_list_all_calls += 1
+        return {"data": [{
+            "analysisId": "a1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 1,
+        }]}
+
+    def analyses(self, product_id):
+        type(self).analyses_calls += 1
+        return super().analyses(product_id)
+
+
+def test_sync_falls_back_to_list_by_product_when_list_all_cannot_prove_product_ownership(tmp_path: Path):
+    BulkAnalysisFallbackClient.analysis_list_all_calls = 0
+    BulkAnalysisFallbackClient.analyses_calls = 0
+    service = _configured_external_service(tmp_path, BulkAnalysisFallbackClient)
+    algorithms_path = tmp_path / "bulk-analysis-fallback" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-analysis-fallback",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    assert BulkAnalysisFallbackClient.analysis_list_all_calls == 1
+    assert BulkAnalysisFallbackClient.analyses_calls == 1
+    operation = service.current_sync_operation("bulk-analysis-fallback")
+    assert operation["analysis_list_source"] == "per_product_fallback"
+    assert "productId" in operation["analysis_list_fallback_reason"]
+
+
+class BulkSummaryEnabledButDetailDisabledClient(FakeChangLianClient):
+    def analysis_list_all(self, **_filters):
+        return {"data": [{
+            "analysisId": "a1",
+            "productId": "p1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 1,
+        }]}
+
+    def analyses(self, product_id):
+        raise AssertionError("优化路径不应查询 listByProduct")
+
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1",
+            "productId": "p1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 0,
+        }}
+
+
+def test_bulk_analysis_index_never_overrides_authoritative_detail_training_status(tmp_path: Path):
+    service = _configured_external_service(tmp_path, BulkSummaryEnabledButDetailDisabledClient)
+    algorithms_path = tmp_path / "bulk-detail-truth" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(
+        project_id="bulk-detail-truth",
+        algorithms_path=algorithms_path,
+        sync_type="manual",
+    )
+
+    assert result["ok"] is True
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert algorithm["external_analysis_ids"] == []
+    assert algorithm["external_analyses"][0]["status"] == "0"
+    assert service.current_sync_operation("bulk-detail-truth")["analysis_list_source"] == "list_all"

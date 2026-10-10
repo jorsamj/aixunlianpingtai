@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from .node_identity import resolve_node_identity
 from .training_devices import normalize_training_device, probe_training_devices
+from .training_resource_policy import deferred_auto_reservation_bytes
 
 
 _GPU_INVENTORY_CREATE = """
@@ -143,7 +144,7 @@ def ensure_gpu_runtime_schema(database, *, legacy_node_id: str | None = None) ->
 
 @dataclass(frozen=True)
 class GPUConfig:
-    max_concurrent: int = 2
+    max_concurrent: int = 1
     safety_bytes: int = 1024 ** 3
     max_reserved_ratio: float = 0.9
     sample_max_age_seconds: int = 15
@@ -153,7 +154,7 @@ class GPUConfig:
     @classmethod
     def from_env(cls):
         return cls(
-            max_concurrent=max(1, int(os.environ.get("TRAINING_GPU_MAX_CONCURRENT", "2"))),
+            max_concurrent=max(1, int(os.environ.get("TRAINING_GPU_MAX_CONCURRENT", "1"))),
             safety_bytes=max(0, int(os.environ.get("TRAINING_GPU_SAFETY_BYTES", str(1024 ** 3)))),
             max_reserved_ratio=max(0.01, min(1.0, float(os.environ.get("TRAINING_GPU_MAX_RESERVED_RATIO", "0.9")))),
         )
@@ -485,6 +486,17 @@ class GPUResourceManager:
         if slot:
             return False, "GPU_WORKER_SLOT_BUSY: training slot already owns a task"
         estimated = _number(payload.get("estimated_gpu_memory_bytes")) or None
+        deferred_auto = (
+            payload.get("resource_resolution_deferred") is True
+            and str(payload.get("resource_strategy") or "auto").strip().lower() == "auto"
+            and device == "auto"
+        )
+        admission_estimate = (
+            _number(payload.get("gpu_memory_floor_bytes")) or None
+            if deferred_auto else estimated
+        )
+        if deferred_auto and admission_estimate is None:
+            return False, "RESOURCE_ADMISSION_ESTIMATE_MISSING: deferred AUTO requires gpu_memory_floor_bytes"
         cutoff = (datetime.fromisoformat(now) - timedelta(seconds=self.config.sample_max_age_seconds)).isoformat()
         candidates = []
         reasons = []
@@ -506,17 +518,39 @@ class GPUResourceManager:
                 "SELECT * FROM gpu_reservations WHERE gpu_uuid=?", (gpu["gpu_uuid"],)
             ).fetchall()
             count = len(active)
-            if count >= self.config.max_concurrent or (count and (policy == "exclusive" or any(r["policy"] == "exclusive" for r in active))):
+            # Never auto-share a physical GPU. The environment's legacy
+            # max-concurrent setting cannot override exclusive ownership.
+            if count:
                 reasons.append("GPU_CONCURRENCY_LIMIT: GPU is reserved")
                 continue
             capacity = min(int(total * self.config.max_reserved_ratio), total - self.config.safety_bytes)
-            # Unknown job size takes the entire allowed budget, preventing implicit sharing.
-            requested = estimated or capacity
             reserved = sum(row["reserved_bytes"] for row in active)
+            if deferred_auto:
+                try:
+                    requested = deferred_auto_reservation_bytes(
+                        payload,
+                        total_bytes=int(total),
+                        free_bytes=int(free),
+                        already_reserved_bytes=int(reserved),
+                        active_count=count,
+                    )
+                except ValueError as error:
+                    return False, f"{error}"
+                if not requested:
+                    reasons.append("GPU_MEMORY_INSUFFICIENT: batch=1 admission floor exceeds candidate AUTO budget")
+                    continue
+            else:
+                # Unknown legacy job size takes the entire allowed budget,
+                # preventing implicit sharing.
+                requested = estimated or capacity
             if requested <= 0 or reserved + requested > capacity or requested > free - reserved - self.config.safety_bytes:
                 reasons.append("GPU_MEMORY_INSUFFICIENT: free memory after reservations and safety reserve is insufficient")
                 continue
-            eligible = bool(estimated and estimated <= total * self.config.small_job_ratio and self._sharing_evidence(payload, now))
+            eligible = bool(
+                admission_estimate
+                and admission_estimate <= total * self.config.small_job_ratio
+                and self._sharing_evidence(payload, now)
+            )
             if count and (policy == "auto" or any(row["policy"] == "auto" for row in active)):
                 samples = database.execute(
                     """
@@ -531,15 +565,33 @@ class GPUResourceManager:
                 if not eligible or not low_utilization or not all(row["share_eligible"] and (row["sharing_evidence_at"] or "") >= cutoff for row in active):
                     reasons.append("GPU_SHARING_EVIDENCE_REQUIRED: small memory estimate and recent low GPU/CPU/IO pressure required")
                     continue
-            # Lexicographic score always spreads to idle GPUs before considering sharing.
-            score = (count == 0, -count, (free - reserved - self.config.safety_bytes) / total,
-                     -gpu["utilization"], -int(gpu["physical_index"] or 0))
+            # Deferred AUTO prefers absolute headroom among idle cards so a
+            # 48G card is not tied with a similarly-empty 24G card by ratio.
+            headroom = max(0, free - reserved - self.config.safety_bytes)
+            if deferred_auto:
+                low_pressure = gpu["utilization"] <= self.config.shared_utilization_limit
+                score = (
+                    count == 0,
+                    -count,
+                    low_pressure,
+                    headroom,
+                    -gpu["utilization"],
+                    -int(gpu["physical_index"] or 0),
+                )
+            else:
+                score = (
+                    count == 0,
+                    -count,
+                    headroom / total,
+                    -gpu["utilization"],
+                    -int(gpu["physical_index"] or 0),
+                )
             candidates.append((score, gpu, requested, eligible))
         if not candidates:
             return False, reasons[0] if reasons else f"GPU_NOT_AVAILABLE: waiting for {device}"
         _, gpu, requested, eligible = max(candidates, key=lambda item: item[0])
         database.execute("INSERT INTO gpu_reservations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (task["task_id"], gpu["gpu_uuid"], _cuda_index(gpu), requested, estimated, worker_id,
+                         (task["task_id"], gpu["gpu_uuid"], _cuda_index(gpu), requested, admission_estimate, worker_id,
                           self.worker_slot, token, policy, int(eligible),
                           (payload.get("gpu_sharing_evidence") or {}).get("sampled_at") if eligible else None,
                           now, now, expires_at))

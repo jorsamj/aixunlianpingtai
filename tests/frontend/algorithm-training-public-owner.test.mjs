@@ -25,8 +25,9 @@ test('training start and algorithm expansion point at current canonical owners',
   assert.match(recovery, /window\.showTrainLog423 = taskId => openDetail\(taskId, \{focus: 'log'\}\)/);
 });
 
-test('historical implementations are isolated under Legacy names', () => {
+test('historical algorithm implementations stay isolated while retired training log owners stay absent', () => {
   assert.match(app, /window\.renderAlgorithmsLegacy423_/);
-  assert.match(app, /window\.showTrainLogLegacy423_/);
   assert.match(app, /window\.showVersionDeploymentsLegacy423_/);
+  assert.equal(app.includes('showTrainLogLegacy423_'), false);
+  assert.equal(recovery.includes('showTrainLogLegacy423_'), false);
 });

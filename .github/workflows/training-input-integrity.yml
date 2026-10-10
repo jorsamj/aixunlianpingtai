@@ -99,14 +99,37 @@ jobs:
       - name: Permanent task-filtered negative guards
         shell: bash
         run: |
-          grep -Fq 'negative_origin"] = "filtered_by_training_labels"' platform_core/training_label_tasks.py
+          grep -Fq 'negative_origin"] = "redacted_unselected_labels"' platform_core/training_label_tasks.py
+          grep -Fq 'TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"' platform_core/training_tasks.py
+          grep -Fq 'training_projection_policy"] = base.TRAINING_PROJECTION_POLICY' platform_core/training_label_tasks.py
+          grep -Fq 'policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}' platform_core/training_tasks.py
+          grep -Fq 'def _apply_training_projection(' platform_core/training_tasks.py
+          grep -Fq 'excluded_object_redaction' platform_core/training_tasks.py
+          grep -Fq 'test_redaction_v2_preserves_selected_positive_pixels_inside_excluded_box' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_legacy_v1_redaction_remains_replayable_without_v2_pixel_restore' tests/unit/test_training_label_contract.py
+          grep -Fq 'training_projection_digest' platform_core/snapshots.py
+          grep -Fq '"source_annotation_hash",' platform_core/snapshots.py
+          grep -Fq 'DATASET_REVISION_SCHEMA_VERSION = 2' platform_core/snapshots.py
+          grep -Fq 'test_dataset_revision_v2_tracks_source_annotation_identity' tests/unit/test_snapshots.py
+          grep -Fq 'test_dataset_revision_v1_identity_remains_backward_compatible' tests/unit/test_snapshots.py
           grep -Fq 'negative_origin_counts' platform_core/snapshots.py
           grep -Fq 'test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source' tests/unit/test_training_label_contract.py
           grep -Fq 'test_task_filtered_negative_materializes_as_empty_yolo_label' tests/unit/test_training_label_contract.py
-          grep -Fq 'test_snapshot_preserves_task_filtered_negative_origin' tests/unit/test_negative_sample_contract.py
+          grep -Fq 'test_snapshot_preserves_redacted_task_negative_projection_evidence' tests/unit/test_negative_sample_contract.py
+          grep -Fq '"base_model_contract_schema_version": 1' platform_core/training_label_tasks.py
+          grep -Fq 'test_input_freeze_identity_changes_when_frozen_base_model_changes' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_version_contract_backfill_preserves_full_frozen_base_lineage' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_iteration_collapses_merged_previous_labels_into_current_canonical_target' tests/unit/test_training_label_contract.py
+          grep -Fq 'test_iteration_rejects_inactive_previous_label_without_merge_target' tests/unit/test_training_label_contract.py
+          grep -Fq 'merged_inherited_label_codes' platform_core/training_label_tasks.py
+          grep -Fq 'previous_version_merged' platform_core/training_label_tasks.py
+          grep -Fq 'update_algorithm_version(' platform_core/training_label_tasks.py
+          if grep -Fq 'save_algorithms(path, algorithms)' platform_core/training_label_tasks.py; then echo 'label lineage backfill must not replace the whole algorithm graph' >&2; exit 1; fi
           grep -Fq 'Task-derived negative addendum' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
-          if grep -Fq '不能通过过滤其他标签制造负样本' platform_core/training_label_tasks.py; then
-            echo 'legacy rejection of task-derived negatives must not return' >&2
+          grep -Fq 'Never recreate `negative_origin=filtered_by_training_labels`' docs/superpowers/specs/2026-09-11-negative-sample-contract.md
+          if grep -Fq 'negative_origin"] = "filtered_by_training_labels"' platform_core/training_label_tasks.py; then
+            echo 'visible deselected objects must never return as filtered empty-label negatives' >&2
             exit 1
           fi
           test ! -e tools/_one_shot_task_filtered_negative.py
@@ -114,6 +137,6 @@ jobs:
           grep -Fq 'benchmark_source_version_id' app.py
           grep -Fq 'def _training_reusable_benchmark' app.py
           grep -Fq 'exclude_reserved_test_components' platform_core/training_splits.py
-          grep -Fq 'reserved_training_candidate_count' app.py
+          grep -Fq 'reserved_training_candidate_count' platform_core/remote_training_tasks.py
           grep -Fq 'test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids' tests/api/test_training_request.py
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

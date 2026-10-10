@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,8 +11,10 @@ from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_node_assignments import (
     AssignmentAwareFencedTaskRepository,
     CentralTaskAllocator,
+    _assigned_gpu_ids,
     task_node_capability,
     task_node_connection_mode,
+    task_preemptible,
     task_remote_execution_contract,
 )
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
@@ -447,6 +451,260 @@ def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     assert task_node_capability(clean, artifacts) == "cleaning"
     assert task_node_capability(annotate, artifacts) == "annotation"
     assert task_node_capability(default, artifacts) == "material-import"
+
+
+def test_clean_manual_node_affinity_never_spills_to_another_eligible_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "batch-clean-pinned",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-agent-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "clean-agent-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 64 * 1024**3}, "disk": {"free_bytes": 500 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-agent-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "clean-agent-b"
+
+
+
+def test_clean_auto_scheduling_prefers_idle_agent_over_stronger_busy_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_online_node(
+        repository,
+        "clean-idle-a",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 50 * 1024**3}},
+    )
+    create_online_node(
+        repository,
+        "clean-busy-b",
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 512 * 1024**3}, "disk": {"free_bytes": 100 * 1024**4}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-running-on-b",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": "clean-busy-b", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    reserved = allocator.assign_next()
+    assert reserved and reserved["node_id"] == "clean-busy-b"
+    allocator.release("clean-running-on-b", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id='agent:clean-busy-b' "
+            "WHERE task_id='clean-running-on-b'"
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-auto-next",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "auto", "node_id": "", "queue_policy": "normal"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assignment = allocator.assign_next()
+    assert assignment is not None
+    assert assignment["task_id"] == "clean-auto-next"
+    assert assignment["node_id"] == "clean-idle-a"
+
+
+
+def test_clean_preemption_cancels_recoverable_victim_then_requeues_it_after_preemptor_finishes(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "clean-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning"],
+        connection_mode="agent",
+        resources={"memory": {"available_bytes": 16 * 1024**3}, "disk": {"free_bytes": 100 * 1024**3}},
+    )
+    create_task(
+        repository,
+        artifacts,
+        "clean-victim",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "clean-victim"
+    allocator.release("clean-victim", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='scanning',worker_id=? WHERE task_id='clean-victim'",
+            (f"agent:{node_id}",),
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-preemptor",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    event = allocator.preempt_for("clean-preemptor", node_id)
+    assert event["preempted_task_ids"] == ["clean-victim"]
+    assert repository.get("clean-victim").status is TaskStatus.CANCEL_REQUESTED
+
+    # Simulate the fenced Agent acknowledging cancellation, then the incoming
+    # clean finishing. The allocator owns the durable auto-resume transition.
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED',stage='cancelled',finished_at=updated_at WHERE task_id='clean-victim'"
+        )
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED',stage='succeeded',finished_at=updated_at WHERE task_id='clean-preemptor'"
+        )
+    allocator.assign_next()
+    resumed = repository.get("clean-victim")
+    assert resumed is not None
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.retry_of == "clean-victim"
+    lineage = allocator.list_preemptions(incoming_task_id="clean-preemptor")
+    assert lineage[0]["state"] == "RESUMED"
+
+
+def test_clean_preemption_fails_closed_for_nonrecoverable_running_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    node_id = "mixed-preempt-agent"
+    create_online_node(
+        repository,
+        node_id,
+        ["cleaning", "conversion"],
+        connection_mode="agent",
+    )
+    create_task(
+        repository,
+        artifacts,
+        "conversion-victim",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=10,
+    )
+    allocator = CentralTaskAllocator(repository, artifacts)
+    victim_assignment = allocator.assign_next()
+    assert victim_assignment and victim_assignment["task_id"] == "conversion-victim"
+    allocator.release("conversion-victim", "execution_started")
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET status='RUNNING',stage='converting',worker_id=? WHERE task_id='conversion-victim'",
+            (f"agent:{node_id}",),
+        )
+
+    create_task(
+        repository,
+        artifacts,
+        "clean-cannot-preempt",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "scheduling": {"mode": "node", "node_id": node_id, "queue_policy": "preempt"},
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+        priority=50,
+    )
+    with pytest.raises(Exception, match="non-preemptible task"):
+        allocator.preempt_for("clean-cannot-preempt", node_id)
+    assert repository.get("conversion-victim").status is TaskStatus.RUNNING
+
+
+def test_remote_training_is_not_preemptible_without_agent_pause_release_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "remote-training-preempt-guard",
+        TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    assert task_preemptible(task, artifacts) is False
 
 
 def test_portable_clean_material_batch_selects_only_agent_node(tmp_path):
@@ -1118,3 +1376,35 @@ def test_confirmed_material_import_is_released_back_to_local_worker_owner(tmp_pa
     confirmed = repository.get(task.task_id)
     assert confirmed.accepted is True
     assert task_node_capability(confirmed, artifacts) is None
+
+
+def test_running_agent_still_excludes_its_gpu_after_assignment_release():
+    """Central allocator must not reuse cuda:0 while Agent training is RUNNING."""
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    try:
+        database.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, worker_id TEXT)"
+        )
+        database.execute(
+            "CREATE TABLE task_node_assignments "
+            "(task_id TEXT, node_id TEXT, state TEXT, resolved_execution_config TEXT)"
+        )
+        database.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?)",
+            ("training-active", "RUNNING", "agent:gpu-node"),
+        )
+        database.execute(
+            "INSERT INTO task_node_assignments VALUES (?, ?, ?, ?)",
+            (
+                "training-active", "gpu-node", "RELEASED",
+                json.dumps({"selected_gpu": {"id": "cuda:0"}}),
+            ),
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == {"cuda:0"}
+        database.execute(
+            "UPDATE tasks SET status='SUCCEEDED' WHERE task_id='training-active'"
+        )
+        assert _assigned_gpu_ids(database, "gpu-node") == set()
+    finally:
+        database.close()

@@ -24,6 +24,7 @@ MAX_COCO_JSON_BYTES = 64 * 1024 * 1024
 MAX_VOC_XML_BYTES = 2 * 1024 * 1024
 MAX_ANNOTATION_FILES = 250_000
 MAX_ANNOTATION_BOXES = 5_000_000
+_UNSET_SOURCE_INVENTORY = object()
 
 
 class DetectionImportError(StorageError):
@@ -205,10 +206,21 @@ class DetectionDatasetScanner:
         if batch:
             self.store.inventory_many(batch)
 
-    def _read_annotation_source(self, key: str, maximum: int) -> bytes:
+    def _read_annotation_source(
+        self,
+        key: str,
+        maximum: int,
+        *,
+        expected_inventory=_UNSET_SOURCE_INVENTORY,
+        identity_sink: list[dict] | None = None,
+    ) -> bytes:
         """Read bounded annotation bytes and freeze their verified source identity."""
         raw = _read_bounded(self.provider, key, maximum)
-        current = self.store.inventory_for_keys([key]).get(key)
+        current = (
+            self.store.inventory_for_keys([key]).get(key)
+            if expected_inventory is _UNSET_SOURCE_INVENTORY
+            else expected_inventory
+        )
         if current is None:
             raise DetectionImportError(
                 "DETECTION_SOURCE_CHANGED",
@@ -228,12 +240,16 @@ class DetectionDatasetScanner:
                 "DETECTION_SOURCE_CHANGED",
                 "annotation source hash changed while being read",
             )
-        self.store.inventory_many([{
+        identity = {
             "object_key": key,
             "size_bytes": actual_size,
             "etag": str(current.get("etag") or ""),
             "sha256": actual_sha,
-        }])
+        }
+        if identity_sink is None:
+            self.store.inventory_many([identity])
+        else:
+            identity_sink.append(identity)
         return raw
 
     def _resolve_image(self, file_name: str, *, annotation_key: str, prefix: str) -> str | None:
@@ -273,6 +289,23 @@ class DetectionDatasetScanner:
             storage_type=self.storage_type,
             seen_hashes=seen_hashes if self.deduplicate_images else set(),
         )
+
+    def _flush_annotation_batch(
+        self,
+        manifests: list[dict],
+        states: list[dict],
+        boxes: list[dict],
+        issues: list[dict],
+    ) -> None:
+        """Persist one bounded annotation evidence batch using the existing task store."""
+        if manifests:
+            self.store.manifest_many(manifests)
+        if states or boxes or issues:
+            self.store.annotation_batch(states, boxes, issues)
+        manifests.clear()
+        states.clear()
+        boxes.clear()
+        issues.clear()
 
     def ensure_all_image_candidates(self) -> int:
         """Ensure every inventoried image has candidate truth without re-reading existing candidates."""
@@ -314,10 +347,25 @@ class DetectionDatasetScanner:
 
     def _scan_coco(self, prefix: str) -> DetectionScanResult:
         documents: list[tuple[str, dict]] = []
-        for key in sorted(self._json_keys):
+        json_keys = sorted(self._json_keys)
+        expected_inventory: dict[str, dict] = {}
+        verified_identities: list[dict] = []
+        for source_index, key in enumerate(json_keys):
+            if source_index % BATCH_SIZE == 0:
+                if verified_identities:
+                    self.store.inventory_many(verified_identities)
+                    verified_identities.clear()
+                expected_inventory = self.store.inventory_for_keys(
+                    json_keys[source_index:source_index + BATCH_SIZE]
+                )
             _cancelled(self.cancelled)
             try:
-                raw = self._read_annotation_source(key, MAX_COCO_JSON_BYTES)
+                raw = self._read_annotation_source(
+                    key,
+                    MAX_COCO_JSON_BYTES,
+                    expected_inventory=expected_inventory.get(key),
+                    identity_sink=verified_identities,
+                )
                 payload = json.loads(raw.decode("utf-8-sig"))
             except DetectionImportError:
                 raise
@@ -330,6 +378,8 @@ class DetectionDatasetScanner:
                 and isinstance(payload.get("categories"), list)
             ):
                 documents.append((key, payload))
+        if verified_identities:
+            self.store.inventory_many(verified_identities)
         if not documents:
             raise DetectionImportError(
                 "COCO_ANNOTATION_REQUIRED",
@@ -344,6 +394,10 @@ class DetectionDatasetScanner:
         missing_images = 0
         total_boxes = 0
         candidate_batch: list[dict] = []
+        manifest_batch: list[dict] = []
+        state_batch: list[dict] = []
+        box_batch: list[dict] = []
+        issue_batch: list[dict] = []
 
         for annotation_key, payload in documents:
             categories: dict[int, str] = {}
@@ -453,26 +507,40 @@ class DetectionDatasetScanner:
                     else "confirmed_empty" if not raw_annotations
                     else "invalid"
                 )
-                self.store.manifest_many([{
+                manifest_batch.append({
                     "object_key": key,
                     "split": split,
                     "yaml_key": annotation_key,
-                }])
-                self.store.annotation_batch(
-                    [{
-                        "object_key": key,
-                        "label_key": annotation_key,
-                        "annotation_status": status,
-                        "box_count": len(boxes),
-                    }],
-                    boxes,
-                    issues,
-                )
+                })
+                state_batch.append({
+                    "object_key": key,
+                    "label_key": annotation_key,
+                    "annotation_status": status,
+                    "box_count": len(boxes),
+                })
+                box_batch.extend(boxes)
+                issue_batch.extend(issues)
+                if (
+                    len(state_batch) >= BATCH_SIZE
+                    or len(box_batch) + len(issue_batch) >= 5000
+                ):
+                    self._flush_annotation_batch(
+                        manifest_batch,
+                        state_batch,
+                        box_batch,
+                        issue_batch,
+                    )
                 if image_index == 1 or image_index % 100 == 0:
                     self.progress(key)
 
         if candidate_batch:
             self.store.upsert_many(candidate_batch)
+        self._flush_annotation_batch(
+            manifest_batch,
+            state_batch,
+            box_batch,
+            issue_batch,
+        )
         self.store.set_label_mapping(names)
         quality = self.store.quality_summary()
         if missing_images:
@@ -502,10 +570,29 @@ class DetectionDatasetScanner:
         missing_images = 0
         total_boxes = 0
         candidate_batch: list[dict] = []
+        manifest_batch: list[dict] = []
+        state_batch: list[dict] = []
+        box_batch: list[dict] = []
+        issue_batch: list[dict] = []
 
+        expected_inventory: dict[str, dict] = {}
+        verified_identities: list[dict] = []
         for annotation_index, annotation_key in enumerate(xml_keys, start=1):
+            source_index = annotation_index - 1
+            if source_index % BATCH_SIZE == 0:
+                if verified_identities:
+                    self.store.inventory_many(verified_identities)
+                    verified_identities.clear()
+                expected_inventory = self.store.inventory_for_keys(
+                    xml_keys[source_index:source_index + BATCH_SIZE]
+                )
             _cancelled(self.cancelled)
-            raw = self._read_annotation_source(annotation_key, MAX_VOC_XML_BYTES)
+            raw = self._read_annotation_source(
+                annotation_key,
+                MAX_VOC_XML_BYTES,
+                expected_inventory=expected_inventory.get(annotation_key),
+                identity_sink=verified_identities,
+            )
             lowered = raw.lower()
             if b"<!doctype" in lowered or b"<!entity" in lowered:
                 raise DetectionImportError("VOC_XML_UNSAFE", "Pascal VOC XML contains forbidden declarations")
@@ -580,26 +667,42 @@ class DetectionDatasetScanner:
                 if warning:
                     issues.append({"object_key": key, "line_number": line_number, "code": warning, "severity": "warning"})
             status = "annotated" if boxes else "confirmed_empty" if not objects else "invalid"
-            self.store.manifest_many([{
+            manifest_batch.append({
                 "object_key": key,
                 "split": _split_from_key(annotation_key),
                 "yaml_key": annotation_key,
-            }])
-            self.store.annotation_batch(
-                [{
-                    "object_key": key,
-                    "label_key": annotation_key,
-                    "annotation_status": status,
-                    "box_count": len(boxes),
-                }],
-                boxes,
-                issues,
-            )
+            })
+            state_batch.append({
+                "object_key": key,
+                "label_key": annotation_key,
+                "annotation_status": status,
+                "box_count": len(boxes),
+            })
+            box_batch.extend(boxes)
+            issue_batch.extend(issues)
+            if (
+                len(state_batch) >= BATCH_SIZE
+                or len(box_batch) + len(issue_batch) >= 5000
+            ):
+                self._flush_annotation_batch(
+                    manifest_batch,
+                    state_batch,
+                    box_batch,
+                    issue_batch,
+                )
             if annotation_index == 1 or annotation_index % 100 == 0:
                 self.progress(key)
 
+        if verified_identities:
+            self.store.inventory_many(verified_identities)
         if candidate_batch:
             self.store.upsert_many(candidate_batch)
+        self._flush_annotation_batch(
+            manifest_batch,
+            state_batch,
+            box_batch,
+            issue_batch,
+        )
         if not names:
             raise DetectionImportError("VOC_CLASSES_INVALID", "Pascal VOC dataset contains no valid classes")
         self.store.set_label_mapping(names)

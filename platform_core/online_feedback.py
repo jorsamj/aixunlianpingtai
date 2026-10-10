@@ -37,6 +37,8 @@ CREATE INDEX IF NOT EXISTS ix_online_feedback_status
     ON online_feedback(status, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS ix_online_feedback_version
     ON online_feedback(algorithm_id, version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_online_feedback_pending_version
+    ON online_feedback(algorithm_id, version_id, status);
 """
 
 
@@ -396,13 +398,18 @@ def build_supplement_training_provenance(
             raise ValueError(f"supplement material {material_id} content changed after candidate freeze")
         annotation_hash = _sha(raw.get("annotation_hash"), "annotation_hash")
         current_annotation_hash = _sha(
-            truth.get("annotation_hash") or truth.get("content_digest"),
+            truth.get("source_annotation_hash")
+            or truth.get("annotation_hash")
+            or truth.get("content_digest"),
             "current annotation_hash",
         )
         if current_annotation_hash != annotation_hash:
             raise ValueError(f"supplement material {material_id} annotation changed after candidate freeze")
         annotation_state = _text(raw.get("annotation_state"), 100)
-        current_state = _text(truth.get("annotation_state"), 100)
+        current_state = _text(
+            truth.get("source_annotation_state") or truth.get("annotation_state"),
+            100,
+        )
         if current_state != annotation_state:
             raise ValueError(f"supplement material {material_id} annotation state changed after candidate freeze")
         adopted.append({
@@ -483,6 +490,42 @@ class OnlineFeedbackRepository:
             ).fetchall()
         by_id = {str(row["id"]): self._decode(row) for row in rows}
         return [by_id[value] for value in ids if value in by_id]
+
+    def pending_version_reference(self, algorithm_id: str, version_id: str) -> str:
+        """One indexed pending-review reference pins a model version's lifecycle."""
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT id FROM online_feedback "
+                "WHERE algorithm_id=? AND version_id=? AND status='pending_review' "
+                "LIMIT 1",
+                (str(algorithm_id), str(version_id)),
+            ).fetchone()
+        return str(row["id"]) if row is not None else ""
+
+    def pending_label_reference(self, labels: Iterable[str]) -> str:
+        """Bounded result: find a pending correct prediction using a live label name.
+
+        The existing status index selects pending rows; JSON is inspected in
+        SQLite without hydrating the feedback queue or copying label truth.
+        Must be called under the canonical project label-governance fence.
+        """
+        names = sorted({str(value).strip() for value in labels if str(value).strip()})
+        if not names:
+            return ""
+        if len(names) > 500:
+            raise ValueError("pending label reference lookup is limited to 500 names")
+        placeholders = ",".join("?" for _ in names)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT feedback.id FROM online_feedback AS feedback "
+                "WHERE feedback.status='pending_review' AND feedback.feedback_type='correct' "
+                "AND EXISTS (SELECT 1 FROM json_each("
+                "feedback.payload_json, '$.source.detections') AS detection "
+                "WHERE json_extract(detection.value, '$.label') IN (" + placeholders + ")) "
+                "LIMIT 1",
+                names,
+            ).fetchone()
+        return str(row["id"]) if row is not None else ""
 
     def list_confirmed_for_version(
         self, algorithm_id: str, version_id: str, *, limit: int = 500,

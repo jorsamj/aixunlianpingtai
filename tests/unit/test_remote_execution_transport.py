@@ -40,6 +40,22 @@ class FakeModelArtifacts:
         self.model_row = model_row
         self.discovered = []
         self.registered = []
+        self.refreshed = []
+
+    def refresh_conversion_artifacts(
+        self, project_id, algorithm_id, version_id, conversion_job_id
+    ):
+        row = {
+            "artifact_id": hashlib.sha256(
+                f"{project_id}:{algorithm_id}:{version_id}:{conversion_job_id}".encode("utf-8")
+            ).hexdigest()[:32],
+            "project_id": str(project_id),
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "conversion_job_id": str(conversion_job_id),
+        }
+        self.refreshed.append(dict(row))
+        return [row]
 
     def discover_version_artifacts(self, project_id, algorithm, version):
         return list(self.discovered)
@@ -750,6 +766,59 @@ def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_
     }
 
 
+def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
+    tmp_path, monkeypatch
+):
+    transport, provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-rollback",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {"remote_execution": contract}
+    output = b"verified-remote-onnx"
+    output_sha = hashlib.sha256(output).hexdigest()
+    evidence = {
+        "sha256": output_sha,
+        "size_bytes": len(output),
+        "execution_generation": 3,
+    }
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    confirmed["result_ref"] = "remote-results/3/result.json"
+
+    job_dir = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-rollback"
+    job_dir.mkdir(parents=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        '{"id":"convert-rollback","status":"queued","outputs":[]}',
+        encoding="utf-8",
+    )
+    original_replace = Path.replace
+
+    def fail_job_commit(path, target):
+        if path.name == ".job.json.remote.tmp":
+            raise OSError("simulated durable job commit failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_job_commit)
+
+    with pytest.raises(OSError, match="durable job commit failure"):
+        transport.commit_result_publication(task, payload, evidence, confirmed)
+
+    assert not (job_dir / "artifacts" / "model.onnx").exists()
+    assert not (job_dir / "artifacts" / "manifest.json").exists()
+    assert json.loads(job_file.read_text(encoding="utf-8"))["status"] == "queued"
+
+
 def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
     tmp_path, monkeypatch
 ):
@@ -1033,6 +1102,22 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
         "schema_version": 1,
         "framework": "ultralytics",
         "snapshot_id": "snapshot-remote-one",
+        "dataset_revision_id": "f" * 64,
+        "label_schema": [
+            {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+        ],
+        "label_codes": ["smoke"],
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-one",
+            "effective_label_codes": ["smoke"],
+            "effective_label_schema": [
+                {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
         "bundle": {
             "storage_source_id": "remote-models",
             "object_key": "training-bundles/p1/snapshot/bundle.zip",
@@ -1324,9 +1409,21 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         "platform_core.remote_execution_transport.resolve_current_version_id",
         lambda _algorithm, framework=None: None,
     )
+    def atomic_attach_spy(
+        _path, algorithm_id, version, *, expected_current_version_id
+    ):
+        assert expected_current_version_id is None
+        attached.append((algorithm_id, dict(version)))
+        return dict(version)
+
     monkeypatch.setattr(
-        "platform_core.remote_execution_transport.attach_version",
-        lambda _path, algorithm_id, version: attached.append((algorithm_id, dict(version))) or dict(version),
+        "platform_core.remote_execution_transport.attach_version_if_current",
+        atomic_attach_spy,
+    )
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.request_external_auto_publish_if_enabled",
+        lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
     )
 
     confirmed_for_commit = {
@@ -1350,10 +1447,21 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     assert committed["algorithm_id"] == "algorithm-one"
     assert committed["version_id"] == confirmed_models["version_id"]
     assert committed["model_artifacts_committed"] is True
+    assert committed["external_publish_requested"] is True
+    assert len(publish_requests) == 1
+    assert publish_requests[0]["algorithm_id"] == "algorithm-one"
+    assert publish_requests[0]["version_id"] == confirmed_models["version_id"]
     assert attached and attached[0][0] == "algorithm-one"
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
+    assert version["label_codes"] == ["smoke"]
+    assert version["label_schema"] == [
+        {"class_id": 0, "code": "smoke", "canonical_project_class_id": 7}
+    ]
+    assert version["label_contract"]["algorithm_id"] == "algorithm-one"
+    assert version["label_contract"]["effective_label_codes"] == ["smoke"]
+    assert committed["label_codes"] == ["smoke"]
     assert version["training_lineage"]["parameters"]["requested"]["resource_profile"] == "performance"
     assert version["training_lineage"]["parameters"]["requested"]["precision"] == "fp16"
     assert version["training_lineage"]["parameters"]["actual"]["batch"] == 12
@@ -1371,6 +1479,77 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     assert provider.uploads == []
     serialized = str(confirmed)
     assert str(tmp_path / "task_runtime" / "remote-training-results") not in serialized
+
+
+def test_remote_training_commit_reuses_existing_task_version_before_base_stale_check(
+    tmp_path, monkeypatch,
+):
+    provider = FakeProvider()
+    model_artifacts = FakeModelArtifacts()
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(
+        tmp_path,
+        provider,
+        model_artifacts=model_artifacts,
+        task_artifacts=artifacts,
+    )
+    task, payload, _bundle_bytes, _bundle_sha = _remote_training_fixture()
+    generation = 2
+    stage = transport._training_result_stage_root(task.task_id, generation)
+    (stage / "verified").mkdir(parents=True)
+    (stage / "verified.json").write_text("{}", encoding="utf-8")
+    version_id = transport._remote_training_version_id(
+        task.task_id,
+        generation,
+        "snapshot-remote-one",
+    )
+    existing_version = {
+        "id": version_id,
+        "version_name": "remote-existing",
+        "task_id": task.task_id,
+        "job_id": task.task_id,
+        "training_job_id": task.task_id,
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "external_analysis_id": "analysis-visual-1",
+    }
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.list_algorithms",
+        lambda _path: [{
+            "id": "algorithm-one",
+            "current_version_id": version_id,
+            "versions": [existing_version],
+        }],
+    )
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.resolve_current_version_id",
+        lambda _algorithm, framework=None: version_id,
+    )
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.request_external_auto_publish_if_enabled",
+        lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
+    )
+
+    committed = transport.commit_result_publication(
+        task,
+        payload,
+        {
+            "sha256": "a" * 64,
+            "size_bytes": 1,
+            "execution_generation": generation,
+        },
+        {"result": {}},
+    )
+
+    assert committed["version_id"] == version_id
+    assert committed["version_name"] == "remote-existing"
+    assert committed["model_artifacts_committed"] is True
+    assert committed["external_publish_requested"] is True
+    assert publish_requests[0]["version_id"] == version_id
+    assert model_artifacts.registered == []
 
 
 def test_remote_training_commit_rejects_stale_iteration_base(tmp_path, monkeypatch):
@@ -1751,6 +1930,7 @@ def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypa
 @pytest.mark.parametrize(
     ("params", "message"),
     [
+        ({"chip": "rk3578", "precision": "fp16"}, "rk3568 or rk3576"),
         ({"chip": "rk3588", "precision": "fp16"}, "rk3568 or rk3576"),
         ({"chip": "rk3568", "precision": "fp32"}, "fp16 or int8"),
         ({"chip": "rk3568", "precision": "fp16", "dynamic": True}, "static input shape"),
@@ -1861,10 +2041,11 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert publish_requests[0]["conversion_job"]["params"]["chip"] == "rk3568"
 
 
-def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path):
+@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])
+def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path, chip):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
-    model = tmp_path / "model_rk3568.rknn"
+    model = tmp_path / f"model_{chip}.rknn"
     image = tmp_path / "verify.jpg"
     model.write_bytes(b"verified-rknn-model")
     image.write_bytes(b"verify-image")
@@ -1875,13 +2056,13 @@ def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp
         conversion_job_id="convert-1",
         model_path=model,
         input_path=image,
-        chip="rk3568",
+        chip=chip,
         input_size=640,
     )
     deployment = contract["deployment"]
     assert deployment["runtime_format"] == "rknn"
     assert deployment["framework"] == "rknn"
-    assert deployment["board"]["chip"] == "rk3568"
+    assert deployment["board"]["chip"] == chip
     assert deployment["board"]["model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
     assert "signed.example.test" not in str(contract)
 
@@ -1931,6 +2112,7 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
         "target": "rockchip",
         "status": "done",
         "validation_status": "converted_unverified",
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
     }), encoding="utf-8")
 
     task = SimpleNamespace(
@@ -2003,7 +2185,16 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
     assert verification["input"]["file_name"] == "verify.jpg"
     assert verification["input"]["sha256"] == "c" * 64
     assert verification["input"]["size_bytes"] == 123
+    assert verification["result_output_storage"]["storage_source_id"] == "remote-models"
+    assert verification["result_output_storage"]["object_key"] == "result.jpg"
+    assert verification["result_output_storage"]["size_bytes"] == 10
+    assert verification["result_output_storage"]["sha256"] == "a" * 64
     assert verification["verified_at"]
+    assert committed["canonical_artifact_ids"]
+    assert len(transport.model_artifacts.refreshed) == 1
+    assert transport.model_artifacts.refreshed[0]["algorithm_id"] == "a1"
+    assert transport.model_artifacts.refreshed[0]["version_id"] == "v1"
+    assert transport.model_artifacts.refreshed[0]["conversion_job_id"] == "convert-1"
 
     # Any later model mutation must fail closed and cannot produce a new valid verification.
     model.write_bytes(b"mutated-rknn-model")

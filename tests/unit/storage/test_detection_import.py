@@ -295,3 +295,161 @@ def test_voc_scan_hashes_real_xml_bytes_and_rejects_ambiguous_image_sources(tmp_
     ambiguous, _store = _scanner(tmp_path / "ambiguous", duplicate)
     with pytest.raises(Exception, match="multiple Pascal VOC XML documents"):
         ambiguous.scan("voc", prefix="dataset", recursive=True)
+
+def test_large_detection_annotation_writes_are_batched(tmp_path, monkeypatch):
+    total = 1001
+
+    def fake_candidate(key, _seen_hashes):
+        return {
+            "object_key": key,
+            "filename": Path(key).name,
+            "storage_source_id": "s3-source",
+            "storage_type": "s3",
+            "content_sha256": ("a" if key.endswith(".jpg") else "b") * 64,
+            "size_bytes": 1,
+            "etag": f'"etag-{key}"',
+            "width": 100,
+            "height": 80,
+            "status": "IMPORTABLE",
+            "error": "",
+            "duplicate": False,
+        }
+
+    for import_format in ("coco", "voc"):
+        root = tmp_path / import_format
+        image_bytes = b"x"
+        payloads = {
+            f"dataset/train/images/image-{index:05d}.jpg": image_bytes
+            for index in range(total)
+        }
+        if import_format == "coco":
+            coco = {
+                "images": [
+                    {"id": index, "file_name": f"image-{index:05d}.jpg", "width": 100, "height": 80}
+                    for index in range(total)
+                ],
+                "annotations": [],
+                "categories": [{"id": 7, "name": "smoke"}],
+            }
+            payloads["dataset/train/_annotations.coco.json"] = json.dumps(coco).encode()
+        else:
+            payloads.update({
+                f"dataset/train/Annotations/image-{index:05d}.xml": b"<annotation/>"
+                for index in range(total)
+            })
+
+        scanner, store = _scanner(root, payloads)
+        monkeypatch.setattr(scanner, "_inspect", fake_candidate)
+        if import_format == "voc":
+            def read_voc(key, _maximum, **_kwargs):
+                stem = Path(key).stem
+                return (
+                    f"<annotation><filename>{stem}.jpg</filename>"
+                    "<object><name>fire</name><bndbox>"
+                    "<xmin>5</xmin><ymin>6</ymin><xmax>55</xmax><ymax>46</ymax>"
+                    "</bndbox></object></annotation>"
+                ).encode()
+            monkeypatch.setattr(scanner, "_read_annotation_source", read_voc)
+
+        original_manifest_many = store.manifest_many
+        original_annotation_batch = store.annotation_batch
+        manifest_batches = []
+        state_batches = []
+
+        def counted_manifest_many(rows):
+            batch = list(rows)
+            manifest_batches.append(len(batch))
+            return original_manifest_many(batch)
+
+        def counted_annotation_batch(states, boxes, issues):
+            state_rows = list(states)
+            box_rows = list(boxes)
+            issue_rows = list(issues)
+            state_batches.append(len(state_rows))
+            return original_annotation_batch(state_rows, box_rows, issue_rows)
+
+        monkeypatch.setattr(store, "manifest_many", counted_manifest_many)
+        monkeypatch.setattr(store, "annotation_batch", counted_annotation_batch)
+
+        result = scanner.scan(import_format, prefix="dataset", recursive=True)
+        assert manifest_batches == [500, 500, 1]
+        assert state_batches == [500, 500, 1]
+        assert result.quality["images"] == total
+
+def test_detection_annotation_source_identity_reads_and_writes_are_batched(tmp_path, monkeypatch):
+    total = 1001
+
+    def fake_candidate(key, _seen_hashes):
+        return {
+            "object_key": key,
+            "filename": Path(key).name,
+            "storage_source_id": "s3-source",
+            "storage_type": "s3",
+            "content_sha256": "c" * 64,
+            "size_bytes": 1,
+            "etag": f'"etag-{key}"',
+            "width": 100,
+            "height": 80,
+            "status": "IMPORTABLE",
+            "error": "",
+            "duplicate": False,
+        }
+
+    for import_format in ("coco", "voc"):
+        root = tmp_path / f"source-identity-{import_format}"
+        payloads = {
+            f"dataset/train/images/image-{index:05d}.jpg": b"x"
+            for index in range(total)
+        }
+        if import_format == "coco":
+            for index in range(total):
+                payloads[f"dataset/train/annotations-{index:05d}.json"] = json.dumps({
+                    "images": [{
+                        "id": index,
+                        "file_name": f"image-{index:05d}.jpg",
+                        "width": 100,
+                        "height": 80,
+                    }],
+                    "annotations": [],
+                    "categories": [{"id": 7, "name": "smoke"}],
+                }, separators=(",", ":")).encode()
+        else:
+            for index in range(total):
+                payloads[f"dataset/train/Annotations/image-{index:05d}.xml"] = (
+                    f"<annotation><filename>image-{index:05d}.jpg</filename>"
+                    "<object><name>fire</name><bndbox>"
+                    "<xmin>5</xmin><ymin>6</ymin><xmax>55</xmax><ymax>46</ymax>"
+                    "</bndbox></object></annotation>"
+                ).encode()
+
+        scanner, store = _scanner(root, payloads)
+        monkeypatch.setattr(scanner, "_inspect", fake_candidate)
+        scanner._inventory("dataset", True)
+
+        original_get = store.inventory_for_keys
+        original_write = store.inventory_many
+        read_batches = []
+        write_batches = []
+
+        def counted_get(keys):
+            keys = list(keys)
+            read_batches.append(len(keys))
+            return original_get(keys)
+
+        def counted_write(rows):
+            rows = list(rows)
+            write_batches.append(len(rows))
+            return original_write(rows)
+
+        monkeypatch.setattr(store, "inventory_for_keys", counted_get)
+        monkeypatch.setattr(store, "inventory_many", counted_write)
+
+        if import_format == "coco":
+            result = scanner._scan_coco("dataset")
+        else:
+            result = scanner._scan_voc("dataset")
+
+        assert read_batches == [500, 500, 1]
+        assert write_batches == [500, 500, 1]
+        assert result.quality["images"] == total
+

@@ -7,11 +7,12 @@ from PIL import Image
 from platform_core.algorithms import list_algorithms
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
+from platform_core.remote_training_tasks import TrainingPrepareHandler
 import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
 
-def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
+def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     project = data_dir / "projects" / project_id
@@ -39,6 +40,7 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
                 "stored_name": stored_name,
                 "width": 64,
                 "height": 64,
+                "size_bytes": image_path.stat().st_size,
                 "content_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
                 "group_id": image_id,
                 "processing_status": "processed",
@@ -75,15 +77,17 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     repository = TaskRepository(runtime / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime / "artifacts")
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "framework": "ultralytics",
         "target": "local",
+        "training_input_state": "PREPARING",
+        "training_prepare_task_id": "trainprep_task-one",
         "algorithm_asset_id": "algorithm-one",
-        "external_analysis_id": "analysis-durable-1",
         "model": "mother.pt",
         "split_mode": "random_test_from_training_pool",
         "train_image_ids": [f"image-{index}" for index in range(7)],
         "test_image_ids": [],
+        "train_labels": ["fire"],
         "experiment_percent": 25,
         "validation_percent": 20,
         "seed": 7,
@@ -95,6 +99,17 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         "eval_metric": "map50",
         "continue_threshold": 0.60,
         "stop_threshold": 0.90,
+        "label_contract": {
+            "schema_version": 1,
+            "algorithm_id": "algorithm-one",
+            "effective_label_codes": ["fire"],
+            "effective_label_schema": [
+                {"code": "fire", "class_id": 0, "canonical_project_class_id": 0}
+            ],
+            "base_training_mode": "mother_model_init",
+            "strict_resume": False,
+            "optimizer_state_resumed": False,
+        },
     }
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
@@ -104,7 +119,22 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
             TaskKind.TRAINING,
             "payload.json",
             "training:cpu",
-            required_capabilities=("training.ultralytics",),
+            required_capabilities=("training.input.ready",),
+        )
+    )
+    artifacts.atomic_write_json(
+        "trainprep_task-one",
+        "payload.json",
+        {"schema_version": 2, "training_task_id": "task-one", "project_id": project_id},
+    )
+    repository.create(
+        TaskRecord.new(
+            "trainprep_task-one",
+            project_id,
+            TaskKind.TRAINING_PREPARE,
+            "payload.json",
+            f"training-prepare:{project_id}",
+            required_capabilities=("training.prepare",),
         )
     )
 
@@ -160,6 +190,50 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         },
     )
 
+    prepare_handler = TrainingPrepareHandler(data_dir)
+
+    def fake_resource_resolution(context, target, prepared_payload, bundle, selected_images, split_manifest):
+        resolved = {
+            "schema_version": 1,
+            "resource_strategy": "auto",
+            "resolved_batch": 2,
+            "resolved_workers": 0,
+            "resolved_cache": False,
+        }
+        context.artifacts.atomic_write_json(target.task_id, "resolved-resources.json", resolved)
+        context.artifacts.atomic_write_json(
+            target.task_id,
+            "resource-context.json",
+            {
+                "train_image_count": split_manifest.counts["train"],
+                "decoded_dataset_bytes": len(selected_images) * (64 ** 2) * 3,
+            },
+        )
+        return {
+            **prepared_payload,
+            "resolved_resources": resolved,
+            "resolved_batch": 2,
+            "resolved_workers": 0,
+            "resolved_cache": False,
+        }
+
+    monkeypatch.setattr(prepare_handler, "_resolve_local_resources", fake_resource_resolution)
+    prepare_scheduler = Scheduler(
+        repository,
+        artifacts,
+        "training-prepare-test",
+        {TaskKind.TRAINING_PREPARE: prepare_handler},
+        {"training.prepare"},
+    )
+    assert prepare_scheduler.run_once() is True
+    prepared = repository.get("task-one")
+    assert prepared is not None and prepared.status is TaskStatus.QUEUED, prepared.error if prepared else "missing parent"
+    prepared_payload = artifacts.read_json("task-one", "payload.json")
+    assert prepared_payload["training_input_state"] == "READY"
+    assert (artifacts.artifact_path("task-one", "input-freeze.json")).is_file()
+    assert (artifacts.artifact_path("task-one", "snapshot.json")).is_file()
+    assert (artifacts.artifact_path("task-one", "resolved-resources.json")).is_file()
+
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
         repository,
@@ -182,6 +256,12 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert "image-7" not in set(snapshot["ids"]["train"] + snapshot["ids"]["validation"] + snapshot["ids"]["test"])
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
+    archived_model = artifacts.artifact_path(
+        "task-one", result["verified_models"][0]["ref"],
+    )
+    assert result["verified_models"][0]["sha256"] == hashlib.sha256(
+        archived_model.read_bytes()
+    ).hexdigest()
     assert (artifacts.artifact_path("task-one", "work/bundle/manifest.json")).is_file()
     bundle_manifest = artifacts.read_json("task-one", "work/bundle/manifest.json")
     bundled_ids = {
@@ -197,9 +277,15 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert len(str(versions[0]["version_name"])) == 14
     assert str(versions[0]["version_name"]).isdigit()
     assert versions[0]["version_no"] == versions[0]["version_name"]
-    assert versions[0]["external_analysis_id"] == "analysis-durable-1"
+    assert versions[0]["external_analysis_id"] == ""
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert result["label_codes"] == ["fire"]
+    assert result["label_schema"][0]["code"] == "fire"
+    assert result["label_contract"]["algorithm_id"] == "algorithm-one"
+    assert versions[0]["label_codes"] == result["label_codes"]
+    assert versions[0]["label_schema"] == result["label_schema"]
+    assert versions[0]["label_contract"] == result["label_contract"]
     assert versions[0]["training_lineage"]["task_id"] == "task-one"
     assert versions[0]["training_lineage"]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["training_lineage"]["dataset_revision_id"] == result["dataset_revision_id"]
@@ -211,3 +297,20 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert result["training_lineage"] == versions[0]["training_lineage"]
     assert result["evaluation"] == versions[0]["evaluation"]
     assert result["iteration_decision"] == versions[0]["iteration_decision"]
+
+def test_training_model_archive_hashes_during_copy():
+    import inspect
+
+    source = inspect.getsource(training_tasks_module.TrainingHandler)
+    assert "_copy2_with_sha256(source, destination)" in source
+    assert "shutil.copy2(source, destination)" not in source
+    assert '"sha256": _sha256(destination)' not in source
+
+def test_training_primary_lineage_reuses_verified_model_evidence():
+    import inspect
+
+    source = inspect.getsource(training_tasks_module.TrainingHandler)
+    assert 'model_sha256 = str(primary_evidence["sha256"])' in source
+    assert 'model_size_bytes = int(primary_evidence["size_bytes"])' in source
+    assert "_sha256(primary)" not in source
+

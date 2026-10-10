@@ -23,7 +23,7 @@ test('version truth no longer depends on a render wrapper', () => {
   assert.equal(app.includes('const baseRenderV37=render;'), false);
   assert.equal(app.includes('baseRenderV37()'), false);
   assert.equal(app.includes('state.versionInfo={...(state.versionInfo||{}),version:V42};'), false);
-  assert.match(app, /state\.versionInfo=\{version:V413,name:'畅联云算法训练'\}/);
+  assert.match(app, /state\.versionInfo=\{version:String\(s\.platform_version\|\|''\)\.trim\(\)\|\|'—',build_id:String\(s\.build_id\|\|''\)\.trim\(\),name:'畅联云算法训练'\}/);
 });
 
 test('base modal owns autofocus without a V37 compatibility wrapper', () => {

@@ -105,3 +105,124 @@ def test_store_serializes_concurrent_decisions_without_lost_updates(tmp_path):
         "clean",
         "ready",
     ]
+
+
+def test_upload_request_receipt_is_idempotent_and_manifest_fenced(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    manifest = [{"name": "a.jpg", "size": 12, "content_type": "image/jpeg"}]
+    first, created = store.begin_upload_request(
+        "upload-request-001", created_at="2026-09-28T10:00:00Z", manifest=manifest,
+        dataset_id="default", storage_source_id="default_local",
+    )
+    assert created is True
+    assert first["upload_request_status"] == "PROCESSING"
+    repeated, created = store.begin_upload_request(
+        "upload-request-001", created_at="2026-09-28T10:00:01Z", manifest=manifest,
+        dataset_id="default", storage_source_id="default_local",
+    )
+    assert created is False
+    assert repeated["upload_request_status"] == "PROCESSING"
+    with pytest.raises(ValueError, match="已用于不同文件"):
+        store.begin_upload_request(
+            "upload-request-001", created_at="2026-09-28T10:00:02Z",
+            manifest=[{"name": "different.jpg", "size": 99, "content_type": "image/jpeg"}],
+            dataset_id="default", storage_source_id="default_local",
+        )
+
+
+def test_upload_request_receipt_persists_terminal_replay_truth(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    store.begin_upload_request(
+        "upload-request-002", created_at="2026-09-28T10:00:00Z",
+        manifest=[{"name": "a.jpg", "size": 12, "content_type": "image/jpeg"}],
+        dataset_id="default", storage_source_id="default_local",
+    )
+    completed = store.complete_upload_request(
+        "upload-request-002", ["image-a"], failed=[{"name": "bad.txt", "reason": "unsupported"}],
+        finished_at="2026-09-28T10:00:03Z", elapsed_seconds=3.2, material_total=8,
+    )
+    assert completed["upload_request_status"] == "SUCCEEDED"
+    assert completed["items"] == [{"image_id": "image-a", "decision": "pending"}]
+    assert completed["upload_failed"] == [{"name": "bad.txt", "reason": "unsupported"}]
+    assert completed["upload_material_total"] == 8
+    repeated = store.complete_upload_request(
+        "upload-request-002", ["should-not-replace"], failed=[],
+        finished_at="2026-09-28T10:00:04Z", elapsed_seconds=4, material_total=9,
+    )
+    assert repeated["items"] == [{"image_id": "image-a", "decision": "pending"}]
+
+
+def test_prepared_upload_ids_are_immutable_across_receipt_completion(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    store.begin_upload_request(
+        "prepared-1", created_at="2026-10-08T00:00:00Z",
+        manifest=[{"name": "a.jpg", "size": 12, "content_type": "image/jpeg"}],
+        dataset_id="default", storage_source_id="default_local",
+    )
+    prepared = store.prepare_upload_request(
+        "prepared-1", ["image-one"], failed=[],
+        prepared_at="2026-10-08T00:00:01Z",
+    )
+    assert prepared["upload_prepared_image_ids"] == ["image-one"]
+    with pytest.raises(ValueError, match="已经准备"):
+        store.prepare_upload_request(
+            "prepared-1", ["image-two"], failed=[],
+            prepared_at="2026-10-08T00:00:02Z",
+        )
+    with pytest.raises(ValueError, match="不一致"):
+        store.complete_upload_request(
+            "prepared-1", ["image-two"], failed=[],
+            finished_at="2026-10-08T00:00:03Z",
+            elapsed_seconds=1.0, material_total=1,
+        )
+    assert store.read("prepared-1")["upload_request_status"] == "PROCESSING"
+    completed = store.complete_upload_request(
+        "prepared-1", ["image-one"], failed=[],
+        finished_at="2026-10-08T00:00:04Z",
+        elapsed_seconds=1.0, material_total=1,
+    )
+    assert completed["upload_request_status"] == "SUCCEEDED"
+    assert completed["items"][0]["image_id"] == "image-one"
+
+
+def test_upload_receipt_initializes_missing_directory_before_lock(tmp_path):
+    directory = tmp_path / "new-project" / "upload_batches"
+    assert not directory.exists()
+    store = UploadBatchStore(directory)
+    assert directory.is_dir()
+    receipt, created = store.begin_upload_request(
+        "first-upload", created_at="2026-10-08T12:00:00Z",
+        manifest=[{"name": "first.jpg", "size": 1, "content_type": "image/jpeg"}],
+        dataset_id="default", storage_source_id="default_local",
+    )
+    assert created is True
+    assert receipt["upload_request_status"] == "PROCESSING"
+    assert (directory / "first-upload.json").is_file()
+
+
+def test_receipt_manifest_rejects_same_metadata_with_different_content_hash(tmp_path):
+    store = UploadBatchStore(tmp_path)
+    manifest = [{
+        "name": "camera.jpg", "size": 100, "content_type": "image/jpeg",
+        "sha256": "a" * 64,
+    }]
+    receipt, created = store.begin_upload_request(
+        "content-fence", created_at="2026-10-08T00:00:00Z",
+        manifest=manifest, dataset_id="default",
+        storage_source_id="default_local",
+    )
+    assert created
+    assert receipt["upload_request_manifest"][0]["sha256"] == "a" * 64
+    with pytest.raises(ValueError, match="不同文件"):
+        store.begin_upload_request(
+            "content-fence", created_at="2026-10-08T00:00:01Z",
+            manifest=[{**manifest[0], "sha256": "b" * 64}],
+            dataset_id="default", storage_source_id="default_local",
+        )
+    assert store.read("content-fence")["upload_request_status"] == "PROCESSING"
+    with pytest.raises(ValueError, match="SHA256"):
+        store.begin_upload_request(
+            "invalid-digest", created_at="2026-10-08T00:00:00Z",
+            manifest=[{**manifest[0], "sha256": "not-a-digest"}],
+            dataset_id="default", storage_source_id="default_local",
+        )

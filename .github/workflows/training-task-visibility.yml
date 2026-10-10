@@ -83,7 +83,47 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Eq 'training-task-visibility-runtime\.js\?v=[0-9]+' static/index.html
+          grep -Fq "import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';" static/main.mjs
+          grep -Fq 'const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({' static/main.mjs
+          grep -Fq "navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())" static/main.mjs
+          if grep -Fq '/static/modules/training-task-visibility-runtime.js' static/index.html; then
+            echo 'visibility runtime must be installed by main, not by a second module entrypoint' >&2
+            exit 1
+          fi
+          if grep -Fq 'return window.renderTraining423?.();' static/main.mjs; then
+            echo 'canonical training page owner must not fall back to legacy renderTraining423' >&2
+            exit 1
+          fi
+          if grep -Fq 'function trainRows428(' static/app.js; then
+            echo 'legacy training task table renderer must stay physically retired' >&2
+            exit 1
+          fi
+          grep -Fq 'window.renderTraining423 = renderTraining;' static/modules/training-task-visibility-runtime.js
+          if grep -Eq 'window\.renderTraining42[345]|renderTrainingLegacyBridge' static/app.js; then
+            echo 'app.js must not own canonical training render aliases' >&2
+            exit 1
+          fi
+          grep -Fq 'window.promoteTrain428 = id => mutate(' static/modules/training-task-runtime.js
+          if grep -Fq 'window.promoteTrain428=async function' static/app.js; then
+            echo 'legacy training mutation owner must stay retired from app.js' >&2
+            exit 1
+          fi
+          if grep -Fq 'trainTaskRows423' static/app.js || grep -Fq 'function jobRows424(' static/app.js || grep -Fq 'function rowsTrain425(' static/app.js; then
+            echo 'legacy training task-list generations must stay physically retired' >&2
+            exit 1
+          fi
+          if grep -Eq 'renderTrainingCompatibility|trainJobRowsHtml|updateTrainingJobTable|refreshJobsOnly' static/app.js || grep -Fq 'refreshJobsOnly' static/modules/poll-registry.js; then
+            echo 'pre-canonical training render/refresh fallback must stay physically retired' >&2
+            exit 1
+          fi
+          if grep -Eq 'fillTrainLegacy|applyAlgLegacy|showLogLegacy|window\.stopJob=|window\.deleteJob=|activeLogJob|statusPillClass|renderJobProgress|hasLiveJob|pollActiveLog|window\.showLog=' static/app.js; then
+            echo 'zero-reference pre-canonical training helpers must stay physically retired' >&2
+            exit 1
+          fi
+          if grep -Eq 'function curTarget\(\)|window\.fillTrain=|window\.applyAlg=' static/app.js; then
+            echo 'dead classic training form helpers must stay physically retired' >&2
+            exit 1
+          fi
           grep -Fq 'syncTrainingClockTimer' static/modules/poll-registry.js
           grep -Fq 'data-training-clock="elapsed"' static/modules/training-task-visibility-runtime.js
           grep -Fq "build: 'training-progress-stream-422500'" static/modules/training-progress-stream.js
@@ -167,7 +207,7 @@ jobs:
             echo 'visibility runtime must not use delayed DOM reinsertion' >&2
             exit 1
           fi
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 

@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from filelock import FileLock, Timeout
 
+from .annotation_quality import audit_cleaning_annotations
 from .cleaning import DurableHashIndex, clean_options, metric_issues
 from .material_batches import BatchSelection, SELECTION_REF
 from .material_repository import MaterialRepository
@@ -256,7 +257,14 @@ def commit_remote_cleaning_review(
                     if trailing:
                         raise RemoteCleaningError("REMOTE_CLEANING_REVIEW_EXTRA_ITEMS", "cleaning review contains items outside the frozen selection", 409)
 
+                audit_summary = audit_cleaning_annotations(
+                    project_path,
+                    manifest.database,
+                    materials,
+                    enabled=bool(options.get("annotation_audit", True)),
+                )
                 summary = manifest.summary()
+                summary["annotation_audit"] = audit_summary
         finally:
             manifest.close()
 
@@ -294,7 +302,10 @@ def commit_remote_cleaning_review(
     return {
         **summary,
         "clean_results_ref": SELECTION_REF,
-        "review_required": bool(summary.get("flagged")),
+        "review_required": bool(
+            summary.get("flagged")
+            or (summary.get("annotation_audit") or {}).get("review_images")
+        ),
         "scan_only": True,
         "remote_cleaning_verified": True,
         "execution_generation": int(execution_generation),

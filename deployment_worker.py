@@ -9,7 +9,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from platform_core.conversion import ConversionError, build_manifest, file_record, sha256_file, validate_target
+from platform_core.rknn_runtime import (
+    RKNN_ONNX_DEPENDENCY_CODE,
+    probe_rknn_toolkit,
+)
+
+from platform_core.conversion import (
+    ConversionError,
+    SUPPORTED_ROCKCHIP_CHIPS,
+    build_manifest,
+    file_record,
+    sha256_file,
+    validate_target,
+)
 
 
 def now():
@@ -214,12 +226,23 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
         py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
         if not py or not Path(py).exists():
             raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。', solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并配置该环境的 Python 路径。')
-        try:
-            checked = subprocess.run([py, '-c', 'from rknn.api import RKNN'], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=20)
-        except Exception as error:
-            raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '无法启动 RKNN-Toolkit2 Python 环境。', solution='请检查部署资源中的 RKNN Python 路径。') from error
-        if checked.returncode != 0:
-            raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '当前 Python 未安装可用的 RKNN-Toolkit2。', solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。')
+        probe = probe_rknn_toolkit(py)
+        if not probe["available"]:
+            if probe.get("error_code") == RKNN_ONNX_DEPENDENCY_CODE:
+                raise ConversionError(
+                    RKNN_ONNX_DEPENDENCY_CODE,
+                    str(probe["error"]),
+                    solution=(
+                        f"请在转换节点执行 {py} -m pip install --no-deps "
+                        "--force-reinstall onnx==1.18.0；然后检查 "
+                        "hasattr(onnx, 'mapping') 是否为 True。"
+                    ),
+                )
+            raise ConversionError(
+                'RKNN_TOOLKIT_NOT_FOUND',
+                'RKNN 转换 Python 环境未就绪：' + str(probe.get('error') or 'RKNN-Toolkit2 不可用')[-500:],
+                solution='请检查转换节点的 RKNN Python 路径及 Toolkit2 安装。',
+            )
 
 
 def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path) -> Dict[str, Any]:
@@ -410,23 +433,10 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
 
 def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
     py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
-    if not py or not Path(py).exists():
-        raise ConversionError(
-            'RKNN_TOOLKIT_NOT_FOUND',
-            '瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。',
-            solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并配置该环境的 Python 路径。',
-        )
-    # Validate SDK in the selected environment, not the platform venv.
-    cp = subprocess.run([py, '-c', "from rknn.api import RKNN; import importlib.metadata as m; print(m.version('rknn-toolkit2'))"], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=20)
-    if cp.returncode != 0:
-        raise ConversionError(
-            'RKNN_TOOLKIT_NOT_FOUND',
-            '当前 Python 未安装可用的 RKNN-Toolkit2。',
-            solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。',
-        )
+    # Direct callers need the same environment gate as the task-level preflight.
+    preflight_vendor_tool('rockchip', resource, params)
     chip = str(params.get('chip') or '').strip().lower()
-    supported = {'rk3568', 'rk3576'}
-    if chip not in supported:
+    if chip not in SUPPORTED_ROCKCHIP_CHIPS:
         raise RuntimeError('当前产品瑞芯微转换只支持 rk3568 或 rk3576，且必须明确选择目标芯片')
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}

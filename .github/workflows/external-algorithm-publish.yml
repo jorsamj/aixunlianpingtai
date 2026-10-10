@@ -26,6 +26,7 @@ on:
       - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_model_artifacts.py
+      - tests/api/test_algorithm_version_rollback.py
       - tests/unit/test_integration_audit.py
       - tests/frontend/external-algorithm-publish.test.mjs
       - tests/browser/external-algorithm-publish.spec.mjs
@@ -57,6 +58,7 @@ on:
       - tests/integration/test_training_task_worker.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_model_artifacts.py
+      - tests/api/test_algorithm_version_rollback.py
       - tests/unit/test_integration_audit.py
       - tests/frontend/external-algorithm-publish.test.mjs
       - tests/browser/external-algorithm-publish.spec.mjs
@@ -75,7 +77,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring psutil
       - name: Backend external-publish and model-asset contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
@@ -117,6 +119,27 @@ jobs:
           grep -Fq 'test_artifact_oss_first_save_requires_own_credentials_without_legacy_oss' tests/unit/test_model_artifacts.py
           grep -Fq 'test_purge_algorithm_deletes_remote_objects_and_canonical_rows' tests/unit/test_model_artifacts.py
           grep -Fq 'def purge_algorithm(self, project_id: str, algorithm_id: str)' platform_core/model_artifacts.py
+          grep -Fq 'test_purge_version_deletes_only_target_version_objects_and_rows' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_purge_version_keeps_canonical_rows_when_remote_delete_fails' tests/unit/test_model_artifacts.py
+          grep -Fq 'def purge_version(' platform_core/model_artifacts.py
+          grep -Fq 'def delete_version(' platform_core/model_artifacts.py
+          grep -Fq 'def refresh_conversion_artifacts(' platform_core/model_artifacts.py
+          grep -Fq 'with model_delivery_version_fence(' platform_core/model_artifacts.py
+          grep -Fq 'test_conversion_validation_refresh_waits_for_retirement_fence' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_conversion_validation_refresh_skips_external_algorithm_delete_pending' tests/unit/test_model_artifacts.py
+          grep -Fq 'def model_delivery_version_fence(' platform_core/model_artifacts.py
+          grep -Fq 'test_stale_auto_upload_snapshot_does_not_revive_retired_version' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_retry_refuses_to_reupload_artifact_after_version_retired' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_auto_upload_stale_snapshot_skips_external_algorithm_delete_pending' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_retry_refuses_external_algorithm_delete_pending_even_if_version_remains' tests/unit/test_model_artifacts.py
+          grep -Fq 'MODEL_ARTIFACT_ALGORITHM_RETIRING' platform_core/model_artifacts.py
+          grep -Fq 'with model_delivery_version_fence(' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self._publish_under_version_fence(' platform_core/external_algorithm_publish.py
+          grep -Fq 'DATA_DIR, project_id, algorithm_id, version_id' app.py
+          grep -Fq 'str(payload.expected_current_version_id)' app.py
+          grep -Fq '"validation_status": str(job.get("validation_status") or "")' platform_core/model_artifacts.py
+          grep -Fq 'test_conversion_validation_promotes_on_same_canonical_artifact_identity' tests/unit/test_model_artifacts.py
+          grep -Fq 'canonical_artifact_ids' platform_core/remote_execution_transport.py
           grep -Fq "usage||'')!=='model_artifact'" static/app.js
       - name: Syntax and wiring guards
         run: |
@@ -140,6 +163,30 @@ jobs:
           grep -q "test_remote_id_accepts_official_scalar_data_ids" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'test_publication_repository_delete_algorithm_cascades_version_and_weight_mappings' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'def delete_algorithm(' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_publication_repository_delete_version_cascades_only_target_version' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'def delete_version(' platform_core/external_algorithm_publish.py
+          grep -Fq 'model_assets.purge_version(project_id, algorithm_id, version_id)' app.py
+          grep -Fq 'ExternalPublicationRepository(DATA_DIR).delete_version(' app.py
+          grep -Fq 'test_rollback_cleanup_purges_deleted_version_delivery_state_only' tests/api/test_algorithm_version_rollback.py
+          grep -Fq 'test_rollback_and_delete_blocks_active_rknn_board_validation_by_conversion_lineage' tests/api/test_algorithm_version_rollback.py
+          grep -Fq 'test_rollback_retires_rknn_board_result_output_with_legacy_upload_evidence' tests/api/test_algorithm_version_rollback.py
+          grep -Fq 'def _retire_rknn_board_result_output(' app.py
+          grep -Fq 'deleted_with_version_at' app.py
+          grep -Fq 'verification["result_output_storage"]["sha256"] == "a" * 64' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'source_conversion_job_id' app.py
+          grep -Fq '该版本仍有活动 RKNN 板端验证任务' app.py
+          grep -Fq 'def _algorithm_version_reference_fence(' app.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_RETIRED' app.py
+          grep -Fq 'ALGORITHM_VERSION_REFERENCE_STALE' app.py
+          grep -Fq 'reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()' app.py
+          grep -Fq 'def _v39_create_deploy_job_under_version_fence(' app.py
+          grep -Fq 'async def _v39_create_rknn_hardware_test_under_version_fence(' app.py
+          grep -Fq 'async def _create_deployment_test_under_version_fence(' app.py
+          grep -Fq 'test_version_reference_fence_rechecks_live_version_and_current_truth' tests/api/test_algorithm_version_rollback.py
+          grep -Fq 'def retry_algorithm_version_cleanup(' platform_core/algorithms.py
+          grep -Fq 'version-operations/{operation_id}/retry-cleanup' app.py
+          grep -Fq 'test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted' tests/unit/test_algorithms.py
+          grep -Fq 'test_rollback_cleanup_failure_can_retry_without_recreating_deleted_version' tests/api/test_algorithm_version_rollback.py
           grep -Fq 'return self.version_create(payload)' platform_core/external_algorithm_publish.py
           grep -Fq 'return self.version_list_by_product(product_id)' platform_core/external_algorithm_publish.py
           grep -Fq 'return self.weight_create(payload)' platform_core/external_algorithm_publish.py
@@ -221,10 +268,13 @@ jobs:
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_canonical_chip_code_supports_current_rockchip_targets_without_adding_rk3588" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'if compact in {"RK3568", "RK3578", "RK3576"}:' platform_core/external_algorithm_publish.py
           grep -q "test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs" tests/unit/test_external_algorithm_publish.py
           grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
           grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
           grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_owner_stitches_training_request_and_late_rknn_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_conversion_in_progress_does_not_block_training_version_and_original_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_blocked_by_hardware_rknn_is_still_appended_as_conversion_weight" tests/unit/test_external_algorithm_publish.py
@@ -260,7 +310,8 @@ jobs:
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rollback_with_empty_version_no_recovers_unique_name_and_analysis" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rollback_repairs_pre_v3_durable_training_version_number_before_remote_recovery" tests/unit/test_external_algorithm_publish.py
-          grep -Fq 'SCHEMA_VERSION = 3' platform_core/algorithm_sql_store.py
+          grep -Fq 'SCHEMA_VERSION = 4' platform_core/algorithm_sql_store.py
+          grep -Fq 'algorithm_revision' platform_core/algorithm_sql_store.py
           grep -Fq 'def _repair_missing_training_version_numbers' platform_core/algorithm_sql_store.py
           grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
           grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py
@@ -348,7 +399,21 @@ jobs:
           test ! -e tools/_one_shot_model_asset_integration.py
           test ! -e .github/workflows/_one_shot_model_asset_integration.yml
           grep -Fq 'PUBLICATION_SCHEMA_VERSION = 4' platform_core/external_algorithm_publish.py
-          test "$(cat VERSION.txt)" = "42.24.0"
+          grep -Fq 'def _edit_existing_weight(' platform_core/external_algorithm_publish.py
+          grep -Fq 'def _bind_recovered_weight(' platform_core/external_algorithm_publish.py
+          grep -Fq 'sync_status="PENDING"' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_recovered_weight_missing_file_path_is_repaired_without_duplicate_create' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'DEFAULT_REMOTE_RECONCILE_SECONDS = 6 * 3600' platform_core/external_algorithm_publish.py
+          grep -Fq 'DEFAULT_REMOTE_RECONCILE_BATCH = 20' platform_core/external_algorithm_publish.py
+          grep -Fq 'def reconcile_published_remote(' platform_core/external_algorithm_publish.py
+          grep -Fq 'remote_checked_at=utc_now()' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_weight_without_duplicate_version' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_auto_publish_remote_reconcile_recreates_missing_version_and_weights' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'test_remote_reconcile_due_uses_long_success_and_short_failure_windows' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'REMOTE_WEIGHT_RECONCILIATION_AMBIGUOUS' platform_core/external_algorithm_publish.py
+          grep -Fq 'drifted > 0 and not bool(reconciled.get("blocked"))' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_remote_weight_reconcile_ambiguity_marks_publication_unknown_without_guessing' tests/unit/test_external_algorithm_publish.py
+          python -m platform_core.build_identity --check-version-file VERSION.txt
 
 
   real-chrome:
@@ -377,4 +442,4 @@ jobs:
           grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

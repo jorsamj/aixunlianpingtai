@@ -220,3 +220,20 @@ def test_supplement_training_provenance_freezes_actual_subset_and_rejects_stale_
             ["material-1"],
             [dict(truth[0], annotation_hash="f" * 64)],
         )
+
+
+def test_pending_correct_label_reference_is_bounded_and_released(tmp_path: Path):
+    repo = OnlineFeedbackRepository(tmp_path)
+    staged, _ = repo.stage(
+        evidence(), feedback_type="correct", note="review",
+        created_at="2026-10-09T00:00:00Z",
+    )
+    assert repo.pending_label_reference(["smoke", "烟雾"]) == staged["id"]
+    assert repo.pending_label_reference(["helmet"]) == ""
+    assert repo.pending_label_reference([]) == ""
+    repo.finalize(
+        staged["id"], expected_feedback_type="correct",
+        material_id="material-1", result={"annotation_action": "manual_review"},
+        confirmed_at="2026-10-09T00:01:00Z",
+    )
+    assert repo.pending_label_reference(["smoke"]) == ""

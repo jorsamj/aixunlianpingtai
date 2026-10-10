@@ -79,3 +79,96 @@ def test_failed_or_missing_deployment_outputs_are_not_exposed_as_artifacts(clien
     ids = {row["job_id"] for row in response.json()["items"]}
     assert failed_id not in ids
     assert missing_id not in ids
+
+
+
+def test_successful_conversion_record_cannot_be_deleted_independently(client, seeded_project):
+    project_id, _image = seeded_project
+    job_id = f"immutable-{uuid.uuid4().hex[:8]}"
+    job_dir = platform_app.deploy_root(project_id) / "jobs" / job_id
+    artifacts = job_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    model = artifacts / "model.onnx"
+    model.write_bytes(b"deliverable")
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "project_id": project_id,
+        "status": "done",
+        "target": "onnx",
+        "outputs": [{
+            "name": model.name,
+            "path": str(model),
+            "rel": "artifacts/model.onnx",
+        }],
+    }), encoding="utf-8")
+
+    response = client.delete(f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
+    assert response.status_code == 409
+    assert "CONVERSION_JOB_DELIVERY_IMMUTABLE" in response.text
+    assert job_dir.exists()
+
+
+def test_failed_unreferenced_conversion_record_can_be_deleted(client, seeded_project):
+    project_id, _image = seeded_project
+    job_id = f"failed-delete-{uuid.uuid4().hex[:8]}"
+    job_dir = platform_app.deploy_root(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "project_id": project_id,
+        "status": "failed",
+        "target": "onnx",
+        "outputs": [],
+    }), encoding="utf-8")
+
+    response = client.delete(f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["job_id"] == job_id
+    assert not job_dir.exists()
+
+
+def test_failed_conversion_record_with_canonical_artifact_reference_is_blocked(
+    client, seeded_project,
+):
+    project_id, _image = seeded_project
+    job_id = f"failed-ref-{uuid.uuid4().hex[:8]}"
+    job_dir = platform_app.deploy_root(project_id) / "jobs" / job_id
+    artifacts = job_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    model = artifacts / "model.onnx"
+    model.write_bytes(b"referenced")
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "project_id": project_id,
+        "status": "failed",
+        "target": "onnx",
+        "outputs": [],
+    }), encoding="utf-8")
+
+    service = platform_app.ModelArtifactService(
+        data_dir=platform_app.DATA_DIR,
+        project_dir=platform_app.project_dir,
+        algorithms_file=platform_app.algorithms_file,
+        storage_sources_factory=platform_app.storage_source_repository,
+        storage_credentials_factory=platform_app.storage_credentials,
+    )
+    service.repository.upsert({
+        "artifact_id": f"artifact-{job_id}",
+        "project_id": project_id,
+        "algorithm_id": "algorithm-test",
+        "version_id": "version-test",
+        "artifact_kind": "conversion",
+        "target": "onnx",
+        "chip_code": "",
+        "conversion_job_id": job_id,
+        "file_name": model.name,
+        "source_path": str(model),
+        "sha256": __import__("hashlib").sha256(model.read_bytes()).hexdigest(),
+        "size_bytes": model.stat().st_size,
+        "metadata": {},
+    })
+
+    response = client.delete(f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
+    assert response.status_code == 409
+    assert "CONVERSION_JOB_ARTIFACT_REFERENCED" in response.text
+    assert job_dir.exists()

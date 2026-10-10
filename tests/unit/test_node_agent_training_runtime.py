@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -21,6 +23,7 @@ from platform_core.node_agent_executor_runtime import (
 from platform_core.node_agent_training_runtime import (
     AgentTrainingRunner,
     AgentTrainingRuntimeError,
+    _tail_log_text,
 )
 from platform_core.remote_training_transport import create_training_bundle_archive
 from platform_core.task_runtime.process_control import (
@@ -89,11 +92,14 @@ class FakeControlClient:
         cancel_at_heartbeat=None,
         fence_at_heartbeat=None,
         cancel_when=None,
+        fence_when=None,
     ):
+        self.node_id = "node-1"
         self.transfer = transfer
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
         self.cancel_when = cancel_when
+        self.fence_when = fence_when
         self.heartbeat_calls = 0
         self.heartbeats = []
         self.logs = []
@@ -108,8 +114,14 @@ class FakeControlClient:
         self.heartbeat_calls += 1
         self.heartbeats.append(dict(kwargs))
         if (
-            self.fence_at_heartbeat
-            and self.heartbeat_calls >= self.fence_at_heartbeat
+            (
+                self.fence_at_heartbeat
+                and self.heartbeat_calls >= self.fence_at_heartbeat
+            )
+            or (
+                callable(self.fence_when)
+                and self.fence_when()
+            )
         ):
             raise NodeExecutorHTTPError(
                 "EXECUTION_FENCED",
@@ -482,6 +494,9 @@ parser.add_argument("--project-dir", required=True)
 parser.add_argument("--data", required=True)
 parser.add_argument("--model", required=True)
 parser.add_argument("--epochs", required=True)
+parser.add_argument("--batch", required=True)
+parser.add_argument("--workers", required=True)
+parser.add_argument("--cache", required=True)
 parser.add_argument("--device", required=True)
 parser.add_argument("--assigned-device", required=True)
 parser.add_argument("--requested-device", required=True)
@@ -493,6 +508,7 @@ parser.add_argument("--gpu-policy", required=True)
 parser.add_argument("--precision", required=True)
 parser.add_argument("--time", required=True)
 parser.add_argument("--resource-context", required=True)
+parser.add_argument("--resource-resolution", required=True)
 args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
@@ -503,6 +519,9 @@ runtime_root.joinpath("worker-args.json").write_text(
         "data": args.data,
         "model": args.model,
         "epochs": args.epochs,
+        "batch": args.batch,
+        "workers": args.workers,
+        "cache": args.cache,
         "device": args.device,
         "assigned_device": args.assigned_device,
         "requested_device": args.requested_device,
@@ -517,6 +536,8 @@ runtime_root.joinpath("worker-args.json").write_text(
         "dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("dataset_bytes"),
         "decoded_dataset_bytes": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("decoded_dataset_bytes"),
         "concurrent_reservations": json.loads(Path(args.resource_context).read_text(encoding="utf-8")).get("concurrent_reservations"),
+        "resolved_batch": json.loads(Path(args.resource_resolution).read_text(encoding="utf-8")).get("resolved_batch"),
+        "resolved_workers": json.loads(Path(args.resource_resolution).read_text(encoding="utf-8")).get("resolved_workers"),
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -528,6 +549,16 @@ job.update({{
     "progress_percent": 42,
     "startup_stage": "first_batch",
     "current_item": "Epoch 1/3",
+    "runtime_resources": {{
+        "runtime_batch": int(args.batch),
+        "runtime_workers": int(args.workers),
+        "runtime_cache": False,
+        "actual_device": args.assigned_device,
+        "actual_batch": int(args.batch),
+        "actual_workers": int(args.workers),
+        "actual_cache": False,
+        "actual_precision": args.precision,
+    }},
 }})
 job_file.write_text(json.dumps(job), encoding="utf-8")
 print("fake training started", flush=True)
@@ -576,6 +607,7 @@ def build_runner(
     *,
     sleep_seconds=0.0,
     test_result_status="passed",
+    resource_resolver=None,
 ):
     runtime_root = tmp_path / "runtime"
     write_fake_train_worker(
@@ -584,6 +616,38 @@ def build_runner(
         test_result_status=test_result_status,
     )
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    if resource_resolver is None:
+        def resource_resolver(request, context, _model_argument, output_path):
+            resolved = {
+                "schema_version": 1,
+                "resource_strategy": str(request.get("resource_strategy") or "auto"),
+                "resource_profile": str(request.get("resource_profile") or "balanced"),
+                "gpu_policy": str(request.get("gpu_policy") or "auto"),
+                "precision": str(request.get("precision") or "auto"),
+                "requested_precision": str(request.get("precision") or "auto"),
+                "resolved_precision": (
+                    "fp16"
+                    if str(request.get("precision") or "auto") == "auto"
+                    and str(request.get("device") or "").startswith("cuda:")
+                    else str(request.get("precision") or "fp32")
+                ),
+                "gpu_uuid": context.get("gpu_uuid"),
+                "gpu_name": context.get("gpu_name"),
+                "requested_batch": int(request.get("batch") or 1),
+                "requested_workers": int(request.get("workers") or 0),
+                "requested_cache": request.get("cache", False),
+                "resolved_batch": 2,
+                "resolved_workers": 0,
+                "resolved_cache": False,
+                "reasons": ["test resource resolver"],
+                "adjustments": [],
+            }
+            Path(output_path).write_text(
+                json.dumps(resolved, sort_keys=True),
+                encoding="utf-8",
+            )
+            return resolved
+
     runner = AgentTrainingRunner(
         client,
         workdirs,
@@ -593,6 +657,7 @@ def build_runner(
         heartbeat_interval=1.0,
         process_poll_interval=0.05,
         transfer_timeout=10,
+        resource_resolver=resource_resolver,
     )
     return runner, runtime_root, workdirs
 
@@ -642,11 +707,16 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["resource_profile"] == "performance"
     assert args["gpu_policy"] == "exclusive"
     assert args["precision"] == "fp16"
+    assert args["batch"] == "2"
+    assert args["workers"] == "0"
+    assert args["cache"] == "False"
     assert args["time"] == "2.5"
     assert args["train_image_count"] == 321
     assert args["dataset_bytes"] == 512 * 1024 * 1024
     assert args["decoded_dataset_bytes"] == 2 * 1024**3
     assert args["concurrent_reservations"] == 2
+    assert args["resolved_batch"] == 2
+    assert args["resolved_workers"] == 0
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
@@ -678,7 +748,119 @@ def test_real_subprocess_remote_training_success(tmp_path):
         (heartbeat.get("stage") or "") == "first_batch"
         for heartbeat in client.heartbeats
     )
+    start_heartbeat = next(
+        heartbeat
+        for heartbeat in client.heartbeats
+        if (heartbeat.get("stage") or "") == "REMOTE_TRAINING_STARTING_WORKER"
+    )
+    resolution = start_heartbeat["resource_resolution"]
+    assert resolution["node_id"] == "node-1"
+    assert resolution["execution_generation"] == current.generation
+    assert resolution["assigned_device"] == "cuda:1"
+    assert resolution["gpu_uuid"] == "GPU-agent-uuid"
+    assert resolution["resolved_batch"] == 2
+    runtime_heartbeats = [
+        heartbeat for heartbeat in client.heartbeats
+        if isinstance(heartbeat.get("runtime_resources"), dict)
+    ]
+    assert len(runtime_heartbeats) == 1
+    runtime_resources = runtime_heartbeats[0]["runtime_resources"]
+    assert runtime_resources["node_id"] == "node-1"
+    assert runtime_resources["execution_generation"] == current.generation
+    assert runtime_resources["actual_device"] == "cuda:1"
+    assert runtime_resources["actual_batch"] == 2
+    assert runtime_resources["actual_workers"] == 0
+    assert runtime_resources["actual_cache"] is False
+    assert runtime_resources["actual_precision"] == "fp16"
 
+
+
+def test_subprocess_resource_resolver_preserves_canonical_failure_code(tmp_path, monkeypatch):
+    transfer = FakeTransferSession({})
+    client = FakeControlClient(transfer)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    runner = AgentTrainingRunner(
+        client,
+        workdirs,
+        runtime_root=tmp_path,
+        ultralytics_python=sys.executable,
+        transfer_session=transfer,
+        transfer_timeout=10,
+    )
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Traceback (most recent call last):\n"
+                "ValueError: RESOURCE_MANUAL_INVALID: requested batch=128 "
+                "exceeds current GPU budget\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AgentTrainingRuntimeError,
+        match=r"^RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget$",
+    ):
+        runner._resolve_resource_contract_subprocess(
+            {
+                "resource_strategy": "manual",
+                "batch": 128,
+                "workers": 8,
+            },
+            {"train_image_count": 100},
+            "yolo11n.pt",
+            tmp_path / "resolved-resources.json",
+        )
+
+
+
+def test_remote_auto_precision_is_frozen_before_training_worker(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    current.payload["params"]["precision"] = "auto"
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _workdirs = build_runner(tmp_path, client, transfer)
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "SUCCEEDED", outcome.error
+    args = json.loads((runtime_root / "worker-args.json").read_text(encoding="utf-8"))
+    assert args["precision"] == "fp16"
+
+def test_remote_manual_resource_validation_fails_before_training_worker(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    current.payload["params"] = {
+        **dict(current.payload["params"]),
+        "resource_strategy": "manual",
+        "batch": 128,
+        "workers": 8,
+    }
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+
+    def reject_manual(_request, _context, _model_argument, _output_path):
+        raise AgentTrainingRuntimeError(
+            "RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget"
+        )
+
+    runner, runtime_root, _workdirs = build_runner(
+        tmp_path,
+        client,
+        transfer,
+        resource_resolver=reject_manual,
+    )
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "FAILED"
+    assert "RESOURCE_MANUAL_INVALID" in outcome.error
+    assert not (runtime_root / "started.marker").exists()
+    assert client.finish_calls[-1]["status"] == "FAILED"
 
 def test_remote_training_rejects_bf16_before_starting_worker(tmp_path):
     current, downloads = training_lease(tmp_path)
@@ -742,7 +924,7 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(
         transfer,
-        cancel_at_heartbeat=6,
+        cancel_at_heartbeat=7,
     )
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
@@ -766,16 +948,18 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
 def test_training_fencing_kills_worker_without_stale_terminal_write(tmp_path):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
-    client = FakeControlClient(
-        transfer,
-        fence_at_heartbeat=6,
-    )
+    client = FakeControlClient(transfer)
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
         client,
         transfer,
         sleep_seconds=10,
     )
+    # Fence only after the worker has proven process startup. Heartbeat-count
+    # fencing races Python process initialization on Windows and can otherwise
+    # turn this into a pre-start fencing test instead of the intended
+    # in-flight process termination contract.
+    client.fence_when = lambda: (runtime_root / "started.marker").is_file()
 
     started = time.monotonic()
     with pytest.raises(RemoteExecutionFenced):
@@ -1060,5 +1244,24 @@ def test_agent_failure_source_prefers_worker_job_error_over_secondary_message():
     source = Path("platform_core/node_agent_training_runtime.py").read_text(encoding="utf-8")
     error_read = source.index('error = str(job.get("error") or "").strip()')
     message_read = source.index('error = str(job.get("message") or "").strip()', error_read)
+    tail_read = source.index("_tail_log_text(runtime_log, max_chars=6000)", message_read)
     assert error_read >= 0
     assert message_read > error_read
+    assert tail_read > message_read
+    assert "runtime_log.read_text(" not in source
+
+def test_agent_training_log_tail_reader_is_bounded(tmp_path):
+    path = tmp_path / "large-runtime.log"
+    early = "EARLY-RUNTIME-MARKER"
+    latest = "LATEST-RUNTIME-FAILURE"
+    path.write_text(
+        early + "\n" + ("training output line\n" * 100_000) + latest,
+        encoding="utf-8",
+    )
+
+    tail = _tail_log_text(path, max_chars=6000)
+
+    assert len(tail) <= 6000
+    assert tail.endswith(latest)
+    assert early not in tail
+

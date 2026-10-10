@@ -48,7 +48,7 @@ jobs:
           echo "Expected old-product failure observed (exit=$status)."
       - name: Verify product untouched
         run: |
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --exit-code static/app.js static/index.html static/main.mjs VERSION.txt
       - name: Commit permanent baseline only
         run: |

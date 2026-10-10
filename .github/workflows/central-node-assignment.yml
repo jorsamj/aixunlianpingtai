@@ -88,5 +88,5 @@ jobs:
           grep -Fq '"remote_execution": dict(remote_contract) if remote_contract is not None else None' platform_core/task_node_assignments.py
           grep -Fq 'from platform_core.training_recovery_api import training_recovery_router' app.py
           grep -Fq 'app.include_router(training_recovery_router(' app.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

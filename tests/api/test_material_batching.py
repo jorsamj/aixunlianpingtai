@@ -8,7 +8,7 @@ from PIL import Image
 def create_project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
@@ -76,7 +76,9 @@ def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path
             app_module._v50_end_image_batch(save=False)
 
     snapshot = store.read()
-    assert snapshot.revision == outside_revision + 1
+    # One bounded Material identity transaction plus one bounded annotation
+    # projection transaction; never one Material revision per image.
+    assert snapshot.revision == outside_revision + 2
     assert {row["id"] for row in snapshot.rows} == {
         "existing", "outside", first["id"], second["id"]
     }
@@ -139,7 +141,8 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
     upload_path = project_path / "uploads" / record["stored_name"]
     annotation_repository = app_module.AnnotationRepository(project_path)
     assert upload_path.exists()
-    assert annotation_repository.exists(record["id"])
+    # Formal GT cannot precede its canonical Material identity.
+    assert not annotation_repository.exists(record["id"])
     assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
 
     try:

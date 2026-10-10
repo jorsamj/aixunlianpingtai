@@ -6,6 +6,7 @@ from PIL import Image
 
 from platform_core import annotation_batches
 from platform_core.annotation_batches import AnnotationBatch
+from platform_core.material_batches import BatchSelection
 from platform_core.task_runtime import ArtifactStore
 
 
@@ -25,7 +26,9 @@ class _Manifest:
             "current": current,
         }
 
-    def transition(self, ids, state, error=None):
+    def transition(self, ids, state, error=None, *, commit_guard=None):
+        if commit_guard is not None:
+            commit_guard()
         self.transitions.append((list(ids), state, error))
 
 
@@ -34,12 +37,20 @@ class _Materials:
         self.image_path = image_path
 
     def get_many(self, _ids):
-        return [{"id": "image-1", "filename": self.image_path.name}]
+        return [{
+            "id": "image-1",
+            "filename": self.image_path.name,
+            "content_sha256": "a" * 64,
+        }]
 
 
 class _Context:
     def __init__(self, tmp_path: Path):
-        self.task = SimpleNamespace(task_id="annotation-task-1", project_id="project-1")
+        self.task = SimpleNamespace(
+            task_id="annotation-task-1",
+            project_id="project-1",
+            log_ref="task.log",
+        )
         self.artifacts = ArtifactStore(tmp_path / "artifacts")
         self.checkpoints = []
 
@@ -63,7 +74,7 @@ def _build_batch(tmp_path: Path, monkeypatch, *, on_materialize=None):
     def materialize(_self, _material):
         if on_materialize is not None:
             on_materialize()
-        return SimpleNamespace(path=image_path)
+        return SimpleNamespace(path=image_path, content_sha256="a" * 64)
 
     monkeypatch.setattr(annotation_batches.StorageManager, "materialize", materialize)
     batch = AnnotationBatch(tmp_path, "project-1", materials, context, manifest, {"labels": ["person"]})
@@ -125,3 +136,83 @@ def test_cancel_during_inference_prevents_candidate_commit(tmp_path: Path, monke
 
     assert batch.store.get("image-1") is None
     assert not any(state == "succeeded" for _ids, state, _error in manifest.transitions)
+
+
+def test_cancel_at_candidate_commit_guard_rolls_back_late_success(tmp_path: Path, monkeypatch):
+    batch, _context, manifest, materials = _build_batch(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        annotation_batches,
+        "annotate_one",
+        lambda _runtime, _image: {
+            "boxes": [{"label": "person", "x1": 1, "y1": 1, "x2": 8, "y2": 8}],
+        },
+    )
+
+    def check_active(_context, stage="processing", _current=None, _progress=None):
+        if stage == "AI_ANNOTATION_CANDIDATE_COMMIT":
+            raise InterruptedError("material batch cancelled at candidate commit")
+
+    with pytest.raises(InterruptedError, match="candidate commit"):
+        batch.process(materials, [{"image_id": "image-1"}], check_active)
+
+    assert batch.store.get("image-1") is None
+    assert not any(state == "succeeded" for _ids, state, _error in manifest.transitions)
+
+
+def test_lease_loss_before_selection_commit_keeps_durable_candidate_only(tmp_path: Path, monkeypatch):
+    batch, _context, manifest, materials = _build_batch(tmp_path, monkeypatch)
+    monkeypatch.setattr(annotation_batches, "annotate_one", lambda _runtime, _image: {"boxes": []})
+
+    def check_active(_context, stage="processing", _current=None, _progress=None):
+        if stage == "AI_ANNOTATION_SELECTION_COMMIT":
+            raise PermissionError("worker lease lost before selection commit")
+
+    with pytest.raises(PermissionError, match="lease lost"):
+        batch.process(materials, [{"image_id": "image-1"}], check_active)
+
+    assert batch.store.get("image-1")["status"] == "empty"
+    assert not any(state == "succeeded" for _ids, state, _error in manifest.transitions)
+
+
+def test_lease_loss_fences_failed_candidate_commit(tmp_path: Path, monkeypatch):
+    batch, _context, manifest, materials = _build_batch(tmp_path, monkeypatch)
+
+    def inference_failure(_runtime, _image):
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(annotation_batches, "annotate_one", inference_failure)
+
+    def check_active(_context, stage="processing", _current=None, _progress=None):
+        if stage == "AI_ANNOTATION_CANDIDATE_COMMIT":
+            raise PermissionError("worker lease lost before failed candidate commit")
+
+    with pytest.raises(PermissionError, match="lease lost"):
+        batch.process(materials, [{"image_id": "image-1"}], check_active)
+
+    assert batch.store.get("image-1") is None
+    assert not any(state == "failed" for _ids, state, _error in manifest.transitions)
+
+
+def test_batch_selection_commit_guard_rolls_back_state_transition(tmp_path: Path):
+    manifest = BatchSelection(tmp_path / "selection.sqlite3")
+    manifest.database.execute(
+        "INSERT INTO selection(image_id,state) VALUES (?,?)",
+        ("image-1", "running"),
+    )
+
+    def reject_commit():
+        raise PermissionError("worker lease lost")
+
+    with pytest.raises(PermissionError, match="lease lost"):
+        manifest.transition(
+            ["image-1"],
+            "succeeded",
+            commit_guard=reject_commit,
+        )
+
+    row = manifest.database.execute(
+        "SELECT state FROM selection WHERE image_id=?",
+        ("image-1",),
+    ).fetchone()
+    assert row["state"] == "running"
+    manifest.close()

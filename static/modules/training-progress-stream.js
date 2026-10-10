@@ -30,18 +30,9 @@ function activeIds(jobs) {
     .filter(Boolean);
 }
 
-function applyProgressCounters(job, currentItem) {
-  const item = String(currentItem || '');
-  const epoch = item.match(/Epoch\s*(\d+)\s*\/\s*(\d+)/i);
-  const batch = item.match(/Batch\s*(\d+)\s*\/\s*(\d+)/i);
-  if (epoch) {
-    job.current_epoch = Number(epoch[1]);
-    job.total_epochs = Number(epoch[2]);
-  }
-  if (batch) {
-    job.current_batch = Number(batch[1]);
-    job.total_batches = Number(batch[2]);
-  }
+function displayRevision(task = {}) {
+  const value = Number(task?.training_display_progress?.revision ?? task?.display_revision);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export function installTrainingProgressStream({
@@ -111,20 +102,41 @@ export function installTrainingProgressStream({
     }
 
     const current = jobs[index] || {};
-    const incomingTime = Date.parse(String(update.updated_at || ''));
-    const currentTime = Date.parse(String(current.updated_at || ''));
-    if (Number.isFinite(incomingTime) && Number.isFinite(currentTime) && incomingTime < currentTime) {
+    const incomingRevision = displayRevision(update);
+    const currentRevision = displayRevision(current);
+    if (incomingRevision !== null && currentRevision !== null && incomingRevision < currentRevision) {
       return false;
     }
+    if (incomingRevision === null || currentRevision === null) {
+      const incomingTime = Date.parse(String(update.updated_at || ''));
+      const currentTime = Date.parse(String(current.updated_at || ''));
+      if (Number.isFinite(incomingTime) && Number.isFinite(currentTime) && incomingTime < currentTime) {
+        return false;
+      }
+    }
 
+    const display = update.training_display_progress && typeof update.training_display_progress === 'object'
+      ? update.training_display_progress
+      : null;
     const next = {
       ...current,
       task_status: String(update.status || current.task_status || '').trim().toUpperCase(),
       persisted_status: String(update.persisted_status || current.persisted_status || '').trim().toUpperCase(),
       phase: update.phase ?? current.phase,
       task_stage: update.phase ?? current.task_stage,
-      progress_percent: update.progress_percent ?? current.progress_percent,
-      current_item: update.current_item ?? current.current_item,
+      progress_percent: display?.overall_progress ?? update.progress_percent ?? current.progress_percent,
+      current_item: display?.message ?? update.current_item ?? current.current_item,
+      current_epoch: display?.current_epoch ?? update.current_epoch ?? current.current_epoch,
+      total_epochs: display?.total_epochs ?? update.total_epochs ?? current.total_epochs,
+      current_batch: display?.current_batch ?? update.current_batch ?? current.current_batch,
+      total_batches: display?.total_batches ?? update.total_batches ?? current.total_batches,
+      elapsed_seconds: display?.elapsed_seconds ?? update.elapsed_seconds ?? current.elapsed_seconds,
+      eta_seconds: display?.eta_seconds ?? update.eta_seconds ?? current.eta_seconds,
+      phase_progress: display?.phase_progress ?? update.phase_progress ?? current.phase_progress,
+      telemetry_source: display?.telemetry_source ?? update.telemetry_source ?? current.telemetry_source,
+      training_progress: update.training_progress ?? current.training_progress,
+      training_display_progress: display ?? current.training_display_progress,
+      display_revision: display?.revision ?? update.display_revision ?? current.display_revision,
       task_worker_id: update.worker_id ?? current.task_worker_id,
       task_lease_expires_at: update.lease_expires_at ?? current.task_lease_expires_at,
       resource_wait_reason: update.resource_wait_reason ?? current.resource_wait_reason,
@@ -132,7 +144,6 @@ export function installTrainingProgressStream({
       finished_at: update.finished_at ?? current.finished_at,
       error: update.error ?? current.error,
     };
-    applyProgressCounters(next, next.current_item);
     const copy = [...jobs];
     copy[index] = next;
     state().jobs = copy;

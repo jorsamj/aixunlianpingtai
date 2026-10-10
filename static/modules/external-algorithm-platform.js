@@ -338,6 +338,61 @@ function syncCountsText(item) {
   return `品目 ${counts.categories || 0} · 算法 ${counts.products || 0} · 分析方式 ${counts.analyses || 0} · 算力环境 ${counts.compute_platforms || 0}`;
 }
 
+export function externalSyncOperationActive(operation) {
+  return ['queued', 'running'].includes(String(operation?.status || ''));
+}
+
+export function externalSyncOperationPhaseText(value) {
+  return ({
+    queued: '等待启动',
+    fetch_categories: '读取算法品目',
+    fetch_products: '读取算法产品',
+    fetch_compute_platforms: '读取算力环境',
+    fetch_analysis_index: '读取分析方式索引',
+    fetch_analyses: '核验产品分析详情',
+    purge_removed_algorithms: '清理远端已删除算法',
+    cache_commit: '提交主数据缓存',
+    algorithm_mirror_commit: '提交本地算法镜像',
+    completed: '同步完成',
+    failed: '同步失败',
+  }[String(value || '')] || String(value || '准备同步'));
+}
+
+export function externalSyncOperationHtml(operation) {
+  if (!operation) return '<div class="subline">当前没有正在执行的同步任务</div>';
+  const active = externalSyncOperationActive(operation);
+  const status = String(operation.status || '');
+  const total = Number(operation.total_products);
+  const processed = Number(operation.processed_products || 0);
+  const productProgress = Number.isFinite(total) && total >= 0
+    ? `${processed} / ${total}`
+    : `${processed} / 待读取`;
+  const requestDuration = Number(operation.last_request_duration_ms);
+  const requestText = Number.isFinite(requestDuration) && requestDuration >= 0
+    ? `${requestDuration} ms`
+    : '-';
+  const analysisListSource = ({
+    list_all: 'listAll 一次读取',
+    per_product: '按产品读取',
+    per_product_fallback: 'listAll 异常，已按产品回退',
+  }[String(operation.analysis_list_source || '')] || '-');
+  const errorText = status === 'failed'
+    ? `<div class="alert warn" style="margin-top:10px"><b>${escapeHtml(operation.error || '同步失败')}</b><span>${escapeHtml(operation.detail || '')}</span></div>`
+    : '';
+  return `<div class="external-sync-operation" data-external-sync-operation="${escapeHtml(operation.operation_id || operation.id || '')}">
+    <div class="external-sync-kpis">
+      <div><span>任务状态</span><b>${escapeHtml(active ? '正在同步' : syncStatusText(status))}</b></div>
+      <div><span>开始时间</span><b>${escapeHtml(timeText(operation.started_at))}</b></div>
+      <div><span>当前阶段</span><b>${escapeHtml(externalSyncOperationPhaseText(operation.current_phase))}</b></div>
+      <div><span>产品进度</span><b>${escapeHtml(productProgress)}</b></div>
+      <div><span>最近请求耗时</span><b>${escapeHtml(requestText)}</b></div>
+      <div><span>分析列表</span><b>${escapeHtml(analysisListSource)}</b></div>
+      <div><span>成功 / 错误</span><b>${Number(operation.success_count || 0)} / ${Number(operation.error_count || 0)}</b></div>
+    </div>
+    ${errorText}
+  </div>`;
+}
+
 export function installExternalAlgorithmPlatformRuntime({
   getState,
   projectId,
@@ -350,6 +405,9 @@ export function installExternalAlgorithmPlatformRuntime({
   const state = () => getState?.() || {};
   let config = null;
   let history = [];
+  let syncOperation = null;
+  let syncPollGeneration = 0;
+  let syncPollPromise = null;
   let pageLoadedAt = 0;
 
   function persistConfigSnapshot() {
@@ -420,6 +478,22 @@ export function installExternalAlgorithmPlatformRuntime({
       const body = await requestJson(`${API_ROOT}/sync-history?limit=20`);
       history = Array.isArray(body?.items) ? body.items : [];
       return history;
+    } catch (error) {
+      if (!silent) notify?.(error?.message || error);
+      throw error;
+    }
+  }
+
+  async function loadSyncOperation({silent = false} = {}) {
+    const pid = currentProjectId();
+    if (!pid) {
+      syncOperation = null;
+      return null;
+    }
+    try {
+      const body = await requestJson(`${API_ROOT}/sync-operation?project_id=${encodeURIComponent(pid)}`);
+      syncOperation = body?.operation || null;
+      return syncOperation;
     } catch (error) {
       if (!silent) notify?.(error?.message || error);
       throw error;
@@ -647,6 +721,7 @@ export function installExternalAlgorithmPlatformRuntime({
       ? '使用服务器已保存的 API 地址和凭据测试连接；已保存的 Secret 不会回显到浏览器。'
       : '使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。';
     const syncSucceeded = last?.status === 'success';
+    const operationActive = externalSyncOperationActive(syncOperation);
     const configSaved = Boolean(c.updatedAt);
     const sourceStatus = external ? '新畅联管理' : '本平台管理';
     const connectionStatus = connectionTest?.ok === true
@@ -671,7 +746,7 @@ export function installExternalAlgorithmPlatformRuntime({
           <div class="external-platform-actions">
             <button class="btn" id="externalPlatformTest">测试连接</button>
             ${configActionsHtml}
-            <button class="btn green" id="externalPlatformSync" ${savedConnectionReady ? '' : 'disabled'} title="${savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">↻ 立即同步</button>
+            <button class="btn green" id="externalPlatformSync" ${savedConnectionReady && !operationActive ? '' : 'disabled'} title="${operationActive ? '当前已有同步任务正在执行' : savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">${operationActive ? '正在同步…' : '↻ 立即同步'}</button>
           </div>
         </div>
         <div class="external-platform-status external-platform-status-v2">
@@ -773,7 +848,8 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="panel" data-platform-tab-panel="sync">
         <div class="panel-head"><div><div class="panel-title">数据同步</div><div class="subline">“立即同步”只执行 新畅联 → 本平台 的算法品目、算法产品、分析方式和算力环境同步。</div></div></div>
         <div class="panel-body">
-          <div class="external-sync-kpis">
+          <div id="externalSyncOperation">${externalSyncOperationHtml(syncOperation)}</div>
+          <div class="external-sync-kpis" style="margin-top:12px">
             <div><span>最近同步</span><b>${escapeHtml(timeText(last?.finished_at || last?.started_at))}</b></div>
             <div><span>状态</span><b>${escapeHtml(syncStatusText(last?.status))}</b></div>
             <div><span>算法品目</span><b>${Number(cache.category_count || 0)}</b></div>
@@ -994,6 +1070,66 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
+  function paintSyncOperation() {
+    const root = document.getElementById('externalSyncOperation');
+    if (root) root.innerHTML = externalSyncOperationHtml(syncOperation);
+    const active = externalSyncOperationActive(syncOperation);
+    for (const button of [
+      document.getElementById('externalPlatformSync'),
+      ...document.querySelectorAll('[data-algorithm-sync]'),
+    ].filter(Boolean)) {
+      button.disabled = active;
+      button.textContent = active
+        ? '正在同步…'
+        : (button.id === 'externalPlatformSync' ? '↻ 立即同步' : '↻ 同步畅联云');
+      if (active) button.title = '当前已有同步任务正在执行';
+    }
+  }
+
+  async function waitForSyncOperation(operationId, generation) {
+    const expectedProject = currentProjectId();
+    for (;;) {
+      if (destroyed || generation !== syncPollGeneration || currentProjectId() !== expectedProject) return syncOperation;
+      if (!externalSyncOperationActive(syncOperation)) return syncOperation;
+      await new Promise(resolve => setTimeout(resolve, 800));
+      if (destroyed || generation !== syncPollGeneration || currentProjectId() !== expectedProject) return syncOperation;
+      await loadSyncOperation({silent: true});
+      if (operationId && syncOperation && String(syncOperation.operation_id || syncOperation.id || '') !== String(operationId)) {
+        return syncOperation;
+      }
+      paintSyncOperation();
+    }
+  }
+
+  function ensureSyncOperationPolling() {
+    if (!externalSyncOperationActive(syncOperation)) return null;
+    if (syncPollPromise) return syncPollPromise;
+    const operationId = String(syncOperation?.operation_id || syncOperation?.id || '');
+    const generation = ++syncPollGeneration;
+    syncPollPromise = waitForSyncOperation(operationId, generation)
+      .then(async operation => {
+        syncOperation = operation;
+        if (operation?.status === 'success') {
+          await Promise.all([
+            loadConfig({silent: true}),
+            loadHistory({silent: true}),
+            loadCache({silent: true}),
+            loadReadiness({silent: true}),
+          ]);
+          await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
+        } else if (operation?.status === 'failed') {
+          await loadHistory({silent: true});
+        }
+        if (String(state().page || '') === PAGE) await render({reload: false});
+        return operation;
+      })
+      .finally(() => {
+        syncPollPromise = null;
+        paintSyncOperation();
+      });
+    return syncPollPromise;
+  }
+
   async function syncNow() {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
@@ -1003,29 +1139,24 @@ export function installExternalAlgorithmPlatformRuntime({
       return notify?.('请先保存 API 地址、AccessKey 和 AccessSecret，再执行同步');
     }
 
-    const buttons = [
-      document.getElementById('externalPlatformSync'),
-      ...document.querySelectorAll('[data-external-list-sync]'),
-    ].filter(Boolean);
-    for (const button of buttons) {
-      button.disabled = true;
-      button.dataset.originalText = button.textContent || '';
-      button.textContent = '正在同步…';
-    }
     try {
       const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
-      const counts = body?.sync?.counts || {};
-      await Promise.all([loadConfig({silent: true}), loadHistory({silent: true}), loadCache({silent: true}), loadReadiness({silent: true})]);
-      await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
-      notify?.(`同步完成：算法新增 ${counts.added || 0}，更新 ${counts.updated || 0}`);
-      if (String(state().page || '') === PAGE) await render({reload: false});
-      return body;
-    } finally {
-      for (const button of buttons) {
-        button.disabled = false;
-        button.textContent = button.dataset.originalText || (button.id === 'externalPlatformSync' ? '↻ 立即同步' : '↻ 同步畅联云');
-        delete button.dataset.originalText;
+      syncOperation = body?.operation || body?.sync || null;
+      paintSyncOperation();
+      if (externalSyncOperationActive(syncOperation)) {
+        syncOperation = await ensureSyncOperationPolling();
       }
+
+      if (syncOperation?.status === 'success') {
+        const counts = syncOperation?.counts || {};
+        notify?.(`同步完成：算法新增 ${counts.added || 0}，更新 ${counts.updated || 0}`);
+      } else if (syncOperation?.status === 'failed') {
+        notify?.(syncOperation.error || '新畅联同步失败，请查看同步详情');
+      }
+      if (String(state().page || '') === PAGE) await render({reload: false});
+      return {...body, operation: syncOperation};
+    } finally {
+      paintSyncOperation();
     }
   }
 
@@ -1157,18 +1288,22 @@ export function installExternalAlgorithmPlatformRuntime({
     loading = true;
     if (!config) view.innerHTML = '<div class="empty">首次读取平台对接配置…</div>';
     try {
-      const [nextConfig, nextHistory, nextCache, nextReadiness] = await Promise.all([
+      const [nextConfig, nextHistory, nextOperation, nextCache, nextReadiness] = await Promise.all([
         loadConfig({silent: true}),
         loadHistory({silent: true}),
+        loadSyncOperation({silent: true}),
         loadCache({silent: true}),
         loadReadiness({silent: true}),
       ]);
       config = nextConfig;
       history = nextHistory;
+      syncOperation = nextOperation;
       cacheData = nextCache;
       readiness = nextReadiness;
       pageLoadedAt = Date.now();
-      return paintCachedPage();
+      const painted = paintCachedPage();
+      if (externalSyncOperationActive(syncOperation)) void ensureSyncOperationPolling();
+      return painted;
     } catch (error) {
       if (!hasSnapshot && String(state().page || '') === PAGE) {
         view.innerHTML = `<div class="alert err">${escapeHtml(error?.message || error)}</div>`;
@@ -1194,6 +1329,7 @@ export function installExternalAlgorithmPlatformRuntime({
     page: PAGE,
     loadConfig,
     loadHistory,
+    loadSyncOperation,
     loadCache,
     loadReadiness,
     render,
@@ -1212,6 +1348,7 @@ export function installExternalAlgorithmPlatformRuntime({
     config: () => config,
     destroy() {
       destroyed = true;
+      syncPollGeneration += 1;
       trainingAnalysisObserver?.disconnect();
       detachAlgorithmListProvider?.();
       trainingPreflightCache.clear();

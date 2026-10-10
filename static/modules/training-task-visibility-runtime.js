@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422563';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422607';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -41,6 +41,15 @@ function statusBucket(job) {
   if (['failed', 'blocked_by_environment', 'blocked_by_hardware'].includes(status)) return 'failed';
   if (['stopped', 'cancelled', 'canceled'].includes(status)) return 'stopped';
   return TERMINAL_STATUSES.has(status) ? 'stopped' : 'queued';
+}
+
+export function reconcileTrainingBatchSelection(selectedIds, result) {
+  if (!(selectedIds instanceof Set) || !result || result.cancelled || result.busy) return false;
+  if (!Array.isArray(result.succeeded_ids)) return false;
+  for (const id of result.succeeded_ids) selectedIds.delete(String(id));
+  return selectedIds.size === 0 && Number(result.succeeded || 0) > 0
+    && Number(result.failed || 0) === 0 && Number(result.skipped || 0) === 0
+    && !result.refreshError && result.ok === true;
 }
 
 export function trainingTaskStatusCounts(jobs = []) {
@@ -147,10 +156,10 @@ function taskActions(job) {
   const detail = `<button onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
   const log = `<button onclick="showTrainLog423('${id}')">日志</button>`;
   if (['starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return `${detail}${log}<span class="train428-action-lock">状态切换中</span>`;
-  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
-  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}<details class="entity-more"><summary>•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除</button></div></details>`;
+  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}${trainingBatchActionEligible(job, 'delete') ? `<details class="entity-more"><summary>•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除记录</button></div></details>` : ''}`;
 }
 
 export function trainingTaskPresentationRow(job, {batchMode = false, selected = false} = {}) {
@@ -160,7 +169,7 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
   const percent = canonicalTaskProgressPercent(job);
   const stage = trainingStageView(job);
   const algorithmName = job?.asset_algorithm_name || job?.algorithm_name || '未命名算法';
-  const taskName = job?.task_name || job?.run_name || job?.auto_version_name || '训练任务';
+  const taskName = [job?.task_name, job?.run_name, job?.auto_version_name].map(v => String(v || '').trim()).find(v => v && v !== '训练任务') || `训练 · ${id.slice(-8) || '待分配'}`;
   const elapsed = progress.elapsedSeconds == null ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
   const eta = progress.etaSeconds == null ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
   const active = ['starting', 'running', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status);
@@ -281,10 +290,7 @@ export function installTrainingTaskVisibilityRuntime({
       <section class="entity-table-surface training-table-surface"><div class="table-wrap"><table class="table train428-table entity-table">
         <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead>
         <tbody></tbody>
-      </table></div><footer class="entity-pagination"><span data-training-total>共 0 条</span><div>
-        <select data-training-page-size><option value="10">10 条/页</option><option value="20">20 条/页</option><option value="50">50 条/页</option></select>
-        <button type="button" data-training-page-prev aria-label="上一页">‹</button><span data-training-page-label>1 / 1</span><button type="button" data-training-page-next aria-label="下一页">›</button>
-      </div></footer></section>
+      </table></div><footer class="entity-pagination"><div data-training-pagination></div></footer></section>
     </section>`;
   }
 
@@ -336,8 +342,7 @@ export function installTrainingTaskVisibilityRuntime({
     syncBatchToolbar(root);
     try {
       const result = await runtime.batchAction(action, [...selectedIds]);
-      if (!result?.cancelled && (result?.succeeded || 0) > 0) {
-        selectedIds.clear();
+      if (reconcileTrainingBatchSelection(selectedIds, result)) {
         batchMode = false;
       }
     } finally {
@@ -387,16 +392,6 @@ export function installTrainingTaskVisibilityRuntime({
         renderOwned();
         return;
       }
-      if (event.target.closest?.('[data-training-page-prev]')) {
-        taskView.page = Math.max(1, taskView.page - 1);
-        renderOwned();
-        return;
-      }
-      if (event.target.closest?.('[data-training-page-next]')) {
-        taskView.page += 1;
-        renderOwned();
-        return;
-      }
       const toggle = event.target.closest?.('[data-training-batch-toggle]');
       if (toggle) {
         batchMode = !batchMode;
@@ -412,7 +407,7 @@ export function installTrainingTaskVisibilityRuntime({
         const visible = filtered.slice(start, start + taskView.pageSize);
         if (action === 'clear') selectedIds.clear();
         else {
-          if (action === 'deletable-visible') selectedIds.clear();
+          // Keep earlier-page selection when choosing deletable rows on this page.
           for (const job of visible) {
             const id = String(job?.id || job?.task_id || '');
             if (!id) continue;
@@ -430,13 +425,6 @@ export function installTrainingTaskVisibilityRuntime({
       }
     });
     root.addEventListener('change', event => {
-      const pageSize = event.target.closest?.('[data-training-page-size]');
-      if (pageSize) {
-        taskView.pageSize = Math.max(1, Number(pageSize.value) || 10);
-        taskView.page = 1;
-        renderOwned();
-        return;
-      }
       const checkbox = event.target.closest?.('[data-training-batch-select]');
       if (!checkbox) return;
       const id = String(checkbox.dataset.trainingBatchSelect || '');
@@ -598,21 +586,31 @@ export function installTrainingTaskVisibilityRuntime({
     taskView.page = Math.min(Math.max(1, taskView.page), pages);
     const start = (taskView.page - 1) * taskView.pageSize;
     const visible = filtered.slice(start, start + taskView.pageSize);
-    const visibleIds = new Set(visible.map(job => String(job?.id || job?.task_id || '')));
-    for (const id of [...selectedIds]) {
-      if (!visibleIds.has(id)) selectedIds.delete(id);
-    }
+    // Selected task IDs must survive paging and partial failures.
     patchRows(body, visible);
-    const total = root.querySelector?.('[data-training-total]');
-    const pageLabel = root.querySelector?.('[data-training-page-label]');
-    const prev = root.querySelector?.('[data-training-page-prev]');
-    const next = root.querySelector?.('[data-training-page-next]');
-    const pageSize = root.querySelector?.('[data-training-page-size]');
-    if (total) total.textContent = `共 ${filtered.length} 条`;
-    if (pageLabel) pageLabel.textContent = `${taskView.page} / ${pages}`;
-    if (prev) prev.disabled = taskView.page <= 1;
-    if (next) next.disabled = taskView.page >= pages;
-    if (pageSize) pageSize.value = String(taskView.pageSize);
+    window.PlatformCore?.pagination?.mountPagination?.(
+      root.querySelector?.('[data-training-pagination]'),
+      {
+        page: taskView.page,
+        pageSize: taskView.pageSize,
+        total: filtered.length,
+        totalPages: pages,
+      },
+      {
+        label: '训练任务分页',
+        showPageSize: true,
+        pageSizes: [10, 20, 50, 100],
+        onPageChange: targetPage => {
+          taskView.page = targetPage;
+          renderOwned();
+        },
+        onPageSizeChange: pageSize => {
+          taskView.pageSize = pageSize;
+          taskView.page = 1;
+          renderOwned();
+        },
+      },
+    );
     syncBatchToolbar(root);
     pollRegistry?.syncTrainingClockTimer?.();
     return true;
@@ -641,12 +639,12 @@ export function installTrainingTaskVisibilityRuntime({
     if (!button || destroyed || String(state().page || '') !== TRAINING_PAGE) return;
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
-    if (button.disabled || runtime.state?.().inflight) return;
+    if (button.disabled) return;
     pollRegistry?.clear?.('training-jobs');
     button.disabled = true;
     const previousText = button.textContent;
     button.textContent = '刷新中';
-    void runtime.refresh({render: true, source: 'manual'}).then(
+    void runtime.refresh({render: true, force: true, source: 'manual'}).then(
       result => { if (!result?.stale) notify?.('训练任务已刷新'); },
       error => notify?.(error?.message || error),
     ).finally(() => {
@@ -733,11 +731,3 @@ export function installTrainingTaskVisibilityRuntime({
   return visibilityRuntime;
 }
 
-if (typeof window !== 'undefined') {
-  installTrainingTaskVisibilityRuntime({
-    getState: () => state,
-    trainingTaskRuntime: window.PlatformCore?.runtime?.trainingTaskRuntime || window.TrainingTaskRuntime,
-    pollRegistry: window.PollRegistryRuntime,
-    notify: message => window.toast?.(message),
-  });
-}

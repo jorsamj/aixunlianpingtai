@@ -163,7 +163,7 @@ export function installTrainingCreateHydrationRuntime({
     ]);
     const result = getState?.() || state;
     if (requireTrainable && !trainingOptionsHydrated(result.targets)) {
-      throw new Error('没有读取到可用训练配置，请检查训练资源');
+      throw new Error('没有发现可用的训练目标。请先到「训练资源」页面读取环境，确认本机或远程训练节点已就绪后重试。');
     }
     return result;
   };

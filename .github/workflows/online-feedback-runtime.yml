@@ -9,6 +9,7 @@ on:
       - platform_core/online_feedback.py
       - platform_core/material_repository.py
       - platform_core/annotation_repository.py
+      - platform_core/labels.py
       - static/app.js
       - tests/unit/test_online_feedback.py
       - tests/api/test_online_feedback.py
@@ -21,6 +22,7 @@ on:
       - platform_core/online_feedback.py
       - platform_core/material_repository.py
       - platform_core/annotation_repository.py
+      - platform_core/labels.py
       - static/app.js
       - tests/unit/test_online_feedback.py
       - tests/api/test_online_feedback.py
@@ -51,7 +53,7 @@ jobs:
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 python-multipart pillow pyyaml requests opencv-python-headless psutil filelock keyring cryptography boto3 oss2 pydantic
       - name: Compile feedback runtime
-        run: python -m py_compile app.py platform_core/online_feedback.py platform_core/material_repository.py platform_core/annotation_repository.py
+        run: python -m py_compile app.py platform_core/online_feedback.py platform_core/material_repository.py platform_core/annotation_repository.py platform_core/labels.py
       - name: Feedback repository contracts
         run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_online_feedback.py
       - name: Feedback API contracts
@@ -63,7 +65,7 @@ jobs:
       - name: Permanent feedback guards
         shell: bash
         run: |
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           grep -Fq 'feedback_eligible' app.py
           grep -Fq 'window.predictCore12=async()=>{' static/app.js
           grep -Fq 'window.predict=async function predictCanonicalFeedback63()' static/app.js
@@ -89,6 +91,9 @@ jobs:
           grep -Fq 'supplement-data-candidates/freeze' app.py
           grep -Fq 'test_confirmed_feedback_candidates_freeze_without_revision_or_training_side_effect' tests/api/test_online_feedback.py
           grep -Fq 'test_feedback_candidate_freeze_rejects_stale_annotation_and_excludes_pending' tests/api/test_online_feedback.py
+          grep -Fq 'active = active_label_options(project_label_items(project))' app.py
+          grep -Fq 'with label_governance_fence(project_dir(project_id)):' app.py
+          grep -Fq 'test_feedback_label_retirement_before_truth_commit_rolls_back_new_material' tests/api/test_online_feedback.py
 
   real-chrome:
     runs-on: ubuntu-24.04
@@ -128,4 +133,4 @@ jobs:
           grep -Fq 'external-intake' static/app.js
           grep -Fq 'window.openAuditConnect42=window.openExternalFeedbackIntake63' static/app.js
           grep -Fq 'dismissOnlineFeedback63' static/app.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

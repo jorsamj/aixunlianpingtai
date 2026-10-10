@@ -25,6 +25,17 @@ async function seedProject(request) {
   return {project, algorithmId: created.algorithm.id};
 }
 
+async function routeCompatibleTrainingMaterials(page) {
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
+}
+
 test('hard refresh algorithm list prewarms training configuration before the first click', async ({page, request}) => {
   const {project} = await seedProject(request);
   let trainingOptionsCalls = 0;
@@ -57,7 +68,7 @@ test('hard refresh algorithm list prewarms training configuration before the fir
           default_imgsz: 640,
           default_batch: 4,
         }],
-        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+        base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
       }]})
     });
   });
@@ -106,13 +117,27 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
 
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 1_500});
   await expect(page.locator('[data-training-create-shell="1"]')).toHaveCount(0);
   await expect(dialog.locator('#tr429Target')).toHaveValue('first-open-ultralytics');
   await expect(dialog.locator('#tr429Target')).toContainText('首次打开 Ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
-  await expect(dialog.locator('#tr429Model')).toHaveText('yolo11n.pt');
+  await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  // Labels must sit next to materials, not below the mode options.
+  const desktopLayout = await dialog.evaluate(node => {
+    const rect = selector => node.querySelector(selector).getBoundingClientRect();
+    const card = rect('.modal-card'), materials = rect('.train-ui-data-card');
+    const labels = rect('.train-ui-labels-card'), modes = rect('.train-v3-mode-card');
+    return {width: card.width, materials: {top: materials.top, right: materials.right},
+      labels: {top: labels.top, left: labels.left}, modeTop: modes.top};
+  });
+  expect(desktopLayout.width).toBeGreaterThan(1000);
+  expect(Math.abs(desktopLayout.materials.top - desktopLayout.labels.top)).toBeLessThan(16);
+  expect(desktopLayout.labels.left).toBeGreaterThanOrEqual(desktopLayout.materials.right);
+  expect(desktopLayout.modeTop).toBeGreaterThan(desktopLayout.materials.top);
+
 
   expect(trainingOptionsCalls).toBe(beforeOptions);
   expect(recommendationCalls).toBe(beforeRecommendation);
@@ -143,13 +168,226 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   const reloadedCard = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await reloadedCard.getByRole('button', {name: '训练'}).click();
-  const secondDialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
   await expect(secondDialog.locator('#trV3Device')).toContainText('CPU');
   await page.waitForTimeout(180);
   expect(trainingDeviceCalls).toBe(deviceCallsAfterFirstOpen);
+
+  // Small screens must show labels between materials and training modes.
+  await page.setViewportSize({width: 760, height: 820});
+  const mobileLayout = await secondDialog.evaluate(node => {
+    const top = selector => node.querySelector(selector).getBoundingClientRect().top;
+    return {algorithm: top('.train-ui-algorithm-card'), materials: top('.train-ui-data-card'),
+      labels: top('.train-ui-labels-card'), modes: top('.train-v3-mode-card')};
+  });
+  expect(mobileLayout.algorithm).toBeLessThan(mobileLayout.materials);
+  expect(mobileLayout.materials).toBeLessThan(mobileLayout.labels);
+  expect(mobileLayout.labels).toBeLessThan(mobileLayout.modes);
 });
 
+
+
+test('training dialog shows canonical inherited labels horizontally without historical audit', async ({page, request}) => {
+  const {project, algorithmId} = await seedProject(request);
+
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'merged-label-training',
+      name: 'Merged Label Training',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 20, default_imgsz: 640, default_batch: 4}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
+    }]})
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.route('**/api/v62/projects/*/training-labels/inherited**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      has_previous_version: true,
+      base_version_id: 'merged-label-version',
+      base_version_name: '20260928180000',
+      labels: [{code: 'smoke', display_name: '烟雾'}],
+    }),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
+    const body = route.request().postDataJSON();
+    const count = Array.isArray(body?.image_ids) ? body.image_ids.length : 0;
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        requested_count: count, matched_count: count, selectable_count: count,
+        eligible_count: count, pending_annotation_count: 0, eligible_total: count,
+        box_count: count, size_bytes: count * 1024,
+        label_codes: ['fire', 'smoke'], label_counts: {fire: count, smoke: count}, repository_revision: 1,
+      }),
+    });
+  });
+
+  await selectIsolatedTestProject(page, project.id, '算法列表');
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+
+  await page.evaluate(({algorithmId}) => {
+    const algorithm = (state.algorithms || []).find(row => String(row?.id || '') === String(algorithmId));
+    if (!algorithm) throw new Error('algorithm missing from browser state');
+    algorithm.current_version_id = 'merged-label-version';
+    algorithm.versions = [{
+      id: 'merged-label-version', version_name: '20260928180000',
+      training_status: 'SUCCEEDED', artifact_verified: true, trainable: true, framework: 'ultralytics',
+      label_schema: [{code: 'legacy_smoke', class_id: 0}, {code: 'smoke', class_id: 1}],
+    }];
+    const activeSmoke = (state.labels || []).find(row => String(row?.code || '') === 'smoke')
+      || {code: 'smoke', display_name: '烟雾', class_id: 0, status: 'active'};
+    const activeFire = (state.labels || []).find(row => String(row?.code || '') === 'fire')
+      || {code: 'fire', display_name: '明火', class_id: 0, status: 'active'};
+    state.labels = [{...activeFire, status: 'active'}, {...activeSmoke, status: 'active'}];
+    state.labelGovernance414 = [
+      {...activeSmoke, status: 'active'},
+      {code: 'legacy_smoke', display_name: '旧烟雾', class_id: 99, status: 'merged', merged_into: 'smoke'},
+    ];
+    window.TrainingDraftRuntime.update({algorithmId, baseVersionId: 'merged-label-version'});
+    window.TrainingDraftRuntime.setMaterialIds(['merged-label-material']);
+  }, {algorithmId});
+
+  const panel = dialog.locator('#trainingLabelContractPanel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('训练标签');
+  await expect(panel).toContainText('上一版本继承');
+  await expect(panel.locator('[data-training-base-label="smoke"]')).toHaveCount(1);
+  await expect(panel.locator('.training-label-base-list')).toHaveCSS('display', 'flex');
+  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(0);
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(1);
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('新增 0');
+  await expect(panel).not.toContainText('legacy_smoke');
+  await expect(panel).not.toContainText('合并关系');
+  await expect(panel).not.toContainText('Schema Changed');
+
+  await panel.locator('[data-training-label-code="fire"]').check();
+  await expect(panel.locator('.training-label-contract-count')).toHaveText('新增 1');
+});
+
+test('same selected materials reload canonical labels after a completed label unification', async ({page, request}) => {
+  const {project} = await seedProject(request);
+  let unified = false;
+  let selectedSummaryCalls = 0;
+
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'label-unify-refresh',
+      name: 'Label Unify Refresh',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 20,
+        default_imgsz: 640,
+        default_batch: 4,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
+    }]})
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {
+    const body = route.request().postDataJSON();
+    const ids = Array.isArray(body?.image_ids) ? body.image_ids.map(String) : [];
+    if (ids.includes('same-material-after-unify')) selectedSummaryCalls += 1;
+    const labels = unified ? ['smoke'] : ['fire'];
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        requested_count: ids.length,
+        matched_count: ids.length,
+        selectable_count: ids.length,
+        eligible_count: ids.length,
+        pending_annotation_count: 0,
+        selectable_total: ids.length,
+        eligible_total: ids.length,
+        box_count: ids.length,
+        size_bytes: ids.length * 1024,
+        label_codes: ids.length ? labels : [],
+        label_counts: ids.length ? {[labels[0]]: ids.length} : {},
+        repository_revision: unified ? 2 : 1,
+      }),
+    });
+  });
+
+  await selectIsolatedTestProject(page, project.id, '算法列表');
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  let card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  let dialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => {
+    if (!(state.labels || []).some(row => String(row?.code || '') === 'fire')) {
+      state.labels = [...(state.labels || []), {
+        code: 'fire', display_name: '明火', class_id: 1, active: true, status: 'active',
+      }];
+    }
+    window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']);
+  });
+
+  let panel = dialog.locator('#trainingLabelContractPanel');
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(1);
+  await expect(panel).toContainText('明火');
+  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).not.toContainText('合并关系');
+  await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(1);
+
+  await page.evaluate(() => window.closeModal());
+  unified = true;
+  await page.evaluate(() => {
+    state.labels = (state.labels || []).filter(row => String(row?.code || '') !== 'fire');
+  });
+
+  card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  dialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
+
+  panel = dialog.locator('#trainingLabelContractPanel');
+  await expect.poll(() => selectedSummaryCalls).toBeGreaterThanOrEqual(2);
+  await expect(panel.locator('[data-training-label-code="fire"]')).toHaveCount(0);
+  await expect(panel.locator('[data-training-label-code="smoke"]')).toHaveCount(1);
+  await expect(panel).toContainText('烟雾');
+  await expect(panel).not.toContainText('上一版本');
+  await expect(panel).not.toContainText('合并关系');
+});
 
 test('training target is the only automatic early-stop control', async ({page, request}) => {
   const {project} = await seedProject(request);
@@ -171,7 +409,7 @@ test('training target is the only automatic early-stop control', async ({page, r
         default_imgsz: 640,
         default_batch: 4,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -191,12 +429,12 @@ test('training target is the only automatic early-stop control', async ({page, r
 
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
 
-  await dialog.getByText('进阶配置（可选）', {exact: true}).click();
-  await expect(dialog.getByRole('button', {name: '编辑全部训练参数'})).toBeVisible();
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.getByRole('button', {name: '配置更多专业参数'})).toBeVisible();
+  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settings).toBeVisible();
   await expect(settings.getByText('阶段试验与目标')).toBeVisible();
@@ -206,11 +444,12 @@ test('training target is the only automatic early-stop control', async ({page, r
   await expect(settings.getByText('目标正确率', {exact: true})).toBeVisible();
   await expect(settings.locator('#ts428Goal')).toHaveValue('90');
   await expect(settings.locator('#ts428Low')).toHaveCount(0);
-  await expect(settings.locator('#ts428Patience')).toHaveCount(0);
+  await expect(settings.locator('#ts428Patience')).toHaveValue('40');
+  await expect(settings.locator('#ts428EarlyStop')).not.toBeChecked();
   await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
 
   await settings.getByRole('button', {name: '应用配置'}).click();
-  await expect(dialog.locator('#tr429Gate')).toContainText('≥ 90.0%');
+  await expect(dialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
   const config = await page.evaluate(() => window.trainingConfigCanonical428?.());
   expect(config.stop_threshold).toBe(0.9);
   expect(config.continue_threshold).toBe(0);
@@ -219,6 +458,7 @@ test('training target is the only automatic early-stop control', async ({page, r
 
 test('frozen feedback candidates stay aligned with training submit provenance', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
+  await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   let durableTask = null;
   let jobListReads = 0;
@@ -267,7 +507,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
         default_imgsz: 640,
         default_batch: 4,
       }],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status:'FOUND'}],
     }]})
   }));
   await page.route('**/api/system/recommendation', route => route.fulfill({
@@ -327,7 +567,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
   const card = page.locator('[data-algorithm-card]', {hasText: '首次打开配置回归'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('#tr429Target')).toHaveValue('feedback-training-target');
 
@@ -357,7 +597,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await expect(dialog.locator('[data-supplement-candidate-summary]')).toContainText('反馈补数据');
   await expect(dialog.locator('[data-supplement-candidate-value]')).toHaveText('1 / 1 张');
 
-  const submitButton = dialog.getByRole('button', {name: '开始训练'});
+  const submitButton = dialog.getByRole('button', {name: '创建训练任务'});
   await expect(submitButton).toBeEnabled();
   const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
@@ -391,9 +631,10 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
 
 test('verified fixed benchmark stays aligned from backend availability to training submit', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
+  await routeCompatibleTrainingMaterials(page);
   let submitted = null;
   const scopeId = 'b'.repeat(64);
-  await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n'}]}]})}));
+  await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]})}));
   await page.route('**/api/system/recommendation', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({device:'cpu',batch:4,workers:0})}));
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
@@ -405,15 +646,23 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});
   const card=page.locator('[data-algorithm-card]',{hasText:'首次打开配置回归'});
   await card.getByRole('button',{name:'训练'}).click();
-  const dialog=page.getByRole('dialog',{name:'训练 · 首次打开配置回归'});
+  const dialog=page.getByRole('dialog',{name:'创建训练任务'});
   await expect(dialog).toBeVisible({timeout:10000});
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
+  // Availability alone must NOT silently replace the default 60/20/20 split.
+  await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();
+  // Data partition is its own disclosure in the new creation form.
+  const splitDetails = dialog.locator('.train-create-split-details');
+  if (!(await splitDetails.getAttribute('open'))) await splitDetails.locator(':scope > summary').click();
+  await expect(dialog.locator('#trV3Experiment')).toHaveValue('20');
+  await expect(dialog.locator('#trV3Validation')).toHaveValue('20');
+  await dialog.locator('#trV3BenchmarkReuse').check();
   await expect(dialog.locator('#trV3BenchmarkReuse')).toBeChecked();
   await expect(dialog.locator('[data-benchmark-mode]')).toContainText('服务端固定 Benchmark');
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
   await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
-  const submitButton=dialog.getByRole('button',{name:'开始训练'});
+  const submitButton=dialog.getByRole('button',{name:'创建训练任务'});
   await expect(submitButton).toBeEnabled();
   await submitButton.click();
   await expect.poll(()=>submitted).not.toBeNull();

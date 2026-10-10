@@ -13,7 +13,7 @@ from filelock import FileLock
 from .errors import PlatformError
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
 _INIT_LOCK_TIMEOUT = 30
@@ -240,10 +240,20 @@ class AlgorithmSqlStore:
                     preserved_legacy_remote_fields=preserved_legacy_remote_fields,
                 )
                 self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
+
+    def revision(self) -> int:
+        """Return the durable algorithm graph revision for cache invalidation."""
+        self.ensure_ready()
+        with self._connect() as conn:
+            try:
+                return max(0, int(self._meta(conn, "algorithm_revision") or 0))
+            except (TypeError, ValueError):
+                return 0
 
     def read_one(self, algorithm_id: str) -> dict | None:
         self.ensure_ready()
@@ -272,6 +282,7 @@ class AlgorithmSqlStore:
                 ).fetchone()[0])
                 self._insert_algorithm_conn(conn, value, sort_index)
                 self._replace_analyses_conn(conn, algorithm_id, value)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -299,6 +310,7 @@ class AlgorithmSqlStore:
                 self._update_algorithm_conn(conn, merged)
                 if replace_analyses:
                     self._replace_analyses_conn(conn, algorithm_id, merged)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -313,6 +325,7 @@ class AlgorithmSqlStore:
                 cursor = conn.execute("DELETE FROM algorithms WHERE project_id=? AND id=?", (self.project_id, str(algorithm_id)))
                 if cursor.rowcount != 1:
                     raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -351,6 +364,144 @@ class AlgorithmSqlStore:
                     "UPDATE algorithms SET current_version_id=?, updated_at=COALESCE(?,updated_at) WHERE project_id=? AND id=?",
                     (version_id, updated_at, self.project_id, algorithm_id),
                 )
+                self._bump_revision(conn)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return value
+
+    def attach_version_if_current(
+        self,
+        algorithm_id: str,
+        version: Mapping[str, Any],
+        *,
+        expected_current_version_id: str | None,
+    ) -> dict:
+        """Atomically compare the training base and attach one new current version.
+
+        Duplicate training_job_id is resolved first so a crash after the first
+        successful attach remains idempotent even though current_version_id now
+        points at that same task's version.
+        """
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        value = dict(version)
+        version_id = str(value.get("id") or "").strip()
+        if not version_id:
+            raise PlatformError(
+                "ALGORITHM_VERSION_ID_REQUIRED",
+                "算法版本缺少 ID",
+                algorithm_id,
+                "请重新归档训练版本。",
+                409,
+            )
+        task_id = str(
+            value.get("task_id")
+            or value.get("job_id")
+            or value.get("training_job_id")
+            or ""
+        ).strip()
+        expected = str(expected_current_version_id or "").strip()
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                algorithm_row = conn.execute(
+                    "SELECT current_version_id FROM algorithms "
+                    "WHERE project_id=? AND id=?",
+                    (self.project_id, algorithm_id),
+                ).fetchone()
+                if algorithm_row is None:
+                    raise PlatformError(
+                        "ALGORITHM_NOT_FOUND",
+                        "算法不存在",
+                        f"找不到算法 {algorithm_id}。",
+                        "请刷新算法列表后重试。",
+                        404,
+                    )
+
+                if task_id:
+                    duplicate = conn.execute(
+                        "SELECT * FROM algorithm_versions "
+                        "WHERE algorithm_id=? AND training_job_id=? LIMIT 1",
+                        (algorithm_id, task_id),
+                    ).fetchone()
+                    if duplicate is not None:
+                        conn.rollback()
+                        return self._version_from_row(duplicate)
+
+                persisted_current = str(
+                    algorithm_row["current_version_id"] or ""
+                ).strip()
+                if expected:
+                    if persisted_current and persisted_current != expected:
+                        raise PlatformError(
+                            "ALGORITHM_VERSION_CONFLICT",
+                            "算法当前版本已经发生变化",
+                            f"训练任务基于 {expected}，当前实际版本为 {persisted_current}。",
+                            "请保留该任务结果用于审计，并基于当前版本重新发起迭代训练。",
+                            409,
+                        )
+                    if not persisted_current:
+                        base_exists = conn.execute(
+                            "SELECT 1 FROM algorithm_versions "
+                            "WHERE algorithm_id=? AND id=?",
+                            (algorithm_id, expected),
+                        ).fetchone()
+                        if base_exists is None:
+                            raise PlatformError(
+                                "ALGORITHM_VERSION_CONFLICT",
+                                "训练基础版本已经不存在",
+                                f"训练任务基于 {expected}，但该版本已被删除或回退清理。",
+                                "请基于当前有效版本重新发起训练。",
+                                409,
+                            )
+                else:
+                    any_version = conn.execute(
+                        "SELECT 1 FROM algorithm_versions "
+                        "WHERE algorithm_id=? LIMIT 1",
+                        (algorithm_id,),
+                    ).fetchone()
+                    if persisted_current or any_version is not None:
+                        actual = persisted_current or "<legacy-inferred>"
+                        raise PlatformError(
+                            "ALGORITHM_VERSION_CONFLICT",
+                            "首训任务的算法版本状态已经变化",
+                            f"任务创建时没有基础版本，当前已存在版本 {actual}。",
+                            "请按迭代训练重新提交任务，不能让旧首训覆盖当前版本。",
+                            409,
+                        )
+
+                if conn.execute(
+                    "SELECT 1 FROM algorithm_versions WHERE id=?",
+                    (version_id,),
+                ).fetchone() is not None:
+                    raise PlatformError(
+                        "ALGORITHM_VERSION_ID_DUPLICATED",
+                        "算法版本 ID 已存在",
+                        version_id,
+                        "请检查训练归档幂等状态。",
+                        409,
+                    )
+                sort_index = int(
+                    conn.execute(
+                        "SELECT COALESCE(MIN(sort_index),0)-1 "
+                        "FROM algorithm_versions WHERE algorithm_id=?",
+                        (algorithm_id,),
+                    ).fetchone()[0]
+                )
+                self._insert_version_conn(conn, algorithm_id, value, sort_index)
+                updated_at = str(
+                    value.get("finished_at") or value.get("created_at") or ""
+                ) or None
+                conn.execute(
+                    "UPDATE algorithms SET current_version_id=?, "
+                    "updated_at=COALESCE(?,updated_at) "
+                    "WHERE project_id=? AND id=?",
+                    (version_id, updated_at, self.project_id, algorithm_id),
+                )
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -384,6 +535,7 @@ class AlgorithmSqlStore:
                     },
                 )
                 conn.execute("UPDATE algorithms SET updated_at=? WHERE project_id=? AND id=?", (now, self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -430,6 +582,7 @@ class AlgorithmSqlStore:
                 )
                 if delete_current_version:
                     conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, expected_current_version_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -468,6 +621,7 @@ class AlgorithmSqlStore:
                 payload["version_operations"] = operations
                 conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, version_id))
                 conn.execute("UPDATE algorithms SET updated_at=?, payload_json=? WHERE project_id=? AND id=?", (now, self._dumps(payload), self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -491,6 +645,7 @@ class AlgorithmSqlStore:
                 operation.update(dict(patch))
                 payload["version_operations"] = operations
                 conn.execute("UPDATE algorithms SET payload_json=? WHERE project_id=? AND id=?", (self._dumps(payload), self.project_id, algorithm_id))
+                self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -512,7 +667,15 @@ class AlgorithmSqlStore:
                     master = dict(master_raw)
                     algorithm_id = existing.get(str(product_id))
                     if not algorithm_id:
-                        item = {**master, "current_version_id": None, "version_operations": [], "versions": [], "created_at": synced_at, "updated_at": synced_at}
+                        item = {
+                            **master,
+                            "current_version_id": None,
+                            "version_operations": [],
+                            "versions": [],
+                            "external_last_synced_at": synced_at,
+                            "created_at": synced_at,
+                            "updated_at": synced_at,
+                        }
                         sort_index = int(conn.execute("SELECT COALESCE(MIN(sort_index),0)-1 FROM algorithms WHERE project_id=?", (self.project_id,)).fetchone()[0])
                         self._insert_algorithm_conn(conn, item, sort_index)
                         self._replace_analyses_conn(conn, str(item["id"]), item)
@@ -521,17 +684,66 @@ class AlgorithmSqlStore:
                     current = self._read_one_conn(conn, algorithm_id)
                     if current is None:
                         continue
-                    changed = any(current.get(key) != value for key, value in master.items())
+                    # Observation metadata and local derivative/version state do
+                    # not constitute an external master-data graph change.
+                    # In particular, external_last_synced_at advances on every
+                    # successful sync but must not invalidate Bootstrap caches.
+                    compare_ignored = {
+                        "id",
+                        "current_version_id",
+                        "versions",
+                        "version_operations",
+                        "created_at",
+                        "updated_at",
+                        "external_last_synced_at",
+                    }
+                    list_fields = {
+                        "external_analyses",
+                        "external_analysis_ids",
+                        "external_compute_platform_ids",
+                    }
+
+                    def comparable(key: str, value: Any) -> Any:
+                        if key == "external_analyses":
+                            rows = [
+                                dict(row)
+                                for row in (value or [])
+                                if isinstance(row, Mapping)
+                            ]
+                            return sorted(
+                                rows,
+                                key=lambda row: (
+                                    str(row.get("analysis_id") or row.get("analysisId") or ""),
+                                    self._dumps(row),
+                                ),
+                            )
+                        if key in list_fields:
+                            return sorted(str(item) for item in (value or []))
+                        return value
+
+                    changed = any(
+                        comparable(key, current.get(key)) != comparable(key, value)
+                        for key, value in master.items()
+                        if key not in compare_ignored
+                    )
                     merged = dict(current)
                     merged.update(master)
                     # external master data must never rewrite the platform's stable algorithm id
                     merged["id"] = algorithm_id
+                    merged["external_last_synced_at"] = synced_at
                     if changed:
                         merged["updated_at"] = synced_at
                         self._update_algorithm_conn(conn, merged)
                         self._replace_analyses_conn(conn, algorithm_id, merged)
                         updated += 1
                     else:
+                        # Freshness metadata is durable but intentionally does
+                        # not move algorithm_revision or algorithm.updated_at.
+                        conn.execute(
+                            "UPDATE algorithms SET external_last_synced_at=? "
+                            "WHERE project_id=? AND id=?",
+                            (synced_at, self.project_id, algorithm_id),
+                        )
                         unchanged += 1
                 incoming_ids = {str(key) for key in incoming}
                 for row in rows:
@@ -548,6 +760,8 @@ class AlgorithmSqlStore:
                         (self.project_id, str(row["id"])),
                     ).rowcount
                     deleted += int(changed or 0)
+                if added or updated or deleted:
+                    self._bump_revision(conn)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -691,6 +905,7 @@ class AlgorithmSqlStore:
                 "version_count": version_count,
                 "external_analysis_count": analysis_count,
                 "schema_version": int(self._meta(conn, "schema_version") or SCHEMA_VERSION),
+                "algorithm_revision": int(self._meta(conn, "algorithm_revision") or 0),
                 "legacy_json_migrated": self._meta(conn, "legacy_json_migrated") == "1",
             }
 
@@ -776,6 +991,8 @@ class AlgorithmSqlStore:
                 );
             """
         )
+        if self._meta(conn, "algorithm_revision") is None:
+            self._set_meta(conn, "algorithm_revision", "0")
         self._repair_missing_training_version_numbers(conn)
         self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
@@ -1141,3 +1358,13 @@ class AlgorithmSqlStore:
             "INSERT INTO algorithm_store_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, str(value)),
         )
+
+    @classmethod
+    def _bump_revision(cls, conn: sqlite3.Connection) -> int:
+        try:
+            current = max(0, int(cls._meta(conn, "algorithm_revision") or 0))
+        except (TypeError, ValueError):
+            current = 0
+        value = current + 1
+        cls._set_meta(conn, "algorithm_revision", str(value))
+        return value

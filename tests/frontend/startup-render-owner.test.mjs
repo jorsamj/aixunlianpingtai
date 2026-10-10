@@ -25,6 +25,13 @@ test('startup dispatch is deferred until canonical page owners and render bridge
   assert.ok(bridge >= 0 && startup > bridge, 'canonical render bridge must exist before startup begins');
 });
 
+test('dead legacy navigation inventory and repaint timer cannot return', () => {
+  assert.equal(app.includes("const navs=["), false);
+  assert.equal(app.includes("navs.includes("), false);
+  assert.equal(app.includes("navs.indexOf("), false);
+  assert.equal(app.includes("setTimeout(()=>{try{renderNav()}catch(e){}},0);"), false);
+});
+
 test('bounded startup cleanup timer cannot return after final render ownership', () => {
   assert.equal(app.includes("setTimeout(()=>{renderTop();cleanup(document);},100);"), false);
   assert.equal(app.includes('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});'), true);

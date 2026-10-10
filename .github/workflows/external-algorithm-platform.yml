@@ -122,9 +122,10 @@ jobs:
           node --check static/modules/training-submit.js
           grep -q "external_algorithm_platform_router" app.py
           grep -Fq 'def training_preflight(' platform_core/external_algorithm_platform.py
-          grep -Fq 'def _refresh_external_training_algorithm' app.py
-          test "$(grep -Fc '_refresh_external_training_algorithm(project_id, asset_algorithm)' app.py)" = "3"
-          grep -Fq 'test_all_backend_training_create_owners_recheck_external_truth_before_local_gate' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
+          grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py
+          ! grep -Fq '_refresh_external_training_algorithm(' app.py
+          grep -Fq 'test_training_create_has_one_external_truth_owner_plus_compatibility_delegate' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_REQUIRED' platform_core/external_algorithm_platform.py
           grep -Fq 'client.product_info(product_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'test_training_preflight_rechecks_changlian_and_blocks_non_visual_change' tests/unit/test_external_algorithm_platform.py
@@ -157,13 +158,13 @@ jobs:
           grep -Fq 'data-category-check' static/modules/algorithm-list-runtime.js
           grep -Fq 'data-category-confirm' static/modules/algorithm-list-runtime.js
           grep -Fq "'外部平台' : '本平台'" static/modules/algorithm-list-runtime.js
-          grep -Fq 'data-external-list-sync' static/modules/external-algorithm-platform.js
+          grep -Fq 'data-algorithm-sync' static/modules/external-algorithm-platform.js
           grep -Fq '自动同步已启用' static/modules/external-algorithm-platform.js
           grep -Fq '每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据' static/modules/external-algorithm-platform.js
           if grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js; then echo "ChangLian UI must not own an interval-based sync setting" >&2; exit 1; fi
           grep -Fq 'latest_due_slot' platform_core/external_algorithm_platform.py
           grep -Fq 'if str(item.get("sync_type") or "") == "auto"' platform_core/external_algorithm_platform.py
-          grep -Fq 'test_legacy_v12_training_entry_enforces_external_analysis_gate' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_v12_training_entry_defers_external_preflight_to_durable_prepare' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_uses_analysis_get_info_as_authoritative_training_truth' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_can_train_when_get_info_proves_enabled_visual_analysis' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_fails_closed_when_analysis_get_info_omits_status' tests/unit/test_external_algorithm_platform.py
@@ -174,7 +175,7 @@ jobs:
           grep -Fq 'def _analysis_detail_truth' platform_core/external_algorithm_platform.py
           grep -Fq 'client.analysis_info(analysis_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
-          grep -Fq '"external_analysis_id": external_analysis_id' app.py
+          grep -Fq '"external_analysis_id": external_analysis_id' platform_core/remote_training_tasks.py
           if grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py; then echo "Web/API auto-sync timer must stay retired" >&2; exit 1; fi
           grep -Fq '后台 Worker heartbeat hook 负责触发固定时段到期检查' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -Fq 'test_auto_sync_reporter_uses_worker_heartbeat_trigger_without_periodic_timer' tests/unit/test_external_algorithm_auto_sync.py
@@ -222,6 +223,10 @@ jobs:
           grep -Fq 'test_missing_external_product_is_deleted_with_versions' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_remote_status_two_is_retained_as_inactive_not_deleted' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"external_delete_pending": True' platform_core/external_algorithm_platform.py
+          grep -Fq 'with ExitStack() as delivery_fences:' platform_core/external_algorithm_platform.py
+          grep -Fq 'model_delivery_version_fence(' platform_core/external_algorithm_platform.py
           grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
           grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
           grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py
@@ -260,7 +265,7 @@ jobs:
           grep -q '_request("POST", self.endpoints.test_sign, params=params)' platform_core/external_algorithm_platform.py
           grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
           if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
-          grep -q "resolve_external_training_analysis" app.py
+          grep -q "resolve_external_training_analysis" platform_core/remote_training_tasks.py
           if grep -Fq "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js; then echo "external platform must not own algorithm-list rendering decorators" >&2; exit 1; fi
           grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
           grep -q "def readiness(self" platform_core/external_algorithm_platform.py
@@ -325,7 +330,7 @@ jobs:
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test ! -e tools/_one_shot_secret_gc_docs.py
           test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
 
 
   real-chrome:
@@ -363,4 +368,4 @@ jobs:
           grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
           grep -Fq "本次训练分析方式" static/modules/external-algorithm-platform.js
           if grep -Fq 'data-external-endpoint=' static/modules/external-algorithm-platform.js; then echo "ChangLian canonical provider paths must not be user-editable" >&2; exit 1; fi
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt

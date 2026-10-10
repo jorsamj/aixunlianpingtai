@@ -14,6 +14,7 @@ from .models import ObjectMetadata, StorageType
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 BATCH_SIZE = 500
 MAX_TEXT_LINE = 1024 * 1024
+_UNSET_TEXT_INVENTORY = object()
 
 
 @dataclass(frozen=True)
@@ -269,8 +270,20 @@ class YoloImportScanner:
                 self._tick(key)
         flush()
 
-    def _record_text_identity(self, key: str, sha256: str, size_bytes: int) -> None:
-        current = self.store.inventory_for_keys([key]).get(key)
+    def _record_text_identity(
+        self,
+        key: str,
+        sha256: str,
+        size_bytes: int,
+        *,
+        expected_inventory=_UNSET_TEXT_INVENTORY,
+        identity_sink: list[dict] | None = None,
+    ) -> None:
+        current = (
+            self.store.inventory_for_keys([key]).get(key)
+            if expected_inventory is _UNSET_TEXT_INVENTORY
+            else expected_inventory
+        )
         if current is None:
             raise YoloImportError(
                 "YOLO_SOURCE_CHANGED",
@@ -282,14 +295,31 @@ class YoloImportScanner:
                 "YOLO_SOURCE_CHANGED",
                 "YOLO text object changed while being read",
             )
-        self.store.inventory_many([{
+        actual_sha = str(sha256 or "").lower()
+        listed_sha = str(current.get("sha256") or "").strip().lower()
+        if listed_sha and listed_sha != actual_sha:
+            raise YoloImportError(
+                "YOLO_SOURCE_CHANGED",
+                "YOLO text object hash changed while being read",
+            )
+        identity = {
             "object_key": key,
             "size_bytes": int(size_bytes),
             "etag": str(current.get("etag") or ""),
-            "sha256": str(sha256 or "").lower(),
-        }])
+            "sha256": actual_sha,
+        }
+        if identity_sink is None:
+            self.store.inventory_many([identity])
+        else:
+            identity_sink.append(identity)
 
-    def _lines(self, key):
+    def _lines(
+        self,
+        key,
+        *,
+        expected_inventory=_UNSET_TEXT_INVENTORY,
+        identity_sink: list[dict] | None = None,
+    ):
         digest = hashlib.sha256()
         size_bytes = 0
         with closing(self.provider.open_reader(key)) as stream:
@@ -298,7 +328,13 @@ class YoloImportScanner:
                     raise YoloScanCancelled()
                 line = stream.readline(MAX_TEXT_LINE + 1)
                 if not line:
-                    self._record_text_identity(key, digest.hexdigest(), size_bytes)
+                    self._record_text_identity(
+                        key,
+                        digest.hexdigest(),
+                        size_bytes,
+                        expected_inventory=expected_inventory,
+                        identity_sink=identity_sink,
+                    )
                     return
                 if len(line) > MAX_TEXT_LINE:
                     raise YoloImportError("YOLO_TEXT_LINE_TOO_LONG", "Dataset text line exceeds the size limit")
@@ -496,14 +532,20 @@ class YoloImportScanner:
                 if not images:
                     return self.store.quality_summary()
                 options = {key for image in images for key in self._label_options(image[0])}
-                available = set()
+                available_inventory: dict[str, dict] = {}
                 keys = sorted(options)
                 for offset in range(0, len(keys), BATCH_SIZE):
                     chunk = keys[offset:offset + BATCH_SIZE]
                     placeholders = ",".join("?" for _ in chunk)
-                    available.update(row[0] for row in connection.execute(
-                        f"SELECT object_key FROM dataset_objects WHERE object_key IN ({placeholders})", chunk))
+                    for row in connection.execute(
+                        f"SELECT object_key,size_bytes,etag,sha256 FROM dataset_objects "
+                        f"WHERE object_key IN ({placeholders})",
+                        chunk,
+                    ):
+                        available_inventory[str(row["object_key"])] = dict(row)
+                available = set(available_inventory)
             states, boxes, issues = [], [], []
+            verified_identities: list[dict] = []
 
             def flush():
                 self.store.annotation_batch(states, boxes, issues)
@@ -524,7 +566,14 @@ class YoloImportScanner:
                     state["label_key"] = label_key
                     nonempty = False
                     try:
-                        for number, line in enumerate(self._lines(label_key), 1):
+                        for number, line in enumerate(
+                            self._lines(
+                                label_key,
+                                expected_inventory=available_inventory.get(label_key),
+                                identity_sink=verified_identities,
+                            ),
+                            1,
+                        ):
                             if not line:
                                 continue
                             nonempty = True
@@ -543,5 +592,7 @@ class YoloImportScanner:
                         issues.append({"object_key": key, "line_number": 0,
                                        "code": error.code if isinstance(error, YoloImportError) else "YOLO_LABEL_READ_FAILED", "severity": "error"})
                 states.append(state)
+            if verified_identities:
+                self.store.inventory_many(verified_identities)
             flush()
             after = images[-1][0]

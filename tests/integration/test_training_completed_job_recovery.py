@@ -2,14 +2,87 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from platform_core.algorithms import list_algorithms
 from platform_core.snapshots import dataset_revision_document, ensure_dataset_revision
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.task_runtime.worker import WorkerContext
-from platform_core.training_tasks import TrainingHandler
+from platform_core.training_tasks import (
+    TrainingHandler,
+    _training_finalization_existing_version,
+)
 
 
-def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
+def _trainable_version(version_id: str, *, task_id: str = ""):
+    return {
+        "id": version_id,
+        "version_name": version_id,
+        "task_id": task_id,
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+    }
+
+
+def test_local_finalization_rejects_stale_iteration_base():
+    algorithm = {
+        "id": "alg",
+        "current_version_id": "v2",
+        "versions": [
+            _trainable_version("v1"),
+            _trainable_version("v2"),
+        ],
+    }
+
+    with pytest.raises(RuntimeError, match="TRAINING_BASE_VERSION_STALE"):
+        _training_finalization_existing_version(
+            algorithm,
+            task_id="task-new",
+            expected_base_version_id="v1",
+            framework="ultralytics",
+        )
+
+
+def test_local_first_run_finalization_rejects_new_current_version():
+    algorithm = {
+        "id": "alg",
+        "current_version_id": "v1",
+        "versions": [_trainable_version("v1")],
+    }
+
+    with pytest.raises(RuntimeError, match="TRAINING_BASE_VERSION_STALE"):
+        _training_finalization_existing_version(
+            algorithm,
+            task_id="task-first",
+            expected_base_version_id=None,
+            framework="ultralytics",
+        )
+
+
+def test_local_finalization_reuses_same_task_version_before_stale_check():
+    existing = _trainable_version("v2", task_id="task-recover")
+    algorithm = {
+        "id": "alg",
+        "current_version_id": "v2",
+        "versions": [
+            _trainable_version("v1"),
+            existing,
+        ],
+    }
+
+    resolved = _training_finalization_existing_version(
+        algorithm,
+        task_id="task-recover",
+        expected_base_version_id="v1",
+        framework="ultralytics",
+    )
+
+    assert resolved is existing
+
+
+def test_completed_training_job_recovers_without_retraining(tmp_path: Path, monkeypatch):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     task_id = "train-recover"
@@ -146,6 +219,12 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
     def must_not_retrain(*_args, **_kwargs):
         raise AssertionError("completed verified training must be finalized, not trained again")
 
+    publish_requests = []
+    monkeypatch.setattr(
+        "platform_core.training_tasks._request_external_publish_after_training",
+        lambda **kwargs: publish_requests.append(dict(kwargs)) or True,
+    )
+
     handler = TrainingHandler(data_dir, process_runner=must_not_retrain)
     context = WorkerContext(second.task, second, repository, artifacts)
     status, result_ref = handler.recover(context)
@@ -164,3 +243,7 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
     assert len(versions) == 1
     assert versions[0]["task_id"] == task_id
     assert versions[0]["training_status"] == "SUCCEEDED"
+    assert result["external_publish_requested"] is True
+    assert len(publish_requests) == 1
+    assert publish_requests[0]["algorithm_id"] == "algorithm-one"
+    assert publish_requests[0]["version_id"] == versions[0]["id"]

@@ -140,10 +140,12 @@ test('training task create uses hydration truth even when training resource navi
   await expect(page.getByRole('button', {name: /训练资源/})).toBeHidden();
   await page.getByRole('button', {name: '＋ 新建训练任务', exact: true}).click();
 
-  const dialog = page.getByRole('dialog', {name: '训练 · 训练任务入口回归'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('#tr429Target')).toHaveValue('task-create-ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('#trainUiLabelSlot')).toBeVisible();
   expect(trainingOptionsCalls).toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);
 });
@@ -431,9 +433,16 @@ test('formal version marker stays stable across final render owners and delayed 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
+  const backendVersion = await page.evaluate(async () => {
+    const response = await fetch('/api/system/version');
+    const body = await response.json();
+    return String(body.version || '');
+  });
+  expect(backendVersion).not.toBe('');
+
   const expectFormalVersion = async () => {
-    await expect(page.locator('#versionBadge')).toHaveText('v42.24.0');
-    await expect(page.locator('.nav-footer b')).toHaveText('v42.24.0');
+    await expect(page.locator('#versionBadge')).toHaveText(`v${backendVersion}`);
+    await expect(page.locator('.nav-footer b')).toHaveText(`v${backendVersion}`);
   };
 
   await expectFormalVersion();

@@ -7,16 +7,29 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'static/index.html'
+      - 'app.py'
+      - 'platform_core/training_label_tasks.py'
       - 'static/main.mjs'
       - 'static/app.js'
+      - 'static/training-create-modal.css'
+      - 'tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs'
       - 'static/modules/training-create-hydration.js'
       - 'static/modules/training-task-visibility-runtime.js'
       - 'static/modules/training-draft.js'
+      - 'static/modules/training-draft-runtime.js'
       - 'static/modules/training-submit.js'
+      - 'static/modules/training-labels.js'
+      - 'static/modules/training-material-summary-runtime.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
+      - 'tests/frontend/training-draft.test.mjs'
+      - 'tests/frontend/training-draft-runtime.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
+      - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'tests/frontend/training-submit-validation.test.mjs'
+      - 'tests/frontend/training-labels.test.mjs'
+      - 'tests/frontend/training-material-summary-runtime.test.mjs'
+      - 'tests/unit/test_training_label_contract.py'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
       - 'tests/browser/navigation-stability.spec.mjs'
@@ -39,7 +52,9 @@ jobs:
         run: >-
           node --check static/modules/training-create-hydration.js &&
           node --check static/modules/training-draft.js &&
+          node --check static/modules/training-draft-runtime.js &&
           node --check static/modules/training-submit.js &&
+          node --check static/modules/training-labels.js &&
           node --check static/main.mjs &&
           node --check tests/frontend/training-create-hydration.test.mjs &&
           node --check tests/frontend/training-submit-validation.test.mjs &&
@@ -48,9 +63,15 @@ jobs:
         run: >-
           node --test
           tests/frontend/training-create-hydration.test.mjs
+          tests/frontend/training-draft.test.mjs
+          tests/frontend/training-draft-runtime.test.mjs
           tests/frontend/training-modal-device-probe.test.mjs
           tests/frontend/training-submit.test.mjs
+          tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs
+          tests/frontend/mother-model-preinstall.test.mjs
           tests/frontend/training-submit-validation.test.mjs
+          tests/frontend/training-labels.test.mjs
+          tests/frontend/training-material-summary-runtime.test.mjs
       - name: Permanent first-open guards
         shell: bash
         run: |
@@ -62,6 +83,10 @@ jobs:
             exit 1
           fi
           grep -Fq 'training task create uses hydration truth even when training resource navigation is hidden' tests/browser/navigation-stability.spec.mjs
+          if grep -Eq 'openTrainTask423|startAlgorithmTrainingLegacy423_1|startTrain423\(\)' static/app.js; then
+            echo 'pre-canonical v423 training create modal must stay retired' >&2
+            exit 1
+          fi
           grep -Fq "build: 'training-create-hydration-" static/modules/training-create-hydration.js
           grep -Fq 'const hydrateOptions = async' static/modules/training-create-hydration.js
           grep -Fq 'const hydrateRecommendation = async' static/modules/training-create-hydration.js
@@ -71,6 +96,22 @@ jobs:
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
           grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
+          grep -Fq 'training label UI shows only server-resolved canonical inheritance without merge audit ownership' tests/frontend/training-labels.test.mjs
+          grep -Fq 'labelHistoryOwner: false' static/modules/training-labels.js
+          grep -Fq 'labelInheritanceOwner: false' static/modules/training-draft-runtime.js
+          if grep -Eq 'labelGovernance414|merged_into|inheritedLabelCodes|effectiveLabelCodes|inheritancePending|Label Schema Changed' static/modules/training-labels.js static/modules/training-draft.js; then
+            echo 'training create frontend must not own label history or effective schema' >&2
+            exit 1
+          fi
+          grep -Fq 'materialSummaryRuntime?.invalidate?.();' static/modules/training-labels.js
+          grep -Fq '/training-labels/inherited?algorithm_id=' static/modules/training-labels.js
+          grep -Fq 'serverInheritancePreviewOwner: true' static/modules/training-labels.js
+          grep -Fq 'def inherited_training_label_preview(' platform_core/training_label_tasks.py
+          grep -Fq '/api/v62/projects/{project_id}/training-labels/inherited' app.py
+          grep -Fq 'data-training-base-label' static/modules/training-labels.js
+          grep -Fq 'function invalidate()' static/modules/training-material-summary-runtime.js
+          grep -Fq 'invalidateTrainingMaterialSummaryAfterLabelMutation414' static/app.js
+          grep -Fq 'same selected materials reload canonical labels after a completed label unification' tests/browser/training-create-first-open.spec.mjs
           grep -Fq 'async function preflightTraining(algorithmId' static/modules/external-algorithm-platform.js
           grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
           grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js
@@ -81,7 +122,7 @@ jobs:
           if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
           grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
           grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
-          grep -Fq 'legacy training shell uses same-scope status helper before final visibility runtime takes ownership' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq 'canonical training visibility uses its same-scope status helper' tests/frontend/training-submit-validation.test.mjs
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
@@ -99,6 +140,7 @@ jobs:
           grep -Fq "preferred_project_id" tests/browser/training-quality-reports.spec.mjs
           if grep -Fq "JSON.stringify({projectId, page" tests/browser/training-create-first-open.spec.mjs tests/browser/training-quality-reports.spec.mjs; then echo 'browser tests must not restore production localStorage project selection' >&2; exit 1; fi
           grep -Fq 'training target is the only automatic early-stop control' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq 'training dialog shows canonical inherited labels horizontally without historical audit' tests/browser/training-create-first-open.spec.mjs
           test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
           stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
           benchmark_line="$(grep -nF 'async function loadTrainingBenchmarkReuseV1' static/app.js | head -1 | cut -d: -f1)"
@@ -107,7 +149,7 @@ jobs:
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js
           grep -Fq "api('/api/v62/training-devices')" static/app.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   real-chrome:

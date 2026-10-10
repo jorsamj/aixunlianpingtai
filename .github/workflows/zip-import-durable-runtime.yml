@@ -22,6 +22,14 @@ on:
       - 'static/styles.css'
       - 'tests/unit/test_secrets.py'
       - 'tests/unit/test_zip_multipart.py'
+      - 'tools/audit_v19_partial_import.py'
+      - 'tests/unit/test_audit_v19_partial_import.py'
+      - 'tests/api/test_v19_import_bounded_admission.py'
+      - 'tests/api/test_v19_multipart_controls.py'
+      - 'tests/api/test_zip_class_samples_v19.py'
+      - 'platform_core/zip_label_samples.py'
+      - 'tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs'
+      - 'tests/api/test_v19_import_failure_rollback.py'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - 'tests/frontend/zip-multipart-upload.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
@@ -32,6 +40,7 @@ on:
       - 'tests/api/test_v19_import_scalability.py'
       - 'tests/api/test_v19_import_report_externalization.py'
       - 'docs/PROJECT_HANDOFF_CURRENT.md'
+      - 'docs/UAT_2026_10_09_IMPORT_FIX_PROGRESS.md'
       - 'docs/BUG_AUDIT_2026-09-17.md'
       - '.github/workflows/zip-import-durable-runtime.yml'
 
@@ -60,6 +69,7 @@ jobs:
         run: >-
           node --test
           tests/frontend/zip-import-durable-runtime.test.mjs
+          tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs
           tests/frontend/zip-multipart-upload.test.mjs
           tests/frontend/upload-task-center.test.mjs
           tests/frontend/storage-import-progress.test.mjs
@@ -76,11 +86,11 @@ jobs:
           grep -Fq "stage:'等待前序 ZIP 导入任务'" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
           grep -Fq 'window.doUploadZip426=input=>upload(input)' static/modules/zip-import-runtime.js
-          grep -Fq 'zip-import-bootstrap.mjs?v=422543' static/index.html
+          grep -Fq 'zip-import-bootstrap.mjs?v=422617' static/index.html
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
-          grep -Fq "zip-import-runtime.js?v=422543" static/zip-import-bootstrap.mjs
+          grep -Fq "zip-import-runtime.js?v=422617" static/zip-import-bootstrap.mjs
           if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
           grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq "pollOwner" static/modules/upload-task-center.js
@@ -91,7 +101,7 @@ jobs:
           grep -Fq 'upload task center stays below modal interaction layer' tests/frontend/import-dock-style.test.mjs
           if grep -Fq 'setInterval(switchProject, 1500)' static/modules/upload-task-center.js; then echo "upload task center project switching must be navigation-owned" >&2; exit 1; fi
           grep -Fq 'uploadTaskCenterRuntime.switchProject?.()' static/main.mjs
-          grep -Fq "upload-task-center.js?v=66008" static/main.mjs
+          grep -Fq "upload-task-center.js?v=66009" static/main.mjs
           grep -Eq 'main\.mjs\?v=42\.25\.[0-9]+' static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
@@ -123,7 +133,7 @@ jobs:
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test ! -e tools/_one_shot_secret_gc_docs.py
           test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
   backend-persistence:
@@ -144,16 +154,21 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
           tests/unit/test_secrets.py
           tests/unit/test_zip_multipart.py
+          tests/unit/test_audit_v19_partial_import.py
       - name: Durable v19 persistence and bounded 10k hot-state tests
         run: >-
           python -m pytest -q
           tests/api/test_v19_job_atomic_persistence.py
           tests/api/test_v19_import_scalability.py
           tests/api/test_v19_import_report_externalization.py
+          tests/api/test_v19_import_bounded_admission.py
+          tests/api/test_v19_multipart_controls.py
+          tests/api/test_zip_class_samples_v19.py
+          tests/api/test_v19_import_failure_rollback.py
       - name: Backend syntax and wiring guards
         shell: bash
         run: |
-          python -m py_compile app.py platform_core/secrets.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py
+          python -m py_compile app.py platform_core/secrets.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py tools/audit_v19_partial_import.py
           grep -Fq 'class V19MultipartUploadReq' app.py
           grep -Fq 'ZipMultipartRepository' app.py
           grep -Fq '正在合并 ZIP 分片' app.py

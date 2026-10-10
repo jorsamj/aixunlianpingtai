@@ -1,5 +1,11 @@
 name: Remote Material Import
 
+# Superseded pushes on the same branch must not build an unbounded CI queue.
+# Tests and guards remain unchanged; only the latest HEAD may be accepted.
+concurrency:
+  group: material-import-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
@@ -16,6 +22,7 @@ on:
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/frontend/plain-upload-request-id.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -28,6 +35,8 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/labels.py'
       - 'platform_core/storage/import_candidates.py'
       - 'platform_core/storage/rescan_tasks.py'
       - 'tests/unit/storage/test_rescan_tasks.py'
@@ -42,6 +51,12 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
+      - 'platform_core/upload_batches.py'
+      - 'platform_core/storage/source_repository.py'
+      - 'tests/unit/storage/test_source_repository.py'
+      - 'tests/unit/test_upload_batches.py'
+      - 'tests/api/test_upload_request_recovery.py'
+      - 'tests/api/test_upload_storage_source_lifecycle.py'
       - '.github/workflows/remote-material-import.yml'
   pull_request:
     branches:
@@ -58,6 +73,7 @@ on:
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
+      - 'tests/frontend/plain-upload-request-id.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -69,6 +85,8 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/annotation_repository.py'
+      - 'platform_core/labels.py'
       - 'platform_core/storage/import_candidates.py'
       - 'platform_core/storage/rescan_tasks.py'
       - 'tests/unit/storage/test_rescan_tasks.py'
@@ -83,6 +101,12 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/integration/test_storage_import_worker.py'
       - 'tests/api/test_server_material_import.py'
+      - 'platform_core/upload_batches.py'
+      - 'platform_core/storage/source_repository.py'
+      - 'tests/unit/storage/test_source_repository.py'
+      - 'tests/unit/test_upload_batches.py'
+      - 'tests/api/test_upload_request_recovery.py'
+      - 'tests/api/test_upload_storage_source_lifecycle.py'
       - '.github/workflows/remote-material-import.yml'
 
 jobs:
@@ -116,6 +140,11 @@ jobs:
           platform_core/storage/detection_import.py
           platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
+          platform_core/annotation_repository.py
+          platform_core/upload_batches.py
+          tests/api/test_upload_request_recovery.py
+          tests/api/test_upload_storage_source_lifecycle.py
+          platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
           task_worker.py
@@ -157,13 +186,15 @@ jobs:
         run: >-
           node --check static/app.js &&
           node --check static/modules/upload-task-center.js &&
-          node --check tests/frontend/upload-task-center.test.mjs
+          node --check tests/frontend/upload-task-center.test.mjs &&
+          node --check tests/frontend/plain-upload-request-id.test.mjs
       - name: Storage import frontend contracts
         run: >-
           node --test
           tests/frontend/server-material-import.test.mjs
           tests/frontend/storage-import-progress.test.mjs
           tests/frontend/upload-task-center.test.mjs
+          tests/frontend/plain-upload-request-id.test.mjs
 
   api:
     runs-on: ubuntu-24.04
@@ -188,13 +219,20 @@ jobs:
           platform_core/external_publish_request.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
+          platform_core/annotation_repository.py
+          platform_core/labels.py
           platform_core/storage/import_candidates.py
           platform_core/storage/rescan_tasks.py
-      - name: Remote material import API contract
+      - name: Remote material import API and durable upload recovery contracts
         run: >-
           python -m pytest -q
           tests/api/test_server_material_import.py
           tests/api/test_storage_sources.py
+          tests/api/test_upload_request_recovery.py
+          tests/api/test_upload_storage_source_lifecycle.py
+          tests/unit/storage/test_source_repository.py
+          tests/unit/test_upload_batches.py
+          tests/unit/test_image_batch_context_isolation.py
       - name: Permanent remote material guards
         shell: bash
         run: |
@@ -268,6 +306,9 @@ jobs:
           grep -Fq 'def _commit_yolo_review_annotations' platform_core/remote_material_import.py
           grep -Fq 'store.annotation_batch(states, boxes, issues)' platform_core/remote_material_import.py
           grep -Fq "annotations = AnnotationRepository" platform_core/storage/import_tasks.py
+          grep -Fq 'with label_governance_fence(project_path):' platform_core/storage/import_tasks.py
+          grep -Fq '_confirmed_import_label_ids' platform_core/storage/import_tasks.py
+          grep -Fq 'test_confirmed_import_rechecks_label_governance_before_material_commit' tests/integration/test_storage_import_worker.py
           grep -Fq "confirmation.get('label_mapping')" platform_core/storage/import_tasks.py
           grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
           grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py
@@ -283,17 +324,41 @@ jobs:
           grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py
           grep -Fq 'material_staging_ref' platform_core/remote_material_import.py
           grep -Fq '_remote_material_publisher' platform_core/storage/import_tasks.py
-          grep -Fq 'class RemoteMaterialStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'class RemoteExecutionStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'RemoteMaterialStagingLifecycle = RemoteExecutionStagingLifecycle' platform_core/remote_material_lifecycle.py
           grep -Fq 'REMOTE_MATERIAL_STAGING_RETENTION_SECONDS' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.MODEL_CONVERSION' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.TRAINING' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.MATERIAL_BATCH' platform_core/remote_material_lifecycle.py
+          grep -Fq 'TaskKind.DEPLOYMENT_TEST' platform_core/remote_material_lifecycle.py
+          grep -Fq 'hardware_verification.result_output_storage' platform_core/remote_execution_transport.py
           grep -Fq 'provider.delete(key)' platform_core/remote_material_lifecycle.py
-          grep -Fq 'RemoteMaterialStagingGCReporter' task_worker.py
-          grep -Fq 'instance_lease.add_renew_hook(material_gc_reporter.report)' task_worker.py
-          grep -Fq 'remote_staging_cleanup' platform_core/remote_execution_transport.py
+          grep -Fq 'RemoteExecutionStagingGCReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(remote_staging_gc_reporter.report)' task_worker.py
+          grep -Fq 'provisional-training-delivery' platform_core/remote_material_lifecycle.py
+          grep -Fq 'remote-results/{generation}/training-models.json' platform_core/remote_material_lifecycle.py
+          grep -Fq 'model_delivery_version_fence(' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_retires_unattached_final_model_delivery' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_does_not_protect_older_generation_by_task_id_only' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_protects_delivery_when_version_is_attached' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'conversion-local-staging' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_conversion_gc_retires_exact_local_orphan_after_crash' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_conversion_gc_protects_local_artifact_after_job_commit' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_terminal_conversion_gc_protects_exact_canonical_model_artifact' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_conversion_local_gc_defers_stale_failed_snapshot_after_task_retry' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq '.remote-conversion-commit.lock' platform_core/remote_material_lifecycle.py
+          grep -Fq 'timeout=0' platform_core/remote_material_lifecycle.py
+          grep -Fq 'test_terminal_training_gc_refuses_unowned_canonical_row' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'def _record_remote_result_staging(' platform_core/remote_execution_transport.py
+          grep -Fq 'test_conversion_terminal_gc_uses_exact_upload_state_and_keeps_canonical_source' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_successful_retry_ledger_includes_previous_generation_result' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_deployment_test_gc_records_only_staged_model_and_input_not_result_output' tests/unit/test_remote_material_lifecycle.py
+          grep -Fq 'test_generic_deployment_test_stays_outside_rknn_board_gc_scope' tests/unit/test_remote_material_lifecycle.py
           ! grep -Fq 'list_objects(' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
 
 

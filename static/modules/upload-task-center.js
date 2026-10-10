@@ -1,4 +1,4 @@
-const ACTIVE_STATUSES = new Set(['UPLOADING','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
+const ACTIVE_STATUSES = new Set(['UPLOADING','PAUSED','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
 const TERMINAL_STATUSES = new Set(['DONE','SUCCEEDED','COMPLETED','FINISHED','FAILED','CANCELLED','CANCELED','INTERRUPTED']);
 const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
 const POLL_MS = 1200;
@@ -20,6 +20,7 @@ function statusPresentation(status) {
   if (['DONE','SUCCEEDED','COMPLETED','FINISHED'].includes(key)) return {label:'已完成', cls:'ok'};
   if (['FAILED','INTERRUPTED'].includes(key)) return {label:'失败', cls:'bad'};
   if (['CANCELLED','CANCELED'].includes(key)) return {label:'已取消', cls:'muted'};
+  if (key === 'PAUSED') return {label:'已暂停', cls:'warn'};
   if (['QUEUED','WAITING','WAITING_RESOURCE','SELECTING'].includes(key)) return {label:'等待中', cls:'warn'};
   return {label:'进行中', cls:'run'};
 }

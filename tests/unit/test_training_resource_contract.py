@@ -4,6 +4,7 @@ import pytest
 
 import platform_core.training_metrics as training_metrics
 import platform_core.training_devices as training_devices
+import platform_core.training_resource_policy as resource_policy
 
 
 GIB = 1024 ** 3
@@ -41,6 +42,9 @@ class _Cuda:
 
     def device_count(self):
         return self._devices
+
+    def get_device_properties(self, _index):
+        return SimpleNamespace(uuid="GPU-test", name="Test GPU")
 
 
 class _Torch:
@@ -154,6 +158,45 @@ def test_fp32_uses_more_conservative_activation_memory_budget_than_fp16(monkeypa
     assert fp32["resolved_batch"] < fp16["resolved_batch"]
 
 
+
+def test_auto_precision_is_frozen_before_trainer_start(monkeypatch):
+    _patch_host(monkeypatch)
+    fp16 = training_metrics.resolve_resources(
+        _request(precision="auto", amp=True),
+        _context(gpu_uuid="GPU-test", gpu_name="Scheduler GPU"),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    fp32 = training_metrics.resolve_resources(
+        _request(precision="auto", amp=False),
+        _context(gpu_uuid="GPU-test"),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert fp16["requested_precision"] == "auto"
+    assert fp16["resolved_precision"] == "fp16"
+    assert fp16["assigned_device"] == "cuda:0"
+    assert fp16["gpu_uuid"] == "GPU-test"
+    assert fp32["resolved_precision"] == "fp32"
+    assert fp32["activation_precision_factor"] == pytest.approx(2.0)
+
+
+def test_resource_resolution_rejects_changed_gpu_identity(monkeypatch):
+    _patch_host(monkeypatch)
+
+    class ChangedCuda(_Cuda):
+        def get_device_properties(self, _index):
+            return SimpleNamespace(uuid="GPU-other", name="Other GPU")
+
+    with pytest.raises(RuntimeError, match="GPU_IDENTITY_MISMATCH"):
+        training_metrics.resolve_resources(
+            _request(),
+            _context(gpu_uuid="GPU-assigned"),
+            _Model(),
+            _Torch(ChangedCuda()),
+        )
+
 def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatch):
     _patch_host(monkeypatch)
 
@@ -205,6 +248,48 @@ def test_auto_batch_minus_one_remains_supported(monkeypatch):
     assert result["requested_batch"] == -1
     assert result["resolved_batch"] > 0
     assert result["resolved_batch"] <= 128
+
+
+def test_auto_requested_batch_128_resolves_to_safe_batch_32(monkeypatch):
+    _patch_host(monkeypatch)
+    constrained_gpu = _Cuda(
+        free=int(14.2 * GIB),
+        total=24 * GIB,
+    )
+    result = training_metrics.resolve_resources(
+        _request(batch=128, resource_profile="balanced"),
+        _context(),
+        _Model(),
+        _Torch(constrained_gpu),
+    )
+
+    assert result["requested_batch"] == 128
+    assert result["resolved_batch"] == 32
+    assert constrained_gpu.selected == 0
+
+
+def test_manual_batch_128_over_same_gpu_budget_fails(monkeypatch):
+    _patch_host(monkeypatch)
+    constrained_gpu = _Cuda(
+        free=int(14.2 * GIB),
+        total=24 * GIB,
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"RESOURCE_MANUAL_INVALID: requested batch=128 exceeds current GPU budget",
+    ):
+        training_metrics.resolve_resources(
+            _request(
+                resource_strategy="manual",
+                batch=128,
+                workers=4,
+                cache=False,
+                resource_profile="balanced",
+            ),
+            _context(),
+            _Model(),
+            _Torch(constrained_gpu),
+        )
 
 
 def test_manual_batch_minus_one_is_rejected(monkeypatch):
@@ -284,13 +369,12 @@ def test_auto_tiny_dataset_caps_batch_and_workers_to_executable_loader_truth(mon
         _Torch(_Cuda()),
     )
 
-    assert result["resource_candidate_batch"] > 11
-    assert result["resolved_batch"] == 11
-    assert result["loader_batches"] == 1
-    assert result["resolved_workers"] == 0
-    assert any("batch capped" in item and "->11" in item for item in result["adjustments"])
-    assert any("workers capped" in item and "->0" in item for item in result["adjustments"])
-    assert any("train_images=11" in item and "loader_batches=1" in item for item in result["reasons"])
+    assert result["resource_candidate_batch"] == 3
+    assert result["resolved_batch"] == 3
+    assert result["loader_batches"] == 4
+    assert result["resolved_workers"] == 4
+    assert any("small training set" in item and "->3" in item for item in result["adjustments"])
+    assert any("train_images=11" in item and "loader_batches=4" in item for item in result["reasons"])
 
 
 def test_auto_single_image_dataset_is_one_batch_with_zero_workers(monkeypatch):
@@ -349,3 +433,80 @@ def test_manual_rejects_values_that_ultralytics_loader_would_change(monkeypatch)
             _Model(),
             _Torch(_Cuda()),
         )
+
+
+
+def test_deferred_auto_admission_only_estimates_batch_one_floor():
+    evidence = resource_policy.auto_admission_evidence(
+        _request(device="auto", batch=128, resource_profile="balanced"),
+        _Model(),
+    )
+
+    memory = evidence["memory_model"]
+    assert evidence["mode"] == "deferred_auto_assignment"
+    assert evidence["gpu_memory_floor_bytes"] == (
+        memory["fixed_bytes"] + memory["per_image_bytes"]
+    )
+    assert evidence["target_gpu_memory_fraction"] == pytest.approx(0.70)
+    assert "resolved_batch" not in evidence
+    assert memory["resolved_precision"] == "fp16"
+
+
+def test_deferred_auto_reservation_scales_with_candidate_gpu_headroom():
+    payload = {
+        "resource_resolution_deferred": True,
+        "resource_strategy": "auto",
+        "resource_profile": "balanced",
+        "gpu_memory_floor_bytes": 2 * GIB,
+    }
+    small = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=24 * GIB,
+        free_bytes=22 * GIB,
+        already_reserved_bytes=0,
+        active_count=0,
+    )
+    large = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=48 * GIB,
+        free_bytes=44 * GIB,
+        already_reserved_bytes=0,
+        active_count=0,
+    )
+
+    assert small and large
+    assert large > small > payload["gpu_memory_floor_bytes"]
+    shared = resource_policy.deferred_auto_reservation_bytes(
+        payload,
+        total_bytes=48 * GIB,
+        free_bytes=44 * GIB,
+        already_reserved_bytes=4 * GIB,
+        active_count=1,
+    )
+    assert shared == payload["gpu_memory_floor_bytes"]
+
+
+def test_auto_small_dataset_keeps_multiple_optimizer_updates(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(batch=-1, workers=0, resource_profile="performance"),
+        _context(train_image_count=80),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    assert result["resolved_batch"] <= 20
+    assert result["loader_batches"] >= 4
+    assert result["resolved_workers"] <= 12
+    assert any("small training set" in note for note in result["adjustments"])
+
+
+def test_auto_workers_are_bounded_by_actual_host_ram(monkeypatch):
+    _patch_host(monkeypatch)
+    monkeypatch.setattr(training_metrics, "host_resources", lambda: (16, 8 * GIB))
+    resolved = training_metrics.resolve_resources(
+        _request(batch=-1, workers=0, resource_profile="performance"),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    assert resolved["resolved_workers"] <= 2

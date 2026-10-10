@@ -6,6 +6,7 @@ import {
   benchmarkReuseContext,
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
+  validatePreparedMotherModel,
   installTrainingSubmitRuntime,
   normalizeTrainingPrecision,
   supplementCandidateContext,
@@ -43,6 +44,27 @@ const target = {
   algorithms: [{key: 'yolo_detect', base_model: 'yolo11n.pt'}],
 };
 const algorithm = target.algorithms[0];
+
+
+test('first training only accepts a selected and prepared .pt checkpoint', () => {
+  const prepared = {id:'remote-agent', framework:'ultralytics', type:'server',
+    base_models:[
+      {value:'/data/platform-data/models/yolo11n.pt', model_status:'FOUND', source:'preinstalled'},
+      {value:'yolo11s.pt', model_status:'DOWNLOADABLE', source:'official'},
+    ]};
+  const d = draft({config:{model:'/data/platform-data/models/yolo11n.pt'}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:prepared}),true);
+  assert.equal(buildTrainingEngineParameters({draft:d,target:prepared,algorithm}).model,
+    '/data/platform-data/models/yolo11n.pt');
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared}),/预置/);
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:''}}),target:prepared}),/预置/);
+  assert.throws(()=>buildTrainingEngineParameters({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared,algorithm}),/预置/);
+});
+
+test('iteration retains latest checkpoint contract without requiring mother-model selection', () => {
+  const d = draft({baseVersionId:'current-version',config:{model:''}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:{base_models:[]}}),true);
+});
 
 function installDom() {
   const controls = {
@@ -150,11 +172,28 @@ test('recommended mode preserves scheduler-owned auto device and adaptive profil
   assert.equal(parameters.time, null);
 });
 
-test('submit readiness depends only on canonical draft, inheritance and submitting state', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}}), {ready: true, reason: ''});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), inheritance: {blocked: false}}), {ready: false, reason: 'materials'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: true}}), {ready: false, reason: 'iteration'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
+test('submit readiness depends only on canonical draft, base and submitting state', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), base: {blocked: false}}), {ready: false, reason: 'materials'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: true}}), {ready: false, reason: 'iteration'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
+});
+
+test('compatibility issues disable submit until the current draft passes', () => {
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: true, issue_count: 2},
+    }),
+    {ready: false, reason: 'material-compatibility'},
+  );
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: false, issue_count: null},
+    }),
+    {ready: false, reason: 'material-compatibility-loading'},
+  );
 });
 
 test('device validation fails closed for missing or unavailable device', () => {
@@ -183,7 +222,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, base: () => ({blocked: false})},
     trainingDraftToRequest,
   });
 
@@ -219,7 +258,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { reloaded += 1; },
     renderAlgorithms: () => { rendered += 1; },
@@ -267,7 +306,7 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: true}),
+      base: () => ({blocked: true}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
@@ -315,7 +354,7 @@ test('stale changlian master data disables submit and blocks network POST', asyn
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: false}),
+      base: () => ({blocked: false}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
@@ -328,6 +367,39 @@ test('stale changlian master data disables submit and blocks network POST', asyn
   assert.equal(result, null);
   assert.equal(calls, 0);
   assert.match(notices.at(-1), /立即同步/);
+  cleanup(runtime);
+});
+
+test('submit button exposes truthful creation stages while the durable POST is pending', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      await pending;
+      return {ok: true, async json() { return durableTask(); }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+  });
+
+  const request = window.submitTrain429();
+  assert.equal(runtime.state().lastStage, 'posting');
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
+  assert.equal(submitButton.textContent, '服务端正在核验并创建持久任务…');
+  assert.equal(submitButton.disabled, true);
+
+  release();
+  await request;
+  assert.equal(runtime.isSubmitting(), false);
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'idle');
+  assert.equal(submitButton.textContent, '开始训练');
   cleanup(runtime);
 });
 
@@ -349,7 +421,7 @@ test('double click cannot create two independent training tasks', async () => {
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
   });
@@ -386,7 +458,7 @@ test('refresh failure after successful POST does not invite a duplicate training
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { throw new Error('list offline'); },
     notify: message => notices.push(String(message)),
@@ -416,7 +488,7 @@ test('2xx without the formal durable task identity is not success and keeps the 
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     trainingTaskRuntime: {acceptCreatedTask: () => { accepted += 1; }},
     closeModal: () => { closed += 1; },
@@ -442,7 +514,7 @@ test('durable response task id must match the submitted planned task id', async 
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     closeModal: () => { closed += 1; },
     notify: message => notices.push(String(message)),
@@ -471,7 +543,7 @@ test('confirmed iteration action lineage is injected only for matching current d
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
-    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -481,6 +553,34 @@ test('confirmed iteration action lineage is injected only for matching current d
   });
   assert.equal(sent.task_id,'train_'+'a'.repeat(24));
   assert.equal(state.trainingIterationAction,null);
+  cleanup(runtime);
+});
+
+test('invalid historical iteration task id fails closed before POST', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'legacy-task-id'},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let postCount=0;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async()=>{
+    postCount+=1;return{ok:true,async json(){return durableTask()}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(postCount,0);
+  assert.match(notices.at(-1),/历史迭代任务 ID 格式异常/);
+  assert.ok(state.trainingIterationAction);
   cleanup(runtime);
 });
 
@@ -499,7 +599,7 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
-    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -508,7 +608,7 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   cleanup(runtime);
 });
 
-test('supplement candidate context follows the inherited version and actual selected materials', () => {
+test('supplement candidate context follows the base version and actual selected materials', () => {
   const asset = {
     id: 'alg-1', current_version_id: 'ver-1',
     versions: [{id: 'ver-1', supplement_data_candidate_set: {
@@ -522,7 +622,7 @@ test('supplement candidate context follows the inherited version and actual sele
     testMaterialIds: ['img-3'],
     splitMode: 'independent_test_set',
   });
-  const context = supplementCandidateContext({asset, draft: value, inheritance: {versionId: 'ver-1'}});
+  const context = supplementCandidateContext({asset, draft: value, base: {versionId: 'ver-1'}});
   assert.equal(context.candidateSetId, 'a'.repeat(64));
   assert.equal(context.sourceCandidateCount, 3);
   assert.deepEqual(context.adoptedMaterialIds, ['img-2', 'img-3']);
@@ -553,7 +653,7 @@ test('submit runtime carries candidate_set_id when selected materials adopt feed
     projectId: () => 'project-1',
     trainingDraftRuntime: {
       sync: () => value, current: () => value,
-      inheritance: () => ({blocked: false, versionId: 'ver-1'}),
+      base: () => ({blocked: false, versionId: 'ver-1'}),
     },
     trainingDraftToRequest,
   });
@@ -565,22 +665,22 @@ test('fixed benchmark context requires current bundle-verified backend identity'
   const asset = {id: 'alg-1', current_version_id: 'ver-1'};
   const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
   const context = benchmarkReuseContext({
-    asset, draft: value, inheritance: {versionId: 'ver-1'},
+    asset, draft: value, base: {versionId: 'ver-1'},
     benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 12, binding_level: 'bundle_verified'},
   });
   assert.equal(context.sourceVersionId, 'ver-1');
   assert.equal(context.scopeId, 'c'.repeat(64));
   assert.equal(context.testImageCount, 12);
   assert.throws(() => benchmarkReuseContext({
-    asset: {...asset, current_version_id: 'ver-2'}, draft: value, inheritance: {versionId: 'ver-1'},
+    asset: {...asset, current_version_id: 'ver-2'}, draft: value, base: {versionId: 'ver-1'},
     benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), test_image_count: 12, binding_level: 'bundle_verified'},
   }), /来源版本已变化/);
 });
 
 test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
 });
 
 test('submit runtime sends only fixed benchmark identity while exact test ids stay server-side', async () => {
@@ -593,7 +693,7 @@ test('submit runtime sends only fixed benchmark identity while exact test ids st
   globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return durableTask(sent.task_id); }}; }};
   const runtime = installTrainingSubmitRuntime({
     getState: () => state, projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => value, current: () => value, inheritance: () => ({blocked: false, versionId: 'ver-1'})},
+    trainingDraftRuntime: {sync: () => value, current: () => value, base: () => ({blocked: false, versionId: 'ver-1'})},
     trainingDraftToRequest,
   });
   await window.submitTrain429();
@@ -602,4 +702,140 @@ test('submit runtime sends only fixed benchmark identity while exact test ids st
   assert.equal(Object.hasOwn(sent, 'test_image_ids'), false);
   assert.equal(Object.hasOwn(sent, 'experiment_percent'), false);
   cleanup(runtime);
+});
+
+
+test('created task notice distinguishes effective training truth from pending annotation selection', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({
+      ok: true,
+      async json() {
+        return {
+          ...durableTask(),
+          selection: {
+            selected_train_count: 10_000,
+            effective_train_count: 2_000,
+            pending_annotation_count: 8_000,
+            test_count: 0,
+          },
+        };
+      },
+    }),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      base: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  const result = await window.submitTrain429();
+  assert.ok(result);
+  assert.match(notices[0], /本轮有效 2000 张/);
+  assert.match(notices[0], /待标注 8000 张已保留/);
+  cleanup(runtime);
+});
+
+
+test('training defaults use exclusive performance with 150 first epochs and 80 iteration epochs', () => {
+  const first = createTrainingDraft({config: {model: 'yolo11n.pt'}});
+  const initial = buildTrainingEngineParameters({draft: first, target, algorithm});
+  assert.equal(initial.epochs, 150);
+  assert.equal(initial.resource_strategy, 'auto');
+  assert.equal(initial.resource_profile, 'performance');
+  assert.equal(initial.gpu_policy, 'exclusive');
+  assert.equal(initial.early_stopping_enabled, false);
+
+  const inherited = createTrainingDraft({baseVersionId: 'verified-previous-version'});
+  const next = buildTrainingEngineParameters({draft: inherited, target, algorithm});
+  assert.equal(next.epochs, 80);
+
+  const manual = createTrainingDraft({
+    baseVersionId: 'verified-previous-version',
+    trainingMode: 'custom',
+    resource: {strategy: 'manual', batch: 8, workers: 0, cache: false},
+    config: {epochs: 300, early_stopping_enabled: true, patience: 40},
+  });
+  const explicit = buildTrainingEngineParameters({draft: manual, target, algorithm});
+  assert.equal(explicit.epochs, 300);
+  assert.equal(explicit.patience, 40);
+  assert.equal(explicit.early_stopping_enabled, true);
+});
+
+
+test('four modes freeze only training semantics while GPU resources resolve at worker start', () => {
+  const specs = [
+    ['quick', 30, 20, 640],
+    ['full', 150, 80, 640],
+    ['complex', 250, 150, 800],
+  ];
+  for (const [trainingMode, firstEpochs, iterationEpochs, imgsz] of specs) {
+    for (const [baseVersionId, expectedEpochs] of [['', firstEpochs], ['previous-ok', iterationEpochs]]) {
+      const d = draft({
+        trainingMode,
+        baseVersionId,
+        resource: {strategy:'manual', profile:'stability', device:'auto', gpuPolicy:'auto', batch:128, workers:8, cache:'ram'},
+        config: {model:'custom.pt', epochs:999, imgsz:320},
+      });
+      const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+      assert.equal(payload.training_mode, trainingMode);
+      assert.equal(payload.epochs, expectedEpochs);
+      assert.equal(payload.imgsz, imgsz);
+      assert.equal(payload.resource_strategy, 'auto');
+      assert.equal(payload.resource_profile, 'performance');
+      assert.equal(payload.gpu_policy, 'exclusive');
+      assert.equal(payload.batch, 8); // non-manual candidate only; Worker resolves at execution
+      assert.equal(payload.workers, 0);
+      assert.equal(payload.cache, 'False');
+    }
+  }
+});
+
+test('old automatic GPU policy cannot bypass custom-mode physical GPU exclusivity', () => {
+  const d = draft({
+    trainingMode: 'custom',
+    baseVersionId: 'previous-ok',
+    resource: {strategy:'manual',profile:'performance',device:'auto',gpuPolicy:'auto',batch:8,workers:0,cache:false},
+    config: {model:'custom.pt',epochs:30,imgsz:640},
+  });
+  const payload = buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+  assert.equal(d.resource.gpuPolicy, 'exclusive');
+  assert.equal(payload.gpu_policy, 'exclusive');
+  assert.equal(payload.resource_strategy, 'manual');
+});
+
+test('custom mode freezes entered Batch Workers Cache and epochs rather than silently adjusting', () => {
+  const d = draft({
+    trainingMode:'custom',
+    resource:{strategy:'manual', profile:'performance', device:'auto', gpuPolicy:'exclusive', batch:64, workers:6, cache:'disk'},
+    config:{model:'custom.pt', epochs:310, imgsz:960, patience:45, early_stopping_enabled:true},
+  });
+  const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+  assert.equal(payload.training_mode, 'custom');
+  assert.equal(payload.resource_strategy, 'manual');
+  assert.equal(payload.epochs, 310);
+  assert.equal(payload.imgsz, 960);
+  assert.equal(payload.batch, 64);
+  assert.equal(payload.workers, 6);
+  assert.equal(payload.cache, 'disk');
+  assert.equal(payload.early_stopping_enabled, true);
+});
+
+test('first-training explicit label rule remains active for every training mode', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    const resource = trainingMode === 'custom'
+      ? {strategy:'manual', batch:8, workers:0, cache:false}
+      : {strategy:'auto'};
+    const d = createTrainingDraft({algorithmId:'alg-1',materialIds:['image-1'],trainingMode,resource,newLabelCodes:[]});
+    assert.throws(() => buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest}), /至少选择一个训练标签/);
+  }
 });

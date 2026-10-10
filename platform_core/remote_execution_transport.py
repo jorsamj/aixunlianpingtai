@@ -17,9 +17,17 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
-from .algorithms import attach_version, list_algorithms, resolve_current_version_id, update_algorithm_version
+from .algorithms import (
+    attach_version,
+    attach_version_if_current,
+    list_algorithms,
+    resolve_current_version_id,
+    update_algorithm_version,
+)
 from filelock import FileLock, Timeout
 
+from .conversion import SUPPORTED_ROCKCHIP_CHIPS
+from .external_publish_request import request_external_auto_publish_if_enabled
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService, build_artifact_object_key
 from .remote_training_results import (
@@ -35,7 +43,7 @@ from .remote_cleaning import (
     RemoteCleaningError,
     commit_remote_cleaning_review,
 )
-from .remote_material_lifecycle import RemoteMaterialStagingLifecycle
+from .remote_material_lifecycle import RemoteExecutionStagingLifecycle
 from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
@@ -44,6 +52,7 @@ from .training_evaluation import build_evaluation_benchmark_scope, build_evaluat
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
+SUPPORTED_PORTABLE_RKNN_CHIPS = SUPPORTED_ROCKCHIP_CHIPS
 _REMOTE_PREFIX = "remote-execution"
 _SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -406,7 +415,7 @@ class RemoteExecutionTransportService:
                 409,
             )
         chip = str(chip or "").strip().lower()
-        if chip not in {"rk3568", "rk3576"}:
+        if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_RKNN_BOARD_CHIP_INVALID",
                 "RKNN board verification supports rk3568 or rk3576",
@@ -851,7 +860,7 @@ class RemoteExecutionTransportService:
             return common
 
         chip = str(values.get("chip") or "").strip().lower()
-        if chip not in {"rk3568", "rk3576"}:
+        if chip not in SUPPORTED_PORTABLE_RKNN_CHIPS:
             raise RemoteExecutionTransportError(
                 "REMOTE_CONVERSION_PARAMS_INVALID",
                 "portable Agent RKNN conversion currently supports rk3568 or rk3576",
@@ -2976,6 +2985,46 @@ class RemoteExecutionTransportService:
                 422,
             )
         expected_base_id = str(model_contract.get("base_version_id") or "").strip()
+        version_id = self._remote_training_version_id(
+            str(task.task_id),
+            generation,
+            str(training.get("snapshot_id") or ""),
+        )
+        existing_version = next(
+            (
+                row
+                for row in (algorithm.get("versions") or [])
+                if str(row.get("id") or "") == version_id
+            ),
+            None,
+        )
+        if existing_version is not None:
+            # Crash recovery must resolve the same task/version before comparing
+            # its frozen base with the now-advanced current_version_id.
+            durable_analysis_id = str(payload.get("external_analysis_id") or "").strip()
+            if durable_analysis_id and not str(existing_version.get("external_analysis_id") or "").strip():
+                existing_version = update_algorithm_version(
+                    self.algorithms_file(str(task.project_id)),
+                    algorithm_id,
+                    version_id,
+                    {"external_analysis_id": durable_analysis_id},
+                    now=str(getattr(task, "updated_at", "") or datetime.now(timezone.utc).isoformat()),
+                )
+            external_publish_requested = request_external_auto_publish_if_enabled(
+                data_dir=self.data_dir,
+                algorithms_path=self.algorithms_file(str(task.project_id)),
+                algorithm_id=algorithm_id,
+                version_id=version_id,
+                now=datetime.now(timezone.utc).isoformat(),
+            )
+            return {
+                "algorithm_id": algorithm_id,
+                "version_id": version_id,
+                "version_name": str(existing_version.get("version_name") or ""),
+                "model_artifacts_committed": True,
+                "external_publish_requested": bool(external_publish_requested),
+            }
+
         current_base_id = str(resolve_current_version_id(algorithm, framework="ultralytics") or "")
         if expected_base_id:
             if current_base_id != expected_base_id:
@@ -2990,34 +3039,6 @@ class RemoteExecutionTransportService:
                 "algorithm gained a newer current version while first-run remote training was running",
                 409,
             )
-
-        version_id = "rt" + hashlib.sha256(
-            f"{task.task_id}:{generation}:{training.get('snapshot_id')}".encode("utf-8")
-        ).hexdigest()[:10]
-        existing_version = next(
-            (
-                row
-                for row in (algorithm.get("versions") or [])
-                if str(row.get("id") or "") == version_id
-            ),
-            None,
-        )
-        if existing_version is not None:
-            durable_analysis_id = str(payload.get("external_analysis_id") or "").strip()
-            if durable_analysis_id and not str(existing_version.get("external_analysis_id") or "").strip():
-                existing_version = update_algorithm_version(
-                    self.algorithms_file(str(task.project_id)),
-                    algorithm_id,
-                    version_id,
-                    {"external_analysis_id": durable_analysis_id},
-                    now=str(getattr(task, "updated_at", "") or datetime.now(timezone.utc).isoformat()),
-                )
-            return {
-                "algorithm_id": algorithm_id,
-                "version_id": version_id,
-                "version_name": str(existing_version.get("version_name") or ""),
-                "model_artifacts_committed": True,
-            }
 
         verified_models = result.get("verified_models")
         training_models = confirmed.get("training_models")
@@ -3222,6 +3243,51 @@ class RemoteExecutionTransportService:
             snapshot_truth or None,
             dataset_manifest=dataset_manifest or None,
         )
+        frozen_label_schema = [
+            dict(item)
+            for item in (training.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        if not frozen_label_schema and snapshot_truth:
+            frozen_label_schema = [
+                dict(item)
+                for item in (snapshot_truth.get("label_schema") or [])
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ]
+        frozen_label_codes = [
+            str(item.get("code") or "").strip()
+            for item in frozen_label_schema
+        ]
+        frozen_label_contract = (
+            dict(training.get("label_contract") or {})
+            if isinstance(training.get("label_contract"), Mapping)
+            else {}
+        )
+        if not frozen_label_contract and isinstance(payload.get("label_contract"), Mapping):
+            frozen_label_contract = dict(payload.get("label_contract") or {})
+        frozen_label_contract.pop("project_path", None)
+        contract_codes = [
+            str(value or "").strip()
+            for value in (frozen_label_contract.get("effective_label_codes") or [])
+            if str(value or "").strip()
+        ]
+        if contract_codes and contract_codes != frozen_label_codes:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_LABEL_CONTRACT_MISMATCH",
+                "remote training frozen label contract does not match snapshot schema",
+                409,
+            )
+        snapshot_codes = [
+            str(item.get("code") or "").strip()
+            for item in (snapshot_truth.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        if snapshot_codes and frozen_label_codes and snapshot_codes != frozen_label_codes:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_LABEL_SNAPSHOT_MISMATCH",
+                "remote training label schema changed between preparation and commit",
+                409,
+            )
         evaluation = build_evaluation_truth(
             report.get("test_result") if isinstance(report.get("test_result"), Mapping) else {},
             task_id=str(task.task_id),
@@ -3298,6 +3364,9 @@ class RemoteExecutionTransportService:
             "artifact_verified": True,
             "trainable": True,
             "framework": "ultralytics",
+            "label_schema": frozen_label_schema,
+            "label_codes": frozen_label_codes,
+            "label_contract": frozen_label_contract,
             "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
@@ -3311,10 +3380,27 @@ class RemoteExecutionTransportService:
             "finished_at": finished_at,
         }
 
-        attach_version(
-            self.algorithms_file(str(task.project_id)),
-            algorithm_id,
-            version,
+        try:
+            attach_version_if_current(
+                self.algorithms_file(str(task.project_id)),
+                algorithm_id,
+                version,
+                expected_current_version_id=expected_base_id or None,
+            )
+        except Exception as error:
+            if getattr(error, "code", "") == "ALGORITHM_VERSION_CONFLICT":
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_BASE_VERSION_STALE",
+                    str(error),
+                    409,
+                ) from error
+            raise
+        external_publish_requested = request_external_auto_publish_if_enabled(
+            data_dir=self.data_dir,
+            algorithms_path=self.algorithms_file(str(task.project_id)),
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            now=datetime.now(timezone.utc).isoformat(),
         )
         return {
             "algorithm_id": algorithm_id,
@@ -3322,7 +3408,9 @@ class RemoteExecutionTransportService:
             "version_name": version_name,
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
+            "label_codes": frozen_label_codes,
             "model_artifacts_committed": True,
+            "external_publish_requested": bool(external_publish_requested),
             "model_artifact_summary": {
                 "discovered": len(artifact_rows),
                 "uploaded": len(artifact_rows),
@@ -3405,6 +3493,11 @@ class RemoteExecutionTransportService:
                 "remote conversion result commit is busy",
                 409,
             ) from error
+        created_destination = False
+        manifest_path: Path | None = None
+        previous_manifest: bytes | None = None
+        job_tmp: Path | None = None
+        job_committed = False
         try:
             destination = (artifacts / file_name).resolve()
             if artifacts not in destination.parents:
@@ -3456,6 +3549,7 @@ class RemoteExecutionTransportService:
                             502,
                         )
                     temporary.replace(destination)
+                    created_destination = True
                 finally:
                     temporary.unlink(missing_ok=True)
 
@@ -3489,6 +3583,11 @@ class RemoteExecutionTransportService:
                 },
             }
             manifest_path = artifacts / "manifest.json"
+            previous_manifest = (
+                manifest_path.read_bytes()
+                if manifest_path.is_file()
+                else None
+            )
             manifest_tmp = artifacts / ".manifest.json.remote.tmp"
             manifest_tmp.write_text(
                 json.dumps(manifest, ensure_ascii=False, sort_keys=True),
@@ -3561,6 +3660,7 @@ class RemoteExecutionTransportService:
                 encoding="utf-8",
             )
             job_tmp.replace(job_file)
+            job_committed = True
             from .external_publish_request import (
                 request_external_auto_publish_for_conversion_if_enabled,
             )
@@ -3578,6 +3678,33 @@ class RemoteExecutionTransportService:
                 "runtime_verified": runtime_verified,
                 "hardware_verified": False,
             }
+        except Exception:
+            # If this invocation downloaded a new local artifact but failed
+            # before job.json became durable, it is not yet a deliverable
+            # conversion result. Roll back only files created/overwritten by
+            # this invocation so the next execution generation is not blocked.
+            if not job_committed:
+                try:
+                    if job_tmp is not None:
+                        job_tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    if manifest_path is not None:
+                        if previous_manifest is None:
+                            manifest_path.unlink(missing_ok=True)
+                        else:
+                            restore = artifacts / ".manifest.json.rollback.tmp"
+                            restore.write_bytes(previous_manifest)
+                            restore.replace(manifest_path)
+                except OSError:
+                    pass
+                if created_destination:
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            raise
         finally:
             lock.release()
 
@@ -3602,7 +3729,7 @@ class RemoteExecutionTransportService:
         chip = str(board.get("chip") or "").strip().lower()
         conversion_job_id = str(board.get("conversion_job_id") or "").strip()
         if (
-            chip not in {"rk3568", "rk3576"}
+            chip not in SUPPORTED_PORTABLE_RKNN_CHIPS
             or not conversion_job_id
             or runtime.get("ok") is not True
             or str(runtime.get("engine") or "").strip().lower() != "rknn-lite2"
@@ -3733,9 +3860,17 @@ class RemoteExecutionTransportService:
             "inference_ms": inference_ms,
             "output_count": output_count,
             "output_shapes": list(runtime.get("output_shapes") or []),
-            "result_output_storage": dict(
-                (confirmed.get("result") or {}).get("output_storage") or {}
-            ),
+            "result_output_storage": {
+                **dict((confirmed.get("result") or {}).get("output_storage") or {}),
+                "size_bytes": _positive_int(
+                    evidence.get("size_bytes"),
+                    "result.size_bytes",
+                ),
+                "sha256": _normalized_sha256(
+                    evidence.get("sha256"),
+                    "result.sha256",
+                ),
+            },
         }
         lock = FileLock(str(job_dir / ".rknn-hardware-verify.lock"), timeout=30)
         try:
@@ -3780,12 +3915,55 @@ class RemoteExecutionTransportService:
             job_tmp.replace(job_path)
         finally:
             lock.release()
+
+        algorithm_id = ""
+        version_id = ""
+        for source in (
+            latest_job.get("source_trace"),
+            latest_job.get("source_meta"),
+        ):
+            if not isinstance(source, Mapping):
+                continue
+            candidate_algorithm_id = str(source.get("algorithm_id") or "").strip()
+            candidate_version_id = str(source.get("version_id") or "").strip()
+            if candidate_algorithm_id and candidate_version_id:
+                algorithm_id = candidate_algorithm_id
+                version_id = candidate_version_id
+                break
+        if not algorithm_id or not version_id:
+            source_id = str(latest_job.get("source_id") or "").strip()
+            match = re.fullmatch(r"version::([^:]+)::([^:]+)", source_id)
+            if match:
+                algorithm_id, version_id = match.group(1), match.group(2)
+
+        refreshed_artifacts: list[dict[str, Any]] = []
+        if algorithm_id and version_id:
+            refreshed_artifacts = self.model_artifacts.refresh_conversion_artifacts(
+                str(task.project_id),
+                algorithm_id,
+                version_id,
+                conversion_job_id,
+            )
+        from .external_publish_request import (
+            request_external_auto_publish_for_conversion_if_enabled,
+        )
+        external_publish_requested = request_external_auto_publish_for_conversion_if_enabled(
+            data_dir=self.data_dir,
+            project_id=str(task.project_id),
+            conversion_job=latest_job,
+        )
         return {
             "rknn_hardware_verified": True,
             "conversion_job_id": conversion_job_id,
             "chip": chip,
             "inference_ms": inference_ms,
             "output_count": output_count,
+            "canonical_artifact_ids": [
+                str(item.get("artifact_id") or "")
+                for item in refreshed_artifacts
+                if str(item.get("artifact_id") or "")
+            ],
+            "external_publish_requested": bool(external_publish_requested),
         }
 
     def _project_label_items(self, project_id: str) -> list[dict[str, Any]]:
@@ -3926,7 +4104,7 @@ class RemoteExecutionTransportService:
         # a provider outage must not turn a verified import into a failed task.
         cleanup: dict[str, Any]
         try:
-            lifecycle = RemoteMaterialStagingLifecycle(
+            lifecycle = RemoteExecutionStagingLifecycle(
                 None,
                 self.task_artifacts,
                 lambda project_id, ref: self._source_provider(project_id, ref)[1],
@@ -4023,6 +4201,33 @@ class RemoteExecutionTransportService:
             "remote_cleaning_review_ref": review_ref,
         }
 
+    def _record_remote_result_staging(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.task_artifacts is None:
+            return {
+                "status": "DEFERRED",
+                "deleted": 0,
+                "error": "task artifact store unavailable",
+            }
+        try:
+            lifecycle = RemoteExecutionStagingLifecycle(
+                None,
+                self.task_artifacts,
+                lambda project_id, ref: self._source_provider(project_id, ref)[1],
+            )
+            return lifecycle.record_confirmed(task, payload, evidence, confirmed)
+        except Exception as error:
+            return {
+                "status": "DEFERRED",
+                "deleted": 0,
+                "error": str(error)[:1000],
+            }
+
     def commit_result_publication(
         self,
         task,
@@ -4032,21 +4237,34 @@ class RemoteExecutionTransportService:
     ) -> dict[str, Any]:
         kind = str(getattr(task.kind, "value", task.kind))
         if kind == "TRAINING":
-            return self._commit_training_result(task, payload, evidence, confirmed)
-        if kind == "MODEL_CONVERSION":
-            return self._commit_conversion_result(task, payload, evidence, confirmed)
-        if kind == "MATERIAL_IMPORT":
+            committed = self._commit_training_result(task, payload, evidence, confirmed)
+        elif kind == "MODEL_CONVERSION":
+            committed = self._commit_conversion_result(task, payload, evidence, confirmed)
+        elif kind == "MATERIAL_IMPORT":
             return self._commit_material_import_result(task, payload, evidence, confirmed)
-        if kind == "MATERIAL_BATCH":
-            return self._commit_cleaning_result(task, payload, evidence, confirmed)
-        if kind == "DEPLOYMENT_TEST":
-            return self._commit_rknn_board_verification_result(
+        elif kind == "MATERIAL_BATCH":
+            committed = self._commit_cleaning_result(task, payload, evidence, confirmed)
+        elif kind == "DEPLOYMENT_TEST":
+            committed = self._commit_rknn_board_verification_result(
                 task,
                 payload,
                 evidence,
                 confirmed,
             )
-        return {}
+            # The staging lifecycle intentionally records only the task-owned
+            # board model/input copies. The result output remains durable report
+            # truth via hardware_verification.result_output_storage.
+        else:
+            return {}
+        return {
+            **dict(committed or {}),
+            "remote_staging_cleanup": self._record_remote_result_staging(
+                task,
+                payload,
+                evidence,
+                confirmed,
+            ),
+        }
 
     @staticmethod
     def _material_scan_source(material: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -4253,7 +4471,7 @@ class RemoteExecutionTransportService:
             model_sha = _normalized_sha256(board.get("model_sha256"), "board.model_sha256")
             if (
                 framework != "rknn"
-                or chip not in {"rk3568", "rk3576"}
+                or chip not in SUPPORTED_PORTABLE_RKNN_CHIPS
                 or not conversion_job_id
                 or input_size < 32
                 or input_size > 4096

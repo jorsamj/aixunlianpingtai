@@ -10,26 +10,28 @@ import {
   pickZipJob,
   zipQueueInfo,
   zipNeedsLabelConfirmation,
+  zipPhaseDetail,
   zipLabelChoice,
   zipStartDisposition,
   isZipBootstrapReconcile,
   zipView,
 } from '../../static/modules/zip-import-runtime.js';
 
-const running={id:'job-a',status:'running',created_at:'2026-09-16T10:00:00Z',stage:'正在解压数据集',progress:31.4,message:'解压 3140/10000'};
-const selecting={id:'job-b',status:'selecting',created_at:'2026-09-16T10:05:00Z',progress:0,message:'上传与ZIP校验完成，等待开始后台导入'};
+const running={id:'job-a',status:'running',created_at:'2026-09-16T10:00:00Z',stage:'正在解压数据集',progress:54.28,message:'解压 3140/10000',zip_display_progress:{phase:'EXTRACT',phase_label:'解压导入范围',phase_progress:31.4,overall_progress:54.28,completed:3140,total:10000,unit:'files',eta_seconds:18}};
+const selecting={id:'job-b',status:'selecting',created_at:'2026-09-16T10:05:00Z',progress:48,message:'上传与ZIP校验完成，等待开始后台导入',zip_display_progress:{phase:'READY',phase_label:'等待启动后台导入',phase_progress:100,overall_progress:48,completed:1,total:1,unit:'step',eta_seconds:null}};
 
 test('refresh restoration picks server running job',()=>assert.equal(pickZipJob([selecting,running]).id,'job-a'));
 test('second ZIP exposes explicit queue wait',()=>{const v=zipView(selecting,[selecting,running]);assert.equal(v.stage,'等待前序 ZIP 导入任务');assert.equal(v.queue.position,2);assert.match(v.message,/前面还有 1 个导入任务/)});
 test('only queue head selecting job can start',()=>{const a={...selecting,id:'a',created_at:'2026-09-16T10:00:00Z'},b={...selecting,id:'b'};assert.equal(zipQueueInfo(a,[b,a]).canStart,true);assert.equal(zipQueueInfo(b,[b,a]).canStart,false)});
-test('backend phase percent remains available but UI uses monotonic whole-pipeline percent',()=>{
-  assert.equal(backendZipProgress(running),31.4);
-  assert.equal(overallZipProgress({status:'uploading',upload_progress:50}),17.5);
-  assert.equal(overallZipProgress({status:'merging'}),36);
-  assert.equal(overallZipProgress({status:'validating'}),37);
-  assert.equal(overallZipProgress(selecting),38);
-  assert.equal(overallZipProgress(running),57.2);
-  assert.equal(zipView(running,[running]).progress,57.2);
+test('server projection owns ZIP phase and overall progress',()=>{
+  assert.equal(backendZipProgress(running),54.28);
+  assert.equal(overallZipProgress(selecting),48);
+  assert.equal(overallZipProgress(running),54.28);
+  const view=zipView(running,[running]);
+  assert.equal(view.progress,54.28);
+  assert.equal(view.stage,'解压导入范围');
+  assert.equal(zipPhaseDetail(running).phaseProgress,31.4);
+  assert.equal(zipPhaseDetail(selecting).etaSeconds,null);
   assert.equal(overallZipProgress({status:'done',progress:100}),100);
 });
 test('new deferred upload waits behind running job then becomes startable',()=>{assert.equal(zipStartDisposition(selecting,[running,selecting],{intent:'deferred'}),'wait');assert.equal(zipStartDisposition(selecting,[selecting],{intent:'deferred'}),'start')});
@@ -116,23 +118,81 @@ test('ZIP bootstrap recovery follows canonical startup readiness instead of a fi
 });
 
 
-test('ZIP label confirmation reuses exact platform codes and offers explicit file-label creation',()=>{
+test('ZIP label confirmation never preselects, recommends, or implicitly creates labels',()=>{
   const labels=[
     {code:'helmet',display_name:'安全帽',status:'active'},
     {code:'person',display_name:'人员',status:'active'},
   ];
-  assert.deepEqual(zipLabelChoice({class_id:'0',name:'helmet'},labels),{mode:'existing',code:'helmet',source:'helmet'});
-  assert.deepEqual(zipLabelChoice({class_id:'1',name:'smoke'},labels),{mode:'create',code:'smoke',source:'smoke'});
+  assert.deepEqual(zipLabelChoice({class_id:'0',name:'helmet'},labels),{mode:'unresolved',code:'',source:'helmet'});
+  assert.deepEqual(zipLabelChoice({class_id:'1',name:'smoke'},labels),{mode:'unresolved',code:'',source:'smoke'});
   assert.deepEqual(zipLabelChoice({class_id:'2',name:'安全帽'},labels),{mode:'unresolved',code:'',source:'安全帽'});
-  assert.deepEqual(zipLabelChoice({class_id:'3',name:'old_helmet',target_label_code:'helmet'},labels),{mode:'existing',code:'helmet',source:'old_helmet'});
+  assert.deepEqual(zipLabelChoice({class_id:'3',name:'old_helmet',target_label_code:'helmet'},labels),{mode:'unresolved',code:'',source:'old_helmet'});
 });
 
 test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
-  assert.match(source,/使用文件标签/);
+  assert.match(source,/系统只展示外部标签事实，不自动选择/);
+  assert.doesNotMatch(source,/自动匹配/);
+  assert.doesNotMatch(source,/__create__/);
   assert.match(source,/data-zip-confirm-button/);
   assert.match(source,/button\.textContent='正在确认…'/);
   assert.match(source,/async function openTask\(taskId\)/);
   assert.match(source,/openTask,confirmLabels/);
+  assert.match(source,/labelMappingReviewPage/);
+  assert.match(source,/buildManualLabelMapping/);
+  assert.match(source,/bulkMapLabels/);
   assert.doesNotMatch(source,/create_labels/);
+});
+
+
+test('canonical ZIP projection owns stage message percent and ETA for new jobs',()=>{
+  const job={
+    id:'canonical',
+    status:'running',
+    stage:'legacy stage',
+    message:'legacy message',
+    progress:7,
+    zip_display_progress:{
+      phase:'ANNOTATION_PARSE',
+      phase_label:'解析图片与标注',
+      phase_progress:40,
+      overall_progress:79.2,
+      completed:400,
+      total:1000,
+      unit:'images',
+      eta_seconds:21,
+      message:'正在解析 400/1000',
+    },
+  };
+  const view=zipView(job,[job]);
+  assert.equal(view.progress,79.2);
+  assert.equal(view.stage,'解析图片与标注');
+  assert.equal(view.message,'正在解析 400/1000');
+  assert.equal(zipPhaseDetail(job).text,'阶段 40% · 400 / 1000 图片 · 预计剩余 21 秒');
+});
+
+test('ZIP runtime renders server phase counter and ETA instead of inventing another phase percent',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/zip_display_progress/);
+  assert.match(source,/zipDurablePhaseMeta/);
+  assert.match(source,/zipPhaseDetail\(job\)/);
+  assert.match(source,/overall_progress/);
+});
+
+test('ZIP class mapping review uses the single shared numeric pagination presentation',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/data-zip-label-pagination/);
+  assert.match(source,/pagination\?\.mountPagination\?\./);
+  assert.match(source,/onPageChange:nextPage=>setReviewPage/);
+  assert.match(source,/onPageSizeChange:size=>/);
+  assert.doesNotMatch(source,/class="row between label-mapping-review-pager"><button/);
+  assert.match(source,/mountLabelReviewPagination\(current\.id\)/);
+});
+
+
+test('restored ZIP completion cannot auto-open stale import-cleaning decision',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/if\(!foregroundImports\.has\(id\)\|\|completionEffects\.has\(id\)\)return/);
+  assert.match(source,/foregroundImports\.add\(String\(provisional\.id\)\)/);
+  assert.match(source,/foregroundImports\.add\(id\);started\.add\(id\)/);
 });

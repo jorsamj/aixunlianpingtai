@@ -93,7 +93,7 @@ test('canonical version conversion polling keeps job and progress nodes stable',
 });
 
 
-test('canonical version conversion coalesces history and resource reads', async ({page}) => {
+test('canonical version conversion caches history but fetches resources on each open', async ({page}) => {
   await page.goto('/');
   await expect.poll(
     () => page.evaluate(() => state.project?.id || null),
@@ -173,5 +173,5 @@ test('canonical version conversion coalesces history and resource reads', async 
   const reopened = page.getByRole('dialog', {name: '新建版本转换'});
   await expect(reopened.locator('#conv428Resource')).toContainText('ONNX 导出环境');
   await page.waitForTimeout(100);
-  expect({historyGets, resourceGets}).toEqual({historyGets:1, resourceGets:1});
+  expect({historyGets, resourceGets}).toEqual({historyGets:1, resourceGets:2});
 });

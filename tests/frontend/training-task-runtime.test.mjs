@@ -2,7 +2,7 @@ import {trainingApiErrorMessage} from '../../static/modules/training-task-runtim
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installTrainingTaskRuntime} from '../../static/modules/training-task-runtime.js';
+import {installTrainingTaskRuntime, mergeTrainingJobRows} from '../../static/modules/training-task-runtime.js';
 import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
@@ -343,34 +343,40 @@ test('pause action mutates only the task endpoint then performs one focused jobs
   cleanup();
 });
 
-test('deleting an active task stops it, deletes it, then refreshes only jobs', async () => {
-  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}], __navigationEpoch: 2};
+test('single-item delete rejects nonterminal states without stopping or deleting a task', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [
+    {id: 'running-1', status: 'running'},
+    {id: 'queued-1', status: 'queued'},
+    {id: 'paused-1', status: 'paused'},
+    {id: 'transition-1', status: 'stopping'},
+    {id: 'done-1', status: 'completed'},
+  ], __navigationEpoch: 2};
   const calls = [];
+  const notices = [];
   globalThis.window = {
     confirm: () => true,
     async fetch(url, init = {}) {
       calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
-      if (url.endsWith('/stop')) return response({ok: true});
       if (String(init.method || '').toUpperCase() === 'DELETE') return response({ok: true});
       if (url.endsWith('/jobs')) return response([]);
       throw new Error(`unexpected URL: ${url}`);
     },
   };
-
   const runtime = installTrainingTaskRuntime({
     getState: () => state,
     projectId: () => state.project.id,
+    notify: message => notices.push(String(message)),
   });
-  const ok = await window.deleteTrain428('j1');
-
-  assert.equal(ok, true);
+  for (const id of ['running-1', 'queued-1', 'paused-1', 'transition-1', 'unknown']) {
+    assert.equal(await window.deleteTrain428(id), false, id);
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(notices.length, 5);
+  assert.equal(await window.deleteTrain428('done-1'), true);
   assert.deepEqual(calls, [
-    'POST /api/v48/projects/p1/jobs/j1/stop',
-    'DELETE /api/v12/projects/p1/jobs/j1',
+    'DELETE /api/v12/projects/p1/jobs/done-1',
     'GET /api/projects/p1/jobs',
   ]);
-  assert.deepEqual(state.jobs, []);
-
   runtime.destroy();
   cleanup();
 });
@@ -531,7 +537,7 @@ test('active training row exposes the 10 product-facing task fields without inte
   assert.match(html, /日志/);
   assert.match(html, /暂停/);
   assert.match(html, /停止/);
-  assert.match(html, /删除/);
+  assert.doesNotMatch(html, /删除/);
 });
 
 test('partial-success training row is completed but explicitly labeled as partial', () => {
@@ -645,6 +651,8 @@ test('batch pause uses only eligible real endpoints and performs one final jobs 
   const result=await runtime.batchAction('pause',['run-1','pause-1']);
   assert.equal(result.succeeded,1);
   assert.equal(result.skipped,1);
+  assert.deepEqual(result.succeeded_ids, ['run-1']);
+  assert.deepEqual(result.skipped_ids, ['pause-1']);
   assert.deepEqual(calls,[
     'POST /api/v48/projects/p1/jobs/run-1/pause',
     'GET /api/projects/p1/jobs',
@@ -688,6 +696,8 @@ test('batch delete posts terminal records once and never stops active selected t
   const result=await runtime.batchAction('delete',['stopped-1','failed-1','running-1']);
   assert.equal(result.succeeded,2);
   assert.equal(result.skipped,1);
+  assert.deepEqual(result.succeeded_ids, ['stopped-1', 'failed-1']);
+  assert.deepEqual(result.skipped_ids, ['running-1']);
   assert.deepEqual(deleteBody,{job_ids:['stopped-1','failed-1']});
   assert.deepEqual(calls,[
     'POST /api/v48/projects/p1/jobs/batch-delete',
@@ -784,3 +794,92 @@ test('training API error formatter keeps structured backend diagnostics', () => 
   assert.doesNotMatch(message, /\[object Object\]/);
 });
 
+
+
+test('HTTP refresh merge rejects a response older than the current SSE display revision', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 60, current_epoch: 18,
+    training_display_progress: {revision: 500, overall_progress: 60, current_epoch: 18},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 52, current_epoch: 15,
+    training_display_progress: {revision: 499, overall_progress: 52, current_epoch: 15},
+  }];
+  assert.deepEqual(mergeTrainingJobRows(current, incoming), current);
+});
+
+test('HTTP refresh merge defensively canonicalizes duplicate task ids only', () => {
+  const incoming = [
+    {
+      id: 'train-1', task_id: 'train-1', status: 'running',
+      training_display_progress: {revision: 500, overall_progress: 50},
+    },
+    {
+      id: 'train-1', task_id: 'train-1', status: 'running',
+      training_display_progress: {revision: 501, overall_progress: 51},
+    },
+    {
+      id: 'train-2', task_id: 'train-2', status: 'queued',
+      training_display_progress: {revision: 100, overall_progress: 0},
+    },
+  ];
+
+  const merged = mergeTrainingJobRows([], incoming);
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].task_id, 'train-1');
+  assert.equal(merged[0].training_display_progress.revision, 501);
+  assert.equal(merged[1].task_id, 'train-2');
+});
+
+test('HTTP refresh merge carries newer live runtime resource truth into the canonical row', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1',
+    runtime_resources: {actual_batch: 16, actual_workers: 2, actual_precision: 'fp16'},
+    training_display_progress: {revision: 500, overall_progress: 50},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1',
+    runtime_resources: {actual_batch: 32, actual_workers: 4, actual_precision: 'fp16'},
+    training_display_progress: {revision: 501, overall_progress: 51},
+  }];
+
+  const merged = mergeTrainingJobRows(current, incoming);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].runtime_resources.actual_batch, 32);
+  assert.equal(merged[0].runtime_resources.actual_workers, 4);
+  assert.equal(merged[0].training_display_progress.revision, 501);
+});
+
+test('HTTP refresh merge accepts a newer canonical display revision', () => {
+  const current = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 52,
+    training_display_progress: {revision: 499, overall_progress: 52},
+  }];
+  const incoming = [{
+    id: 'train-1', task_id: 'train-1', progress_percent: 60,
+    training_display_progress: {revision: 500, overall_progress: 60},
+  }];
+  assert.deepEqual(mergeTrainingJobRows(current, incoming), incoming);
+});
+
+test('batch pause returns item-level success, failure and skipped identities', async () => {
+  const state = {page:'训练任务', project:{id:'p1'}, __navigationEpoch:1,
+    jobs:[{id:'task-a',status:'running'},{id:'task-b',status:'running'},{id:'task-c',status:'paused'}]};
+  globalThis.window = {
+    async fetch(url) {
+      if (url.endsWith('/task-a/pause')) return response({ok:true});
+      if (url.endsWith('/task-b/pause')) return {ok:false,status:409,async json(){return {detail:'conflict'}},async text(){return 'conflict'}};
+      if (url.endsWith('/jobs')) return response(state.jobs);
+      throw new Error('unexpected '+url);
+    },
+  };
+  const runtime = installTrainingTaskRuntime({getState:()=>state,projectId:()=>state.project.id});
+  const result = await runtime.batchAction('pause',['task-a','task-b','task-c']);
+  assert.deepEqual(result.succeeded_ids, ['task-a']);
+  assert.deepEqual(result.failed_ids, ['task-b']);
+  assert.deepEqual(result.skipped_ids, ['task-c']);
+  runtime.destroy();
+  cleanup();
+});

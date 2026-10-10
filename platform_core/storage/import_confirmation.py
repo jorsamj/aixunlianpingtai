@@ -4,18 +4,20 @@ from __future__ import annotations
 import hashlib
 import json
 
-from platform_core.labels import suggest_label_code
-
+from platform_core.labels import active_label_options
 
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
-def mapping_suggestions(classes, labels):
+def external_label_facts(classes):
+    """Return source-side facts only; never expose a canonical target decision."""
+    allowed = ("class_id", "name", "image_count", "box_count")
     return [
-        {**item, 'target_label_code': suggest_label_code(item.get('name'), labels)}
+        {key: item.get(key) for key in allowed if key in item}
         for item in classes
+        if isinstance(item, dict)
     ]
 
 
@@ -33,24 +35,23 @@ def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels
         raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
     active = {
         str(label['code']): label
-        for label in labels
-        if label.get('status', 'active') == 'active'
+        for label in active_label_options(labels)
     }
     resolved = {}
-    for item in mapping_suggestions(classes, labels):
+    for item in classes:
         external_id, name = str(item['class_id']), item['name']
         by_name, by_id = mapping.get(name), mapping.get(external_id)
         if by_name and by_id and by_name != by_id:
             raise ValueError(f'conflicting mapping for external class {external_id}')
-        code = by_name or by_id or item['target_label_code']
+        code = by_name or by_id
         if not code or code not in active:
             raise ValueError(
                 f'外部类别 {external_id} 未映射到当前有效标签；'
                 '目标标签必须来自当前有效标签库'
             )
         if sum(
-            1 for label in labels
-            if label.get('code') == code and label.get('status', 'active') == 'active'
+            1 for label in active_label_options(labels)
+            if label.get('code') == code
         ) > 1:
             raise ValueError(f'ambiguous platform label for external class {external_id}')
         resolved[external_id] = code
@@ -118,7 +119,7 @@ def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping
     return confirmation
 
 def public_quality(value, sanitize):
-    """Whitelist bounded examples/class suggestions without exposing provider data."""
+    """Whitelist bounded quality examples and external class facts."""
     result = {}
     quality = value.get('quality')
     if isinstance(quality, dict):
@@ -129,6 +130,6 @@ def public_quality(value, sanitize):
             for key in ('object_key', 'line_number', 'code', 'severity') if key in row}
             for row in (quality.get('examples') or [])[:100] if isinstance(row, dict)]
     result['external_classes'] = [{key: sanitize(str(row[key])) if row[key] is not None else None
-        for key in ('class_id', 'name', 'target_label_code') if key in row}
+        for key in ('class_id', 'name') if key in row}
         for row in (value.get('external_classes') or [])[:10000] if isinstance(row, dict)]
     return result

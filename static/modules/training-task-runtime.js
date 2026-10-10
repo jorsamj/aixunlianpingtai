@@ -65,14 +65,17 @@ function metricText(value, digits = 3) {
 }
 
 export function trainingProgressView(job = {}) {
+  const display = job.training_display_progress && typeof job.training_display_progress === 'object'
+    ? job.training_display_progress
+    : {};
   const progress = job.training_progress && typeof job.training_progress === 'object' ? job.training_progress : {};
-  const epoch = finiteNumber(progress.epoch) ?? finiteNumber(job.current_epoch) ?? 0;
-  const totalEpochs = finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
-  const currentBatch = finiteNumber(progress.current_batch) ?? finiteNumber(job.current_batch);
-  const totalBatches = finiteNumber(progress.total_batches) ?? finiteNumber(job.total_batches);
-  const elapsedSeconds = finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
-  const etaSeconds = finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
-  const throughput = finiteNumber(progress.images_per_second);
+  const epoch = finiteNumber(display.current_epoch) ?? finiteNumber(progress.epoch) ?? finiteNumber(job.current_epoch) ?? 0;
+  const totalEpochs = finiteNumber(display.total_epochs) ?? finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
+  const currentBatch = finiteNumber(display.current_batch) ?? finiteNumber(progress.current_batch) ?? finiteNumber(job.current_batch);
+  const totalBatches = finiteNumber(display.total_batches) ?? finiteNumber(progress.total_batches) ?? finiteNumber(job.total_batches);
+  const elapsedSeconds = finiteNumber(display.elapsed_seconds) ?? finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
+  const etaSeconds = finiteNumber(display.eta_seconds) ?? finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
+  const throughput = finiteNumber(display.throughput) ?? finiteNumber(progress.images_per_second);
   const losses = progress.losses || {};
   const metrics = progress.metrics || {};
   const learningRates = progress.learning_rates || {};
@@ -95,6 +98,51 @@ export function trainingProgressView(job = {}) {
   if (throughput !== null) parts.push(`${metricText(throughput, 1)} img/s`);
   if (primaryLr !== null) parts.push(`LR ${Number(primaryLr).toPrecision(3)}`);
   return {epoch, totalEpochs, currentBatch, totalBatches, elapsedSeconds, etaSeconds, metricLine: parts.join(' · ')};
+}
+
+export function trainingDisplayRevision(job = {}) {
+  const value = Number(job?.training_display_progress?.revision ?? job?.display_revision);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function mergeTrainingJobRows(currentRows = [], incomingRows = []) {
+  const currentById = new Map(
+    (Array.isArray(currentRows) ? currentRows : [])
+      .map(row => [String(row?.task_id || row?.id || ''), row])
+      .filter(([id]) => Boolean(id)),
+  );
+  const merged = [];
+  const positionById = new Map();
+  for (const incoming of (Array.isArray(incomingRows) ? incomingRows : [])) {
+    const id = String(incoming?.task_id || incoming?.id || '');
+    const current = currentById.get(id);
+    let candidate = incoming;
+    if (current) {
+      const currentRevision = trainingDisplayRevision(current);
+      const incomingRevision = trainingDisplayRevision(incoming);
+      if (currentRevision !== null && incomingRevision !== null && incomingRevision < currentRevision) {
+        candidate = current;
+      }
+    }
+    if (!id) {
+      merged.push(candidate);
+      continue;
+    }
+    const existingPosition = positionById.get(id);
+    if (existingPosition === undefined) {
+      positionById.set(id, merged.length);
+      merged.push(candidate);
+      continue;
+    }
+    const existing = merged[existingPosition];
+    const existingRevision = trainingDisplayRevision(existing);
+    const candidateRevision = trainingDisplayRevision(candidate);
+    if (existingRevision !== null && candidateRevision !== null && candidateRevision < existingRevision) {
+      continue;
+    }
+    merged[existingPosition] = candidate;
+  }
+  return merged;
 }
 
 function statusText(status) {
@@ -292,7 +340,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     };
   }
 
-  function acceptCreatedTask(task, {algorithmId = '', framework = '', queuePriority = 50} = {}) {
+  function acceptCreatedTask(task, {algorithmId = '', algorithmName = '', framework = '', queuePriority = 50} = {}) {
     const taskId = String(task?.task_id || '').trim();
     if (!taskId) throw new Error('训练任务响应缺少 task_id');
     const status = String(task?.status || task?.persisted_status || 'QUEUED').trim().toLowerCase();
@@ -304,6 +352,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       task_status: String(task?.status || '').trim().toUpperCase(),
       asset_algorithm_id: String(algorithmId || task?.asset_algorithm_id || ''),
       algorithm_asset_id: String(algorithmId || task?.algorithm_asset_id || ''),
+      asset_algorithm_name: String(algorithmName || task?.asset_algorithm_name || task?.algorithm_name || '已删除算法'),
       framework: String(framework || task?.framework || ''),
       queue_priority: Number(task?.priority ?? queuePriority ?? 50),
       priority_scheme: 'lower_number_first',
@@ -357,6 +406,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       if (!isCurrent(startPage, startEpoch) || startPage !== TRAINING_PAGE) {
         return {stale: true, jobs: state().jobs || []};
       }
+      jobs = mergeTrainingJobRows(state().jobs, jobs);
       state().jobs = jobs;
       lastRefreshAt = Date.now();
       lastRefreshSource = String(source || 'direct');
@@ -406,9 +456,11 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     const eligible = uniqueIds
       .map(id => jobs.find(job => String(job?.id || job?.task_id || '') === id))
       .filter(job => job && trainingBatchActionEligible(job, action));
+    const eligibleIds = new Set(eligible.map(job => String(job?.id || job?.task_id || '')));
+    const skippedIds = uniqueIds.filter(id => !eligibleIds.has(id));
     if (!eligible.length) {
       notify?.(`所选任务当前没有可${actionName}的项目`);
-      return {ok: false, action, attempted: 0, succeeded: 0, failed: 0, skipped: uniqueIds.length};
+      return {ok: false, action, attempted: 0, succeeded: 0, failed: 0, skipped: uniqueIds.length, succeeded_ids: [], failed_ids: [], skipped_ids: skippedIds};
     }
 
     if (action === 'stop' && typeof window.confirm === 'function') {
@@ -425,6 +477,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     if (mutationLocks.has(lockKey)) return {ok: false, busy: true, action, attempted: eligible.length, succeeded: 0, failed: 0, skipped: uniqueIds.length - eligible.length};
     mutationLocks.add(lockKey);
     const failures = [];
+    const succeededIds = [];
     let succeeded = 0;
     let backendSkipped = 0;
     try {
@@ -443,6 +496,14 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         if (error) throw error;
         const body = await response.json();
         succeeded = Math.max(0, Number(body?.deleted || 0));
+        const submittedIds = new Set(eligible.map(job => String(job?.id || job?.task_id || '')));
+        // Counts alone cannot prove which rows succeeded.
+        for (const id of body?.deleted_ids || []) {
+          if (submittedIds.has(String(id))) succeededIds.push(String(id));
+        }
+        for (const id of [...(body?.skipped_active_ids || []), ...(body?.missing_ids || [])]) {
+          if (submittedIds.has(String(id))) skippedIds.push(String(id));
+        }
         backendSkipped = Math.max(0, Number(body?.skipped_active || 0)) + Math.max(0, Number(body?.missing || 0));
         for (const item of body?.failures || []) {
           failures.push({
@@ -461,6 +522,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
             const error = await responseError(response, `${actionName}训练失败`);
             if (error) throw error;
             succeeded += 1;
+            succeededIds.push(id);
           } catch (error) {
             failures.push({id, message: String(error?.message || error)});
           }
@@ -484,6 +546,9 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         failed: failures.length,
         skipped,
         failures,
+        succeeded_ids: [...new Set(succeededIds)],
+        failed_ids: [...new Set(failures.map(item => item.id).filter(Boolean))],
+        skipped_ids: [...new Set(skippedIds)],
         refreshError: refreshError ? String(refreshError?.message || refreshError) : '',
       };
     } catch (error) {
@@ -496,6 +561,9 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
         failed: failures.length || 1,
         skipped: uniqueIds.length - eligible.length + backendSkipped,
         failures: failures.length ? failures : [{id: '', message: String(error?.message || error)}],
+        succeeded_ids: [...new Set(succeededIds)],
+        failed_ids: [...new Set(failures.map(item => item.id).filter(Boolean))],
+        skipped_ids: [...new Set(skippedIds)],
       };
     } finally {
       mutationLocks.delete(lockKey);
@@ -534,19 +602,21 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     );
   };
   window.deleteTrain428 = async id => {
-    if (typeof window.confirm === 'function' && !window.confirm('确认删除这条训练任务记录？已经生成的算法版本不会删除。')) return false;
+    const job = (state().jobs || []).find(item => String(item?.id || item?.task_id || '') === String(id));
+    // Single-item controls must honor the same terminal-only contract as
+    // the canonical table action and batch delete. Never stop-to-delete.
+    if (!job || !trainingBatchActionEligible(job, 'delete')) {
+      notify?.('仅已结束的训练任务可以删除记录，请先停止任务并等待终态确认');
+      return false;
+    }
+    if (typeof window.confirm === 'function' && !window.confirm('确认删除这条已结束训练任务记录？已经生成的算法版本不会删除。')) return false;
     const key = `delete:${id}`;
     if (mutationLocks.has(key)) return false;
     mutationLocks.add(key);
     try {
       const pid = encodeURIComponent(projectId?.() || '');
       const encodedId = encodeURIComponent(id);
-      const job = (state().jobs || []).find(item => String(item.id) === String(id));
-      if (job && ['running', 'paused', 'queued', 'waiting'].includes(trainingDisplayStatus(job))) {
-        const stopResponse = await nativeFetch(`/api/v48/projects/${pid}/jobs/${encodedId}/stop`, {method: 'POST'});
-        const stopError = await responseError(stopResponse, '停止训练失败');
-        if (stopError) throw stopError;
-      }
+      // Only terminal tasks reach this endpoint; no implicit stop/delete chain.
       const deleteResponse = await nativeFetch(`/api/v12/projects/${pid}/jobs/${encodedId}`, {method: 'DELETE'});
       const deleteError = await responseError(deleteResponse, '删除任务失败');
       if (deleteError) throw deleteError;
@@ -567,7 +637,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   }
 
   const runtime = {
-    build: 'training-task-runtime-422508',
+    build: 'training-task-runtime-422509',
     refresh,
     acceptCreatedTask,
     batchAction,

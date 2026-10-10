@@ -63,9 +63,17 @@ function bytesText(value) {
 
 function failureStageLabel(stage) {
   return ({
+    admission: '任务受理',
+    training_input: '训练输入准备',
+    data_integrity: '素材完整性核验',
+    label_contract: '标签合同核验',
+    resource_validation: '资源核验',
+    worker_process: 'Worker 进程',
+    trainer: '训练器',
     training_process: '训练进程',
     post_training: '训练结束后处理',
     final_validation: '最终模型验证',
+    archive: '训练结果归档',
   })[String(stage || '').toLowerCase()] || String(stage || '未知阶段');
 }
 
@@ -148,8 +156,12 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const completedEpochs = numberOrNull(recovery?.completed_epochs) ?? numberOrNull(progress.epoch) ?? numberOrNull(job.current_epoch) ?? 0;
   const requestedEpochs = numberOrNull(recovery?.requested_epochs) ?? numberOrNull(progress.total_epochs) ?? numberOrNull(job.total_epochs) ?? numberOrNull(job.epochs);
   const recoverable = flags.failed && canRecoverTrainingTask(recovery);
-  const rootCause = flags.failed ? failureRootCause(job, recovery) : '';
-  const errors = flags.failed ? uniqueText([
+  const backendPrimary = String(recovery?.primary_message || '').trim();
+  const rootCause = flags.failed ? (backendPrimary || failureRootCause(job, recovery)) : '';
+  const backendDiagnostics = Array.isArray(recovery?.secondary_diagnostics)
+    ? recovery.secondary_diagnostics.map(String)
+    : [];
+  const errors = flags.failed ? uniqueText(backendDiagnostics.length ? backendDiagnostics : [
     rootCause,
     ...failedEvidence(job, recovery),
     report?.validation_error,
@@ -168,15 +180,45 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const resolved = job?.resolved_resources && typeof job.resolved_resources === 'object' ? job.resolved_resources : {};
   const runtime = job?.runtime_resources && typeof job.runtime_resources === 'object' ? job.runtime_resources : {};
   const actual = job?.actual_train_params && typeof job.actual_train_params === 'object' ? job.actual_train_params : {};
-  const requested = job?.requested_train_params && typeof job.requested_train_params === 'object' ? job.requested_train_params : {};
-  const resourceStrategy = String(resolved.resource_strategy || requested.resource_strategy || job?.resource_strategy || '').trim().toLowerCase();
+  const requestedContract = job?.requested_resources && typeof job.requested_resources === 'object' ? job.requested_resources : {};
+  const requestedTrainParams = job?.requested_train_params && typeof job.requested_train_params === 'object' ? job.requested_train_params : {};
+  const requested = {...requestedContract, ...requestedTrainParams};
+  const resourceStrategy = String(
+    resolved.resource_strategy
+    || requested.resource_strategy
+    || requested.strategy
+    || job?.resource_strategy
+    || ''
+  ).trim().toLowerCase();
   const selectedGpu = job?.selected_gpu && typeof job.selected_gpu === 'object'
     ? job.selected_gpu
     : (resolved?.selected_gpu && typeof resolved.selected_gpu === 'object' ? resolved.selected_gpu : {});
   const counts = job?.dataset_counts && typeof job.dataset_counts === 'object'
     ? job.dataset_counts
     : (job?.counts && typeof job.counts === 'object' ? job.counts : {});
-  const resourceProfile = String(actual.resource_profile || resolved.resource_profile || job?.resource_profile || requested.resource_profile || '').trim();
+  const resourceProfile = String(
+    actual.resource_profile
+    || resolved.resource_profile
+    || job?.resource_profile
+    || requested.resource_profile
+    || requested.profile
+    || ''
+  ).trim();
+  const requestedPrecision = String(requested.precision || job?.precision || '').trim().toLowerCase();
+  const resolvedPrecision = String(
+    resolved.resolved_precision
+    || job?.resolved_precision
+    || resolved.precision
+    || ''
+  ).trim().toLowerCase();
+  const runtimePrecision = String(
+    runtime.actual_precision
+    || runtime.runtime_precision
+    || actual.effective_precision
+    || actual.precision
+    || ''
+  ).trim().toLowerCase();
+  const requestedBatchValue = requested.batch ?? job?.batch ?? null;
   const runtimeMetrics = job?.runtime_metrics && typeof job.runtime_metrics === 'object' ? job.runtime_metrics : {};
   const latestRuntime = runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
   const metricNumber = value => {
@@ -190,8 +232,9 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     taskStatus: String(job?.task_status || recovery?.task_status || flags.canonical || '').trim().toUpperCase(),
     statusKind: flags.success ? (flags.partial ? 'partial' : 'success') : recoverable ? 'recoverable' : flags.failed ? 'failed' : 'active',
     statusMessage: String(job?.message || job?.current_item || '').trim(),
-    failureStage: recovery?.failure_stage || job?.failure_stage || '',
-    failureStageLabel: failureStageLabel(recovery?.failure_stage || job?.failure_stage || ''),
+    primaryErrorCode: String(recovery?.primary_error_code || '').trim(),
+    failureStage: recovery?.primary_stage || recovery?.failure_stage || job?.failure_stage || '',
+    failureStageLabel: failureStageLabel(recovery?.primary_stage || recovery?.failure_stage || job?.failure_stage || ''),
     rootCause,
     failureReason: rootCause || errors[0] || '',
     completionHandshake: completionHandshakeText(job, recovery),
@@ -224,14 +267,28 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     requestedDevice: String(job?.requested_device || requested.device || '').trim(),
     assignedDevice: String(job?.assigned_device || '').trim(),
     actualDevice: String(job?.actual_device || '').trim(),
-    gpuName: String(selectedGpu?.name || '').trim(),
-    gpuUuid: String(selectedGpu?.uuid || '').trim(),
-    resourceStrategy: String(actual.resource_strategy || resolved.resource_strategy || job?.resource_strategy || requested.resource_strategy || '').trim(),
+    gpuName: String(selectedGpu?.name || resolved.gpu_name || '').trim(),
+    gpuUuid: String(selectedGpu?.uuid || resolved.gpu_uuid || '').trim(),
+    resourceStrategy: String(
+      actual.resource_strategy
+      || resolved.resource_strategy
+      || job?.resource_strategy
+      || requested.resource_strategy
+      || requested.strategy
+      || ''
+    ).trim(),
     resourceProfile,
     resourceProfileLabel: resourceProfileLabel(resourceProfile),
     gpuPolicy: String(actual.gpu_policy || resolved.gpu_policy || job?.gpu_policy || requested.gpu_policy || '').trim(),
-    precision: String(actual.effective_precision || actual.precision || resolved.precision || job?.precision || requested.precision || '').trim(),
-    requestedBatch: requested.batch ?? job?.batch ?? null,
+    precision: runtimePrecision || resolvedPrecision || requestedPrecision,
+    requestedPrecision,
+    requestedPrecisionText: requestedPrecision === 'auto' ? '自动' : (requestedPrecision || '-'),
+    resolvedPrecision,
+    runtimePrecision,
+    requestedBatch: requestedBatchValue,
+    requestedBatchText: resourceStrategy === 'auto' && requestedBatchValue != null
+      ? '偏好 ' + requestedBatchValue
+      : requestedBatchValue,
     resolvedBatch: resolved.resolved_batch ?? null,
     runtimeBatch: runtime.runtime_batch ?? actual.batch ?? null,
     requestedWorkers: requested.workers ?? job?.workers ?? null,
@@ -284,7 +341,18 @@ function timelineHtml(steps) {
     </div>`).join('')}</div>`;
 }
 
-function detailHtml(job, recovery, log = '') {
+function inputIssuesHtml(inputIssues) {
+  if (!inputIssues || !Number(inputIssues.issue_count || 0)) return '';
+  const items = Array.isArray(inputIssues.items) ? inputIssues.items : [];
+  const page = Math.max(1, Number(inputIssues.page || 1));
+  const totalPages = Math.max(1, Number(inputIssues.total_pages || 1));
+  const limit = Math.max(1, Number(inputIssues.limit || 100));
+  const start = items.length ? (page - 1) * limit + 1 : 0;
+  const end = start ? start + items.length - 1 : 0;
+  return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div data-training-input-pagination></div></section>`;
+}
+
+function detailHtml(job, recovery, log = '', inputIssues = null) {
   const model = trainingRecoveryDetailModel(job, recovery);
   const failed = model.statusKind === 'failed' || model.statusKind === 'recoverable';
   const statusTitle = model.statusKind === 'recoverable'
@@ -304,14 +372,17 @@ function detailHtml(job, recovery, log = '') {
     ? (model.recoverable ? 'Checkpoint 已保留 · 可重新验证' : 'Checkpoint 已保留 · 当前不可自动恢复')
     : '无可用 Checkpoint · 不可恢复';
   const failureSummaryHtml = failed ? `<section class="training-recovery-panel" data-training-failure-summary>
-    <header><h4>失败主因与运行证据</h4><span>按诊断优先级展示，不改写后端事实</span></header>
-    <div class="training-recovery-kv" data-failure-rank="1"><span>1. Root cause</span><b>${esc(model.rootCause || '-')}</b></div>
-    <div class="training-recovery-kv" data-failure-rank="2"><span>2. Failure stage</span><b>${esc(model.failureStageLabel || model.failureStage || '-')}</b></div>
-    <div class="training-recovery-kv" data-failure-rank="3"><span>3. Process return code</span><b>${esc(model.processReturncode ?? '-')}</b></div>
-    <div class="training-recovery-kv" data-failure-rank="4"><span>4. Completion handshake</span><b>${esc(model.completionHandshake || '-')}</b></div>
-    <div class="training-recovery-kv" data-failure-rank="5"><span>5. Checkpoint / Recovery</span><b>${esc(checkpointRecoveryState)}</b></div>
+    <header><h4>失败原因</h4><span>${esc(model.failureStageLabel || model.failureStage || '训练任务')}</span></header>
+    <div class="training-recovery-message"><b>${esc(model.rootCause || '训练任务失败')}</b></div>
   </section>` : '';
-  const reasonHtml = model.errors.length ? `<section class="training-recovery-reason"><header><b>其他错误与失败证据</b><span>任务 / Worker / 验证 / 归档</span></header>${model.errors.filter(value => value !== model.rootCause).map(value => `<p>${esc(value)}</p>`).join('')}</section>` : '';
+  const technicalFailureHtml = failed ? `<details class="training-recovery-log" data-training-failure-technical><summary>查看技术详情</summary>
+    <div class="training-recovery-kv"><span>Error code</span><b>${esc(model.primaryErrorCode || model.errorType || '-')}</b></div>
+    <div class="training-recovery-kv"><span>Failure stage</span><b>${esc(model.failureStage || '-')}</b></div>
+    <div class="training-recovery-kv"><span>Process return code</span><b>${esc(model.processReturncode ?? '-')}</b></div>
+    <div class="training-recovery-kv"><span>Completion handshake</span><b>${esc(model.completionHandshake || '-')}</b></div>
+    <div class="training-recovery-kv"><span>Checkpoint / Recovery</span><b>${esc(checkpointRecoveryState)}</b></div>
+    ${model.errors.map(value => `<p>${esc(value)}</p>`).join('')}
+  </details>` : '';
   const warningHtml = model.warnings.length ? `<section class="training-recovery-warning"><header><b>警告 / 非致命异常</b><span>不会覆盖成功终态</span></header>${model.warnings.map(value => `<p>${esc(value)}</p>`).join('')}</section>` : '';
   const statusHtml = !failed && model.statusMessage ? `<div class="training-recovery-message"><b>当前信息</b><p>${esc(model.statusMessage)}</p></div>` : '';
   const artifacts = model.artifacts.length ? model.artifacts.join('、') : '-';
@@ -332,7 +403,7 @@ function detailHtml(job, recovery, log = '') {
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
           </section>
-          ${statusHtml}${failureSummaryHtml}${reasonHtml}${warningHtml}
+          ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
           <div class="training-recovery-columns">
             <section class="training-recovery-panel">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>
@@ -340,9 +411,9 @@ function detailHtml(job, recovery, log = '') {
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
               <div class="training-recovery-kv"><span>Optimizer / lr0</span><b>${esc(`${model.optimizer || '-'} / ${model.lr0 ?? '-'}`)}</b></div>
               <div class="training-recovery-kv"><span>最大训练时长</span><b>${esc(model.timeLimit ? `${model.timeLimit} h` : '不限')}</b></div>
-              <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc(`Batch ${model.requestedBatch ?? '-'} · Workers ${model.requestedWorkersText ?? '-'} · Cache ${model.requestedCacheText ?? '-'}`)}</b></div>
-              <div class="training-recovery-kv"><span>自动资源决议</span><b>${esc(`Batch ${model.resolvedBatch ?? '-'} · Workers ${model.resolvedWorkers ?? '-'} · Cache ${model.resolvedCache ?? '-'}`)}</b></div>
-              <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc(`Batch ${model.runtimeBatch ?? '-'} · Workers ${model.runtimeWorkers ?? '-'} · Cache ${model.runtimeCache ?? '-'}`)}</b></div>
+              <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc('Batch ' + (model.requestedBatchText ?? '-') + ' · Workers ' + (model.requestedWorkersText ?? '-') + ' · Precision ' + (model.requestedPrecisionText ?? '-') + ' · Cache ' + (model.requestedCacheText ?? '-'))}</b></div>
+              <div class="training-recovery-kv"><span>${model.resourceStrategy === 'manual' ? '资源核验' : '自动资源决议'}</span><b>${esc('Batch ' + (model.resolvedBatch ?? '-') + ' · Workers ' + (model.resolvedWorkers ?? '-') + ' · Precision ' + (model.resolvedPrecision || '-') + ' · Cache ' + (model.resolvedCache ?? '-'))}</b></div>
+              <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`)}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
@@ -477,6 +548,27 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return raw;
   }
 
+  async function readInputIssues(taskId, page = 1) {
+    const pid = projectId?.();
+    if (!pid) throw new Error('当前项目不可用');
+    const boundedPage = Math.max(1, Number(page || 1));
+    const response = await nativeFetch(`/api/v62/projects/${encodeURIComponent(pid)}/training-tasks/${encodeURIComponent(taskId)}/input-issues?page=${encodeURIComponent(boundedPage)}&limit=100`, {
+      headers: {'Accept': 'application/json'},
+    });
+    if (response.status === 404) return null;
+    return json(response, '读取训练输入异常证据失败');
+  }
+
+  async function loadInputIssuePage(page) {
+    const taskId = openTaskId;
+    if (!taskId) return false;
+    const inputIssues = await readInputIssues(taskId, page);
+    if (!openSnapshot || String(openTaskId) !== String(taskId)) return false;
+    openSnapshot = {...openSnapshot, inputIssues};
+    renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
+    return true;
+  }
+
   function renderOpenDetail(job, recovery = {}, log = '', focus = openFocus) {
     if (!openTaskId || String(job?.id || job?.task_id || '') !== String(openTaskId)) return false;
     const old = doc?.querySelector?.('[data-training-recovery-overlay]');
@@ -485,7 +577,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const logOpen = old?.querySelector?.('[data-training-tech-log]')?.open === true || focus === 'log';
     const host = doc?.createElement?.('div');
     if (!host) return false;
-    host.innerHTML = detailHtml(job, recovery, log);
+    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null);
     const nextOverlay = host.firstElementChild;
     if (!nextOverlay) return false;
     const nextDialog = nextOverlay.querySelector?.('.training-recovery-dialog');
@@ -502,6 +594,23 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
+    const inputIssues = openSnapshot?.inputIssues;
+    const paginationRoot = overlay.querySelector?.('[data-training-input-pagination]');
+    if (paginationRoot && inputIssues) {
+      window.PlatformCore?.pagination?.mountPagination?.(
+        paginationRoot,
+        {
+          page: Number(inputIssues.page || 1),
+          pageSize: Number(inputIssues.limit || 100),
+          total: Number(inputIssues.issue_count || 0),
+          totalPages: Number(inputIssues.total_pages || 1),
+        },
+        {
+          label: '训练输入标签适配问题分页',
+          onPageChange: loadInputIssuePage,
+        },
+      );
+    }
     if (focus === 'log' && logs) queueMicrotask(() => logs.scrollIntoView?.({block: 'nearest'}));
     return true;
   }
@@ -536,15 +645,19 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       const recoveryPromise = includeRecovery
         ? readRecovery(taskId)
         : Promise.resolve(openSnapshot?.recovery || cached?.recovery || {});
-      const [job, recovery, log] = await Promise.all([
+      const inputIssuesPromise = FAILED_TASK_STATUSES.has(canonicalTaskStatus(cached))
+        ? readInputIssues(taskId, openSnapshot?.inputIssues?.page || 1).catch(() => openSnapshot?.inputIssues || null)
+        : Promise.resolve(null);
+      const [job, recovery, log, inputIssues] = await Promise.all([
         readJob(taskId).catch(() => cached),
         recoveryPromise.catch(() => openSnapshot?.recovery || cached?.recovery || {}),
         readLog(taskId).catch(() => openSnapshot?.log || ''),
+        inputIssuesPromise,
       ]);
       if (String(openTaskId) !== String(taskId)) return false;
       const flags = taskStatusFlags(job);
       const effectiveRecovery = flags.success ? {} : recovery;
-      openSnapshot = {job, recovery: effectiveRecovery, log};
+      openSnapshot = {job, recovery: effectiveRecovery, log, inputIssues};
       updateStateJob(flags.success ? {...job, recovery: undefined} : job);
       renderOpenDetail(job, effectiveRecovery, log);
       scheduleDetailRefresh(job);
@@ -561,7 +674,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     }
     openTaskId = String(taskId);
     openFocus = options?.focus === 'log' ? 'log' : 'overview';
-    openSnapshot = {job, recovery: job?.recovery || {}, log: ''};
+    openSnapshot = {job, recovery: job?.recovery || {}, log: '', inputIssues: null};
     renderOpenDetail(job, openSnapshot.recovery, '', openFocus);
     try {
       await refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))});
@@ -666,6 +779,38 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (report) {
       closeDetail();
       window.trainingReport425?.(report.dataset.trainingReportTask);
+      return;
+    }
+    const review = event.target?.closest?.('[data-training-input-review]');
+    if (review) {
+      const imageId = String(review.dataset.trainingInputReview || '');
+      const item = (openSnapshot?.inputIssues?.items || []).find(row => String(row?.image_id || '') === imageId);
+      const s = state();
+      if (item) {
+        s.trainingAnnotationReviewContext = {
+          imageId,
+          requiredLabelCodes: [...(item.required_label_codes || [])],
+          missingLabelCodes: [...(item.missing_label_codes || [])],
+        };
+        if (!(s.images || []).some(row => String(row?.id || '') === imageId)) {
+          s.images = [...(s.images || []), {
+            id: imageId,
+            filename: item.filename || imageId,
+            dataset_id: item.dataset_id || '',
+            url: item.content_url || item.thumbnail_url || '',
+            content_sha256: item.content_sha256 || '',
+          }];
+        }
+      }
+      closeDetail();
+      window.openAnnotation?.(imageId);
+      return;
+    }
+    const exclude = event.target?.closest?.('[data-training-input-exclude]');
+    if (exclude) {
+      const imageId = String(exclude.dataset.trainingInputExclude || '');
+      window.TrainingMaterialSummaryRuntime?.excludeFromDraft?.(imageId);
+      notify?.('已从当前训练草稿排除该素材');
     }
   };
   doc?.addEventListener?.('click', onClick);
@@ -681,7 +826,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-422508',
+    build: 'training-recovery-runtime-422597',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

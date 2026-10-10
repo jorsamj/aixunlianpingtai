@@ -88,6 +88,8 @@ def test_new_canonical_label_retires_matching_alias_from_other_label(client):
         json={"label": "toukui1", "display_name": "头盔旧类"},
     )
     assert promoted.status_code == 200, promoted.text
+    promoted_items = promoted.json()["items"]
+    assert next(row for row in promoted_items if row["code"] == "toukui1")["display_name"] == "头盔旧类"
 
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     helmet = next(row for row in labels if row["code"] == "helmet")
@@ -118,7 +120,7 @@ def test_project_initialization_preserves_aliases_and_prunes_canonical_conflicts
     assert helmet["aliases"] == ["toukui1"]
 
 
-def test_storage_rescan_review_uses_confirmed_alias_suggestions(
+def test_storage_rescan_review_keeps_alias_as_fact_without_suggestion(
     client, tmp_path, monkeypatch
 ):
     project = client.post("/api/projects", json={
@@ -175,11 +177,19 @@ def test_storage_rescan_review_uses_confirmed_alias_suggestions(
     assert public["status"] == "AWAITING_CONFIRMATION"
     assert public["accepted"] is False
     assert public["external_classes"][0]["name"] == "toukui1"
-    assert public["external_classes"][0]["target_label_code"] == "helmet"
+    assert "target_label_code" not in public["external_classes"][0]
 
 
-def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project):
+def test_v60_ai_task_does_not_resolve_learned_alias_in_label_input(client, seeded_project, monkeypatch):
     project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "alias-test-model",
+        "name": "Alias Test Model",
+        "model_name": "vision-test",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://alias-test.local/v1",
+    }])
     updated = client.put(
         f"/api/v12/projects/{project_id}/labels/0",
         json={
@@ -190,13 +200,25 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
     )
     assert updated.status_code == 200, updated.text
 
-    created = client.post(
+    rejected = client.post(
         f"/api/v60/projects/{project_id}/annotation-tasks",
         json={
             "image_ids": [image["id"]],
             "labels_text": "huomiao1",
-            "provider_id": "alias-test-provider",
+            "model_config_id": "alias-test-model",
             "task_name": "alias input test",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "不会根据中文名、别名或历史映射自动选择标签" in rejected.text
+
+    created = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks",
+        json={
+            "image_ids": [image["id"]],
+            "labels_text": "fire",
+            "model_config_id": "alias-test-model",
+            "task_name": "canonical input test",
         },
     )
     assert created.status_code == 202, created.text
@@ -205,10 +227,10 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
         task_id, "request.json", default={}
     )
     assert request["labels"] == ["fire"]
-    assert request["labels_text"] == "huomiao1"
+    assert request["labels_text"] == "fire"
 
 
-def test_pending_storage_import_refreshes_alias_suggestions(
+def test_pending_storage_import_does_not_restore_alias_suggestions(
     client, tmp_path, monkeypatch
 ):
     project = client.post("/api/projects", json={
@@ -257,11 +279,17 @@ def test_pending_storage_import_refreshes_alias_suggestions(
 
     public = app_module._public_storage_import_task(task)
     assert public["status"] == "AWAITING_CONFIRMATION"
-    assert public["result"]["external_classes"][0]["target_label_code"] == "helmet"
+    assert public["result"]["external_classes"][0] == {
+        "class_id": "0",
+        "name": "toukui1",
+    }
 
     task.accepted = True
     frozen = app_module._public_storage_import_task(task)
-    assert frozen["result"]["external_classes"][0]["target_label_code"] is None
+    assert frozen["result"]["external_classes"][0] == {
+        "class_id": "0",
+        "name": "toukui1",
+    }
 
 
 def test_project_creation_rejects_overlong_alias_with_400(client):

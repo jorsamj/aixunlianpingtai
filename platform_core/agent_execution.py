@@ -33,6 +33,7 @@ from .task_runtime.repository import TERMINAL_STATUSES, _from_row
 DEFAULT_EXECUTION_LEASE_SECONDS = 30
 MAX_REMOTE_LOG_BYTES = 64 * 1024
 MAX_REMOTE_RESULT_METADATA_BYTES = 64 * 1024
+MAX_REMOTE_RESOURCE_RESOLUTION_BYTES = 64 * 1024
 
 
 class AgentExecutionError(RuntimeError):
@@ -68,6 +69,225 @@ def _json(value: object, fallback):
         return json.loads(str(value or ""))
     except (TypeError, ValueError):
         return fallback
+
+
+def _sanitize_training_resource_resolution(
+    value: object,
+    *,
+    node_id: str,
+    execution_generation: int,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must be an object",
+            422,
+        )
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        clean = json.loads(encoded.decode("utf-8"))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must contain finite JSON values",
+            422,
+        ) from error
+    if len(encoded) > MAX_REMOTE_RESOURCE_RESOLUTION_BYTES:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_TOO_LARGE",
+            "resource_resolution exceeds 64 KiB",
+            413,
+        )
+
+    stack = [clean]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for raw_key, item in current.items():
+                key = str(raw_key).strip().lower()
+                if any(
+                    marker in key
+                    for marker in (
+                        "authorization",
+                        "credential",
+                        "password",
+                        "secret",
+                        "token",
+                    )
+                ):
+                    raise AgentExecutionError(
+                        "REMOTE_RESOURCE_RESOLUTION_INVALID",
+                        "resource_resolution contains forbidden credential fields",
+                        422,
+                    )
+                stack.append(item)
+        elif isinstance(current, list):
+            stack.extend(current)
+
+    try:
+        generation = int(clean.get("execution_generation") or 0)
+        resolved_batch = int(clean.get("resolved_batch") or 0)
+        resolved_workers = int(
+            clean.get("resolved_workers")
+            if clean.get("resolved_workers") is not None
+            else -1
+        )
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution contains invalid numeric fields",
+            422,
+        ) from error
+
+    assigned_device = str(clean.get("assigned_device") or "").strip()
+    resolution_node = str(clean.get("node_id") or "").strip()
+    strategy = str(clean.get("resource_strategy") or "").strip().lower()
+    if (
+        generation != int(execution_generation)
+        or resolution_node != str(node_id)
+        or strategy not in {"auto", "manual"}
+        or not assigned_device
+        or resolved_batch <= 0
+        or resolved_workers < 0
+        or "resolved_cache" not in clean
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution does not match the current execution contract",
+            422,
+        )
+    if assigned_device.startswith("cuda:") and not str(clean.get("gpu_uuid") or "").strip():
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "CUDA resource_resolution must bind the selected GPU UUID",
+            422,
+        )
+    return clean
+
+
+def _sanitize_training_runtime_resources(
+    value: object,
+    *,
+    node_id: str,
+    execution_generation: int,
+    resolved_resources: object,
+) -> dict[str, Any] | None:
+    """Validate Agent-observed Trainer resources against the frozen plan."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources must be an object",
+            422,
+        )
+    if not isinstance(resolved_resources, dict) or not resolved_resources:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "runtime resources cannot be published before resolved resources",
+            409,
+        )
+    try:
+        generation = int(value.get("execution_generation") or 0)
+        actual_batch = int(value.get("actual_batch") if value.get("actual_batch") is not None else value.get("runtime_batch"))
+        actual_workers = int(value.get("actual_workers") if value.get("actual_workers") is not None else value.get("runtime_workers"))
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources contains invalid numeric fields",
+            422,
+        ) from error
+    if "actual_cache" in value:
+        actual_cache = value.get("actual_cache")
+    elif "runtime_cache" in value:
+        actual_cache = value.get("runtime_cache")
+    else:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources is missing actual_cache",
+            422,
+        )
+    actual_device = str(value.get("actual_device") or "").strip()
+    actual_precision = str(value.get("actual_precision") or value.get("runtime_precision") or "").strip().lower()
+    runtime_node = str(value.get("node_id") or "").strip()
+    if (
+        generation != int(execution_generation)
+        or runtime_node != str(node_id)
+        or not actual_device
+        or actual_batch <= 0
+        or actual_workers < 0
+        or actual_precision not in {"fp16", "fp32"}
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources does not match the current execution identity",
+            422,
+        )
+    try:
+        expected_batch = int(resolved_resources.get("resolved_batch"))
+        expected_workers = int(resolved_resources.get("resolved_workers"))
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved resource truth is incomplete",
+            409,
+        ) from error
+    if "resolved_cache" not in resolved_resources:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved resource cache truth is missing",
+            409,
+        )
+    expected_cache = resolved_resources.get("resolved_cache")
+    expected_device = str(resolved_resources.get("assigned_device") or "").strip()
+    expected_precision = str(resolved_resources.get("resolved_precision") or "").strip().lower()
+    if not expected_device or expected_precision not in {"fp16", "fp32"}:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved device/precision truth is incomplete",
+            409,
+        )
+    aliases = {
+        "runtime_batch": actual_batch,
+        "runtime_workers": actual_workers,
+        "runtime_cache": actual_cache,
+    }
+    for key, expected in aliases.items():
+        if key in value and value.get(key) != expected:
+            raise AgentExecutionError(
+                "REMOTE_RUNTIME_RESOURCES_INVALID",
+                f"{key} conflicts with the corresponding actual runtime value",
+                422,
+            )
+    if (
+        actual_batch != expected_batch
+        or actual_workers != expected_workers
+        or actual_cache != expected_cache
+        or actual_device != expected_device
+        or actual_precision != expected_precision
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_MISMATCH",
+            "Trainer runtime resources diverged from the frozen resolved contract",
+            409,
+        )
+    return {
+        "node_id": runtime_node,
+        "execution_generation": generation,
+        "actual_device": actual_device,
+        "actual_batch": actual_batch,
+        "actual_workers": actual_workers,
+        "actual_cache": actual_cache,
+        "actual_precision": actual_precision,
+        **aliases,
+    }
 
 
 def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
@@ -703,13 +923,45 @@ class AgentExecutionService:
         progress=None,
         stage=None,
         current_item=None,
+        resource_resolution=None,
+        runtime_resources=None,
     ) -> dict[str, Any]:
-        self._owned_execution(
+        current = self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
+        )
+        resolution = _sanitize_training_resource_resolution(
+            resource_resolution,
+            node_id=node_id,
+            execution_generation=execution_generation,
+        )
+        if resolution is not None and current.kind is not TaskKind.TRAINING:
+            raise AgentExecutionError(
+                "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                "resource_resolution is only valid for TRAINING executions",
+                409,
+            )
+        if runtime_resources is not None and current.kind is not TaskKind.TRAINING:
+            raise AgentExecutionError(
+                "REMOTE_RUNTIME_RESOURCES_UNSUPPORTED",
+                "runtime_resources is only valid for TRAINING executions",
+                409,
+            )
+        resolved_truth = resolution
+        if runtime_resources is not None and resolved_truth is None:
+            resolved_truth = self.artifacts.read_json(
+                current.task_id,
+                "resolved-resources.json",
+                default={},
+            )
+        runtime = _sanitize_training_runtime_resources(
+            runtime_resources,
+            node_id=node_id,
+            execution_generation=execution_generation,
+            resolved_resources=resolved_truth,
         )
         try:
             task = self.fenced.heartbeat(
@@ -727,9 +979,40 @@ class AgentExecutionService:
                 "remote execution heartbeat lost ownership",
                 409,
             ) from error
+        if resolution is not None or runtime is not None:
+            # Re-prove generation/node ownership immediately before publishing
+            # Agent-observed training truth. This projects the one frozen
+            # planner/Trainer contract; it never creates a second resource owner.
+            current = self._owned_execution(
+                node_id,
+                node_token,
+                task_id,
+                execution_lease_token,
+                execution_generation,
+            )
+            if current.kind is not TaskKind.TRAINING:
+                raise AgentExecutionError(
+                    "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                    "training resource projections require a TRAINING execution",
+                    409,
+                )
+            if resolution is not None:
+                self.artifacts.atomic_write_json(
+                    current.task_id,
+                    "resolved-resources.json",
+                    resolution,
+                )
+            if runtime is not None:
+                self.artifacts.atomic_write_json(
+                    current.task_id,
+                    "runtime-resources.json",
+                    runtime,
+                )
         return {
             "task": _task_public(task),
             "cancel_requested": task.status is TaskStatus.CANCEL_REQUESTED,
+            "resource_resolution_committed": resolution is not None,
+            "runtime_resources_committed": runtime is not None,
         }
 
     def append_log(
@@ -1899,6 +2182,8 @@ def agent_executor_router(
             progress=payload.get("progress"),
             stage=payload.get("stage"),
             current_item=payload.get("current_item"),
+            resource_resolution=payload.get("resource_resolution"),
+            runtime_resources=payload.get("runtime_resources"),
         )
 
     @router.post("/executions/{task_id}/logs")
