@@ -7544,7 +7544,7 @@ class TrainReq(BaseModel):
     api_key: Optional[str] = ""
     paddle_command: Optional[str] = ""
     # v20 进阶训练参数，Ultralytics 本机训练生效。
-    patience: int = 100
+    patience: int = 40
     early_stopping_enabled: bool = False
     time: Optional[float] = None
     precision: Literal["auto", "fp16", "bf16", "fp32"] = "auto"
