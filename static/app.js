@@ -5478,6 +5478,28 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const labelPanel=document.getElementById('trainingLabelContractPanel'),labelSlot=root.querySelector('#trainUiLabelSlot');
     if(labelPanel&&labelSlot&&!labelSlot.contains(labelPanel)){labelSlot.querySelector('.train-ui-label-wait')?.remove();labelSlot.appendChild(labelPanel)}
     const summary=root.querySelector('#trainUiSummary');if(summary)summary.innerHTML=trainingSummaryHtml();
+    const mode=String(state.trainingDraft?.trainingMode||'full');
+    root.dataset.trainingMode=mode;
+    root.querySelectorAll('.train-v3-mode-option').forEach(button=>{
+      const active=button.dataset.mode===mode;
+      button.classList.toggle('is-selected',active);
+      button.setAttribute('aria-pressed',String(active));
+    });
+    const base=state.trainingDraftBase||{};
+    const preset=window.TrainingSubmitRuntime?.modePreset?.(mode,Boolean(base.hasPrevious));
+    const cfg=state.trainingDraft?.config||{};
+    const brief=root.querySelector('#trainModeBriefV3');
+    if(brief)brief.textContent=mode==='custom'
+      ? `手动配置 · ${cfg.epochs||150} Epoch · GPU 独占 · 参数严格执行`
+      : `${preset?.epochs||150} Epoch · ${preset?.imgsz||640} px · GPU 独占 · 启动前自动适配`;
+    const custom=root.querySelector('#trainModeCustomSlotV3');if(custom)custom.hidden=mode!=='custom';
+    const modelTag=root.querySelector('#trainBaseModeLabelV3');
+    if(modelTag)modelTag.textContent=base.hasPrevious?'继承当前有效模型版本':'首次训练';
+    const labelCount=root.querySelector('#trainUiLabelSelectedV3');
+    if(labelCount){
+      const selected=(state.trainingDraft?.newLabelCodes||[]).map(labelText);
+      labelCount.textContent=selected.length?`本次已选：${selected.join('、')}`:(base.hasPrevious?'沿用已有版本标签，可选择新增标签':'首次训练需选择至少一个标签');
+    }
     const search=root.querySelector('#trainUiLabelSearch');if(search&&!search.dataset.trainingUiBound){search.dataset.trainingUiBound='true';search.addEventListener('input',()=>filterTrainingLabelsUi(root))}
     if(!root.dataset.trainingUiBound){root.dataset.trainingUiBound='true';const refresh=()=>queueMicrotask(()=>refreshTrainingCreateUi());root.addEventListener('input',refresh);root.addEventListener('change',refresh)}
     filterTrainingLabelsUi(root);return true;
@@ -5496,7 +5518,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }else{
       field.innerHTML=`<header><span class="train-ui-card-icon">▣</span><div><b>训练设备</b><small>设备选项来自当前真实训练环境</small></div></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select">${options.map(row=>`<option value="${esc(row.id)}" ${row.available===false?'disabled':''}>${esc(row.label||row.id)}${row.available===false?'（不可用）':''}</option>`).join('')||'<option value="" disabled>设备读取失败</option>'}</select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select"><option value="exclusive">GPU 独占（推荐）</option><option value="auto">兼容自动隔离</option></select></label></div><small>${esc(report.error||report.auto?.meaning||'按所选训练环境的可用设备执行')}</small>`;
     }
-    panel.before(field);field.querySelector('#trV3Device').value=schedulerOwned?'auto':(resource.device||'auto');field.querySelector('#trV3GpuPolicy').value=schedulerOwned?'exclusive':(resource.gpuPolicy||'exclusive');
+    (root.querySelector('#trainModeCustomSlotV3')||panel.parentElement).appendChild(field);field.querySelector('#trV3Device').value=schedulerOwned?'auto':(resource.device||'auto');field.querySelector('#trV3GpuPolicy').value=schedulerOwned?'exclusive':(resource.gpuPolicy||'exclusive');
   }
   function applyBenchmarkReuseUi(panel,s){
     const benchmark=benchmarkReuseState(),available=Boolean(benchmark?.available),enabled=Boolean(s.benchmarkReuseEnabled&&available);
@@ -5530,8 +5552,40 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const strategy=document.getElementById('trV3ResourceStrategy')?.value||'auto',manual=document.getElementById('trV3ManualResources'),profile=document.getElementById('trV3ResourceProfile'),batch=Number(document.getElementById('trV3ManualBatch')?.value),workers=Number(document.getElementById('trV3ManualWorkers')?.value),precision=document.getElementById('trV3ManualPrecision')?.value||'auto',recommendation=trainingResourceRecommendationV3(),warning=document.getElementById('trV3ManualWarning');
     if(manual)manual.hidden=strategy!=='manual';if(profile)profile.disabled=strategy==='manual';
     if(warning){const unsafe=strategy==='manual'&&recommendation.safeMax&&Number.isFinite(batch)&&batch>recommendation.safeMax;warning.hidden=!unsafe;warning.textContent=unsafe?`当前 GPU 预计无法满足 Batch ${batch}。建议使用 ${recommendation.batch}，当前安全上限约 ${recommendation.safeMax}。`:''}
-    const patch={strategy,profile:profile?.value||'performance'};if(Number.isFinite(batch))patch.batch=batch;if(Number.isFinite(workers))patch.workers=workers;
+    const mode=state.trainingDraft?.trainingMode||'full';
+    const patch={strategy:mode==='custom'?'manual':'auto',profile:mode==='custom'?(profile?.value||'performance'):'performance'};
+    if(mode==='custom'){
+      if(Number.isFinite(batch))patch.batch=batch;
+      if(Number.isFinite(workers))patch.workers=workers;
+    }
     window.TrainingDraftRuntime?.update?.({resource:patch,config:{precision}});window.refreshTrainingCreateUi?.();
+  };
+  window.setTrainingModeV3=function(mode){
+    if(!['quick','full','complex','custom'].includes(mode))return;
+    const draft=state.trainingDraft||{},wasCustom=draft.trainingMode==='custom';
+    const resource=draft.resource||{},config=draft.config||{};
+    const preset=window.TrainingSubmitRuntime?.modePreset?.(mode,Boolean(state.trainingDraftBase?.hasPrevious));
+    const patch={
+      trainingMode:mode,
+      resource:{
+        strategy:mode==='custom'?'manual':'auto',
+        profile:'performance',
+        device:'auto',
+        gpuPolicy:'exclusive',
+        batch:mode==='custom'?(wasCustom?(resource.batch??8):8):null,
+        workers:mode==='custom'?(wasCustom?(resource.workers??0):0):null,
+        cache:mode==='custom'?(wasCustom?(resource.cache??false):false):null
+      },
+      config:mode==='custom'?{...config,epochs:config.epochs??150,imgsz:config.imgsz??640}:{...config,epochs:preset.epochs,imgsz:preset.imgsz}
+    };
+    const strategy=document.getElementById('trV3ResourceStrategy');
+    if(strategy)strategy.value=patch.resource.strategy;
+    const batch=document.getElementById('trV3ManualBatch');if(batch&&mode==='custom')batch.value=String(patch.resource.batch);
+    const workers=document.getElementById('trV3ManualWorkers');if(workers&&mode==='custom')workers.value=String(patch.resource.workers);
+    const device=document.getElementById('trV3Device');if(device)device.value='auto';
+    window.TrainingDraftRuntime?.update?.(patch);
+    window.syncTrainingResourceModeV3?.();
+    window.refreshTrainingCreateUi?.();
   };
   window.useTrainingResourceRecommendationV3=function(){const value=trainingResourceRecommendationV3(),batch=document.getElementById('trV3ManualBatch'),workers=document.getElementById('trV3ManualWorkers'),precision=document.getElementById('trV3ManualPrecision');if(batch)batch.value=String(value.batch);if(workers)workers.value=String(value.workers);if(precision)precision.value=value.precision;window.syncTrainingResourceModeV3()};
   function renderSplit(){
@@ -5539,9 +5593,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     renderResources(root,panel);
     if(!root.querySelector('#trV3ResourceStrategy')){
       const field=document.createElement('section'),recommendation=trainingResourceRecommendationV3(),resource=state.trainingDraft?.resource||{};field.className='train-v3-resource-strategy train-ui-card';
-      field.innerHTML=`<header><span class="train-ui-card-icon">⚡</span><div><b>训练资源策略</b><small>服务端在训练 Worker 启动前解析并核验最终资源</small></div></header><div class="form two"><label class="field"><span>资源控制</span><select id="trV3ResourceStrategy" class="select" onchange="syncTrainingResourceModeV3()"><option value="auto">自动调度（推荐）</option><option value="manual">手动配置</option></select></label><label class="field"><span>自动档位</span><select id="trV3ResourceProfile" class="select" onchange="syncTrainingResourceModeV3()"><option value="performance">性能优先（推荐）</option><option value="balanced">均衡</option><option value="stability">稳定优先</option></select></label></div><div class="train-v3-auto-resource"><span>Batch：自动</span><span>Workers：自动</span><span>Precision：自动</span><span>GPU：自动调度</span></div><div id="trV3ManualResources" class="train-v3-manual-resource" hidden><div class="form three"><label class="field"><span>Batch</span><input id="trV3ManualBatch" class="input" type="number" min="1" max="4096" value="${Number(resource.batch||recommendation.batch)}" oninput="syncTrainingResourceModeV3()"><small>推荐 ${recommendation.batch} · 当前估算安全范围 1 ~ ${recommendation.safeMax||'后台核验'}</small></label><label class="field"><span>Workers</span><input id="trV3ManualWorkers" class="input" type="number" min="0" value="${Number(resource.workers??recommendation.workers)}" oninput="syncTrainingResourceModeV3()"><small>推荐 ${recommendation.workers} · 最终由服务端核验</small></label><label class="field"><span>Precision</span><select id="trV3ManualPrecision" class="select" onchange="syncTrainingResourceModeV3()"><option value="auto">自动</option><option value="fp16">FP16</option><option value="fp32">FP32</option></select></label></div><div id="trV3ManualWarning" class="alert warn" hidden></div><button class="btn mini" type="button" onclick="useTrainingResourceRecommendationV3()">使用推荐值</button></div><small>自动模式中的 Batch 是偏好而非硬约束，服务端可安全下调；手动模式是硬约束，不满足预算时会在启动 Trainer 前失败。</small>`;
-      panel.before(field);
-      field.querySelector('#trV3ResourceStrategy').value=state.trainingDraft?.resource?.strategy||'auto';
+      field.innerHTML=`<header><span class="train-ui-card-icon">⚡</span><div><b>手动资源配置</b></div></header><div class="form two"><label class="field"><span>资源控制</span><select id="trV3ResourceStrategy" class="select" onchange="syncTrainingResourceModeV3()"><option value="auto">自动调度（推荐）</option><option value="manual">手动配置</option></select></label><label class="field"><span>自动档位</span><select id="trV3ResourceProfile" class="select" onchange="syncTrainingResourceModeV3()"><option value="performance">性能优先（推荐）</option><option value="balanced">均衡</option><option value="stability">稳定优先</option></select></label></div><div class="train-v3-auto-resource"><span>Batch：自动</span><span>Workers：自动</span><span>Precision：自动</span><span>GPU：自动调度</span></div><div id="trV3ManualResources" class="train-v3-manual-resource" hidden><div class="form three"><label class="field"><span>Batch</span><input id="trV3ManualBatch" class="input" type="number" min="1" max="4096" value="${Number(resource.batch||recommendation.batch)}" oninput="syncTrainingResourceModeV3()"><small>推荐 ${recommendation.batch} · 当前估算安全范围 1 ~ ${recommendation.safeMax||'后台核验'}</small></label><label class="field"><span>Workers</span><input id="trV3ManualWorkers" class="input" type="number" min="0" value="${Number(resource.workers??recommendation.workers)}" oninput="syncTrainingResourceModeV3()"><small>推荐 ${recommendation.workers} · 最终由服务端核验</small></label><label class="field"><span>Precision</span><select id="trV3ManualPrecision" class="select" onchange="syncTrainingResourceModeV3()"><option value="auto">自动</option><option value="fp16">FP16</option><option value="fp32">FP32</option></select></label></div><div id="trV3ManualWarning" class="alert warn" hidden></div><button class="btn mini" type="button" onclick="useTrainingResourceRecommendationV3()">使用推荐值</button></div><small>自动模式中的 Batch 是偏好而非硬约束，服务端可安全下调；手动模式是硬约束，不满足预算时会在启动 Trainer 前失败。</small>`;
+      (root.querySelector('#trainModeCustomSlotV3')||panel.parentElement).appendChild(field);
+      field.querySelector('#trV3ResourceStrategy').value=state.trainingDraft?.trainingMode==='custom'?'manual':'auto';
       field.querySelector('#trV3ResourceProfile').value=state.trainingDraft?.resource?.profile||'performance';
       field.querySelector('#trV3ManualPrecision').value=state.trainingDraft?.config?.precision||recommendation.precision;
       window.syncTrainingResourceModeV3();
