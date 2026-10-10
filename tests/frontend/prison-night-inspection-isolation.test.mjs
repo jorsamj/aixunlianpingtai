@@ -30,6 +30,6 @@ test('the imported demo cannot access or pollute the parent DOM, CSS or storage'
   assert.match(entry,/classList.add\('sidebar-collapsed'\)/);
   assert.match(read("static/index.html"),/aiFoundationMenuToggle/);
   assert.match(html,/ai-foundation-sandbox-nav-scroll/);
-  assert.match(html,/ai-foundation-sandbox-navigation-guard/);
+  assert.match(html,/ai-foundation-sandbox-navigation-owner/);
   assert.match(html, /\.sidebar \.nav\{flex:1 1 auto;min-height:0;overflow-y:auto/);
 });

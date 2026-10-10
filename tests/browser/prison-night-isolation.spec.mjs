@@ -23,6 +23,17 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(frame).toHaveAttribute('title','AI算法底座（独立演示）');
   await expect(page.frameLocator('#nightInspectionIsolated iframe').getByText('夜间离床风险智能研判大屏').first()).toBeVisible();
   await page.frameLocator('#nightInspectionIsolated iframe').locator('[data-page="events"]').first().click();
+  const navDebug=await page.frameLocator('#nightInspectionIsolated iframe').locator('body').evaluate(()=>{
+    const button=document.querySelector('.sidebar .nav button[data-page="events"]');
+    const target=document.getElementById('events');
+    return {owner:Boolean(document.getElementById('ai-foundation-sandbox-navigation-owner')),
+      showPage:typeof window.showPage,
+      activePages:[...document.querySelectorAll('.page.active')].map(node=>node.id),
+      buttonActive:button?.classList.contains('active'),
+      targetClass:target?.className,targetDisplay:target&&getComputedStyle(target).display,
+      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length};
+  });
+  console.log('[ai-foundation-nav-diagnostic]',JSON.stringify(navDebug));
   await expect(page.frameLocator('#nightInspectionIsolated iframe').locator('#events')).toBeVisible();
   for(const pageId of ['deviceAccess','channelView','taskConfig','modelConfig','algoList','workflowConfig','dictTags','templateConfig']){
     await page.frameLocator('#nightInspectionIsolated iframe').locator(`.nav button[data-page="${pageId}"]`).first().click();
