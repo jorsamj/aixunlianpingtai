@@ -106,28 +106,17 @@ async function routeReadyTrainingRuntime(page) {
 
 
 async function expandTrainingAdvanced(trainingDialog) {
-  const root = trainingDialog.locator('.train429-create');
-  if (!(await root.getAttribute('class')).includes('train-create-show-advanced')) {
-    await trainingDialog.locator('[data-train-advanced-toggle]').click();
-  }
-  await expect(root).toHaveClass(/train-create-show-advanced/);
-  // Both technical fields and data split live inside their own native
-  // disclosures. Global advanced visibility does not expand those details.
-  for (const selector of ['details.train-create-technical', 'details.train-create-split-details']) {
-    const disclosure = trainingDialog.locator(selector);
-    if (await disclosure.count() && (await disclosure.getAttribute('open')) === null) {
-      await disclosure.locator(':scope > summary').click();
-    }
+  const split = trainingDialog.locator('details.train-create-split-details');
+  if (await split.count() && !(await split.evaluate(element => element.open))) {
+    await split.locator(':scope > summary').click();
   }
 }
 
 async function openTrainingSettings(page, trainingDialog) {
-  await expandTrainingAdvanced(trainingDialog);
-  const advanced = trainingDialog.locator('details.train-ui-advanced');
-  if (!(await advanced.getAttribute('open'))) {
-    await advanced.locator(':scope > summary').click();
-  }
-  const button = advanced.locator('.train-ui-edit-config');
+  // Expert controls only exist after explicitly selecting custom mode.
+  await trainingDialog.locator('[data-mode="custom"]').click();
+  await expect(trainingDialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
+  const button = trainingDialog.getByRole('button', {name: '配置更多专业参数'});
   await expect(button).toBeVisible();
   await button.click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
@@ -157,11 +146,12 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(algorithmCard.getByRole('button', {name: '报告', exact: true})).toBeVisible({timeout: 20_000});
   await algorithmCard.getByRole('button', {name: '训练'}).click();
 
-  const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const trainingDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(trainingDialog).toBeVisible();
   await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(trainingDialog);
-  await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
+  await expect(trainingDialog.locator('#trainBaseModeLabelV3')).toContainText('首次训练');
+  await expect(trainingDialog.locator('#tr429MotherModel')).toBeVisible();
   await expect(trainingDialog.getByText('从本次训练素材随机抽取试验集')).toBeVisible();
   await expect(trainingDialog.locator('#trV3Experiment')).toHaveValue('20');
   const priority = trainingDialog.locator('#tr429Priority');
@@ -169,7 +159,8 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(priority).toHaveAttribute('min', '1');
   await expect(priority).toHaveAttribute('max', '999');
   await expect(priority).toHaveValue('50');
-  await expect(trainingDialog.getByText('1 最高，数字越大优先级越低')).toBeVisible();
+  await expect(trainingDialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(trainingDialog.locator('#trainUiLabelSlot')).toBeVisible();
   const settingsDialog = await openTrainingSettings(page, trainingDialog);
   const advanced = settingsDialog.locator('details.advanced427-box');
   await expect(advanced).not.toHaveAttribute('open', '');
@@ -217,7 +208,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
@@ -226,7 +217,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await fireLabel.check();
   await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
@@ -242,7 +233,7 @@ test('training submit sends the selected candidate pool and configured experimen
     if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
   };
   page.on('request', capturePostSubmit);
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect.poll(() => submitted).toBeTruthy();
   await expect.poll(async () => page.evaluate(() =>
     window.PlatformCore?.runtime?.trainingSubmitRuntime?.state?.().submitting ?? true
@@ -273,7 +264,7 @@ test('training material selection does not depend on dataset groups and supports
     state.datasets = [];
     await window.startAlgorithmTraining429(algorithmId);
   }, algorithm.id);
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
 
@@ -306,7 +297,7 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeDisabled();
+  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeDisabled();
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
@@ -354,13 +345,13 @@ test('versioned training locks the latest version and projects the current rando
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(dialog);
-  await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
-  await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
-  await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
+  await expect(dialog.locator('#trainBaseModeLabelV3')).toContainText('继承当前有效模型版本');
+  await expect(dialog.locator('#tr429MotherModel')).toBeDisabled();
+  await expect(dialog.locator('#trainModeBriefV3')).toContainText('80 Epoch');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
   const settings = await openTrainingSettings(page, dialog);
   await expect(settings.locator('#ts428Model')).toBeDisabled();
