@@ -136,3 +136,35 @@ test('draft request preserves 1-999 integer priority contract', () => {
   assert.equal(trainingDraftToRequest(createTrainingDraft({...base, priority: 1})).queue_priority, 1);
   assert.equal(trainingDraftToRequest(createTrainingDraft({...base, priority: 999})).queue_priority, 999);
 });
+
+
+test('mode lives in canonical draft; preset selection drops hidden manual overrides', () => {
+  const preset = createTrainingDraft({
+    trainingMode:'full',
+    resource:{strategy:'manual',batch:128,workers:8,cache:'ram',gpuPolicy:'shared'},
+  });
+  assert.equal(preset.trainingMode, 'full');
+  assert.equal(preset.resource.strategy, 'auto');
+  assert.equal(preset.resource.profile, 'performance');
+  assert.equal(preset.resource.batch, null);
+  assert.equal(preset.resource.workers, null);
+  assert.equal(preset.resource.cache, null);
+  assert.equal(preset.resource.gpuPolicy, 'exclusive');
+  const legacy = createTrainingDraft({resource:{strategy:'manual',batch:64,workers:0,cache:false}});
+  assert.equal(legacy.trainingMode, 'custom');
+  assert.equal(legacy.resource.batch, 64);
+  assert.equal(legacy.resource.workers, 0);
+  assert.equal(legacy.resource.cache, false);
+});
+
+test('preset draft still retains explicit labels and version base without remapping', () => {
+  const d = createTrainingDraft({
+    trainingMode:'complex',algorithmId:'a',baseVersionId:'v2',
+    materialIds:['im1','im2'],newLabelCodes:['fire','smoke'],
+  });
+  const request = trainingDraftToRequest(d,{epochs:150,imgsz:800});
+  assert.deepEqual(request.train_labels,['fire','smoke']);
+  assert.equal(request.training_mode,'complex');
+  assert.deepEqual(request.train_image_ids,['im1','im2']);
+  assert.equal(d.baseVersionId,'v2');
+});
