@@ -203,7 +203,7 @@
 .train-create-saas-v2 .train-v3-mode-option{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:82px;padding:13px 11px;gap:6px;text-align:left;border:1.5px solid #dfe7f3;border-radius:12px;background:#fff;color:#243453;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s}
 .train-create-saas-v2 .train-v3-mode-option:hover{border-color:#a9c1ed;background:#f9fbff}
 .train-create-saas-v2 .train-v3-mode-option b{font-size:15px;font-weight:800;line-height:1.25}
-.train-create-saas-v2 .train-v3-mode-option span{font-size:12px;line-height:1.4;color:#71819b}
+.train-create-saas-v2 .train-v3-mode-option span{font-size:13px;line-height:1.4;color:#71819b}
 .train-create-saas-v2 .train-v3-mode-option.is-selected{border-color:#2563eb;background:#edf5ff;box-shadow:0 0 0 1px rgba(37,99,235,.08)}
 .train-create-saas-v2 .train-v3-mode-option.is-selected b{color:#1655ca}
 .train-create-saas-v2 .train-v3-mode-option.is-selected:after{content:"✓";position:absolute;top:6px;right:9px;color:#2563eb;font-size:15px;font-weight:900}
