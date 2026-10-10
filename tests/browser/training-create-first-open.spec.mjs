@@ -125,6 +125,19 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
   await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
   await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  // Labels must sit next to materials, not below the mode options.
+  const desktopLayout = await dialog.evaluate(node => {
+    const rect = selector => node.querySelector(selector).getBoundingClientRect();
+    const card = rect('.modal-card'), materials = rect('.train-ui-data-card');
+    const labels = rect('.train-ui-labels-card'), modes = rect('.train-v3-mode-card');
+    return {width: card.width, materials: {top: materials.top, right: materials.right},
+      labels: {top: labels.top, left: labels.left}, modeTop: modes.top};
+  });
+  expect(desktopLayout.width).toBeGreaterThan(1000);
+  expect(Math.abs(desktopLayout.materials.top - desktopLayout.labels.top)).toBeLessThan(16);
+  expect(desktopLayout.labels.left).toBeGreaterThanOrEqual(desktopLayout.materials.right);
+  expect(desktopLayout.modeTop).toBeGreaterThan(desktopLayout.materials.top);
+
 
   expect(trainingOptionsCalls).toBe(beforeOptions);
   expect(recommendationCalls).toBe(beforeRecommendation);
@@ -160,6 +173,17 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect(secondDialog.locator('#trV3Device')).toContainText('CPU');
   await page.waitForTimeout(180);
   expect(trainingDeviceCalls).toBe(deviceCallsAfterFirstOpen);
+
+  // Small screens must show labels between materials and training modes.
+  await page.setViewportSize({width: 760, height: 820});
+  const mobileLayout = await secondDialog.evaluate(node => {
+    const top = selector => node.querySelector(selector).getBoundingClientRect().top;
+    return {algorithm: top('.train-ui-algorithm-card'), materials: top('.train-ui-data-card'),
+      labels: top('.train-ui-labels-card'), modes: top('.train-v3-mode-card')};
+  });
+  expect(mobileLayout.algorithm).toBeLessThan(mobileLayout.materials);
+  expect(mobileLayout.materials).toBeLessThan(mobileLayout.labels);
+  expect(mobileLayout.labels).toBeLessThan(mobileLayout.modes);
 });
 
 

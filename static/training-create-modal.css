@@ -163,16 +163,17 @@
 
 
 /* v42.24.344 — compact creation flow; existing label/draft/split owners are retained. */
-.training-create-modal-card{width:min(868px,calc(100vw - 40px))!important;max-height:min(92vh,920px)!important;border-radius:20px!important;box-shadow:0 25px 80px rgba(12,30,68,.19)!important}
+.training-create-modal-card{width:min(1280px,calc(100vw - 40px))!important;height:min(94dvh,1000px)!important;max-height:calc(100dvh - 32px)!important;border-radius:20px!important;box-shadow:0 25px 80px rgba(12,30,68,.19)!important}
 .training-create-modal-card .modal-head{min-height:64px;padding:0 26px;background:#fff}
 .training-create-modal-card .modal-title{font-size:22px;letter-spacing:-.03em;font-weight:800}
-.training-create-modal-card .modal-body{padding:0 26px;background:#fff;overflow:auto}
+.training-create-modal-card .modal-body{flex:1 1 auto;min-height:0;padding:0 26px;background:#fff;overflow:auto}
 .train-create-saas-v2{font-size:16px;line-height:1.5;color:#23304a}
-.train-create-saas-v2 .train-create-layout{display:flex;flex-direction:column;gap:15px;padding:18px 0 20px}
-.train-create-saas-v2 .train-create-left,.train-create-saas-v2 .train-create-right{display:flex;flex-direction:column;gap:15px;width:100%;min-width:0}
-.train-create-saas-v2 .train-create-left .train-ui-algorithm-card{order:1}
-.train-create-saas-v2 .train-create-left .train-ui-data-card{order:2}
-.train-create-saas-v2 .train-create-left .train-v3-mode-card{order:3}
+.train-create-saas-v2 .train-create-layout{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);grid-template-areas:"algorithm algorithm" "materials labels" "modes labels";gap:16px 20px;align-items:start;padding:18px 0 20px}
+.train-create-saas-v2 .train-create-left,.train-create-saas-v2 .train-create-right{display:contents}
+.train-create-saas-v2 .train-ui-algorithm-card{grid-area:algorithm}
+.train-create-saas-v2 .train-ui-data-card{grid-area:materials}
+.train-create-saas-v2 .train-ui-labels-card{grid-area:labels;align-self:start}
+.train-create-saas-v2 .train-v3-mode-card{grid-area:modes}
 .train-create-saas-v2 .train-ui-card,.train-create-saas-v2 .train428-panel{padding:19px 22px;background:#fff;border:1px solid #e4eaf3;border-radius:15px;box-shadow:0 2px 9px rgba(24,52,96,.025)}
 .train-create-saas-v2 .train-ui-card:hover,.train-create-saas-v2 .train428-panel:hover{border-color:#dbe4f2}
 .train-create-saas-v2 .train-ui-card>header,.train-create-saas-v2 .train428-panel>header{margin-bottom:15px}
@@ -219,16 +220,16 @@
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy>.form.two{display:none}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource{display:block}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource[hidden]{display:none}
-.train-create-saas-v2 .train-ui-labels-card{min-height:0}
+.train-create-saas-v2 .train-ui-labels-card{min-height:0;border-color:#bad3fa;background:linear-gradient(180deg,#f5f9ff 0,#fff 120px);box-shadow:0 4px 20px rgba(29,78,216,.055)}
 .train-create-saas-v2 .train-ui-labels-card>header small{display:block!important;max-width:600px;margin-top:4px;color:#5c708f;font-size:14px;font-weight:550;line-height:1.5}
 .train-create-saas-v2 .train-ui-label-search{height:45px;margin-bottom:12px;border-radius:10px}
 .train-create-saas-v2 .train-ui-label-search input{font-size:15px}
-.train-create-saas-v2 .train-ui-label-slot{min-height:64px}
+.train-create-saas-v2 .train-ui-label-slot{min-height:110px;max-height:min(49dvh,520px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-right:5px}
 .train-create-saas-v2 .train-ui-label-wait{min-height:64px;font-size:14px}
 .train-create-saas-v2 .training-label-contract{border:0!important;background:transparent!important}
 .train-create-saas-v2 .training-label-contract-head{display:none}
 .train-create-saas-v2 .training-label-contract-title{font-size:15px!important}
-.train-create-saas-v2 .training-label-contract-list{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px!important}
+.train-create-saas-v2 .training-label-contract-list{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px!important}
 .train-create-saas-v2 .training-label-choice{min-height:48px;padding:10px 12px!important;border-radius:10px!important}
 .train-create-saas-v2 .training-label-choice b{font-size:15px!important}
 .train-create-saas-v2 .training-label-choice small{font-size:13px!important}
@@ -237,8 +238,12 @@
 .train-create-saas-v2 .train428-footer{position:sticky;bottom:0;z-index:5;margin:0 -26px;padding:15px 26px;background:rgba(255,255,255,.98);border-top:1px solid #e9edf5;gap:11px}
 .train-create-saas-v2 .train428-footer .btn{min-height:46px;font-size:16px}
 .train-create-saas-v2 .train428-footer .train-ui-submit{min-width:168px}
+@media(max-width:1050px){
+ .train-create-saas-v2 .train-create-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"algorithm" "materials" "labels" "modes";gap:14px}
+ .train-create-saas-v2 .train-ui-label-slot{max-height:min(38dvh,400px)}
+}
 @media(max-width:790px){
- .training-create-modal-card{width:calc(100vw - 16px)!important;max-height:96vh!important}
+ .training-create-modal-card{width:calc(100vw - 16px)!important;height:calc(100dvh - 16px)!important;max-height:calc(100dvh - 16px)!important}
  .training-create-modal-card .modal-body{padding:0 14px}
  .train-create-saas-v2 .train-create-layout{padding:12px 0 16px}
  .train-create-saas-v2 .train-ui-card,.train-create-saas-v2 .train428-panel{padding:15px}
