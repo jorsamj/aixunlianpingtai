@@ -43,6 +43,7 @@ test('training first-open exposes four modes and visible canonical labels withou
     "setTrainingModeV3('complex')", "setTrainingModeV3('custom')",
     'tr429MotherModel', 'tr429Priority', 'tr429Target', 'tr429TaskId',
     'trainUiLabelSlot', 'trainUiLabelSearch', '训练标签',
+    '智能自动化调度', 'train350-auto-schedule',
   ]) assert.ok(creation.includes(part), part);
   assert.doesNotMatch(creation,/id="tr429QuickEpoch"/);
   assert.doesNotMatch(creation,/编辑全部训练参数/);

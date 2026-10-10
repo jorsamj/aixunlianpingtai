@@ -3906,7 +3906,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       <div class="train-create-layout">
         <div class="train-create-left">
           <section class="train428-panel train-ui-card train-ui-algorithm-card">
-            <header><span class="train-ui-card-icon">▣</span><div><b>训练算法</b></div><span class="train350-auto-schedule"><i></i>智能自动调度</span></header>
+            <header><span class="train-ui-card-icon">▣</span><div><b>训练算法</b></div><span class="train350-auto-schedule"><i></i>智能自动化调度</span></header>
             <div class="train-v3-algorithm-line">
               <div class="train-v3-algorithm-name"><strong>${esc(a.name)}</strong><span id="trainBaseModeLabelV3">首次训练</span></div>
               <div class="field train-v3-priority"><label for="tr429Priority">任务优先级</label><input id="tr429Priority" class="input" type="number" min="1" max="999" step="1" value="50"></div>
